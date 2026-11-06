@@ -412,9 +412,23 @@ class _DiskBackedSymbolCollector:
                         stale_sp = safe_pos_float(getattr(stale_disk, "spread_bps", None), default=0.0) or 0.0
                         share_exec_sec = resolve_derived_telemetry_intervals().get("share_executor_interval_sec", 1800.0)
                         closed_rth_max_age_sec = 192.0 * share_exec_sec  # 192 * 30m = 96h (covers 3-day holiday weekend + overnight)
+                        stale_was_open_rth = (
+                            allow_net_bool
+                            and "MPTRADE_FORCE_RTH_GATE" not in os.environ
+                            and stale_ts > 0.0
+                            and bool(is_symbol_market_open(sym_clean, stale_ts))
+                        )
+                        stale_whale_legacy = self._DISK_FILE_PREFIX == "whale_snapshot" and (
+                            (safe_pos_float(getattr(stale_disk, "taker_ratio_5m", None), default=1.0) or 1.0) < 0.176
+                            or (safe_pos_float(getattr(stale_disk, "taker_ratio_5m", None), default=1.0) or 1.0) > 5.67
+                            or (safe_pos_float(getattr(stale_disk, "top_traders_long_pct", None), default=0.0) or 0.0) <= 0.0
+                            or abs(safe_float(getattr(stale_disk, "funding_rate", None), default=0.0) or 0.0) > 0.0
+                        )
                         if (
                             stale_disk is not None
                             and 0.0 <= (now_f - stale_ts) < closed_rth_max_age_sec
+                            and not stale_was_open_rth
+                            and not (allow_net_bool and stale_whale_legacy)
                             and (self._DISK_FILE_PREFIX != "orderbook_depth" or stale_sp <= 200.0)
                         ):
                             self._cache[sym_clean] = (now_f, stale_disk)

@@ -1430,11 +1430,17 @@ def _format_portfolio_section(
             if isinstance(xs.get("holdings"), dict):
                 xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if _parse_finite_float(hv, 0.0) >= 1e-4}
             if isinstance(xs.get("t212_sibling_cycle"), dict):
-                xs["t212_sibling_cycle"] = {
+                sib_cyc_cp = {
                     ck: cv
                     for ck, cv in xs["t212_sibling_cycle"].items()
                     if cv is not None and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
                 }
+                sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
+                lp_sib = pos_lifo_pnl_by_vs.get(("t212", sib_sym_u), pos_lifo_pnl_by_vs.get(("", sib_sym_u)))
+                sib_rpnl = _parse_finite_float(sib_cyc_cp.get("realized_pnl_usd"), None)
+                if lp_sib is not None and sib_rpnl is not None and sib_rpnl < 0.0 and lp_sib > sib_rpnl:
+                    sib_cyc_cp["realized_pnl_usd"] = lp_sib
+                xs["t212_sibling_cycle"] = sib_cyc_cp
         else:
             xs = xs_raw
         lines.append(

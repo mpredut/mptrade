@@ -1214,6 +1214,15 @@ def enrich_positions_with_orders_and_cycles(
                 ro = _populate_cycle_fallback_recent_order(
                     p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
                 )
+                lp_ro = safe_float(
+                    pos.get("lifo_realized_pnl_usd")
+                    if pos.get("lifo_realized_pnl_usd") is not None
+                    else (ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None),
+                    default=None,
+                )
+                c_rpnl = safe_float(cyc.get("realized_pnl_usd"), default=None)
+                if lp_ro is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_ro > c_rpnl:
+                    cyc["realized_pnl_usd"] = round(lp_ro, 2)
                 if isinstance(ro, dict) and (tac_avg_c := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None:
                     set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", tac_avg_c, pos_px_f, overwrite=False)
                 if isinstance(ro, dict) and (sw_avg_c := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None:
@@ -1341,6 +1350,10 @@ def enrich_positions_with_orders_and_cycles(
             ro = _populate_cycle_fallback_recent_order(
                 c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )
+            lp_ro_c = safe_float(ro.get("lifo_realized_pnl_usd") if isinstance(ro, dict) else None, default=None)
+            c_rpnl_c = safe_float(cyc.get("realized_pnl_usd"), default=None)
+            if lp_ro_c is not None and c_rpnl_c is not None and c_rpnl_c < 0.0 and lp_ro_c > c_rpnl_c:
+                cyc["realized_pnl_usd"] = round(lp_ro_c, 2)
             c_is_eq = c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ"))
             c_px = resolve_symbol_price(
                 c_sym_u if not c_is_eq or c_sym_u.endswith(("_EQ", "_US_EQ")) else f"{c_sym_u}_US_EQ",

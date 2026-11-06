@@ -472,6 +472,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
                 else:
                     prev_c = bar_slice[idx - 1][4] if idx > 0 else o_p
+                    if abs(c_p - prev_c) <= 1e-9:
+                        prev_c = next(
+                            (b_prev[4] for b_prev in reversed(bars) if b_prev[0] < _t and abs(b_prev[4] - c_p) > 1e-9),
+                            prev_c,
+                        )
                     clv = 0.65 if c_p > prev_c else (0.35 if c_p < prev_c else 0.5)
                 turn_usd = vol * c_p
                 b_usd += turn_usd * clv

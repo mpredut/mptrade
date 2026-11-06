@@ -7,7 +7,7 @@ import os
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import extract_current_price_item, load_local_module, safe_pos_int
+from botcore import extract_current_price_item, load_local_module, safe_pos_int, safe_pos_int
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -1675,6 +1675,19 @@ def enrich_24h_and_microstructure(
                             ):
                                 pts_5d = pts_5d[:split_idx]
                                 break
+                        last_pos_v_idx = max(
+                            (
+                                idx_v
+                                for idx_v, pt_v in enumerate(pts_5d)
+                                if len(pt_v) >= 3 and (safe_pos_float(pt_v[2], default=0.0) or 0.0) > 0.0
+                            ),
+                            default=-1,
+                        )
+                        if 4 <= last_pos_v_idx < len(pts_5d) - 1:
+                            for zv_idx in range(last_pos_v_idx + 1, len(pts_5d)):
+                                if (pts_5d[zv_idx][0] - pts_5d[zv_idx - 1][0]) > 20 * 60 * 1000:
+                                    pts_5d = pts_5d[:zv_idx]
+                                    break
                     rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
                     chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
                     if chart_px > 0.0 and (

@@ -8875,4 +8875,129 @@ def test_iter107_equity_crypto_scope_isolation_in_instrument_registry_and_execut
     assert t212_cyc["COIN"]["pos_peak"] == pytest.approx(220.0)
 
 
+def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_vol_hole():
+    """Verify Iteration #23 fixes:
+    1. BX: enrich_positions_with_orders_and_cycles and _format_portfolio_section reconcile
+       negative cycle realized_pnl_usd with active sub-cycle lifo_realized_pnl_usd across
+       both tradable positions (Loop 1), non-tradable cycles (Loop 2), and t212_sibling_cycle.
+    2. BY: _DiskBackedSymbolCollector._prepare_fetch forces a one-shot post-RTH refresh
+       when the cached equity whale snapshot was taken while RTH was still open (e.g. 15:59:47 EST)
+       or contains legacy un-normalized CLV fields (taker_ratio_5m < 0.176 or top_traders_long_pct <= 0.0).
+    3. BZ: microstructure_collector imports safe_pos_int and truncates trailing zero-volume
+       post-RTH bars separated by a >20m gap so 15m/30m deltas do not vanish on SPCX_US_EQ.
+    """
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from intelligence.sentiment.collectors.microstructure_collector import safe_pos_int
+
+    # 1. BX: Cycle realized_pnl_usd synchronization in Loop 1 and Loop 2
+    assert safe_pos_int(42, 0) == 42
+
+    pos_list_eq = [
+        {"venue": "t212", "symbol": "SPCX_US_EQ", "free_base": 54.0, "price": 56.11}
+    ]
+    t212_cyc_eq = {
+        "SPCX_US_EQ": {
+            "qty": 54.0,
+            "avg_cost_px": 56.418889,
+            "entry_price": 56.418889,
+            "pos_peak": 58.65,
+            "realized_pnl_usd": -179.69,
+        }
+    }
+    ro_eq = {
+        "t212:SPCX_US_EQ": {
+            "lifo_realized_pnl_usd": -22.62,
+            "lifo_avg_cost_px": 56.418889,
+        },
+        "SPCX_US_EQ": {
+            "lifo_realized_pnl_usd": -22.62,
+            "lifo_avg_cost_px": 56.418889,
+        },
+    }
+    vro_eq = {
+        "t212": {
+            "SPCX_US_EQ": {
+                "lifo_realized_pnl_usd": -22.62,
+                "lifo_avg_cost_px": 56.418889,
+            }
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_list_eq,
+        {"SPCX_US_EQ": {"price": 56.11}},
+        {},
+        vro_eq,
+        ro_eq,
+        {},
+        {},
+        t212_cyc_eq,
+        {},
+    )
+    assert t212_cyc_eq["SPCX_US_EQ"]["realized_pnl_usd"] == pytest.approx(-22.62)
+
+    # Also test Loop 2 (when scope="crypto", SPCX_US_EQ is not in tradable_positions)
+    t212_cyc_crypto_scope = {
+        "SPCX_US_EQ": {
+            "qty": 54.0,
+            "avg_cost_px": 56.418889,
+            "entry_price": 56.418889,
+            "pos_peak": 58.65,
+            "realized_pnl_usd": -179.69,
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        [],
+        {"SPCX_US_EQ": {"price": 56.11}},
+        {},
+        vro_eq,
+        ro_eq,
+        {},
+        {},
+        t212_cyc_crypto_scope,
+        {},
+    )
+    assert t212_cyc_crypto_scope["SPCX_US_EQ"]["realized_pnl_usd"] == pytest.approx(-22.62)
+
+    # Verify _format_portfolio_section reconciles t212_sibling_cycle realized_pnl_usd as well
+    rendered_portfolio = "\n".join(
+        _format_portfolio_section(
+            {
+                "scope": "equities",
+                "tradable_positions": [
+                    {
+                        "venue": "t212",
+                        "symbol": "SPCX_US_EQ",
+                        "free_base": 54.0,
+                        "price": 56.11,
+                        "lifo_realized_pnl_usd": -22.62,
+                    }
+                ],
+                "t212_cycles": {
+                    "SPCX_US_EQ": {
+                        "qty": 54.0,
+                        "cost_usd": 3046.62,
+                        "avg_cost_px": 56.418889,
+                        "realized_pnl_usd": -179.69,
+                    }
+                },
+                "kraken_xstocks": {
+                    "symbol": "SPACEXUSD",
+                    "qty": 0.9038,
+                    "price": 122.99,
+                    "value_usd": 111.16,
+                    "t212_sibling": "SPCX_US_EQ",
+                    "t212_sibling_price": 56.11,
+                    "t212_sibling_cycle": {
+                        "qty": 54.0,
+                        "avg_cost_px": 56.418889,
+                        "realized_pnl_usd": -179.69,
+                    },
+                },
+            }
+        )
+    )
+    assert "-179.69" not in rendered_portfolio
+    assert "'realized_pnl_usd': -22.62" in rendered_portfolio
+    assert "realized_pnl=$-22.62" in rendered_portfolio
 
