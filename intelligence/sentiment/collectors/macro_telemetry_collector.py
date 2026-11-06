@@ -548,6 +548,8 @@ def harvest_macro_and_news_sensors(
                 continue
             raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
+            if raw_kws and not clean_kws and not has_financial_or_geopolitical_context(item.get("title")):
+                continue
             item_seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             is_stale_sev = item_seen_ts > 0.0 and now_ts > item_seen_ts and (now_ts - item_seen_ts) > 5400.0
             was_valid_aged_sev = bool(is_stale_sev and item.get("is_high_severity") and (clean_kws or not raw_kws))

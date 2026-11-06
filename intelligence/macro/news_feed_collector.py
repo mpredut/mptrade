@@ -32,6 +32,7 @@ from intelligence.macro.lexicon_ssot import (
     filter_valid_severity_keywords,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
+    has_financial_or_geopolitical_context,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
     match_high_severity_keywords,
@@ -204,6 +205,8 @@ class NewsFeedCollector:
                 else ()
             )
             had_only_noise_kws = bool(raw_str_kws) and not matched_kws
+            if had_only_noise_kws and not has_financial_or_geopolitical_context(raw_title):
+                return None
             is_sev = (
                 False
                 if had_only_noise_kws

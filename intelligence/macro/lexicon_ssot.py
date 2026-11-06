@@ -33,6 +33,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
     "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
     "emergency sanction", "supply shock", "warfare cyber", "bank collapse",
+    "naval cruise",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -57,12 +58,13 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
-    "asu", "bags", "bills", "broadcasting", "cabin", "cabins", "cambodia",
-    "centcom", "concentration", "consortium", "counterpunch", "cruise", "cruises",
-    "decider", "declassified", "disney", "dreading", "episode", "episodes",
-    "explained", "finale", "forever", "french", "fries", "greenland", "hbo",
-    "heating", "holocaust", "hulu", "journalist", "journalists", "liberators",
-    "memorial", "museum", "myanmar", "mystery", "netflix", "pack", "packing",
+    "asu", "bags", "bills", "bird", "birds", "broadcasting", "cabin", "cabins",
+    "cambodia", "centcom", "concentration", "consortium", "counterpunch",
+    "cruise", "cruises", "decider", "declassified", "disney", "dreading",
+    "episode", "episodes", "explained", "finale", "forever", "french", "fries",
+    "greenland", "hbo", "heating", "holocaust", "hulu", "journalist",
+    "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
+    "mosquitos", "museum", "myanmar", "mystery", "netflix", "pack", "packing",
     "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
     "retirees", "retirement", "review", "rsf", "season", "social", "streets",
     "tourist", "tourists", "trailer", "tunnels", "vacation", "vatican",
@@ -208,7 +210,7 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "experts", "expiration", "explained", "exposes", "faces", "facing",
     "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
     "forced", "four", "fresh", "functioning", "funding", "golf", "harward", "headlines", "heighten",
-    "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
+    "highlight", "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
     "institute", "introduces", "investigation", "involvement", "island", "jet", "join",
     "keyword", "kinetic", "landing", "later", "latest", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
