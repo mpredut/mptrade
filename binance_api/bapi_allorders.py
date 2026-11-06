@@ -12,6 +12,7 @@ from binance.exceptions import BinanceAPIException
 from .bapi_client import client
 import instrument_registry as sym
 from botcore import (
+    clean_order_id,
     exact_pos_int,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -20,8 +21,7 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
-from providers.base import (
-    clean_order_id,
+from providers.order_ohlc_utils import (
     extract_order_price,
     extract_order_qty,
     extract_order_side,

@@ -13,7 +13,7 @@ import time
 import urllib.parse
 
 from botcore import _parse_bool_flag, fetch_public_json, safe_pos_float
-from providers.base import (
+from providers.order_ohlc_utils import (
     OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES,
     OHLC_INTERVALS_MIN_TO_STR,
     OHLC_INTERVALS_STR_TO_MIN,
@@ -148,13 +148,14 @@ def fetch_ohlc_candles(
             seen_timestamps.add(bar["timestamp"])
             records.append(bar)
 
-        last_open_time = None
-        for item in reversed(raw):
-            if isinstance(item, (list, tuple)) and len(item) >= 1:
-                cand_ot = safe_pos_float(item[0], default=None)
-                if cand_ot is not None:
-                    last_open_time = int(cand_ot)
-                    break
+        last_open_time = next(
+            (
+                int(cand_ot)
+                for item in reversed(raw)
+                if isinstance(item, (list, tuple)) and item and (cand_ot := safe_pos_float(item[0], default=None)) is not None
+            ),
+            None,
+        )
         if last_open_time is None:
             break
         next_start = last_open_time + interval_ms

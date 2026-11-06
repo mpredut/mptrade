@@ -8,8 +8,9 @@ import signal
 #### MYLIB
 from botcore import (
     _parse_bool_flag,
-    exact_pos_int,
+    clean_order_id,
     load_dotenv as _load_dotenv,
+    normalize_scalar_order_id,
     required_float_env,
     safe_float,
     safe_nonneg_float,
@@ -20,16 +21,13 @@ import instrument_registry as sym
 from .bapi_client import client
 from . import bapi_ws
 from . import order_id_context as rc
-from providers.base import (
-    clean_order_id,
+from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,
     extract_order_side,
     extract_orig_qty,
     extract_remaining_qty,
     extract_timestamp_ms,
-    normalize_scalar_order_id,
-    normalize_side,
 )
 from providers.quantity import resolve_assets
 
@@ -181,9 +179,7 @@ def get_account_assets_balances(raise_errors=False):
 
 
 def _clean_bapi_oid_str(val):
-    if not isinstance(val, str):
-        return val
-    return clean_order_id(val)
+    return clean_order_id(val) if isinstance(val, str) else val
 
 
 _normalize_bapi_oid = normalize_scalar_order_id

@@ -22,9 +22,10 @@ from botcore import (
     clean_scale,
     exact_nonneg_int,
     normalize_epoch_sec,
+    normalize_side,
+    normalize_trend_direction,
     obj_attr,
     parse_dotenv,
-    normalize_trend_direction,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -50,14 +51,12 @@ from intelligence.macro_sentiment_ssot import (
     resolve_order_notional,
     scan_latest_long_trend_value,
 )
-from instrument_registry import casefold_get
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
-from providers.base import (
+from providers.order_ohlc_utils import (
     extract_order_price,
     extract_order_qty,
     extract_timestamp_ms,
     extract_timestamp_s,
-    normalize_side,
 )
 from providers.strategy_executor import ProviderError, SubmissionRefused
 from state_io import read_json_dict_cached

@@ -3,16 +3,14 @@ import os
 import time
 import threading
 from collections import defaultdict
-from state_io import atomic_write_json, load_json_state
+from state_io import load_json_state
 
 # Repository imports.
-import utils as u
 import instrument_registry as sym
-from botcore import exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
+from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
 from . import bapi_allorders as apiorders
-from providers.base import (
-    clean_order_id,
+from providers.order_ohlc_utils import (
     extract_client_order_id,
     extract_order_fee,
     extract_order_id,

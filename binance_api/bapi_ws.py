@@ -1,6 +1,6 @@
 """
-Binance WebSocket — shared infrastructure and two streams
-==========================================================
+Binance WebSocket - shared infrastructure and two streams
+=========================================================
 
 BinanceWSBase
     Shared thread and asyncio loop, reconnect backoff, clean shutdown, and
@@ -51,7 +51,7 @@ else:
 
 logger = logging.getLogger("binance.ws")
 
-# ─── Constants ────────────────────────────────────────────────────────────────
+# --- Constants ---------------------------------------------------------------
 
 WS_BASE_URL      = "wss://stream.binance.com:9443/stream"   # market data
 WS_API_URL       = "wss://ws-api.binance.com:443/ws-api/v3"  # user-data (auth)
@@ -81,9 +81,9 @@ def _sanitize_timeout(timeout, default: float = WS_STOP_TIMEOUT) -> float:
     return safe_nonneg_float(timeout, default=float(default))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # Shared base: thread, asyncio, reconnect backoff, and clean shutdown.
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 class BinanceWSBase:
     # Reset backoff only after a session remains stable for this duration.
@@ -198,7 +198,7 @@ class BinanceWSBase:
         """Run one complete connection; subclasses return or raise on disconnect."""
         raise NotImplementedError
 
-    # ─── Shared helpers ──────────────────────────────────────────────────────
+    # --- Shared helpers ------------------------------------------------------
     async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
         await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)
 
@@ -211,12 +211,14 @@ class BinanceWSBase:
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Market data — Shared Public Price Stream Base & Binance Combined Stream
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  Market data - Shared Public Price Stream Base & Binance Combined Stream
+# ==============================================================================
 
 class PublicPriceStreamBase(BinanceWSBase):
     """Shared base class for public WebSocket price streams across all venues (Binance, Hyperliquid, Kraken)."""
+
+    _MAX_STREAMS: Optional[int] = None
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
@@ -273,6 +275,10 @@ class PublicPriceStreamBase(BinanceWSBase):
             return False
         with self._lock:
             if norm_s in self._subscribed:
+                logger.debug("[%s] Already subscribed", norm_s)
+                return False
+            if self._MAX_STREAMS is not None and len(self._subscribed) >= self._MAX_STREAMS:
+                logger.warning("Max streams (%d) reached, cannot add %s", self._MAX_STREAMS, norm_s)
                 return False
             self._subscribed.add(norm_s)
             self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
@@ -317,6 +323,8 @@ class BinancePriceStream(PublicPriceStreamBase):
         get_all_prices(), subscribe(sub)/unsubscribe(sub), running_symbols.
     """
 
+    _MAX_STREAMS = WS_MAX_STREAMS
+
     def __init__(self, symbols: Optional[list] = None):
         super().__init__(symbols=symbols)
         self._cmd_queue: Optional[asyncio.Queue] = None
@@ -328,7 +336,7 @@ class BinancePriceStream(PublicPriceStreamBase):
         super().start(name=name, daemon=_as_bool(daemon, default=False))
         return self
 
-    # ─── Helpers ──────────────────────────────────────────────────────────────
+    # --- Helpers -------------------------------------------------------------
     def _next_id(self) -> int:
         self._req_id += 1
         return self._req_id
@@ -340,7 +348,7 @@ class BinancePriceStream(PublicPriceStreamBase):
         streams = "/".join(self._stream_name(s) for s in sorted(symbols))
         return f"{WS_BASE_URL}?streams={streams}"
 
-    # ─── Async core ───────────────────────────────────────────────────────────
+    # --- Async core ----------------------------------------------------------
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._cmd_queue = asyncio.Queue()   # Create it in the event loop that uses it.
@@ -465,7 +473,7 @@ class BinancePriceStream(PublicPriceStreamBase):
         except (KeyError, ValueError, TypeError, OverflowError, json.JSONDecodeError) as e:
             logger.warning("process_message error: %s | raw: %s", e, str(raw)[:120])
 
-    # ─── Enqueue command (thread-safe) ────────────────────────────────────────
+    # --- Enqueue command (thread-safe) ---------------------------------------
     def _enqueue_cmd(self, method: str, symbol: str) -> None:
         if self._cmd_queue is None:
             logger.warning("Manager not started, cannot send %s for %s", method, symbol)
@@ -486,21 +494,13 @@ class BinancePriceStream(PublicPriceStreamBase):
                 pass
         self._cmd_queue.put_nowait(item)
 
-    # ─── Public API ───────────────────────────────────────────────────────────
+    # --- Public API ----------------------------------------------------------
     def add_symbol(self, symbol: str) -> bool:
-        symbol = self._norm_ws_symbol(symbol)
-        if not symbol:
+        if not super().add_symbol(symbol):
             return False
-        with self._lock:
-            if symbol in self._subscribed:
-                logger.debug("[%s] Already subscribed", symbol)
-                return False
-            if len(self._subscribed) >= WS_MAX_STREAMS:
-                logger.warning("Max streams (%d) reached, cannot add %s", WS_MAX_STREAMS, symbol)
-                return False
-            self._subscribed.add(symbol)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, symbol)))
-        self._enqueue_cmd(_Cmd.SUBSCRIBE, symbol)
+        norm_s = self._norm_ws_symbol(symbol)
+        if norm_s:
+            self._enqueue_cmd(_Cmd.SUBSCRIBE, norm_s)
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
@@ -513,18 +513,18 @@ class BinancePriceStream(PublicPriceStreamBase):
         return True
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  User data — private WS-API session.logon and execution reports
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  User data - private WS-API session.logon and execution reports
+# ==============================================================================
 
 class BinanceAccountStream(BinanceWSBase):
     """
     Authenticated user-data stream. Events are delivered through callbacks so the
     stream does not depend on ``cacheManager`` or create an import cycle:
-        on_event(payload)      — real event (executionReport, etc.)
-        on_available(bool)     — WebSocket available (key and library present)
-        on_healthy()           — a live signal (event/ping) was received
-        on_unhealthy()         — lost connection or expired watchdog
+        on_event(payload)      - real event (executionReport, etc.)
+        on_available(bool)     - WebSocket available (key and library present)
+        on_healthy()           - a live signal (event/ping) was received
+        on_unhealthy()         - lost connection or expired watchdog
     """
 
     def __init__(self, on_event: Callable,
@@ -585,7 +585,7 @@ class BinanceAccountStream(BinanceWSBase):
             self._watchdog_thread.join(timeout=eff_timeout)  # Stop the watchdog cleanly too.
         return ok
 
-    # ─── logon semnat (login + keepalive) ─────────────────────────────────────
+    # --- Signed logon (login + keepalive) ------------------------------------
     def _signed_logon_msg(self, msg_id: str) -> str:
         timestamp = int(time.time() * 1000)
         params_str = f"apiKey={api_key_ws}&timestamp={timestamp}"
@@ -703,12 +703,12 @@ class BinanceAccountStream(BinanceWSBase):
 
 
 # Compatibility aliases retained for earlier code and tests.
-BinanceWebSocketManager = BinancePriceStream   # nume generic original
-BinanceMarketStream     = BinancePriceStream   # nume intermediar
-BinanceUserDataStream   = BinanceAccountStream  # termenul oficial Binance pt user-data
+BinanceWebSocketManager = BinancePriceStream   # original generic name
+BinanceMarketStream     = BinancePriceStream   # intermediate name
+BinanceUserDataStream   = BinanceAccountStream  # official Binance user-data term
 
 
-# ─── Entry point market data (singleton partajat, start LAZY) ──────────────────
+# --- Market data entry point (shared singleton, LAZY start) ------------------
 
 bapi_ws_manager = BinancePriceStream(symbols=sym.symbols)   # Importing does not open a socket.
 

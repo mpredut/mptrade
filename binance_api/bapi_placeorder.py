@@ -1,27 +1,35 @@
 import os
 import time
-import sys
 import threading
 from dataclasses import dataclass
 
-#### Binance
+# Binance
 from binance.exceptions import BinanceAPIException
 
-#### MYLIB
+# MYLIB
 import order_guard
 import order_lifecycle as _outcomes_log
 import instrument_registry as sym
 import botcore as cfg
 import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
 _ = pa
+from botcore import (
+    _parse_bool_flag,
+    clean_order_id,
+    load_dotenv as _load_dotenv,
+    required_float_env,
+    required_int_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api
 from . import bapi_allorders as apiorders
 from .bapi_client import client
-from providers.base import (
-    clean_order_id,
+from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -41,15 +49,6 @@ import binance_cache_health
 # Load versioned, non-secret tuning parameters before reading the environment below.
 # ``botcore.load_dotenv`` never overwrites variables already set in the real environment;
 # it only fills missing values, matching tradeall_config.env and monitortrades_config.env.
-from botcore import (
-    _parse_bool_flag,
-    load_dotenv as _load_dotenv,
-    required_float_env,
-    required_int_env,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
-)
 _load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "bapi_placeorder_config.env"))
 

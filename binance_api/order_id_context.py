@@ -7,8 +7,8 @@ import time
 
 
 from typing import Optional, Union, Iterable
-from botcore import safe_nonneg_int, sanitize_identifier
-from providers.base import MANUAL_CID_PREFIXES, clean_order_id
+from botcore import clean_order_id, safe_nonneg_int, sanitize_identifier
+from providers.order_ohlc_utils import MANUAL_CID_PREFIXES
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -57,7 +57,6 @@ MANUAL_PREFIXES = MANUAL_CID_PREFIXES
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 
 _CLIENT_ORDER_COUNTER = itertools.count()
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def _script_stem():
@@ -69,10 +68,7 @@ def _script_stem():
 
 
 def _derive_process_name(stem):
-    if stem is None or isinstance(stem, bool):
-        stem = "python"
-    else:
-        stem = str(stem) or "python"
+    stem = "python" if (stem is None or isinstance(stem, bool)) else (str(stem) or "python")
     key = stem.lower()
     if key in _PROCESS_NAME_OVERRIDES:
         return _PROCESS_NAME_OVERRIDES[key]
@@ -82,9 +78,7 @@ def _derive_process_name(stem):
         return "".join(part[0].upper() for part in parts if part)
 
     alpha = re.sub(r"[^A-Za-z0-9]", "", stem)
-    if not alpha:
-        return "PY"
-    return alpha[:6].upper()
+    return alpha[:6].upper() if alpha else "PY"
 
 
 def _sanitize_name(value, default="unknown"):
@@ -96,7 +90,6 @@ def _base36(value):
     value = safe_nonneg_int(value, default=0)
     if value == 0:
         return "0"
-
     chars = []
     while value:
         value, rem = divmod(value, 36)

@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import builtins
-import time
 from typing import Any
 
-from botcore import exact_pos_int, resolve_now_ms, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
-from providers.base import (
-    clean_order_id,
+from botcore import clean_order_id, exact_pos_int, resolve_now_ms, safe_float, safe_nonneg_float, safe_pos_float
+from providers.order_ohlc_utils import (
     extract_client_order_id,
     extract_order_price,
     extract_order_side,
