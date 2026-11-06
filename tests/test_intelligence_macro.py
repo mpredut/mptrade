@@ -2167,6 +2167,9 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         "Memory Stocks Are Tanking. Should You Buy the Dip? - Barron's"
     ) is True
     assert is_excluded_reference_news_item(
+        "Should You Buy Nvidia Stock Before Nov. 17?"
+    ) is True
+    assert is_excluded_reference_news_item(
         "China's Military Helicopters: A Guide - TWZ"
     ) is True
     from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
