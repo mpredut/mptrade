@@ -416,7 +416,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             valid_back = p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins))
             if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
                 valid_back = False
-            if not valid_back and mins >= 15.0 and span_ms >= min_span_ms:
+            if not valid_back and 15.0 <= mins <= 30.0 and span_ms >= max(min_span_ms, mins * 60000.0):
                 target_ms = now_ms - mins * 60000.0
                 max_fwd_ms = now_ms - mins * 0.75 * 60000.0
                 fwd_pt = next(
