@@ -8774,6 +8774,37 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert sw_bounce["rally_from_swing_low_pct"] == 4.27
     assert sw_bounce["pullback_from_swing_high_pct"] == -10.29
 
+    # _load_stitched_7d_ohlc_closes anchors 24h peak/trough at their chronological tail extrema and recalculate_live_price_geometry promotes major_swing_low_px when p_cur == swing_low_px
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.microstructure_collector import _load_stitched_7d_ohlc_closes
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_7d_range_metrics, recalculate_live_price_geometry
+
+    fake_ohlc = lambda _s, _tf: SimpleNamespace(
+        timestamps=[now_cd - (10 - i) * 3600 for i in range(10)],
+        closes=[0.195, 0.198, 0.191, 0.186, 0.1783, 0.181, 0.1852, 0.1845, 0.1841, 0.18398],
+    )
+    stitched_7d = _load_stitched_7d_ohlc_closes(
+        fake_ohlc, "ADAUSD", now_cd, {"low_24h": 0.177602, "high_24h": 0.199354}, 0.183943
+    )
+    assert stitched_7d.index(0.199354) < stitched_7d.index(0.177602)
+    m7_ada = compute_7d_range_metrics(stitched_7d)
+    assert m7_ada["swing_low_px"] == 0.177602
+    assert m7_ada["rally_from_swing_low_pct"] > 3.0
+
+    pinfo_ada = {
+        "price": 0.18398,
+        "swing_low_px": 0.18398,
+        "swing_high_px": 0.199354,
+        "rally_from_swing_low_pct": 0.0,
+        "pullback_from_swing_high_pct": -7.71,
+        "major_swing_low_px": 0.177602,
+        "rally_from_major_low_pct": 3.59,
+    }
+    recalculate_live_price_geometry(pinfo_ada, 0.183943)
+    assert pinfo_ada["swing_low_px"] == 0.177602
+    assert pinfo_ada["rally_from_swing_low_pct"] == 3.57
+    assert "major_swing_low_px" not in pinfo_ada
+
 
 
 

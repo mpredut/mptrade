@@ -1116,6 +1116,11 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
             pinfo.pop("major_swing_low_px", None)
             pinfo.pop("rally_from_major_low_pct", None)
+        elif eff_sw_lo is not None and abs(p_cur - eff_sw_lo) / max(p_cur, 1e-12) < 5e-4:
+            pinfo["swing_low_px"] = maj_lo_new
+            pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, maj_lo_new)
+            pinfo.pop("major_swing_low_px", None)
+            pinfo.pop("rally_from_major_low_pct", None)
         else:
             pinfo["major_swing_low_px"] = maj_lo_new
             pinfo["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)

@@ -226,9 +226,17 @@ def _load_stitched_7d_ohlc_closes(
             pass
     if len(vals_7d) >= 2:
         if isinstance(m24, dict):
-            for ex_px in (safe_pos_float(m24.get("low_24h"), default=None), safe_pos_float(m24.get("high_24h"), default=None)):
-                if ex_px is not None and not _prices_diverged(ex_px, vals_7d[-1]):
-                    vals_7d.insert(-1, ex_px)
+            tail_start = max(0, len(vals_7d) - 24)
+            l24_ex = safe_pos_float(m24.get("low_24h"), default=None)
+            h24_ex = safe_pos_float(m24.get("high_24h"), default=None)
+            if l24_ex is not None and not _prices_diverged(l24_ex, vals_7d[-1]):
+                min_idx = min(range(tail_start, len(vals_7d)), key=lambda i: vals_7d[i])
+                if l24_ex < vals_7d[min_idx]:
+                    vals_7d.insert(min_idx, l24_ex)
+            if h24_ex is not None and not _prices_diverged(h24_ex, vals_7d[-1]):
+                max_idx = max(range(tail_start, len(vals_7d)), key=lambda i: vals_7d[i])
+                if h24_ex > vals_7d[max_idx]:
+                    vals_7d.insert(max_idx, h24_ex)
         if cur_px > 0 and not _prices_diverged(cur_px, vals_7d[-1]) and abs(cur_px - vals_7d[-1]) > 1e-9:
             vals_7d.append(cur_px)
     return vals_7d
