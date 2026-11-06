@@ -1003,7 +1003,7 @@ class Strategy(BaseSpotMixin):
         self._save()
         log(f"  📥 [STRAT] POSITION ADOPTED: {qty} @ {self.p.adopt_cost} {self.ccy} — managing TP/DCA/SL")
         self._emit(
-            title=f"📥 {self.pair} ADOPTED {qty:.2f}@{self.p.adopt_cost}",
+            title=f"📥 {self.pair} ADOPTED {qty:.2f}@{format_price_log(self.p.adopt_cost)}",
             body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
             source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
         )

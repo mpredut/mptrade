@@ -64,8 +64,8 @@ def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct
     px_f = _finite_float(price)
     if px_f is None or px_f <= 0:
         return True
-    prag = low_f * (1 + bounce_f / 100)
-    return px_f < prag and not are_close(px_f, prag, tol_pct)
+    threshold = low_f * (1 + bounce_f / 100)
+    return px_f < threshold and not are_close(px_f, threshold, tol_pct)
 
 
 def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pct: float) -> bool:
@@ -76,8 +76,8 @@ def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pc
     px_f = _finite_float(price)
     if px_f is None or px_f <= 0:
         return True
-    prag = sell_f * (1 - drop_f / 100)
-    return px_f > prag and not are_close(px_f, prag, tol_pct)
+    threshold = sell_f * (1 - drop_f / 100)
+    return px_f > threshold and not are_close(px_f, threshold, tol_pct)
 
 
 def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float) -> bool:
@@ -85,8 +85,8 @@ def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float
     px_f, lb_f, drop_f = _finite_float(price), _finite_float(last_buy), _finite_float(drop_pct)
     if px_f is None or px_f <= 0 or lb_f is None or lb_f <= 0 or drop_f is None:
         return False
-    prag = lb_f * (1 - drop_f / 100)
-    return px_f <= prag or are_close(px_f, prag, tol_pct)
+    threshold = lb_f * (1 - drop_f / 100)
+    return px_f <= threshold or are_close(px_f, threshold, tol_pct)
 
 
 def progressive_dca_drop_pct(
@@ -133,22 +133,22 @@ def reentry_hybrid_blocked(
         pullback_f = _finite_float(pullback_pct, 0.0)
         if pullback_f <= 0:
             return False, "bull_immediate"
-        prag = peak * (1.0 - pullback_f / 100.0)
-        blocked = px_f > prag and not are_close(px_f, prag, tol_pct)
+        threshold = peak * (1.0 - pullback_f / 100.0)
+        blocked = px_f > threshold and not are_close(px_f, threshold, tol_pct)
         return blocked, ("bull_pullback_pending" if blocked else "bull_pullback_met")
 
     drop_f = _finite_float(drop_pct, 0.0)
     if drop_f <= 0:
         return False, "range_immediate"
-    prag = sell_f * (1.0 - drop_f / 100.0)
-    if px_f > prag and not are_close(px_f, prag, tol_pct):
+    threshold = sell_f * (1.0 - drop_f / 100.0)
+    if px_f > threshold and not are_close(px_f, threshold, tol_pct):
         return True, "range_drop_pending"
     bounce_f = _finite_float(bounce_pct, 0.0)
     if bounce_f > 0:
         trough_cand = _finite_float(post_sell_trough)
         trough = min(sell_f, trough_cand if (trough_cand is not None and trough_cand > 0) else px_f, px_f)
-        prag_bounce = trough * (1.0 + bounce_f / 100.0)
-        if px_f < prag_bounce and not are_close(px_f, prag_bounce, tol_pct):
+        bounce_threshold = trough * (1.0 + bounce_f / 100.0)
+        if px_f < bounce_threshold and not are_close(px_f, bounce_threshold, tol_pct):
             return True, "range_bounce_pending"
         return False, "range_bounce_met"
     return False, "range_drop_met"

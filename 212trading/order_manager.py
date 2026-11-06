@@ -541,7 +541,7 @@ def place_order_with_retry(
         if lifecycle == "submit_pending":
             log("  ! [ORDER] order rejected; the intent stays queued for reconciliation/retry")
             return False
-        notify(title="T212 order accepted!",
+        notify(title=f"T212 order accepted: {ticker}",
                body=f"LIMIT {ticker} qty={qty_r} @ {price_r} USD\nid={oid}",
                source="T212 order", price=price_r, desktop=desktop)
         return True

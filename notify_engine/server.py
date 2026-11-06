@@ -55,7 +55,7 @@ _GUARD_MARKERS = (
     "REFUSED", "BLOCKED",
 )
 _OPS_MARKERS = (
-    "FAILED", "ERROR", "MANUAL", "GONE",
+    "FAILED", "ERROR", "MANUAL", "GONE", "REJECTED", "CRITICAL", "GIVE UP", "✗",
     "ESUAT", "ERORI", "DISPARUT",
 )
 _EXPLICIT_ERROR_MARKERS = (
@@ -112,7 +112,8 @@ def _category_for_title_and_source(title: str, source: str) -> str:
 
     if (
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
-        or "coin" in t.lower() or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
+        or "listed on" in t.lower() or "coin" in t.lower()
+        or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
         or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
     ):
         return "PRICE"
@@ -647,6 +648,8 @@ class NotificationServer:
                     # Same schema as the retry queue; rendered by AlertNotifier.send_email_batch.
                     s_val = _clean_str(payload.get("subject"), "Alert", strip=True)
                     em_val = _clean_str(payload.get("message"))
+                    if not em_val and isinstance(payload.get("alerts"), list) and payload["alerts"]:
+                        em_val = AlertNotifier.format_batch_message(payload["alerts"])
                     self._send_email(s_val, em_val)
                 return
             except json.JSONDecodeError as e:

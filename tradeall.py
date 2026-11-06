@@ -656,7 +656,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
         direction, action = _dir_action(bool(trend_state.is_trend_up()))
         if (trend_state.is_trend_consistent_validated()
         or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
-            print(f"ATENTIE {action} ALL {win} .... ")
+            print(f"ATTENTION {action} ALL {win} .... ")
             _fire_once(direction, action, f"consistent_or_old_{direction.lower()}")
 
     # Extreme slope counter-trend exhaustion / reversal case
@@ -664,7 +664,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
         direction, action = _dir_action(slope <= -SLOPE_EXTREME_THRESHOLD)
         if (trend_state.is_trend_consistent_validated()
         and trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
-            print(f"ATENTIE 3: {action} ALL {win} .... ")
+            print(f"ATTENTION 3: {action} ALL {win} .... ")
             reason = "slope<=-5.1_and_old_down" if direction == "UP" else "slope>=5.1_and_old_up"
             _fire_once(direction, action, reason)
 

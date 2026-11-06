@@ -1411,6 +1411,7 @@ class EmailMirrorTest(unittest.TestCase):
 
     def test_owner_tag_stripping_and_refused_guard_classification(self):
         from notify_engine.alertnotifiers import _is_guard_alert, strip_owner_tags
+        from notify_engine.server import _category_for_title_and_source
         import order_retry
 
         self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")
@@ -1420,5 +1421,47 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(order_retry.infer_concrete_record_owner({"intent_id": "trailing:kraken:ADA:SELL:100"}), "trailing_stop")
         self.assertEqual(order_retry.infer_concrete_record_owner({"kind": "TRAIL_SELL"}), "trailing_stop")
         self.assertEqual(order_retry.infer_concrete_record_owner({"client_order_id": "OR_123_0"}), "")
+        self.assertEqual(_category_for_title_and_source("HYPEUSD listed on Kraken!", "kraken"), "PRICE")
+        self.assertEqual(_category_for_title_and_source("✗ Order REJECTED: NVDA", "T212 order"), "ERROR")
+
+        # Verify legacy email intent with "alerts" list (no "message") renders body cleanly
+        self.sent.clear()
+        legacy_email_line = json.dumps({
+            "__orchestrator_intent__": "email",
+            "subject": "High sustained process resource usage",
+            "alerts": [{"type": "bot_event", "symbol": "SYSTEM", "name": "High sustained process resource usage", "source": "watchdog", "body": "PID 123 — CPU 99%"}],
+        })
+        self.server.process_line(legacy_email_line, "os_resources_watchdog")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("PID 123", self.sent[0][0].get_payload(decode=True).decode("utf-8"))
+
+    def test_distinct_trades_within_topic_bulk_window_are_batched_not_eliminated(self):
+        from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
+
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_GATE_SECONDS": "180",
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+        }):
+            t0 = 1_750_000_000.0
+            t1_alert = [{"type": "bot_event", "name": "[Binance] 🎉 BUY BTCUSDC @ 75180.00 [tradeall]", "body": "Order 1001 (tradeall) executed! Filled: 0.0066 BTCUSDC (~500.00 USDC)", "source": "monitortrades", "symbol": "BTCUSDC"}]
+            t2_alert = [{"type": "bot_event", "name": "[Binance] 🎉 BUY BTCUSDC @ 74900.00 [tradeall]", "body": "Order 1002 (tradeall) executed! Filled: 0.0067 BTCUSDC (~500.00 USDC)", "source": "monitortrades", "symbol": "BTCUSDC"}]
+
+            allow1, reason1, _, _ = pass_common_gate(
+                "ntfy", t1_alert[0]["name"], t1_alert[0]["body"], "urgent", "ntfy-trades-test", t1_alert, urgent=True, now=t0
+            )
+            self.assertTrue(allow1)
+            self.assertEqual(reason1, "reserved")
+
+            # 60s later: distinct trade on same symbol must be queued for bulk, NOT dropped as similar_eliminated
+            allow2, reason2, _, _ = pass_common_gate(
+                "ntfy", t2_alert[0]["name"], t2_alert[0]["body"], "urgent", "ntfy-trades-test", t2_alert, urgent=True, now=t0 + 60.0
+            )
+            self.assertFalse(allow2)
+            self.assertEqual(reason2, "buffered_for_bulk")
+
+            batch = pop_due_bulk_batch("ntfy", now=t0 + 305.0)
+            self.assertIsNotNone(batch)
+            self.assertIn("Order 1002", batch[1])
+
 
 

@@ -66,7 +66,7 @@ _ERROR_AND_OPS_SOURCES = (
     "post_stop_guard", "verify", "deadman", "mailer", "orchestrator",
 )
 _TRADE_MARKERS = (
-    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "📝", "🎉",
+    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "OPEN ", "CLOSE ", "📝", "🎉",
 )
 _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
@@ -272,7 +272,11 @@ def _similarity_signature(
             first_line = ln.strip()
             break
     norm_body_head = _normalize_text_for_similarity(first_line)[:120]
-    if is_generic_title or is_pure_trade:
+    if is_pure_trade:
+        raw_t = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+        raw_b = re.sub(r"\s+", " ", first_line).strip().lower()[:120]
+        sig_raw = f"sim|{topic}|{raw_t}|{raw_b}"
+    elif is_generic_title:
         sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
     else:
         sig_raw = f"sim|{topic}|{norm_title}"
@@ -555,7 +559,7 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
         )
     if any(marker in titles for marker in _TRADE_MARKERS):
         return 0  # Real trades must never be suppressed by deduplication
-    if "DISPONIBIL" in titles or "AVAILABLE" in titles:
+    if "DISPONIBIL" in titles or "AVAILABLE" in titles or "LISTED ON" in titles or "LISTED" in titles:
         return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
     if any(m in titles for m in ("MACRO", "SENTIMENT")) or any(
         isinstance(a, dict) and "macro" in str(a.get("source", "")).lower() for a in alerts

@@ -27,7 +27,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from botcore import ensure_local_module_priority  # noqa: E402
+from botcore import ensure_local_module_priority, format_price_log  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import (
@@ -489,10 +489,12 @@ class Strategy(BaseSpotMixin):
         avg = self._avg()
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:
+            fp_s = format_price_log(fp) if 0.0 < fp < 1.0 else f"{fp:.2f}"
+            avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
             log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
                 f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
-            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp:.2f}",
-                   body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg:.2f}",
+            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp_s}",
+                   body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg_s}",
                    source="hyperliquid", price=fp, desktop=self.desktop)
         self._cancel_close()   # average changed; replace the take-profit order
 
@@ -506,9 +508,11 @@ class Strategy(BaseSpotMixin):
             self.s["wins"] = self.s.get("wins", 0) + 1
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:
+            px_s = format_price_log(price) if 0.0 < price < 1.0 else f"{price:.2f}"
+            avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
             log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
-            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{price:.2f} N{net:+.2f}",
-                   body=f"a{avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
+            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f}",
+                   body=f"a{avg_s} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:
             eff_avg = safe_pos_float(real_avg, default=avg)
@@ -541,7 +545,7 @@ class Strategy(BaseSpotMixin):
                 orders=remaining_orders,
             )
             if not self.replay_mode:
-                log(f"  [STRAT] === ciclu inchis, reincep (ciclu {self.s['cycle']}) ===")
+                log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the configured threshold."""
