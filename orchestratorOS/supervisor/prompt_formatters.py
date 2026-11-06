@@ -185,7 +185,7 @@ def build_supervisor_prompt(
             "to liquidate or reduce the unwanted position (all profit/cooldown guards `G_PROF`/`GO1` are bypassed so you can exit immediately "
             "even at a scratch or small loss to repair a bad bot entry).\n"
             "     3) If a bot placed a resting order in `open_limit_orders` (`\"actor\": \"BOT\"`) that you disagree with or that locks wallet "
-            "liquidity needed for your repair trade, set `\"replace_open_orders\": true` (or `\"cancel_bot_open_orders\": true`) to cancel "
+            "liquidity needed for your repair trade, set `\"cancel_bot_open_orders\": true` (alongside `\"replace_open_orders\": true` if also replacing a prior AI order) to cancel "
             "the bot's resting order and unlock the balance.\n"
             "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
             "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
@@ -242,7 +242,7 @@ def build_supervisor_prompt(
         )
         schema.append(
             f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
-            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, '
+            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, "cancel_bot_open_orders": false, '
             f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 

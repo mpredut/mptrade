@@ -282,8 +282,14 @@ class AutonomousIntentGateway:
 
         replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
         cancel_bot_open = _parse_bool_flag(intent.get("cancel_bot_open_orders"), default=False)
+        thesis_low = str(intent.get("thesis") or "").lower()
+        thesis_cancels_bot_order = bool(
+            replace_open
+            and any(b in thesis_low for b in ("bot", "tradeall", "assetguardian", "by=bot"))
+            and any(a in thesis_low for a in ("cancel", "override", "unwanted", "premature", "unlock"))
+        )
         dup_oid: Optional[str] = None
-        if mode == "enforce" and is_limit and not cancel_bot_open:
+        if mode == "enforce" and is_limit and not (cancel_bot_open or thesis_cancels_bot_order):
             dup_oid = find_duplicate_ai_open_limit_order(
                 inst,
                 decision,
@@ -328,7 +334,7 @@ class AutonomousIntentGateway:
             mode == "enforce"
             and replace_open
             and not cancel_bot_open
-            and (not guard_allowed or effective_usd < requested_effective_usd * 0.95)
+            and (thesis_cancels_bot_order or not guard_allowed or effective_usd < requested_effective_usd * 0.95)
         ):
             # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
