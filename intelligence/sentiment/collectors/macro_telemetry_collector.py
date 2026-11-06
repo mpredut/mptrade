@@ -221,8 +221,7 @@ def collect_macro_benchmarks_snapshot(
                     chg_24h = round(((px - pts_24h[0][1]) / pts_24h[0][1]) * 100.0, 2) + 0.0
             globex_session_chg = None
             if (
-                not bool(meta.get("hasPrePostMarketData"))
-                and len(pts_24h) >= 2
+                len(pts_24h) >= 2
                 and (pts_24h[-1][0] - pts_24h[0][0]) >= 64800.0
                 and pts_24h[0][1] > 0
             ):
