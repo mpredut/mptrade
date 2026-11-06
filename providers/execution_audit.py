@@ -610,6 +610,60 @@ def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
     return recs
 
 
+def find_order_audit_record(
+    order_id: Any = None,
+    client_order_id: Any = None,
+    *,
+    symbol: Any = None,
+    event_ts_s: Optional[float] = None,
+    audit_dir: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the most recent execution-audit record matching ``order_id`` or ``client_order_id``."""
+    target_oid = clean_order_id(order_id)
+    target_cid = clean_order_id(client_order_id)
+    if not target_oid and not target_cid:
+        return None
+    eff_dir = (
+        audit_dir
+        or os.environ.get("EXECUTION_AUDIT_DIR")
+        or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logger", "execution_audit")
+    )
+    if not os.path.isdir(eff_dir):
+        return None
+    target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""
+    ref_ts = safe_pos_float(event_ts_s, default=None)
+    min_day = max_day = ""
+    if ref_ts is not None and ref_ts > 0.0:
+        min_day = datetime.fromtimestamp(max(0.0, ref_ts - 5 * 86400.0), timezone.utc).strftime("%Y-%m-%d")
+        max_day = datetime.fromtimestamp(ref_ts + 86400.0, timezone.utc).strftime("%Y-%m-%d")
+    all_paths = sorted(
+        glob.glob(os.path.join(glob.escape(eff_dir), "execution_audit_*.jsonl")),
+        reverse=True,
+    )
+    if not min_day:
+        all_paths = all_paths[:5]
+    for audit_path in all_paths:
+        file_day = os.path.basename(audit_path)[len("execution_audit_"):-len(".jsonl")]
+        if min_day and _AUDIT_DAY_RE.fullmatch(file_day) and (file_day < min_day or file_day > max_day):
+            continue
+        for rec in reversed(_read_audit_intent_records(audit_path)):
+            rec_oid = clean_order_id(rec.get("order_id"))
+            rec_cid = clean_order_id(rec.get("client_order_id"))
+            if not ((target_oid and rec_oid == target_oid) or (target_cid and rec_cid == target_cid)):
+                continue
+            if target_sym:
+                rec_sym = canonical_symbol_key(rec.get("symbol"))
+                if rec_sym and rec_sym != target_sym:
+                    continue
+            if ref_ts is not None and ref_ts > 0.0:
+                rec_ts = safe_pos_float(rec.get("ts"), default=None)
+                if rec_ts is not None and abs(rec_ts - ref_ts) > 6 * 86400.0:
+                    continue
+            if rec.get("client_order_id") or rec.get("kind") or rec.get("intent_id"):
+                return rec
+    return None
+
+
 def reconcile_intents_from_execution_audit(
     intents: list[dict[str, Any]],
     audit_dir: str,

@@ -8,6 +8,7 @@ from typing import Any
 from botcore import exact_pos_int, resolve_now_ms, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.base import (
     clean_order_id,
+    extract_client_order_id,
     extract_order_price,
     extract_order_side,
     extract_timestamp_ms,
@@ -236,4 +237,7 @@ def parse_trade_execution_report(
     raw_N = event.get("N")
     if isinstance(raw_N, str) and raw_N.strip():
         trade_item["commissionAsset"] = raw_N.strip()
+    cid = extract_client_order_id(event, default="") or clean_order_id(event.get("c"))
+    if cid:
+        trade_item["clientOrderId"] = cid
     return symbol, trade_item

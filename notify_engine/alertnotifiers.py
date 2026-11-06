@@ -1165,10 +1165,17 @@ def _dispatch_order_event_notification(
             px_s = f"{px_s}00"
         elif len(px_s.rsplit(".", 1)[-1]) == 1:
             px_s = f"{px_s}0"
-    eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}"
+    valid_owner = bool(
+        owner_norm
+        and owner_norm not in ("unspecified", "unknown", "order_retry")
+        and not owner_norm.startswith("alt:")
+    )
+    owner_tag = f" [{owner_norm}]" if valid_owner else ""
+    owner_body = f" ({owner_norm})" if valid_owner else ""
+    eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}{owner_tag}"
     eff_body = body or (
         f"Venue: {venue_s} · Qty: {qty_s} @ ${px_s} ({ord_type_s} · ${notional_f:,.0f})\n"
-        f"Order ID: {order_id}"
+        f"Order ID: {order_id}{owner_body}"
     )
     if callable(notify_fn):
         if include_price:

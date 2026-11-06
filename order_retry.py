@@ -810,8 +810,17 @@ def _clean_str(val) -> str:
     return "" if val is None or isinstance(val, bool) else str(val).strip()
 
 
+def _is_concrete_owner(owner: str) -> bool:
+    return bool(
+        owner
+        and not isinstance(owner, bool)
+        and owner not in {"unknown", "unspecified", "order_retry"}
+        and not str(owner).startswith("alt:")
+    )
+
+
 def infer_record_owner(rec: dict) -> str:
-    """Infer the logical bot owner of a durable outbox record."""
+    """Infer the logical bot owner of a durable outbox or execution-audit record."""
     if not isinstance(rec, dict):
         return "unspecified"
     raw_place_kw = rec.get("place_kwargs")
@@ -820,23 +829,40 @@ def infer_record_owner(rec: dict) -> str:
     if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
         return parent_owner
     owner = "unspecified"
-    cid = _clean_str(placement.get("client_order_id")) or _clean_str(rec.get("prefix"))
+    cid = (
+        _clean_str(rec.get("client_order_id"))
+        or _clean_str(placement.get("client_order_id"))
+        or _clean_str(rec.get("prefix"))
+    )
     if cid:
         try:
             from binance_api import order_id_context as rc
             owner = rc.resolve_order_owner(cid)
         except Exception:
             owner = "unspecified"
-    if owner not in {"unknown", "unspecified", "order_retry"} and not str(owner).startswith("alt:"):
+    if _is_concrete_owner(owner):
         return owner
+    iid = _clean_str(rec.get("intent_id"))
+    if iid:
+        try:
+            from binance_api import order_id_context as rc
+            iid_owner = rc.resolve_order_owner(iid)
+            if _is_concrete_owner(iid_owner):
+                return iid_owner
+        except Exception:
+            pass
+        if iid.startswith(("intent_", "AI_")):
+            return "ai_executor"
+        if iid.startswith("spot-dca:"):
+            return "spot_dca"
     kind = _clean_str(rec.get("kind")) or _clean_str(placement.get("kind"))
     if "monitor_order_replace" in kind:
         return "monitororder"
-    if kind in {"STOP", "TP"}:
+    if kind in {"STOP", "TP", "SL", "REENTRY"}:
         return "monitortrades"
-    if _is_tradeall_kind(kind):
+    if _is_tradeall_kind(kind) or kind in {"INITIAL", "TREND", "ADD", "DCA", "CYCLE_SELL", "CYCLE_BUY"}:
         return "tradeall"
-    if kind.lower().startswith("assetguardian"):
+    if kind.lower().startswith("assetguardian") or "asset_guardian" in kind.lower():
         return "assetguardian"
     return owner
 
@@ -848,11 +874,53 @@ def get_accepted_order_owner_map() -> dict:
         if not _is_active_accepted_or_unassigned(r):
             continue
         inferred = infer_record_owner(r)
-        if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
+        if not _is_concrete_owner(inferred):
             continue
         for k in _record_order_and_client_ids(r):
             res[k] = inferred
     return res
+
+
+def resolve_tracked_order_owner(
+    order_id=None,
+    client_order_id=None,
+    *,
+    symbol=None,
+    event_ts_s: Optional[float] = None,
+    accepted_owner_map: Optional[dict] = None,
+    audit_dir: Optional[str] = None,
+) -> str:
+    """Resolve the logical bot owner for an order across clientOrderId, outbox, and execution audit."""
+    oid_str = _clean_retry_order_id(order_id) or _clean_str(order_id)
+    cid_str = _clean_str(client_order_id)
+    owner = "unspecified"
+    if cid_str:
+        try:
+            from binance_api import order_id_context as rc
+            owner = rc.resolve_order_owner(cid_str)
+        except Exception:
+            owner = "unspecified"
+        if _is_concrete_owner(owner):
+            return owner
+    owner_map = accepted_owner_map if isinstance(accepted_owner_map, dict) else get_accepted_order_owner_map()
+    for key in (oid_str, cid_str):
+        if key and key in owner_map:
+            mapped = _clean_str(owner_map.get(key))
+            if _is_concrete_owner(mapped):
+                return mapped
+    if oid_str or cid_str:
+        try:
+            from providers.execution_audit import find_order_audit_record
+            audit_rec = find_order_audit_record(
+                oid_str, cid_str, symbol=symbol, event_ts_s=event_ts_s, audit_dir=audit_dir
+            )
+            if isinstance(audit_rec, dict):
+                audit_owner = infer_record_owner(audit_rec)
+                if _is_concrete_owner(audit_owner):
+                    return audit_owner
+        except Exception:
+            pass
+    return owner
 
 
 def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:

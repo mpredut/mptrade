@@ -1853,6 +1853,95 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
                 price=80060.0,
             )
 
+    def test_executed_trade_includes_owner_from_client_order_id(self):
+        initial_trades = []
+        new_trade = {
+            "symbol": "TAOUSDC",
+            "id": "4001",
+            "orderId": "721818232",
+            "clientOrderId": "AGS1778020031521d2ef2e09",
+            "price": 213.20,
+            "qty": 1.7379,
+            "time": 1700000050000,
+            "isBuyer": True,
+        }
+        with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
+            mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
+            mock_notify.assert_not_called()
+
+            mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
+            mock_notify.assert_called_once_with(
+                title="🎉 BUY TAOUSDC @ 213.20 [assetguardian]",
+                body="Order 721818232 (assetguardian) executed! Filled: 1.7379 TAOUSDC (~370.52 USDC)",
+                source="monitortrades",
+                symbol="TAOUSDC",
+                price=213.20,
+            )
+
+    def test_executed_trade_resolves_owner_from_execution_audit(self):
+        import tempfile
+        from providers.execution_audit import ExecutionAudit
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audit_ts = 1700000100.0
+            audit = ExecutionAudit(directory=tmpdir, clock=lambda: audit_ts)
+            audit.record(
+                "submit_accepted",
+                intent_id="outbox-999111222",
+                venue="Binance",
+                symbol="BTCUSDC",
+                order_id="10739572358",
+                client_order_id="TA_OR_999111222_0",
+                kind="accel_surge_up",
+                side="sell",
+            )
+            initial_trades = []
+            new_trade = {
+                "symbol": "BTCUSDC",
+                "id": "5001",
+                "orderId": "10739572358",
+                "price": 76210.75,
+                "qty": 0.0007,
+                "time": int(audit_ts * 1000),
+                "isBuyer": False,
+            }
+            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": tmpdir}), \
+                 patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, [new_trade]]), \
+                 patch("notify_engine.alertnotifiers.notify") as mock_notify:
+                mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
+                mock_notify.assert_not_called()
+
+                mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
+                mock_notify.assert_called_once_with(
+                    title="🎉 SELL BTCUSDC @ 76210.75 [tradeall]",
+                    body="Order 10739572358 (tradeall) executed! Filled: 0.0007 BTCUSDC (~53.35 USDC)",
+                    source="monitortrades",
+                    symbol="BTCUSDC",
+                    price=76210.75,
+                )
+
+    def test_ws_trade_report_preserves_client_order_id(self):
+        from binance_api.bapi_ws_normalize import parse_trade_execution_report
+
+        res = parse_trade_execution_report({
+            "e": "executionReport",
+            "x": "TRADE",
+            "X": "FILLED",
+            "s": "BTCUSDC",
+            "S": "BUY",
+            "t": 90001,
+            "i": 10734890649,
+            "c": "AI_intent_1778016667__61795c_f2bb206",
+            "L": "75180.00",
+            "l": "0.0066",
+            "T": 1700000000000,
+        })
+        self.assertIsNotNone(res)
+        sym_out, trade_item = res
+        self.assertEqual(sym_out, "BTCUSDC")
+        self.assertEqual(trade_item.get("clientOrderId"), "AI_intent_1778016667__61795c_f2bb206")
+
     def test_api_error_handled_gracefully(self):
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=RuntimeError("API timeout")), \
              patch("notify_engine.alertnotifiers.notify") as mock_notify:

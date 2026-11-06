@@ -2188,7 +2188,7 @@ class CacheTradeManager(CacheManagerInterface):
                             f"conflicting Trade row for immutable ID {trade_id}"
                         )
                     if prev_idx >= persisted_count:
-                        for fee_key in ("commission", "commissionAsset"):
+                        for fee_key in ("commission", "commissionAsset", "clientOrderId"):
                             if fee_key not in prev_item and item.get(fee_key) is not None:
                                 prev_item[fee_key] = item[fee_key]
                                 enriched_unpersisted = True

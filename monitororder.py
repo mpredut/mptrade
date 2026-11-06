@@ -276,9 +276,21 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Invalid order ID ({order_id}) for {symbol}, skipping.")
             continue
         cid = extract_client_order_id(order, default="") or ""
+        order_ts = extract_timestamp_s(order, default=0.0) or 0.0
         owner = rc.resolve_order_owner(cid)
-        if owner == "order_retry":
-            owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner
+        if owner in ("order_retry", "unspecified", "unknown") or str(owner).startswith("alt:"):
+            owner = (
+                accepted_owner_map.get(oid_str)
+                or accepted_owner_map.get(cid)
+                or order_retry.resolve_tracked_order_owner(
+                    oid_str,
+                    cid,
+                    symbol=symbol,
+                    event_ts_s=order_ts if order_ts > 0 else None,
+                    accepted_owner_map=accepted_owner_map,
+                )
+                or owner
+            )
 
         already_notified = oid_str in _notified_placed_order_ids
         _notified_placed_order_ids.add(oid_str)
@@ -291,7 +303,6 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             _notify_order_launched(symbol, order_type, order_id, price, extract_order_qty(order), owner=owner)
 
         # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
-        order_ts = extract_timestamp_s(order, default=0.0) or 0.0
         age_sec = 0.0
         effective_ttl = resolve_effective_order_ttl(
             oid_str, cid, owner=owner, custom_ttl_map=custom_ttl_map)

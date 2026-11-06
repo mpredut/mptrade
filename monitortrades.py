@@ -30,6 +30,7 @@ from instrument import Instrument as _Instrument
 from instrument_registry import load_for
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 import order_guard
+import order_retry
 import pricewindow as pw
 from providers.base import (
     extract_client_order_id,
@@ -172,6 +173,11 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 oid = extract_order_id(t, default="") or _extract_trade_uid(t)
                 trades_by_order.setdefault(oid, []).append(t)
 
+            try:
+                accepted_owner_map = order_retry.get_accepted_order_owner_map()
+            except Exception:
+                accepted_owner_map = {}
+
             for oid, group in trades_by_order.items():
                 first = group[0]
                 side = extract_order_side(first) or "SELL"
@@ -181,6 +187,30 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     if raw_sym is not None and not isinstance(raw_sym, bool) and str(raw_sym).strip()
                     else str(symbol)
                 )
+                cid = next(
+                    (c for t in group if (c := extract_client_order_id(t, default=""))),
+                    "",
+                )
+                trade_ts_ms = _order_timestamp_ms(first)
+                trade_ts_s = trade_ts_ms / 1000.0 if trade_ts_ms > 0 else None
+                try:
+                    owner = order_retry.resolve_tracked_order_owner(
+                        oid,
+                        cid,
+                        symbol=sym_name,
+                        event_ts_s=trade_ts_s,
+                        accepted_owner_map=accepted_owner_map,
+                    )
+                except Exception:
+                    owner = "unspecified"
+                valid_owner = bool(
+                    owner
+                    and not isinstance(owner, bool)
+                    and owner not in ("unspecified", "unknown", "order_retry")
+                    and not str(owner).startswith("alt:")
+                )
+                owner_tag = f" [{owner}]" if valid_owner else ""
+                owner_body = f" ({owner})" if valid_owner else ""
                 total_qty = sum(extract_order_qty(t) for t in group)
                 total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
@@ -188,12 +218,12 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
                 avg_px_str = format_price_log(avg_price)
                 print(
-                    f"[MONITORTRADES] 🎉 New executed order: {side} {total_qty:.6f} "
+                    f"[MONITORTRADES] 🎉 New executed order{owner_body}: {side} {total_qty:.6f} "
                     f"{sym_name} @ {avg_px_str} (orderId={oid}{fill_suffix})"
                 )
                 alert.notify(
-                    title=f"🎉 {side} {sym_name} @ {avg_px_str}",
-                    body=f"Order {oid} executed! Filled: {total_qty:.4f} {sym_name} (~{total_val:.2f} {quote}){fill_suffix}",
+                    title=f"🎉 {side} {sym_name} @ {avg_px_str}{owner_tag}",
+                    body=f"Order {oid}{owner_body} executed! Filled: {total_qty:.4f} {sym_name} (~{total_val:.2f} {quote}){fill_suffix}",
                     source="monitortrades",
                     symbol=sym_name,
                     price=avg_price,

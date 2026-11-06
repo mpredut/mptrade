@@ -13,6 +13,7 @@ from . import bapi as api
 from . import bapi_allorders as apiorders
 from providers.base import (
     clean_order_id,
+    extract_client_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -288,7 +289,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             else symbol
         )
         clean_oid = _resolve_trade_order_id(trade)
-        filtered_trades.append({
+        row = {
             'symbol': sym_out,
             'id': _valid_fill_id(trade.get('id')),
             'orderId': clean_oid,
@@ -300,5 +301,9 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             'timestamp': ts_ms,
             'isBuyer': side == "BUY",
             'side': side,
-        })
+        }
+        cid = extract_client_order_id(trade, default="")
+        if cid:
+            row['clientOrderId'] = cid
+        filtered_trades.append(row)
     return filtered_trades
