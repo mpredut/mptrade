@@ -297,7 +297,9 @@ def _is_excluded_non_crisis_attack_keyword(
                 "academic", "consortium", "university", "college", "campus",
                 "curriculum", "degree", "scholarship", "collaborates", "faculty",
                 "error", "mistake", "mistakenly", "false", "drill", "drills",
-                "environmental", "county", "michigan",
+                "environmental", "county", "michigan", "loan", "loans", "grant",
+                "grants", "boost", "boosts", "expand", "expands", "grid",
+                "electricity", "utility", "utilities", "clinton", "department",
             }
         ) and not (
             combined_words
@@ -307,6 +309,7 @@ def _is_excluded_non_crisis_attack_keyword(
                     "weapon", "weapons", "warhead", "warheads", "missile", "missiles",
                     "enrichment", "strike", "strikes", "attack", "attacks",
                     "meltdown", "leak", "radiation", "explosion", "evacuate", "evacuation",
+                    "emergency", "crisis", "threat", "threatens", "warn", "warns",
                 }
             )
         ):
@@ -330,7 +333,10 @@ def _is_excluded_non_crisis_attack_keyword(
     if kw_words and kw_words <= {"bank", "banks", "collapse", "collapses", "crisis"}:
         if (
             combined_words
-            & {"paraguay", "pena", "resigns", "resigned", "resignation", "impeachment", "removal"}
+            & {
+                "paraguay", "paraguayan", "pena", "ueno", "resigns", "resigned",
+                "resignation", "impeach", "impeached", "impeachment", "removal",
+            }
         ) and not (
             combined_words & {"fed", "fdic", "ecb", "treasury", "wall", "street", "contagion", "systemic"}
         ):
