@@ -770,8 +770,7 @@ def _send_quarantine_alert(alert_set, fingerprint, rec, title_prefix, detail_msg
     alert_set.add(fingerprint)
     try:
         context = _format_record_context(rec, include_lease=include_lease)
-        owner = _concrete_record_owner(rec)
-        owner_sfx = f" [{owner}]" if owner else ""
+        owner_sfx, _ = alert.format_owner_tags(_concrete_record_owner(rec))
         alert.notify(
             title=f"{title_prefix} {rec.get('side')} {rec.get('symbol')}{owner_sfx}",
             body=f"{context}\n{detail_msg}",

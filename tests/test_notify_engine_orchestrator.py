@@ -1530,6 +1530,7 @@ class EmailMirrorTest(unittest.TestCase):
         from notify_engine.alertnotifiers import (
             _GATE_ACCEPTED_REASONS,
             _GATE_SUPPRESSED_REASONS,
+            _dedup_seconds,
             format_notify_price,
             format_notify_qty,
             format_owner_tags,
@@ -1553,6 +1554,12 @@ class EmailMirrorTest(unittest.TestCase):
         collapsed = NotificationServer._collapse_traceback(tb_lines)
         self.assertIn("...", collapsed)
         self.assertTrue(collapsed.startswith("line_0\n  ...\nline_5"))
+        with mock.patch.dict(os.environ, {"NOTIFICATION_MACRO_DEDUP_SECONDS": "3600", "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
+            macro_alert = [{"name": "🧭 [auto_macro_sentiment] HOLD (CAUTION)", "source": "macro_shadow"}]
+            self.assertEqual(_dedup_seconds(macro_alert, False), 3600)
+            guard_alert = [{"name": "🛡 [VETO] Would Block BUY TAOUSDC", "source": "macro_shadow"}]
+            self.assertEqual(_dedup_seconds(guard_alert, False), 1800)
+
 
 
 

@@ -603,13 +603,11 @@ def complete_accepted_claim(
             owner = ""
     elif hasattr(order_retry_module, "infer_record_owner"):
         try:
-            raw_owner = str(order_retry_module.infer_record_owner(claim_dict) or "").strip()
-            if raw_owner and raw_owner not in ("unknown", "unspecified", "order_retry") and not raw_owner.startswith("alt:"):
-                owner = raw_owner
+            owner = str(order_retry_module.infer_record_owner(claim_dict) or "").strip()
         except Exception:
             owner = ""
-    owner_tag = f" [{owner}]" if owner else ""
-    owner_part = f"owner={owner} " if owner else ""
+    owner_tag, _ = alert.format_owner_tags(owner)
+    owner_part = f"owner={owner_tag.strip(' []')} " if owner_tag else ""
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
     qty_f = safe_float(qty, default=None)

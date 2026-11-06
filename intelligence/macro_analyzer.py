@@ -280,6 +280,7 @@ class MacroAnalyzer:
                         f"Risk: {assessment.risk_level}\n"
                         f"{assessment.summary}"
                     ),
+                    skip_notify=stale_cached_fallback,
                 )
                 return True
         except Exception as e:

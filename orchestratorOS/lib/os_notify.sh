@@ -68,7 +68,7 @@ send_os_ntfy() {
         local dedup_dir="$ROOT/logs/.os_notify_dedup"
         mkdir -p "$dedup_dir" 2>/dev/null || true
         chmod 0777 "$dedup_dir" 2>/dev/null || true
-        find "$dedup_dir" -maxdepth 1 -type f -name '[0-9a-f]*' -mmin +60 -delete 2>/dev/null || true
+        find "$dedup_dir" -maxdepth 1 -type f \( -name '[0-9a-f]*' -o -name '.pending_bulk_*' \) -mmin +60 -delete 2>/dev/null || true
         local norm_title norm_body key_hash safe_topic
         norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
         norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/\b[0-9a-f]{7,40}\b/<SHA>/g; s/[0-9]+([.][0-9]+)?/<N>/g')"
@@ -98,7 +98,14 @@ send_os_ntfy() {
                 fi
             fi
             case "$title" in
-                *RECOVERED*|*repaired*|*RESTORED*) should_buffer=0 ;;
+                *RECOVERED*|*repaired*|*RESTORED*)
+                    should_buffer=0
+                    local rec_prefix="${title% RECOVERED*}"
+                    rec_prefix="${rec_prefix% RESTORED*}"
+                    if [ -n "$rec_prefix" ] && [ "$rec_prefix" != "$title" ] && [ -f "$bulk_file" ]; then
+                        grep -vF "${rec_prefix} FAILED:" "$bulk_file" > "${bulk_file}.tmp" 2>/dev/null && mv -f "${bulk_file}.tmp" "$bulk_file" || rm -f "${bulk_file}.tmp"
+                    fi
+                    ;;
             esac
             if [ "$should_buffer" -eq 1 ]; then
                 printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
@@ -115,8 +122,14 @@ send_os_ntfy() {
             fi
             if [ -s "$bulk_file" ]; then
                 local bulk_count=$(( $(wc -l < "$bulk_file" 2>/dev/null || echo 0) + 1 ))
-                body="$(cat "$bulk_file" 2>/dev/null; printf '%s: %s\n' "$title" "$body")"
-                title="📦 Bulk ($bulk_count): $title"
+                local prev_titles joined_titles
+                prev_titles="$(awk -F': ' '{print $1}' "$bulk_file" 2>/dev/null | paste -sd '|' - | sed 's/|/ | /g')"
+                joined_titles="${prev_titles:+$prev_titles | }$title"
+                if [ "${#joined_titles}" -gt 90 ]; then
+                    joined_titles="${joined_titles:0:87}..."
+                fi
+                body="$(awk '{printf "%d. %s\n\n", NR, $0}' "$bulk_file" 2>/dev/null)$(printf '%d. %s: %s\n' "$bulk_count" "$title" "$body")"
+                title="📦 Bulk ($bulk_count): $joined_titles"
                 used_bulk=1
             fi
         fi

@@ -573,6 +573,8 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
         str(alert.get("name") or alert.get("title") or "").upper()
         for alert in alerts if isinstance(alert, dict)
     )
+    if any(m in titles for m in ("AUTO_MACRO_", "MACRO_SENTIMENT", "MACRO_GEOPOLITICAL")):
+        return _config_notification_int("NOTIFICATION_MACRO_DEDUP_SECONDS", 3600)
     if _is_guard_alert(alerts):
         return _positive_int_env("NOTIFICATION_GUARD_DEDUP_SECONDS", 30 * 60)
     if _is_error_or_ops_alert(alerts):

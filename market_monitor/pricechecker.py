@@ -29,6 +29,10 @@ _CANONICAL_CMC_SLUG = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "ADA": "cardano",
     "XRP": "xrp", "DOGE": "dogecoin", "TAO": "bittensor", "HYPE": "hyperliquid",
     "PEPE": "pepe", "PURR": "purr-2", "WIF": "dogwifhat", "FLR": "flare-networks",
+    "ARB": "arbitrum", "ENA": "ethena", "FET": "artificial-superintelligence-alliance",
+    "WLD": "worldcoin-org", "RENDER": "render", "SUI": "sui", "AVAX": "avalanche",
+    "LINK": "chainlink", "NEAR": "near-protocol", "TRUMP": "official-trump",
+    "XMR": "monero", "ZEC": "zcash",
 }
 
 # Threshold configuration (can be adjusted at any time)
