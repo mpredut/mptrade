@@ -242,7 +242,7 @@ def collect_macro_benchmarks_snapshot(
             if len(pts) >= 2:
                 last_bar_ts = pts[-1][0]
                 item_entry["last_bar_ts"] = int(last_bar_ts)
-                if eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0:
+                if mkt_state != "CLOSED" and (eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0):
                     prior_pts = pts[:-1]
                     for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
                         target_ts = last_bar_ts - target_sec

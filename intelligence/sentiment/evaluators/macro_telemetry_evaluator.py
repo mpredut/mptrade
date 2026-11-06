@@ -102,9 +102,10 @@ def compute_equity_macro_regime(data: Any) -> str:
         entry = items.get(sym)
         if not isinstance(entry, dict):
             continue
+        m_state = str(entry.get("market_state") or "").strip().upper()
         if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
             eq_24h.append(c24)
-        if (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
+        if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
             eq_1h.append(c1)
     if not eq_24h and not eq_1h:
         explicit = str(data.get("equity_regime") or "").strip().upper()
@@ -306,12 +307,17 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             if (sym == "US10Y" or unit_kind == "yield_pct")
             else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
         )
+        m_state = str(entry.get("market_state") or "").strip().upper()
         d_parts = [
             f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
-            for h_lbl, h_key in (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
+            for h_lbl, h_key in (
+                (("24h", "chg_24h_pct"),)
+                if m_state == "CLOSED"
+                else (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
+            )
             if (val := safe_float(entry.get(h_key), default=None)) is not None
         ]
-        if (m_state := str(entry.get("market_state") or "").strip().upper()) and m_state != "REGULAR":
+        if m_state and m_state != "REGULAR":
             d_parts.append(m_state.lower())
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")

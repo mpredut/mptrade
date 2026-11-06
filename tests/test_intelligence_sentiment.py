@@ -8698,6 +8698,26 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert cd_map["SPCX_US_EQ"]["cycle_delta"]["prev_whale_long_pct"] == 0.40
     assert cd_map["SPCX_US_EQ"]["cycle_delta"]["whale_long_delta_pct"] == 0.0444
 
+    # Closed cash benchmark omits stale 1h/15m intraday deltas in summary line
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+
+    closed_line = format_macro_benchmarks_summary_line(
+        {
+            "items": {
+                "QQQ": {
+                    "price": 651.92,
+                    "chg_24h_pct": -5.79,
+                    "chg_1h_pct": 0.65,
+                    "chg_15m_pct": 0.19,
+                    "market_state": "CLOSED",
+                }
+            }
+        }
+    )
+    assert "QQQ=$651.92 (-5.79% 24h, closed)" in closed_line
+    assert "+0.65% 1h" not in closed_line
+
+
 
 
 

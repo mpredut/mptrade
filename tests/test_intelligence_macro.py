@@ -2317,6 +2317,10 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     assert has_financial_or_geopolitical_context(
         "Here's what's driving Nvidia's stock higher after a brutal selloff"
     ) is True
+    assert is_excluded_reference_news_item(
+        "Friday's big stock stories: What’s likely to move the market in the next trading session"
+    ) is True
+
 
 
 
