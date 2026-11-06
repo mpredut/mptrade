@@ -554,8 +554,9 @@ def collect_pretrade_telemetry(
             m24_d: Dict[str, Any],
             px_v: float,
             last_pt_v: Optional[Tuple[float, float]],
+            ob_ts_v: float = 0.0,
         ) -> None:
-            sym_u_pt = str(sym_v or "").strip().upper()
+            sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
             if (
                 not m24_d
                 or m24_d.get("vp_source") != "TPO"
@@ -567,10 +568,16 @@ def collect_pretrade_telemetry(
                 import time as _pt_time
 
                 now_s_pt = _pt_time.time()
-                if last_pt_v is None or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= 30 * 60 * 1000.0:
+                if (
+                    last_pt_v is None
+                    or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= 30 * 60 * 1000.0
+                    or (ob_ts_v > 0.0 and abs(now_s_pt - ob_ts_v) <= 30 * 60.0)
+                ):
                     ohlc_fn_pt = _resolve_fallback_ohlc_fn(sym_u_pt)
                     if callable(ohlc_fn_pt) or "PYTEST_CURRENT_TEST" not in os.environ or os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1":
-                        pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
+                        pts_vp_pt = _load_stitched_24h_ohlc_points(
+                            ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True, cache_dir=cachedb_dir
+                        )
                         if len(pts_vp_pt) >= 8 and (pts_vp_pt[-1][0] - pts_vp_pt[0][0]) >= 18 * 3600 * 1000:
                             vp_last_pt = safe_pos_float(pts_vp_pt[-1][1], default=0.0) or 0.0
                             if px_v <= 0.0 or (vp_last_pt > 0.0 and abs(px_v - vp_last_pt) / max(px_v, vp_last_pt) <= 0.015):
@@ -595,6 +602,7 @@ def collect_pretrade_telemetry(
 
         _upgrade_tpo_vp_from_ohlc(symbol, m24, cur_px_est, last_alt_pt)
 
+        ob_ts_est = 0.0
         cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:
             now_ts_s = _time.time()
@@ -671,6 +679,10 @@ def collect_pretrade_telemetry(
                 cur_px_est = ob_mid_est
                 if m24:
                     recalculate_live_price_geometry(m24, ob_mid_est)
+            if m24 and m24.get("vp_source") == "TPO":
+                _upgrade_tpo_vp_from_ohlc(symbol, m24, cur_px_est, last_alt_pt, ob_ts_est)
+                if cur_px_est > 0.0 and m24.get("vp_source") == "REAL_VOL":
+                    recalculate_live_price_geometry(m24, cur_px_est)
 
         btc_m24: Dict[str, Any] = {}
         btc_vals_7d: list = []
@@ -820,7 +832,11 @@ def collect_pretrade_telemetry(
                 import time as _pt_time
 
                 now_s_7d = _pt_time.time()
-                if last_alt_pt is None or abs(now_s_7d * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0:
+                if (
+                    last_alt_pt is None
+                    or abs(now_s_7d * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0
+                    or (ob_ts_est > 0.0 and abs(now_s_7d - ob_ts_est) <= 30 * 60.0)
+                ):
                     sym_u_7d = clean_symbol_key(symbol) or str(symbol).strip().upper()
                     ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
                     if callable(ohlc_fn_7d):
@@ -833,7 +849,12 @@ def collect_pretrade_telemetry(
         if m7d:
             if m24.get("low_24h") is not None and m24.get("high_24h") is not None:
                 m7d["low_24h"], m7d["high_24h"] = m24["low_24h"], m24["high_24h"]
-            if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, safe_pos_float(m7d.get("low_7d"), 0.0) or cur_px_est):
+            low_7d_v = safe_pos_float(m7d.get("low_7d"), 0.0) or cur_px_est
+            high_7d_v = safe_pos_float(m7d.get("high_7d"), 0.0) or cur_px_est
+            if cur_px_est > 0.0 and (
+                low_7d_v <= cur_px_est <= high_7d_v
+                or not (_prices_diverged(cur_px_est, low_7d_v) and _prices_diverged(cur_px_est, high_7d_v))
+            ):
                 recalculate_live_price_geometry(m7d, cur_px_est)
         is_sub24h_dup_7d = (
             bool(m24)
@@ -1136,7 +1157,13 @@ def collect_pretrade_telemetry(
                     sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
                     if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
                         if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
+                            sib_ob_ts = safe_pos_float(sib_m.pop("_ob_ts", None), default=0.0) or normalize_epoch_sec(
+                                safe_pos_float(sib_ob_d.get("ts"), default=0.0) or 0.0,
+                                default=0.0,
+                            )
                             sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
+                            sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
+                            sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
                             sib_live_px = extract_current_price_item(casefold_get(cur_p_items, cand_u))
                             if not sib_live_px or sib_live_px <= 0.0:
                                 if isinstance(l24_s := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_u}.json")), dict):
@@ -1148,10 +1175,6 @@ def collect_pretrade_telemetry(
                             if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
                                 import time as _pt_t_sib
 
-                                sib_ob_ts = normalize_epoch_sec(
-                                    safe_pos_float(sib_ob_d.get("ts"), default=0.0) or 0.0,
-                                    default=0.0,
-                                )
                                 if sib_ob_ts > 0.0 and (_pt_t_sib.time() - sib_ob_ts) > 120.0:
                                     sib_live_px = cur_px_est
                             if (
@@ -1160,8 +1183,18 @@ def collect_pretrade_telemetry(
                                 and sib_live_px
                                 and sib_live_px > 0.0
                                 and sib_ob_mid is not None
-                                and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, sib_ob_mid) > 0.01
+                                and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, ob_mid_m if (ob_mid_m := sib_ob_mid) else sib_live_px) > 0.01
                                 and not _prices_diverged(sib_live_px, sib_ob_mid)
+                                and not (
+                                    0.0 < sib_ob_ts
+                                    and sib_last_pt is not None
+                                    and (sib_ob_ts * 1000.0 - sib_last_pt[0]) > 60_000.0
+                                )
+                                and not (
+                                    cur_px_est > 0.0
+                                    and abs(cur_px_est - sib_ob_mid) / max(cur_px_est, sib_ob_mid) <= 0.005
+                                    and abs(sib_live_px - cur_px_est) / max(sib_live_px, cur_px_est) > 0.01
+                                )
                             ):
                                 s_scale = sib_live_px / sib_ob_mid
                                 s_dec = _auto_px_decimals(sib_live_px)
@@ -1189,12 +1222,11 @@ def collect_pretrade_telemetry(
                                     sib_p_est["kalman_trend"] = sib_k.get("kalman_trend")
                                 if (sib_k_vol := safe_pos_float(sib_k.get("vol_1h_pct"), default=None)) is not None:
                                     sib_p_est["vol_1h_pct"] = sib_k_vol
-                            sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
                             if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
                                 if not k_items_map and not isinstance(casefold_get(st_items_map, cand_u), dict):
                                     for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                                         sib_p_est.pop(k_kal, None)
-                                _upgrade_tpo_vp_from_ohlc(cand_u, sib_m24, sib_px or 0.0, _parse_ts_px_row(sib_s24[-1]))
+                                _upgrade_tpo_vp_from_ohlc(cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts)
                                 _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                                 if sib_px and sib_px > 0:
                                     sib_p_est["price"] = sib_px

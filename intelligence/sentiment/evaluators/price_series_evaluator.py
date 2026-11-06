@@ -1003,6 +1003,7 @@ def _load_stitched_24h_ohlc_points(
     cutoff_24h: float,
     *,
     require_positive_volume: bool = False,
+    cache_dir: Optional[str] = None,
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
     in_pytest = "PYTEST_CURRENT_TEST" in os.environ
@@ -1013,7 +1014,11 @@ def _load_stitched_24h_ohlc_points(
     disk_fallback_pts: List[List[Any]] = []
     if (not in_pytest or (allow_offline_disk and not callable(ohlc_fn))) and sym_u and sym_u.replace("_", "").isalnum():
         try:
-            cpath = str(cache_path(f"cache_ohlc_24h_{sym_u}.json"))
+            cpath = (
+                os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json")
+                if cache_dir and os.path.exists(os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json"))
+                else str(cache_path(f"cache_ohlc_24h_{sym_u}.json"))
+            )
             st = os.stat(cpath)
             age_s = _time.time() - st.st_mtime
             max_disk_age = 7200.0 if allow_offline_disk else 3600.0

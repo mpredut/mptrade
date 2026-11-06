@@ -2044,7 +2044,7 @@ def enrich_24h_and_microstructure(
                 include_derivatives=True,
             )
         if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
-            m_info_ref.pop("_ob_ts", None)
+            ob_ref_ts = safe_pos_float(m_info_ref.pop("_ob_ts", None), default=0.0) or 0.0
             msym_quotes = compatible_quote_suffixes(msym)
             msym_is_eq = is_equity_symbol(msym)
             p_ref = _first_variant_dict(
@@ -2057,6 +2057,7 @@ def enrich_24h_and_microstructure(
             )
             if p_ref is not None and msym not in prices_and_trends:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
+                p_ref_px = safe_pos_float(p_ref.get("price"), default=0.0) or 0.0
                 if msym.upper().endswith("USD") and not msym.upper().endswith(("FDUSD", "TUSD", "BUSD")) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cur_p_items, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cache_dir:
@@ -2067,20 +2068,26 @@ def enrich_24h_and_microstructure(
                                 default=None,
                             )
                         if not sib_live_px or sib_live_px <= 0.0:
-                            ob_ref_d = _rj(os.path.join(cache_dir, f"orderbook_depth_{msym.upper()}.json"))
-                            if not isinstance(ob_ref_d, dict):
-                                ob_ref_d = _rj(os.path.join(cache_dir, "telemetry", f"orderbook_depth_{msym.upper()}.json"))
-                            ob_ref_ts = normalize_epoch_sec(
-                                safe_pos_float((ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"), default=0.0) or 0.0,
-                                default=0.0,
-                            )
+                            if ob_ref_ts <= 0.0:
+                                ob_ref_d = _rj(os.path.join(cache_dir, f"orderbook_depth_{msym.upper()}.json"))
+                                if not isinstance(ob_ref_d, dict):
+                                    ob_ref_d = _rj(os.path.join(cache_dir, "telemetry", f"orderbook_depth_{msym.upper()}.json"))
+                                ob_ref_ts = normalize_epoch_sec(
+                                    safe_pos_float((ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"), default=0.0) or 0.0,
+                                    default=0.0,
+                                )
                             if ob_ref_ts > 0.0 and (now_ts - ob_ref_ts) > 120.0:
-                                sib_live_px = safe_pos_float(p_ref.get("price"), default=None)
+                                sib_live_px = p_ref_px if p_ref_px > 0.0 else None
                     if (
                         sib_live_px
                         and sib_live_px > 0.0
                         and abs(sib_live_px - ob_mid_sib) / max(sib_live_px, ob_mid_sib) > 0.01
                         and not _prices_diverged(sib_live_px, ob_mid_sib)
+                        and not (
+                            p_ref_px > 0.0
+                            and abs(p_ref_px - ob_mid_sib) / max(p_ref_px, ob_mid_sib) <= 0.005
+                            and abs(sib_live_px - p_ref_px) / max(sib_live_px, p_ref_px) > 0.01
+                        )
                     ):
                         s_scale = sib_live_px / ob_mid_sib
                         s_dec = _auto_px_decimals(sib_live_px)

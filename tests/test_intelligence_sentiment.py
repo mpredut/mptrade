@@ -9188,7 +9188,19 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     now_134 = time.time()
     s24_ts_ms = int((now_134 - 3600.0) * 1000)
     (cdir_134 / "cache_24_price_TAOUSDC.json").write_text(
-        json.dumps({"items": {"TAOUSDC": [[s24_ts_ms - 3600_000, 218.0], [s24_ts_ms, 218.5]]}}),
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        [s24_ts_ms - 4 * 900_000, 218.0],
+                        [s24_ts_ms - 3 * 900_000, 218.2],
+                        [s24_ts_ms - 2 * 900_000, 218.3],
+                        [s24_ts_ms - 900_000, 218.4],
+                        [s24_ts_ms, 218.5],
+                    ]
+                }
+            }
+        ),
         encoding="utf-8",
     )
     (cdir_134 / "cache_sparse_price_TAOUSDC.jsonl").write_text(
@@ -9222,9 +9234,72 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     enrich_24h_and_microstructure(str(cdir_134), str(tmp_path), pt_134, micro_134, {}, {}, now_134)
     assert pt_134["TAOUSDC"]["price"] == 221.2
     assert pt_134["TAOUSDC"]["chg_7d_pct"] == -13.25
-    pt_tele_134 = collect_pretrade_telemetry("TAO_USDC", cachedb_dir=str(cdir_134))
+    (cdir_134 / "cache_current_price.json").write_text(
+        json.dumps({"items": {"TAOUSD": [[s24_ts_ms, 218.5]], "TAOUSDC": [[s24_ts_ms, 218.5]]}}),
+        encoding="utf-8",
+    )
+    (cdir_134 / "orderbook_depth_TAOUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSD",
+                "ts": now_134 - 10.0,
+                "mid_price": 221.18,
+                "best_bid": 221.08,
+                "best_ask": 221.28,
+                "spread_bps": 9.04,
+                "imbalance": 0.10,
+                "bid_depth_usd": 35000.0,
+                "ask_depth_usd": 30000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_134 / "cache_ohlc_24h_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "ts": now_134 - 5.0,
+                "points": [
+                    [int((now_134 - (20 - idx) * 3600.0) * 1000), 218.5 + (idx % 3) * 0.8, 120.0 + idx * 10.0]
+                    for idx in range(21)
+                ]
+                + [[int((now_134 - 60.0) * 1000), 221.15, 250.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    import os as _os_134
+
+    _os_134.environ["MPTRADE_OFFLINE_DISK_CACHE"] = "1"
+    try:
+        pt_tele_134 = collect_pretrade_telemetry("TAO_USDC", cachedb_dir=str(cdir_134))
+    finally:
+        _os_134.environ.pop("MPTRADE_OFFLINE_DISK_CACHE", None)
     assert "24h Range=[$218.0, $221.2]" in str(pt_tele_134.get("24h Multi-Horizon Price Evolution", ""))
     assert "-13.25%" in str(pt_tele_134.get("7d Price Range & Swing Structure", ""))
+    assert "vp_source=REAL_VOL" in str(pt_tele_134.get("24h Volume Profile (POC / Value Area)", ""))
+    assert "arb_vs_TAOUSD=+0.9bps" in str(pt_tele_134.get("Cross-Venue Relative Value (Arbitrage)", ""))
+
+    # Bug 135: collect_pretrade_telemetry reconciles low_7d <= low_24h even when price bounced >10% above low_7d
+    cdir_135 = tmp_path / "b135_cache"
+    cdir_135.mkdir()
+    (cdir_135 / "cache_24_price_ARBUSDC.json").write_text(
+        json.dumps({"items": {"ARBUSDC": [[s24_ts_ms - 3600_000, 0.15], [s24_ts_ms, 0.1679]]}}),
+        encoding="utf-8",
+    )
+    (cdir_135 / "cache_sparse_price_ARBUSDC.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"s": "ARBUSDC", "i": [s24_ts_ms - 6 * 86400 * 1000, 0.1715]}),
+                json.dumps({"s": "ARBUSDC", "i": [s24_ts_ms - 3 * 86400 * 1000, 0.1504]}),
+                json.dumps({"s": "ARBUSDC", "i": [s24_ts_ms, 0.1679]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pt_tele_135 = collect_pretrade_telemetry("ARB_USDC", cachedb_dir=str(cdir_135))
+    assert "7d Range=[$0.15, $0.1715]" in str(pt_tele_135.get("7d Price Range & Swing Structure", ""))
+
 
 
 def test_premarket_gap_preservation_and_symmetric_sell_late_scale(tmp_path, monkeypatch):
