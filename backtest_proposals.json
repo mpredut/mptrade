@@ -1,20 +1,6 @@
 [
   {
-    "ts": "2026-11-06T01:00:21",
-    "full_key": "BINANCE_BTC.mt.lost",
-    "section": "BINANCE_BTC",
-    "key": "mt.lost",
-    "symbol": "BTCUSDC",
-    "current_on_dev": 2.9562,
-    "winner_value": 2.3,
-    "margin_vs_current": {
-      "half1": 108.2,
-      "half2": 803.64
-    },
-    "dev_commit": "715d827a"
-  },
-  {
-    "ts": "2026-11-06T01:00:21",
+    "ts": "2026-11-06T02:19:07",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -23,8 +9,8 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 51.76,
-      "half2": 400.86
+      "half2": 400.87
     },
-    "dev_commit": "715d827a"
+    "dev_commit": "600c9198"
   }
 ]
