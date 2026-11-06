@@ -276,7 +276,7 @@ def check_geopolitical_order_guards(
                         isinstance(sa_data, dict)
                         and sa_ts > 0.0
                         and 0.0 <= (now_ts - sa_ts) <= 7200.0
-                        and str(sa_data.get("market_bias") or "").upper() == "BULLISH"
+                        and str(sa_data.get("market_bias") or "").upper() != "BEARISH"
                         and sa_action == "ACCUMULATE"
                     ):
                         market_absorbed = True

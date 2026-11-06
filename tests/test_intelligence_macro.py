@@ -2135,6 +2135,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Chuck Schumer on funding and the Iran war - Punchbowl News", ["war", "iran war"]),
         ("It's farcical to blame the Iran war's costs on stopping the war - Washington Examiner", ["war", "iran war"]),
         ("Trump Says Venezuela Gains Exceed Iran War Costs - Al Arabiya English", ["war", "iran war"]),
+        ("Ukraine war briefing: Zelenskyy says Russia has damaged 'every power plant' as he seeks Latin American help - The Guardian", ["war", "ukraine war"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()

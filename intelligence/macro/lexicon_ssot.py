@@ -198,7 +198,7 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "discount", "discounts", "downscale", "efforts", "eight", "elevated",
     "end", "essay", "essays", "eve", "evident", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
-    "fallout", "false", "fare", "features", "five", "fleet", "florida",
+    "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
     "forced", "four", "fresh", "functioning", "funding", "golf", "headlines", "heighten",
     "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "intel",
     "institute", "introduces", "investigation", "involvement", "island", "jet", "join",
@@ -310,6 +310,7 @@ def _is_excluded_non_crisis_attack_keyword(
                     "electric", "vehicle", "vehicles", "cost", "costs", "bill",
                     "household", "households", "funding", "schumer", "hegseth",
                     "defend", "defends", "blame", "farcical", "stopping", "exceed",
+                    "briefing", "seeks", "seeking",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
