@@ -304,6 +304,19 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     if kw_words and kw_words <= {"nuclear"}:
         if (
+            combined_words & {"regulatory", "framework"}
+        ) and not (
+            combined_words
+            & {
+                "weapon", "weapons", "warhead", "warheads", "missile", "missiles",
+                "enrichment", "strike", "strikes", "attack", "attacks",
+                "meltdown", "leak", "explosion", "evacuate", "evacuation",
+                "emergency", "crisis", "threat", "threatens", "warn", "warns",
+                "violation", "breach",
+            }
+        ):
+            return True
+        if (
             combined_words
             & {
                 "academic", "consortium", "university", "college", "campus",
@@ -354,15 +367,19 @@ def _is_excluded_non_crisis_attack_keyword(
         ):
             return True
     war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
+    war_weapons_essay = bool(combined_words & {"gis", "decide", "decides"})
+    non_kinetic_war_kws = ({"strike", "strikes"} if war_cost_context else set()) | (
+        {"missile", "missiles"} if war_weapons_essay else set()
+    )
     if kw_words and kw_words <= (
         {
             "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
             "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
             "hormuz", "strait", "emergency",
         }
-        | ({"strike", "strikes"} if war_cost_context else set())
+        | non_kinetic_war_kws
     ):
-        eff_kinetic = (kinetic_only - {"strike", "strikes"}) if war_cost_context else kinetic_only
+        eff_kinetic = kinetic_only - non_kinetic_war_kws
         if (
             "trump" in combined_words
             and not (
@@ -391,7 +408,8 @@ def _is_excluded_non_crisis_attack_keyword(
                     "defend", "defends", "blame", "farcical", "stopping", "exceed",
                     "briefing", "seeks", "seeking", "harward", "recalibrates",
                     "recalibrate", "expectations", "assumptions", "soufan",
-                    "multilateral", "approaches", "really", "safe",
+                    "multilateral", "approaches", "really", "safe", "gis",
+                    "decide", "decides",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
