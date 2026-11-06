@@ -357,6 +357,71 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.manager.processes, {})
 
+    async def test_reload_runtime_modules_reloads_alertnotifiers_before_mailer_and_rth_equity_price_checker_gates(self):
+        import importlib
+        import notify_engine.alertnotifiers as _an
+        import notify_engine.mailer as _mailer
+        import notify_engine.server as _ns
+        from market_monitor.pricechecker import PriceChecker
+        from market_monitor.pricefetcher import is_rth_equity_symbol
+
+        reload_order = []
+        real_reload = importlib.reload
+
+        def _spy_reload(mod):
+            reload_order.append(getattr(mod, "__name__", ""))
+            return mod
+
+        fake_server = type(
+            "NotificationServer",
+            (),
+            {"_load_ntfy_token": lambda self: "tok", "_load_rules": lambda self: {}},
+        )()
+        self.manager.server = fake_server
+        self.manager.parse_procs_conf = MagicMock(return_value=[])
+
+        with patch("importlib.reload", side_effect=_spy_reload):
+            await self.manager._reload_runtime_modules_and_manifest()
+
+        self.assertLess(
+            reload_order.index(_an.__name__),
+            reload_order.index(_mailer.__name__),
+        )
+        self.assertLess(
+            reload_order.index(_mailer.__name__),
+            reload_order.index(_ns.__name__),
+        )
+
+        self.assertTrue(is_rth_equity_symbol("SPCX"))
+        self.assertTrue(is_rth_equity_symbol("NVDA_US_EQ"))
+        self.assertFalse(is_rth_equity_symbol("BTCUSDC"))
+        self.assertFalse(is_rth_equity_symbol("HYPE"))
+
+        now_s = time.time()
+        fake_cache = MagicMock()
+        fake_cache.price_factory = None
+        fake_cache.get_latest_price.return_value = 123.62
+        fake_cache.get_price_history.return_value = [
+            {"timestamp": (now_s - 3600) * 1000.0, "price": 135.92, "timestamp_readable": "off_rth"},
+            {"timestamp": (now_s - 1800) * 1000.0, "price": 124.00, "timestamp_readable": "rth_1"},
+            {"timestamp": (now_s - 600) * 1000.0, "price": 123.62, "timestamp_readable": "rth_2"},
+        ]
+        checker = PriceChecker(
+            fake_cache,
+            config={"default": {"up_percent": 3.0, "down_percent": 3.0}, "lookback_hours": 24},
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            with patch(
+                "market_monitor.pricechecker.is_us_rth_open",
+                side_effect=lambda ts=None: False if ts is None else (ts >= now_s - 2000),
+            ):
+                hist = checker._get_price_history_last_hours("SPCX", 24)
+                self.assertEqual([h[1] for h in hist], [124.0, 123.62])
+                alerts = checker.check_symbol("SPCX")
+                self.assertEqual(alerts, [])
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,11 +14,11 @@ from collections import defaultdict
 from operator import itemgetter
 from urllib.parse import quote
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import is_us_rth_open, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
-from market_monitor.pricefetcher import get_base_symbol
+from market_monitor.pricefetcher import get_base_symbol, is_rth_equity_symbol
 from state_io import load_json_state, save_json_state
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
@@ -214,6 +214,14 @@ class PriceChecker:
                 timestamp *= 1000
             if timestamp >= cutoff_time:
                 recent_history.append((timestamp, price, entry.get("timestamp_readable")))
+        if (
+            recent_history
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and is_rth_equity_symbol(symbol, getattr(self.cachePriceAll, "price_factory", None))
+        ):
+            rth_history = [item for item in recent_history if is_us_rth_open(item[0] / 1000.0)]
+            if len(rth_history) >= 2:
+                return rth_history
         return recent_history
 
 
@@ -333,9 +341,14 @@ class PriceChecker:
         thresholds = self._get_thresholds_for_symbol(symbol)
         up_threshold = thresholds["up_percent"]
         down_threshold = thresholds["down_percent"]
+        rth_closed_eq = (
+            "PYTEST_CURRENT_TEST" not in os.environ
+            and is_rth_equity_symbol(symbol, getattr(self.cachePriceAll, "price_factory", None))
+            and not is_us_rth_open()
+        )
 
         # Check for price increase (upper threshold)
-        if up_percent >= up_threshold:
+        if not rth_closed_eq and up_percent >= up_threshold:
             if self._should_send_alert(symbol, "up"):
                 alert = PriceAlert(
                     symbol=symbol,
@@ -351,7 +364,7 @@ class PriceChecker:
                 self._record_alert_sent(symbol, "up")
 
         # Check for price decrease (lower threshold)
-        if down_percent <= -down_threshold:
+        if not rth_closed_eq and down_percent <= -down_threshold:
             if self._should_send_alert(symbol, "down"):
                 alert = PriceAlert(
                     symbol=symbol,

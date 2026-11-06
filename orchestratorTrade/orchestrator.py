@@ -347,8 +347,8 @@ class BotManager:
                 import notify_engine.alertnotifiers as _an
                 import notify_engine.mailer as _mailer
                 import notify_engine.server as _ns
-                importlib.reload(_mailer)
                 importlib.reload(_an)
+                importlib.reload(_mailer)
                 importlib.reload(_ns)
                 NotificationServer = _ns.NotificationServer
                 self.server.__class__ = _ns.NotificationServer

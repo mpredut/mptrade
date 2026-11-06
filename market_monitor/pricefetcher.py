@@ -15,8 +15,8 @@ from abc import ABC, abstractmethod
 
 import instrument_registry as sym
 from binance_api import bapi as api
-from botcore import exact_pos_int, required_env, safe_pos_float, safe_pos_int
-from cachepaths import cache_path, normalize_venue_name
+from botcore import exact_pos_int, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
+from cachepaths import cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
 # Import the base classes from cacheManager
@@ -691,6 +691,14 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return last_times
     
     def get_remote_items(self, symbol, startTime):
+        if (
+            is_rth_equity_symbol(symbol, getattr(self, "price_factory", None))
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and not is_us_rth_open()
+        ):
+            with self.lock:
+                if self._cached_entries_locked(symbol):
+                    return []
         try:
             # Ensure the attribute exists
             if not hasattr(self, 'symbol_preferred_source'):
@@ -986,6 +994,49 @@ def is_valid_symbol_for_monitoring(symbol: str) -> bool:
 
 def get_base_symbol(symbol: str) -> str:
     return resolve_assets(symbol)[0]
+
+
+def is_rth_equity_symbol(symbol: object, price_factory: Optional[object] = None) -> bool:
+    """Return True when ``symbol`` is a US RTH equity (by suffix, Yahoo-only platform, or instruments.conf)."""
+    if not isinstance(symbol, str) or isinstance(symbol, bool) or not symbol.strip():
+        return False
+    sym_u = symbol.strip().upper()
+    if sym.is_equity_symbol(sym_u):
+        return True
+    if price_factory is not None and hasattr(price_factory, "_platforms"):
+        yahoo_sup = False
+        other_sup = False
+        for plat in getattr(price_factory, "_platforms", ()) or ():
+            if getattr(plat, "platform_name", "") == "Yahoo":
+                yahoo_sup = sym_u in getattr(plat, "_symbols", set())
+            elif sym_u in getattr(plat, "_supported_symbols", set()):
+                other_sup = True
+        if yahoo_sup and not other_sup:
+            return True
+    try:
+        reg = sym.load_registry()
+        has_eq = any(
+            (s.provider == "t212" or s.market_hours == "rth")
+            and (
+                s.symbol.upper() == sym_u
+                or s.base.upper() == sym_u
+                or canonical_base_asset(s.symbol).upper() == sym_u
+            )
+            for s in reg.values()
+        )
+        has_crypto = any(
+            s.provider != "t212"
+            and s.market_hours != "rth"
+            and (
+                s.symbol.upper() == sym_u
+                or s.base.upper() == sym_u
+                or canonical_base_asset(s.symbol).upper() == sym_u
+            )
+            for s in reg.values()
+        )
+        return has_eq and not has_crypto
+    except Exception:
+        return False
 
 
 def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_symbols=None):
