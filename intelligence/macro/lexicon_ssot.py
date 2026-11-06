@@ -365,6 +365,9 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "wants to be the nvidia of",
     "should you buy the dip",
     "names at fire-sale prices",
+    "jim cramer says",
+    "cramer says",
+    "cheapest in a decade",
     ": a guide",
 )
 
