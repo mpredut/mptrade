@@ -248,11 +248,9 @@ class Instrument:
         profit_reference_mode = kwargs.pop("reference_mode", None)
         caller_module = kwargs.pop("module", None)
         allow_math_reference_sell = _parse_bool_flag(kwargs.pop("allow_math_reference_sell", False), False)
-        is_stop_loss = _parse_bool_flag(kwargs.pop("is_stop_loss", False), False)
         order_kind = kwargs.get("kind") or kwargs.get("motivation")
         if order_kind is not None:
             kwargs["kind"] = order_kind
-        is_stop = is_stop_loss or str(order_kind or "").strip().upper() == "STOP"
 
         def _refuse_early(r: str):
             if outcome_context is not None:
@@ -412,10 +410,8 @@ class Instrument:
                         price = px_f
 
             # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
-            if not (GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards) or is_stop):
-                ok, reason = order_guard.daily_limit_guard(
-                    self._provider, self.symbol, side_u, bypass_guards=bypassed_guards
-                )
+            if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
+                ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u)
                 if not ok:
                     return None
 

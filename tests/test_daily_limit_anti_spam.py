@@ -122,52 +122,12 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         prov = FakeProvider()
         for _ in range(30):
             prov.seed_trade("BUY", age_sec=3600.0)
-        for bypass in (
-            {"GO1"},
-            {"daily_limit"},
-            {"daily_cap"},
-            {"anti_spam"},
-            {"recent_transaction"},
-            {"cooldown"},
-            {"all"},
-        ):
+        for bypass in ({"GO1"}, {"daily_limit"}, {"all"}):
             ok, reason = order_guard.daily_limit_guard(
                 prov, "BTCUSDC", "BUY", max_daily_trades=25,
                 bypass_guards=bypass)
             self.assertTrue(ok)
             self.assertIsNone(reason)
-
-    def test_stop_loss_bypasses_go1_even_without_explicit_go1_bypass(self):
-        prov = FakeProvider(name="kraken")
-        for _ in range(25):
-            prov.seed_trade("SELL", age_sec=3600.0, symbol="BTCUSDC")
-        prov.seed_trade("SELL", age_sec=1.0, symbol="BTCUSDC")
-        api = MarketApi([prov])
-        inst = Instrument(name="KRAKEN_BTC", symbol="BTCUSDC", provider="kraken",
-                          base="BTC", quote="USDC", api=api)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
-            lfile = os.path.join(tmpdir, "order_retry.lock")
-            with patch.object(order_retry, "QUEUE_FILE", qfile), \
-                 patch.object(order_retry, "LOCK_FILE", lfile), \
-                 patch.object(order_guard, "profit_guard", return_value=True):
-                res_kind = inst.place(
-                    "SELL", 100.0, 1.0,
-                    bypass_guards={"profit_guard"},
-                    wait_for_trend=False,
-                    kind="STOP",
-                )
-                self.assertIsNotNone(res_kind)
-
-                res_flag = inst.place(
-                    "SELL", 100.0, 1.0,
-                    bypass_guards={"profit_guard"},
-                    wait_for_trend=False,
-                    is_stop_loss=True,
-                )
-                self.assertIsNotNone(res_flag)
-                self.assertEqual(len(prov.placed), 2)
 
     def test_daily_limit_is_non_failure_deferral_in_order_retry(self):
         self.assertTrue(order_retry.is_non_failure_deferral("daily_limit"))

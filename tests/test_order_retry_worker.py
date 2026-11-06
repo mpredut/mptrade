@@ -1307,7 +1307,7 @@ class ProcessOnceTest(unittest.TestCase):
 
             # 1. Fresh (Stage 1): 20 hours in (progress ~ 0.238 < 0.50)
             oq.rewrite([])
-            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["GO1"]}, requested_price=500.0, now=t0)
             mkt1 = FakeMkt(price=500.0, succeed=True)
             t_stage1 = t0 + 20 * 3600.0
             stats1 = worker.process_once(mkt1, now=t_stage1)
@@ -1315,13 +1315,13 @@ class ProcessOnceTest(unittest.TestCase):
             self.assertEqual(len(mkt1.calls), 1)
             kw1 = mkt1.calls[0]["kw"]
             self.assertNotIn("profit_margin", kw1)
-            self.assertEqual(kw1.get("bypass_guards"), ["cooldown"])
+            self.assertEqual(kw1.get("bypass_guards"), ["GO1"])
             self.assertFalse(kw1.get("allow_math_reference_sell", False))
             self.assertTrue(kw1.get("wait_for_trend"))
 
             # 2. Breakeven (Stage 2): 50 hours in (progress ~ 0.595, in [0.50, 0.75))
             oq.rewrite([])
-            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["GO1"]}, requested_price=500.0, now=t0)
             mkt2 = FakeMkt(price=500.0, succeed=True)
             t_stage2 = t0 + 50 * 3600.0
             stats2 = worker.process_once(mkt2, now=t_stage2)
@@ -1329,13 +1329,13 @@ class ProcessOnceTest(unittest.TestCase):
             self.assertEqual(len(mkt2.calls), 1)
             kw2 = mkt2.calls[0]["kw"]
             self.assertEqual(kw2.get("profit_margin"), 0.15)
-            self.assertEqual(kw2.get("bypass_guards"), ["cooldown"])
+            self.assertEqual(kw2.get("bypass_guards"), ["GO1"])
             self.assertFalse(kw2.get("allow_math_reference_sell", False))
             self.assertTrue(kw2.get("wait_for_trend"))
 
             # 3. Controlled Salvage (Stage 3): 70 hours in (progress ~ 0.833 >= 0.75)
             oq.rewrite([])
-            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"], "profit_margin": None}, requested_price=500.0, now=t0)
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["GO1"], "profit_margin": None}, requested_price=500.0, now=t0)
             mkt3 = FakeMkt(price=500.0, succeed=True)
             t_stage3 = t0 + 70 * 3600.0
             stats3 = worker.process_once(mkt3, now=t_stage3)
@@ -1353,7 +1353,7 @@ class ProcessOnceTest(unittest.TestCase):
             oq.rewrite([])
             oq.enqueue(
                 "TAOUSDC", "SELL", 1.0,
-                {"bypass_guards": ["cooldown"], "profit_margin": None},
+                {"bypass_guards": ["GO1"], "profit_margin": None},
                 requested_price=500.0, now=t0,
                 failure_reason="trend_deferred",
             )
