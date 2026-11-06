@@ -2158,6 +2158,9 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Heavy missiles will decide Ukraine's war - GIS Reports", ["war", "missile", "missiles"]),
         ("UK jailing of Indian sailor over Russia sanctions sets off 'perfect storm' - Al Jazeera", ["sanctions", "russia sanctions"]),
         ("Strait of Hormuz: Chinese ships get free pass, Iranian official says - South China Morning Post", ["hormuz", "strait of hormuz"]),
+        ("Oil Declines on Signs of Moves Toward Gulf War De-Escalation - Bloomberg.com", ["war", "escalation"]),
+        ("Europe's Streets Reject the Economy of War - CounterPunch.org", ["war"]),
+        ("FEMA to Assess Delaware's Nuclear Emergency Readiness in Salem and Hope Creek Exercise - Homeland Security Today", ["nuclear"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()

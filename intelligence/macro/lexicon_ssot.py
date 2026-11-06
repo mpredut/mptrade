@@ -58,15 +58,15 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
     "asu", "bags", "bills", "broadcasting", "cabin", "cabins", "cambodia",
-    "centcom", "concentration", "consortium", "cruise", "cruises", "decider",
-    "declassified", "disney", "dreading", "episode", "episodes", "explained",
-    "finale", "forever", "french", "fries", "greenland", "hbo", "heating",
-    "holocaust", "hulu", "journalist", "journalists", "liberators", "memorial",
-    "museum", "myanmar", "mystery", "netflix", "pack", "packing", "passengers",
-    "podcast", "podcasts", "premiere", "recap", "residents", "retirees",
-    "retirement", "review", "rsf", "season", "social", "tourist", "tourists",
-    "trailer", "tunnels", "vacation", "vatican", "veteran", "veterans",
-    "vulture", "wwi", "wwii",
+    "centcom", "concentration", "consortium", "counterpunch", "cruise", "cruises",
+    "decider", "declassified", "disney", "dreading", "episode", "episodes",
+    "explained", "finale", "forever", "french", "fries", "greenland", "hbo",
+    "heating", "holocaust", "hulu", "journalist", "journalists", "liberators",
+    "memorial", "museum", "myanmar", "mystery", "netflix", "pack", "packing",
+    "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
+    "retirees", "retirement", "review", "rsf", "season", "social", "streets",
+    "tourist", "tourists", "trailer", "tunnels", "vacation", "vatican",
+    "veteran", "veterans", "vulture", "wwi", "wwii",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
@@ -319,6 +319,21 @@ def _is_excluded_non_crisis_attack_keyword(
         ):
             return True
         if (
+            combined_words & {"exercise", "exercises", "drill", "drills", "readiness", "fema"}
+        ) and not (
+            combined_words
+            & (
+                _MAJOR_GEOPOLITICAL_THEATER_WORDS
+                | {
+                    "weapon", "weapons", "warhead", "warheads", "missile", "missiles",
+                    "enrichment", "strike", "strikes", "attack", "attacks",
+                    "meltdown", "leak", "radiation", "explosion", "evacuate", "evacuation",
+                    "crisis", "threat", "threatens", "warn", "warns",
+                }
+            )
+        ):
+            return True
+        if (
             combined_words
             & {
                 "academic", "consortium", "university", "college", "campus",
@@ -541,6 +556,16 @@ def _is_editorial_clickbait_or_advice_title(title_low: str) -> bool:
     )
 
 
+_HYPHENATED_NEGATION_RE = re.compile(r"\b(de|non|anti|post|pre|counter)-([a-z]{3,})\b")
+
+
+def _normalize_hyphenated_crisis_negations(text_low: str) -> str:
+    """Collapse hyphenated prefixes like 'de-escalation', 'anti-war', 'post-war' into single tokens so they do not false-match 'escalation' or 'war'."""
+    if not text_low or "-" not in text_low:
+        return text_low
+    return _HYPHENATED_NEGATION_RE.sub(r"\1\2", text_low)
+
+
 def filter_valid_severity_keywords(
     raw_keywords: Any,
     *,
@@ -556,14 +581,15 @@ def filter_valid_severity_keywords(
     title_low = title.lower() if isinstance(title, str) and title.strip() else ""
     if _is_editorial_clickbait_or_advice_title(title_low):
         return ()
-    title_words = set(re.findall(r"[a-zA-Z]{3,}", title_low)) if title_low else set()
+    norm_title_low = _normalize_hyphenated_crisis_negations(title_low)
+    title_words = set(re.findall(r"[a-zA-Z]{3,}", norm_title_low)) if norm_title_low else set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
         for k in raw_keywords:
             if not isinstance(k, str) or not k.strip():
                 continue
             k_clean = re.sub(r"\s+", " ", k.strip()).lower()
-            if title_low and not re.search(r"\b" + re.escape(k_clean) + r"\b", title_low):
+            if norm_title_low and not re.search(r"\b" + re.escape(k_clean) + r"\b", norm_title_low):
                 continue
             if _is_excluded_non_crisis_attack_keyword(k_clean, title_words, crisis_stems):
                 continue
@@ -1300,15 +1326,16 @@ def match_high_severity_keywords(
     lower = (text or "").lower()
     if not lower or _is_editorial_clickbait_or_advice_title(lower):
         return ()
+    norm_low = _normalize_hyphenated_crisis_negations(lower)
     seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
-    text_words = set(re.findall(r"[a-zA-Z]{3,}", lower))
+    text_words = set(re.findall(r"[a-zA-Z]{3,}", norm_low))
     return tuple(
         kw
         for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
-        if kw in lower
+        if kw in norm_low
         and not _is_excluded_non_crisis_attack_keyword(kw, text_words, crisis_stems)
         and (kw in seed_set or _dynamic_keyword_has_crisis_stem(kw, crisis_stems))
-        and re.search(r"\b" + re.escape(kw) + r"\b", lower)
+        and re.search(r"\b" + re.escape(kw) + r"\b", norm_low)
     )
 
 
@@ -1336,9 +1363,10 @@ def has_acute_shock_keywords(
         low = str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower()
         if not low or _is_editorial_clickbait_or_advice_title(low):
             continue
-        words = set(re.findall(r"[a-zA-Z]{3,}", low))
+        norm_low = _normalize_hyphenated_crisis_negations(low)
+        words = set(re.findall(r"[a-zA-Z]{3,}", norm_low))
         if any(
-            p in low and not _is_excluded_non_crisis_attack_keyword(p, words, crisis_stems)
+            p in norm_low and not _is_excluded_non_crisis_attack_keyword(p, words, crisis_stems)
             for p in phrases
         ):
             return True
