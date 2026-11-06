@@ -519,18 +519,35 @@ def resolve_tradable_instrument(
     if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(_READONLY_XSTOCK_SUFFIXES):
         return None
     venue_norm = normalize_venue_name(venue) or None
+    if _is_eq_suffix(raw_sym_u) and venue_norm and venue_norm != "t212":
+        return None
+    req_is_eq: bool | None = (
+        True
+        if (_is_eq_suffix(raw_sym_u) or venue_norm == "t212")
+        else (
+            False
+            if (venue_norm is not None or split_symbol_assets(raw_sym_u) is not None)
+            else None
+        )
+    )
     req_base = canonical_base_asset(symbol)
     req_quotes = compatible_quote_suffixes(raw_sym_u, default_usd=_DEFAULT_USD_QUOTES)
-    variant_norms = {
-        clean_symbol_key(v)
-        for v in cache_symbol_variants(raw_sym_u, include_original=True, include_base=False, quotes=req_quotes)
-    }
+    raw_variants = cache_symbol_variants(raw_sym_u, include_original=True, include_base=False, quotes=req_quotes)
+    if req_is_eq is True:
+        raw_variants = [v for v in raw_variants if _is_eq_suffix(v) or split_symbol_assets(v) is None]
+    elif req_is_eq is False:
+        raw_variants = [v for v in raw_variants if not _is_eq_suffix(v)]
+    variant_norms = {clean_symbol_key(v) for v in raw_variants}
 
     candidates = [
         inst
         for inst in instruments_map.values()
         if getattr(inst, "enabled", True) is not False
         and (not venue_norm or _inst_venue(inst) == venue_norm)
+        and (
+            req_is_eq is None
+            or (_inst_venue(inst) == "t212" or _is_eq_suffix(_inst_symbol_u(inst))) == req_is_eq
+        )
         and not _inst_symbol_u(inst).endswith(_READONLY_XSTOCK_SUFFIXES)
         and compatible_quote_suffixes(_inst_symbol_u(inst), getattr(inst, "quote", None), default_usd=_DEFAULT_USD_QUOTES) == req_quotes
     ]
@@ -565,6 +582,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         pass
 
     sym_u = _inst_symbol_u(inst)
+    inst_is_eq = _inst_venue(inst) == "t212" or _is_eq_suffix(sym_u)
     raw_base = getattr(inst, "base", None)
     inst_base = (
         raw_base.strip().upper()
@@ -589,6 +607,12 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
                 ):
                     if cand not in candidates:
                         candidates.append(cand)
+            if inst_is_eq:
+                candidates = [
+                    c for c in candidates if _is_eq_suffix(c) or split_symbol_assets(c) is None
+                ]
+            else:
+                candidates = [c for c in candidates if not _is_eq_suffix(c)]
 
             for cand in candidates:
                 px_f = extract_current_price_item(casefold_get(items, cand))
@@ -598,6 +622,10 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
                 base_u = canonical_base_asset(str(inst_base))
                 for k, v in items.items():
                     k_str = str(k).strip().upper()
+                    if _is_eq_suffix(k_str) != inst_is_eq:
+                        continue
+                    if inst_is_eq and split_symbol_assets(k_str) is not None and not _is_eq_suffix(k_str):
+                        continue
                     if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
                         continue
                     if not is_usd_quote and not (split_symbol_assets(k_str) or ("", ""))[1]:
@@ -613,15 +641,16 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
             load_symbol_price_series,
         )
 
+        lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not _is_eq_suffix(sym_u) else str(inst.symbol or "")
         ser_24h, _ = load_symbol_price_series(
-            cache_dir, str(inst.symbol or ""), include_7d=False, quotes=allowed_quotes
+            cache_dir, lookup_sym, include_7d=False, quotes=allowed_quotes
         )
         if ser_24h:
             px_f = safe_pos_float(ser_24h[-1][1], default=None)
             if px_f is not None:
                 return px_f
         if is_usd_quote:
-            minfo = load_symbol_microstructure(cache_dir, str(inst.symbol or ""))
+            minfo = load_symbol_microstructure(cache_dir, lookup_sym)
             if isinstance(minfo, dict):
                 ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
                 if ob_mid is not None:

@@ -8773,9 +8773,106 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     assert called_urls == []
 
 
+def test_iter107_equity_crypto_scope_isolation_in_instrument_registry_and_execution_audit(tmp_path):
+    import json
+    import math
+    from types import SimpleNamespace
+    from instrument_registry import resolve_instrument_live_price, resolve_tradable_instrument
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+    )
+    from providers.execution_audit import (
+        normalize_trading_decisions,
+        summarize_recent_ai_intents,
+    )
 
+    # 1. resolve_tradable_instrument never resolves COIN_US_EQ to crypto COINUSDC or COINUSDC to t212 COIN_US_EQ
+    coin_crypto = SimpleNamespace(
+        symbol="COINUSDC", provider_name="binance", base="COIN", quote="USDC", enabled=True, _provider=SimpleNamespace()
+    )
+    coin_eq = SimpleNamespace(
+        symbol="COIN_US_EQ", provider_name="t212", base="COIN", quote="USD", enabled=True, _provider=SimpleNamespace()
+    )
+    assert resolve_tradable_instrument("COIN_US_EQ", venue=None, instruments_map={"BINANCE_COIN": coin_crypto}) is None
+    assert resolve_tradable_instrument("COIN_US_EQ", venue="binance", instruments_map={"BINANCE_COIN": coin_crypto}) is None
+    assert resolve_tradable_instrument("COINUSDC", venue=None, instruments_map={"T212_COIN": coin_eq}) is None
+    assert resolve_tradable_instrument("COIN_US_EQ", venue=None, instruments_map={"BINANCE_COIN": coin_crypto, "T212_COIN": coin_eq}) is coin_eq
+    assert resolve_tradable_instrument("COINUSDC", venue=None, instruments_map={"BINANCE_COIN": coin_crypto, "T212_COIN": coin_eq}) is coin_crypto
 
+    # 2. resolve_instrument_live_price isolates equity vs crypto keys in cache_current_price.json
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"COINUSDC": {"price": 1.25}}}),
+        encoding="utf-8",
+    )
+    assert math.isnan(resolve_instrument_live_price(coin_eq, cache_dir=str(tmp_path)))
+    assert resolve_instrument_live_price(coin_crypto, cache_dir=str(tmp_path)) == pytest.approx(1.25)
 
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"COIN_US_EQ": {"price": 240.0}}}),
+        encoding="utf-8",
+    )
+    assert math.isnan(resolve_instrument_live_price(coin_crypto, cache_dir=str(tmp_path)))
+    assert resolve_instrument_live_price(coin_eq, cache_dir=str(tmp_path)) == pytest.approx(240.0)
+
+    # 3. summarize_recent_ai_intents does not cross-match recent_orders or open_orders across equity vs crypto
+    intents = [
+        {
+            "intent_id": "eq_1",
+            "venue": "t212",
+            "symbol": "COIN_US_EQ",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "notional_usd": 240.0,
+            "timestamp": 1_700_000_000.0,
+            "execution_payload": {},
+        }
+    ]
+    recent_orders_crypto_only = {
+        "COINUSDC": {
+            "last_buy": {"price": 1.25, "qty": 100.0, "ts_ms": 1_700_000_001_000, "actor": "AI"},
+        }
+    }
+    summaries = summarize_recent_ai_intents(
+        intents,
+        "equities",
+        1_700_000_010.0,
+        lambda d, default=None: d.get("notional_usd", default),
+        recent_orders=recent_orders_crypto_only,
+        open_orders=[{"symbol": "COINUSDC", "side": "BUY", "price": 1.25, "origQty": 100.0, "executedQty": 50.0}],
+    )
+    assert len(summaries) == 1
+    assert summaries[0].get("fill_px") is None
+    assert summaries[0].get("filled_qty") is None
+
+    # 4. normalize_trading_decisions keeps both COIN_US_EQ and COINUSDC when venue is omitted
+    decs = normalize_trading_decisions(
+        {
+            "decisions": [
+                {"symbol": "COIN_US_EQ", "decision": "BUY", "confidence": 0.85, "rationale": "eq"},
+                {"symbol": "COINUSDC", "decision": "BUY", "confidence": 0.80, "rationale": "crypto"},
+            ]
+        }
+    )
+    assert len(decs) == 2
+    assert {d["symbol"] for d in decs} == {"COIN_US_EQ", "COINUSDC"}
+
+    # 5. enrich_positions_with_orders_and_cycles does not price bare t212 COIN from crypto COINUSDC
+    pos_list = [{"venue": "t212", "symbol": "COIN", "free_base": 2.0, "price": 0.0}]
+    t212_cyc = {"COIN": {"qty": 2.0, "avg_cost_px": 220.0, "entry_price": 220.0, "pos_peak": 220.0}}
+    enrich_positions_with_orders_and_cycles(
+        pos_list,
+        {"COINUSDC": {"price": 1.25}},
+        {},
+        {},
+        {},
+        {},
+        {},
+        t212_cyc,
+        {},
+    )
+    assert pos_list[0]["price"] == 0.0
+    assert t212_cyc["COIN"]["pos_peak"] == pytest.approx(220.0)
 
 
 

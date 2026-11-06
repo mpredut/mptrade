@@ -35,6 +35,7 @@ from botcore import (
     sanitize_identifier,
 )
 from cachepaths import (
+    _is_eq_suffix,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -42,6 +43,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    split_symbol_assets,
 )
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
@@ -898,6 +900,7 @@ def _resolve_intent_execution_details(
     )
 
     raw_intent_st = str(i.get("status") or "").strip().upper()
+    is_eq_intent = (venue == "t212") or _is_eq_suffix(symbol)
     matched_open = None
     expected_cids: Optional[set[str]] = None
     if isinstance(open_orders, list) and raw_intent_st in ("EXECUTED", "FAILED", "PENDING_EXECUTION"):
@@ -908,6 +911,9 @@ def _resolve_intent_execution_details(
             if oo_venue and venue and oo_venue != venue:
                 continue
             oo_sym = str(oo.get("symbol") or "").strip().upper()
+            oo_is_eq = (oo_venue == "t212") or _is_eq_suffix(oo_sym)
+            if (oo_venue or oo_sym) and (venue or symbol) and oo_is_eq != is_eq_intent:
+                continue
             if oo_sym and symbol and (
                 canonical_base_asset(oo_sym) != canonical_base_asset(symbol)
                 or compatible_quote_suffixes(oo_sym) != compatible_quote_suffixes(symbol)
@@ -966,7 +972,12 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
-        sym_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
+        raw_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
+        sym_cands = (
+            [c for c in raw_cands if _is_eq_suffix(c) or split_symbol_assets(c) is None]
+            if is_eq_intent
+            else [c for c in raw_cands if not _is_eq_suffix(c)]
+        )
         ro_entry = next(
             (
                 val
@@ -1185,9 +1196,13 @@ def _intent_venue_symbol_side_key(
     venue: Any, symbol: Any, side: Any
 ) -> tuple[str, str, tuple[str, ...], str]:
     s_raw = str(symbol or "").strip().upper()
+    v_norm = normalize_venue_name(venue)
+    base = canonical_base_asset(s_raw) or s_raw
+    if base and (_is_eq_suffix(s_raw) or v_norm == "t212"):
+        base = f"EQ:{base}"
     return (
-        normalize_venue_name(venue),
-        canonical_base_asset(s_raw) or s_raw,
+        v_norm,
+        base,
         compatible_quote_suffixes(s_raw),
         str(side or "").strip().upper(),
     )
@@ -1603,6 +1618,8 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
         sym_raw = str(item.get("symbol") or "").strip().upper()
         sym_canon = canonical_base_asset(sym_raw) or sym_raw
         venue_norm = normalize_venue_name(item.get("venue"))
+        if sym_canon and (_is_eq_suffix(sym_raw) or venue_norm == "t212"):
+            sym_canon = f"EQ:{sym_canon}"
         side_norm = str(item.get("decision") or "HOLD").strip().upper()
         key = (
             (venue_norm, sym_canon, compatible_quote_suffixes(sym_raw), "")

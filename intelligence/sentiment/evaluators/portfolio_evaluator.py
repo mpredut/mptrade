@@ -861,14 +861,10 @@ def reconcile_venue_cycles_with_recent_orders(
                     cyc["last_sell_price"] = round(ls_px, avg_dec)
                     _sync_exit_kind(cyc, ls_px, rem_after_sell)
             elif (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
-                px_c = (
-                    resolve_symbol_price(
-                        c_sym if str(c_sym).strip().upper().endswith(("_EQ", "_US_EQ")) else f"{str(c_sym).strip().upper()}_US_EQ",
-                        prices_and_trends,
-                    )
-                    if c_is_eq
-                    else 0.0
-                ) or resolve_symbol_price(c_sym, prices_and_trends)
+                px_c = resolve_symbol_price(
+                    c_sym if not c_is_eq or str(c_sym).strip().upper().endswith(("_EQ", "_US_EQ")) else f"{str(c_sym).strip().upper()}_US_EQ",
+                    prices_and_trends,
+                )
                 eff_rem_wallet = (
                     live_held
                     if (live_held is not None and live_held > 1e-6)
@@ -1046,7 +1042,8 @@ def enrich_positions_with_orders_and_cycles(
                 seen_venue_syms.add((p_venue, str(cand_vs).upper()))
         p_variants = (*p_quote_variants, *_scope_variants(p_sym, cache_symbol_variants(p_sym), is_eq=p_is_eq))
         pos_px_f = safe_float(pos.get("price"), 0.0)
-        cand_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))
+        p_lookup_sym = f"{p_sym}_US_EQ" if p_is_eq and not p_sym.endswith(("_EQ", "_US_EQ")) else p_sym
+        cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
         if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px))):
             pos_px_f = round(cand_px, 4 if p_venue == "t212" else 6)
             pos["price"] = pos_px_f
@@ -1344,14 +1341,11 @@ def enrich_positions_with_orders_and_cycles(
             ro = _populate_cycle_fallback_recent_order(
                 c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )
-            c_px = (
-                resolve_symbol_price(
-                    c_sym_u if c_sym_u.endswith(("_EQ", "_US_EQ")) else f"{c_sym_u}_US_EQ",
-                    prices_and_trends,
-                )
-                if (c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ")))
-                else 0.0
-            ) or resolve_symbol_price(c_sym_u, prices_and_trends)
+            c_is_eq = c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ"))
+            c_px = resolve_symbol_price(
+                c_sym_u if not c_is_eq or c_sym_u.endswith(("_EQ", "_US_EQ")) else f"{c_sym_u}_US_EQ",
+                prices_and_trends,
+            )
             if c_px > 0.0:
                 c_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
                 c_entry = safe_pos_float(cyc.get("entry_price"), default=None)
