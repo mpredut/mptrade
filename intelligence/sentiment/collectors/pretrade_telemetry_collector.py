@@ -1310,7 +1310,21 @@ def collect_pretrade_telemetry(
     try:
         if fills := load_symbol_best_recent_fills(cachedb_dir, symbol, quote_variants, _rj):
             lb, ls = fills.get("last_buy") or {}, fills.get("last_sell") or {}
-            lb_by = f" (by={lb.get('actor_tag') or lb.get('actor')})" if (lb.get("actor_tag") or lb.get("actor")) else ""
+            lb_px = safe_pos_float(lb.get("price"), default=None)
+            _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
+            open_lots_f = fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else []
+            is_lb_harvested = (
+                lb_px is not None
+                and len(open_lots_f) > 0
+                and not any(
+                    isinstance(lt, dict) and _same_px(lb_px, safe_pos_float(lt.get("entry_px"), default=None))
+                    for lt in open_lots_f
+                )
+            )
+            lb_meta = [f"by={lb.get('actor_tag') or lb.get('actor')}"] if (lb.get("actor_tag") or lb.get("actor")) else []
+            if is_lb_harvested:
+                lb_meta.append("lot_harvested")
+            lb_by = f" ({', '.join(lb_meta)})" if lb_meta else ""
             ls_by = f" (by={ls.get('actor_tag') or ls.get('actor')})" if (ls.get("actor_tag") or ls.get("actor")) else ""
             lb_s = (
                 f"{lb.get('qty')} @ {lb.get('price')}{lb_by}"
@@ -1329,8 +1343,6 @@ def collect_pretrade_telemetry(
                     diff_ms = now_ms_f - s_ts
                     if 0.0 <= diff_ms <= 365.0 * 86400.0 * 1000.0:
                         sub_parts.append(f"{side_lbl}={round(diff_ms / 3_600_000.0, 1)}h")
-            lb_px = safe_pos_float(lb.get("price"), default=None)
-            _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
             if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
                 sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
             if (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None and not _same_px(tac_avg, act_avg) and not _same_px(tac_avg, lb_px):
@@ -1344,6 +1356,14 @@ def collect_pretrade_telemetry(
                 sub_parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
             if abs(lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), 0.0)) >= 0.01:
                 sub_parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
+            if is_lb_harvested:
+                o_lots = [
+                    f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
+                    for lt in open_lots_f[-4:]
+                    if isinstance(lt, dict) and lt.get("qty") is not None and lt.get("entry_px") is not None
+                ]
+                if o_lots:
+                    sub_parts.append(f"Open LIFO Lots=[{', '.join(o_lots)}]")
             r_buys = [
                 f"{b.get('qty')}@{round_opt_px(b.get('price'), 6)}"
                 for b in (fills.get("recent_buys") or ())

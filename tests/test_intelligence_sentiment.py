@@ -6696,6 +6696,52 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     assert "Last SELL Age=14.0h" in rvf
     assert "Recent BUY Tranches=[0.01@77350.0, 0.01@77580.0]" in rvf
 
+    (orders_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "b1",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 77350.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 773.5,
+                            "updateTime": now_ms - int(48 * 3_600_000),
+                            "clientOrderId": "AIBTC1",
+                        },
+                        {
+                            "orderId": "b2",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 77580.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 775.8,
+                            "updateTime": now_ms - int(36 * 3_600_000),
+                            "clientOrderId": "AIBTC2",
+                        },
+                        {
+                            "orderId": "s1",
+                            "side": "SELL",
+                            "status": "FILLED",
+                            "price": 79950.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 799.5,
+                            "updateTime": now_ms - int(14 * 3_600_000),
+                            "clientOrderId": "AIBTC3",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_harvested = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
+    rvf_harvested = pt_harvested.get("Recent Venue Fills", "")
+    assert "Last BUY=0.01 @ 77580.0 (by=BOT, lot_harvested)" in rvf_harvested
+    assert "Open LIFO Lots=[0.01@77350.0]" in rvf_harvested
+
     # 4. Bug 113: normalize_error_signature strips [file.py:line] [STDERR] tags and harvest_log_anomalies_from_dirs
     #    clears recovered transient -2015 IP/auth failover bursts once subsequent bot cycles succeed
     from orchestratorOS.lib.technical_repair_ssot import (

@@ -8836,6 +8836,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         _format_macro_and_news_section,
         _format_market_prices_section,
         _format_portfolio_section,
+        _format_recent_order_line,
         _format_tradable_position_line,
         _format_venue_cycle_line,
     )
@@ -8930,6 +8931,30 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     )
     assert "last_buy_px=213.2 (chg_vs_last_buy=5.65%, lot_harvested)" in pos_line_harvested
 
+    # When LIFO harvest leaves a single remaining lot whose entry_px != active_avg_buy_px, still emit open_lifo_lots + profitable_lifo_usd
+    pos_line_single_rem = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "free_base": 6.0,
+            "value_usd": 1401.6,
+            "free_quote": 6751.44,
+            "price": 233.6,
+            "active_avg_buy_px": 248.3,
+            "pnl_vs_avg_pct": -5.92,
+            "last_buy_px": 220.0,
+            "pnl_vs_last_buy_pct": 6.18,
+            "open_lots": [
+                {"lot_id": "L1", "qty": 6.0, "entry_px": 232.3},
+            ],
+        }
+    )
+    assert "last_buy_px=220.0 (chg_vs_last_buy=6.18%, lot_harvested)" in pos_line_single_rem
+    assert "open_lifo_lots=[6@232.3(+0.56%)]" in pos_line_single_rem
+    assert "profitable_lifo_usd=$1401.60(6_TAO@+0.56%)" in pos_line_single_rem
+
     # Verify tactical_avg_buy_px >= active_avg_buy_px is suppressed so true position profitability is not obscured
     pos_line_arb = _format_tradable_position_line(
         {
@@ -9008,6 +9033,36 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         },
     )
     assert "last_buy=76.5 (pnl_vs_last_buy=+2.19%)" in cyc_line
+
+    cyc_line_harvested = _format_venue_cycle_line(
+        "kraken",
+        "HYPEUSD",
+        {
+            "qty": 10.0,
+            "cost_usd": 808.7,
+            "avg_cost_px": 80.87,
+            "entry_price": 82.0,
+            "last_buy_price": 76.50,
+            "last_sell_price": 83.0,
+            "dca_buys": 1,
+            "dd_pct": -3.33,
+            "_open_lots": [{"lot_id": "L1", "qty": 10.0, "entry_px": 82.0}],
+        },
+    )
+    assert "last_buy=76.5 (chg_vs_last_buy=+2.19%, lot_harvested)" in cyc_line_harvested
+    ro_line_harvested = _format_recent_order_line(
+        "ARBUSDC",
+        {
+            "last_action_side": "SELL",
+            "last_action_actor": "AI",
+            "last_buy": {"price": 0.1505, "qty": 2325.5, "actor": "AI"},
+            "last_sell": {"price": 0.165, "qty": 6643.8, "actor": "AI"},
+            "active_avg_buy_px": 0.155995,
+            "open_lots": [{"lot_id": "L1", "qty": 195.86, "entry_px": 0.1595}],
+        },
+        1_793_800_000_000,
+    )
+    assert "Last BUY=2325.5 @ 0.1505 (by=AI, lot_harvested)" in ro_line_harvested
 
     # 3. Section 3C filters HOLD / stale canceled intents and inactive pending=False assetguardian entries
     s3c = "\n".join(

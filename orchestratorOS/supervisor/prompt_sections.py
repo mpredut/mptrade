@@ -103,7 +103,17 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             if avg_c_f >= 100.0 and abs(est_spot - round(est_spot, 2)) <= avg_c_f * 0.00005:
                 est_spot = round(est_spot, 2)
         lb_pnl = ((est_spot - lb_px_f) / lb_px_f) * 100.0
-        lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
+        if (
+            isinstance(open_lots_cyc := cyc.get("_open_lots"), list)
+            and len(open_lots_cyc) > 0
+            and not any(
+                isinstance(lt, dict) and _same_anchor_px(lb_px_f, lt.get("entry_px"))
+                for lt in open_lots_cyc
+            )
+        ):
+            lb_pnl_sfx = f" (chg_vs_last_buy={lb_pnl:+.2f}%, lot_harvested)"
+        else:
+            lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
     return (
         f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
         f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
@@ -1146,7 +1156,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             eff_pos[cap_k] = round(float(max_usd), 2)
     taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
     maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
-    if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) > 1:
+    if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) >= 1:
         held_pos_q = (_parse_finite_float(pos.get("free_base"), 0.0) or 0.0) + (
             _parse_finite_float(pos.get("locked_base_qty"), 0.0) or 0.0
         )
@@ -1179,7 +1189,11 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 l_pnl_s = f"({_parse_finite_float(l_pnl_pct, 0.0):+.2f}%)" if px_f > 0.0 else ""
                 lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
                 valid_lots.append((l_q, l_px, l_pnl_pct))
-        if len(lot_parts) > 1:
+        if len(lot_parts) > 1 or (
+            len(lot_parts) == 1
+            and pos.get("active_avg_buy_px") is not None
+            and not _same_anchor_px(valid_lots[0][1], pos.get("active_avg_buy_px"))
+        ):
             t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
             prof_q = 0.0
             prof_usd = 0.0
@@ -1243,6 +1257,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
+    open_lots_ro = oinfo.get("open_lots") if isinstance(oinfo.get("open_lots"), list) else []
+
     def _side_summary(key: str) -> str:
         entry = oinfo.get(key) if isinstance(oinfo.get(key), dict) else {}
         px = _round_opt_px(entry.get("price"), 6)
@@ -1254,6 +1270,12 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         qty_v = entry.get("qty")
         qty_pfx = f"{qty_v} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
+        if (
+            key == "last_buy"
+            and len(open_lots_ro) > 0
+            and not any(isinstance(lt, dict) and _same_anchor_px(px, lt.get("entry_px")) for lt in open_lots_ro)
+        ):
+            meta_parts.append("lot_harvested")
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
         return f"{qty_pfx}{px}{meta_sfx}"
 
@@ -1423,6 +1445,7 @@ def _format_portfolio_section(
         )
     pos_lifo_pnl_by_vs: Dict[Tuple[str, str], float] = {}
     pos_px_by_vs: Dict[Tuple[str, str], float] = {}
+    pos_open_lots_by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for p_it in (ps.get("tradable_positions") or ()):
         if isinstance(p_it, dict) and p_it.get("symbol"):
             p_v_norm = normalize_venue_name(p_it.get("venue"))
@@ -1432,6 +1455,10 @@ def _format_portfolio_section(
                 for cand_s in p_cands:
                     pos_px_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), p_px)
                 pos_px_by_vs[(p_v_norm, p_sym_u)] = p_px
+            if isinstance(p_ol := p_it.get("open_lots"), list) and p_ol:
+                for cand_s in p_cands:
+                    pos_open_lots_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), p_ol)
+                pos_open_lots_by_vs[(p_v_norm, p_sym_u)] = p_ol
             if p_it.get("lifo_realized_pnl_usd") is not None:
                 if (lp_v := _parse_finite_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
                     for cand_s in p_cands:
@@ -1454,6 +1481,9 @@ def _format_portfolio_section(
                     if c_data.get("_spot_px") is None:
                         if (sp_px := pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))) is not None:
                             c_data = {**c_data, "_spot_px": sp_px}
+                    if c_data.get("_open_lots") is None:
+                        if (ol_sym := pos_open_lots_by_vs.get((venue_id, c_up), pos_open_lots_by_vs.get(("", c_up)))) is not None:
+                            c_data = {**c_data, "_open_lots": ol_sym}
                 lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
     if ps.get("kraken_xstocks"):
         xs_raw = ps["kraken_xstocks"]
