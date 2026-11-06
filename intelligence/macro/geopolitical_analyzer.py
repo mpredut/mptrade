@@ -103,6 +103,16 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
         tl_norm = normalize_threat_level(data.get("threat_level"), default="NORMAL")
         rb_norm = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl_norm)
+        raw_rs = data.get("risk_score", default_risk_score)
+        sum_low = summary_str.lower()
+        if (
+            tl_norm == "ELEVATED"
+            and ("no systemic risk" in sum_low or "false alarm" in sum_low or "sent in error" in sum_low)
+            and ("already reflected" in sum_low or "already priced" in sum_low or "already digested" in sum_low)
+        ):
+            tl_norm = "NORMAL"
+            rb_norm = "NONE"
+            raw_rs = min(clean_scale(raw_rs, default=default_risk_score, allow_percent=True), 0.25)
         raw_fb = data.get("is_fallback")
         fb_flag = (
             is_fallback
@@ -115,7 +125,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             else max(0, safe_int(data.get("headlines_analyzed"), 0))
         )
         ts_val = safe_nonneg_ts(ts if ts is not None else data.get("ts", 0.0), 0.0)
-        raw_rs = data.get("risk_score", default_risk_score)
         return GeopoliticalThreatAssessment(
             threat_level=tl_norm,
             risk_score=clean_scale(raw_rs, default=default_risk_score, allow_percent=True),
@@ -399,7 +408,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n"
             "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
             "- Reserve 'CRITICAL_SHOCK' ('HARD_VETO_NEW_BUYS') strictly for a brand-new, sudden, unpriced kinetic or systemic escalation breaking right now (e.g., surprise military strike, sudden strait closure, emergency sanctions/tariff shock) that markets have not yet absorbed.\n"
-            "- Each headline includes its publication timestamp (YYYY-MM-DD HH:MM UTC) and age in minutes (age=Xm). Older headlines (age > 90m) are retained in the 6-hour rolling window as historical narrative context; only fresh headlines (age <= 90m) or unabsorbed market stress justify active escalation.\n"
+            "- Each headline includes its publication timestamp (YYYY-MM-DD HH:MM UTC) and age in minutes (age=Xm). Older headlines (age > 90m) are retained in the 6-hour rolling window as historical narrative context; only fresh genuine geopolitical/systemic headlines (age <= 90m) justify active escalation. If the only fresh headline is a false alarm, error, or local non-systemic incident and older headlines (age > 90m) are already reflected in the market, classify as 'NORMAL' ('NONE').\n"
             "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n"
             "- Cross-check headline severity against Live Cross-Asset Market Reaction when present (SPY/QQQ/ES=F/NQ=F, VIX, DXY, US10Y, Futures_Lead, IBIT, CB_Premium, BTC_DVOL/ETH_DVOL, Options_Surface/ETH_Options, Cross_Asset): if markets are calm or advancing (COUPLED_RISK_ON, CRYPTO_BULLISH_DECOUPLING, FUTURES_PREMARKET_GAP_UP, subdued VIX/DVOL, positive CB_Premium), treat recycled conflict headlines as priced-in ('NORMAL' or 'ELEVATED') rather than 'CRITICAL_SHOCK'.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"

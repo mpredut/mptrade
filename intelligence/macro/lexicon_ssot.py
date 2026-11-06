@@ -190,38 +190,38 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "acknowledge", "acknowledges", "active", "activity", "adds", "admit", "admits",
-    "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
+    "adverse", "affecting", "ahead", "airfares", "alert", "alerts", "allegedly",
     "already", "amid", "answered", "app", "apparently", "appears", "apps",
     "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
     "bernie", "bill", "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
     "breaking", "briefing", "bus", "calls", "car", "carried", "carries",
     "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
-    "concedes", "conduct", "conducted", "conducts", "continue", "continued",
-    "continues", "contagion", "cost", "costs", "criticize", "criticized", "criticizes",
+    "concedes", "concern", "concerns", "conduct", "conducted", "conducts", "continue", "continued",
+    "continues", "contagion", "cost", "costs", "county", "criticize", "criticized", "criticizes",
     "damaged", "deadly", "debunked", "deepening", "defend", "defended", "defends", "defensive", "digested", "discourse",
     "discount", "discounts", "downscale", "efforts", "eight", "elevated",
-    "end", "essay", "essays", "eve", "evident", "exceptionally", "exists", "expert",
+    "end", "error", "essay", "essays", "eve", "evident", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
     "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
     "forced", "four", "fresh", "functioning", "funding", "golf", "harward", "headlines", "heighten",
-    "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "intel",
+    "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
     "institute", "introduces", "investigation", "involvement", "island", "jet", "join",
-    "keyword", "kinetic", "landing", "latest", "likely", "limited", "lingering", "links",
+    "keyword", "kinetic", "landing", "later", "latest", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
-    "losers", "losses", "macro", "media", "members", "midterm", "midterms",
-    "mobile", "moderate", "mounting", "mutual", "narrative", "nine", "non", "normal",
+    "losers", "losses", "macro", "media", "members", "michigan", "midterm", "midterms",
+    "mobile", "moderate", "monroe", "mounting", "mutual", "narrative", "nine", "non", "normal",
     "noting", "official", "officials", "one", "ongoing", "orderly", "outlook",
-    "peacefully", "persistent", "physical", "plane", "playbook", "played", "plunge",
-    "plunged", "plunges", "plunging", "political", "position", "possible", "post", "posture",
+    "peacefully", "persistent", "physical", "plane", "plant", "playbook", "played", "plunge",
+    "plunged", "plunges", "plunging", "political", "poses", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
     "qeshm", "questions", "rather", "readiness", "recent", "record", "reflect",
-    "reflects", "related", "remain", "remained", "remaining", "remains", "removal", "renewed", "reported", "reportedly", "represent",
+    "reflected", "reflects", "related", "remain", "remained", "remaining", "remains", "removal", "renewed", "reported", "reportedly", "represent",
     "researchers", "reshapes", "resign", "resigned", "resigns", "retaining", "rhetoric", "rhetorical", "risk", "risks",
     "role", "rout", "routine", "ryanair", "say", "schedule", "scheduled", "scrutiny", "secondary",
     "selloff", "seven", "short", "showdown", "six", "sizing", "soaring", "somalia",
     "south", "stocks", "story", "strategy", "striker", "study", "sudden", "surging", "surprise", "suspected",
     "sustain", "sustained", "sustaining", "sustains", "sweden", "systemic", "tactical", "targets",
-    "tech", "techspot", "ten", "tenerife", "three", "timeline", "trace",
+    "tech", "techspot", "ten", "tenerife", "tension", "tensions", "three", "timeline", "trace",
     "traced", "train", "trains", "truck", "trump", "two", "uganda",
     "unabsorbed", "unanticipated", "uncertainty", "underscore", "underscores", "unpriced", "veto",
     "victim", "victims", "volatility", "volunteer", "vow", "vowed", "vows", "wave", "waves", "widespread",
@@ -296,12 +296,18 @@ def _is_excluded_non_crisis_attack_keyword(
             & {
                 "academic", "consortium", "university", "college", "campus",
                 "curriculum", "degree", "scholarship", "collaborates", "faculty",
+                "error", "mistake", "mistakenly", "false", "drill", "drills",
+                "environmental", "county", "michigan",
             }
         ) and not (
             combined_words
             & (
                 _MAJOR_GEOPOLITICAL_THEATER_WORDS
-                | {"weapon", "weapons", "warhead", "warheads", "missile", "missiles", "enrichment", "strike", "strikes", "attack", "attacks"}
+                | {
+                    "weapon", "weapons", "warhead", "warheads", "missile", "missiles",
+                    "enrichment", "strike", "strikes", "attack", "attacks",
+                    "meltdown", "leak", "radiation", "explosion", "evacuate", "evacuation",
+                }
             )
         ):
             return True
@@ -1134,6 +1140,10 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if matched_fin and matched_fin <= {"attack", "attacks"} and (words & _NON_CRISIS_ATTACK_CONTEXT_WORDS) and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
+    if matched_fin and matched_fin <= {"nuclear", "missile", "missiles", "bank", "banks"}:
+        probe_kw = "nuclear" if "nuclear" in matched_fin else ("missile" if (matched_fin & {"missile", "missiles"}) else "bank")
+        if _is_excluded_non_crisis_attack_keyword(probe_kw, words, _get_crisis_stems_set()):
+            return False
     if matched_fin and matched_fin <= {"shares", "stock"} and not has_tracked_equity_entity(title) and not (
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
     ):

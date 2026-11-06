@@ -2144,6 +2144,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Devils honor 100-year-old World War II veteran on Military Appreciation Night - NHL.com", ["war"]),
         ("Army medic from Bellevue was among the liberators of a World War II concentration camp - Pittsburgh Post-Gazette", ["war"]),
         ("Carney unveils budget to strengthen Canada's economy as Trump's trade war slows growth - The Seattle Times", ["trade war", "war"]),
+        ("Michigan environmental news: Monroe County nuclear plant alert sent in error - Planet Detroit", ["nuclear"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
