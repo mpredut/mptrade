@@ -189,7 +189,7 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
     "already", "amid", "answered", "app", "apparently", "appears", "apps",
     "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
-    "Bernie", "bernie", "bill", "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
+    "bernie", "bill", "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
     "breaking", "briefing", "bus", "calls", "car", "carried", "carries",
     "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
     "concedes", "conduct", "conducted", "conducts", "continue", "continued",
@@ -290,11 +290,14 @@ def _is_excluded_non_crisis_attack_keyword(
             combined_words & {"fed", "fdic", "ecb", "treasury", "wall", "street", "contagion", "systemic"}
         ):
             return True
-    if kw_words and kw_words <= {
-        "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
-        "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
-    }:
-        war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
+    war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
+    if kw_words and kw_words <= (
+        {
+            "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
+            "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
+        }
+        | ({"strike", "strikes"} if war_cost_context else set())
+    ):
         eff_kinetic = (kinetic_only - {"strike", "strikes"}) if war_cost_context else kinetic_only
         if (
             combined_words

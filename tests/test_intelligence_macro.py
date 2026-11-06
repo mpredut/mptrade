@@ -2116,7 +2116,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Melania Trump urges 'humanity over war' with Ukraine, Russia officials - Reuters", ["war"]),
         ("Two Black Dagger Missile Launches Scheduled at Fort Wingate: November 9 and 20 - Cibola Citizen", ["missile", "missile launches"]),
         ("Paraguay's Pena resigns as bank collapse triggers political crisis - Reuters", ["bank collapse"]),
-        ("The Iran war has cost U.S. households nearly $2,000 each. New strikes could keep the bill climbing - Fortune", ["war", "iran war"]),
+        ("The Iran war has cost U.S. households nearly $2,000 each. New strikes could keep the bill climbing - Fortune", ["war", "iran war", "strike", "strikes"]),
         ("Hegseth vows to keep fighting from Pentagon, defends Iran war - Reuters", ["war", "iran war"]),
         ("Chuck Schumer on funding and the Iran war - Punchbowl News", ["war", "iran war"]),
         ("It's farcical to blame the Iran war's costs on stopping the war - Washington Examiner", ["war", "iran war"]),
