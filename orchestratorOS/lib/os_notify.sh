@@ -99,7 +99,10 @@ send_os_ntfy() {
             if [ "$should_buffer" -eq 1 ]; then
                 printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
                 chmod 0666 "$stamp_file" 2>/dev/null || true
-                local cur_lines; cur_lines="$(wc -l < "$bulk_file" 2>/dev/null || echo 0)"
+                local cur_lines=0
+                if [ -f "$bulk_file" ]; then
+                    cur_lines="$(wc -l < "$bulk_file" 2>/dev/null || echo 0)"
+                fi
                 if [ "${cur_lines:-0}" -lt "${topic_max_items:-10}" ] 2>/dev/null; then
                     printf '%s: %s\n' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-300)" >> "$bulk_file" 2>/dev/null || true
                     chmod 0666 "$bulk_file" 2>/dev/null || true
