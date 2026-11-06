@@ -9013,5 +9013,33 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     )
     assert abs(ada_live_entry["epsilon"] - 2.3e-05) < 1e-09
 
+    # Bug 131: update_microstructure_cycle_deltas does not fabricate phantom d_cvd from >15m-old history when metric is frozen
+    cdir_cd_frozen = tmp_path / "cdir_cd_frozen"
+    cdir_cd_frozen.mkdir(exist_ok=True)
+    (cdir_cd_frozen / "microstructure_cycle_history.json").write_text(
+        json.dumps(
+            {
+                "NVDA_US_EQ": [
+                    {"ts": now_cd - 2400.0, "ob_imbalance": 0.469, "cvd_15m_usd": 218000000.0, "whale_long_pct": 0.4996},
+                    {"ts": now_cd - 1200.0, "ob_imbalance": 0.469, "cvd_15m_usd": -352000000.0, "whale_long_pct": 0.4996},
+                    {"ts": now_cd - 360.0, "ob_imbalance": 0.469, "cvd_15m_usd": -352000000.0, "whale_long_pct": 0.4996},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cd_frozen_map = {
+        "NVDA_US_EQ": {
+            "ob_imbalance": 0.469,
+            "cvd_15m_usd": -352000000.0,
+            "whale_long_pct": 0.4996,
+            "oi_usd": 285000000000.0,
+            "taker_buy_sell_ratio": 0.8351,
+        }
+    }
+    update_microstructure_cycle_deltas(str(cdir_cd_frozen), cd_frozen_map, now_ts=now_cd)
+    assert cd_frozen_map["NVDA_US_EQ"]["cycle_delta"]["cvd_15m_delta_usd"] == 0.0
+
+
 
 

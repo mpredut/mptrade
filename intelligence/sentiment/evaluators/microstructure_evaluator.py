@@ -699,14 +699,14 @@ def _resolve_non_static_prev_metric(
     static_tol: float,
     min_diff: float,
 ) -> Optional[float]:
-    """When `ref_val` is nearly identical to `cur_val`, scan recent history (3m-60m) for the last distinct value."""
+    """When `ref_val` is nearly identical to `cur_val`, scan recent history (3m-15m) for the last distinct value."""
     is_scale_key = key in ("whale_long_pct", "ob_imbalance")
     if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
         for cand in reversed(h_list):
             if not isinstance(cand, dict) or (key == "whale_long_pct" and _is_unnormalized_zero_oi_whale_snap(cand)):
                 continue
             cand_ts = normalize_epoch_sec(safe_pos_float(cand.get("ts"), default=0.0) or 0.0, default=0.0)
-            if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
+            if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 900.0:
                 cand_v = (
                     clean_scale(cand.get(key), default=None, allow_percent=True)
                     if is_scale_key
