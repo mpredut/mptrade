@@ -8717,6 +8717,33 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert "QQQ=$651.92 (-5.79% 24h, closed)" in closed_line
     assert "+0.65% 1h" not in closed_line
 
+    # Equity with options OI normalizes legacy perp_spot_basis_bps to 0.0, rescales <0.176 5m CLV ratio, and omits zero funding/perp_basis
+    nvda_m = load_symbol_microstructure(
+        "",
+        "NVDA_US_EQ",
+        lambda _p: None,
+        ob={"best_bid": 186.15, "best_ask": 186.25, "bid_depth_usd": 472_826_496.0, "ask_depth_usd": 522_399_263.0},
+        deriv={"open_interest_usd": 285_486_813_126.0, "funding_rate": 0.0, "predicted_funding_rate": 0.0, "perp_spot_basis_bps": 49.0},
+        whale={
+            "open_interest_usd": 285_721_421_256.0,
+            "open_interest_1h_change_pct": 0.21,
+            "top_traders_long_pct": 0.4996,
+            "taker_buy_sell_ratio": 1.1479,
+            "taker_buy_vol_usd": 1_697_892_844.83,
+            "taker_sell_vol_usd": 1_479_124_636.85,
+            "taker_ratio_5m": 0.0754,
+            "cvd_5m_usd": -1_163_122_701.0,
+        },
+    )
+    assert nvda_m is not None
+    assert nvda_m["perp_spot_basis_bps"] == 0.0
+    assert nvda_m["taker_ratio_5m"] >= 0.1765
+    assert abs(nvda_m["cvd_5m_usd"]) < 1_000_000_000.0
+    sec_3b_nvda = "\n".join(_format_microstructure_section({"NVDA_US_EQ": nvda_m}, {"NVDA_US_EQ": {"price": 186.2}}))
+    assert "perp_basis=" not in sec_3b_nvda
+    assert "funding=0.0" not in sec_3b_nvda
+    assert "oi_usd=285486813126.0" in sec_3b_nvda
+
 
 
 

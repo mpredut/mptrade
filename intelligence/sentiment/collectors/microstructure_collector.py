@@ -1044,6 +1044,19 @@ def load_symbol_microstructure(
                         m_info["taker_ratio_5m"] = round(0.85 / 0.15, 4)
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr
+    if is_equity_symbol(sym):
+        if m_info.get("perp_spot_basis_bps") is not None:
+            m_info["perp_spot_basis_bps"] = 0.0
+        tr5_eq = safe_pos_float(m_info.get("taker_ratio_5m"), default=None)
+        if tr5_eq is not None and (tr5_eq < 0.176 or tr5_eq > 5.67):
+            clv_old = tr5_eq / (1.0 + tr5_eq)
+            u_bar = max(0.0, min(1.0, (clv_old - 0.05) / 0.90))
+            clv_new = 0.15 + 0.70 * u_bar
+            m_info["taker_ratio_5m"] = round(clv_new / (1.0 - clv_new), 4)
+            cvd5_old = safe_float(m_info.get("cvd_5m_usd"), default=None)
+            if cvd5_old is not None and abs(2.0 * clv_old - 1.0) > 1e-6:
+                vol_5m = abs(cvd5_old) / abs(2.0 * clv_old - 1.0)
+                m_info["cvd_5m_usd"] = round(vol_5m * (2.0 * clv_new - 1.0), 0)
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
         m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
     for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):

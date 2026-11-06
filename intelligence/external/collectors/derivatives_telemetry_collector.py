@@ -129,20 +129,13 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
         put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
         total_opt_contracts = call_oi + put_oi
-        last_bar_fresh = bool(
-            bars
-            and isinstance(bars[-1], (list, tuple))
-            and len(bars[-1]) >= 5
-            and (bar_ts_s := safe_pos_float(bars[-1][0], default=None)) is not None
-            and (now - (bar_ts_s / 1000.0 if bar_ts_s > 1e11 else bar_ts_s)) <= 360.0
-        )
-        idx_px = bars[-1][4] if (last_bar_fresh and total_opt_contracts > 0.0) else mark_px
+        idx_px = mark_px
         oi_shares = total_opt_contracts * 100.0
         oi_usd = round(oi_shares * mark_px, 2)
         call_share = (call_oi / total_opt_contracts) if total_opt_contracts > 0.0 else 0.5
         # Map options call-put skew into an 8h funding-equivalent carry metric
         funding_equiv = round((call_share - 0.5) * 0.0004, 6) + 0.0
-        basis_bps = (round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0) + 0.0
+        basis_bps = 0.0
         telemetry = DerivativesTelemetry(
             symbol=symbol,
             funding_rate=funding_equiv,

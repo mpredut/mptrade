@@ -969,7 +969,7 @@ def _format_microstructure_section(
         basis_sfx = ""
         basis_parts: List[str] = []
         eq_no_oi_3b = sym_is_eq_3b and (_parse_finite_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None and not (eq_no_oi_3b and abs(b_bps) < 1e-9):
+        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None and not (sym_is_eq_3b and abs(b_bps) < 1e-9):
             basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
         if (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None and not (
             sym_is_eq_3b and abs(f_ann) < 1e-9 and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12
@@ -1039,12 +1039,17 @@ def _format_microstructure_section(
             continue
         if sym.endswith("USDC") and b_canon_3b not in rendered_3b_perp_by_base:
             rendered_3b_perp_by_base[b_canon_3b] = (sym, tr_sig[0], tr_sig[1])
+        eq_zero_fund_3b = sym_is_eq_3b and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12
         deriv_oi_sfx = (
             ""
-            if (eq_no_oi_3b and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12)
+            if (eq_no_oi_3b and eq_zero_fund_3b)
             else (
-                f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-                f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                f", oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                if eq_zero_fund_3b
+                else (
+                    f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
+                    f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                )
             )
         )
         lines.append(
