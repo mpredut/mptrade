@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_nonneg_float
+from botcore import normalize_side, safe_nonneg_float
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, resolve_qlimit2_sub_bypasses
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
@@ -25,7 +25,6 @@ from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.state.survival import get_cached_t_entry
 from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
 import order_guard as _og
-from providers.base import normalize_side
 
 logger = logging.getLogger("qlimit_order_guard")
 
@@ -40,14 +39,16 @@ def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optiona
     return _og._resolve_trend_direction(symbol, regime_context=regime_context)
 
 
-def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+def resolve_cached_gaussian_horizon(
+    symbol: str, exceed_percent: float = 0.4
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
     try:
         ent = get_cached_t_entry(symbol)
         if isinstance(ent, dict):
-            p90_d = safe_pos_float(ent.get("p90_d"), 0.0) or None
-            med_d = safe_pos_float(ent.get("median_d"), 0.0) or None
-            t_val = safe_pos_float(ent.get("T"), 0.0) or None
+            p90_d = safe_pos_float(ent.get("p90_d"), None)
+            med_d = safe_pos_float(ent.get("median_d"), None)
+            t_val = safe_pos_float(ent.get("T"), None)
             ex_pct = safe_nonneg_float(exceed_percent, default=0.4)
             if ex_pct is None:
                 ex_pct = 0.4

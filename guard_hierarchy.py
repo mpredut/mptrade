@@ -30,6 +30,14 @@ _CATEGORY_SHORTCUTS: dict[str, str] = {
 }
 
 _GLLM1_SPECIFIC_ALIASES: frozenset[str] = frozenset({"gllm1", "llm_high_stake", "high_stake", "ai"})
+_FALSY_BYPASS_TOKENS: frozenset[str] = frozenset({"none", "off", "false", "no", "0", "n", "f", "null", "nan"})
+_CATEGORY_BYPASS_ALIASES: dict[str, frozenset[str]] = {
+    "operational": frozenset({"operational", "go"}),
+    "trend": frozenset({"trend", "gt"}),
+    "profit": frozenset({"profit", "g_prof", "gf", "financial", "profit_guard"}),
+    "qlimit": frozenset({"qlimit", "g_qlimit", "gf", "financial"}),
+    "intelligence": frozenset({"intelligence", "gi", "microstructure"}),
+}
 
 
 def _is_llm_category_bypass(tokens: set[str]) -> bool:
@@ -49,11 +57,10 @@ class BaseGuard(ABC):
     def _extract_raw_bypass_tokens(bypassed_guards: Any) -> list[str]:
         if not bypassed_guards:
             return []
-        if bypassed_guards is True or bypassed_guards == "all" or bypassed_guards == "*":
+        if bypassed_guards is True or bypassed_guards in ("all", "*"):
             return ["all"]
         if isinstance(bypassed_guards, BaseGuard):
             return [bypassed_guards.code.lower()]
-        _falsy = {"none", "off", "false", "no", "0", "n", "f", "null", "nan"}
         items = (
             [bypassed_guards]
             if isinstance(bypassed_guards, str)
@@ -68,7 +75,7 @@ class BaseGuard(ABC):
             elif x and not isinstance(x, bool):
                 for p in str(x).replace(";", ",").split(","):
                     ps = p.strip().lower()
-                    if ps and ps not in _falsy:
+                    if ps and ps not in _FALSY_BYPASS_TOKENS:
                         out.append(ps)
         return out
 
@@ -76,28 +83,23 @@ class BaseGuard(ABC):
     def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
         return set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
 
+    def add_tokens_to(self, target: set[str]) -> None:
+        """Add this guard's lowercase code, canonical name, and aliases to ``target``."""
+        target.update(self.aliases)
+        target.add(self.canonical)
+        target.add(self.code.lower())
+
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
         """Return whether this guard is bypassed by the given set of active bypass keys."""
         low = self._coerce_bypass_set(bypassed_guards)
         if not low:
             return False
-        cat_aliases = {self.category}
-        if self.category == "operational":
-            cat_aliases.add("go")
-        elif self.category == "trend":
-            cat_aliases.add("gt")
-        elif self.category == "profit":
-            cat_aliases.update({"g_prof", "gf", "financial", "profit_guard"})
-        elif self.category == "qlimit":
-            cat_aliases.update({"g_qlimit", "gf", "financial"})
-            if self.code == "G_QLIMIT1":
-                cat_aliases.add("profit_guard")
-        elif self.category == "intelligence":
-            cat_aliases.update({"gi", "microstructure"})
+        cat_aliases = _CATEGORY_BYPASS_ALIASES.get(self.category, frozenset({self.category}))
         return bool(
             "all" in low
             or "*" in low
             or bool(low.intersection(cat_aliases))
+            or (self.code == "G_QLIMIT1" and "profit_guard" in low)
             or self.code.lower() in low
             or self.canonical in low
             or bool(low.intersection(self.aliases))
@@ -108,7 +110,7 @@ class BaseGuard(ABC):
             "code": self.code,
             "canonical": self.canonical,
             "category": self.category,
-            "aliases": sorted(list(self.aliases)),
+            "aliases": sorted(self.aliases),
             "description": self.description,
         }
 
@@ -348,9 +350,7 @@ def normalize_bypassed_guards(
       - Master bypass: 'all' or '*' (bypasses all guards for emergency exits)
     """
     bypassed: set[str] = set()
-    raw_tokens = BaseGuard._extract_raw_bypass_tokens(bypass_guards)
-
-    for token in raw_tokens:
+    for token in BaseGuard._extract_raw_bypass_tokens(bypass_guards):
         if token in _ALL_GUARD_ALIASES:
             bypassed.add(token)
         else:
@@ -359,11 +359,6 @@ def normalize_bypassed_guards(
                 f"known guards are {', '.join(g.code for g in GUARD_INSTANCES)}"
             )
 
-    def _add_guard_tokens(g: BaseGuard) -> None:
-        bypassed.update(g.aliases)
-        bypassed.add(g.canonical)
-        bypassed.add(g.code.lower())
-
     # Expand master bypass ('all' or '*')
     if "all" in bypassed or "*" in bypassed:
         bypassed.update({
@@ -371,7 +366,7 @@ def normalize_bypassed_guards(
             "profit", "qlimit", "financial", "intelligence", "llm", "gllm",
         })
         for g in GUARD_INSTANCES:
-            _add_guard_tokens(g)
+            g.add_tokens_to(bypassed)
 
     # Distinguish category-wide 'llm' / 'gllm' from GLLM1's 'llm' alias when re-normalizing
     llm_category_requested = _is_llm_category_bypass(bypassed)
@@ -388,18 +383,18 @@ def normalize_bypassed_guards(
             if cat_name == "llm":
                 bypassed.add("gllm")
             for g in cat_guards:
-                _add_guard_tokens(g)
+                g.add_tokens_to(bypassed)
 
     # Expand composite profit_guard (G_PROF: math_profit + G_QLIMIT1: quantity_policy)
     if "profit_guard" in bypassed:
         bypassed.add("profit_guard")
         for code in ("G_PROF", "G_QLIMIT1"):
-            _add_guard_tokens(GUARD_REGISTRY[code])
+            GUARD_REGISTRY[code].add_tokens_to(bypassed)
 
     # Expand any individual token to include its canonical name and all alias variations
     for g in GUARD_INSTANCES:
         if bypassed.intersection(g.aliases) or g.code.lower() in bypassed:
-            _add_guard_tokens(g)
+            g.add_tokens_to(bypassed)
 
     return bypassed
 
@@ -424,22 +419,17 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     bypassed.clear()
     bypassed.update(lowered_existing)
 
-    def _add_guard_tokens(guard_obj: GuardSpec) -> None:
-        bypassed.add(guard_obj.code.lower())
-        bypassed.add(guard_obj.canonical)
-        bypassed.update(guard_obj.aliases)
-
     # 1. If master bypass ('all' or '*') was active, expand all sibling guards before revoking target
     if bypassed.intersection({"all", "*"}):
         for s in GUARD_INSTANCES:
             if s.code != g.code:
-                _add_guard_tokens(s)
+                s.add_tokens_to(bypassed)
         bypassed.difference_update({"all", "*"})
 
     # 2. If composite 'profit_guard' (G_PROF + G_QLIMIT1) was active and target is one of them, preserve sibling
     if g.code in ("G_PROF", "G_QLIMIT1") and "profit_guard" in bypassed:
         sibling_spec = GUARD_REGISTRY["G_QLIMIT1"] if g.code == "G_PROF" else GUARD_REGISTRY["G_PROF"]
-        _add_guard_tokens(sibling_spec)
+        sibling_spec.add_tokens_to(bypassed)
         bypassed.discard("profit_guard")
 
     # 3. If composite 'financial' ('gf') category was active, preserve sibling financial guards
@@ -447,20 +437,17 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
         if bypassed.intersection({"financial", "gf"}):
             for s in GUARD_CATEGORIES["financial"]:
                 if s.code != g.code:
-                    _add_guard_tokens(s)
+                    s.add_tokens_to(bypassed)
         bypassed.difference_update({"financial", "gf"})
 
     # 4. If target's category bypass was active, preserve sibling guards in that category
     cat_shortcuts = {sc for sc, cat in _CATEGORY_SHORTCUTS.items() if cat == g.category}
     cat_tokens = {g.category} | cat_shortcuts
-    if g.category == "llm":
-        cat_active = _is_llm_category_bypass(bypassed)
-    else:
-        cat_active = bool(bypassed.intersection(cat_tokens))
+    cat_active = _is_llm_category_bypass(bypassed) if g.category == "llm" else bool(bypassed.intersection(cat_tokens))
     if cat_active:
         for s in GUARD_CATEGORIES.get(g.category, ()):
             if s.code != g.code:
-                _add_guard_tokens(s)
+                s.add_tokens_to(bypassed)
     bypassed.difference_update(g.aliases)
     bypassed.discard(g.canonical)
     bypassed.discard(g.code.lower())

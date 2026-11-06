@@ -14,9 +14,12 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from botcore import (
+    _clean_single_order_id as _clean_id,
     _parse_bool_flag,
+    check_cooldown_gate,
     exact_pos_int,
     load_root_config,
+    normalize_side,
     obj_attr as _regime_attr,
     register_module_aliases,
     required_float_env,
@@ -27,15 +30,13 @@ from botcore import (
     sanitize_pipe_field,
 )
 from notify_engine import alertnotifiers as alert
-from providers.base import (
-    _clean_single_order_id as _clean_id,
+from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
     extract_orig_qty,
     extract_remaining_qty,
-    normalize_side,
 )
 from providers.strategy_executor import (
     OrderStatus,
@@ -613,12 +614,9 @@ def complete_accepted_claim(
     )
     print(f"CRITICAL: accepted order tracking could not be persisted: {detail}")
     dedup_key = (str(provider_name or ""), str(symbol or ""), str(side or ""), str(order_id or client_order_id or ""))
-    now_mono = time.monotonic()
-    last_alert_ts = _ALERTED_PERSISTENCE_FAILURES.get(dedup_key)
-    if last_alert_ts is None or (now_mono - last_alert_ts) >= _PERSISTENCE_ALERT_COOLDOWN_SEC:
-        _ALERTED_PERSISTENCE_FAILURES[dedup_key] = now_mono
-        while len(_ALERTED_PERSISTENCE_FAILURES) > 1000:
-            _ALERTED_PERSISTENCE_FAILURES.pop(next(iter(_ALERTED_PERSISTENCE_FAILURES)), None)
+    if check_cooldown_gate(
+        _ALERTED_PERSISTENCE_FAILURES, dedup_key, time.monotonic(), _PERSISTENCE_ALERT_COOLDOWN_SEC, 1000
+    ):
         alert.notify(
             title="🛑 CRITICAL accepted order tracking persistence failure",
             body=detail,
@@ -633,7 +631,7 @@ def complete_accepted_claim(
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
-_INVALID_LOG_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
+_INVALID_LOG_STRINGS = frozenset({"nan", "null", "none", "inf", "-inf", "+inf"})
 
 
 def _sanitize_outcome_field(value):
@@ -647,10 +645,7 @@ def _sanitize_outcome_field(value):
 
 
 def _clean_numeric_field(value):
-    if isinstance(value, (dict, list, tuple, set, frozenset)):
-        return ""
-    f = safe_float(value, default=None)
-    if f is None:
+    if isinstance(value, (dict, list, tuple, set, frozenset)) or safe_float(value, default=None) is None:
         return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
@@ -719,8 +714,7 @@ def log_order_outcome(
                 _clean_bool_field(_regime_attr(regime_context, "fallback_used", None)),
                 _clean_regime_str(_regime_attr(regime_context, "reason", "")),
             ])
-        line = "|".join(sanitize_pipe_field(c) for c in cols)
-        append_text_line(path, line)
+        append_text_line(path, "|".join(sanitize_pipe_field(c) for c in cols))
     except Exception as e:
         print(f"[log_order_outcome] error writing outcomes log: {e}")
 
@@ -735,16 +729,11 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     side = extract_order_side(order) or "SELL"
     price = extract_order_price(order, default=0.0)
     qty = safe_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
-    level_f = safe_pos_float(order.get("level"), default=0.0)
-    level = level_f if level_f > 0.0 else None
+    level = safe_pos_float(order.get("level"), default=None)
     raw_kind = order.get("kind")
     kind = (
         raw_kind.strip()
-        if (
-            isinstance(raw_kind, str)
-            and raw_kind.strip()
-            and raw_kind.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        )
+        if isinstance(raw_kind, str) and raw_kind.strip() and raw_kind.strip().lower() not in _INVALID_LOG_STRINGS
         else ("TP" if side == "SELL" else "ENTRY")
     )
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0

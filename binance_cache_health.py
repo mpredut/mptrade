@@ -17,14 +17,12 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     exact_int,
-    exact_nonneg_int,
     exact_pos_int,
     load_dotenv,
     normalize_class_name,
     require_int,
     require_pos_float,
     required_float_env,
-    resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -41,19 +39,21 @@ def _positive_finite(value: float, name: str) -> float:
     return require_pos_float(value, name)
 
 
-MAX_AGE_SEC = _positive_finite(
+MAX_AGE_SEC = require_pos_float(
     required_float_env("CM_BINANCE_ACCOUNT_CACHE_MAX_AGE_SEC"),
-    "CM_BINANCE_ACCOUNT_CACHE_MAX_AGE_SEC")
-SUBMIT_PERMIT_TTL_SEC = _positive_finite(
+    "CM_BINANCE_ACCOUNT_CACHE_MAX_AGE_SEC",
+)
+SUBMIT_PERMIT_TTL_SEC = require_pos_float(
     required_float_env("CM_BINANCE_ACCOUNT_CACHE_PERMIT_TTL_SEC"),
-    "CM_BINANCE_ACCOUNT_CACHE_PERMIT_TTL_SEC")
+    "CM_BINANCE_ACCOUNT_CACHE_PERMIT_TTL_SEC",
+)
 if SUBMIT_PERMIT_TTL_SEC >= MAX_AGE_SEC:
     raise ValueError("account-cache permit TTL must be below cache maximum age")
 
 SCHEMA_VERSION = 2
-HEALTH_PATH = os.path.join(
-    _ROOT, "cachedb", "binance_account_cache_health.json")
+HEALTH_PATH = os.path.join(_ROOT, "cachedb", "binance_account_cache_health.json")
 _PROCESS_IDENTITY_REQUIRED = sys.platform.startswith("linux")
+_DEAD_PROC_STATES = frozenset({"Z", "X", "x"})
 _SYNC_FIELDS = {
     "Order": ("order_sync_at_ms", "order_cache_version"),
     "CacheOrder": ("order_sync_at_ms", "order_cache_version"),
@@ -68,11 +68,7 @@ class AccountCacheNotReady(RuntimeError):
     """The shared Binance account snapshot cannot authorize a live submit."""
 
     def __init__(self, reason: str):
-        self.reason = (
-            reason.strip()
-            if isinstance(reason, str) and reason.strip()
-            else "account_cache_not_fresh"
-        )
+        self.reason = reason.strip() if isinstance(reason, str) and reason.strip() else "account_cache_not_fresh"
         super().__init__(self.reason)
 
 
@@ -97,20 +93,22 @@ _writer_state: dict = {}
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
+
+def _proc_stat_fields(stat: str) -> Optional[list[str]]:
+    """Return fields after the command name in `/proc/<pid>/stat`, or None if malformed."""
+    rparen = stat.rfind(")") if stat else -1
+    return stat[rparen + 1:].split() if rparen >= 0 else None
+
+
 def _pid_started_at_ms(pid: int) -> Optional[int]:
     """Return the Linux process start time, or None when it is unavailable."""
     pid_val = exact_pos_int(pid, default=None)
     if pid_val is None:
         return None
     try:
-        stat = read_text_file(f"/proc/{pid_val}/stat")
-        # The command name can contain spaces and parentheses. Fields after the final
-        # closing parenthesis start at field 3; process start ticks are field 22.
-        rparen = stat.rfind(")")
-        if rparen < 0:
-            return None
-        fields = stat[rparen + 1:].split()
-        if len(fields) <= 19 or fields[0] in {"Z", "X", "x"}:
+        # Fields after the final ')' start at field 3; process start ticks are field 22 (index 19).
+        fields = _proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"))
+        if not fields or len(fields) <= 19 or fields[0] in _DEAD_PROC_STATES:
             return None
         start_ticks = int(fields[19])
         if start_ticks <= 0:
@@ -118,11 +116,8 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         proc_lines = read_text_lines("/proc/stat")
         if not proc_lines:
             return None
-        boot_seconds = next(
-            int(line.split()[1]) for line in proc_lines if line.startswith("btime ")
-        )
-        ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
-        return int((boot_seconds + start_ticks / ticks_per_second) * 1000)
+        boot_seconds = next(int(line.split()[1]) for line in proc_lines if line.startswith("btime "))
+        return int((boot_seconds + start_ticks / int(os.sysconf("SC_CLK_TCK"))) * 1000)
     except (OSError, StopIteration, TypeError, ValueError, IndexError):
         return None
 
@@ -131,8 +126,7 @@ def _clean_now_ms(now_ms: Optional[int]) -> int:
     return safe_pos_int(now_ms, default=None) or _now_ms()
 
 
-def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
-                  now_ms: Optional[int] = None) -> None:
+def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:
     """Enable the sole cacheManager writer and invalidate the old generation."""
     global _writer_enabled, _writer_path, _writer_state
     timestamp = _clean_now_ms(now_ms)
@@ -143,8 +137,7 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
             _writer_state = {}
-            raise AccountCacheNotReady(
-                "account_cache_writer_identity_unavailable")
+            raise AccountCacheNotReady("account_cache_writer_identity_unavailable")
         _writer_state = {
             "schema_version": SCHEMA_VERSION,
             "writer_pid": writer_pid,
@@ -182,19 +175,11 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
 
 
 def _publish_locked() -> None:
-    atomic_write_json(
-        _writer_path,
-        _writer_state,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
 
 
-def _normalize_cache_name(cache_name: object) -> str:
-    return normalize_class_name(cache_name)
-
-
-_INVALID_VERSION_STRINGS = {"", "nan", "null", "none", "inf", "-inf", "+inf"}
+_normalize_cache_name = normalize_class_name
+_INVALID_VERSION_STRINGS = frozenset({"", "nan", "null", "none", "inf", "-inf", "+inf"})
 
 
 def _clean_version_str(value: object) -> str:
@@ -213,9 +198,7 @@ def _record_cache_version(
 ) -> bool:
     norm_name = _normalize_cache_name(cache_name)
     version = _clean_version_str(data_version)
-    if not norm_name or not version:
-        return False
-    fields = _SYNC_FIELDS.get(norm_name)
+    fields = _SYNC_FIELDS.get(norm_name) if (norm_name and version) else None
     if fields is None:
         return False
     sync_field, version_field = fields
@@ -236,20 +219,14 @@ def _record_cache_version(
     return True
 
 
-def record_successful_sync(cache_name: str, data_version: str, *,
-                           now_ms: Optional[int] = None) -> bool:
+def record_successful_sync(cache_name: str, data_version: str, *, now_ms: Optional[int] = None) -> bool:
     """Publish one complete, persisted Order or Trade reconciliation success."""
-    return _record_cache_version(
-        cache_name, data_version, now_ms=now_ms, update_sync=True
-    )
+    return _record_cache_version(cache_name, data_version, now_ms=now_ms, update_sync=True)
 
 
-def record_persisted_version(cache_name: str, data_version: str, *,
-                             now_ms: Optional[int] = None) -> bool:
+def record_persisted_version(cache_name: str, data_version: str, *, now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
-    return _record_cache_version(
-        cache_name, data_version, now_ms=now_ms, update_sync=False
-    )
+    return _record_cache_version(cache_name, data_version, now_ms=now_ms, update_sync=False)
 
 
 def _exact_int(value: Any) -> Optional[int]:
@@ -265,8 +242,8 @@ def _nonnegative_int(value, field: str) -> int:
 
 
 def _pid_is_alive(pid: int) -> bool:
-    pid_val = _exact_int(pid)
-    if pid_val is None or pid_val <= 0:
+    pid_val = exact_pos_int(pid, default=None)
+    if pid_val is None:
         return False
     try:
         os.kill(pid_val, 0)
@@ -274,23 +251,19 @@ def _pid_is_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, OverflowError, ValueError, TypeError, OSError):
         return False
-    stat = read_text_file(f"/proc/{pid_val}/stat")
-    if stat:
-        rparen = stat.rfind(")")
-        if rparen >= 0:
-            fields = stat[rparen + 1:].split()
-            if fields and fields[0] in {"Z", "X", "x"}:
-                return False
-    return True
+    fields = _proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"))
+    return not (fields and fields[0] in _DEAD_PROC_STATES)
 
 
-def inspect_health(*, path: str = HEALTH_PATH,
-                   now_ms: Optional[int] = None,
-                   max_age_sec: float = MAX_AGE_SEC,
-                   pid_is_alive: Callable[[int], bool] = _pid_is_alive,
-                   pid_started_at_ms: Callable[
-                       [int], Optional[int]] = _pid_started_at_ms,
-                   future_tolerance_sec: float = 5.0) -> CacheHealthStatus:
+def inspect_health(
+    *,
+    path: str = HEALTH_PATH,
+    now_ms: Optional[int] = None,
+    max_age_sec: float = MAX_AGE_SEC,
+    pid_is_alive: Callable[[int], bool] = _pid_is_alive,
+    pid_started_at_ms: Callable[[int], Optional[int]] = _pid_started_at_ms,
+    future_tolerance_sec: float = 5.0,
+) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
     eff_path = str(resolve_cachedb_filepath(path))
     try:
@@ -299,17 +272,14 @@ def inspect_health(*, path: str = HEALTH_PATH,
             return CacheHealthStatus(False, "account_cache_schema_mismatch")
 
         writer_pid = _positive_int(state.get("writer_pid"), "writer_pid")
-        writer_started_ms = _positive_int(
-            state.get("writer_started_at_ms"), "writer_started_at_ms")
+        writer_started_ms = _positive_int(state.get("writer_started_at_ms"), "writer_started_at_ms")
         generation = _nonnegative_int(state.get("generation"), "generation")
         _positive_int(state.get("published_at_ms"), "published_at_ms")
         stopping = state.get("stopping")
         if not isinstance(stopping, bool):
             raise ValueError("invalid stopping")
-        order_sync_ms = _nonnegative_int(
-            state.get("order_sync_at_ms"), "order_sync_at_ms")
-        trade_sync_ms = _nonnegative_int(
-            state.get("trade_sync_at_ms"), "trade_sync_at_ms")
+        order_sync_ms = _nonnegative_int(state.get("order_sync_at_ms"), "order_sync_at_ms")
+        trade_sync_ms = _nonnegative_int(state.get("trade_sync_at_ms"), "trade_sync_at_ms")
         order_version = state.get("order_cache_version")
         trade_version = state.get("trade_cache_version")
         if not isinstance(order_version, str) or not isinstance(trade_version, str):
@@ -317,8 +287,7 @@ def inspect_health(*, path: str = HEALTH_PATH,
         order_version = _clean_version_str(order_version)
         trade_version = _clean_version_str(trade_version)
         initializing = (
-            generation < 2 or not order_sync_ms or not trade_sync_ms
-            or not order_version or not trade_version
+            generation < 2 or not order_sync_ms or not trade_sync_ms or not order_version or not trade_version
         )
     except FileNotFoundError:
         return CacheHealthStatus(False, "account_cache_health_missing")
@@ -329,10 +298,8 @@ def inspect_health(*, path: str = HEALTH_PATH,
         return CacheHealthStatus(False, "account_cache_writer_not_running")
     observed_start_ms = pid_started_at_ms(writer_pid)
     if _PROCESS_IDENTITY_REQUIRED and observed_start_ms is None:
-        return CacheHealthStatus(
-            False, "account_cache_writer_identity_unavailable")
-    if (observed_start_ms is not None
-            and abs(observed_start_ms - writer_started_ms) > 2_000):
+        return CacheHealthStatus(False, "account_cache_writer_identity_unavailable")
+    if observed_start_ms is not None and abs(observed_start_ms - writer_started_ms) > 2_000:
         return CacheHealthStatus(False, "account_cache_writer_identity_changed")
     if stopping:
         return CacheHealthStatus(False, "account_cache_writer_stopping")
@@ -341,24 +308,18 @@ def inspect_health(*, path: str = HEALTH_PATH,
 
     current_ms = _clean_now_ms(now_ms)
     max_age_val = safe_pos_float(max_age_sec, default=MAX_AGE_SEC)
-    tol_sec = safe_nonneg_float(future_tolerance_sec, default=5.0)
-    future_tolerance_ms = int(tol_sec * 1000)
+    future_tolerance_ms = int(safe_nonneg_float(future_tolerance_sec, default=5.0) * 1000)
 
-    if (order_sync_ms > current_ms + future_tolerance_ms
-            or trade_sync_ms > current_ms + future_tolerance_ms):
-        return CacheHealthStatus(
-            False, "account_cache_timestamp_in_future")
+    if order_sync_ms > current_ms + future_tolerance_ms or trade_sync_ms > current_ms + future_tolerance_ms:
+        return CacheHealthStatus(False, "account_cache_timestamp_in_future")
 
     order_age = max(0.0, (current_ms - order_sync_ms) / 1000.0)
     trade_age = max(0.0, (current_ms - trade_sync_ms) / 1000.0)
     if order_age > max_age_val:
-        return CacheHealthStatus(
-            False, "order_cache_stale", order_age, trade_age)
+        return CacheHealthStatus(False, "order_cache_stale", order_age, trade_age)
     if trade_age > max_age_val:
-        return CacheHealthStatus(
-            False, "trade_cache_stale", order_age, trade_age)
-    return CacheHealthStatus(
-        True, "", order_age, trade_age, order_version, trade_version)
+        return CacheHealthStatus(False, "trade_cache_stale", order_age, trade_age)
+    return CacheHealthStatus(True, "", order_age, trade_age, order_version, trade_version)
 
 
 def require_fresh_account_cache(**kwargs) -> CacheHealthStatus:

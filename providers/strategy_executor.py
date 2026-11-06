@@ -14,7 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, runtime_checkable
 
-from botcore import exact_int, exact_nonneg_int, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    clean_order_id,
+    exact_int,
+    exact_nonneg_int,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 
 class ProviderError(Exception):
@@ -204,30 +211,28 @@ class OrderReconciliationCapabilities:
 
     def __post_init__(self):
         for field_name in (
-                "lookup_by_client_order_id", "status_by_order_id",
-                "cancel_by_order_id", "list_open_orders"):
+            "lookup_by_client_order_id",
+            "status_by_order_id",
+            "cancel_by_order_id",
+            "list_open_orders",
+        ):
             if type(getattr(self, field_name)) is not bool:
                 raise TypeError(f"{field_name} capability must be bool")
         horizon = self.not_found_reliable_for_seconds
         if horizon is None:
             return
-        if isinstance(horizon, bool):
-            raise TypeError(
-                "not_found_reliable_for_seconds must be a positive number")
+        if isinstance(horizon, bool) or not isinstance(horizon, (int, float, str)):
+            raise TypeError("not_found_reliable_for_seconds must be a positive number")
         try:
-            horizon = float(horizon)
+            horizon_f = float(horizon)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise TypeError(
-                "not_found_reliable_for_seconds must be a positive number"
-            ) from exc
-        horizon = safe_pos_float(horizon, default=None)
-        if horizon is None:
-            raise ValueError(
-                "not_found_reliable_for_seconds must be finite and > 0")
+            raise TypeError("not_found_reliable_for_seconds must be a positive number") from exc
+        horizon_pos = safe_pos_float(horizon_f, default=None)
+        if horizon_pos is None:
+            raise ValueError("not_found_reliable_for_seconds must be finite and > 0")
         if not self.lookup_by_client_order_id:
-            raise ValueError(
-                "a NOT_FOUND reliability horizon requires client-ID lookup")
-        object.__setattr__(self, "not_found_reliable_for_seconds", horizon)
+            raise ValueError("a NOT_FOUND reliability horizon requires client-ID lookup")
+        object.__setattr__(self, "not_found_reliable_for_seconds", horizon_pos)
 
 
 def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
@@ -242,7 +247,7 @@ def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
     return capabilities
 
 
-from .order_ohlc_utils import clean_order_id, extract_order_id, extract_orig_qty  # noqa: E402
+from .order_ohlc_utils import extract_order_id, extract_orig_qty  # noqa: E402
 
 # Compatibility alias retained for existing imports.
 extract_order_qty = extract_orig_qty

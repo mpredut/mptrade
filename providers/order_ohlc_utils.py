@@ -6,9 +6,13 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
+    _clean_single_order_id,
     _parse_bool_flag,
+    clean_order_id,
+    clean_order_id_str,
     exact_pos_int,
     normalize_epoch_sec,
+    normalize_scalar_order_id,
     normalize_side,
     obj_attr,
     resolve_now_ts,
@@ -100,48 +104,6 @@ def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[
 def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
     """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
-
-
-_INVALID_OID_STRINGS = frozenset({
-    "0", "0.0", "-0", "+0", "+0.0", "-0.0",
-    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
-    "none", "null",
-})
-
-
-def clean_order_id(val: Any) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, (int, float)):
-        val = exact_pos_int(val, default=None)
-        if val is None:
-            return None
-    if not isinstance(val, (str, int)):
-        return None
-    text = str(val).strip()
-    if not text or text.startswith("-") or text.lower() in _INVALID_OID_STRINGS:
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
-        text = text[:-2]
-    if text in {"0", "+0"}:
-        return None
-    return text[1:] if text.startswith("+") and text[1:].isdigit() else text
-
-
-_clean_single_order_id = clean_order_id
-
-
-def clean_order_id_str(val: Any) -> str:
-    """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
-    return clean_order_id(val) or ""
-
-
-def normalize_scalar_order_id(val: Any) -> int | str | None:
-    """Normalize a scalar order ID, preserving positive integers as ``int`` and string IDs as ``str``."""
-    cleaned = clean_order_id(val)
-    if cleaned is None:
-        return None
-    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:

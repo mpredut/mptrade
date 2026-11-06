@@ -13,9 +13,15 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _clean_single_order_id,
+    _parse_bool_flag,
+    normalize_side,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import legacy_filenames_for, normalize_venue_name, resolve_cachedb_filepath
-from providers.base import _clean_single_order_id, normalize_side
 from state_io import read_json_file, read_jsonl_records, read_recovering_previous
 
 
@@ -38,17 +44,12 @@ DEFAULT_SOURCES = (
     StateSource("hyperliquid", "hyperliquid/.state_*.json"),
 )
 
-_TERMINAL = {
-    "closed",
-    "filled",
-    "canceled",
-    "cancelled",
-    "expired",
-    "rejected",
-    "refused",
-    "refused_before_submit",
-}
-_INVALID_SCALAR_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
+_TERMINAL = frozenset({
+    "closed", "filled", "canceled", "cancelled", "expired",
+    "rejected", "refused", "refused_before_submit",
+})
+_INVALID_SCALAR_STRINGS = frozenset({"nan", "null", "none", "inf", "-inf", "+inf"})
+_STATUS_FIELDS = ("last_status", "status", "lifecycle", "submission_outcome", "submit_status")
 
 
 def _is_backup(path: str) -> bool:
@@ -75,16 +76,13 @@ def _first(row: dict, *names):
 
 
 def _resolve_symbol_and_venue(payload: dict, inherited: dict, owner: str) -> tuple[str | None, str]:
-    symbol = (_first(payload, "symbol", "ticker", "pair")
-              or _first(inherited, "symbol", "ticker", "pair"))
-    raw_venue = (_first(payload, "provider_name", "venue") or _first(inherited, "venue")
-                 or owner.split("_", 1)[0])
+    symbol = _first(payload, "symbol", "ticker", "pair") or _first(inherited, "symbol", "ticker", "pair")
+    raw_venue = _first(payload, "provider_name", "venue") or _first(inherited, "venue") or owner.split("_", 1)[0]
     venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
     return (None if symbol is None else str(symbol), str(venue))
 
 
-def _intent_row(row: dict, *, owner: str, source: str, location: str,
-                inherited: dict) -> dict | None:
+def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited: dict) -> dict | None:
     if _parse_bool_flag(row.get("active"), True) is False:
         return None
     place_kwargs = row.get("place_kwargs")
@@ -94,26 +92,26 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     intent_id = _clean_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol", "sz", "size")
-    qty_f = safe_pos_float(quantity, default=None)
-    if not intent_id or not side or isinstance(side, bool) or qty_f is None:
+    if not intent_id or not side or isinstance(side, bool) or safe_pos_float(quantity, default=None) is None:
         return None
     side_str = normalize_side(side)
     if side_str not in {"BUY", "SELL"}:
         return None
-    for status_field in ("last_status", "status", "lifecycle", "submission_outcome", "submit_status"):
+    first_status = None
+    for status_field in _STATUS_FIELDS:
         field_val = _first(row, status_field)
-        if field_val is not None and str(field_val).strip().lower() in _TERMINAL:
-            return None
-    status = str(_first(
-        row, "last_status", "status", "lifecycle", "submission_outcome", "submit_status",
-    ) or ("accepted" if order_id else "pending")).strip().lower()
+        if field_val is not None:
+            norm_st = str(field_val).strip().lower()
+            if norm_st in _TERMINAL:
+                return None
+            if first_status is None:
+                first_status = norm_st
+    status = first_status or ("accepted" if order_id else "pending")
     terminal_payload = row.get("terminal_status")
     if isinstance(terminal_payload, dict):
         status = str(_first(terminal_payload, "status") or status).strip().lower()
-    elif isinstance(terminal_payload, str):
-        ts_val = _first(row, "terminal_status")
-        if ts_val:
-            status = str(ts_val).strip().lower()
+    elif isinstance(terminal_payload, str) and (ts_val := _first(row, "terminal_status")):
+        status = str(ts_val).strip().lower()
     if status in _TERMINAL:
         return None
     symbol, venue = _resolve_symbol_and_venue(row, inherited, owner)
@@ -135,35 +133,25 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     }
 
 
-def _walk(value, *, owner: str, source: str, location: str = "$",
-          inherited: dict | None = None) -> Iterable[dict]:
+def _walk(
+    value, *, owner: str, source: str, location: str = "$", inherited: dict | None = None
+) -> Iterable[dict]:
     inherited = dict(inherited or {})
     if isinstance(value, dict):
         if _parse_bool_flag(value.get("terminal"), False) is True:
             return
         next_context = dict(inherited)
         for key in ("symbol", "ticker", "pair", "venue", "provider_name"):
-            val_k = _first(value, key)
-            if val_k is not None:
+            if (val_k := _first(value, key)) is not None:
                 next_context["venue" if key == "provider_name" else key] = val_k
-        row = _intent_row(
-            value, owner=owner, source=source, location=location,
-            inherited=next_context,
-        )
-        if row is not None:
+        if (row := _intent_row(value, owner=owner, source=source, location=location, inherited=next_context)) is not None:
             yield row
         for key, child in value.items():
             if isinstance(child, (dict, list)):
-                yield from _walk(
-                    child, owner=owner, source=source,
-                    location=f"{location}.{key}", inherited=next_context,
-                )
+                yield from _walk(child, owner=owner, source=source, location=f"{location}.{key}", inherited=next_context)
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            yield from _walk(
-                child, owner=owner, source=source,
-                location=f"{location}[{index}]", inherited=inherited,
-            )
+            yield from _walk(child, owner=owner, source=source, location=f"{location}[{index}]", inherited=inherited)
 
 
 def _read(path: str, *, json_lines: bool):
@@ -174,28 +162,23 @@ def _read(path: str, *, json_lines: bool):
 
 def _path_context(path: str) -> dict:
     name = os.path.basename(path)
-    if name.startswith(".state_") and name.endswith(".json"):
-        return {"symbol": name[len(".state_"):-len(".json")]}
-    return {}
+    return {"symbol": name[len(".state_"):-len(".json")]} if name.startswith(".state_") and name.endswith(".json") else {}
 
 
-def _extract_exposure(payload: dict, *, owner: str, source: str,
-                      inherited: dict) -> dict | None:
+def _extract_exposure(payload: dict, *, owner: str, source: str, inherited: dict) -> dict | None:
     if not isinstance(payload, dict):
         return None
     qty_val = safe_float(payload.get("qty"), default=None)
     if qty_val is None or abs(qty_val) < 1e-9:
         return None
-    cost_val = safe_nonneg_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
-    entry_price_val = safe_pos_float(payload.get("entry_price"), default=None)
     symbol, venue = _resolve_symbol_and_venue(payload, inherited, owner)
     return {
         "owner": owner,
         "venue": venue,
         "symbol": symbol,
         "qty": qty_val,
-        "cost": cost_val,
-        "entry_price": entry_price_val,
+        "cost": safe_nonneg_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None),
+        "entry_price": safe_pos_float(payload.get("entry_price"), default=None),
         "entry_ts": _first(payload, "entry_ts"),
         "source": source,
     }

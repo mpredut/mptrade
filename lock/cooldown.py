@@ -13,16 +13,25 @@ deadlocks under the lock. State persists; the lock does not.
             s.commit(order_id=123)        # Success keeps the cooldown active.
         # Otherwise exit automatically releases the reservation.
 """
-import configparser
 import contextlib
 import multiprocessing
 import os
 import socket
-import sys
 import threading
 import time
 
-from botcore import _parse_bool_flag, clean_json_value, exact_pos_int, load_ini_config, register_module_aliases, safe_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    clean_json_value,
+    clean_order_id,
+    exact_pos_int,
+    load_ini_config,
+    normalize_scalar_order_id,
+    normalize_side,
+    register_module_aliases,
+    safe_float,
+    safe_pos_float,
+)
 from cachepaths import resolve_cachedb_filepath
 from state_io import read_json_dict, save_json_state
 
@@ -65,17 +74,13 @@ class FileLock:
             self._fd = None
 
 
-
 def _is_active_entry(last, now: float, ttl: float) -> bool:
     if not isinstance(last, dict):
         return False
     ts = safe_float(last.get("timestamp"), None)
     ttl_f = safe_float(ttl, None)
     now_f = safe_float(now, None)
-    if ts is None or ttl_f is None or now_f is None:
-        return False
-    age = now_f - ts
-    return 0.0 <= age < ttl_f
+    return ts is not None and ttl_f is not None and now_f is not None and 0.0 <= (now_f - ts) < ttl_f
 
 
 def _sanitize_json_payload(value):
@@ -86,39 +91,30 @@ _as_bool_flag = _parse_bool_flag
 
 
 def _safe_list(val) -> list:
-    if isinstance(val, (list, tuple, set, frozenset)):
-        return list(val)
-    return []
+    return list(val) if isinstance(val, (list, tuple, set, frozenset)) else []
 
 
 def _safe_dict(val) -> dict:
-    if isinstance(val, dict):
-        return dict(val)
-    return {}
+    return dict(val) if isinstance(val, dict) else {}
+
+
+_INVALID_COOLDOWN_KEYS = frozenset({"", "none", "null", "nan", "inf", "-inf", "+inf"})
 
 
 def _clean_cooldown_key(key) -> str:
     if key is None or isinstance(key, (bool, dict, list, tuple, set, frozenset)):
         return ""
     s = str(key).strip()
-    if s.lower() in {"", "none", "null", "nan", "inf", "-inf", "+inf"}:
-        return ""
-    return s
+    return "" if s.lower() in _INVALID_COOLDOWN_KEYS else s
 
 
 _RESERVED_ENTRY_KEYS = frozenset({
-    "timestamp",
-    "key",
-    "group_id",
-    "group_members",
-    "group_pending",
-    "group_committed",
-    "group_results",
+    "timestamp", "key", "group_id", "group_members", "group_pending", "group_committed", "group_results",
 })
 
 
 class Reservation:
-    """Obiectul dat de `Cooldown.slot` (stil RAII / guard C++).
+    """RAII reservation guard returned by ``Cooldown.slot``.
     ``allowed=False`` means cooldown rejected the operation. Commit only after success;
     it retains the reservation and stores extra fields. Exiting without commit rolls back.
     """
@@ -455,43 +451,18 @@ def _cooldown():
     return _cd
 
 
-def _clean_pair_id(val):
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        iv = exact_pos_int(val, default=None)
-        return str(iv) if iv is not None else None
-    s = _clean_cooldown_key(val)
-    if not s or s.startswith("-") or s.lower() in {"0", "0.0", "-0", "+0", "+0.0", "-0.0", "infinity", "-infinity", "+infinity"}:
-        return None
-    if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
-        s = s[:-2]
-    if s in {"0", "+0"}:
-        return None
-    return s[1:] if s.startswith("+") and s[1:].isdigit() else s
+_clean_pair_id = clean_order_id
+_clean_order_id_meta = normalize_scalar_order_id
+_norm_side = normalize_side
 
 
 def _valid_pair_id(pair_id) -> bool:
     return _clean_pair_id(pair_id) is not None
 
 
-def _clean_order_id_meta(val):
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        return exact_pos_int(val, default=None)
-    return _clean_pair_id(val)
-
-
-def _norm_side(side) -> str:
-    if not side or isinstance(side, bool):
-        return ""
-    s = str(side).strip().upper()
-    if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
-        return "BUY"
-    if s in ("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
-        return "SELL"
-    return ""
-
-
-def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
-                  pair_id=None):
+def reserve_trade(
+    side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None, pair_id=None
+):
     """Atomically check and reserve placement rights for ``symbol``."""
     clean_cid = _clean_order_id_meta(client_order_id)
     norm_side = _norm_side(side)
@@ -499,9 +470,12 @@ def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_
     if clean_pid is not None:
         return _cooldown().reserve_group_member(
             symbol, cooldown_sec, clean_pid, norm_side,
-            side="PAIR", symbol=symbol, client_order_id=clean_cid)
-    return _cooldown().reserve(symbol, cooldown_sec, side=norm_side, symbol=symbol,
-                               client_order_id=clean_cid, binance_order_id=None)
+            side="PAIR", symbol=symbol, client_order_id=clean_cid,
+        )
+    return _cooldown().reserve(
+        symbol, cooldown_sec, side=norm_side, symbol=symbol,
+        client_order_id=clean_cid, binance_order_id=None,
+    )
 
 
 def release_trade(symbol):

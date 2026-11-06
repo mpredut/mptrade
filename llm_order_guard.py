@@ -262,27 +262,21 @@ def check_geopolitical_order_guards(
                         else get_cachedb_dir()
                     )
                     sa_data, _ = read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
-                    sa_ts = float((sa_data or {}).get("ts") or 0.0) if isinstance(sa_data, dict) else 0.0
-                    sa_action = (
-                        str(
-                            (sa_data or {}).get("recommended_action")
-                            or (sa_data or {}).get("recommended_posture")
-                            or ""
+                    if isinstance(sa_data, dict):
+                        sa_ts = float(sa_data.get("ts") or 0.0)
+                        sa_action = str(
+                            sa_data.get("recommended_action") or sa_data.get("recommended_posture") or ""
                         ).upper()
-                        if isinstance(sa_data, dict)
-                        else ""
-                    )
-                    if (
-                        isinstance(sa_data, dict)
-                        and sa_ts > 0.0
-                        and 0.0 <= (now_ts - sa_ts) <= 7200.0
-                        and str(sa_data.get("market_bias") or "").upper() != "BEARISH"
-                        and sa_action == "ACCUMULATE"
-                    ):
-                        market_absorbed = True
+                        if (
+                            sa_ts > 0.0
+                            and 0.0 <= (now_ts - sa_ts) <= 7200.0
+                            and str(sa_data.get("market_bias") or "").upper() != "BEARISH"
+                            and sa_action == "ACCUMULATE"
+                        ):
+                            market_absorbed = True
                     if not market_absorbed:
                         mb_data = load_cached_macro_benchmarks(cdir)
-                        mb_ts = float((mb_data or {}).get("ts") or 0.0) if isinstance(mb_data, dict) else 0.0
+                        mb_ts = float(mb_data.get("ts") or 0.0) if isinstance(mb_data, dict) else 0.0
                         if isinstance(mb_data, dict) and mb_ts > 0.0 and 0.0 <= (now_ts - mb_ts) <= 1800.0:
                             ca_reg = str(mb_data.get("cross_asset_regime") or "").upper()
                             target_decouple = (

@@ -1594,6 +1594,11 @@ _TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
 _TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
 _BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
 _SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
+_INVALID_OID_STRINGS = frozenset((
+    "0", "0.0", "-0", "+0", "+0.0", "-0.0",
+    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
+    "none", "null",
+))
 
 
 def normalize_side(side: object) -> str:
@@ -1606,6 +1611,42 @@ def normalize_side(side: object) -> str:
     if s in _SELL_SIDE_TOKENS:
         return "SELL"
     return ""
+
+
+def clean_order_id(val: object) -> str | None:
+    """Validate and normalize a scalar venue order ID to a non-empty string (or ``None``)."""
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(val, (int, float)):
+        val = exact_pos_int(val, default=None)
+        if val is None:
+            return None
+    if not isinstance(val, (str, int)):
+        return None
+    text = str(val).strip()
+    if not text or text.startswith("-") or text.lower() in _INVALID_OID_STRINGS:
+        return None
+    if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
+        text = text[:-2]
+    if text in {"0", "+0"}:
+        return None
+    return text[1:] if text.startswith("+") and text[1:].isdigit() else text
+
+
+_clean_single_order_id = clean_order_id
+
+
+def clean_order_id_str(val: object) -> str:
+    """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
+    return clean_order_id(val) or ""
+
+
+def normalize_scalar_order_id(val: object) -> int | str | None:
+    """Normalize a scalar order ID, preserving positive integers as ``int`` and string IDs as ``str``."""
+    cleaned = clean_order_id(val)
+    if cleaned is None:
+        return None
+    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
 
 
 def normalize_trend_direction(

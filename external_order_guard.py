@@ -123,11 +123,9 @@ def check_external_order_guards(
             from notify_engine.alertnotifiers import notify
             price_str = f" @ ${price_f:,.2f}" if price_f > 0.0 else ""
             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
-            order_header = f"Order: {order_side} {symbol}{price_str}{scale_str}"
-            body = f"{order_header}\n{reason}"
             notify(
                 title=title,
-                body=body,
+                body=f"Order: {order_side} {symbol}{price_str}{scale_str}\n{reason}",
                 source="order_guard",
                 symbol=symbol,
             )
@@ -152,11 +150,14 @@ def check_external_order_guards(
             print(f"{prefix} {order_side} {symbol}: {dec.reason} (brake={dec.brake_action}{scale_sfx})")
             if mode == "shadow" and shadow_notify_enabled:
                 scale_pct = int(d_scale * 100) if d_scale < 1.0 else None
-                if use_brake_value_in_title:
-                    action_str = str(dec.brake_action.value)
-                else:
-                    action_str = f"SCALE {scale_pct}%" if (dec.allowed and scale_pct is not None) else "DEFER"
-                _send_micro_shadow_notify(notify_key, f"🛡 [{code_tag}] {action_str} {order_side} {symbol}", dec.reason, scale_pct=scale_pct)
+                action_str = (
+                    str(dec.brake_action.value)
+                    if use_brake_value_in_title
+                    else (f"SCALE {scale_pct}%" if (dec.allowed and scale_pct is not None) else "DEFER")
+                )
+                _send_micro_shadow_notify(
+                    notify_key, f"🛡 [{code_tag}] {action_str} {order_side} {symbol}", dec.reason, scale_pct=scale_pct
+                )
             if mode == "enforce":
                 if not dec.allowed or d_scale <= 0.0:
                     return False, dec.reason, 0.0
@@ -273,7 +274,9 @@ def evaluate_whale_spread_flow(
         collector = get_whale_collector()
         if collector is None:
             return False, "no_collector"
-        snap = fetch_guard_snapshot(collector, symbol, now=resolve_now_ts(now) if now is not None else None, allow_network=False)
+        snap = fetch_guard_snapshot(
+            collector, symbol, now=resolve_now_ts(now) if now is not None else None, allow_network=False
+        )
         if snap is None:
             return False, "no_snapshot"
         ratio = safe_pos_float(obj_attr(snap, "taker_buy_sell_ratio"), 0.0) or 0.0
@@ -281,9 +284,7 @@ def evaluate_whale_spread_flow(
         if raw_oi is None:
             raw_oi = obj_attr(snap, "oi_1h_chg_pct")
         oi_pct = safe_float(raw_oi, default=0.0) or 0.0
-        raw_reg = obj_attr(snap, "divergence_regime")
-        if raw_reg is None:
-            raw_reg = obj_attr(snap, "div_regime")
+        raw_reg = obj_attr(snap, "divergence_regime") or obj_attr(snap, "div_regime")
         div_regime = str(raw_reg or "").strip().lower()
         if side_u == "BUY":
             if 0.0 < ratio < 0.80:
