@@ -3,6 +3,11 @@
 Separates prompt presentation (Sections 1, 2, 3A, 3B, 3C) and symbol price
 resolution from telemetry harvesting and order execution in
 `autonomous_ai_reconciler.py`.
+
+Intentional prompt compression invariants:
+- Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
+- `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
+- `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
 """
 
 import re

@@ -597,6 +597,9 @@ def collect_pretrade_telemetry(
 
         cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:
+            now_ts_s = _time.time()
+            ob_ts_est = safe_pos_float(cur_m_info.pop("_ob_ts", None), default=0.0) or 0.0
+            is_exact_ob_sym = clean_symbol_key(cur_m_info.get("_source_cand") or symbol) == clean_symbol_key(symbol)
             if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     cur_m_info.pop(k_strip, None)
@@ -607,6 +610,13 @@ def collect_pretrade_telemetry(
                 and (ob_mid_m := safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)) is not None
                 and abs(cur_px_est - ob_mid_m) / max(cur_px_est, ob_mid_m) > 0.01
                 and not _prices_diverged(cur_px_est, ob_mid_m)
+                and not (
+                    is_exact_ob_sym
+                    and 0.0 < ob_ts_est <= now_ts_s + 300.0
+                    and last_alt_pt is not None
+                    and (ob_ts_est * 1000.0 - last_alt_pt[0]) > 60_000.0
+                    and ((now_ts_s - ob_ts_est) <= 300.0 or abs(cur_px_est - last_alt_pt[1]) <= 1e-6)
+                )
             ):
                 scale_r = cur_px_est / ob_mid_m
                 px_dec = _auto_px_decimals(cur_px_est)
@@ -641,13 +651,22 @@ def collect_pretrade_telemetry(
                         )
                         telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
             ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-            is_exact_ob_sym = clean_symbol_key(cur_m_info.get("_source_cand") or symbol) == clean_symbol_key(symbol)
             if (
                 not is_eq_sym
                 and is_usd_sym
                 and is_exact_ob_sym
                 and ob_mid_est is not None
-                and (cur_px_est <= 0.0 or abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01)
+                and (
+                    cur_px_est <= 0.0
+                    or abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01
+                    or (
+                        not _prices_diverged(cur_px_est, ob_mid_est)
+                        and 0.0 < ob_ts_est <= now_ts_s + 300.0
+                        and last_alt_pt is not None
+                        and (ob_ts_est * 1000.0 - last_alt_pt[0]) > 60_000.0
+                        and ((now_ts_s - ob_ts_est) <= 300.0 or abs(cur_px_est - last_alt_pt[1]) <= 1e-6)
+                    )
+                )
             ):
                 cur_px_est = ob_mid_est
                 if m24:
@@ -707,6 +726,8 @@ def collect_pretrade_telemetry(
                     if btc_last_pt is not None and btc_last_pt[1] > 0.0:
                         btc_live_px = btc_last_pt[1]
                     btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
+                    if isinstance(btc_m_info, dict):
+                        btc_m_info.pop("_ob_ts", None)
                     btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
                     if (
                         btc_ob_mid is not None

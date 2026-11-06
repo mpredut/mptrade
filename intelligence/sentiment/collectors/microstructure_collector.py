@@ -964,6 +964,8 @@ def load_symbol_microstructure(
         if (spread_bps := round_spread_bps(obj_attr(ob, "spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=ob_mid)) is not None:
             m_info["spread_bps"] = spread_bps
         if ob_same_quote:
+            if (ob_ts_v := normalize_epoch_sec(safe_pos_float(obj_attr(ob, "ts"), default=0.0) or 0.0, default=0.0)) > 0.0:
+                m_info["_ob_ts"] = ob_ts_v
             for k_px, v_px in (("ob_mid_price", ob_mid), ("best_bid", best_bid), ("best_ask", best_ask)):
                 if v_px is not None:
                     m_info[k_px] = v_px
@@ -1953,14 +1955,34 @@ def enrich_24h_and_microstructure(
             is_usd_sym = "USD" in compatible_quote_suffixes(sym)
             sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
             ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
+            ob_ts_m = safe_pos_float(m_info.pop("_ob_ts", None), default=0.0) or 0.0
             src_cand_u = str(m_info.get("_source_cand") or sym).strip().upper()
-            is_exact_ob_sym = src_cand_u == str(sym).strip().upper()
+            is_exact_ob_sym = clean_symbol_key(src_cand_u) == clean_symbol_key(sym)
             cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_by_sym) and (sym in inst_by_sym)
             if not is_eq_sym and is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
-                if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
+                if (
+                    sym_px_m <= 0.0
+                    or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01)
+                    or (
+                        is_exact_ob_sym
+                        and not _prices_diverged(sym_px_m, ob_mid_m)
+                        and 0.0 < ob_ts_m <= now_ts + 300.0
+                        and raw_s24_last_ts_ms > 0.0
+                        and (ob_ts_m * 1000.0 - raw_s24_last_ts_ms) > 60_000.0
+                        and (
+                            (now_ts - ob_ts_m) <= 300.0
+                            or (raw_s24_last_pt is not None and abs(sym_px_m - raw_s24_last_pt[1]) <= 1e-6)
+                        )
+                    )
+                ):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
-                    if active_7d_vals and len(active_7d_vals) >= 2 and not _prices_diverged(ob_mid_m, safe_float(active_7d_vals[0], 0.0)):
+                    if (
+                        active_7d_vals
+                        and len(active_7d_vals) >= 2
+                        and safe_float(active_7d_vals[0], 0.0) > 0.0
+                        and not _prices_diverged(ob_mid_m, safe_float(active_7d_vals[-1], 0.0))
+                    ):
                         prices_and_trends[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(active_7d_vals[0], 0.0))
                     recalculate_live_price_geometry(prices_and_trends[sym], ob_mid_m)
                 elif (
@@ -2009,6 +2031,7 @@ def enrich_24h_and_microstructure(
                 include_derivatives=True,
             )
         if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
+            m_info_ref.pop("_ob_ts", None)
             msym_quotes = compatible_quote_suffixes(msym)
             msym_is_eq = is_equity_symbol(msym)
             p_ref = _first_variant_dict(

@@ -1111,15 +1111,32 @@ def enrich_cross_venue_trends(
                     continue
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
                 w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
+                is_eq_w7 = sym.endswith(("_EQ", "_US_EQ"))
+                vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
+                if not is_eq_w7 and sym_px_cur > 0.0 and vals and not _prices_diverged(sym_px_cur, vals[-1]) and abs(sym_px_cur - vals[-1]) > 1e-9:
+                    vals.append(sym_px_cur)
+                dec_7d = 4 if is_eq_w7 else None
+                eff_dec_7d = dec_7d if dec_7d is not None else 6
                 if "chg_7d_pct" in entry and (
-                    sym.endswith(("_EQ", "_US_EQ"))
+                    is_eq_w7
                     or entry.get("_partial_7d_span_ms") is None
                     or w_span_ms <= safe_float(entry.get("_partial_7d_span_ms"), 0.0)
                 ):
+                    from intelligence.sentiment.collectors.microstructure_collector import _LAST_7D_SPAN_MS_BY_SYM
+
+                    if (
+                        not is_eq_w7
+                        and w_span_ms >= 5 * 86400 * 1000
+                        and _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0) < 5 * 86400 * 1000
+                        and sym_px_cur > 0.0
+                        and len(vals) >= 2
+                        and vals[0] > 0.0
+                        and entry.get("high_7d") == round(max(vals), eff_dec_7d)
+                        and not _prices_diverged(sym_px_cur, vals[-1])
+                    ):
+                        entry["chg_7d_pct"] = pct_delta(sym_px_cur, vals[0])
                     entry.pop("_partial_7d_span_ms", None)
                     continue
-                vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
-                dec_7d = 4 if sym.endswith(("_EQ", "_US_EQ")) else None
                 for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
                     entry.pop(k_7d_opt, None)
                 entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))

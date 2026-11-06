@@ -9163,3 +9163,67 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     )
     assert "(pnl_vs_last_buy=-10.13%)" in spcx_cyc_line
 
+    # Bug 133: enrich_cross_venue_trends aligns watcher 7d chg_7d_pct with live sym_px_cur across pre/post ob_mid_price updates
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+
+    w_hype_7d = {
+        "HYPE": [
+            [1793406572768, 89.865],
+            [1793670000000, 89.9475],
+            [1793946582910, 77.7125],
+        ]
+    }
+    pt_hype_7d = {"HYPEUSDC": {"price": 77.703}}
+    enrich_cross_venue_trends(pt_hype_7d, {}, {}, {}, {}, {}, w_hype_7d)
+    assert pt_hype_7d["HYPEUSDC"]["chg_7d_pct"] == -13.53
+    pt_hype_7d["HYPEUSDC"]["price"] = 77.5095
+    enrich_cross_venue_trends(pt_hype_7d, {}, {}, {}, {}, {}, w_hype_7d)
+    assert pt_hype_7d["HYPEUSDC"]["chg_7d_pct"] == -13.75
+
+    # Bug 134: fresh orderbook_depth_<SYM>.json (>60s newer than stale 24h series) updates price & chg_7d_pct even on >1% move or >10% 7d drawdown
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+
+    cdir_134 = tmp_path / "b134_cache"
+    cdir_134.mkdir()
+    now_134 = time.time()
+    s24_ts_ms = int((now_134 - 3600.0) * 1000)
+    (cdir_134 / "cache_24_price_TAOUSDC.json").write_text(
+        json.dumps({"items": {"TAOUSDC": [[s24_ts_ms - 3600_000, 218.0], [s24_ts_ms, 218.5]]}}),
+        encoding="utf-8",
+    )
+    (cdir_134 / "cache_sparse_price_TAOUSDC.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"s": "TAOUSDC", "i": [s24_ts_ms - 6 * 86400 * 1000, 255.0]}),
+                json.dumps({"s": "TAOUSDC", "i": [s24_ts_ms, 218.5]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (cdir_134 / "orderbook_depth_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "ts": now_134 - 10.0,
+                "mid_price": 221.2,
+                "best_bid": 221.1,
+                "best_ask": 221.3,
+                "spread_bps": 9.05,
+                "imbalance": 0.12,
+                "bid_depth_usd": 50000.0,
+                "ask_depth_usd": 40000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_134 = {"TAOUSDC": {"price": 218.5}}
+    micro_134: dict = {}
+    enrich_24h_and_microstructure(str(cdir_134), str(tmp_path), pt_134, micro_134, {}, {}, now_134)
+    assert pt_134["TAOUSDC"]["price"] == 221.2
+    assert pt_134["TAOUSDC"]["chg_7d_pct"] == -13.25
+    pt_tele_134 = collect_pretrade_telemetry("TAO_USDC", cachedb_dir=str(cdir_134))
+    assert "24h Range=[$218.0, $221.2]" in str(pt_tele_134.get("24h Multi-Horizon Price Evolution", ""))
+    assert "-13.25%" in str(pt_tele_134.get("7d Price Range & Swing Structure", ""))
+
+
