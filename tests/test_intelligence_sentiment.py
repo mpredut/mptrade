@@ -8943,19 +8943,3 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     tel_eq_old_cp = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir_eq_old_cp))
     assert "24h=+2.67%" in str(tel_eq_old_cp.get("24h Multi-Horizon Price Evolution"))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
