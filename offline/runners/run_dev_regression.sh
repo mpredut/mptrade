@@ -151,10 +151,14 @@ atomic_write_json(status_json_path, status_data, indent=2)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")
 EOF
 
+    local failed_tests=""
+    if [ "$rc" -ne 0 ] && [ -f "$LOG_FILE.run" ]; then
+        failed_tests="$(grep -E '^FAILED ' "$LOG_FILE.run" 2>/dev/null | sed 's/^FAILED //' | head -n 5 | paste -sd ', ' - || true)"
+    fi
     rm -f "$LOG_FILE.run"
     if [ "$rc" -ne 0 ]; then
         echo "[dev_regression $(date '+%F %T')] FAILED on commit $commit_short ($rc)" | tee -a "$LOG_FILE" >&2
-        send_os_ntfy "DEV CI Regression FAILED" "Commit $commit_short failed: $commit_msg (exit code: $rc). Duration: ${duration}s." "high" || true
+        send_os_ntfy "DEV CI Regression FAILED" "Commit $commit_short failed: $commit_msg (exit code: $rc). Duration: ${duration}s.${failed_tests:+ Failed: $failed_tests}" "high" || true
     else
         echo "[dev_regression $(date '+%F %T')] PASSED on commit $commit_short in ${duration}s" | tee -a "$LOG_FILE"
         [ "$prev_status" = "FAILED" ] && send_os_ntfy "DEV CI Regression RECOVERED" "Commit $commit_short passed all tests: $commit_msg. Duration: ${duration}s." "default" || true
