@@ -189,19 +189,19 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
     "already", "amid", "answered", "app", "apparently", "appears", "apps",
     "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
-    "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
+    "Bernie", "bernie", "bill", "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
     "breaking", "briefing", "bus", "calls", "car", "carried", "carries",
     "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
     "concedes", "conduct", "conducted", "conducts", "continue", "continued",
-    "continues", "contagion", "criticize", "criticized", "criticizes",
-    "damaged", "deadly", "debunked", "deepening", "defensive", "digested", "discourse",
+    "continues", "contagion", "cost", "costs", "criticize", "criticized", "criticizes",
+    "damaged", "deadly", "debunked", "deepening", "defend", "defended", "defends", "defensive", "digested", "discourse",
     "discount", "discounts", "downscale", "efforts", "eight", "elevated",
     "end", "essay", "essays", "eve", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
     "fallout", "false", "fare", "features", "five", "fleet", "florida",
-    "forced", "four", "fresh", "functioning", "golf", "headlines", "heighten",
-    "highlights", "history", "horrific", "humanitarian", "hurt", "intel",
-    "institute", "introduces", "involvement", "island", "jet", "join",
+    "forced", "four", "fresh", "functioning", "funding", "golf", "headlines", "heighten",
+    "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "intel",
+    "institute", "introduces", "investigation", "involvement", "island", "jet", "join",
     "keyword", "kinetic", "landing", "latest", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
     "losers", "losses", "macro", "media", "members", "midterm", "midterms",
@@ -211,16 +211,16 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "plunged", "plunges", "plunging", "political", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
     "qeshm", "questions", "rather", "readiness", "recent", "record", "reflect",
-    "reflects", "related", "renewed", "reported", "reportedly", "represent",
-    "researchers", "reshapes", "retaining", "rhetoric", "rhetorical", "risk", "risks",
-    "role", "rout", "routine", "ryanair", "say", "scrutiny", "secondary",
+    "reflects", "related", "remain", "remained", "remaining", "remains", "removal", "renewed", "reported", "reportedly", "represent",
+    "researchers", "reshapes", "resign", "resigned", "resigns", "retaining", "rhetoric", "rhetorical", "risk", "risks",
+    "role", "rout", "routine", "ryanair", "say", "schedule", "scheduled", "scrutiny", "secondary",
     "selloff", "seven", "short", "showdown", "six", "sizing", "soaring", "somalia",
     "south", "stocks", "story", "strategy", "striker", "study", "surging", "suspected",
     "sustain", "sustained", "sustaining", "sustains", "sweden", "systemic", "tactical", "targets",
     "tech", "techspot", "ten", "tenerife", "three", "timeline", "trace",
     "traced", "train", "trains", "truck", "trump", "two", "uganda",
     "unabsorbed", "unanticipated", "uncertainty", "underscore", "underscores", "unpriced", "veto",
-    "victim", "victims", "volatility", "volunteer", "wave", "waves", "widespread",
+    "victim", "victims", "volatility", "volunteer", "vow", "vowed", "vows", "wave", "waves", "widespread",
     "withdrawing", "workers", "worse", "wrap",
 })
 
@@ -276,10 +276,26 @@ def _is_excluded_non_crisis_attack_keyword(
         return True
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
         return True
+    if kw_words and kw_words <= {"missile", "missiles", "launch", "launches"}:
+        if (
+            combined_words
+            & {"scheduled", "schedule", "test", "tests", "testing", "exercise", "exercises", "drill", "drills", "fort", "wingate"}
+        ) and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+            return True
+    if kw_words and kw_words <= {"bank", "banks", "collapse", "collapses", "crisis"}:
+        if (
+            combined_words
+            & {"paraguay", "pena", "resigns", "resigned", "resignation", "impeachment", "removal"}
+        ) and not (
+            combined_words & {"fed", "fdic", "ecb", "treasury", "wall", "street", "contagion", "systemic"}
+        ):
+            return True
     if kw_words and kw_words <= {
         "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
         "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
     }:
+        war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
+        eff_kinetic = (kinetic_only - {"strike", "strikes"}) if war_cost_context else kinetic_only
         if (
             combined_words
             & (
@@ -288,10 +304,12 @@ def _is_excluded_non_crisis_attack_keyword(
                 | {
                     "strategy", "playbook", "outlook", "parse", "parsing",
                     "before", "already", "scrutiny", "rumors", "prolongation",
-                    "electric", "vehicle", "vehicles",
+                    "electric", "vehicle", "vehicles", "cost", "costs", "bill",
+                    "household", "households", "funding", "schumer", "hegseth",
+                    "defend", "defends", "blame", "farcical", "stopping", "exceed",
                 }
             )
-        ) and not (combined_words & ((kinetic_only - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
+        ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
             return True
         if (
             combined_words
