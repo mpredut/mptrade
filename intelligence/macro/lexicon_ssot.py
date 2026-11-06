@@ -392,7 +392,8 @@ def _is_excluded_non_crisis_attack_keyword(
                 "halt", "halts", "halted", "halting", "deescalation", "deescalate",
                 "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending",
                 "talks", "negotiation", "negotiations", "proposal", "proposals", "reviewing",
-                "humanity", "humanitarian", "melania",
+                "humanity", "humanitarian", "melania", "exempt", "exempts",
+                "exempted", "exempting", "exemption", "exemptions",
             }
         ) and not (
             combined_words

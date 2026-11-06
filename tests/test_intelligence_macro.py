@@ -2150,6 +2150,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Can Multilateral Approaches Do More for Free Passage in the Strait of Hormuz? - Observer Research Foundation", ["hormuz", "strait of hormuz"]),
         ("Is the Strait of Hormuz Really Safe After the Iran War? - Modern Diplomacy", ["war", "iran war", "hormuz", "strait of hormuz"]),
         ("Multiple bears may have been involved in fatal attack, Canadian authorities say - The Washington Post", ["attack"]),
+        ("Why is Iran exempting India, China, Qatar, Iraq from Hormuz restrictions? - Al Jazeera", ["hormuz"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
