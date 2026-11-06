@@ -42,10 +42,11 @@ _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
-    "allegedly", "alligator", "animal", "arrest", "arrested", "baseball", "bat",
-    "bear", "boy", "burglary", "charged", "cougar", "dog", "grizzly", "heart",
-    "lion", "mugger", "panic", "robbery", "shark", "stabbing", "suspect",
-    "teenager", "tiger", "volunteer", "wildlife", "wolf",
+    "allegedly", "alligator", "alligators", "animal", "animals", "arrest", "arrested",
+    "baseball", "bat", "bear", "bears", "boy", "burglary", "charged", "cougar", "cougars",
+    "dog", "dogs", "grizzly", "heart", "lion", "lions", "mugger", "panic", "robbery",
+    "shark", "sharks", "stabbing", "suspect", "suspects", "teenager", "tiger", "tigers",
+    "volunteer", "wildlife", "wolf", "wolves",
 })
 
 _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -271,7 +272,7 @@ def _is_excluded_non_crisis_attack_keyword(
     kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
     combined_words = text_words | kw_words
     kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {
-        "crude", "oil", "ceasefire", "escalation", "tehran", "pentagon", "idf", "military", "nuclear",
+        "crude", "oil", "ceasefire", "escalation", "hormuz", "tehran", "pentagon", "idf", "military", "nuclear",
     }
     if (combined_words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (text_words & (kinetic_only - kw_words)):
         if kw_words and (kw_words & {"war", "wars"}):
@@ -379,7 +380,7 @@ def _is_excluded_non_crisis_attack_keyword(
                     "defend", "defends", "blame", "farcical", "stopping", "exceed",
                     "briefing", "seeks", "seeking", "harward", "recalibrates",
                     "recalibrate", "expectations", "assumptions", "soufan",
-                    "multilateral", "approaches",
+                    "multilateral", "approaches", "really", "safe",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
