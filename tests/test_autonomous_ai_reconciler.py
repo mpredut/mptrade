@@ -9087,7 +9087,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             + "\n",
             encoding="utf-8",
         )
-        g_res = harvest_log_anomalies_from_dirs([tmp_d], lookback_hours=6.0)
+        g_res = harvest_log_anomalies_from_dirs([tmp_d], lookback_hours=24.0)
         assert g_res.warning_count == 4
         assert len(g_res.guard_interventions) == 3
         assert "price 216.4, diff -0.09%" in g_res.guard_interventions[0]
@@ -9165,7 +9165,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             + "\n",
             encoding="utf-8",
         )
-        net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=6.0)
+        net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=24.0)
         assert net_res.error_count == 0
         assert not net_res.persistent_errors
 

@@ -1037,6 +1037,11 @@ def load_symbol_microstructure(
                         and (safe_float(m_info.get("cvd_5m_usd"), default=0.0) or 0.0) < 0.0
                     ):
                         m_info["taker_ratio_5m"] = round(0.15 / 0.85, 4)
+                    elif (
+                        m_info.get("taker_ratio_5m") == 2.0
+                        and (safe_float(m_info.get("cvd_5m_usd"), default=0.0) or 0.0) > 0.0
+                    ):
+                        m_info["taker_ratio_5m"] = round(0.85 / 0.15, 4)
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:

@@ -5202,7 +5202,7 @@ def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filteri
         f"[{s_fmt(300)}] [manage_agy] ui-sync: check healthy (rc=10, idle_sec=120s).\n",
         encoding="utf-8",
     )
-    anom = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=2.0)
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=24.0)
     assert anom.error_count == 0
     assert anom.persistent_errors == []
     assert not any("<stdin>" in ev for ev in anom.critical_events)
