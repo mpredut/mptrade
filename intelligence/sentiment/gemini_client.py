@@ -32,6 +32,7 @@ from orchestratorOS.agy.summary_store import (
 )
 from orchestratorOS.agy.topics import (
     TopicSession,
+    condense_decision,
     extract_json_object,
     format_topic_history_prefix,
     format_topic_turn_header,
@@ -619,6 +620,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                             if not is_mocked
                                             else None
                                         )
+                                        latest_turn_summary = condense_decision(output, max_len=360)
+                                        compact_prompt = (
+                                            f"/compact Context checkpoint after turn ({latest_turn_summary}). "
+                                            "Reply ONLY with the single token COMPACT_OK. Do NOT output any market analysis, "
+                                            "JSON blocks, position calculations, stop-loss/risk rules, or tool calls."
+                                        )
                                         for compact_model in self.get_compact_model_candidates(
                                             models_to_try,
                                             attempt_idx,
@@ -627,7 +634,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                             try:
                                                 c_proc = self._execute_cli(
                                                     turn_cid,
-                                                    "/compact Summarize prior turns concisely in Romanian, preserving only exact factual recent decisions, resting limit orders, and user instructions from the latest turn. Do NOT approximate or recalculate position USD values (the next turn provides live telemetry), do NOT invent risk guard rules or fixed thresholds, and do NOT call any tools or read/modify any files.",
+                                                    compact_prompt,
                                                     compact_timeout,
                                                     compact_model,
                                                     bot_cli_base,
