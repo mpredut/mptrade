@@ -233,10 +233,18 @@ def collect_pretrade_telemetry(
                 if not ob_same_q:
                     continue
                 eff_side_d = side_d_usd if side_d_usd > 0.0 else (tot_ob_depth * 0.5)
-                min_wall_usd = min(100_000.0, max(5_000.0, eff_side_d * 0.05)) if eff_side_d > 0.0 else 100_000.0
+                min_wall_usd = (
+                    min(100_000.0, max(500.0 if is_eq_sym else 5_000.0, eff_side_d * 0.05))
+                    if eff_side_d > 0.0
+                    else 100_000.0
+                )
                 w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
                 w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)
-                w_px_fmt = f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip(".")
+                w_px_fmt = (
+                    f"{w_px:.4f}".rstrip("0").rstrip(".")
+                    if is_eq_sym and 1.0 <= w_px < 10.0 and abs(w_px - round(w_px, 2)) >= 1e-4
+                    else (f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip("."))
+                )
                 telemetry[f"Orderbook {side_lbl} Wall Ahead"] = (
                     f"${w_usd:,.0f} @ ${w_px_fmt}"
                     if w_usd >= min_wall_usd and w_px > 0.0
@@ -409,6 +417,19 @@ def collect_pretrade_telemetry(
                             ):
                                 pts_5d_eq = pts_5d_eq[:split_idx]
                                 break
+                        last_pos_v_idx_eq = max(
+                            (
+                                idx_v
+                                for idx_v, pt_v in enumerate(pts_5d_eq)
+                                if len(pt_v) >= 3 and (safe_pos_float(pt_v[2], default=0.0) or 0.0) > 0.0
+                            ),
+                            default=-1,
+                        )
+                        if 4 <= last_pos_v_idx_eq < len(pts_5d_eq) - 1:
+                            for zv_idx in range(last_pos_v_idx_eq + 1, len(pts_5d_eq)):
+                                if (pts_5d_eq[zv_idx][0] - pts_5d_eq[zv_idx - 1][0]) > 20 * 60 * 1000:
+                                    pts_5d_eq = pts_5d_eq[:zv_idx]
+                                    break
                     raw_alt_series_24h = list(alt_series_24h)
                     now_ms_c = int(_pt_time.time() * 1000)
                     eq_rth_open_c = bool(is_symbol_market_open(symbol, now_ms_c / 1000.0))
@@ -612,7 +633,11 @@ def collect_pretrade_telemetry(
                     w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
                     w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
                     if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
-                        w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
+                        w_px_fmt = (
+                            f"{w_px_rc:.4f}".rstrip("0").rstrip(".")
+                            if 1.0 <= w_px_rc < 10.0 and abs(w_px_rc - round(w_px_rc, 2)) >= 1e-4
+                            else (f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip("."))
+                        )
                         telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
             ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
             is_exact_ob_sym = str(cur_m_info.get("_source_cand") or symbol).strip().upper() == str(symbol).strip().upper()

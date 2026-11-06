@@ -8943,3 +8943,26 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     tel_eq_old_cp = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir_eq_old_cp))
     assert "24h=+2.67%" in str(tel_eq_old_cp.get("24h Multi-Horizon Price Evolution"))
 
+    # Bug 129: collect_pretrade_telemetry reports micro-cap equity orderbook walls (>= $500) with 4-decimal precision
+    (cdir_eq_old_cp / "orderbook_depth_RGNT_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "RGNT_US_EQ",
+            "imbalance_ratio": 0.362,
+            "mid_price": 1.17,
+            "best_bid": 1.1651,
+            "best_ask": 1.1749,
+            "spread_bps": 83.33,
+            "bid_depth_usd": 1579.0,
+            "ask_depth_usd": 2779.0,
+            "largest_bid_wall_price": 1.1681,
+            "largest_bid_wall_usd": 1544.0,
+            "largest_ask_wall_price": 1.1797,
+            "largest_ask_wall_usd": 2600.0,
+        }),
+        encoding="utf-8",
+    )
+    tel_rgnt = collect_pretrade_telemetry("RGNT_US_EQ", cachedb_dir=str(cdir_eq_old_cp))
+    assert tel_rgnt.get("Orderbook Bid Wall Ahead") == "$1,544 @ $1.1681"
+    assert tel_rgnt.get("Orderbook Ask Wall Ahead") == "$2,600 @ $1.1797"
+
+
