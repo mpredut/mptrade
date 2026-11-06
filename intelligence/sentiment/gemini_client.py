@@ -622,9 +622,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                         )
                                         latest_turn_summary = condense_decision(output, max_len=360)
                                         compact_prompt = (
-                                            f"/compact Context checkpoint after turn ({latest_turn_summary}). "
-                                            "Reply ONLY with the single token COMPACT_OK. Do NOT output any market analysis, "
-                                            "JSON blocks, position calculations, stop-loss/risk rules, or tool calls."
+                                            f"/compact Context checkpoint after completed turn ({latest_turn_summary}). "
+                                            "All prior turns are ALREADY COMPLETED; in <summary> Next Steps write ONLY: "
+                                            "'Reply ONLY with COMPACT_OK and wait for the next user prompt.' "
+                                            "In your immediate post-compaction response, reply ONLY with the single token COMPACT_OK "
+                                            "(do NOT output any market analysis, markdown report, JSON blocks, position calculations, "
+                                            "stop-loss/risk rules, or tool calls)."
                                         )
                                         for compact_model in self.get_compact_model_candidates(
                                             models_to_try,
