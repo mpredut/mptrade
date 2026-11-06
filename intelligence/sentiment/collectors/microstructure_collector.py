@@ -1029,8 +1029,14 @@ def load_symbol_microstructure(
                 ts_cur = safe_nonneg_float(m_info.get("taker_sell_vol_usd"), default=0.0) or 0.0
                 if (tb_cur <= 0.0 < ts_cur) or (ts_cur <= 0.0 < tb_cur):
                     tot_v = tb_cur + ts_cur
+                    m_info["taker_buy_sell_ratio"] = round(tr_ref, 4)
                     m_info["taker_buy_vol_usd"] = round(tot_v * wl_norm, 2)
                     m_info["taker_sell_vol_usd"] = round(tot_v * (1.0 - wl_norm), 2)
+                    if (
+                        m_info.get("taker_ratio_5m") == 0.5
+                        and (safe_float(m_info.get("cvd_5m_usd"), default=0.0) or 0.0) < 0.0
+                    ):
+                        m_info["taker_ratio_5m"] = round(0.15 / 0.85, 4)
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
