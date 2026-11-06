@@ -1113,7 +1113,14 @@ def enrich_cross_venue_trends(
                 w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
                 is_eq_w7 = sym.endswith(("_EQ", "_US_EQ"))
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
-                if not is_eq_w7 and sym_px_cur > 0.0 and vals and not _prices_diverged(sym_px_cur, vals[-1]) and abs(sym_px_cur - vals[-1]) > 1e-9:
+                if (
+                    not is_eq_w7
+                    and w_span_ms >= 5 * 86400 * 1000
+                    and sym_px_cur > 0.0
+                    and vals
+                    and abs(sym_px_cur - vals[-1]) / max(sym_px_cur, vals[-1]) <= 0.01
+                    and abs(sym_px_cur - vals[-1]) > 1e-9
+                ):
                     vals.append(sym_px_cur)
                 dec_7d = 4 if is_eq_w7 else None
                 eff_dec_7d = dec_7d if dec_7d is not None else 6
