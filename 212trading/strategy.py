@@ -874,13 +874,32 @@ class Strategy(BaseSpotMixin):
             if callable(hist_fn) and not hasattr(hist_fn, "_mock_name"):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
+                    fill_oid = str(latest.get("orderId") or latest.get("id") or "").strip()
+                    raw_ts = _clean_pos_float(latest.get("timestamp") or latest.get("time"))
+                    fill_ts_s = (raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts) if raw_ts is not None else None
+                    last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
+                    stale_hist = bool(
+                        (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))
+                        or (side == "SELL" and fill_ts_s is not None and last_sell_ts is not None and fill_ts_s <= last_sell_ts + 0.5)
+                    )
+                    if not stale_hist and fill_ts_s is not None:
+                        latest_any = hist_fn(self.ticker, side=None, refresh=False)
+                        if isinstance(latest_any, dict):
+                            any_side = str(latest_any.get("side") or "").strip().upper()
+                            any_ts_raw = _clean_pos_float(latest_any.get("timestamp") or latest_any.get("time"))
+                            any_ts_s = (any_ts_raw / 1000.0 if any_ts_raw > 1e11 else any_ts_raw) if any_ts_raw is not None else None
+                            if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
+                                stale_hist = True
                     fill_qty = _clean_pos_float(latest.get("executedQty") or latest.get("qty"))
                     fill_px = _clean_pos_float(latest.get("price"))
                     if (
-                        fill_qty is not None
+                        not stale_hist
+                        and fill_qty is not None
                         and fill_px is not None
                         and abs(fill_qty - abs(position_delta)) <= max(0.011, abs(position_delta) * 0.05)
                     ):
+                        if fill_oid:
+                            self.s["last_hist_fill_id"] = fill_oid
                         return fill_px
             return None
 

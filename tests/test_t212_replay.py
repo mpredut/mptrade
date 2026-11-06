@@ -943,9 +943,13 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         obs_engine.step(112.0)
         self.assertAlmostEqual(obs_engine.s["pos_peak"], 112.0)
 
-        # Transient 1-poll empty portfolio with no tracked SELL and no fill history must not emit phantom SELL
+        # Transient 1-poll empty portfolio with no tracked SELL (even when history has an older prior-cycle 1.0 SELL before the latest BUY) must not emit phantom SELL
         obs_client.get_portfolio.return_value = []
-        obs_client.latest_filled_order_for_ticker = lambda tkr, side=None, refresh=False: None
+        obs_client.latest_filled_order_for_ticker = lambda tkr, side=None, refresh=False: (
+            {"orderId": "old-sell-1", "price": 103.0, "qty": 1.0, "executedQty": 1.0, "side": "SELL", "timestamp": 4000000}
+            if side == "SELL"
+            else {"orderId": "cur-buy-1", "price": 98.0, "qty": 1.0, "executedQty": 1.0, "side": "BUY", "timestamp": 4500000}
+        )
         with patch.object(strategy, "notify") as mock_notify:
             self.assertFalse(obs_engine._reconcile_real(90.0))
             mock_notify.assert_not_called()
