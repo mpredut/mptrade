@@ -2166,6 +2166,8 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("France to order long-range naval cruise missile from MBDA - Reuters", ["cruise missile", "missile"]),
         ("35 years since Kuwait extinguished last burning oil well after Iraqi invasion - Kuwait Times", ["invasion"]),
         ("AI stocks hammered by midterm shock as data center buildout becomes a 'war of attrition'", ["war"]),
+        ("Iran War Fuels Louisiana LNG Interest, Complicates Woodside Dealmaking - Natural Gas Intelligence", ["war", "iran war"]),
+        ("Russia secretly bolstered Iran's missile arsenal before war with US, records uncover - Fox News", ["war", "missile"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
@@ -2198,6 +2200,11 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         "NVIDIA (NVDA) Sees $118.8 Million in Net ETF Selling on Wednesday",
         "ETFs Bought $34.3 Million of SpaceX (SPCX) on Nov. 4",
         "Nvidia Stock Rises on Dip-Buying: 3 Reasons to Be Optimistic",
+        "Dell vs. Nvidia: Chip Stocks Just Suffered Their Worst Sell-Off Since 2020. Which Is the Better Buy for 2027?",
+        "Texas Gov.-Elect Gina Hinojosa Just Delivered Fantastic News for SpaceX Investors",
+        "TSMC Makes the Chips for Both Nvidia and AMD. Here's What a $5,000 Investment Could Be Worth by 2030.",
+        "Forget Nvidia. Here's the Company Behind the Chips",
+        "Why SpaceX Stock Is Up Today",
     ):
         assert is_excluded_reference_news_item(etf_blurb) is True
     assert is_excluded_reference_news_item(
