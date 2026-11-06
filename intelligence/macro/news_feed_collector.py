@@ -205,8 +205,6 @@ class NewsFeedCollector:
                 else ()
             )
             had_only_noise_kws = bool(raw_str_kws) and not matched_kws
-            if had_only_noise_kws and not has_financial_or_geopolitical_context(raw_title):
-                return None
             is_sev = (
                 False
                 if had_only_noise_kws
