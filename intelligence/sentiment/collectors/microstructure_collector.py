@@ -1698,9 +1698,22 @@ def enrich_24h_and_microstructure(
                             default=-1,
                         )
                         if 4 <= last_pos_v_idx < len(pts_5d) - 1:
-                            for zv_idx in range(last_pos_v_idx + 1, len(pts_5d)):
-                                if (pts_5d[zv_idx][0] - pts_5d[zv_idx - 1][0]) > 20 * 60 * 1000:
-                                    pts_5d = pts_5d[:zv_idx]
+                            while len(pts_5d) - 1 > last_pos_v_idx:
+                                tail_gap_idx = next(
+                                    (
+                                        zv_idx
+                                        for zv_idx in range(len(pts_5d) - 1, last_pos_v_idx, -1)
+                                        if (pts_5d[zv_idx][0] - pts_5d[zv_idx - 1][0]) > 20 * 60 * 1000
+                                    ),
+                                    None,
+                                )
+                                if tail_gap_idx is None:
+                                    break
+                                tail_span_ms = pts_5d[-1][0] - pts_5d[tail_gap_idx][0]
+                                tail_is_live = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                                if tail_span_ms < 15 * 60 * 1000 and not tail_is_live:
+                                    pts_5d = pts_5d[:tail_gap_idx]
+                                else:
                                     break
                     rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
                     chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000

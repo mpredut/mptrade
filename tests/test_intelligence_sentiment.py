@@ -9227,3 +9227,107 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert "-13.25%" in str(pt_tele_134.get("7d Price Range & Swing Structure", ""))
 
 
+def test_premarket_gap_preservation_and_symmetric_sell_late_scale(tmp_path, monkeypatch):
+    """Verify PRE-market >1% gap bars are preserved across _chart and enrich_24h_and_microstructure,
+    SELL late intelligence scale applies _suggested_scale_by_side['SELL'], and cancel_existing_ai_open_orders
+    discards superseded submit_pending order_retry entries."""
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from providers.execution_audit import cancel_existing_ai_open_orders
+    from providers.quantity import extract_regime_buy_scale
+
+    # 1. Pre-market bars after 8h overnight gap (>1% above regularMarketPrice) are preserved in enrich_24h_and_microstructure
+    cdir = tmp_path / "premarket_cache"
+    cdir.mkdir()
+    now_s = 1_793_958_000.0
+    rth_close_ms = int((now_s - 43200.0) * 1000)   # 12h ago (yesterday RTH close, volume > 0)
+    post_end_ms = int((now_s - 32400.0) * 1000)    # 9h ago (yesterday post-market end, volume = 0)
+    pre_start_ms = int((now_s - 3600.0) * 1000)    # 1h ago (today pre-market start after 8h gap, volume = 0, +4.3% higher)
+    bars_5d = [
+        [rth_close_ms - 86400_000, 198.0, 1000.0],
+        [rth_close_ms - 300_000, 181.40, 2500.0],
+        [rth_close_ms, 181.59, 3200.0],
+        [post_end_ms, 180.50, 0.0],
+        [pre_start_ms, 187.59, 0.0],
+        [int((now_s - 1800.0) * 1000), 188.04, 0.0],
+        [int((now_s - 900.0) * 1000), 189.47, 0.0],
+        [int((now_s - 300.0) * 1000), 189.30, 0.0],
+        [int(now_s * 1000), 189.47, 0.0],
+    ]
+    (cdir / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": bars_5d}}),
+        encoding="utf-8",
+    )
+    pt_nvda = {"NVDA_US_EQ": {"price": 189.47}}
+    micro_nvda: dict = {}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_nvda, micro_nvda, {}, {}, now_s)
+    # 15m delta must compare 189.47 against 189.47 (0.0%), NOT against yesterday's 180.50 (+4.97%)
+    assert abs(float(pt_nvda["NVDA_US_EQ"]["chg_15m_pct"])) < 0.05
+    assert abs(float(pt_nvda["NVDA_US_EQ"]["chg_30m_pct"]) - ((189.47 - 188.04) / 188.04 * 100.0)) < 0.05
+    assert abs(float(pt_nvda["NVDA_US_EQ"]["chg_1h_pct"]) - ((189.47 - 187.59) / 187.59 * 100.0)) < 0.05
+
+    # 2. Symmetric SELL late intelligence scale reads _suggested_scale_by_side['SELL'] while ignoring regime suggested_scale
+    ctx_sell = {"suggested_scale": 0.25, "_suggested_scale_by_side": {"BUY": 0.25}}
+    assert extract_regime_buy_scale(ctx_sell, side="SELL") is None
+    assert extract_regime_buy_scale(ctx_sell, side="BUY") == 0.25
+    ctx_sell["_suggested_scale_by_side"]["SELL"] = 0.31
+    assert extract_regime_buy_scale(ctx_sell, side="SELL") == 0.31
+
+    # 3. cancel_existing_ai_open_orders discards superseded submit_pending order_retry records when include_bot_orders=True
+    import order_retry
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+    q_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "bot_deferred_sell_1",
+                        "prefix": "MO_TA_OR",
+                        "symbol": "BTCUSDC",
+                        "side": "SELL",
+                        "qty": 0.02153,
+                        "created_ts": now_s - 20.0,
+                        "revision": 0,
+                        "lifecycle": "submit_pending",
+                        "place_kwargs": {"client_order_id": "MO_TA_OR_bot_deferred_sell_1"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": "ai_accepted_sell_1",
+                        "prefix": "OR",
+                        "intent_id": "intent_1_sell_btcusdc",
+                        "symbol": "BTCUSDC",
+                        "side": "SELL",
+                        "qty": 0.00771,
+                        "order_id": "10744797899",
+                        "created_ts": now_s - 60.0,
+                        "revision": 0,
+                        "lifecycle": "accepted",
+                        "place_kwargs": {"client_order_id": "AI_intent_1_sell_btcusdc"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _DummyInst:
+        symbol = "BTCUSDC"
+
+        def open_orders(self):
+            return [{"orderId": "10744856617", "clientOrderId": "MO_TA_OR_1", "side": "SELL", "price": "76046.32"}]
+
+        def cancel_order(self, oid):
+            return True
+
+    canceled = cancel_existing_ai_open_orders(_DummyInst(), "SELL", include_bot_orders=True)
+    assert canceled == ["10744856617"]
+    remaining_ids = [r.get("id") for r in order_retry.load_all()]
+    assert remaining_ids == ["ai_accepted_sell_1"]
+
+
+

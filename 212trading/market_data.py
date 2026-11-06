@@ -187,7 +187,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         if reg_start is not None and bars:
             reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or float("inf"))]
             cleaned_pre_post = []
-            for b in bars:
+            for idx, b in enumerate(bars):
                 is_outside_reg = b[0] < reg_start or (reg_end is not None and b[0] > reg_end)
                 if is_outside_reg and (b[2] is None or b[2] <= 0.0):
                     ref_px = (
@@ -196,7 +196,13 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
                         else ref_meta_px
                     )
                     if ref_px is not None and ref_px > 0.0 and abs(b[1] - ref_px) / ref_px > 0.01:
-                        continue
+                        near_bars = [
+                            nb for j, nb in enumerate(bars)
+                            if j != idx and abs(nb[0] - b[0]) <= 1800 and b[1] > 0.0 and abs(nb[1] - b[1]) / b[1] <= 0.01
+                        ]
+                        has_session_peer = len(near_bars) >= 2 or any(abs(nb[1] - b[1]) > 1e-9 for nb in near_bars)
+                        if not has_session_peer:
+                            continue
                 cleaned_pre_post.append(b)
             if cleaned_pre_post:
                 bars = cleaned_pre_post

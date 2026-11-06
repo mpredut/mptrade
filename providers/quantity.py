@@ -415,15 +415,19 @@ def parse_scale_factor(val: Any, default: Optional[float] = None) -> Optional[fl
     return safe_float(val, default=default)
 
 
-def extract_regime_buy_scale(regime_context: Any, explicit_scale: Any = None) -> Optional[float]:
-    """Extract the BUY risk-reduction scale factor from ``explicit_scale`` or ``regime_context``."""
+def extract_regime_buy_scale(
+    regime_context: Any, explicit_scale: Any = None, side: str = "BUY"
+) -> Optional[float]:
+    """Extract the risk-reduction scale factor from ``explicit_scale`` or ``regime_context``."""
     raw_scale = explicit_scale
+    side_u = normalize_side(side) or "BUY"
     if raw_scale is None and regime_context is not None:
-        raw_scale = obj_attr(regime_context, "suggested_scale")
+        if side_u == "BUY":
+            raw_scale = obj_attr(regime_context, "suggested_scale")
         if raw_scale is None:
             by_side = obj_attr(regime_context, "_suggested_scale_by_side")
             if isinstance(by_side, dict):
-                raw_scale = by_side.get("BUY")
+                raw_scale = by_side.get(side_u)
     return parse_scale_factor(raw_scale, default=None)
 
 

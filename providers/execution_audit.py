@@ -2147,11 +2147,11 @@ def cancel_existing_ai_open_orders(
     if not callable(open_fn) or not callable(cancel_fn) or (not any_side and not want_side):
         return canceled_ids
     excluded = {str(x) for x in (exclude_order_ids or ()) if x}
+    ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
     try:
         raw_open = open_fn()
         if not isinstance(raw_open, list):
             return canceled_ids
-        ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
@@ -2188,6 +2188,52 @@ def cancel_existing_ai_open_orders(
     except Exception as e:
         if log:
             log.debug("Open order scan failed before replacement: %s", e)
+
+    sym_str = str(getattr(inst, "symbol", "") or "").strip().upper()
+    if sym_str and not hasattr(getattr(inst, "symbol", None), "_mock_name"):
+        try:
+            import order_retry
+            default_q = os.path.abspath(str(resolve_cachedb_filepath("order_retry_queue.jsonl")))
+            active_q = os.path.abspath(str(getattr(order_retry, "QUEUE_FILE", "")))
+            if active_q != default_q or not hasattr(cancel_fn, "_mock_name"):
+                canceled_set = set(canceled_ids)
+                to_discard: list[str] = []
+                for rec in order_retry.load_all():
+                    if not isinstance(rec, dict) or str(rec.get("symbol") or "").strip().upper() != sym_str:
+                        continue
+                    rec_id = str(rec.get("id") or "").strip()
+                    if not rec_id:
+                        continue
+                    rec_oid = str(rec.get("order_id") or "").strip()
+                    if rec_oid and rec_oid in canceled_set:
+                        to_discard.append(rec_id)
+                        continue
+                    lc = str(rec.get("lifecycle") or "submit_pending").strip().lower()
+                    if lc not in ("submit_pending", "awaiting_cancel"):
+                        continue
+                    rec_side = normalize_side(rec.get("side"))
+                    if not any_side and rec_side != want_side:
+                        continue
+                    rec_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
+                    rec_probe = {
+                        "orderId": rec_oid,
+                        "clientOrderId": rec_kw.get("client_order_id") or rec.get("prefix") or "",
+                        "intent_id": rec.get("intent_id") or "",
+                    }
+                    is_ai_rec = resolve_order_actor(rec_probe, ai_oids) == "AI"
+                    if not is_ai_rec and not include_bot_orders:
+                        continue
+                    to_discard.append(rec_id)
+                if to_discard:
+                    order_retry.discard(to_discard)
+                    if log:
+                        log.info(
+                            "[INTENT GATEWAY] Discarded %d superseded order_retry record(s) on %s: %s",
+                            len(to_discard), sym_str, to_discard,
+                        )
+        except Exception as re_err:
+            if log:
+                log.debug("Order retry queue cleanup skipped on %s: %s", sym_str, re_err)
     return canceled_ids
 
 

@@ -416,15 +416,19 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             valid_back = p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins))
             if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
                 valid_back = False
-            if not valid_back and 15.0 <= mins <= 30.0 and span_ms >= max(min_span_ms, mins * 60000.0):
+            if not valid_back and 15.0 <= mins <= 180.0 and span_ms >= max(min_span_ms, mins * 60000.0):
                 target_ms = now_ms - mins * 60000.0
-                max_fwd_ms = now_ms - mins * 0.75 * 60000.0
+                max_fwd_ms = now_ms - (30.0 if mins == 60.0 else mins * 0.75) * 60000.0
                 fwd_pt = next(
                     ((t_f, p_f) for t_f, p_f in clean_series if target_ms < t_f <= max_fwd_ms and t_f not in seen_sample_tms),
                     None,
                 )
                 if fwd_pt is not None and fwd_pt[1] > 0:
                     tms, p_ref, valid_back = fwd_pt[0], fwd_pt[1], True
+                elif tms is not None and p_ref > 0 and tms not in seen_sample_tms:
+                    nxt_t = next((t_f for t_f, _ in clean_series if t_f > tms), None)
+                    if nxt_t is not None and tms <= target_ms < nxt_t and (nxt_t - tms) > 2.0 * 3600000.0:
+                        valid_back = True
             if valid_back:
                 if tms is not None:
                     seen_sample_tms.add(tms)

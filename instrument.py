@@ -177,10 +177,10 @@ class Instrument:
         applied_scale: float, side_u: str = "BUY"
     ) -> tuple[float, float, Optional[str]]:
         """Scale down quantity if intelligence guards recommended risk reduction after initial calculation."""
-        if regime_context is None or isinstance(qty, bool) or side_u != "BUY":
+        if regime_context is None or isinstance(qty, bool) or side_u not in ("BUY", "SELL"):
             return qty, applied_scale, None
         qty_f = safe_pos_float(qty, default=None)
-        scale_f = extract_regime_buy_scale(regime_context)
+        scale_f = extract_regime_buy_scale(regime_context, side=side_u)
         app_f = 1.0 if isinstance(applied_scale, bool) else safe_pos_float(applied_scale, default=None)
         if qty_f is None or scale_f is None or app_f is None or not (0.0 < scale_f < app_f):
             return qty, applied_scale, None
