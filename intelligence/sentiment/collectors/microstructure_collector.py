@@ -7,10 +7,11 @@ import os
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import extract_current_price_item, load_local_module, safe_pos_int, safe_pos_int
+from botcore import extract_current_price_item, load_local_module, safe_pos_int
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    clean_symbol_key,
     compatible_quote_suffixes,
     legacy_filenames_for,
     normalize_venue_name,
@@ -151,11 +152,13 @@ def _wrap_cached_ohlc_fn(
 
 def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     sym_u = str(sym or "").strip().upper()
+    sym_clean = clean_symbol_key(sym_u)
     inst_map = inst_by_sym or {}
     inst_obj = (
-        (inst_map.get(f"binance:{sym_u}") if sym_u != "HYPEUSDC" else None)
+        (inst_map.get(f"binance:{sym_clean}") if sym_clean != "HYPEUSDC" else None)
         or inst_map.get(sym)
         or inst_map.get(sym_u)
+        or inst_map.get(sym_clean)
     )
     ohlc_fn = getattr(getattr(inst_obj, "_provider", None), "ohlc_series", None)
     if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
@@ -164,7 +167,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         prov_key = ""
         sym_parts = split_symbol_assets(sym_u) if sym_u and not is_equity_symbol(sym_u) else None
         sym_q = sym_parts[1] if sym_parts is not None else ""
-        if sym_u == "HYPEUSDC":
+        if sym_clean == "HYPEUSDC":
             prov_key = "hyperliquid"
             if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
                 _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
@@ -1231,9 +1234,12 @@ def _refresh_stale_t212_cached_positions(
         from state_io import save_json_state
 
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
-        t212_rows = T212Provider()._client().get_portfolio()
+        try:
+            t212_rows = T212Provider()._client().get_portfolio()
+        except Exception:
+            t212_rows = []
         if not isinstance(t212_rows, list):
-            return False
+            t212_rows = []
         t212_dirty = False
         seen_portfolio_tickers: set[str] = set()
         for row in t212_rows:
@@ -1275,7 +1281,13 @@ def _refresh_stale_t212_cached_positions(
                     prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
                     new_c_px = round(cur_px_fb, 4)
                     if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or prev_c_ts <= 0.0:
+                        c_free = safe_pos_float(
+                            c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
+                            default=0.0,
+                        ) or 0.0
                         c_pos["price"] = new_c_px
+                        if c_free > 0.0:
+                            c_pos["value_usd"] = round(c_free * cur_px_fb, 2)
                         c_pos["ts"] = now_ts
                         t212_dirty = True
             except Exception:

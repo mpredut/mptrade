@@ -13,6 +13,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
+    clean_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
@@ -1027,7 +1028,16 @@ def load_symbol_best_recent_fills(
                 else compatible_quote_suffixes(cand_u)
             )
             same_quote_fam = 1 if (not sym_quotes or cand_quotes == sym_quotes) else 0
-            exact_sym = 1 if (cand_u == sym_upper or (cache_venue == "hyperliquid" and cand_u == base_upper and sym_upper == f"{base_upper}USDC")) else 0
+            sym_clean = clean_symbol_key(sym_upper)
+            cand_clean = clean_symbol_key(cand_u)
+            exact_sym = (
+                1
+                if (
+                    cand_clean == sym_clean
+                    or (cache_venue == "hyperliquid" and cand_u == base_upper and sym_clean == f"{base_upper}USDC")
+                )
+                else 0
+            )
             cand_ts = max(
                 safe_nonneg_float((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
                 safe_nonneg_float((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
@@ -1100,6 +1110,8 @@ def load_symbol_best_recent_fills(
                             and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
                         ):
                             fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
+                        fills["active_avg_buy_px"] = round(cyc_avg, 6)
+                    elif fills.get("active_avg_buy_px") is None and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
                         fills["active_avg_buy_px"] = round(cyc_avg, 6)
                     if fills.get("last_buy") is None and cyc_lb is not None:
                         lb_fb: Dict[str, Any] = {

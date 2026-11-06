@@ -1112,7 +1112,11 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         if not pinfo.get("recent_swings_7d") and l24 is not None and h24 is not None:
             sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur, l24), 6), round(max(sw_hi, p_cur, h24), 6)
         else:
-            sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur), 6), round(max(sw_hi, p_cur, h24 if h24 is not None and not pinfo.get("recent_swings_7d") else p_cur), 6)
+            sw_lo_new = round(
+                min(sw_lo, p_cur, *([l24] if l24 is not None and l24 < sw_lo and not pinfo.get("major_swing_low_px") else [])),
+                6,
+            )
+            sw_hi_new = round(max(sw_hi, p_cur, h24 if h24 is not None and not pinfo.get("recent_swings_7d") else p_cur), 6)
         pinfo["swing_low_px"], pinfo["swing_high_px"] = sw_lo_new, sw_hi_new
         if sw_lo_new > 0.0:
             pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, sw_lo_new)

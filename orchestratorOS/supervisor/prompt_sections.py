@@ -81,16 +81,22 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     )
     lb_px_f = _parse_finite_float(cyc.get("last_buy_price"), None)
     avg_c_f = _parse_finite_float(cyc.get("avg_cost_px"), None)
+    spot_px_f = _parse_finite_float(cyc.get("_spot_px"), None)
     lb_pnl_sfx = ""
     if (
         lb_px_f is not None
         and lb_px_f > 0.0
         and avg_c_f is not None
         and avg_c_f > 0.0
-        and dd_f is not None
+        and (dd_f is not None or (spot_px_f is not None and spot_px_f > 0.0))
         and not _same_anchor_px(lb_px_f, avg_c_f)
     ):
-        est_spot = avg_c_f * (1.0 + dd_f / 100.0)
+        if spot_px_f is not None and spot_px_f > 0.0:
+            est_spot = spot_px_f
+        else:
+            est_spot = avg_c_f * (1.0 + dd_f / 100.0)
+            if avg_c_f >= 100.0 and abs(est_spot - round(est_spot, 2)) <= avg_c_f * 0.00005:
+                est_spot = round(est_spot, 2)
         lb_pnl = ((est_spot - lb_px_f) / lb_px_f) * 100.0
         lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
     return (
@@ -1400,14 +1406,21 @@ def _format_portfolio_section(
             "  * Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)"
         )
     pos_lifo_pnl_by_vs: Dict[Tuple[str, str], float] = {}
+    pos_px_by_vs: Dict[Tuple[str, str], float] = {}
     for p_it in (ps.get("tradable_positions") or ()):
-        if isinstance(p_it, dict) and p_it.get("symbol") and p_it.get("lifo_realized_pnl_usd") is not None:
-            if (lp_v := _parse_finite_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
-                p_v_norm = normalize_venue_name(p_it.get("venue"))
-                p_sym_u = str(p_it["symbol"]).strip().upper()
-                for cand_s in (p_sym_u, *cache_symbol_variants(p_sym_u, include_base=True)):
-                    pos_lifo_pnl_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), lp_v)
-                pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
+        if isinstance(p_it, dict) and p_it.get("symbol"):
+            p_v_norm = normalize_venue_name(p_it.get("venue"))
+            p_sym_u = str(p_it["symbol"]).strip().upper()
+            p_cands = (p_sym_u, *cache_symbol_variants(p_sym_u, include_base=True))
+            if (p_px := _parse_finite_float(p_it.get("price"), None)) is not None and p_px > 0.0:
+                for cand_s in p_cands:
+                    pos_px_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), p_px)
+                pos_px_by_vs[(p_v_norm, p_sym_u)] = p_px
+            if p_it.get("lifo_realized_pnl_usd") is not None:
+                if (lp_v := _parse_finite_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
+                    for cand_s in p_cands:
+                        pos_lifo_pnl_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), lp_v)
+                    pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
     for cyc_key, venue_lbl, venue_id in (
         ("kraken_cycles", "Kraken", "kraken"),
         ("hyperliquid_cycles", "Hyperliquid", "hyperliquid"),
@@ -1422,6 +1435,9 @@ def _format_portfolio_section(
                     c_rpnl = _parse_finite_float(c_data.get("realized_pnl_usd"), None)
                     if lp_sym is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_sym > c_rpnl:
                         c_data = {**c_data, "realized_pnl_usd": lp_sym}
+                    if c_data.get("_spot_px") is None:
+                        if (sp_px := pos_px_by_vs.get((venue_id, c_up), pos_px_by_vs.get(("", c_up)))) is not None:
+                            c_data = {**c_data, "_spot_px": sp_px}
                 lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
     if ps.get("kraken_xstocks"):
         xs_raw = ps["kraken_xstocks"]

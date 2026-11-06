@@ -9094,6 +9094,72 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert abs(spy_item["chg_24h_pct"] - (-3.91)) <= 0.02
     assert abs(spy_item["globex_session_chg_pct"] - 0.42) <= 0.02
 
+    # Bug 133: collect_pretrade_telemetry & load_symbol_best_recent_fills normalize underscore symbols (HYPE_USDC)
+    cdir_us = tmp_path / "cdir_underscore_sym"
+    cdir_us.mkdir(exist_ok=True)
+    hype_bars = [
+        [int((now_cd - (20 - i) * 60) * 1000), round(77.50 + i * 0.01, 4), 100.0]
+        for i in range(21)
+    ]
+    (cdir_us / "cache_24_price_HYPEUSDC.json").write_text(
+        json.dumps({"items": {"HYPEUSDC": hype_bars}}),
+        encoding="utf-8",
+    )
+    (cdir_us / "orderbook_depth_HYPEUSDC.json").write_text(
+        json.dumps({
+            "symbol": "HYPEUSDC",
+            "imbalance_ratio": 0.91,
+            "mid_price": 77.3135,
+            "best_bid": 77.312,
+            "best_ask": 77.315,
+            "spread_bps": 0.39,
+            "bid_depth_usd": 532631.0,
+            "ask_depth_usd": 53009.0,
+        }),
+        encoding="utf-8",
+    )
+    (cdir_us / "cache_order_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    {"id": "k-buy-1", "side": "buy", "status": "closed", "price": 80.0, "filled": 25.0, "timestamp": int((now_cd - 3600) * 1000)},
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    (cdir_us / "cache_trade_hyperliquid.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPE": [
+                    {"oid": "hl-buy-1", "side": "B", "status": "filled", "px": 83.8, "sz": 5.75, "time": int((now_cd - 7200) * 1000)},
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    tel_hype_us = collect_pretrade_telemetry("HYPE_USDC", cachedb_dir=str(cdir_us))
+    assert "now:77.3135" in str(tel_hype_us.get("24h Multi-Horizon Price Evolution"))
+    assert "5.75 @ 83.8" in str(tel_hype_us.get("Recent Venue Fills"))
 
+    # Bug 134: _format_venue_cycle_line reconciles pnl_vs_last_buy without 2-decimal dd_pct rounding drift
+    from orchestratorOS.supervisor.prompt_sections import _format_venue_cycle_line
 
+    spcx_cyc_line = _format_venue_cycle_line(
+        "t212",
+        "SPCX_US_EQ",
+        {
+            "qty": 19.627275,
+            "cost_usd": 2845.73,
+            "avg_cost_px": 144.988,
+            "entry_price": 149.84,
+            "last_buy_price": 140.51,
+            "last_sell_price": 152.71,
+            "last_exit_kind": "TP",
+            "dca_buys": 1,
+            "dd_pct": -12.9,
+            "pnl_vs_avg_pct": -12.9,
+        },
+    )
+    assert "(pnl_vs_last_buy=-10.13%)" in spcx_cyc_line
 

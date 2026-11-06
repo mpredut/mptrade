@@ -9,6 +9,7 @@ from botcore import extract_current_price_item, load_local_module
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    clean_symbol_key,
     compatible_quote_suffixes,
     get_cachedb_dir,
     resolve_cachedb_filepath,
@@ -185,9 +186,9 @@ def collect_pretrade_telemetry(
         disk_d = _disk_telem(prefix)
         if snap is not None and disk_d is not None:
             if prefix == "orderbook_depth_":
-                sym_u_p2 = str(symbol or "").strip().upper()
-                snap_sym_p2 = str(obj_attr(snap, "symbol") or "").strip().upper()
-                disk_sym_p2 = str(disk_d.get("symbol") or "").strip().upper()
+                sym_u_p2 = clean_symbol_key(symbol)
+                snap_sym_p2 = clean_symbol_key(obj_attr(snap, "symbol"))
+                disk_sym_p2 = clean_symbol_key(disk_d.get("symbol"))
                 if snap_sym_p2 and disk_sym_p2 == sym_u_p2 and snap_sym_p2 != sym_u_p2:
                     return disk_d
                 if (
@@ -332,7 +333,7 @@ def collect_pretrade_telemetry(
                 _refresh_stale_t212_cached_positions(vb_d, vb_path, _pt_time.time())
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
-                    if str(vb_v.get("symbol") or vb_k.split(":", 2)[-1]).strip().upper() == str(symbol).strip().upper():
+                    if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(symbol):
                         vb_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
                         vb_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
                         if vb_px > 0.0:
@@ -640,7 +641,7 @@ def collect_pretrade_telemetry(
                         )
                         telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
             ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
-            is_exact_ob_sym = str(cur_m_info.get("_source_cand") or symbol).strip().upper() == str(symbol).strip().upper()
+            is_exact_ob_sym = clean_symbol_key(cur_m_info.get("_source_cand") or symbol) == clean_symbol_key(symbol)
             if (
                 not is_eq_sym
                 and is_usd_sym
@@ -776,7 +777,7 @@ def collect_pretrade_telemetry(
                 ]
                 if len(vals_7d) < 2:
                     continue
-                if ck != symbol and (compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1]))):
+                if clean_symbol_key(ck) != clean_symbol_key(symbol) and (compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1]))):
                     continue
                 w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
                 w_span_7d = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
@@ -799,7 +800,7 @@ def collect_pretrade_telemetry(
 
                 now_s_7d = _pt_time.time()
                 if last_alt_pt is None or abs(now_s_7d * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0:
-                    sym_u_7d = str(symbol).strip().upper()
+                    sym_u_7d = clean_symbol_key(symbol) or str(symbol).strip().upper()
                     ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
                     if callable(ohlc_fn_7d):
                         vals_7d_ohlc = _load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, now_s_7d, m24, cur_px_est)
@@ -982,6 +983,7 @@ def collect_pretrade_telemetry(
                     "slope_15m", "growth_15m", "trend_15m",
                     "slope_2_5h", "growth_2_5h", "trend_2_5h",
                     "gradient_recent_fast", "gradient_recent",
+                    "vol_1h_pct",
                 ):
                     t_entry.pop(k_ov, None)
                 t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
@@ -1103,7 +1105,7 @@ def collect_pretrade_telemetry(
                 cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
                 for cand in quote_variants:
                     cand_u = str(cand or "").strip().upper()
-                    if not cand_u or cand_u == str(symbol).strip().upper():
+                    if not cand_u or clean_symbol_key(cand_u) == clean_symbol_key(symbol):
                         continue
                     sib_ob_d = _rj(os.path.join(cachedb_dir, f"orderbook_depth_{cand_u}.json"))
                     if not isinstance(sib_ob_d, dict):
