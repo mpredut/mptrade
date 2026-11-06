@@ -1139,7 +1139,8 @@ def enrich_positions_with_orders_and_cycles(
                     )
                     ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
                     ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
-                    if hi_24h > 0.0 and not _prices_diverged(pos_px_f, hi_24h, threshold=0.35):
+                    ref_pk_anchor = max(pos_px_f, act_avg_pk or 0.0, ls_px_pk)
+                    if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
                         seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
                         set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
         for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
@@ -1251,7 +1252,8 @@ def enrich_positions_with_orders_and_cycles(
                             hi_24h_p = _resolve_cycle_high_since(
                                 p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                             )
-                            if hi_24h_p > 0.0 and not _prices_diverged(pos_px_f, hi_24h_p, threshold=0.35):
+                            ref_pk_anchor_p = max(pos_px_f, act_avg_c or 0.0, c_entry_c or 0.0, c_pk_sync)
+                            if hi_24h_p > 0.0 and not _prices_diverged(ref_pk_anchor_p, hi_24h_p, threshold=0.35):
                                 seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
                                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
                                 cyc["pos_peak"] = round(seed_pk_p, 6)
@@ -1376,7 +1378,8 @@ def enrich_positions_with_orders_and_cycles(
                         ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                         ls_c_ts = int(safe_pos_float(ls_c_d.get("ts_ms"), default=0) or 0)
                         ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
-                        if hi_24h_c > 0.0 and not _prices_diverged(c_px, hi_24h_c, threshold=0.35):
+                        ref_pk_anchor_c = max(c_px, c_avg or 0.0, c_entry or 0.0, ls_c_px)
+                        if hi_24h_c > 0.0 and not _prices_diverged(ref_pk_anchor_c, hi_24h_c, threshold=0.35):
                             c_pk = max(
                                 hi_24h_c,
                                 ls_c_px,

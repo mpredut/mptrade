@@ -8805,6 +8805,51 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert pinfo_ada["rally_from_swing_low_pct"] == 3.57
     assert "major_swing_low_px" not in pinfo_ada
 
+    # Cycle high seeding anchors _prices_diverged against max(pos_px, avg_cost_px, entry_price) so >26% peak drawdowns preserve trail_peak/pos_peak
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+
+    cdir_pk = tmp_path / "cdir_pk"
+    cdir_pk.mkdir(exist_ok=True)
+    oldest_rgnt_ms = int((now_cd - 5 * 86400) * 1000)
+    (cdir_pk / "cache_365_price_RGNT_US_EQ.jsonl").write_text(
+        json.dumps({"s": "RGNT_US_EQ", "i": [oldest_rgnt_ms + 3600000, 1.60]}) + "\n",
+        encoding="utf-8",
+    )
+    pos_rgnt_dd = [{"venue": "t212", "symbol": "RGNT_US_EQ", "price": 1.17, "free_base": 122.51, "value_usd": 143.34}]
+    t212_cyc_dd = {
+        "RGNT_US_EQ": {
+            "qty": 122.51,
+            "cost_usd": 176.35,
+            "avg_cost_px": 1.4395,
+            "entry_price": 1.4395,
+            "pos_peak": 1.4395,
+            "last_buy_price": 1.43,
+            "last_sell_price": 1.37,
+        }
+    }
+    ro_rgnt_dd = {
+        "open_lots": [{"qty": 122.51, "price": 1.4395, "ts_ms": oldest_rgnt_ms}],
+        "active_avg_buy_px": 1.4395,
+        "last_buy": {"price": 1.43, "qty": 72.14, "ts_ms": oldest_rgnt_ms + 7200000},
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_rgnt_dd,
+        {"RGNT_US_EQ": {"price": 1.17, "high_24h": 1.36}},
+        {},
+        {"t212": {"RGNT_US_EQ": ro_rgnt_dd}},
+        {"RGNT_US_EQ": ro_rgnt_dd},
+        {},
+        {},
+        t212_cyc_dd,
+        {},
+        cache_dir=str(cdir_pk),
+    )
+    assert pos_rgnt_dd[0]["trailing_peak"] == 1.6
+    assert pos_rgnt_dd[0]["dd_from_peak_pct"] == -26.88
+    assert t212_cyc_dd["RGNT_US_EQ"]["pos_peak"] == 1.6
+    assert t212_cyc_dd["RGNT_US_EQ"]["dd_from_peak_pct"] == -26.88
+
+
 
 
 
