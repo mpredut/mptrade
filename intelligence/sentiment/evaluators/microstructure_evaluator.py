@@ -682,6 +682,16 @@ def compute_cross_venue_arb_metrics(
             break
 
 
+def _is_unnormalized_zero_oi_whale_snap(snap: Dict[str, Any]) -> bool:
+    """Return True if a history snapshot has an unnormalized 0% or 100% whale_long_pct with zero OI."""
+    if not isinstance(snap, dict) or snap.get("whale_long_pct") is None:
+        return False
+    if (safe_pos_float(snap.get("oi_usd"), default=0.0) or 0.0) > 0.0:
+        return False
+    wl_v = safe_pos_float(snap.get("whale_long_pct"), default=0.0) or 0.0
+    return wl_v <= 0.0 or wl_v >= 1.0
+
+
 def _resolve_non_static_prev_metric(
     h_list: List[Dict[str, Any]],
     eff_now: float,
@@ -696,13 +706,7 @@ def _resolve_non_static_prev_metric(
     is_scale_key = key in ("whale_long_pct", "ob_imbalance")
     if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
         for cand in reversed(h_list):
-            if not isinstance(cand, dict):
-                continue
-            if (
-                cand.get("whale_long_pct") is not None
-                and (safe_pos_float(cand.get("whale_long_pct"), default=0.0) or 0.0) <= 0.0
-                and (safe_pos_float(cand.get("oi_usd"), default=0.0) or 0.0) <= 0.0
-            ):
+            if not isinstance(cand, dict) or _is_unnormalized_zero_oi_whale_snap(cand):
                 continue
             cand_ts = normalize_epoch_sec(safe_pos_float(cand.get("ts"), default=0.0) or 0.0, default=0.0)
             if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
@@ -798,9 +802,38 @@ def update_microstructure_cycle_deltas(
             if cur_cvd is not None and p_cvd is not None:
                 delta_d["cvd_15m_delta_usd"] = round(cur_cvd - p_cvd, 2)
                 delta_d["prev_cvd_15m_usd"] = round(p_cvd, 2)
+            wl_ref_snap: Optional[Dict[str, Any]] = (
+                ref_snap
+                if not _is_unnormalized_zero_oi_whale_snap(ref_snap)
+                else (
+                    next(
+                        (
+                            s
+                            for s in reversed(h_list)
+                            if 180.0 <= (eff_now - float(s["ts"])) <= 7200.0 and not _is_unnormalized_zero_oi_whale_snap(s)
+                        ),
+                        None,
+                    )
+                    or next(
+                        (
+                            s
+                            for s in reversed(h_list)
+                            if 20.0 <= (eff_now - float(s["ts"])) <= 7200.0 and not _is_unnormalized_zero_oi_whale_snap(s)
+                        ),
+                        None,
+                    )
+                )
+            )
             p_wl = _resolve_non_static_prev_metric(
-                h_list, eff_now, "whale_long_pct", cur_wl, clean_scale(ref_snap.get("whale_long_pct"), default=None, allow_percent=True),
-                static_tol=1e-5, min_diff=1e-4,
+                h_list,
+                eff_now,
+                "whale_long_pct",
+                cur_wl,
+                clean_scale(wl_ref_snap.get("whale_long_pct"), default=None, allow_percent=True)
+                if isinstance(wl_ref_snap, dict)
+                else None,
+                static_tol=1e-5,
+                min_diff=1e-4,
             )
             if cur_wl is not None and p_wl is not None:
                 delta_d["whale_long_delta_pct"] = round(cur_wl - p_wl, 4)

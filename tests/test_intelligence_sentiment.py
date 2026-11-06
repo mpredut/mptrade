@@ -8669,6 +8669,35 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert eq_m["taker_buy_sell_ratio"] == 0.80
     assert eq_m["taker_buy_vol_usd"] > 0.0
 
+    # update_microstructure_cycle_deltas ignores unnormalized whale_long_pct=0.0 in ref_snap (t-360s) on zero-OI symbols
+    import json
+    from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
+
+    now_cd = 1_793_910_000.0
+    (tmp_path / "microstructure_cycle_history.json").write_text(
+        json.dumps(
+            {
+                "SPCX_US_EQ": [
+                    {"ts": now_cd - 360.0, "ob_imbalance": 0.45, "cvd_15m_usd": -100000.0, "whale_long_pct": 0.0},
+                    {"ts": now_cd - 200.0, "ob_imbalance": 0.46, "cvd_15m_usd": -90000.0, "whale_long_pct": 0.40},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cd_map = {
+        "SPCX_US_EQ": {
+            "ob_imbalance": 0.47,
+            "cvd_15m_usd": -80000.0,
+            "whale_long_pct": 0.4444,
+            "oi_usd": 0.0,
+            "taker_buy_sell_ratio": 0.80,
+        }
+    }
+    update_microstructure_cycle_deltas(str(tmp_path), cd_map, now_ts=now_cd)
+    assert cd_map["SPCX_US_EQ"]["cycle_delta"]["prev_whale_long_pct"] == 0.40
+    assert cd_map["SPCX_US_EQ"]["cycle_delta"]["whale_long_delta_pct"] == 0.0444
+
 
 
 
