@@ -960,11 +960,29 @@ class Strategy(BaseSpotMixin):
             )
             if source_order is pending_for_fill:
                 self._persist_pending_submit(None)
+            self._unconfirmed_zero_polls = 0
             self._cancel_open("SELL")
 
         elif real_qty < prev_qty - 1e-6:
             sold = prev_qty - real_qty
             exact_price = self._exact_execution_price("SELL", sold, status_cache)
+            has_tracked_sell = (
+                any(o.get("side") == "SELL" for o in self.s["orders"])
+                or bool(pending_for_fill and pending_for_fill.get("side") == "SELL")
+            )
+            hist_fn = getattr(self.client, "latest_filled_order_for_ticker", None)
+            if (
+                real_qty <= 1e-9
+                and exact_price is None
+                and not has_tracked_sell
+                and callable(hist_fn)
+                and not hasattr(hist_fn, "_mock_name")
+                and getattr(self, "_unconfirmed_zero_polls", 0) < 1
+            ):
+                self._unconfirmed_zero_polls = getattr(self, "_unconfirmed_zero_polls", 0) + 1
+                log(f"  [STRAT] {self.yahoo_sym} portfolio qty transiently 0 with no tracked SELL or fill history — awaiting confirmation")
+                return False
+            self._unconfirmed_zero_polls = 0
             sell_price = exact_price or price
             gross, fee, net = _sell_pnl(prev_avg, sell_price, sold, self.p.fx_fee_pct)
             self.s["realized_pnl_usd"] += gross
@@ -985,6 +1003,7 @@ class Strategy(BaseSpotMixin):
                 self._persist_pending_submit(None)
 
         else:
+            self._unconfirmed_zero_polls = 0
             self._sync_real_position_cost(real_qty, real_avg, sync_spent_only_when_held=True)
 
         for o in list(self.s["orders"]):

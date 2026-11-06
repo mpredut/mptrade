@@ -943,6 +943,20 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         obs_engine.step(112.0)
         self.assertAlmostEqual(obs_engine.s["pos_peak"], 112.0)
 
+        # Transient 1-poll empty portfolio with no tracked SELL and no fill history must not emit phantom SELL
+        obs_client.get_portfolio.return_value = []
+        obs_client.latest_filled_order_for_ticker = lambda tkr, side=None, refresh=False: None
+        with patch.object(strategy, "notify") as mock_notify:
+            self.assertFalse(obs_engine._reconcile_real(90.0))
+            mock_notify.assert_not_called()
+        self.assertAlmostEqual(obs_engine.s["qty"], 1.0)
+        # Next poll restores position cleanly without ADOPTED or loss_band reset
+        obs_client.get_portfolio.return_value = [{"ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0}]
+        with patch.object(strategy, "notify") as mock_notify:
+            self.assertTrue(obs_engine._reconcile_real(90.0))
+            mock_notify.assert_not_called()
+        self.assertEqual(obs_engine._unconfirmed_zero_polls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

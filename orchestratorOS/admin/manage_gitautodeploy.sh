@@ -44,7 +44,7 @@ g() {
         git -C "$ROOT" "$@"
     fi
 }
-alert() { send_os_ntfy "$1" "$2" default || true; }
+alert() { send_os_ntfy "$1" "$2" "${3:-default}" "${4:-$(ntfy_server_topic)}" || true; }
 
 shadow_report_and_exit() {  # $1=action_desc
     log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD $1. Not applied."
@@ -86,7 +86,7 @@ if [ "$local_sha" != "$remote_sha" ]; then
     [ "$AUTODEPLOY_MODE" = shadow ] && shadow_report_and_exit "pull + restart python_orchestrator.service"
     if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
         log "git pull --ff-only failed"
-        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted."
+        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted." "high" "$(ntfy_error_topic)"
         exit 0
     fi
     g ls-files --stage 2>/dev/null | awk '$1 == "100755" {print $4}' | while IFS= read -r _f; do

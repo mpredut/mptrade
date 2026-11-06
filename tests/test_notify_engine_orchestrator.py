@@ -1423,6 +1423,11 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(order_retry.infer_concrete_record_owner({"client_order_id": "OR_123_0"}), "")
         self.assertEqual(_category_for_title_and_source("HYPEUSD listed on Kraken!", "kraken"), "PRICE")
         self.assertEqual(_category_for_title_and_source("✗ Order REJECTED: NVDA", "T212 order"), "ERROR")
+        self.assertEqual(_category_for_title_and_source("✗ Order REJECTED: BUY NVDA", "T212 order"), "ERROR")
+        self.assertEqual(_category_for_title_and_source("⚠ Order Skipped (Below Min): BUY ARBUSDC [rtrade]", "rtrade"), "GUARD")
+        self.assertEqual(_category_for_title_and_source("[order_retry] 🛑 order-retry GIVE UP SELL TAOUSDC", "order_retry"), "ERROR")
+        self.assertEqual(_category_for_title_and_source("🛑 order-retry queue corruption", "order_retry"), "ERROR")
+        self.assertEqual(_category_for_title_and_source("[assetguardian] 🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)", "assetguardian"), "ERROR")
 
         # Verify legacy email intent with "alerts" list (no "message") renders body cleanly
         self.sent.clear()

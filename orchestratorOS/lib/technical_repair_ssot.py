@@ -1506,8 +1506,10 @@ def send_supervisor_ntfy_http(
     except Exception:
         format_ntfy_url = AlertNotifier = None  # type: ignore[assignment]
 
+    topic_raw = (target_topic or "").strip()
     url_raw = (ntfy_url or "").strip()
-    url = format_ntfy_url(url_raw or target_topic) if format_ntfy_url is not None else (url_raw if url_raw.startswith(("http://", "https://")) else f"https://ntfy.sh/{target_topic}")
+    chosen_target = topic_raw or url_raw
+    url = format_ntfy_url(chosen_target) if format_ntfy_url is not None else (chosen_target if chosen_target.startswith(("http://", "https://")) else f"https://ntfy.sh/{chosen_target}")
     if not url:
         return False
     safe_title = (

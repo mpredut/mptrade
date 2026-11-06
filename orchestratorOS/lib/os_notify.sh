@@ -19,6 +19,10 @@ ntfy_error_topic() {
     env_get NTFY_TOPIC_ERROR "$(env_get NTFY_TOPIC "ntfy-error-1978")"
 }
 
+ntfy_server_topic() {
+    env_get NTFY_TOPIC_SERVER "$(env_get NTFY_TOPIC_DEADMAN "$(ntfy_error_topic)")"
+}
+
 ntfy_load_auth_hdr() {
     local token="${NTFY_TOKEN:-$(env_get NTFY_TOKEN)}"
     AUTH_HDR=()
@@ -46,7 +50,13 @@ send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mir
 
 send_os_ntfy() {
     local title="${1:-OS Alert}" body="${2:-}" priority="${3:-default}" topic="${4:-}"
-    [ -n "$topic" ] || topic="$(ntfy_error_topic)"
+    if [ -z "$topic" ]; then
+        case "$title" in
+            *FAILED*|*ERROR*|*CRITICAL*|*DOWN*|*DEAD*) topic="$(ntfy_error_topic)" ;;
+            autodeploy*|*Deadman*|*"Server Status"*) topic="$(ntfy_server_topic)" ;;
+            *) topic="$(ntfy_error_topic)" ;;
+        esac
+    fi
 
     # Per-topic batching + central single-gate dispatcher + similarity elimination
     local stamp_file="" gate_file="" topic_gate_file="" bulk_file="" now_ts="" used_bulk=0
@@ -60,7 +70,7 @@ send_os_ntfy() {
         chmod 0777 "$dedup_dir" 2>/dev/null || true
         local norm_title norm_body key_hash safe_topic
         norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
-        norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
+        norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/\b[0-9a-f]{7,40}\b/<SHA>/g; s/[0-9]+([.][0-9]+)?/<N>/g')"
         key_hash="$(printf '%s|%s|%s' "$topic" "$norm_title" "$norm_body" | md5sum 2>/dev/null | awk '{print $1}')"
         safe_topic="$(printf '%s' "$topic" | tr -c 'A-Za-z0-9_-' '_')"
         if [ -n "$key_hash" ] && [ -d "$dedup_dir" ]; then

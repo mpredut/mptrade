@@ -677,7 +677,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         mode="enforce",
         notify_enabled=True,
     )
-    reconciler.ntfy_url = ""
+    reconciler.ntfy_url = "https://ntfy.sh/legacy-phone-alert-url"
     reconciler.ntfy_topic_server = "ntfy-server-1978"
     reconciler.ntfy_topic_error = "ntfy-error-1978"
 

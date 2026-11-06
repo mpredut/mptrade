@@ -52,14 +52,15 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GUARD_MARKERS = (
     "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
-    "REFUSED", "BLOCKED",
+    "REFUSED", "BLOCKED", "SKIPPED",
 )
 _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE", "REJECTED", "CRITICAL", "GIVE UP", "✗",
-    "ESUAT", "ERORI", "DISPARUT",
+    "CORRUPTION", "UNRECOGNIZED", "ESUAT", "ERORI", "DISPARUT",
 )
 _EXPLICIT_ERROR_MARKERS = (
-    "FAILED", "ERROR", "EXCEPTION", "CRASH", "ESUAT", "ERORI", "DISPARUT", "GONE",
+    "FAILED", "ERROR", "EXCEPTION", "CRASH", "REJECTED", "CRITICAL", "GIVE UP",
+    "CORRUPTION", "UNRECOGNIZED", "✗", "ESUAT", "ERORI", "DISPARUT", "GONE",
 )
 _SERVER_MARKERS = (
     "CONFIG RELOAD", "SERVER STATUS", "SERVER DOWN", "DEADMAN",
@@ -94,6 +95,8 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "SERVER"
     if "MACRO" in t or "macro" in s or "geopolitical" in s:
         return "MACRO"
+    if any(m in t for m in ("ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED")) or "watchdog" in s:
+        return "ERROR"
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
     if any(m in t for m in _SERVER_MARKERS) or "deadman" in s:
