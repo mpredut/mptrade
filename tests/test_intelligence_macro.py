@@ -2151,6 +2151,9 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Is the Strait of Hormuz Really Safe After the Iran War? - Modern Diplomacy", ["war", "iran war", "hormuz", "strait of hormuz"]),
         ("Multiple bears may have been involved in fatal attack, Canadian authorities say - The Washington Post", ["attack"]),
         ("Why is Iran exempting India, China, Qatar, Iraq from Hormuz restrictions? - Al Jazeera", ["hormuz"]),
+        ("Myanmar civil war: after supporting 500 Journalists, RSF continues its work through emergency assistance and radio broadcasting - RSF", ["war"]),
+        ("Lebanese pack bags and stock up amid fears of new Israeli escalation - Al Jazeera", ["escalation"]),
+        ("Major construction ongoing near Iran missile bases, satellite images suggest - BBC News", ["missile"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()

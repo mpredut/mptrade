@@ -292,6 +292,16 @@ def _is_excluded_non_crisis_attack_keyword(
             }
         ) and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
             return True
+        if (
+            combined_words & {"construction", "satellite"}
+        ) and not (
+            combined_words
+            & {
+                "launch", "launches", "launched", "strike", "strikes", "struck",
+                "attack", "attacks", "fire", "fired", "barrage", "intercept", "intercepted",
+            }
+        ):
+            return True
     if kw_words and kw_words <= {"nuclear"}:
         if (
             combined_words
