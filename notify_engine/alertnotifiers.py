@@ -149,7 +149,7 @@ def _is_guard_alert(alerts: list[Any]) -> bool:
     for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        title = str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper()
+        title = strip_owner_tags(str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper())
         source = str(alert.get("source") or "").lower()
         if (
             any(
@@ -262,7 +262,7 @@ def _similarity_signature(
     )
     alerts_list = alerts or []
     is_pure_trade = (
-        any(m in str(title or "").upper() for m in _TRADE_MARKERS)
+        any(m in strip_owner_tags(str(title or "")).upper() for m in _TRADE_MARKERS)
         and not _is_guard_alert(alerts_list)
         and not _is_error_or_ops_alert(alerts_list)
     )

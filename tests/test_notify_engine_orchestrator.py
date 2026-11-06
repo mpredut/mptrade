@@ -666,6 +666,62 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertIn("Kraken websocket connection reset by peer", err_msg["message"])
             self.assertEqual(err_msg["topic"], "ntfy-error-test")
 
+    def test_assetguardian_and_trailing_stop_owner_tags_preserve_distinct_trades_in_bulk(self):
+        from notify_engine.alertnotifiers import _is_guard_alert
+        from notify_engine.server import _category_for_title_and_source
+
+        self.assertEqual(_category_for_title_and_source("🎉 SELL ARBUSDC @ 0.169 [assetguardian]", "monitortrades"), "TRADES")
+        self.assertEqual(_category_for_title_and_source("📝 SELL ARBUSDC @ 0.169 [assetguardian]", "monitororder"), "TRADES")
+        self.assertFalse(_is_guard_alert([{
+            "type": "bot_event",
+            "name": "🎉 SELL ARBUSDC @ 0.169 [assetguardian]",
+            "body": "Order 563411304 (assetguardian) executed! Filled: 152.9000 ARBUSDC (~25.84 USDC)",
+            "source": "monitortrades",
+            "symbol": "ARBUSDC",
+        }]))
+
+        t0 = 1_700_100_000.0
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_DEDUP_SECONDS": "900",
+            "NOTIFICATION_GATE_SECONDS": "180",
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+        }):
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "📝 SELL ARBUSDC @ 0.169 [assetguardian]",
+                    "body": "Order 563411304 (assetguardian) placed on venue. Qty: 152.9000 ARBUSDC (~25.84 USDC)",
+                    "source": "monitororder",
+                    "symbol": "ARBUSDC",
+                }], bot_name="monitororder")
+                self.assertEqual(len(self.dispatched), 1)
+
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🎉 SELL ARBUSDC @ 0.169 [assetguardian]",
+                    "body": "Order 563411304 (assetguardian) executed! Filled: 152.9000 ARBUSDC (~25.84 USDC)",
+                    "source": "monitortrades",
+                    "symbol": "ARBUSDC",
+                }], bot_name="monitortrades")
+
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🎉 SELL ARBUSDC @ 0.1686 [assetguardian]",
+                    "body": "Order 563412614 (assetguardian) executed! Filled: 122.3000 ARBUSDC (~20.62 USDC)",
+                    "source": "monitortrades",
+                    "symbol": "ARBUSDC",
+                }], bot_name="monitortrades")
+
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 305))
+            self.assertEqual(len(self.dispatched), 2)
+            bulk_msg = self.dispatched[1]
+            self.assertTrue(bulk_msg["title"].startswith("📦 Bulk (2):"), bulk_msg["title"])
+            self.assertIn("Order 563411304 (assetguardian) executed! Filled: 152.9000 ARBUSDC", bulk_msg["message"])
+            self.assertIn("Order 563412614 (assetguardian) executed! Filled: 122.3000 ARBUSDC", bulk_msg["message"])
+            self.assertNotIn("(×2)", bulk_msg["title"])
+
     def test_queue_retry_count_persistence_and_edge_cases(self):
         import asyncio
         from notify_engine.alertnotifiers import AlertNotifier

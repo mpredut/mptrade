@@ -89,28 +89,27 @@ def resolve_topic(category: str) -> str:
 
 def _category_for_title_and_source(title: str, source: str) -> str:
     t = _clean_str(title).upper()
+    t_no_owner = strip_owner_tags(t)
     s = _clean_str(source).lower()
     if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
-        if any(m in t for m in _EXPLICIT_ERROR_MARKERS):
+        if any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS):
             return "ERROR"
         return "SERVER"
     if "MACRO" in t or "macro" in s or "geopolitical" in s:
         return "MACRO"
-    if any(m in t for m in ("ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED")) or "watchdog" in s:
+    if any(m in t_no_owner for m in ("ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED")) or "watchdog" in s:
         return "ERROR"
-    if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
+    if any(m in t_no_owner for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
-    if any(m in t for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
+    if any(m in t_no_owner for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
         return "SERVER"
 
     # Real trades (order launched, order executed, fills) route to TRADES unless explicitly failed/errored
-    has_trade_marker = any(m in t for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
-    has_explicit_error = any(m in t for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
+    has_trade_marker = any(m in t_no_owner for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
+    has_explicit_error = any(m in t_no_owner for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
     if has_trade_marker and not has_explicit_error:
         return "TRADES"
 
-    # Strip owner tags like [manual] or (manual) so operational error check is not tricked by order attribution
-    t_no_owner = strip_owner_tags(t)
     if any(m in t_no_owner for m in _OPS_MARKERS) or "watchdog" in s:
         return "ERROR"
 
