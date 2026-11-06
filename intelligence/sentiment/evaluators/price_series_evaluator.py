@@ -223,6 +223,11 @@ def compute_volume_profile_metrics(
                 vol_cov_fresh and n_pos_vol >= max(4, min(len(raw_pairs), max(n_with_vol_col, 16)) // 4)
             )
 
+        vol_cap: Optional[float] = None
+        if has_real_vol:
+            pos_vols = sorted(v for _, v in raw_pairs if v > 0.0)
+            if len(pos_vols) >= 8:
+                vol_cap = pos_vols[len(pos_vols) // 2] * 8.0
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None
         for px_f, vol_w in raw_pairs:
@@ -230,6 +235,8 @@ def compute_volume_profile_metrics(
                 vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
             elif vol_w <= 0.0:
                 vol_w = 0.0
+            elif vol_cap is not None and vol_w > vol_cap:
+                vol_w = vol_cap
             prev_px = px_f
             samples.append((px_f, vol_w))
 
@@ -406,9 +413,19 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
             tms, p_ref = _sample_at(mins)
-            if p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins)):
-                if dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
-                    continue
+            valid_back = p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins))
+            if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
+                valid_back = False
+            if not valid_back and mins >= 15.0 and span_ms >= min_span_ms:
+                target_ms = now_ms - mins * 60000.0
+                max_fwd_ms = now_ms - mins * 0.75 * 60000.0
+                fwd_pt = next(
+                    ((t_f, p_f) for t_f, p_f in clean_series if target_ms < t_f <= max_fwd_ms and t_f not in seen_sample_tms),
+                    None,
+                )
+                if fwd_pt is not None and fwd_pt[1] > 0:
+                    tms, p_ref, valid_back = fwd_pt[0], fwd_pt[1], True
+            if valid_back:
                 if tms is not None:
                     seen_sample_tms.add(tms)
                 out[key] = pct_delta(cur_px, p_ref)
