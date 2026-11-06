@@ -295,13 +295,32 @@ def _is_excluded_non_crisis_attack_keyword(
         ) and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
             return True
         if (
-            combined_words & {"construction", "satellite"}
+            combined_words
+            & {
+                "construction", "satellite", "order", "orders", "procurement",
+                "mbda", "contract", "contracts",
+            }
         ) and not (
             combined_words
             & {
                 "launch", "launches", "launched", "strike", "strikes", "struck",
                 "attack", "attacks", "fire", "fired", "barrage", "intercept", "intercepted",
             }
+        ):
+            return True
+    if kw_words and kw_words <= {"gas", "pipeline", "pipelines", "oil"}:
+        if (
+            combined_words & {"awards", "awarded", "commissioning", "contract", "contracts", "engineering"}
+        ) and not (
+            combined_words
+            & (
+                _BROAD_MARKET_INDEX_CONTEXT_WORDS
+                | {
+                    "cut", "cuts", "halt", "halts", "sabotage", "leak", "explosion",
+                    "attack", "attacks", "sanction", "sanctions", "embargo",
+                    "disruption", "shortage", "crisis",
+                }
+            )
         ):
             return True
     if kw_words and kw_words <= {"nuclear"}:
@@ -1243,6 +1262,9 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
             return False
     if matched_fin and matched_fin <= {"sanction", "sanctions", "russia", "russian", "iran", "iranian"}:
         if _is_excluded_non_crisis_attack_keyword("sanctions", words, _get_crisis_stems_set()):
+            return False
+    if matched_fin and matched_fin <= {"gas", "pipeline", "pipelines", "oil"}:
+        if _is_excluded_non_crisis_attack_keyword("gas pipeline", words, _get_crisis_stems_set()):
             return False
     if matched_fin and matched_fin <= {"shares", "stock"} and not has_tracked_equity_entity(title) and not (
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
