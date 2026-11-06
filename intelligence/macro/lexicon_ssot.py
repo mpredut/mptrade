@@ -568,6 +568,9 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "millionaire-maker",
     "retire a millionaire",
     "help you retire",
+    "in net etf selling",
+    "in net etf buying",
+    "reasons to be optimistic",
     "wants to be the nvidia of",
     "should you buy ",
     "names at fire-sale prices",
@@ -580,7 +583,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
-    r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
+    r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|^etfs\s+(?:bought|sold)\s+\$[\d.]+\s+(?:million|billion)\s+of\b|\([a-z]{2,5}\)\s+(?:adds|buys|sells|trims|sees)\b.*\bon\s+(?:monday|tuesday|wednesday|thursday|friday|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z.]*\s+\d{1,2})\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
 )
 
 

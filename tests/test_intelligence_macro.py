@@ -2190,6 +2190,15 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     assert is_excluded_reference_news_item(
         "Could Investing $500 a Month in SpaceX Stock Help You Retire a Millionaire?"
     ) is True
+    for etf_blurb in (
+        "SPDR Portfolio S&P 500 Growth (SPYG) Buys $29.8 Million More NVDA on Nov. 4",
+        "Proshares Trust (TQQQ) Adds Apple and Nvidia on Nov. 4",
+        "iShares PHLX SOX Semi Sector Index Fund (SOXX) Adds AMD and NVDA on Wednesday",
+        "NVIDIA (NVDA) Sees $118.8 Million in Net ETF Selling on Wednesday",
+        "ETFs Bought $34.3 Million of SpaceX (SPCX) on Nov. 4",
+        "Nvidia Stock Rises on Dip-Buying: 3 Reasons to Be Optimistic",
+    ):
+        assert is_excluded_reference_news_item(etf_blurb) is True
     assert is_excluded_reference_news_item(
         "Not Nvidia. Not Micron. This Dutch Company Controls a Key Bottleneck of AI Chip Production."
     ) is True
