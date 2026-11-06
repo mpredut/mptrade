@@ -8965,4 +8965,53 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert tel_rgnt.get("Orderbook Bid Wall Ahead") == "$1,544 @ $1.1681"
     assert tel_rgnt.get("Orderbook Ask Wall Ahead") == "$2,600 @ $1.1797"
 
+    # Bug 130: Flat short-window plateau falls back to 900s/9000s epsilon and backfills zeroed fast slopes from live price geometry
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_live_24trend_windows,
+        apply_short_trend_item,
+        recalculate_live_price_geometry,
+    )
+    ada_entry = {
+        "price": 0.4310,
+        "recent_tape_15m": ["-15m:0.4305", "-5m:0.4310", "-3m:0.4310", "-1m:0.4310", "now:0.4310"],
+        "chg_1m_pct": 0.0,
+        "chg_3m_pct": 0.0,
+        "low_24h": 0.4200,
+        "high_24h": 0.4400,
+    }
+    apply_short_trend_item(
+        ada_entry,
+        {
+            "slope_full": 0.0,
+            "growth_coefficient": 0.0,
+            "gradient_recent": 0.0,
+            "gradient_recent_fast": 0.0,
+            "epsilon": 0.0,
+            "final_trend": 0,
+            "dynamic": {
+                "90": {"slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0, "epsilon": 0.0, "trend": 0},
+                "222": {"slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0, "epsilon": 0.0, "trend": 0},
+                "900": {"slope_full": -5e-07, "growth_coefficient": -1e-06, "gradient_recent": -2e-05, "epsilon": 2.1e-05, "trend": 0},
+                "9000": {"slope_full": 1.1e-06, "growth_coefficient": 2.5e-06, "gradient_recent": 1.5e-05, "epsilon": 1.9e-05, "trend": 1},
+            },
+        },
+    )
+    assert abs(ada_entry["epsilon"] - 2.1e-05) < 1e-09
+    recalculate_live_price_geometry(ada_entry, 0.4316)
+    assert abs(ada_entry["chg_1m_pct"] - 0.14) <= 0.01
+    assert ada_entry["slope_90s"] > 0.0
+    assert ada_entry["slope_3_7m"] > 0.0
+    assert ada_entry["gradient_recent_fast"] > 0.0
+    ada_live_entry = {"price": 0.4310}
+    apply_live_24trend_windows(
+        ada_live_entry,
+        {
+            "90": {"slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0, "epsilon": 0.0, "trend": 0},
+            "222": {"slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0, "epsilon": 0.0, "trend": 0},
+            "900": {"slope_full": -5e-07, "growth_coefficient": -1e-06, "gradient_recent": -2e-05, "epsilon": 2.3e-05, "trend": 0},
+        },
+    )
+    assert abs(ada_live_entry["epsilon"] - 2.3e-05) < 1e-09
+
+
 

@@ -750,6 +750,11 @@ def apply_short_trend_item(
             if gf_fb is not None and abs(gf_fb) >= 5e-8:
                 entry["gradient_recent_fast"] = gf_fb
                 break
+    if entry.get("epsilon") is not None and (safe_pos_float(entry.get("epsilon"), default=0.0) or 0.0) <= 1e-12:
+        for w_fb in (wins["222"], wins["90"], wins["900"], wins["9000"]):
+            if (eps_fb := safe_pos_float(w_fb.get("epsilon"), default=None)) is not None and eps_fb > 1e-12:
+                entry["epsilon"] = eps_fb
+                break
     if not require_any_slope:
         entry["trend_fast"] = tinfo.get("trend_fast", trend)
     t_vol, t_re = safe_pos_float(tinfo.get("vol_1h_pct"), default=None), safe_pos_float(tinfo.get("adapt_reentry_pct"), default=None)
@@ -819,8 +824,11 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
     if entry.get("gradient_recent_fast") is None or abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 5e-8:
         if (gf_live := w90.get("gradient_recent_fast") or w222.get("gradient_recent_fast") or w90.get("gradient_recent") or w90.get("slope_full")) is not None:
             entry["gradient_recent_fast"] = gf_live
-    if entry.get("epsilon") is None and (eps_live := w222.get("epsilon") or w90.get("epsilon")) is not None:
-        entry["epsilon"] = eps_live
+    if (safe_pos_float(entry.get("epsilon"), default=0.0) or 0.0) <= 1e-12:
+        for w_fb in (w222, w90, w900, wins["9000"]):
+            if (eps_live := safe_pos_float(w_fb.get("epsilon"), default=None)) is not None and eps_live > 1e-12:
+                entry["epsilon"] = eps_live
+                break
     for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
         w_dict = wins[wk]
         if not w_dict:
@@ -1178,6 +1186,24 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             ):
                 if chg_key in pinfo and (ref_px_t := tape_ref_by_lbl.get(tape_lbl)) is not None:
                     pinfo[chg_key] = pct_delta(p_cur_15m, ref_px_t)
+            has_eps_scale = (safe_pos_float(pinfo.get("epsilon"), default=0.0) or 0.0) > 0.0
+            for s_key_t, win_s_t, win_m_t, primary_lbl, fallback_lbl in (
+                ("slope_90s", 90.0, 1.5, "-1m", "-3m"),
+                ("slope_3_7m", 222.0, 3.7, "-3m", "-5m"),
+            ):
+                if s_key_t in pinfo and abs(safe_float(pinfo.get(s_key_t), 0.0)) <= 1e-12:
+                    ref_t_px = tape_ref_by_lbl.get(primary_lbl) or tape_ref_by_lbl.get(fallback_lbl)
+                    if ref_t_px is not None and ref_t_px > 0.0 and abs(p_cur_15m - ref_t_px) > 1e-12:
+                        raw_st = ((p_cur_15m - ref_t_px) / win_s_t) if has_eps_scale else (((p_cur_15m - ref_t_px) / ref_t_px) / win_m_t)
+                        pinfo[s_key_t] = (float(f"{raw_st:.2e}") if 0.0 < abs(raw_st) < 1e-4 else round(raw_st, 6)) + 0.0
+            if (
+                pinfo.get("gradient_recent_fast") is not None
+                and abs(safe_float(pinfo.get("gradient_recent_fast"), 0.0)) <= 1e-12
+            ):
+                for fb_gf_k in ("slope_90s", "slope_3_7m"):
+                    if (fb_gf := safe_float(pinfo.get(fb_gf_k), default=None)) is not None and abs(fb_gf) > 1e-12:
+                        pinfo["gradient_recent_fast"] = fb_gf
+                        break
     l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
     h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
     if l15 is not None and h15 is not None:
