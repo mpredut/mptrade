@@ -174,7 +174,7 @@ def main():
     print("\n--- healthcheck --check ---")
     print(check_out)
 
-    # 3. Analiza per-proces
+    # 3. Per-process analysis
     dead = []          # [(label, role)]
     warn = []
     ok = []
@@ -212,7 +212,7 @@ def main():
             print(f"\n  ⚠  FLEET dead (not restarting by hand, flota_start owns it): {fleet_dead}")
             actions.append(f"ALERT-FLEET: {fleet_dead}")
 
-    # 5. Rezumat final
+    # 5. Final summary
     print(f"\n{'='*60}")
     print(f"  SUMMARY: OK={ok}  DEAD={[l for l,_ in dead]}  WARN={[l for l,_ in warn]}")
     if actions:

@@ -50,7 +50,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _GUARD_MARKERS = (
-    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
+    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "SMART-SL", "POST-STOP", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
     "REFUSED", "BLOCKED", "SKIPPED",
 )
@@ -63,7 +63,8 @@ _EXPLICIT_ERROR_MARKERS = (
     "CORRUPTION", "UNRECOGNIZED", "✗", "ESUAT", "ERORI", "DISPARUT", "GONE",
 )
 _SERVER_MARKERS = (
-    "CONFIG RELOAD", "SERVER STATUS", "SERVER DOWN", "DEADMAN",
+    "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
+    "SERVER STATUS", "SERVER DOWN", "DEADMAN",
 )
 
 def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
@@ -99,7 +100,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "ERROR"
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
-    if any(m in t for m in _SERVER_MARKERS) or "deadman" in s:
+    if any(m in t for m in _SERVER_MARKERS) or "deadman" in s or "scheduled_pilot" in s:
         return "SERVER"
 
     # Real trades (order launched, order executed, fills) route to TRADES unless explicitly failed/errored

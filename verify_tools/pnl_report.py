@@ -70,7 +70,7 @@ def per_bot(symbol):
     try:
         orders = bapi.client.get_all_orders(symbol=symbol, limit=1000) or []
     except Exception as e:  # noqa: BLE001
-        print(f"  {symbol}: EROARE {e}"); return
+        print(f"  {symbol}: ERROR {e}"); return
     g = defaultdict(lambda: {"bq": 0.0, "bv": 0.0, "sq": 0.0, "sv": 0.0})
     for o in orders:
         if not isinstance(o, dict):

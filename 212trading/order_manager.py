@@ -167,11 +167,11 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
         notify_px = safe_pos_float(fp, 0.0)
-        notify(title=f"✓ Order filled: {ticker}", body=f"q{fq} @ {fp}",
+        notify(title=f"✓ Order filled: {ticker} [order_manager]", body=f"q{fq} @ {fp}",
                source="T212 order", price=notify_px, desktop=desktop)
     else:
         log(f"  [ORDER] ✗ {st}")
-        notify(title=f"✗ Order {st}: {ticker}", body=f"id={order_id}",
+        notify(title=f"✗ Order {st}: {ticker} [order_manager]", body=f"id={order_id}",
                source="T212 order", desktop=desktop)
     return info
 
@@ -541,7 +541,7 @@ def place_order_with_retry(
         if lifecycle == "submit_pending":
             log("  ! [ORDER] order rejected; the intent stays queued for reconciliation/retry")
             return False
-        notify(title=f"T212 order accepted: {ticker}",
+        notify(title=f"T212 order accepted: {ticker} [order_manager]",
                body=f"LIMIT {ticker} qty={qty_r} @ {price_r} USD\nid={oid}",
                source="T212 order", price=price_r, desktop=desktop)
         return True

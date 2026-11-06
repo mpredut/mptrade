@@ -385,7 +385,7 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
     The configured existing account asset (``XSTOCK_TRIAL_ASSET``) is treated
     as a new allocation and its real pair as the listing. The bot is forced
     into paper mode, the watchdog is tested by killing and restarting it, and
-    trial state is removed afterward. Notifications are real and use [PROBA].
+    trial state is removed afterward. Notifications are real and use [TRIAL].
     """
     global notify
     asset = required_env("XSTOCK_TRIAL_ASSET")
@@ -400,12 +400,12 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
     if os.path.exists(_state_file()):
         os.remove(_state_file())
     orig_notify = notify
-    notify = lambda **kw: orig_notify(**{**kw, "title": "[PROBA] " + kw.get("title", "")})
+    notify = lambda **kw: orig_notify(**{**kw, "title": "[TRIAL] " + kw.get("title", "")})
     verdict = {}
     bot_pid = None
     trial_pair = None
     try:
-        log("=== PROBA END-TO-END (bot PAPER, stare izolata, cont real) ===")
+        log("=== END-TO-END TRIAL (PAPER bot, isolated state, real account) ===")
         try:
             bal = client.balance()
         except KrakenError as e:
@@ -415,7 +415,7 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             return 1
         asset_bal = safe_pos_float(casefold_get(bal, asset, 0), 0.0)
         if asset_bal <= 0:
-            log(f"  ! n-ai {asset} in cont — alege alt activ: XSTOCK_TRIAL_ASSET=...")
+            log(f"  ! no {asset} in account — choose another asset: XSTOCK_TRIAL_ASSET=...")
             return 1
         st = _load_state()
         asset_cf = str(asset).strip().casefold()
@@ -424,9 +424,9 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             for a, q in bal.items()
             if str(a).strip().casefold() != asset_cf and (qf := safe_pos_float(q, None)) is not None
         }
-        log(f"  [proba] cobai: {asset} — removing it from the snapshot so it 'arrives' now")
+        log(f"  [trial] guinea pig: {asset} — removing it from the snapshot so it 'arrives' now")
         check_balance(client, st, asset, desktop)                # 1. allocation detection
-        verdict["alocare detectata"] = bool(st["allocated"])
+        verdict["allocation detected"] = bool(st["allocated"])
         check_pairs(client, st, asset, desktop, quote)           # 2. listed pair
         verdict["pair found"] = bool(st["pair"])
         trial_pair = st["pair"]
@@ -434,17 +434,17 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
         if not alloc:
             log("  ! no price for the pair — probe failed")
             return 1
-        log(f"  [proba] simulated allocation price: {alloc} (the current price)")
+        log(f"  [trial] simulated allocation price: {alloc} (the current price)")
         maybe_start_bot(st, alloc, desktop)                      # 3. bot started in paper mode
         bot_pid = st.get("bot_pid")
         verdict["bot started (PAPER)"] = _bot_alive(bot_pid)
         _save_state(st)
-        log("  [proba] waiting 12s for it to adopt the position and place the paper TP...")
+        log("  [trial] waiting 12s for it to adopt the position and place the paper TP...")
         time.sleep(12)
         if (clean_pid := _clean_pid(bot_pid)) is not None:
             os.kill(clean_pid, 15)                            # 4. watchdog
         time.sleep(1.0)
-        verdict["moartea botului detectata"] = not _bot_alive(bot_pid)
+        verdict["bot death detected"] = not _bot_alive(bot_pid)
         maybe_start_bot(st, alloc, desktop)
         bot_pid = st.get("bot_pid")
         verdict["bot restarted by watchdog"] = _bot_alive(bot_pid)
@@ -475,7 +475,7 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             else:
                 os.environ[env_k] = env_v
     ok = all(verdict.values()) and len(verdict) == 5
-    log("=== VERDICT PROBA ===")
+    log("=== TRIAL VERDICT ===")
     for k, v in verdict.items():
         log(f"    {'✅' if v else '❌'} {k}")
     log(f"=== DRILL {'PASSED — the whole chain works' if ok else 'FAILED — see above'} ===")
@@ -485,14 +485,14 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
 def main() -> int:
     load_env_stack(os.path.join(_HERE, ".env"))
 
-    ap = argparse.ArgumentParser(description="Watcher alocare xStocks (Kraken).")
+    ap = argparse.ArgumentParser(description="xStocks allocation watcher (Kraken).")
     ap.add_argument("--once", action="store_true", help="a single check, then exit")
     ap.add_argument("--status", action="store_true", help="show the state and exit")
     ap.add_argument("--trial", action="store_true",
                     help="an end-to-end DRILL with ZERO money: an existing asset as a simulated allocation, a PAPER bot, the watchdog tested, cleanup at the end")
     ap.add_argument("--desktop", action="store_true")
     ap.add_argument("--interval", type=float,
-                    default=required_float_env("XSTOCK_CHECK_MINUTES"), help="minute")
+                    default=required_float_env("XSTOCK_CHECK_MINUTES"), help="minutes")
     args = ap.parse_args()
     if not args.status and not args.trial:
         single_instance("kraken_xstock_watch")
@@ -512,17 +512,17 @@ def main() -> int:
 
     if args.status:
         print(f"regex={rx}  alloc_price={alloc_price}  tp={tp_pct}%  sl={sl_pct}%  yahoo={yahoo_sym}")
-        print(f"active cunoscute: {len(st['known_assets'])} -> {', '.join(sorted(st['known_assets'])) or '-'}")
-        print(f"alocare: {st['allocated'] or 'nedetectata'}")
-        print(f"pereche API: {st['pair'] or 'nelistata'}")
+        print(f"known assets: {len(st['known_assets'])} -> {', '.join(sorted(st['known_assets'])) or '-'}")
+        print(f"allocation: {st['allocated'] or 'not detected'}")
+        print(f"API pair: {st['pair'] or 'unlisted'}")
         alive = _bot_alive(st.get("bot_pid"))
         print(f"bot: {'RUNNING pid ' + str(st['bot_pid']) if alive else ('down (pid ' + str(st['bot_pid']) + ', will be restarted)' if st.get('bot_pid') else 'not started')}")
         return 0
 
     log("=== xStock watcher started ===")
     log(f"    regex      : {rx}")
-    log(f"    alocare    : {alloc_price if alloc_price > 0 else 'price unknown (detection only)'}")
-    log(f"    alerte     : +{tp_pct}% / -{sl_pct}%  (price: Kraken or Yahoo {yahoo_sym})")
+    log(f"    allocation : {alloc_price if alloc_price > 0 else 'price unknown (detection only)'}")
+    log(f"    alerts     : +{tp_pct}% / -{sl_pct}%  (price: Kraken or Yahoo {yahoo_sym})")
     log(f"    interval   : {args.interval} min")
     beats = 0
     sleep_sec = max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0)

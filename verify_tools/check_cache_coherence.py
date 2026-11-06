@@ -126,7 +126,7 @@ def main() -> int:
 
     print()
     if problems:
-        print(f"PROBLEME ({len(problems)}): {problems}")
+        print(f"PROBLEMS ({len(problems)}): {problems}")
         return 1
     print("OK — every cache is FRESH and coherent for all symbols")
     return 0

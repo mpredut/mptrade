@@ -24,7 +24,7 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 with contextlib.redirect_stdout(io.StringIO()):
-    from notify_engine.alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
+    from notify_engine.alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url, pass_common_gate  # noqa: E402
     from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
     from kraken.kraken_client import KrakenClient  # noqa: E402
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -120,20 +120,37 @@ def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
     if _external_notifications_disabled():
         return
-    topic = (os.environ.get("NTFY_TOPIC") or "").strip()
+    topic = (
+        os.environ.get("NTFY_TOPIC")
+        or os.environ.get("NTFY_TOPIC_GUARD")
+        or ""
+    ).strip()
     if not topic:
-        # Read from kraken/config.env when it is not in the environment.
-        cfg = os.path.join(KRAKEN_DIR, "config.env")
-        if os.path.exists(cfg):
-            try:
-                topic = (parse_dotenv(cfg).get("NTFY_TOPIC") or "").strip()
-            except OSError:
-                topic = ""
+        for cfg in (os.path.join(ROOT, ".env"), os.path.join(KRAKEN_DIR, "config.env")):
+            if os.path.exists(cfg):
+                try:
+                    env_map = parse_dotenv(cfg)
+                    topic = (env_map.get("NTFY_TOPIC") or env_map.get("NTFY_TOPIC_GUARD") or "").strip()
+                    if topic:
+                        break
+                except OSError:
+                    topic = ""
     url = format_ntfy_url(topic)
     if not url:
         return
-    safe_title = AlertNotifier.utf8_header(title or "Alert") or "Alert"
+    clean_title = str(title or "Alert").strip() or "Alert"
     body_str = "" if isinstance(body, bool) else str(body or "")
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        topic_name = url.rstrip("/").rsplit("/", 1)[-1]
+        allowed, _, _, out_payload = pass_common_gate(
+            "ntfy", clean_title, body_str, "high", topic_name,
+        )
+        if not allowed:
+            return
+        if out_payload:
+            clean_title, body_str, _, out_topic = out_payload
+            url = format_ntfy_url(out_topic or topic) or url
+    safe_title = AlertNotifier.utf8_header(clean_title) or "Alert"
     req = urllib.request.Request(
         url, data=body_str.encode("utf-8"),
         headers={"Title": safe_title, "Priority": "high", "Tags": "warning"})
@@ -193,9 +210,9 @@ def run_alerts(kr: list[dict]) -> list[str]:
             unreal = _f(r.get("unrealized"), 0.0)
             cost = _f(r.get("cost"), 0.0)
             _ntfy(
-                f"⚠️ Risc {engine}: DD {dd:.1f}%",
-                f"{engine} drawdown nerealizat {dd:.1f}% "
-                f"(nereal ${unreal:.0f} pe cost ${cost:.0f}, "
+                f"⚠️ Risk {engine}: DD {dd:.1f}%",
+                f"{engine} unrealized drawdown {dd:.1f}% "
+                f"(unrealized ${unreal:.0f} on cost ${cost:.0f}, "
                 f"threshold {threshold:.0f}%). Check the position.")
             st[engine] = {"dd": dd, "ts": now.isoformat(timespec="seconds")}
             fired.append(f"{engine} DD {dd:.1f}%")

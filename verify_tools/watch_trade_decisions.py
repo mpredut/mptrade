@@ -31,7 +31,7 @@ import pricewindow as pw  # noqa: E402
 SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
-import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
+import utils  # noqa: E402 — base_asset centralized in utils
 _base = utils.base_asset
 
 
@@ -63,7 +63,7 @@ def position(symbol, maxage=17 * 24 * 3600):
     last_buy = (
         extract_order_price(max((o for o, _, _ in buys), key=lambda o: extract_timestamp_ms(o, default=0) or 0))
         if buys else 0.0
-    )   # ca get_relevant_trade (referinta botului)
+    )   # same as get_relevant_trade (the bot reference)
     return (tv / tq if tq else 0.0), tq - sq, len(sells_q), last_buy
 
 
@@ -98,7 +98,7 @@ def main():
         gain = (px - ref) / ref * 100 if ref else 0.0
         trend = "UP  " if gr > 0 else ("DOWN" if gr < 0 else "flat")
         hard_px = ref * (1 + hard_tp_pct / 100) if ref else 0.0
-        print(f"  {s}: px={px:.2f}  ref=ULTIMUL_buy {ref:.2f} (avg {avg:.2f})  gain={gain:+.1f}%")
+        print(f"  {s}: px={px:.2f}  ref=LAST_buy {ref:.2f} (avg {avg:.2f})  gain={gain:+.1f}%")
         print(f"      trend_instant={trend} ({gr:+.4f})  |  free={free:.4f}  net={net:.4f}  sells={n_sells}")
         flags = []
         if gain >= hard_tp_pct:

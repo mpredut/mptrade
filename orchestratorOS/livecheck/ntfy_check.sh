@@ -41,4 +41,4 @@ for a in alarms[-8:]:
 }
 
 check_url "$PHONE_URL" "crypto-alerts"
-check_url "https://ntfy.sh/$NT_TOPIC" "flota/healthcheck"
+check_url "https://ntfy.sh/$NT_TOPIC" "fleet/healthcheck"

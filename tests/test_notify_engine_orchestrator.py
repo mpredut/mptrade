@@ -1417,6 +1417,7 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")
         self.assertEqual(strip_owner_tags("📝 BUY HYPEUSD [spot_dca]"), "📝 BUY HYPEUSD ")
         self.assertEqual(strip_owner_tags("🎉 SELL TAOUSDC [trailing_stop]"), "🎉 SELL TAOUSDC ")
+        self.assertEqual(strip_owner_tags("✓ Order filled: NVDA_US_EQ [order_manager]"), "✓ Order filled: NVDA_US_EQ ")
         self.assertTrue(_is_guard_alert([{"name": "⚠️ [auto_trade_executor] REFUSED BUY BTCUSDC", "source": "llm_trader"}]))
         self.assertEqual(order_retry.infer_concrete_record_owner({"intent_id": "trailing:kraken:ADA:SELL:100"}), "trailing_stop")
         self.assertEqual(order_retry.infer_concrete_record_owner({"kind": "TRAIL_SELL"}), "trailing_stop")
@@ -1428,6 +1429,8 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(_category_for_title_and_source("[order_retry] 🛑 order-retry GIVE UP SELL TAOUSDC", "order_retry"), "ERROR")
         self.assertEqual(_category_for_title_and_source("🛑 order-retry queue corruption", "order_retry"), "ERROR")
         self.assertEqual(_category_for_title_and_source("[assetguardian] 🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)", "assetguardian"), "ERROR")
+        self.assertEqual(_category_for_title_and_source("Pilot backtest: config changed", "scheduled_pilot.py"), "SERVER")
+        self.assertEqual(_category_for_title_and_source("Backtest: 3 new config proposal(s)", "scheduled_pilot.py"), "SERVER")
 
         # Verify legacy email intent with "alerts" list (no "message") renders body cleanly
         self.sent.clear()
