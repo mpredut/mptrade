@@ -645,6 +645,13 @@ def compute_swing_wave_metrics(
     major_low_px: Optional[float] = None
     if direction == 1 and pivots:
         swing_low_px, swing_high_px = pivots[-1][2], max(hi_px, cur_v)
+        if (
+            len(pivots) >= 2
+            and pivots[-2][0] == "HIGH"
+            and pivots[-2][2] > swing_high_px
+            and abs(cur_v - swing_high_px) / max(cur_v, 1e-12) < 5e-4
+        ):
+            swing_high_px = pivots[-2][2]
         if len(pivots) >= 3 and pivots[-3][0] == "LOW" and pivots[-3][2] < swing_low_px:
             major_low_px = pivots[-3][2]
     elif direction == -1 and pivots:

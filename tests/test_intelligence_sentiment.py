@@ -8748,7 +8748,10 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert "oi_usd=285486813126.0" in sec_3b_nvda
 
     # Volume profile Winsorizes single-bar block volume spikes (8x median) and compute_24h_price_metrics resolves 30m from -25m across post-market gaps
-    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        compute_swing_wave_metrics,
+    )
 
     rgnt_block_series = [
         [int((now_cd - 86400 + i * 1800) * 1000), round(1.35 - (i % 6) * 0.03, 4), 1200.0]
@@ -8764,6 +8767,12 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert m24_rgnt_block.get("chg_30m_pct") is not None
     assert m24_rgnt_block["vah_px"] - m24_rgnt_block["val_px"] >= 0.03
     assert m24_rgnt_block["va_pos_pct"] < 150.0
+
+    sw_bounce = compute_swing_wave_metrics([1.30, 1.36, 1.17, 1.22])
+    assert sw_bounce["swing_low_px"] == 1.17
+    assert sw_bounce["swing_high_px"] == 1.36
+    assert sw_bounce["rally_from_swing_low_pct"] == 4.27
+    assert sw_bounce["pullback_from_swing_high_pct"] == -10.29
 
 
 
