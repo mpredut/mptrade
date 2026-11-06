@@ -56,14 +56,15 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
-    "academic", "alaska", "alaskan", "alaskans", "appreciation", "asu", "bills",
-    "cabin", "cabins", "cambodia", "centcom", "concentration", "consortium",
-    "cruise", "cruises", "decider", "disney", "dreading", "episode", "episodes",
-    "explained", "finale", "forever", "french", "fries", "hbo", "heating",
-    "holocaust", "hulu", "liberators", "memorial", "museum", "netflix",
-    "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
-    "retirees", "retirement", "review", "season", "social", "tourist", "tourists",
-    "trailer", "vacation", "veteran", "veterans", "vulture",
+    "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
+    "asu", "bags", "bills", "broadcasting", "cabin", "cabins", "cambodia",
+    "centcom", "concentration", "consortium", "cruise", "cruises", "decider",
+    "disney", "dreading", "episode", "episodes", "explained", "finale", "forever",
+    "french", "fries", "hbo", "heating", "holocaust", "hulu", "journalist",
+    "journalists", "liberators", "memorial", "museum", "myanmar", "netflix",
+    "pack", "packing", "passengers", "podcast", "podcasts", "premiere", "recap",
+    "residents", "retirees", "retirement", "review", "rsf", "season", "social",
+    "tourist", "tourists", "trailer", "vacation", "veteran", "veterans", "vulture",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
@@ -347,7 +348,7 @@ def _is_excluded_non_crisis_attack_keyword(
         {
             "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
             "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
-            "hormuz", "strait",
+            "hormuz", "strait", "emergency",
         }
         | ({"strike", "strikes"} if war_cost_context else set())
     ):
