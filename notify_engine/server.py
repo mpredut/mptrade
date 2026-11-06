@@ -52,6 +52,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GUARD_MARKERS = (
     "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
+    "REFUSED", "BLOCKED",
 )
 _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE",
@@ -112,7 +113,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
     if (
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
         or "coin" in t.lower() or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
-        or any(m in t for m in ("▲", "▼", "RISE", "DROP"))
+        or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
     ):
         return "PRICE"
     return "TRADES"

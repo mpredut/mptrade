@@ -1437,10 +1437,15 @@ class ProcessOnceTest(unittest.TestCase):
             "ttl_sec": 900.0,
             "attempts": 2,
             "last_failure_reason": "guard_blocked",
+            "place_kwargs": {"client_order_id": "AI_intent_1793650000_buy_btcusdc"},
         }
         worker._alert_giveups([rec], now=2000.0)
         self.assertEqual(len(self.alerts), 1)
+        self.assertIn("[ai_executor]", self.alerts[0]["title"])
+        self.assertIn("(BINANCE · ai_executor)", self.alerts[0]["body"])
         self.assertIn("TTL: 15m", self.alerts[0]["body"])
+        ctx = worker._format_record_context(rec)
+        self.assertIn("(BTCUSDC · BINANCE · ai_executor)", ctx)
 
     def test_cross_venue_display_assets_and_provider_label_normalization(self):
         from cachepaths import split_symbol_assets

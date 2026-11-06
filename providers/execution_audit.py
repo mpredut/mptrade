@@ -1979,7 +1979,11 @@ def execute_enforce_intent_order(
                     decision, inst.symbol, refusal_reason,
                 )
             title = f"⚠️ {trade_tag} REFUSED {decision} {inst.symbol}"
-            body = f"Venue {inst.provider_name} refused placement ({refusal_reason}).\nThesis: {thesis}"
+            body = (
+                f"Venue: {inst.provider_name} · Price: ${px_body_s} · Notional: ${effective_usd:.0f}\n"
+                f"Reason: {refusal_reason}\n"
+                f"Thesis: {thesis}"
+            )
             if callable(dispatch_notify_fn):
                 dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 

@@ -684,6 +684,15 @@ def _fmt_num(val: float) -> str:
     return f"{float(val):.8f}".rstrip("0").rstrip(".") or "0"
 
 
+def _concrete_record_owner(rec) -> str:
+    if not isinstance(rec, dict):
+        return ""
+    owner = str(oq.infer_record_owner(rec) or "").strip()
+    if not owner or owner in ("unknown", "unspecified", "order_retry") or owner.startswith("alt:"):
+        return ""
+    return owner
+
+
 def _format_record_context(rec, *, include_lease=False):
     """Build a structured summary of order time, base asset qty/price, and quote value."""
     raw_side = rec.get("side")
@@ -729,8 +738,10 @@ def _format_record_context(rec, *, include_lease=False):
     raw_place_kw = rec.get("place_kwargs")
     place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
     client_order_id = place_kw.get("client_order_id") or rec.get("order_id") or rec.get("id") or "N/A"
+    owner = _concrete_record_owner(rec)
+    owner_part = f" · {owner}" if owner else ""
     return (
-        f"Order: {side} {_fmt_num(qty_val)} {base_asset} ({symbol} · {provider}) {price_str} | Value: {value_str}\n"
+        f"Order: {side} {_fmt_num(qty_val)} {base_asset} ({symbol} · {provider}{owner_part}) {price_str} | Value: {value_str}\n"
         f"Time: {time_line}\n"
         f"ID: {client_order_id}"
     )
@@ -757,8 +768,10 @@ def _send_quarantine_alert(alert_set, fingerprint, rec, title_prefix, detail_msg
     alert_set.add(fingerprint)
     try:
         context = _format_record_context(rec, include_lease=include_lease)
+        owner = _concrete_record_owner(rec)
+        owner_sfx = f" [{owner}]" if owner else ""
         alert.notify(
-            title=f"{title_prefix} {rec.get('side')} {rec.get('symbol')}",
+            title=f"{title_prefix} {rec.get('side')} {rec.get('symbol')}{owner_sfx}",
             body=f"{context}\n{detail_msg}",
             source="order_retry",
             symbol=str(rec.get("symbol")),
@@ -987,12 +1000,14 @@ def _alert_giveups(records, now):
                 last_failure_reason=rec.get("last_failure_reason"),
             )
             place_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
+            owner_lbl = _concrete_record_owner(rec) or "unknown"
             events.append({
                 "labels": {
                     "provider": str(rec.get("provider_name") or "routed"),
                     "symbol": str(rec.get("symbol")),
                     "side": str(rec.get("side")),
                     "kind": str(rec.get("kind") or place_kw.get("kind") or "unspecified"),
+                    "owner": owner_lbl,
                     "reason": str(rec.get("last_failure_reason") or "unspecified"),
                     "expiry": reason,
                 },
@@ -1027,6 +1042,9 @@ def _alert_giveups(records, now):
             expiry = str(labels.get("expiry") or "active_ttl")
             kind = labels.get("kind")
             kind_str = f" [{kind}]" if kind and kind != "unspecified" else ""
+            owner = str(labels.get("owner") or "")
+            owner_sfx = f" [{owner}]" if owner and owner != "unknown" else ""
+            owner_body_sfx = f" · {owner}" if owner and owner != "unknown" else ""
 
             px_val = report.get("last_price")
             tot_notional = float(report.get("notional") or 0.0)
@@ -1059,9 +1077,9 @@ def _alert_giveups(records, now):
             expiry_detail = f"{expiry} (TTL: {ttl_str})" if expiry == "active_ttl" else expiry
             try:
                 alert.notify(
-                    title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}",
+                    title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}{owner_sfx}",
                     body=(
-                        f"{side} {sym} ({prov}){kind_str}: {cnt} intent(s) expired "
+                        f"{side} {sym} ({prov}{owner_body_sfx}){kind_str}: {cnt} intent(s) expired "
                         f"(size ~{_fmt_num(unit_qty)} {base_asset}{price_part}{value_part}{attempts_str}). "
                         f"{time_info}Blocked by {reason} (expiry={expiry_detail}). "
                         f"No order submitted to exchange."

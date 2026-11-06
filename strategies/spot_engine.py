@@ -843,7 +843,7 @@ class Strategy(BaseSpotMixin):
                 f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f} fee={fee}")
             self._emit(
                 title=f"{tag}{self.pair} BUY {vol:.2f}@{px_str}",
-                body=f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg_str} | desf{self.s['spent']:.0f}{self.ccy}",
+                body=f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg_str} | dep{self.s['spent']:.0f}{self.ccy}",
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             self._cancel_orders("sell", exclude_market=True)
@@ -856,10 +856,10 @@ class Strategy(BaseSpotMixin):
             self.s["realized_net"] += gross
             self._release_sell_cost_basis(vol, avg)
             log(f"  [STRAT] {tag}SELL FILLED {vol} @ {price} {self.ccy}  "
-                f"brut={gross:+.4f} fee_ciclu={self.s['cycle_fees']:.4f} net={net:+.4f}")
+                f"gross={gross:+.4f} cycle_fee={self.s['cycle_fees']:.4f} net={net:+.4f}")
             self._emit(
                 title=f"{tag}{self.pair} SELL {vol:.2f}@{px_str} N{net:+.2f}{self.ccy}",
-                body=(f"a{avg_str} · br{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
+                body=(f"a{avg_str} · gr{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
                       f"Ntot{self.s['realized_net']:+.2f}{self.ccy}"),
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
@@ -1001,9 +1001,9 @@ class Strategy(BaseSpotMixin):
         self.s["last_buy_price"] = self.p.adopt_cost
         self.s["adopted"] = True
         self._save()
-        log(f"  📥 [STRAT] POZITIE ADOPTATA: {qty} @ {self.p.adopt_cost} {self.ccy} — gestionez TP/DCA/SL")
+        log(f"  📥 [STRAT] POSITION ADOPTED: {qty} @ {self.p.adopt_cost} {self.ccy} — managing TP/DCA/SL")
         self._emit(
-            title=f"📥 {self.pair} ADOPTAT {qty:.2f}@{self.p.adopt_cost}",
+            title=f"📥 {self.pair} ADOPTED {qty:.2f}@{self.p.adopt_cost}",
             body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
             source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
         )

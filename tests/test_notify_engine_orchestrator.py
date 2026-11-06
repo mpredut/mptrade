@@ -117,9 +117,12 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_topic_for_category("🛑 STOP_LOSS triggered", "kraken"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("🛡 Guard active", "kraken"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("TRAILING SELL FILLED", "kraken-trail"), "ntfy-guard-test")
+        self.assertEqual(_topic_for_category("📉 TRAILING NVDA -5.2%", "T212"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("LIQUIDATION IMMINENT", "hl_bot"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("🛑 order submission quarantined", "order_retry"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("Drawdown alert", "assetguardian"), "ntfy-guard-test")
+        self.assertEqual(_topic_for_category("⚠️ [auto_sharetrade_executor] REFUSED BUY NVDA_US_EQ", "auto_sharetrade_executor"), "ntfy-guard-test")
+        self.assertEqual(_topic_for_category("🛡 [auto_cryptotrade_executor] BLOCKED BUY BTCUSDC", "auto_cryptotrade_executor"), "ntfy-guard-test")
 
         # MACRO
         self.assertEqual(_topic_for_category("🛡 [VETO] Would Block BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
@@ -137,6 +140,8 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         # PRICE
         self.assertEqual(_topic_for_category("BTC ▲ +5.20%", "price_alert"), "ntfy-price-test")
         self.assertEqual(_topic_for_category("Threshold reached", "pricechecker"), "ntfy-price-test")
+        self.assertEqual(_topic_for_category("📉 NVDA -12.1%", "T212"), "ntfy-price-test")
+        self.assertEqual(_topic_for_category("📈 xStock +25.0% above the allocation (250)", "xstock-watch"), "ntfy-price-test")
 
     def test_manual_order_dispatch_formatting_and_topic(self):
         """Verify manual trade orders route to TRADES with [Binance] prefix, not ERROR topic."""

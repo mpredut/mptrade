@@ -506,9 +506,9 @@ class Strategy(BaseSpotMixin):
             self.s["wins"] = self.s.get("wins", 0) + 1
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:
-            log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  brut={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
+            log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
             notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{price:.2f} N{net:+.2f}",
-                   body=f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
+                   body=f"a{avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:
             eff_avg = safe_pos_float(real_avg, default=avg)

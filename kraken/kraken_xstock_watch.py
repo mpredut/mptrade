@@ -175,22 +175,22 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
         st["known_assets"] = {}
     if not st["known_assets"]:
         st["known_assets"] = assets
-        log(f"  snapshot initial balanta: {len(assets)} active ({', '.join(sorted(assets))})")
+        log(f"  initial balance snapshot: {len(assets)} assets ({', '.join(sorted(assets))})")
         return
     for a, q in assets.items():
         if a in st["known_assets"]:
             continue
         if re.search(rx, a, re.I):
             st["allocated"] = {"asset": a, "qty": q, "ts": time.time()}
-            log(f"  🎯 ALOCARE DETECTATA: {a} = {q}")
-            notify(title=f"🎯 ALOCARE xStock: {a} = {q}",
-                   body=f"There appeared {a} in the Kraken account (quantity {q}). "
-                        f"Seteaza XSTOCK_ALLOC_PRICE in config.env pt alerte de nivel "
+            log(f"  🎯 ALLOCATION DETECTED: {a} = {q}")
+            notify(title=f"🎯 xStock ALLOCATION: {a} = {q}",
+                   body=f"{a} appeared in the Kraken account (quantity {q}). "
+                        f"Set XSTOCK_ALLOC_PRICE in config.env for level alerts "
                         f"and STRAT_ADOPT_COST when the pair becomes tradable.",
                    source="xstock-watch", desktop=desktop)
         else:
-            log(f"  ℹ activ nou in cont: {a} = {q}")
-            notify(title=f"ℹ Activ nou in cont Kraken: {a} = {q}",
+            log(f"  ℹ new asset in account: {a} = {q}")
+            notify(title=f"ℹ New asset in Kraken account: {a} = {q}",
                    body="Check whether the xStock allocation sits under a different code than expected.",
                    source="xstock-watch", desktop=desktop)
     st["known_assets"].update(assets)
@@ -244,9 +244,9 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
         except KrakenError:
             pass
         log(f"  🚀 PAIR LISTED on the API: {name} (price {px})")
-        notify(title=f"🚀 {name} LISTAT pe Kraken API" + (f" @ {px}" if px else ""),
+        notify(title=f"🚀 {name} LISTED on Kraken API" + (f" @ {px}" if px else ""),
                body=f"You can start the bot and adopt the allocation:\n"
-                    f"STRAT_ADOPT_COST=<pret_alocare> python3 kraken_bot.py --pair {k}",
+                    f"STRAT_ADOPT_COST=<alloc_price> python3 kraken_bot.py --pair {k}",
                source="xstock-watch", price=px, desktop=desktop)
 
 
@@ -283,12 +283,12 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
     tp2 = required_float_env("XSTOCK_TP2_ALERT_PCT")
     if tp2 > 0 and not st.get("alerted_tp2") and chg >= tp2:
         st["alerted_tp2"] = True
-        notify(title=f"📈📈 TRANSA 2: xStock {chg:+.1f}% ({price})",
+        notify(title=f"📈📈 TRANCHE 2: xStock {chg:+.1f}% ({price})",
                body=f"The second target is reached — sell the rest. Value: {qty * price:.0f}.",
                source="xstock-watch", price=price, desktop=desktop)
     if sl_pct > 0 and not st.get("alerted_sl") and chg <= -sl_pct:
         st["alerted_sl"] = True
-        notify(title=f"📉 xStock {chg:+.1f}% sub alocare ({price})",
+        notify(title=f"📉 xStock {chg:+.1f}% below allocation ({price})",
                body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
                     f"Decide: hold (DCA) or cut the loss.",
                source="xstock-watch", price=price, desktop=desktop)
@@ -339,7 +339,7 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     if alloc_f <= 0:
         if not st.get("alerted_need_price"):
             st["alerted_need_price"] = True
-            notify(title="⚠ xStock: completeaza XSTOCK_ALLOC_PRICE",
+            notify(title="⚠ xStock: set XSTOCK_ALLOC_PRICE",
                    body=f"The allocation {allocated['asset']} is in the account and the pair "
                         f"{pair} is listed, but I do not know the allocation price. "
                         f"Set XSTOCK_ALLOC_PRICE in config.env so I can start the bot automatically.",
@@ -373,8 +373,8 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     st["bot_pid"] = proc.pid
     verb = "RESTARTED (was down)" if relaunch else "AUTO-STARTED"
     log(f"  🤖 BOT {verb}: pid {proc.pid}  pair {st['pair']}  adopt @ {alloc_price}  (log: {BOT_LOG})")
-    notify(title=f"🤖 BOT {verb} pe {st['pair']} (adopt @ {alloc_price})",
-           body=f"kraken_bot gestioneaza alocarea: TP/DCA/stop-loss. pid {proc.pid}, log {BOT_LOG}",
+    notify(title=f"🤖 BOT {verb} on {st['pair']} (adopt @ {alloc_price})",
+           body=f"kraken_bot manages the allocation: TP/DCA/stop-loss. pid {proc.pid}, log {BOT_LOG}",
            source="xstock-watch", price=alloc_price, desktop=desktop)
 
 

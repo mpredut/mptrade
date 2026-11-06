@@ -452,12 +452,12 @@ class GeminiQuotaRouterMixin:
             else "🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
         )
         msg = (
-            f"Credite suplimentare: {available_credits:.0f} | "
+            f"Available credits: {available_credits:.0f} | "
             f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
             f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
             f"gpt-oss-120b (free): {free_rem * 100:.0f}%. "
-            f"Routing activat automat pe primul model cu credite confirmate; "
-            f"revenire dinamica imediata pe Argon dupa reincarcare/reset."
+            f"Automatic routing activated on first model with confirmed quota; "
+            f"immediate dynamic recovery to Argon upon top-up/reset."
         )
         dispatched = False
         try:

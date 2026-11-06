@@ -15,7 +15,7 @@ import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag, obj_attr, safe_float
+from botcore import _parse_bool_flag, format_price_log, obj_attr, safe_float
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
@@ -121,7 +121,12 @@ def check_external_order_guards(
             return
         try:
             from notify_engine.alertnotifiers import notify
-            price_str = f" @ ${price_f:,.2f}" if price_f > 0.0 else ""
+            px_fmt = (
+                f"{price_f:,.2f}"
+                if price_f >= 1.0 and round(price_f, 2) == round(price_f, 6)
+                else format_price_log(price_f)
+            )
+            price_str = f" @ ${px_fmt}" if price_f > 0.0 else ""
             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
             notify(
                 title=title,

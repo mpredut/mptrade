@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, format_price_log
 from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.macro_sentiment_ssot import (
@@ -178,7 +178,12 @@ def evaluate_high_stake_order_guard(
 
                 px_clean = _pos_float(price, 0.0)
                 qty_clean = _pos_float(qty, 0.0)
-                price_str = f"{ccy_sym}{px_clean:,.2f}" if px_clean > 0.0 else ""
+                px_fmt = (
+                    f"{px_clean:,.2f}"
+                    if px_clean >= 1.0 and round(px_clean, 2) == round(px_clean, 6)
+                    else format_price_log(px_clean)
+                )
+                price_str = f"{ccy_sym}{px_fmt}" if px_clean > 0.0 else ""
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
                 order_header += f" · {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"

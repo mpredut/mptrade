@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, format_price_log
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
@@ -203,12 +203,15 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             if cooldown > 0 and not check_cooldown_gate(_POST_STOP_NOTIFY_CACHE, (clean_symbol_key(symbol), action_label), now_ts=ts, cooldown_sec=cooldown):
                 return
 
+            cur_s = format_price_log(current_price)
+            trough_s = format_price_log(trough)
+            sl_s = format_price_log(last_sell_price)
             notify(
                 title=f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}",
                 body=(
-                    f"{symbol} @ ${current_price:.2f} (Bounce: +{bounce_pct:.2f}% de la minimul ${trough:.2f}, SL la: ${last_sell_price:.2f})\n"
-                    f"Decizie: {action_label}\n"
-                    f"Motiv AI: {decision.reason}"
+                    f"{symbol} @ ${cur_s} (Bounce: +{bounce_pct:.2f}% from low ${trough_s}, SL at: ${sl_s})\n"
+                    f"Decision: {action_label}\n"
+                    f"AI Reason: {decision.reason}"
                 ),
                 source="post_stop_guard",
                 symbol=symbol,
