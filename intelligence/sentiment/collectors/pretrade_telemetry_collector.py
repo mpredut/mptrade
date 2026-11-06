@@ -251,7 +251,7 @@ def collect_pretrade_telemetry(
         if f_snap is not None:
             fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
             oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
-            if fr_f is not None and not (is_eq_sym and oi_f <= 0.0 and abs(fr_f) < 1e-12):
+            if fr_f is not None and not (is_eq_sym and abs(fr_f) < 1e-12):
                 telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
             if oi_f > 0.0:
                 telemetry["Derivatives Open Interest"] = f"${oi_f:,.0f}"
@@ -987,7 +987,7 @@ def collect_pretrade_telemetry(
                 )
             ):
                 telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_m:.2f}"
-            if eq_no_oi_pt and abs(safe_float(cur_m_info.get("funding_rate"), default=0.0) or 0.0) < 1e-12:
+            if is_eq_sym and abs(safe_float(cur_m_info.get("funding_rate"), default=0.0) or 0.0) < 1e-12:
                 telemetry.pop("Perpetual Funding Rate", None)
             elif (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
                 fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
@@ -1000,7 +1000,7 @@ def collect_pretrade_telemetry(
                         if f_ann is not None and not (is_eq_sym and abs(f_ann) < 1e-9 and abs(fr_v) < 1e-12)
                         else "",
                         f"perp_basis={b_bps:+.1f}bps"
-                        if b_bps is not None and not (eq_no_oi_pt and abs(b_bps) < 1e-9)
+                        if b_bps is not None and not (is_eq_sym and abs(b_bps) < 1e-9)
                         else "",
                     )
                     if x and x.split("=", 1)[0] not in fr_base

@@ -705,8 +705,7 @@ def build_cross_market_context(
                 if eq_m_info.get(mk_eq) is None:
                     continue
                 if (
-                    eq_no_oi
-                    and mk_eq in ("funding_rate", "oi_1h_chg_pct", "perp_spot_basis_bps")
+                    (mk_eq in ("funding_rate", "perp_spot_basis_bps") or (eq_no_oi and mk_eq == "oi_1h_chg_pct"))
                     and abs(safe_float(eq_m_info.get(mk_eq), 0.0) or 0.0) < 1e-9
                 ):
                     continue

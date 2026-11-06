@@ -115,10 +115,7 @@ def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bo
     if (aw_eq := safe_pos_float(m_info.get("ask_wall_px"), default=None)) is not None and aw_eq <= spot_px:
         m_info["ask_wall_px"] = round(spot_px + tick_eq, px_dec)
         changed = True
-    if (
-        (safe_nonneg_float(m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
-        and abs(safe_float(m_info.get("perp_spot_basis_bps"), default=0.0) or 0.0) > 0.0
-    ):
+    if abs(safe_float(m_info.get("perp_spot_basis_bps"), default=0.0) or 0.0) > 0.0:
         m_info["perp_spot_basis_bps"] = 0.0
         changed = True
     return changed
