@@ -1011,20 +1011,23 @@ def load_symbol_microstructure(
         ):
             m_info["native_l1_oi_usd"] = round(deriv_oi, 2)
             m_info["oi_usd"] = w_oi
+        wl_cur = safe_pos_float(m_info.get("whale_long_pct"), default=0.0) or 0.0
         if (safe_pos_float(m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0 and (
-            safe_pos_float(m_info.get("whale_long_pct"), default=0.0) or 0.0
-        ) <= 0.0:
+            wl_cur <= 0.0 or wl_cur >= 1.0
+        ):
             tr_ref = safe_pos_float(
                 m_info.get("taker_ratio_1h") or m_info.get("taker_buy_sell_ratio"),
                 default=None,
             )
-            if tr_ref is not None:
+            if tr_ref is not None and tr_ref < 100.0:
                 wl_norm = round(tr_ref / (1.0 + tr_ref), 4)
                 m_info["whale_long_pct"] = wl_norm
                 m_info["whale_long_ratio"] = round(tr_ref, 4)
+                if (safe_pos_float(m_info.get("taker_buy_sell_ratio"), default=0.0) or 0.0) <= 0.0:
+                    m_info["taker_buy_sell_ratio"] = round(tr_ref, 4)
                 tb_cur = safe_nonneg_float(m_info.get("taker_buy_vol_usd"), default=0.0) or 0.0
-                ts_cur = safe_pos_float(m_info.get("taker_sell_vol_usd"), default=None)
-                if tb_cur <= 0.0 and ts_cur is not None:
+                ts_cur = safe_nonneg_float(m_info.get("taker_sell_vol_usd"), default=0.0) or 0.0
+                if (tb_cur <= 0.0 < ts_cur) or (ts_cur <= 0.0 < tb_cur):
                     tot_v = tb_cur + ts_cur
                     m_info["taker_buy_vol_usd"] = round(tot_v * wl_norm, 2)
                     m_info["taker_sell_vol_usd"] = round(tot_v * (1.0 - wl_norm), 2)

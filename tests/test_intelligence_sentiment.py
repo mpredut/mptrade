@@ -8631,6 +8631,45 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     enrich_microstructure_cvd(spcx_ask_heavy, {"price": 123.52, "chg_15m_pct": 1.11})
     assert spcx_ask_heavy["spot_cvd_15m_usd"] < 0.0
 
+    # Sibling reconciliation also preserves negative synthetic spot CVD when aggregate book is ask-heavy and CVD < 0
+    from intelligence.sentiment.evaluators.microstructure_evaluator import reconcile_sibling_flow_and_liq_regimes
+
+    sib_micro = {
+        "BTCUSDC": dict(spcx_ask_heavy, ob_mid_price=70000.0),
+        "BTCUSDT": dict(spcx_ask_heavy, ob_mid_price=70000.0),
+    }
+    sib_pt = {
+        "BTCUSDC": {"price": 70000.0, "chg_15m_pct": 1.11},
+        "BTCUSDT": {"price": 70000.0, "chg_15m_pct": 1.11},
+    }
+    reconcile_sibling_flow_and_liq_regimes(sib_micro, sib_pt)
+    assert sib_micro["BTCUSDC"]["spot_cvd_15m_usd"] < 0.0
+    assert sib_micro["BTCUSDT"]["spot_cvd_15m_usd"] < 0.0
+
+    # Zero-OI equity with whale_long_pct=0.0 and taker_buy_sell_ratio=0.0 normalizes taker_buy_sell_ratio from taker_ratio_1h
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+
+    eq_m = load_symbol_microstructure(
+        "",
+        "SPCX_US_EQ",
+        lambda _p: None,
+        ob={"best_bid": 123.50, "best_ask": 123.54, "bid_depth_usd": 100000.0, "ask_depth_usd": 120000.0},
+        deriv={"funding_rate": 0.0, "open_interest_usd": 0.0},
+        whale={
+            "top_traders_long_pct": 0.0,
+            "top_traders_long_ratio": 0.0,
+            "taker_buy_sell_ratio": 0.0,
+            "taker_ratio_1h": 0.80,
+            "taker_buy_vol_usd": 0.0,
+            "taker_sell_vol_usd": 90000.0,
+            "open_interest_usd": 0.0,
+        },
+    )
+    assert eq_m["whale_long_pct"] == 0.4444
+    assert eq_m["taker_buy_sell_ratio"] == 0.80
+    assert eq_m["taker_buy_vol_usd"] > 0.0
+
+
 
 
 

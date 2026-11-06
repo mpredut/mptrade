@@ -250,9 +250,9 @@ def collect_pretrade_telemetry(
         f_snap = _fetch_pillar2(get_derivatives_collector, "derivatives_telemetry_")
         if f_snap is not None:
             fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
-            if fr_f is not None:
-                telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
             oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
+            if fr_f is not None and not (is_eq_sym and oi_f <= 0.0 and abs(fr_f) < 1e-12):
+                telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
             if oi_f > 0.0:
                 telemetry["Derivatives Open Interest"] = f"${oi_f:,.0f}"
     except Exception:
@@ -966,11 +966,33 @@ def collect_pretrade_telemetry(
                 p_est["price"] = cur_px_est
                 recalculate_live_price_geometry(p_est, cur_px_est)
             enrich_microstructure_cvd(cur_m_info, p_est)
-            if (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
+            eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
+            if (
+                (wl_p := clean_scale(cur_m_info.get("whale_long_pct"), default=None, allow_percent=True)) is not None
+                and 0.0 < wl_p < 1.0
+                and (
+                    "Whale Positioning" not in telemetry
+                    or str(telemetry.get("Whale Positioning") or "").startswith(("0.0% ", "100.0% "))
+                )
+            ):
+                wl_r = safe_pos_float(cur_m_info.get("whale_long_ratio"), default=None)
+                if wl_r is None:
+                    wl_r = wl_p / (1.0 - wl_p)
+                telemetry["Whale Positioning"] = f"{wl_p * 100.0:.1f}% Top Traders Long (L/S ratio: {wl_r:.2f})"
+            if (
+                (tr_m := safe_pos_float(cur_m_info.get("taker_buy_sell_ratio"), default=None)) is not None
+                and (
+                    "Whale Taker Flow" not in telemetry
+                    or str(telemetry.get("Whale Taker Flow") or "").endswith(" 0.00")
+                )
+            ):
+                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_m:.2f}"
+            if eq_no_oi_pt and abs(safe_float(cur_m_info.get("funding_rate"), default=0.0) or 0.0) < 1e-12:
+                telemetry.pop("Perpetual Funding Rate", None)
+            elif (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
                 fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
                 f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
                 b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
-                eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
                 fr_extras = [
                     x
                     for x in (
@@ -1104,7 +1126,7 @@ def collect_pretrade_telemetry(
                 if sp_cvd is not None:
                     cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}"
                 telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
-            if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
+            if not eq_no_oi_pt and liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
                 deep_parts = [
                     f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
                     for s_lbl, px_k, usd_k, dist_k in (
