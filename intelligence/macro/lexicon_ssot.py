@@ -81,9 +81,9 @@ _SPORTS_CONTEXT_WORDS: frozenset[str] = frozenset({
 _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS: frozenset[str] = frozenset({
     "airstrike", "airstrikes", "attack", "attacks", "blockade", "bomb", "bombing",
     "casualties", "ceasefire", "crude", "drone", "drones", "embargo", "escalation",
-    "hormuz", "idf", "invasion", "missile", "missiles", "military", "nuclear",
-    "oil", "pentagon", "retaliation", "sanction", "sanctions", "strike", "strikes",
-    "tanker", "tehran", "troops", "warhead", "warship",
+    "explosion", "explosions", "hormuz", "idf", "invasion", "missile", "missiles",
+    "military", "nuclear", "oil", "pentagon", "retaliation", "sanction", "sanctions",
+    "strike", "strikes", "tanker", "tehran", "troops", "warhead", "warship",
 })
 
 _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -346,6 +346,7 @@ def _is_excluded_non_crisis_attack_keyword(
         {
             "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
             "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
+            "hormuz", "strait",
         }
         | ({"strike", "strikes"} if war_cost_context else set())
     ):
@@ -376,7 +377,9 @@ def _is_excluded_non_crisis_attack_keyword(
                     "electric", "vehicle", "vehicles", "cost", "costs", "bill",
                     "household", "households", "funding", "schumer", "hegseth",
                     "defend", "defends", "blame", "farcical", "stopping", "exceed",
-                    "briefing", "seeks", "seeking", "harward",
+                    "briefing", "seeks", "seeking", "harward", "recalibrates",
+                    "recalibrate", "expectations", "assumptions", "soufan",
+                    "multilateral", "approaches",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
