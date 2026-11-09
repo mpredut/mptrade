@@ -9175,6 +9175,7 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
     tao_pos = [{"venue": "binance", "symbol": "TAOUSDC", "free_base": 8.331, "locked_base": 0.0, "price": 215.2}]
     enrich_positions_with_orders_and_cycles(tao_pos, {}, {}, {"binance": recent_orders}, recent_orders, {}, {}, {}, {})
     assert len(recent_orders["TAOUSDC"]["open_lots"]) == 2
+    assert len(tao_pos[0]["open_lots"]) == 2
 
     # 2. align_equity_orderbook_to_spot preserves 4-decimal precision when 2-decimal rounding collapses tight spread
     ob_nvda = {"best_bid": 186.76, "best_ask": 186.77, "ob_mid_price": 186.765, "spread_bps": 0.54}

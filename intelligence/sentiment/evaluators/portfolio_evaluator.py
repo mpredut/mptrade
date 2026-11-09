@@ -1095,9 +1095,10 @@ def enrich_positions_with_orders_and_cycles(
                 or (int(safe_pos_float(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0)
             )
             fresh_lots = [
-                lot for lot in open_lots[-4:]
+                ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+                for lot in open_lots[-4:]
                 if isinstance(lot, dict)
-                and safe_float(lot.get("entry_px"), 0.0) > 0
+                and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
                 and (
                     newest_lot_ts <= 0
                     or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))

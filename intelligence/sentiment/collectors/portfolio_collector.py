@@ -1149,10 +1149,10 @@ def load_symbol_best_recent_fills(
             default=0,
         )
         fresh_lots = [
-            lot
+            ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
             for lot in open_lots_raw[-4:]
             if isinstance(lot, dict)
-            and safe_float(lot.get("entry_px"), 0.0) > 0
+            and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
             and (
                 newest_lot_ts <= 0
                 or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))
