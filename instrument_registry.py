@@ -283,7 +283,8 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
         if reg is None:
             reg = load_registry(path)
         return any(
-            (spec.provider == "t212" or spec.market_hours == "rth") and spec.symbol.upper() == sym_u
+            (spec.provider == "t212" or spec.market_hours == "rth")
+            and (spec.symbol.upper() == sym_u or spec.symbol.upper().split("_", 1)[0] == sym_u)
             for spec in reg.values()
         )
     except Exception:

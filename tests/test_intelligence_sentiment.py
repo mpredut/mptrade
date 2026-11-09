@@ -9588,6 +9588,9 @@ def test_harvest_positions_dedup_bare_equity_pretrade_and_assetguardian_recovery
     )
     tel_nvda = collect_pretrade_telemetry("NVDA", cachedb_dir=str(cdir))
     assert "Perpetual Funding Rate" not in tel_nvda
+    from instrument_registry import is_equity_symbol
+    assert is_equity_symbol("NVDA") is True
+    assert is_equity_symbol("RNDR") is False
 
     # 3. Recovered AssetValue cache error in assetguardian.log is suppressed once normal cycles resume
     ldir = tmp_path / "logs"
