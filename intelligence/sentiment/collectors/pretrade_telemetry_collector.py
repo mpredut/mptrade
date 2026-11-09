@@ -1591,9 +1591,6 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
         """Enrich ``ctx.telemetry`` using the normalized snapshot in ``ctx``."""
 
 
-PretradeTelemetryStage = PretradePillarCollectorBase
-
-
 class Pillar2AndRegimeStage(PretradePillarCollectorBase):
     """Concrete pillar collector (Level 3): Pillar 2 Orderbook/Funding/Whale + Pillar 3 Regime snapshots."""
 
@@ -1919,7 +1916,6 @@ __all__ = [
     "PretradeShortSlopesKalmanStage",
     "PretradeStructural7dStage",
     "PretradeTelemetryOrchestrator",
-    "PretradeTelemetryStage",
     "QuantitativeSeriesAndMicrostructureStage",
     "RecentFillsExecutionStage",
     "collect_pretrade_telemetry",

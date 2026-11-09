@@ -187,7 +187,7 @@ def test_telemetry_prompt_context():
     assert "Whale Positioning: 72.5% Top Traders Long" in prompt
 
 
-class MockInstrument(mt._Instrument):
+class MockInstrument(mt.Instrument):
     def __init__(self, symbol="TAOUSDC", price=103.0, free=0.0, min_qty=0.1, buy_qty=None, orders_dict=None):
         self.symbol = symbol
         self.name = symbol

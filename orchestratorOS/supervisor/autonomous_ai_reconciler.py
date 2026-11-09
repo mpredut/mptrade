@@ -30,7 +30,6 @@ from botcore import (
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -39,13 +38,13 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     populate_market_and_portfolio_snapshot,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    apply_short_trend_item as _apply_short_trend_item,  # noqa: F401 (re-export: test compat)
+    apply_short_trend_item,  # noqa: F401 (re-export: test compat)
     compute_liquidation_clusters,  # noqa: F401 (re-export: test compat)
-    compute_swing_wave_metrics as _compute_swing_wave_metrics,  # noqa: F401 (re-export: test compat)
+    compute_swing_wave_metrics,  # noqa: F401 (re-export: test compat)
     compute_volume_profile_metrics,  # noqa: F401 (re-export: test compat)
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    parse_venue_cycle_state as _parse_venue_cycle_state,  # noqa: F401 (re-export: test compat)
+    parse_venue_cycle_state,  # noqa: F401 (re-export: test compat)
     resolve_venue_fee_and_limits,  # noqa: F401 (re-export: test compat)
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
@@ -82,7 +81,7 @@ from orchestratorOS.supervisor.prompt_formatters import (
 )
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from providers.execution_audit import (
-    normalize_trading_decisions as _normalize_trading_decisions,  # noqa: F401 (re-export: test compat)
+    normalize_trading_decisions,  # noqa: F401 (re-export: test compat)
 )
 import instrument as _instrument_preload  # noqa: F401 — preload with core modules to prevent mid-deploy split-commit lazy import races
 

@@ -26,7 +26,7 @@ import uuid
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
 import binance_cache_health as account_cache_health
-from botcore import safe_pos_float
+from botcore import normalize_epoch_sec, resolve_now_ts, safe_pos_float
 from cacheInterface import (
     CacheManagerInterface,
     _ACCOUNT_CACHE_CLASSES,
@@ -51,7 +51,7 @@ from providers.base import (
 )
 from state_io import (
     atomic_snapshot_file,
-    atomic_text_writer as atomic_write,
+    atomic_text_writer,
     atomic_write_json,
     discard_generation_file,
     meta_file_path,
@@ -792,7 +792,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 committed_metadata = {}
 
                 def _write_trade_data():
-                    with atomic_write(self.filename) as handle:
+                    with atomic_text_writer(self.filename) as handle:
                         for symbol, items in self.cache.items():
                             for item in items:
                                 records.append((symbol, item))
@@ -1412,6 +1412,30 @@ class CacheAssetValueManager(CacheAccountManagerBase):
     """Account/portfolio total asset value history cache (Level 3) backed by append-only JSONL."""
 
     DEFAULT_FILENAME = "cache_asset_value.jsonl"
+
+    @classmethod
+    def extract_asset_value_summary(cls, rec: object, *, now_ts: Optional[float] = None) -> dict:
+        """Extract normalized portfolio value fields from a ``cache_asset_value.jsonl`` record."""
+        if not isinstance(rec, dict) or not isinstance(rec.get("i"), dict):
+            return {}
+        av_inner = rec["i"]
+        out: dict = {"total_value_usdc": av_inner.get("total_value_usdc")}
+        if isinstance(av_inner.get("venues_usd"), dict) and av_inner["venues_usd"]:
+            out["venues_value_usd"] = av_inner["venues_usd"]
+        if av_inner.get("portfolio_total_usd") is not None:
+            out["portfolio_total_usd"] = av_inner.get("portfolio_total_usd")
+        av_ts_s = normalize_epoch_sec(
+            extract_timestamp_s(rec)
+            or extract_timestamp_s(av_inner)
+            or rec.get("t")
+            or av_inner.get("t")
+            or av_inner.get("datetime_local"),
+            allow_iso=True,
+        )
+        eff_now_s = resolve_now_ts(now_ts)
+        if av_ts_s is not None and eff_now_s is not None:
+            out["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
+        return out
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:

@@ -9,13 +9,12 @@ from typing import Any, Optional, Tuple
 from botcore import (
     normalize_epoch_sec,
     resolve_patched_attr,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
 from guard_hierarchy import GUARD_REGISTRY
-from instrument import Instrument as _Instrument
+from instrument import Instrument
 import order_guard
 import order_retry
 from order_lifecycle import restore_cancelled_orders
@@ -207,7 +206,7 @@ def _mt_attr(name: str, default: Any) -> Any:
 
 def _as_instrument(x):
     """Accept an Instrument or adapt a symbol string through the provider facade."""
-    inst_cls = _mt_attr("_Instrument", _Instrument)
+    inst_cls = _mt_attr("Instrument", Instrument)
     if isinstance(x, inst_cls):
         return x
     sym_s = str(x)

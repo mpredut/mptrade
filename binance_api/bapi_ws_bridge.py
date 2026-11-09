@@ -234,7 +234,7 @@ def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
             manager._persist_items(symbol, items)
     except Exception as exc:
         mgr_name = getattr(manager, "cls_name", None) or type(manager).__name__
-        print(f"[cacheManager] _refresh_symbol_in_cache {mgr_name}/{symbol}: {exc}")
+        print(f"[cacheManager] refresh_symbol_in_cache {mgr_name}/{symbol}: {exc}")
 
 
 def handle_binance_ws_event(

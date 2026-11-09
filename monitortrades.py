@@ -25,7 +25,7 @@ from botcore import (
 import cacheManager as cm
 import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
-from instrument import Instrument as _Instrument
+from instrument import Instrument
 from instrument_registry import load_for
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h as get_symbol_volatility_1h
 import order_guard
@@ -1293,7 +1293,7 @@ def _execute_reentry_buy(
 
 def _resolve_mt_inst_cfg(inst):
     """Resolve and cache parsed ``mt.*`` instrument parameters against current module defaults."""
-    is_real_inst = type(inst) is _Instrument
+    is_real_inst = type(inst) is Instrument
     if is_real_inst:
         key = (HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE)
         cached = getattr(inst, "_mt_cfg_cache", None)

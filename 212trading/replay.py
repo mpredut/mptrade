@@ -36,7 +36,7 @@ from offline.backtests.execution import (
     validate_ohlc_bars,
 )
 from offline.backtests.metrics import round_metric
-from providers.replay_provider import SimClock as _SimClock
+from providers.replay_provider import SimClock
 from strategies.spot_replay import build_replay_summary
 
 
@@ -131,7 +131,7 @@ def _run_once(
     execution: ExecutionModel,
 ) -> dict:
     client = _ReplayClient()
-    clock = _SimClock(0.0)
+    clock = SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
     for row in warmup_ohlc or ():
         if isinstance(row, (list, tuple)) and len(row) >= 4:

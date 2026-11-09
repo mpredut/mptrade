@@ -1646,14 +1646,14 @@ class TestRefreshSymbolInCache(unittest.TestCase):
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items=remote)
             with mgr.lock:
                 mgr.cache["SYM"] = []
-            cm._refresh_symbol_in_cache(mgr, "SYM")
+            cm.refresh_symbol_in_cache(mgr, "SYM")
             with mgr.lock:
                 self.assertIn(42.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
         with self.subTest("refresh missing symbol no crash"):
             fname = _tmp_file(self.tmp, "x.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={})
-            cm._refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
+            cm.refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
 
 
 class TestFactorySingletonWarning(unittest.TestCase):
@@ -2031,7 +2031,7 @@ class TestAtomicWrite(unittest.TestCase):
         with self.subTest("atomic write cleanup on error"):
             p = os.path.join(self.tmp, "b.json")
             with self.assertRaises(ValueError):
-                with cm.atomic_write(p) as f:
+                with cm.atomic_text_writer(p) as f:
                     f.write("partial")
                     raise ValueError("boom")
             self.assertFalse(os.path.exists(p))            # Target file untouched.
@@ -2041,7 +2041,7 @@ class TestAtomicWrite(unittest.TestCase):
             p = os.path.join(self.tmp, "c.json")
             cm.atomic_write_json(p, {"v": "old"})
             with self.assertRaises(ValueError):
-                with cm.atomic_write(p) as f:
+                with cm.atomic_text_writer(p) as f:
                     f.write("new-incomplete")
                     raise ValueError("boom")
             with open(p) as f:
@@ -2064,7 +2064,7 @@ class TestAtomicWrite(unittest.TestCase):
                     fh.write('{"migrated": true}\n')
                 with open(old_p + ".meta", "w", encoding="utf-8") as fh:
                     fh.write('{"meta": true}\n')
-                cm._migrate_legacy_filename_if_needed(new_p)
+                cm.migrate_legacy_filename_if_needed(new_p)
                 self.assertTrue(os.path.exists(new_p), f"Expected {new_name} to exist")
                 self.assertTrue(os.path.exists(new_p + ".meta"), f"Expected {new_name}.meta to exist")
                 self.assertFalse(os.path.exists(old_p), f"Expected {old_name} to be moved")

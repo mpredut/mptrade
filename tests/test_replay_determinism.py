@@ -623,7 +623,7 @@ class TestSimClock(unittest.TestCase):
     def test_tradeall_backtest_uses_shared_class(self):
         from offline.backtests import tradeall as tb
         from providers.replay_clock import SimClock
-        self.assertIs(tb._SimClock, SimClock)
+        self.assertIs(tb.SimClock, SimClock)
 
 
 if __name__ == "__main__":

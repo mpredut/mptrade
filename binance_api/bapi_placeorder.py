@@ -58,7 +58,6 @@ PLACE_ORDER_SAFEBACK_SEC = required_int_env("PLACE_ORDER_SAFEBACK_SEC")
 PLACE_ORDER_MIN_NOTIONAL = required_float_env("PLACE_ORDER_MIN_NOTIONAL")
 
 
-_CACHE_SUBMIT_PERMIT_TTL_SEC = binance_cache_health.SUBMIT_PERMIT_TTL_SEC
 _CACHE_SUBMIT_PERMIT_ISSUER = object()
 
 
@@ -101,8 +100,8 @@ class _AccountCacheSubmitPermit:
         object.__setattr__(self, "_scope", _AccountCacheSubmitScope(
             pid=os.getpid(),
             issued_at=issued_at,
-            expires_at=issued_at + _CACHE_SUBMIT_PERMIT_TTL_SEC,
-            expires_at_wall=issued_at_wall + _CACHE_SUBMIT_PERMIT_TTL_SEC,
+            expires_at=issued_at + binance_cache_health.SUBMIT_PERMIT_TTL_SEC,
+            expires_at_wall=issued_at_wall + binance_cache_health.SUBMIT_PERMIT_TTL_SEC,
             order_cache_version=str(status.order_cache_version),
             trade_cache_version=str(status.trade_cache_version),
             symbol="" if isinstance(symbol, bool) else str(symbol or "").strip().upper(),
@@ -228,7 +227,7 @@ def _require_submit_permit_headroom(status):
     parsed_ages = [safe_nonneg_float(age, default=None) for age in (status.order_age_sec, status.trade_age_sec)]
     if (
         any(age_f is None for age_f in parsed_ages)
-        or max(parsed_ages) + _CACHE_SUBMIT_PERMIT_TTL_SEC > binance_cache_health.MAX_AGE_SEC
+        or max(parsed_ages) + binance_cache_health.SUBMIT_PERMIT_TTL_SEC > binance_cache_health.MAX_AGE_SEC
     ):
         raise SubmissionRefused("account_cache_not_fresh")
     return status

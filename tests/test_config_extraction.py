@@ -273,7 +273,8 @@ import pytest
 
 from botcore import parse_dotenv
 from providers.strategy_executor import PairPrecision
-from strategies import spot_dca, spot_engine
+import strategies
+from strategies import spot_engine
 from strategies.spot_engine import StratParams
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,11 +302,10 @@ def _params():
 
 
 class SpotModuleBoundaryTest(unittest.TestCase):
-    def test_spot_dca_shim_matches_spot_engine_canonical(self):
-        self.assertIs(spot_dca.Strategy, spot_engine.Strategy)
-        self.assertIs(spot_dca.StratParams, spot_engine.StratParams)
-        self.assertEqual(spot_dca._new_state(), spot_engine._new_state())
-        self.assertEqual(spot_dca.state_path_for("HYPEUSD"), spot_engine.state_path_for("HYPEUSD"))
+    def test_strategies_package_exports_spot_engine_canonical(self):
+        self.assertIs(strategies.Strategy, spot_engine.Strategy)
+        self.assertIs(strategies.StratParams, spot_engine.StratParams)
+        self.assertIs(strategies.spot_engine, spot_engine)
 
     def test_missing_venue_precision_fails_before_strategy_start(self):
         executor = _Executor()

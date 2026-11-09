@@ -11,8 +11,7 @@ Provides a provider-agnostic, mathematical mirror state machine for position exi
 from __future__ import annotations
 
 import math
-import time
-from dataclasses import dataclass, field, fields as _dc_fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -336,7 +335,7 @@ class PositionExitConfig:
     allow_external_cache: bool = True
 
     def __post_init__(self) -> None:
-        for f in _dc_fields(self):
+        for f in fields(self):
             val = getattr(self, f.name, f.default)
             if isinstance(f.default, bool):
                 setattr(self, f.name, _parse_bool_flag(val, f.default))

@@ -40,12 +40,12 @@ from botcore import (
     load_key_value_conf,
 )
 from instrument_registry import (
-    load_tradable_instruments as _load_tradable_instruments,
+    load_tradable_instruments,
     resolve_instrument_live_price,
     resolve_tradable_instrument,
 )
 from providers.execution_audit import (
-    append_intent_history as _append_intent_history,
+    append_intent_history,
     cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
@@ -169,7 +169,7 @@ class AutonomousIntentGateway:
         asset_scope: str = "all",
     ) -> Dict[str, Any]:
         """Load enabled instruments filtered by asset_scope ('crypto' | 'equities' | 'all')."""
-        return _load_tradable_instruments(
+        return load_tradable_instruments(
             self.workspace_dir,
             only_workspace_conf=only_workspace_conf,
             include_closed_rth=include_closed_rth,
@@ -308,7 +308,7 @@ class AutonomousIntentGateway:
             )
             intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
             intent["duplicate_of_order_id"] = dup_oid
-            _append_intent_history(intent, {
+            append_intent_history(intent, {
                 "ts": now,
                 "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
                 "duplicate_of_order_id": dup_oid,
@@ -383,7 +383,7 @@ class AutonomousIntentGateway:
         if mode != "enforce":
             logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", mode, intent_id)
             intent["status"] = "REJECTED_GATEWAY_DISABLED"
-            _append_intent_history(intent, {
+            append_intent_history(intent, {
                 "ts": now,
                 "action": "REJECTED_GATEWAY_DISABLED",
                 "mode": mode,

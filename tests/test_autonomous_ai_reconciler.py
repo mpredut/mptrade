@@ -1413,7 +1413,7 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
 
 def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_env, tmp_path, monkeypatch):
     import subprocess
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
     from verify_tools import pnl_report, portfolio_snapshot, watch_trade_decisions
 
     workspace, cache_dir, _ = temp_env
@@ -1437,8 +1437,8 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     assert rec_str_notify.mode == "shadow"
     assert rec_str_notify.notify_enabled is True
 
-    # 2. _normalize_trading_decisions ignores boolean confidence when sorting
-    decs = _normalize_trading_decisions({
+    # 2. normalize_trading_decisions ignores boolean confidence when sorting
+    decs = normalize_trading_decisions({
         "market_trading_decisions": [
             {"venue": "binance", "symbol": "BTCUSDC", "decision": "BUY", "confidence": True},
             {"venue": "binance", "symbol": "TAOUSDC", "decision": "BUY", "confidence": 0.91},
@@ -2267,7 +2267,7 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
 def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(tmp_path):
     from cachepaths import normalize_venue_name
     from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
     from providers.kraken_provider import _kraken_pair_matches
 
     # 1. Venue alias normalization
@@ -2279,7 +2279,7 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert normalize_venue_name("krk") == "kraken"
     assert normalize_venue_name("bin") == "binance"
 
-    # 2. _normalize_trading_decisions sorts by confidence before deduplicating canonical base + venue alias
+    # 2. normalize_trading_decisions sorts by confidence before deduplicating canonical base + venue alias
     plan = {
         "trading_decisions": [
             {"venue": "hl", "symbol": "HYPE", "action": "BUY", "confidence": 0.88, "notional_usd": 40.0},
@@ -2287,7 +2287,7 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
             {"venue": "trading212", "symbol": "SPCX_US_EQ", "side": "SELL", "confidence": 0.91, "notional_usd": 50.0},
         ]
     }
-    decs = _normalize_trading_decisions(plan)
+    decs = normalize_trading_decisions(plan)
     assert len(decs) == 2
     assert decs[0]["venue"] == "hyperliquid"
     assert decs[0]["symbol"] == "HYPEUSDC"
@@ -2515,7 +2515,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
-        _compute_swing_wave_metrics,
+        compute_swing_wave_metrics,
     )
 
     # 1. Pure objective ZigZag swing wave extraction on rally (+8.68%) and subsequent drop (-7.82%)
@@ -2525,7 +2525,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
         [3000, 0.1700],
         [4000, 0.1778],  # +8.68% rally peak
     ]
-    m_up = _compute_swing_wave_metrics(series_rally)
+    m_up = compute_swing_wave_metrics(series_rally)
     assert m_up["swing_low_px"] == 0.1636
     assert m_up["swing_high_px"] == 0.1778
     assert m_up["rally_from_swing_low_pct"] == 8.68
@@ -2534,7 +2534,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert m_up["recent_swings_7d"] == ["-6.5%", "+8.7%"]
 
     series_drop = series_rally + [[5000, 0.1639]]  # -7.82% pullback from 0.1778
-    m_dn = _compute_swing_wave_metrics(series_drop)
+    m_dn = compute_swing_wave_metrics(series_drop)
     assert m_dn["swing_high_px"] == 0.1778
     assert m_dn["pullback_from_swing_high_pct"] == -7.82
     assert "swing_action_zone" not in m_dn
@@ -2633,11 +2633,11 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert "SWING_3_8_RULE" not in prompt_out
     assert "do NOT call tools, shell commands, or file readers" not in prompt_out
 
-    # 3. _normalize_trading_decisions deduplicates per (venue, symbol) so conflicting BUY+SELL on the same coin
+    # 3. normalize_trading_decisions deduplicates per (venue, symbol) so conflicting BUY+SELL on the same coin
     #    cannot both fire in one cycle, and normalizes percentage confidence & LONG/SHORT aliases
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
 
-    deduped = _normalize_trading_decisions({
+    deduped = normalize_trading_decisions({
         "market_trading_decisions": [
             {"venue": "binance", "symbol": "TAOUSDC", "decision": "BUY", "confidence": "88%", "suggested_notional_usd": "$200"},
             {"venue": "binance", "symbol": "TAOUSDC", "decision": "SELL", "confidence": "94%", "suggested_notional_usd": "$650"},
@@ -2675,7 +2675,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
         AutonomousAIReconciler,
         GeminiClient,
         _format_venue_cycle_line,
-        _parse_venue_cycle_state,
+        parse_venue_cycle_state,
     )
     from providers.t212_provider import T212Provider
 
@@ -2683,9 +2683,9 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     cache_dir.mkdir(exist_ok=True)
     (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
 
-    # 1. _parse_venue_cycle_state extracts realized_net, uses fallback_prices for dd_pct,
+    # 1. parse_venue_cycle_state extracts realized_net, uses fallback_prices for dd_pct,
     #    rounds float noise, and _format_venue_cycle_line omits (None) / dd=None%
-    cyc_ada = _parse_venue_cycle_state(
+    cyc_ada = parse_venue_cycle_state(
         {
             "qty": 202.0,
             "cost_usd": 45.4,

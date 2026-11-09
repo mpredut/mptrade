@@ -35,7 +35,7 @@ from botcore import (
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     clean_symbol_key,
-    migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+    migrate_legacy_filename_if_needed,
 )
 import instrument_registry as sym
 from lock import FileLock
@@ -47,7 +47,7 @@ from providers.base import (
 from state_io import (
     atomic_gzip_file,
     atomic_snapshot_file,
-    atomic_text_writer as atomic_write,
+    atomic_text_writer,
     atomic_write_json,
     commit_file_and_meta,
     discard_generation_file,
@@ -357,7 +357,7 @@ class CacheManagerInterface(ABC):
         )
 
     def load_state(self):
-        _migrate_legacy_filename_if_needed(self.filename)
+        migrate_legacy_filename_if_needed(self.filename)
         print(f"[{self.cls_name}][Info] Load state from {self.filename} ...")
         if self.append_persist:
             self._migrate_legacy_json_if_needed()
@@ -870,7 +870,7 @@ class CacheManagerInterface(ABC):
                 metadata = self._build_basic_meta_locked()
 
                 def _write_compacted():
-                    with atomic_write(self.filename) as f:
+                    with atomic_text_writer(self.filename) as f:
                         for symbol, items in self.cache.items():
                             for item in items:
                                 f.write(_jsonl_line(symbol, item))

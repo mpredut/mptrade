@@ -44,7 +44,7 @@ class FakeProvider:
         return [dict(x) for x in self.fills if x["side"] == side]
 
 
-class FakeInstrument(mt._Instrument):
+class FakeInstrument(mt.Instrument):
     """Instrument-shaped test double that records final financial intents."""
 
     def __init__(self, *, price, free, fills, params=None, min_qty=0.0,
@@ -572,7 +572,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             }],
         )
         pipeline_symbol = "CHARPIPEUSD"
-        inst = mt._Instrument(
+        inst = mt.Instrument(
             name="PIPELINE",
             symbol=pipeline_symbol,
             provider=provider.name,

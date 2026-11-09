@@ -83,7 +83,7 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compute_venue_nav_breakdown,
-    migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+    migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
 from cacheprice import (
@@ -127,7 +127,7 @@ from providers.base import (
 from state_io import (
     atomic_gzip_file,
     atomic_snapshot_file,
-    atomic_text_writer as atomic_write,
+    atomic_text_writer,
     atomic_write_json,
     commit_file_and_meta,
     discard_generation_file,
@@ -708,7 +708,7 @@ def _persist_ws_updated_caches(event_type):
     )
 
 
-_refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
+refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
 
 
 def _handle_binance_ws_event(event):

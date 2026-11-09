@@ -812,7 +812,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         backup_path = writer._stage_previous_generation()
 
         changed = {**first, "price": "200"}
-        with cm.atomic_write(writer.filename) as handle:
+        with cm.atomic_text_writer(writer.filename) as handle:
             handle.write(json.dumps(
                 {"s": "BTCUSDC", "i": changed},
                 separators=(",", ":"),
@@ -1637,7 +1637,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             v2_items = {"BTCUSDC": [first_order, second_order]}
             v2_ft = {"BTCUSDC": now_ms + 1000}
             v2_version = writer._snapshot_data_version(v2_items)
-            with cm.atomic_write(writer.filename) as handle:
+            with cm.atomic_text_writer(writer.filename) as handle:
                 json.dump(
                     {
                         "data_version": v2_version,
@@ -1693,7 +1693,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             # Simulate a process crash during compaction after replacing JSONL
             # with a truncated/uncommitted payload before .meta update.
             cm.atomic_snapshot_file(writer.filename, writer._previous_generation_path())
-            with cm.atomic_write(writer.filename) as handle:
+            with cm.atomic_text_writer(writer.filename) as handle:
                 handle.write(
                     json.dumps({"s": "BTCUSDC", "i": _trade(1, 1000)}, separators=(",", ":"))
                     + "\n"

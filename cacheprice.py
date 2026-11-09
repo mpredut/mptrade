@@ -79,7 +79,7 @@ from providers.base import (
 )
 from state_io import (
     atomic_snapshot_file,
-    atomic_text_writer as atomic_write,
+    atomic_text_writer,
     atomic_write_jsonl,
     discard_generation_file,
     read_json_dict,
@@ -637,7 +637,7 @@ class Cache365PriceManager(Cache24PriceManager):
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
             snapshot_fn(self.filename, backup_path)
             with (
-                atomic_write(self.filename) as target,
+                atomic_text_writer(self.filename) as target,
                 open(backup_path, encoding="utf-8") as source,
             ):
                 for line_idx, line in enumerate(source, 1):
@@ -764,7 +764,7 @@ class Cache365PriceManager(Cache24PriceManager):
                         if line.strip()
                     ]
                     tail = lines[-1] if lines else b""
-            with atomic_write(self.filename) as target:
+            with atomic_text_writer(self.filename) as target:
                 decoded_tail = tail.decode("utf-8", errors="ignore")
                 target.write(decoded_tail)
                 if decoded_tail and not decoded_tail.endswith("\n"):

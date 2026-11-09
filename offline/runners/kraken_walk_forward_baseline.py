@@ -36,7 +36,6 @@ from offline.backtests.datasets import (  # noqa: E402
 from offline.backtests.evaluation import (  # noqa: E402
     add_walk_forward_cli_args,
     build_execution_model_from_args,
-    evaluate_spot_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     load_layered_env_config,
     parse_dataset_specs,
@@ -49,15 +48,6 @@ from offline.backtests.execution import ExecutionModel  # noqa: E402
 def fetch_closed_candles(pair: str, interval: int) -> list[dict]:
     """Read at most 720 Kraken bars and drop the last, still-forming bar."""
     return kraken_market_data.fetch_ohlc_candles(pair, interval, drop_incomplete=True)
-
-
-def _segment_result(records: list[dict], params: StratParams, fee_pct: float,
-                    interval: int, warmup_records: list[dict] | tuple = (),
-                    execution: ExecutionModel | None = None) -> dict:
-    return evaluate_spot_segment(
-        records, params, fee_pct, interval,
-        warmup_records=warmup_records, execution=execution, validate_contract=False,
-    )
 
 
 def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: float,

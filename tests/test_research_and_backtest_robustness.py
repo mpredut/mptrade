@@ -1604,9 +1604,9 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert len(fills) == 2
 
     # 4. AutonomousIntentGateway handles null history and integer intent_id without crashing
-    from orchestratorTrade.autonomous_intent_gateway import _append_intent_history
+    from orchestratorTrade.autonomous_intent_gateway import append_intent_history
     intent_obj = {"intent_id": 12345, "history": None}
-    _append_intent_history(intent_obj, {"action": "TEST"})
+    append_intent_history(intent_obj, {"action": "TEST"})
     assert intent_obj["history"] == [{"action": "TEST"}]
 
     # 5. intelligence.cli handles null symbols/pillars in heartbeat and report safely
@@ -6124,7 +6124,7 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         SupervisorAuditReport,
-        _normalize_trading_decisions,
+        normalize_trading_decisions,
     )
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
@@ -6149,7 +6149,7 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     assert mon_bad.dev_port == 32238
 
     # 4. AutonomousAIReconciler apply_reconciliation & _apply_code_patch_safely directory & falsy string guards
-    assert _normalize_trading_decisions(None) == []  # type: ignore[arg-type]
+    assert normalize_trading_decisions(None) == []  # type: ignore[arg-type]
     reconciler = AutonomousAIReconciler(
         mode="enforce",
         workspace_dir=str(tmp_path),

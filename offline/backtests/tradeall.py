@@ -28,11 +28,10 @@ sys.path.insert(0, ROOT)
 import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A5) — the model is not reimplemented.
 # 23 Jul: SimClock extracted into providers/replay_clock.py (shared with
 # monitortrades — see UNIFIED_BACKTEST_PLAN.md §7/§8), passed to
-# TrendState(now_fn=...) so that fast-forward is correct (A5). The
-# `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
+# TrendState(now_fn=...) so that fast-forward is correct (A5).
 from botcore import safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
-from providers.replay_provider import SimClock as _SimClock, backtest_isolation_context  # noqa: F401
+from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
@@ -330,7 +329,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     price_path = os.path.join(out_dir, "tradeall_price_samples.log")
 
     trend_gate = DynamicReplayTrendSource([symbol]) if trend_gate_timeout_sec is not None else None
-    clock = _SimClock()
+    clock = SimClock()
     broker = BacktestBroker(out_dir, clock, trend_gate=trend_gate,
                             trend_gate_timeout_sec=trend_gate_timeout_sec,
                             trend_gate_max_wait_sec=trend_gate_max_wait_sec)

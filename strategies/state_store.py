@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import fields as _dc_fields
-from botcore import _parse_bool_flag, safe_nonneg_float, safe_pos_float
+from dataclasses import fields
+from botcore import _parse_bool_flag, safe_pos_float
 from intelligence.internal.state.volatility import vol_pct_to_ratio
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager
@@ -121,7 +121,7 @@ def build_dataclass_from_dict(
     if isinstance(defaults, dict):
         base_defaults.update(defaults)
     merged = {**base_defaults, **(dict(values) if isinstance(values, dict) else {})}
-    valid = {f.name for f in _dc_fields(cls) if f.init}
+    valid = {f.name for f in fields(cls) if f.init}
     if _parse_bool_flag(warn_dropped, False):
         dropped = sorted(set(merged) - valid)
         if dropped:

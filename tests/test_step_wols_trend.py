@@ -441,7 +441,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(kt_obj._trend_value("XBTUSD"), 0.04, places=6)
 
     def test_apply_short_trend_item_populates_growth_horizons(self):
-        from orchestratorOS.supervisor.autonomous_ai_reconciler import _apply_short_trend_item
+        from orchestratorOS.supervisor.autonomous_ai_reconciler import apply_short_trend_item
 
         entry = {}
         tinfo = {
@@ -456,7 +456,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
                 "9000": {"slope_full": 4.5, "final_trend": 1, "growth_coefficient": 0.08},
             },
         }
-        self.assertTrue(_apply_short_trend_item(entry, tinfo))
+        self.assertTrue(apply_short_trend_item(entry, tinfo))
         self.assertAlmostEqual(entry["growth_3_7m"], -0.09, places=6)
         self.assertAlmostEqual(entry["growth_15m"], 0.03, places=6)
         self.assertAlmostEqual(entry["growth_2_5h"], 0.08, places=6)

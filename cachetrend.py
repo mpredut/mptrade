@@ -26,7 +26,6 @@ from collections import defaultdict
 from typing import List, Optional, Tuple
 
 import pricewindow as pw
-import utils as u
 from botcore import (
     diff_percent,
     is_live_network_backfill_enabled,
@@ -43,12 +42,10 @@ from botcore import (
 )
 from cacheInterface import CacheManagerInterface
 from cachepaths import (
-    CACHEDB_SUBDOMAINS,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
-    clean_symbol_key,
-    migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+    migrate_legacy_filename_if_needed,
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
@@ -312,7 +309,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     # ── CacheManagerInterface contract methods ───────────────────────────────
     def load_state(self):
         """Hydrate metadata and heal interrupted commits without pre-priming reader memory."""
-        _migrate_legacy_filename_if_needed(self.filename)
+        migrate_legacy_filename_if_needed(self.filename)
         meta_path = meta_file_path(self.filename)
         if os.path.exists(meta_path):
             try:
@@ -816,7 +813,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             if not isinstance(cand, str) or not cand:
                 continue
             cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, f"cache_24_price_{cand}.json")))
-            _migrate_legacy_filename_if_needed(cand_file)
+            migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
             ):
