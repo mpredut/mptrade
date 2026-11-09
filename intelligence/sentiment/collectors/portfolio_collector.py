@@ -123,11 +123,12 @@ def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
     contracts_fn = getattr(_mc.CacheAccountManagerBase, "venue_order_and_trade_cache_contracts", None)
     if callable(contracts_fn):
         return tuple(contracts_fn())
+    trd_cls = _mc.CacheTradeManager
     return (
         (getattr(_mc.CacheOrderManager, "DEFAULT_FILENAME", ""), "binance"),
-        (getattr(_mc.CacheKrakenTradeManager, "DEFAULT_FILENAME", ""), "kraken"),
-        (getattr(_mc.CacheHyperliquidTradeManager, "DEFAULT_FILENAME", ""), "hyperliquid"),
-        (getattr(_mc.CacheT212TradeManager, "DEFAULT_FILENAME", ""), "t212"),
+        (trd_cls.disk_filename("kraken"), "kraken"),
+        (trd_cls.disk_filename("hyperliquid"), "hyperliquid"),
+        (trd_cls.disk_filename("t212"), "t212"),
     )
 
 
@@ -1589,7 +1590,6 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     Modeled on ``CacheAccountManagerBase(CacheManagerInterface, ABC)``: encapsulates
     shared order/fill cache bindings (`CacheOrderManager`, `CacheTradeManager`,
-    `CacheKrakenTradeManager`, `CacheHyperliquidTradeManager`, `CacheT212TradeManager`,
     `CacheAssetValueManager`, and execution_audit fallback) and portfolio state readers.
     """
 
@@ -1610,21 +1610,6 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     def trade_cache_cls(self) -> Any:
         _ensure_cacheprice_classes_bound()
         return _mc.CacheTradeManager
-
-    @property
-    def kraken_trade_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheKrakenTradeManager
-
-    @property
-    def hyperliquid_trade_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheHyperliquidTradeManager
-
-    @property
-    def t212_trade_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheT212TradeManager
 
     @property
     def asset_value_cache_cls(self) -> Any:

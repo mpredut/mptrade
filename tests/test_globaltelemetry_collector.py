@@ -683,11 +683,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     # 3. Cache hierarchy filename & schema contracts are reused
     from cacheaccount import (
         CacheAccountManagerBase,
-        CacheHyperliquidTradeManager,
-        CacheKrakenTradeManager,
-        CacheT212TradeManager,
         CacheTradeManager,
-        CacheVenueTradeSnapshotManagerBase,
     )
     from intelligence.sentiment.collectors import (
         FearGreedCollector,
@@ -704,20 +700,25 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
-    assert CacheTradeManager.for_venue("binance") is CacheTradeManager
-    for venue_trd_cls, expected_venue, expected_fname in (
-        (CacheKrakenTradeManager, "kraken", "cache_trade_kraken.json"),
-        (CacheHyperliquidTradeManager, "hyperliquid", "cache_trade_hyperliquid.json"),
-        (CacheT212TradeManager, "t212", "cache_trade_t212.json"),
+    for expected_venue, expected_fname, expected_fmt in (
+        ("binance", "cache_trade.jsonl", "jsonl"),
+        ("kraken", "cache_trade_kraken.json", "json"),
+        ("hyperliquid", "cache_trade_hyperliquid.json", "json"),
+        ("t212", "cache_trade_t212.json", "json"),
     ):
-        assert issubclass(venue_trd_cls, CacheVenueTradeSnapshotManagerBase)
-        assert issubclass(venue_trd_cls, CacheTradeManager)
-        assert issubclass(venue_trd_cls, CacheAccountManagerBase)
-        assert venue_trd_cls.VENUE_KEY == expected_venue
-        assert venue_trd_cls.DEFAULT_FILENAME == expected_fname
-        assert CacheTradeManager.for_venue(expected_venue) is venue_trd_cls
+        assert issubclass(CacheTradeManager, CacheAccountManagerBase)
+        assert CacheTradeManager.for_venue(expected_venue) is CacheTradeManager
+        assert CacheTradeManager.disk_filename(expected_venue) == expected_fname
+        trd_inst = CacheTradeManager.create_for_venue(
+            expected_venue,
+            filename=os.path.join(temp_cache_dir, expected_fname),
+            start_sync=False,
+        )
+        assert trd_inst.venue == expected_venue
+        assert trd_inst.stream_format == expected_fmt
+        assert trd_inst.append_persist is (expected_fmt == "jsonl")
 
-    kraken_trd_path = os.path.join(temp_cache_dir, CacheKrakenTradeManager.DEFAULT_FILENAME)
+    kraken_trd_path = os.path.join(temp_cache_dir, CacheTradeManager.disk_filename("kraken"))
     from state_io import save_json_state
 
     save_json_state(
@@ -733,10 +734,10 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         },
         indent=2,
     )
-    sanitized = CacheKrakenTradeManager.load_sanitized_trade_snapshot(kraken_trd_path)
+    sanitized = CacheTradeManager.load_sanitized_trade_snapshot(kraken_trd_path, venue="kraken")
     assert len(sanitized["items"].get("TAOUSD", [])) == 2
     assert sanitized["fetchtime"].get("TAOUSD") == 1700000200
-    k_mgr = CacheKrakenTradeManager(filename=kraken_trd_path, start_sync=False)
+    k_mgr = CacheTradeManager(filename=kraken_trd_path, venue="kraken", stream_format="json", start_sync=False)
     assert k_mgr.get_last_opposite_fill_price("TAOUSD", "BUY") == pytest.approx(412.5)
     assert k_mgr.get_last_opposite_fill_price("TAOUSD", "SELL") == pytest.approx(405.0)
 
