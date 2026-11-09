@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-09T03:10:53",
+    "ts": "2026-11-09T14:11:00",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -9,8 +9,22 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 41.34,
-      "half2": 2.15
+      "half2": 2.16
     },
-    "dev_commit": "f7dfebe8"
+    "dev_commit": "a49b221d"
+  },
+  {
+    "ts": "2026-11-09T14:11:00",
+    "full_key": "BINANCE_ARB.mt.lost",
+    "section": "BINANCE_ARB",
+    "key": "mt.lost",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 4.8594,
+    "winner_value": 3.5,
+    "margin_vs_current": {
+      "half1": 13.4,
+      "half2": 27.13
+    },
+    "dev_commit": "a49b221d"
   }
 ]
