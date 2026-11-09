@@ -703,25 +703,53 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         "total_value_usdc_age_min": 5.0,
     }
 
-    # 4. Level-3 evaluators inherit from Level-2 bases and evaluate statelessly
-    for eval_cls, l2_base in (
-        (VenueCycleStateEvaluator, PortfolioEvaluatorBase),
-        (SymbolRecentFillsEvaluator, PortfolioEvaluatorBase),
-        (VenueCycleReconciliationEvaluator, PortfolioEvaluatorBase),
-        (PositionCostBasisEnrichmentEvaluator, PortfolioEvaluatorBase),
-        (VenueFeeAndLimitsEvaluator, TcaRiskEvaluatorBase),
-        (OpenLimitOrdersTcaEvaluator, TcaRiskEvaluatorBase),
-        (EnterprisePortfolioRiskEvaluator, TcaRiskEvaluatorBase),
-        (CrossMarketContextEvaluator, TcaRiskEvaluatorBase),
-        (FuturesPremarketLeadEvaluator, MacroTelemetryEvaluatorBase),
-        (EquityMacroRegimeEvaluator, MacroTelemetryEvaluatorBase),
-        (CrossAssetRegimeEvaluator, MacroTelemetryEvaluatorBase),
-        (DeribitOptionsSurfaceEvaluator, MacroTelemetryEvaluatorBase),
-        (InstitutionalPostureDivergenceEvaluator, MacroTelemetryEvaluatorBase),
-        (AssetScopeFilterEvaluator, MacroTelemetryEvaluatorBase),
-        (LiveVenueEquityReconciliationEvaluator, MacroTelemetryEvaluatorBase),
+    # 4. Level-3 evaluators inherit from Level-2 bases, register in TelemetryEvaluatorFactory, and evaluate statelessly
+    from intelligence.sentiment.evaluators import (
+        CrossVenueSiblingArbEvaluator,
+        CrossVenueTrendsEnricherEvaluator,
+        Horizon24hPriceEvaluator,
+        LiquidationClusterEvaluator,
+        MicrostructureCycleDeltaEvaluator,
+        MicrostructureEvaluatorBase,
+        OrderbookCvdFlowEvaluator,
+        PriceSeriesEvaluatorBase,
+        ShortTrendAndKalmanEvaluator,
+        SiblingSymbolTelemetrySyncEvaluator,
+        Structural7dWaveEvaluator,
+        TelemetryEvaluatorFactory,
+        VolumeProfileEvaluator,
+    )
+
+    for eval_id, eval_cls, l2_base in (
+        ("price_volume_profile", VolumeProfileEvaluator, PriceSeriesEvaluatorBase),
+        ("price_horizon_24h", Horizon24hPriceEvaluator, PriceSeriesEvaluatorBase),
+        ("price_structural_7d_wave", Structural7dWaveEvaluator, PriceSeriesEvaluatorBase),
+        ("price_short_trend_kalman", ShortTrendAndKalmanEvaluator, PriceSeriesEvaluatorBase),
+        ("micro_orderbook_cvd_flow", OrderbookCvdFlowEvaluator, MicrostructureEvaluatorBase),
+        ("micro_liquidation_clusters", LiquidationClusterEvaluator, MicrostructureEvaluatorBase),
+        ("micro_cross_venue_sibling_arb", CrossVenueSiblingArbEvaluator, MicrostructureEvaluatorBase),
+        ("micro_cycle_delta", MicrostructureCycleDeltaEvaluator, MicrostructureEvaluatorBase),
+        ("micro_cross_venue_trends", CrossVenueTrendsEnricherEvaluator, MicrostructureEvaluatorBase),
+        ("micro_sibling_symbol_sync", SiblingSymbolTelemetrySyncEvaluator, MicrostructureEvaluatorBase),
+        ("portfolio_venue_cycle_state", VenueCycleStateEvaluator, PortfolioEvaluatorBase),
+        ("portfolio_symbol_recent_fills", SymbolRecentFillsEvaluator, PortfolioEvaluatorBase),
+        ("portfolio_venue_cycle_reconciliation", VenueCycleReconciliationEvaluator, PortfolioEvaluatorBase),
+        ("portfolio_position_cost_basis", PositionCostBasisEnrichmentEvaluator, PortfolioEvaluatorBase),
+        ("tca_venue_fee_and_limits", VenueFeeAndLimitsEvaluator, TcaRiskEvaluatorBase),
+        ("tca_open_limit_orders", OpenLimitOrdersTcaEvaluator, TcaRiskEvaluatorBase),
+        ("tca_enterprise_portfolio_risk", EnterprisePortfolioRiskEvaluator, TcaRiskEvaluatorBase),
+        ("tca_cross_market_context", CrossMarketContextEvaluator, TcaRiskEvaluatorBase),
+        ("macro_futures_premarket_lead", FuturesPremarketLeadEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_equity_regime", EquityMacroRegimeEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_cross_asset_regime", CrossAssetRegimeEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_deribit_options_surface", DeribitOptionsSurfaceEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_institutional_posture_divergence", InstitutionalPostureDivergenceEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_asset_scope_filter", AssetScopeFilterEvaluator, MacroTelemetryEvaluatorBase),
+        ("macro_live_venue_equity_reconciliation", LiveVenueEquityReconciliationEvaluator, MacroTelemetryEvaluatorBase),
     ):
         assert issubclass(eval_cls, l2_base)
-        ev = eval_cls()
+        ev = TelemetryEvaluatorFactory.create(eval_id)
+        assert isinstance(ev, eval_cls)
         assert isinstance(ev, TelemetryEvaluatorInterface)
+        assert TelemetryEvaluatorFactory.get_evaluator(eval_cls) is ev
 

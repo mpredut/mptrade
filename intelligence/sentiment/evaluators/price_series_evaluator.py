@@ -2179,6 +2179,47 @@ class ShortTrendAndKalmanEvaluator(PriceSeriesEvaluatorBase):
         return target
 
 
+class TelemetryEvaluatorFactory:
+    """Singleton registry and factory for stateless telemetry evaluators (modeled on ``CacheFactory``)."""
+
+    _instances: Dict[str, TelemetryEvaluatorInterface] = {}
+    _registry: Dict[str, type[TelemetryEvaluatorInterface]] = {}
+
+    @classmethod
+    def register(
+        cls,
+        evaluator_id: str,
+        evaluator_cls: type[TelemetryEvaluatorInterface],
+    ) -> None:
+        cls._registry[str(evaluator_id)] = evaluator_cls
+
+    @classmethod
+    def create(cls, evaluator_id: str) -> Any:
+        key = str(evaluator_id)
+        evaluator_cls = cls._registry.get(key)
+        if evaluator_cls is None:
+            raise KeyError(f"Unknown telemetry evaluator id: {key}")
+        return cls.get_evaluator(evaluator_cls)
+
+    @classmethod
+    def get_evaluator(cls, evaluator_cls: type[TelemetryEvaluatorInterface]) -> Any:
+        key = evaluator_cls.__name__
+        inst = cls._instances.get(key)
+        if inst is None:
+            inst = evaluator_cls()
+            cls._instances[key] = inst
+        return inst
+
+
+for _ps_eval_id, _ps_eval_cls in (
+    ("price_volume_profile", VolumeProfileEvaluator),
+    ("price_horizon_24h", Horizon24hPriceEvaluator),
+    ("price_structural_7d_wave", Structural7dWaveEvaluator),
+    ("price_short_trend_kalman", ShortTrendAndKalmanEvaluator),
+):
+    TelemetryEvaluatorFactory.register(_ps_eval_id, _ps_eval_cls)
+
+
 class AssetSessionPolicy(ABC):
     """Abstract base contract (Level 2) for asset-class session rules and series normalization."""
 

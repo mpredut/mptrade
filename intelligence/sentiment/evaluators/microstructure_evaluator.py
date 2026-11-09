@@ -28,6 +28,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import _VENUE_DEFAULT_FEE_SPECS
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     _auto_px_decimals,
     _parse_ts_px_row,
@@ -1558,12 +1559,75 @@ class MicrostructureCycleDeltaEvaluator(MicrostructureEvaluatorBase):
         return m_map
 
 
+class CrossVenueTrendsEnricherEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) enriching symbols with cross-venue short slopes, Kalman velocity, long trend, Weibull, and 7d range."""
+
+    cls_name = "CrossVenueTrendsEnricherEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        trends_data: Any = None,
+        kalman_data: Any = None,
+        long_items: Any = None,
+        priceanalysis_data: Any = None,
+        t_trend_map: Any = None,
+        watcher_price_items: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        pt_map = data if isinstance(data, dict) else {}
+        enrich_cross_venue_trends(
+            pt_map,
+            trends_data,
+            kalman_data,
+            long_items,
+            priceanalysis_data,
+            t_trend_map,
+            watcher_price_items,
+        )
+        return pt_map
+
+
+class SiblingSymbolTelemetrySyncEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) synchronizing cross-venue & sibling symbol telemetry across Binance, Kraken, Hyperliquid, and T212/xStocks."""
+
+    cls_name = "SiblingSymbolTelemetrySyncEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        microstructure: Optional[Dict[str, Any]] = None,
+        cache_dir: Optional[str] = None,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        pt_map = data if isinstance(data, dict) else {}
+        m_map = microstructure if isinstance(microstructure, dict) else {}
+        sync_sibling_symbol_telemetry(pt_map, m_map, cache_dir=cache_dir, now_ts=now_ts)
+        return pt_map
+
+
+for _ms_eval_id, _ms_eval_cls in (
+    ("micro_orderbook_cvd_flow", OrderbookCvdFlowEvaluator),
+    ("micro_liquidation_clusters", LiquidationClusterEvaluator),
+    ("micro_cross_venue_sibling_arb", CrossVenueSiblingArbEvaluator),
+    ("micro_cycle_delta", MicrostructureCycleDeltaEvaluator),
+    ("micro_cross_venue_trends", CrossVenueTrendsEnricherEvaluator),
+    ("micro_sibling_symbol_sync", SiblingSymbolTelemetrySyncEvaluator),
+):
+    TelemetryEvaluatorFactory.register(_ms_eval_id, _ms_eval_cls)
+
+
 __all__ = [
     "CrossVenueSiblingArbEvaluator",
+    "CrossVenueTrendsEnricherEvaluator",
     "LiquidationClusterEvaluator",
     "MicrostructureCycleDeltaEvaluator",
     "MicrostructureEvaluatorBase",
     "OrderbookCvdFlowEvaluator",
+    "SiblingSymbolTelemetrySyncEvaluator",
     "_MICRO_PRICE_ANCHOR_KEYS",
     "_blend_structural_liq_anchor",
     "_first_variant_dict",

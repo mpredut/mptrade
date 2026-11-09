@@ -24,7 +24,11 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
-from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorInterface, pct_delta
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorFactory,
+    TelemetryEvaluatorInterface,
+    pct_delta,
+)
 from instrument_registry import casefold_get
 from providers.quantity import venue_fee_cap_quantity
 
@@ -837,10 +841,18 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         )
 
 
-_VENUE_FEE_AND_LIMITS_EVALUATOR = VenueFeeAndLimitsEvaluator()
-_OPEN_LIMIT_ORDERS_TCA_EVALUATOR = OpenLimitOrdersTcaEvaluator()
-_ENTERPRISE_PORTFOLIO_RISK_EVALUATOR = EnterprisePortfolioRiskEvaluator()
-_CROSS_MARKET_CONTEXT_EVALUATOR = CrossMarketContextEvaluator()
+for _tca_eval_id, _tca_eval_cls in (
+    ("tca_venue_fee_and_limits", VenueFeeAndLimitsEvaluator),
+    ("tca_open_limit_orders", OpenLimitOrdersTcaEvaluator),
+    ("tca_enterprise_portfolio_risk", EnterprisePortfolioRiskEvaluator),
+    ("tca_cross_market_context", CrossMarketContextEvaluator),
+):
+    TelemetryEvaluatorFactory.register(_tca_eval_id, _tca_eval_cls)
+
+_VENUE_FEE_AND_LIMITS_EVALUATOR = TelemetryEvaluatorFactory.create("tca_venue_fee_and_limits")
+_OPEN_LIMIT_ORDERS_TCA_EVALUATOR = TelemetryEvaluatorFactory.create("tca_open_limit_orders")
+_ENTERPRISE_PORTFOLIO_RISK_EVALUATOR = TelemetryEvaluatorFactory.create("tca_enterprise_portfolio_risk")
+_CROSS_MARKET_CONTEXT_EVALUATOR = TelemetryEvaluatorFactory.create("tca_cross_market_context")
 
 
 def resolve_venue_fee_and_limits(

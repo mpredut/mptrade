@@ -22,7 +22,10 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorInterface
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorFactory,
+    TelemetryEvaluatorInterface,
+)
 
 
 MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
@@ -1247,13 +1250,24 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
         return portfolio_summary
 
 
-_FUTURES_PREMARKET_LEAD_EVALUATOR = FuturesPremarketLeadEvaluator()
-_EQUITY_MACRO_REGIME_EVALUATOR = EquityMacroRegimeEvaluator()
-_CROSS_ASSET_REGIME_EVALUATOR = CrossAssetRegimeEvaluator()
-_DERIBIT_OPTIONS_SURFACE_EVALUATOR = DeribitOptionsSurfaceEvaluator()
-_INSTITUTIONAL_POSTURE_DIVERGENCE_EVALUATOR = InstitutionalPostureDivergenceEvaluator()
-_ASSET_SCOPE_FILTER_EVALUATOR = AssetScopeFilterEvaluator()
-_LIVE_VENUE_EQUITY_RECONCILIATION_EVALUATOR = LiveVenueEquityReconciliationEvaluator()
+for _macro_eval_id, _macro_eval_cls in (
+    ("macro_futures_premarket_lead", FuturesPremarketLeadEvaluator),
+    ("macro_equity_regime", EquityMacroRegimeEvaluator),
+    ("macro_cross_asset_regime", CrossAssetRegimeEvaluator),
+    ("macro_deribit_options_surface", DeribitOptionsSurfaceEvaluator),
+    ("macro_institutional_posture_divergence", InstitutionalPostureDivergenceEvaluator),
+    ("macro_asset_scope_filter", AssetScopeFilterEvaluator),
+    ("macro_live_venue_equity_reconciliation", LiveVenueEquityReconciliationEvaluator),
+):
+    TelemetryEvaluatorFactory.register(_macro_eval_id, _macro_eval_cls)
+
+_FUTURES_PREMARKET_LEAD_EVALUATOR = TelemetryEvaluatorFactory.create("macro_futures_premarket_lead")
+_EQUITY_MACRO_REGIME_EVALUATOR = TelemetryEvaluatorFactory.create("macro_equity_regime")
+_CROSS_ASSET_REGIME_EVALUATOR = TelemetryEvaluatorFactory.create("macro_cross_asset_regime")
+_DERIBIT_OPTIONS_SURFACE_EVALUATOR = TelemetryEvaluatorFactory.create("macro_deribit_options_surface")
+_INSTITUTIONAL_POSTURE_DIVERGENCE_EVALUATOR = TelemetryEvaluatorFactory.create("macro_institutional_posture_divergence")
+_ASSET_SCOPE_FILTER_EVALUATOR = TelemetryEvaluatorFactory.create("macro_asset_scope_filter")
+_LIVE_VENUE_EQUITY_RECONCILIATION_EVALUATOR = TelemetryEvaluatorFactory.create("macro_live_venue_equity_reconciliation")
 
 
 def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:

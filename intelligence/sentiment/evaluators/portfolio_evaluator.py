@@ -19,6 +19,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
     _prices_diverged,
     pct_delta,
@@ -1560,10 +1561,18 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         return tradable_positions
 
 
-_VENUE_CYCLE_STATE_EVALUATOR = VenueCycleStateEvaluator()
-_SYMBOL_RECENT_FILLS_EVALUATOR = SymbolRecentFillsEvaluator()
-_VENUE_CYCLE_RECONCILIATION_EVALUATOR = VenueCycleReconciliationEvaluator()
-_POSITION_COST_BASIS_ENRICHMENT_EVALUATOR = PositionCostBasisEnrichmentEvaluator()
+for _port_eval_id, _port_eval_cls in (
+    ("portfolio_venue_cycle_state", VenueCycleStateEvaluator),
+    ("portfolio_symbol_recent_fills", SymbolRecentFillsEvaluator),
+    ("portfolio_venue_cycle_reconciliation", VenueCycleReconciliationEvaluator),
+    ("portfolio_position_cost_basis", PositionCostBasisEnrichmentEvaluator),
+):
+    TelemetryEvaluatorFactory.register(_port_eval_id, _port_eval_cls)
+
+_VENUE_CYCLE_STATE_EVALUATOR = TelemetryEvaluatorFactory.create("portfolio_venue_cycle_state")
+_SYMBOL_RECENT_FILLS_EVALUATOR = TelemetryEvaluatorFactory.create("portfolio_symbol_recent_fills")
+_VENUE_CYCLE_RECONCILIATION_EVALUATOR = TelemetryEvaluatorFactory.create("portfolio_venue_cycle_reconciliation")
+_POSITION_COST_BASIS_ENRICHMENT_EVALUATOR = TelemetryEvaluatorFactory.create("portfolio_position_cost_basis")
 
 
 def parse_venue_cycle_state(
