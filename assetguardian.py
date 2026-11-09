@@ -37,6 +37,7 @@ from botcore import (
     clamp_float,
     exact_nonneg_int,
     load_root_config,
+    required_env,
     required_float_env,
     required_int_env,
     safe_float,
