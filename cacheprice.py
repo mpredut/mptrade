@@ -26,7 +26,6 @@ import concurrent.futures as _futures
 import json
 import json as _json
 import os
-import sys
 import threading
 import time
 from typing import Optional

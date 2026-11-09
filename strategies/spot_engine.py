@@ -10,17 +10,16 @@ from __future__ import annotations
 
 import math
 import os
-import time
 from collections import deque
 from dataclasses import dataclass, fields
 from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, are_close, format_price_log, log, defined_env, normalize_epoch_sec,
-    require_finite_float, require_int, required_env,
+    _parse_bool_flag, format_price_log, log, defined_env, normalize_epoch_sec,
+    require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
-    safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
+    safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import (
@@ -30,13 +29,8 @@ from providers.base import (
     normalize_side,
 )
 from providers.execution_audit import intent_client_order_id
-from providers.strategy_executor import ProviderError, StrategyExecutor
+from providers.strategy_executor import ProviderError
 from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
-
-from intelligence.internal.state.volatility import (
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-)
 
 from . import spot_rules as sr
 from .base_spot_mixin import (
@@ -48,7 +42,6 @@ from .base_spot_mixin import (
     sanitize_common_spot_state,
 )
 from .state_store import (
-    JsonStateStore,
     state_path_for as _shared_state_path_for,
 )
 from .position_exit_manager import (

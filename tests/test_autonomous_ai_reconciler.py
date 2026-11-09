@@ -109,7 +109,7 @@ def test_harvest_log_anomalies(temp_env):
 
 def test_recent_log_lines_handles_clock_only_stamps_and_midnight_wrap():
     from datetime import datetime
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import recent_log_lines
+    from orchestratorOS.lib.technical_repair_ssot import recent_log_lines
 
     mtime = datetime(2026, 10, 23, 0, 10, 0).timestamp()
     lines = [
@@ -1089,7 +1089,7 @@ def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venu
 
 def test_recent_log_lines_handles_invalid_glog_and_year_wrap():
     from datetime import datetime
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import recent_log_lines
+    from orchestratorOS.lib.technical_repair_ssot import recent_log_lines
 
     jan1_mtime = datetime(2027, 1, 1, 0, 10, 0).timestamp()
     cutoff = jan1_mtime - 3600.0  # 1 hour lookback (includes Dec 31 23:50, excludes Dec 31 20:00)
@@ -1413,7 +1413,7 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
 
 def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_env, tmp_path, monkeypatch):
     import subprocess
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
+    from providers.execution_audit import normalize_trading_decisions
     from verify_tools import pnl_report, portfolio_snapshot, watch_trade_decisions
 
     workspace, cache_dir, _ = temp_env
@@ -2267,7 +2267,7 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
 def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(tmp_path):
     from cachepaths import normalize_venue_name
     from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
+    from providers.execution_audit import normalize_trading_decisions
     from providers.kraken_provider import _kraken_pair_matches
 
     # 1. Venue alias normalization
@@ -2512,10 +2512,10 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
 
 
 def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tmp_path):
+    from intelligence.sentiment.collectors.microstructure_collector import compute_swing_wave_metrics
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
-        compute_swing_wave_metrics,
     )
 
     # 1. Pure objective ZigZag swing wave extraction on rally (+8.68%) and subsequent drop (-7.82%)
@@ -2635,7 +2635,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
 
     # 3. normalize_trading_decisions deduplicates per (venue, symbol) so conflicting BUY+SELL on the same coin
     #    cannot both fire in one cycle, and normalizes percentage confidence & LONG/SHORT aliases
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import normalize_trading_decisions
+    from providers.execution_audit import normalize_trading_decisions
 
     deduped = normalize_trading_decisions({
         "market_trading_decisions": [
@@ -2671,12 +2671,12 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
 def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypatch):
     """Verify prompt data accuracy across T212 Yahoo fallback, orderbook wall distances,
     venue-isolated trailing peaks/cycles/orders, realized_net PnL, and clean None formatting."""
+    from intelligence.sentiment.collectors.portfolio_collector import parse_venue_cycle_state
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
-        _format_venue_cycle_line,
-        parse_venue_cycle_state,
     )
+    from orchestratorOS.supervisor.prompt_sections import _format_venue_cycle_line
     from providers.t212_provider import T212Provider
 
     cache_dir = tmp_path / "cachedb"
@@ -2848,12 +2848,14 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
 def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_path) -> None:
     """Verify Volume Profile (POC/VAH/VAL), symmetric LONG/SHORT Liquidation Clusters, and Maker/Taker/Spread/Limits telemetry."""
     from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        compute_liquidation_clusters,
+        compute_volume_profile_metrics,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import resolve_venue_fee_and_limits
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
-        compute_liquidation_clusters,
-        compute_volume_profile_metrics,
-        resolve_venue_fee_and_limits,
     )
 
     # 1. Volume Profile (POC, VAL, VAH, symmetric % distances, and regime)
@@ -3891,7 +3893,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert w_snap.taker_sell_vol_usd == pytest.approx(8_000_000.0)
 
     from intelligence.sentiment.guards.high_stake_guard import harvest_recent_orders_and_enrich_positions
-    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+    from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
     from providers.execution_audit import execute_enforce_intent_order
 
     mock_inst = MagicMock(symbol="BTCUSDC", provider_name="binance")
@@ -4479,7 +4481,7 @@ def test_iteration23_execution_audit_cross_venue_recent_orders_isolation(tmp_pat
 
 
 def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
-    from orchestratorOS.supervisor.prompt_formatters import (
+    from orchestratorOS.supervisor.prompt_sections import (
         _format_microstructure_section,
         _format_tradable_position_line,
     )
@@ -5033,10 +5035,10 @@ def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tm
 def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3b():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
-    from orchestratorOS.supervisor.prompt_formatters import (
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from orchestratorOS.supervisor.prompt_sections import (
         _format_microstructure_section,
         _format_recent_order_line,
-        build_supervisor_prompt,
     )
     from providers.quantity import clamp_notional_to_wallet_balance, resolve_assets
 
@@ -5997,7 +5999,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
         harvest_macro_and_news_sensors,
         parse_venue_cycle_state,
     )
-    from orchestratorOS.supervisor.prompt_formatters import (
+    from orchestratorOS.supervisor.prompt_sections import (
         _format_market_prices_section,
         _format_microstructure_section,
         _format_venue_cycle_line,
@@ -6537,7 +6539,7 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert sum_hl[0]["venue_status"] == "FILLED"
 
     # 8. _fmt_slope_val zeroes sub-5e-8 IEEE-754 polyfit noise while keeping low-price slopes >= 5e-8
-    from orchestratorOS.supervisor.prompt_formatters import _fmt_slope_val
+    from orchestratorOS.supervisor.prompt_sections import _fmt_slope_val
     from intelligence.sentiment.guards.high_stake_guard import _compute_kalman_from_series
 
     assert _fmt_slope_val(-1.22e-8) == "+0.00000"
@@ -7599,7 +7601,7 @@ def test_cross_market_telemetry_sparse_7d_t212_audit_submit_ts_and_no_qty_format
         enrich_24h_and_microstructure,
         harvest_recent_orders_and_enrich_positions,
     )
-    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+    from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
 
     cache_dir = tmp_path / "cachedb"
     prices_dir = cache_dir / "prices"
@@ -8462,7 +8464,7 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
         _compute_short_slopes_from_series,
         harvest_kraken_xstocks,
     )
-    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+    from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
 
     # 1. 5m OHLC close at k*300_000 ms vs 1s tick at k*300_000 - 1000 ms
     base_ms = 1_793_700_000_000
@@ -8523,7 +8525,7 @@ def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_c
         harvest_recent_orders_and_enrich_positions,
         parse_venue_cycle_state,
     )
-    from orchestratorOS.supervisor.prompt_formatters import (
+    from orchestratorOS.supervisor.prompt_sections import (
         _format_recent_order_line,
         _format_tradable_position_line,
     )

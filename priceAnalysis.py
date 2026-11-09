@@ -29,7 +29,7 @@ from botcore import (
     safe_pos_int,
     touch_module_heartbeat,
 )
-from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset, canonical_symbol_key
+from cachepaths import cache_path, cache_symbol_variants
 from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     calculate_mann_kendall,

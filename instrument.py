@@ -17,12 +17,10 @@ from typing import Optional, List, Callable, Any
 from cachepaths import normalize_venue_name
 from guard_hierarchy import (
     GUARD_REGISTRY,
-    normalize_bypassed_guards,
     revoke_guard_bypass,
 )
 from instrument_registry import (
     InstrumentSpec,
-    casefold_get,
     discover_tradable_specs,
     load_registry,
     resolve_instrument_spec,
@@ -36,7 +34,6 @@ from botcore import (
     normalize_side,
     resolve_patched_attr,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )

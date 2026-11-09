@@ -25,7 +25,6 @@ from botcore import (
     load_dotenv,
     optional_env,
     required_int_env,
-    safe_float,
     safe_int,
     safe_nonneg_int,
 )

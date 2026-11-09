@@ -35,9 +35,6 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from instrument_registry import casefold_get
 from providers.base import (
-    _EXEC_QTY_KEYS,
-    _UNFILLED_ORDER_STATUSES,
-    _parse_epoch_or_iso_s,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
     extract_executed_qty,
@@ -49,6 +46,11 @@ from providers.base import (
     format_actor_tag,
     normalize_timestamp_ms,
     resolve_order_origin,
+)
+from providers.order_ohlc_utils import (
+    _EXEC_QTY_KEYS,
+    _UNFILLED_ORDER_STATUSES,
+    _parse_epoch_or_iso_s,
 )
 from providers.execution_audit import extract_intent_order_type, extract_intent_side
 

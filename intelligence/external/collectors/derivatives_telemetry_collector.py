@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from botcore import safe_nonneg_float, safe_pos_float
-from cachepaths import canonical_symbol_key, resolve_binance_lookup_symbol
+from cachepaths import resolve_binance_lookup_symbol
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,

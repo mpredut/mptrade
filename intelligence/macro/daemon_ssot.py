@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import asdict
 import logging
 import os
-import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple

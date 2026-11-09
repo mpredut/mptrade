@@ -57,7 +57,6 @@ from cachepaths import (
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
-from state_io import read_json_dict_recovering
 
 _MISSING = object()
 

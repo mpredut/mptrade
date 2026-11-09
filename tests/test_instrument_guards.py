@@ -1024,7 +1024,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_composite_profit_guard_bypass_does_not_bypass_intelligence(self):
         """Verify bypass_guards={'profit_guard'} bypasses only G_PROF & G_QLIMIT1, not intelligence."""
-        from instrument import normalize_bypassed_guards
+        from guard_hierarchy import normalize_bypassed_guards
         bypassed = normalize_bypassed_guards("profit_guard")
         self.assertIn("math_reference", bypassed)
         self.assertIn("math_profit", bypassed)
@@ -1461,6 +1461,382 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             )
             self.assertIsNotNone(res_ts_released)
             self.assertEqual(len(p.placed), 1)
+
+    def test_place_golden_characterization_matrix(self):
+        """Step 0 Golden Characterization Matrix for Instrument.place().
+
+        Freezes exact return values, _outcome_context fields, order_outcomes_*.log
+        columns (including sys._getframe(1) caller filename and regime telemetry),
+        order_retry outbox state transitions, _EXECUTION_AUDIT events, and provider
+        place_order kwargs across all placement stages.
+        """
+        import order_retry as oq
+        import instrument as inst_mod
+
+        def read_audit_events():
+            audit_files = glob.glob(os.path.join(self._log_tmp, "execution_audit_*.jsonl"))
+            events = []
+            for af in sorted(audit_files):
+                with open(af, encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.strip():
+                            events.append(json.loads(line))
+            return events
+
+        def clear_all():
+            self._clear_state()
+            for af in glob.glob(os.path.join(self._log_tmp, "execution_audit_*.jsonl")):
+                os.remove(af)
+
+        # ------------------------------------------------------------------
+        # 1. Pre-pipeline early refusals: update _outcome_context, NO log, NO outbox
+        # ------------------------------------------------------------------
+        with self.subTest("pre_pipeline_early_refusals"):
+            clear_all()
+            p = _FakeProvider(price=100.0)
+            inst = self._inst(p)
+
+            # 1a. invalid_side
+            ctx_side = {}
+            self.assertIsNone(inst.place("INVALID_SIDE", 100.0, 1.0, _outcome_context=ctx_side))
+            self.assertEqual(ctx_side, {"accepted": False, "reason": "invalid_side", "state": "refused"})
+            self.assertEqual(self._log_lines(), [])
+            self.assertEqual(oq.load_all(), [])
+
+            # 1b. invalid_cache_permit_provider
+            ctx_permit = {}
+            self.assertIsNone(inst.place("BUY", 100.0, 1.0, cache_permit={"tok": 1}, _outcome_context=ctx_permit))
+            self.assertEqual(ctx_permit, {"accepted": False, "reason": "invalid_cache_permit_provider", "state": "refused"})
+            self.assertEqual(self._log_lines(), [])
+
+            # 1c. execution_gate_unavailable
+            class _BrokenGateProvider(_FakeProvider):
+                def execution_enabled(self):
+                    raise RuntimeError("gate crash")
+
+            ctx_gate = {}
+            inst_broken = self._inst(_BrokenGateProvider())
+            self.assertIsNone(inst_broken.place("BUY", 100.0, 1.0, _outcome_context=ctx_gate))
+            self.assertEqual(ctx_gate, {"accepted": False, "reason": "execution_gate_unavailable", "state": "refused"})
+            self.assertEqual(self._log_lines(), [])
+
+            # 1d. retry_price_constraint_unsupported on guards_internally() provider
+            ctx_internal = {}
+            inst_internal = self._inst(_GuardsInternallyProvider())
+            self.assertIsNone(
+                inst_internal.place("BUY", 100.0, 1.0, _retry_requested_price=100.0, _outcome_context=ctx_internal)
+            )
+            self.assertEqual(
+                ctx_internal,
+                {"accepted": False, "reason": "retry_price_constraint_unsupported", "state": "refused"},
+            )
+            self.assertEqual(self._log_lines(), [])
+
+            # 1e. T212 order_validity injection + motivation->kind normalization on guards_internally()
+            p_t212 = _GuardsInternallyProvider(name="t212")
+            inst_t212 = Instrument(
+                name="NVDA", symbol=SYMBOL, provider="t212", base="NVDA", quote="USD",
+                params={"execution.order_validity": " day "}, api=MarketApi([p_t212]),
+            )
+            res_t212 = inst_t212.place("buy", 100.0, 2.0, motivation="dip_entry")
+            self.assertEqual(res_t212, {"orderId": 1})
+            self.assertEqual(len(p_t212.placed), 1)
+            self.assertEqual(p_t212.placed[0][1], "BUY")
+            self.assertEqual(p_t212.placed[0][4]["kind"], "dip_entry")
+            self.assertEqual(p_t212.placed[0][4]["order_validity"], "DAY")
+
+        # ------------------------------------------------------------------
+        # 2. Guard bypass revocations, GT_M scaling, caller frame & regime log
+        # ------------------------------------------------------------------
+        with self.subTest("gt_m_scaling_and_caller_frame_and_regime_telemetry"):
+            clear_all()
+            p = _FakeProvider(price=100.0)
+            inst = self._inst(
+                p,
+                params={
+                    "medium_trend_action": "scale",
+                    "medium_trend_scale": "0.4",
+                },
+            )
+            regime = {
+                "regime": "bear",
+                "strength": 0.81234,
+                "source": "intelligence_bus",
+                "fresh": True,
+                "fallback_used": False,
+                "reason": "macro_bear",
+            }
+            ctx_scale = {}
+            res = inst.place(
+                "BUY", 100.0, 10.0,
+                smart=False,
+                wait_for_trend=False,
+                bypass_guards={"profit_guard"},
+                regime_context=regime,
+                intent_id="intent-gtm-1",
+                kind="gtm_test",
+                _outcome_context=ctx_scale,
+            )
+            self.assertIsNotNone(res)
+            self.assertTrue(ctx_scale["accepted"])
+            self.assertEqual(ctx_scale["state"], "accepted")
+            self.assertIsNone(ctx_scale["reason"])
+            self.assertAlmostEqual(ctx_scale["submitted_qty"], 4.0)
+            self.assertAlmostEqual(ctx_scale["submitted_price"], 100.0)
+            self.assertEqual(ctx_scale["intent_id"], "intent-gtm-1")
+            self.assertTrue(ctx_scale.get("client_order_id"))
+
+            # Verify log_order_outcome columns including caller filename and regime fields
+            lines = self._log_lines()
+            self.assertEqual(len(lines), 1)
+            cols = lines[0].split("|")
+            self.assertEqual(cols[1], SYMBOL)
+            self.assertEqual(cols[2], "BUY")
+            self.assertEqual(float(cols[3]), 100.0)
+            self.assertAlmostEqual(float(cols[4]), 4.0)
+            self.assertEqual(cols[5], "accepted")
+            self.assertEqual(cols[6], "")
+            self.assertEqual(cols[7], "test_instrument_guards.py")
+            self.assertEqual(cols[8], "gtm_test")
+            self.assertEqual(cols[9], "bear")
+            self.assertEqual(cols[10], "0.8123")
+            self.assertEqual(cols[11], "intelligence_bus")
+            self.assertEqual(cols[12], "True")
+            self.assertEqual(cols[13], "False")
+            self.assertEqual(cols[14], "macro_bear")
+
+            # Verify outbox persisted applied_scale and completed as accepted
+            tracked = oq.load_all()
+            self.assertEqual(len(tracked), 1)
+            self.assertEqual(tracked[0]["lifecycle"], "accepted")
+            self.assertAlmostEqual(tracked[0]["qty"], 4.0)
+            self.assertAlmostEqual(tracked[0]["place_kwargs"]["applied_scale"], 0.4)
+
+            # Verify execution audit events
+            audits = read_audit_events()
+            self.assertEqual([a["event"] for a in audits], ["submit_requested", "submit_accepted"])
+            self.assertEqual(audits[0]["intent_id"], "intent-gtm-1")
+            self.assertEqual(audits[1]["order_id"], "1")
+
+        # ------------------------------------------------------------------
+        # 3. Permit-gated market dispatch re-check with late intelligence scaling
+        # ------------------------------------------------------------------
+        with self.subTest("permit_market_dispatch_late_scale_and_claim_sync"):
+            clear_all()
+
+            class _PermitMarketProvider(_FakeProvider):
+                def __init__(self):
+                    super().__init__(name="Binance", price=100.0)
+                    self.state_prepared = 0
+                    self.state_validated = 0
+                    self.preflight_calls = []
+
+                def requires_cache_permit(self):
+                    return True
+
+                def supports_business_minimum(self):
+                    return True
+
+                def prepare_order_state(self):
+                    self.state_prepared += 1
+                    return {"snap": self.state_prepared}
+
+                def validate_order_state(self, state):
+                    self.state_validated += 1
+                    assert state == {"snap": 1}
+
+                def preflight_order(self, symbol, side, qty, price, **kwargs):
+                    self.preflight_calls.append((symbol, side, qty, price, kwargs))
+                    return {"permit_qty": qty, "seq": len(self.preflight_calls)}
+
+                def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
+                    return 100.0
+
+                def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
+                    return qty
+
+            p_perm = _PermitMarketProvider()
+            inst_perm = self._inst(p_perm)
+            # Late intelligence scale triggered only during final market profit_guard
+            late_regime = {"regime": "bear", "suggested_scale": 1.0}
+
+            def _profit_guard_mutating_regime(prov, sym, side, px, margin, **kw):
+                # At Stage 3 (pre-persist), keep scale=1.0; at dispatch final_profit_check, recommend 0.5 scale
+                if len(p_perm.preflight_calls) >= 1:
+                    late_regime["suggested_scale"] = 0.5
+                return True
+
+            ctx_perm = {}
+            with patch("order_guard.check_math_profit_reference", return_value=True), \
+                 patch("order_guard.profit_guard", side_effect=_profit_guard_mutating_regime):
+                res_perm = inst_perm.place(
+                    "BUY", 100.0, 10.0,
+                    market=True,
+                    smart=False,
+                    wait_for_trend=False,
+                    regime_context=late_regime,
+                    intent_id="intent-perm-mkt",
+                    _outcome_context=ctx_perm,
+                )
+
+            self.assertIsNotNone(res_perm, ctx_perm)
+            self.assertEqual(p_perm.state_prepared, 1)
+            self.assertEqual(p_perm.state_validated, 1)
+            # Preflight called twice: once for qty=10.0, then re-acquired after late dispatch scaling to 5.0
+            self.assertEqual([c[2] for c in p_perm.preflight_calls], [10.0, 5.0])
+            self.assertAlmostEqual(ctx_perm["submitted_qty"], 5.0)
+            placed_kw = p_perm.placed[0][4]
+            self.assertEqual(placed_kw["cache_permit"], {"permit_qty": 5.0, "seq": 2})
+            self.assertTrue(placed_kw["market"])
+            self.assertTrue(placed_kw["force"])
+            self.assertTrue(placed_kw["_balance_verified"])
+            self.assertEqual(placed_kw["known_balance"], 1_000_000.0)
+            self.assertTrue(placed_kw["enforce_business_minimum"])
+
+            audits = read_audit_events()
+            self.assertEqual(
+                [a["event"] for a in audits],
+                ["submit_requested", "submit_scaled", "submit_accepted"],
+            )
+            self.assertAlmostEqual(audits[1]["qty"], 5.0)
+            self.assertAlmostEqual(audits[1]["scale"], 0.5)
+
+        # ------------------------------------------------------------------
+        # 4. Post-persist SubmissionRefused vs mid-flight abort vs unknown
+        # ------------------------------------------------------------------
+        with self.subTest("post_persist_abort_completes_claim_as_success_not_retry"):
+            clear_all()
+            p_abort = _FakeProvider(price=100.0)
+            inst_abort = self._inst(p_abort)
+
+            # Abort triggers only after enqueue_claimed (on the second check of abort_if)
+            abort_calls = []
+
+            def _late_abort():
+                abort_calls.append(1)
+                return len(abort_calls) >= 2
+
+            ctx_abort = {}
+            res_abort = inst_abort.place(
+                "BUY", 100.0, 2.0,
+                smart=False,
+                wait_for_trend=False,
+                bypass_guards={"profit_guard"},
+                abort_if=_late_abort,
+                intent_id="intent-late-abort",
+                _outcome_context=ctx_abort,
+            )
+            self.assertIsNone(res_abort)
+            self.assertEqual(ctx_abort["state"], "refused")
+            self.assertEqual(ctx_abort["reason"], "aborted_by_caller")
+            self.assertEqual(ctx_abort["intent_id"], "intent-late-abort")
+            # Because prequeued_claim was already created, complete_claim("success") removes it from active retry
+            self.assertEqual(oq.load_all(), [])
+            audits = read_audit_events()
+            self.assertEqual([a["event"] for a in audits], ["submit_requested", "submit_refused"])
+            self.assertEqual(audits[1]["failure_reason"], "aborted_by_caller")
+
+        # ------------------------------------------------------------------
+        # 5. Pre-submit refusal enqueue: orig_qty=None vs explicit orig_qty
+        # ------------------------------------------------------------------
+        with self.subTest("pre_submit_refusal_enqueues_scaled_qty_only_when_orig_qty_is_none"):
+            clear_all()
+
+            class _FixedCapProvider(_FakeProvider):
+                def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
+                    return 20.0
+
+                def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
+                    return 100.0
+
+            p_cap = _FixedCapProvider(price=100.0)
+            inst_cap = self._inst(
+                p_cap,
+                params={"medium_trend_action": "scale", "medium_trend_scale": "0.5"},
+            )
+            bear_regime = {"regime": "bear"}
+
+            # 5a. orig_qty=None -> sized to 20.0, GT_M scales to 10.0 (scale=0.5), then profit_guard refuses
+            with patch("order_guard.check_math_profit_reference", return_value=True), \
+                 patch("order_guard.profit_guard", return_value=False):
+                res_none_qty = inst_cap.place(
+                    "BUY", 100.0, None,
+                    smart=False, wait_for_trend=False, regime_context=bear_regime,
+                )
+            self.assertIsNone(res_none_qty)
+            q_records = oq.load_all()
+            self.assertEqual(len(q_records), 1)
+            self.assertAlmostEqual(q_records[0]["qty"], 10.0)
+            self.assertAlmostEqual(q_records[0]["place_kwargs"].get("applied_scale"), 0.5)
+
+            # 5b. orig_qty=20.0 -> GT_M scales to 10.0, then profit_guard refuses -> enqueues original 20.0 without applied_scale
+            clear_all()
+            with patch("order_guard.check_math_profit_reference", return_value=True), \
+                 patch("order_guard.profit_guard", return_value=False):
+                res_expl_qty = inst_cap.place(
+                    "BUY", 100.0, 20.0,
+                    smart=False, wait_for_trend=False, regime_context=bear_regime,
+                )
+            self.assertIsNone(res_expl_qty)
+            q_records_2 = oq.load_all()
+            self.assertEqual(len(q_records_2), 1)
+            self.assertAlmostEqual(q_records_2[0]["qty"], 20.0)
+            self.assertNotIn("applied_scale", q_records_2[0]["place_kwargs"])
+
+        # ------------------------------------------------------------------
+        # 6. Pre-submit outbox persistence failure blocks submit
+        # ------------------------------------------------------------------
+        with self.subTest("pre_submit_persist_failed_blocks_venue_call"):
+            clear_all()
+            p_pers = _FakeProvider(price=100.0)
+            inst_pers = self._inst(p_pers)
+            ctx_pers = {}
+            with patch("order_retry.enqueue_claimed", return_value=None):
+                res_pers = inst_pers.place(
+                    "BUY", 100.0, 1.0,
+                    smart=False, wait_for_trend=False,
+                    bypass_guards={"profit_guard"},
+                    _outcome_context=ctx_pers,
+                )
+            self.assertIsNone(res_pers)
+            self.assertEqual(p_pers.placed, [])
+            self.assertEqual(ctx_pers["state"], "refused")
+            self.assertEqual(ctx_pers["reason"], "pre_submit_persist_failed")
+            self.assertTrue(any("|refused|pre_submit_persist_failed|test_instrument_guards.py|" in l for l in self._log_lines()))
+
+        # ------------------------------------------------------------------
+        # 7. Smart pricing with defers_smart_cancellation forwards orig_price
+        # ------------------------------------------------------------------
+        with self.subTest("smart_pricing_defers_cancel_and_forwards_orig_price"):
+            clear_all()
+
+            class _DeferredSmartProvider(_FakeProvider):
+                def defers_smart_cancellation(self):
+                    return True
+
+                def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
+                    self.last_cancel_opposite = cancel_opposite
+                    return price - 0.5
+
+                def round_price(self, symbol, price):
+                    return round(price, 2)
+
+            p_def = _DeferredSmartProvider(price=100.0)
+            inst_def = self._inst(p_def)
+            ctx_def = {}
+            res_def = inst_def.place(
+                "BUY", 100.0, 1.0,
+                smart=True, wait_for_trend=False,
+                bypass_guards={"profit_guard"},
+                _outcome_context=ctx_def,
+            )
+            self.assertIsNotNone(res_def)
+            self.assertFalse(p_def.last_cancel_opposite)
+            self.assertAlmostEqual(ctx_def["submitted_price"], 99.5)
+            self.assertAlmostEqual(p_def.placed[0][2], 99.5)
+            self.assertAlmostEqual(p_def.placed[0][4]["_cancel_opposite_requested_price"], 100.0)
+
+
 
 
 from order_lifecycle import (

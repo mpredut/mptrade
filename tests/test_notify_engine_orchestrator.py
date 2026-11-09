@@ -774,10 +774,8 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(cli.query_json("p1", cache_ttl_sec=60.0), {"a": 1})
 
     def test_orchestrator_reconciler_gateway_and_monitor_safety(self):
-        from orchestratorOS.supervisor.autonomous_ai_reconciler import (
-            AutonomousAIReconciler,
-            recent_log_lines,
-        )
+        from orchestratorOS.lib.technical_repair_ssot import recent_log_lines
+        from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
         from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
         from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 

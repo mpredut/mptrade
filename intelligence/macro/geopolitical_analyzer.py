@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot

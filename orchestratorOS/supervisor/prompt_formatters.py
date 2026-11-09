@@ -19,15 +19,11 @@ from orchestratorOS.lib.technical_repair_ssot import (
     DIAGNOSED_SEVERITIES,
 )
 from orchestratorOS.supervisor.prompt_sections import (
-    _fmt_slope_val,
     _format_macro_and_news_section,
     _format_market_prices_section,
     _format_microstructure_section,
     _format_portfolio_section,
-    _format_recent_order_line,
     _format_sre_and_fleet_section,
-    _format_tradable_position_line,
-    _format_venue_cycle_line,
 )
 
 

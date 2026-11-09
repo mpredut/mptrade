@@ -8,7 +8,6 @@ from binance.exceptions import BinanceAPIException
 
 # MYLIB
 import order_guard
-import order_lifecycle
 import instrument_registry as sym
 import botcore as cfg
 from botcore import (

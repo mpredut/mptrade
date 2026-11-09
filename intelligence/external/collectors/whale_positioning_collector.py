@@ -16,7 +16,6 @@ from typing import Any, Dict, Optional
 from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
-    canonical_symbol_key,
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,

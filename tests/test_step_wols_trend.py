@@ -441,7 +441,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(kt_obj._trend_value("XBTUSD"), 0.04, places=6)
 
     def test_apply_short_trend_item_populates_growth_horizons(self):
-        from orchestratorOS.supervisor.autonomous_ai_reconciler import apply_short_trend_item
+        from intelligence.sentiment.collectors.microstructure_collector import apply_short_trend_item
 
         entry = {}
         tinfo = {

@@ -37,7 +37,6 @@ import contextlib
 import dataclasses
 import difflib
 import io
-import json
 import os
 import re
 import sys

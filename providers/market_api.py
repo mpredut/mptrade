@@ -16,15 +16,11 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
-import instrument_registry
 from botcore import (
     _parse_bool_flag,
-    exact_pos_int,
     lru_dict_put,
     require_finite_float,
     require_pos_float,
-    safe_float,
-    safe_int,
     safe_pos_float,
     safe_nonneg_float,
 )
@@ -53,7 +49,6 @@ from .quantity import (
     binance_filter_refusal_reason,
     decimal_places,
     fee_cap_quantity,
-    remaining_average_cost,
     resolve_assets,
 )
 from .strategy_executor import (

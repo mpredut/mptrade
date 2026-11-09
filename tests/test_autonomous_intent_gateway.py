@@ -641,7 +641,7 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
 def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_trend(temp_workspace):
     import json
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import apply_short_trend_item
+    from intelligence.sentiment.collectors.microstructure_collector import apply_short_trend_item
 
     ws, cache_dir = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")

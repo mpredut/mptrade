@@ -34,7 +34,6 @@ from intelligence.external.collectors.base_collector import (
     _clean_dict_float,
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
-    _has_hyperliquid_instrument,
     _is_multi_venue_base,
     _resolve_configured_venue,
     round_spread_bps,

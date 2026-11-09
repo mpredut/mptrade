@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 import time
 from typing import Dict, List, Optional, Tuple
 

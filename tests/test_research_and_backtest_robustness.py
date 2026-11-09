@@ -6124,9 +6124,9 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         SupervisorAuditReport,
-        normalize_trading_decisions,
     )
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from providers.execution_audit import normalize_trading_decisions
 
     # 1. notify_engine and agy_store_fix _parse_bool_flag / _external_notifications_disabled float-string handling
     assert alertnotifiers._parse_bool_flag("1.0", False) is True

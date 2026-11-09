@@ -20,7 +20,6 @@ from cachepaths import cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
 # Import the base classes and factory
-from cacheInterface import CacheManagerInterface
 from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
 # Market-data facade. market_api imports binance_api.bapi without importing pricefetcher,
