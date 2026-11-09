@@ -1,16 +1,19 @@
-"""Trend cache managers and non-Binance trend poller extracted from cacheManager.py.
+"""Domain trend cache managers (Level 2 abstract base + Level 3 concrete classes).
 
 Provides:
-- ``CacheLongTrendManager`` (alias ``CacheLongTrend``): ``CacheManagerInterface``
-  subclass for long-horizon trend snapshots from ``priceanalysis.json``.
-- ``CacheShortTrendManager`` (alias ``CacheShortTrend``): ``CacheManagerInterface``
-  subclass for real-time multi-window short trends, O(1) incremental prefix-sum
-  dynamic windows, and transactional cross-process snapshot persistence
+- ``CacheTrendManagerBase(CacheManagerInterface, ABC)``: Level-2 abstract base
+  for trend cache managers.
+- ``CacheLongTrendManager(CacheTrendManagerBase)`` (alias ``CacheLongTrend``):
+  concrete manager for long-horizon trend snapshots from ``priceanalysis.json``.
+- ``CacheShortTrendManager(CacheTrendManagerBase)`` (alias ``CacheShortTrend``):
+  concrete manager for real-time multi-window short trends, O(1) incremental
+  prefix-sum dynamic windows, and transactional cross-process snapshot persistence
   (``cache_short_trend.json`` + ``.meta`` + ``.previous`` recovery).
-- ``get_short_trend_manager``: thread-safe singleton accessor.
-- ``_NonBinanceTrendPoller``, ``_fetch_price_with_deadline``,
-  ``_start_nonbinance_trend_poller``: bounded-deadline polling for non-Binance
-  instruments feeding the ``CurrentPrice -> Cache24 -> ShortTrend`` chain.
+
+Non-Binance public price streams and pollers (``HyperliquidPriceStream``,
+``KrakenPriceStream``, ``_NonBinanceTrendPoller``, ``_fetch_price_with_deadline``,
+``_start_nonbinance_trend_poller``) live canonically in ``cacheprice.py`` and
+are re-exported here for backward compatibility.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import sys
 import threading
 import time
 import weakref
+from abc import ABC
 from collections import defaultdict
 from typing import List, Optional, Tuple
 
@@ -42,6 +46,7 @@ from botcore import (
     safe_pos_int,
     split_csv,
 )
+from cacheInterface import CacheManagerInterface
 from cachepaths import (
     CACHEDB_SUBDOMAINS,
     cache_path,
@@ -52,6 +57,15 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
     split_symbol_assets,
+)
+from cacheprice import (
+    HyperliquidPriceStream,
+    KrakenPriceStream,
+    _NB_FETCH_DEADLINE_SEC,
+    _NonBinanceTrendPoller,
+    _VenuePriceStreamBase,
+    _fetch_price_with_deadline,
+    _start_nonbinance_trend_poller,
 )
 from instrument_registry import casefold_get, is_symbol_market_open
 from state_io import (
@@ -84,12 +98,6 @@ CM_PUBLISHED_TREND_WINDOWS_SEC = [
     float(part) for part in split_csv(required_env("CM_PUBLISHED_TREND_WINDOWS_SEC"))
 ]
 
-from cachebase import CacheManagerInterface
-
-# A poll deadline prevents the loop from waiting on one slow provider call. The
-# provider's own network timeout still owns the worker lifecycle.
-_NB_FETCH_DEADLINE_SEC = 8
-
 _ORIG_CACHETREND_ATTRS = {
     "_CONFIG_ROOT": _CONFIG_ROOT,
     "CM_DYNAMIC_WINDOW_MIN_SEC": CM_DYNAMIC_WINDOW_MIN_SEC,
@@ -115,7 +123,54 @@ def _cm_attr(name: str, default=None):
     return resolve_patched_attr(name, default, modules=("cacheManager", getattr(cm_mod, "__name__", "")))
 
 
-class CacheLongTrendManager(CacheManagerInterface):
+def _short_trend_symbol_variants(symbol) -> list:
+    """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
+    return cache_symbol_variants(symbol, include_original=True, include_base=True, quotes=("USDC", "USDT", "USD"))
+
+
+_MISSING_VARIANT = object()
+_LEGACY_SNAP_KEYS = ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
+
+
+def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None, allow_none: bool = False):
+    """Look up ``symbol`` across ``_short_trend_symbol_variants(symbol)`` using ``casefold_get``.
+
+    Returns ``(matched_candidate, value)`` or ``(None, None)`` when absent.
+    """
+    if not isinstance(mapping, dict):
+        return None, None
+    cands = _short_trend_symbol_variants(symbol)
+    for src in (mapping, mapping.get("items") if isinstance(mapping.get("items"), dict) else None):
+        if not isinstance(src, dict):
+            continue
+        for cand in cands:
+            val = casefold_get(src, cand, _MISSING_VARIANT)
+            if val is not _MISSING_VARIANT and val is not None:
+                if expected_type is None or isinstance(val, expected_type):
+                    return cand, val
+        if allow_none and expected_type is None:
+            cf_keys = {k.casefold(): v for k, v in src.items() if isinstance(k, str)}
+            for cand in cands:
+                if cand in src and src[cand] is None:
+                    return cand, None
+                if isinstance(cand, str) and cand.casefold() in cf_keys and cf_keys[cand.casefold()] is None:
+                    return cand, None
+    return None, None
+
+
+class CacheTrendManagerBase(CacheManagerInterface, ABC):
+    """Abstract domain base class for trend cache managers (Level 2).
+
+    Shared by ``CacheLongTrendManager`` and ``CacheShortTrendManager``.
+    """
+
+    def __init__(self, *args, **kwargs):
+        if type(self) is CacheTrendManagerBase:
+            raise TypeError("CacheTrendManagerBase is an abstract base class and cannot be instantiated directly.")
+        super().__init__(*args, **kwargs)
+
+
+class CacheLongTrendManager(CacheTrendManagerBase):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
@@ -172,49 +227,14 @@ class CacheLongTrendManager(CacheManagerInterface):
 CacheLongTrend = CacheLongTrendManager
 
 
-def _short_trend_symbol_variants(symbol) -> list:
-    """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
-    return cache_symbol_variants(symbol, include_original=True, include_base=True, quotes=("USDC", "USDT", "USD"))
-
-
-_MISSING_VARIANT = object()
-_LEGACY_SNAP_KEYS = ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
-
-
-def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None, allow_none: bool = False):
-    """Look up ``symbol`` across ``_short_trend_symbol_variants(symbol)`` using ``casefold_get``.
-
-    Returns ``(matched_candidate, value)`` or ``(None, None)`` when absent.
-    """
-    if not isinstance(mapping, dict):
-        return None, None
-    cands = _short_trend_symbol_variants(symbol)
-    for src in (mapping, mapping.get("items") if isinstance(mapping.get("items"), dict) else None):
-        if not isinstance(src, dict):
-            continue
-        for cand in cands:
-            val = casefold_get(src, cand, _MISSING_VARIANT)
-            if val is not _MISSING_VARIANT and val is not None:
-                if expected_type is None or isinstance(val, expected_type):
-                    return cand, val
-        if allow_none and expected_type is None:
-            cf_keys = {k.casefold(): v for k, v in src.items() if isinstance(k, str)}
-            for cand in cands:
-                if cand in src and src[cand] is None:
-                    return cand, None
-                if isinstance(cand, str) and cand.casefold() in cf_keys and cf_keys[cand.casefold()] is None:
-                    return cand, None
-    return None, None
-
-
-class CacheShortTrendManager(CacheManagerInterface):
+class CacheShortTrendManager(CacheTrendManagerBase):
     """Calculate per-symbol short trends and share snapshots across processes.
 
-    Inherits from ``CacheManagerInterface`` so that its on-disk snapshot
-    (``cache_short_trend.json``) benefits from the same transactional commit
-    and ``.previous`` generation crash recovery as all other cache managers,
-    while preserving the top-level ``{symbol: snapshot_dict}`` JSON format
-    expected by all direct readers.
+    Inherits from ``CacheTrendManagerBase`` (and ``CacheManagerInterface``) so
+    that its on-disk snapshot (``cache_short_trend.json``) benefits from the
+    same transactional commit and ``.previous`` generation crash recovery as all
+    other cache managers, while preserving the top-level ``{symbol: snapshot_dict}``
+    JSON format expected by all direct readers.
     """
 
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
@@ -1716,627 +1736,28 @@ class CacheShortTrendManager(CacheManagerInterface):
 CacheShortTrend = CacheShortTrendManager
 
 
-from binance_api.bapi_ws import (
-    BinanceWSBase,
-    PublicPriceStreamBase,
-    WS_CLOSE_TIMEOUT,
-    WS_PING_INTERVAL,
-    WS_PING_TIMEOUT,
-    WS_RECV_TIMEOUT,
-)
-import asyncio
-import json as _json
-import websockets as _websockets
-
-
-class _VenuePriceStreamBase(PublicPriceStreamBase):
-    """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
-
-    MIN_SAME_PRICE_EMIT_MS = 1000
-
-    def __init__(self, symbols=None, *, ws_url: str):
-        super().__init__(symbols=symbols)
-        self.ws_url = ws_url
-        self._last_emit_ts_ms: dict[str, int] = {}
-        self._last_emit_price: dict[str, float] = {}
-
-    def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not super().remove_symbol(symbol):
-            return False
-        if norm_s:
-            with self._lock:
-                self._last_emit_ts_ms.pop(norm_s, None)
-                self._last_emit_price.pop(norm_s, None)
-        return True
-
-    def _notify_subscribers(self, symbol: str, items) -> None:
-        ts_ms = None
-        px = None
-        if isinstance(items, list) and items and isinstance(items[-1], (list, tuple)) and len(items[-1]) >= 2:
-            ts_ms = safe_pos_int(items[-1][0], default=None)
-            px = safe_pos_float(items[-1][1], default=None)
-        with self._lock:
-            subscribers = list(self._subscribers)
-            if ts_ms is not None and px is not None:
-                prev_ts = self._last_emit_ts_ms.get(symbol)
-                prev_px = self._last_emit_price.get(symbol)
-                if (
-                    prev_ts is not None
-                    and prev_px == px
-                    and 0 <= (ts_ms - prev_ts) < self.MIN_SAME_PRICE_EMIT_MS
-                ):
-                    now_s = time.time()
-                    for sub in subscribers:
-                        ws_map = getattr(sub, "_ws_stream_event_ts_per_symbol", None)
-                        if isinstance(ws_map, dict):
-                            ws_map[symbol] = now_s
-                    return
-                self._last_emit_ts_ms[symbol] = ts_ms
-                self._last_emit_price[symbol] = px
-        for sub in subscribers:
-            try:
-                sub.on_items_update(symbol, items)
-            except Exception as exc:
-                builtins.print(f"[{self.__class__.__name__}] subscriber error ({symbol}): {exc}")
-
-    async def _connect_and_run(self) -> None:
-        while not self._stop_event.is_set():
-            with self._lock:
-                has_symbols = bool(self._symbols)
-            if has_symbols:
-                break
-            await self._interruptible_sleep(1.0)
-        if not self._symbols or self._stop_event.is_set():
-            return
-        async with _websockets.connect(
-            self.ws_url,
-            ping_interval=WS_PING_INTERVAL,
-            ping_timeout=WS_PING_TIMEOUT,
-            close_timeout=WS_CLOSE_TIMEOUT,
-        ) as ws:
-            sub_msg = self._build_subscribe_payload()
-            if sub_msg:
-                await ws.send(sub_msg)
-            for extra_msg in self._build_extra_subscribe_payloads():
-                if extra_msg:
-                    await ws.send(extra_msg)
-            while not self._stop_event.is_set():
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
-                    self._process_message(raw)
-                except asyncio.TimeoutError:
-                    continue
-                except _websockets.exceptions.ConnectionClosed:
-                    break
-                except Exception:
-                    continue
-
-    def _build_subscribe_payload(self) -> Optional[str]:
-        raise NotImplementedError
-
-    def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
-        return ()
-
-    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
-        raise NotImplementedError
-
-
-class HyperliquidPriceStream(_VenuePriceStreamBase):
-    """Real-time Hyperliquid WebSocket stream (`allMids` + optional `userFills`) feeding CacheCurrentPriceManager and SSOT trade cache."""
-
-    DEFAULT_WS_URL = "wss://api.hyperliquid.xyz/ws"
-    _KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
-
-    def __init__(
-        self,
-        symbols=None,
-        *,
-        market_api=None,
-        ws_url: str = DEFAULT_WS_URL,
-        user_address: Optional[str] = None,
-        fills_cache_path: Optional[str] = None,
-    ):
-        super().__init__(symbols=symbols, ws_url=ws_url)
-        self.market_api = market_api
-        self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
-        self._fills_cache_path = fills_cache_path
-        self._fills_ws_seeded = False
-        self._last_fills_touch_ms = 0
-        if user_address is None and "pytest" not in sys.modules:
-            from providers.base import env_value
-
-            hl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperliquid")
-            user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(hl_dir, "HL_ACCOUNT_ADDRESS")
-        self._user_address = str(user_address or "").strip() or None
-
-    def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        removed = super().remove_symbol(symbol)
-        if removed and norm_s:
-            with self._lock:
-                self._resolved_spot_keys.pop(norm_s, None)
-        return removed
-
-    def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
-        with self._lock:
-            cached = self._resolved_spot_keys.get(symbol)
-        if cached:
-            return cached
-        split = split_symbol_assets(symbol)
-        base = split[0] if split else symbol.replace("USDC", "").replace("USD", "")
-        keys: list[str] = []
-        if self.market_api is not None and hasattr(self.market_api, "provider_by_name"):
-            try:
-                prov = self.market_api.provider_by_name("hyperliquid")
-                if prov is not None and (not hasattr(prov, "supports_symbol") or prov.supports_symbol(symbol)):
-                    pair_fn = getattr(prov, "_pair", None)
-                    spot_pair = pair_fn() if callable(pair_fn) else getattr(prov, "_spot_pair", None)
-                    if isinstance(spot_pair, str) and spot_pair.strip():
-                        keys.append(spot_pair.strip())
-            except Exception:
-                pass
-        known_spot = self._KNOWN_SPOT_PAIRS.get(base.upper())
-        if known_spot and known_spot not in keys:
-            keys.append(known_spot)
-        for fallback in (f"{base}/USDC", symbol, base):
-            if fallback and fallback not in keys:
-                keys.append(fallback)
-        resolved = tuple(keys)
-        with self._lock:
-            self._resolved_spot_keys[symbol] = resolved
-        return resolved
-
-    def _build_subscribe_payload(self) -> str:
-        return _json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
-
-    def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
-        self._fills_ws_seeded = False
-        if not self._user_address:
-            return ()
-        return (
-            _json.dumps({
-                "method": "subscribe",
-                "subscription": {"type": "userFills", "user": self._user_address},
-            }),
-        )
-
-    def _resolve_fills_cache_file(self) -> str:
-        return str(self._fills_cache_path) if self._fills_cache_path else cache_path("cache_trade_hyperliquid.json")
-
-    def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:
-        raw_fills = (
-            data.get("fills")
-            if isinstance(data, dict)
-            else (data if isinstance(data, list) else None)
-        )
-        if not isinstance(raw_fills, list):
-            return
-        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
-        cache_file = self._resolve_fills_cache_file()
-        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-        cache_obj = (
-            loaded
-            if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict) and isinstance(loaded.get("fetchtime"), dict)
-            else {"items": {}, "fetchtime": {}}
-        )
-        with self._lock:
-            symbols = self._symbols
-        for sym in symbols:
-            spot_coins = {
-                k.upper()
-                for k in self._candidate_mids_keys(sym)
-                if isinstance(k, str) and (k.startswith("@") or "/" in k)
-            }
-            sym_fills = [
-                dict(f)
-                for f in raw_fills
-                if isinstance(f, dict) and str(f.get("coin") or "").strip().upper() in spot_coins
-            ]
-            if is_snapshot:
-                cache_obj["items"][sym] = sym_fills
-                cache_obj["fetchtime"][sym] = ts_ms
-            elif sym_fills:
-                bucket = list(cache_obj["items"].get(sym) or [])
-                seen_keys = {
-                    (f.get("tid"), f.get("oid"), f.get("time"))
-                    for f in bucket
-                    if isinstance(f, dict)
-                }
-                for f in sym_fills:
-                    fk = (f.get("tid"), f.get("oid"), f.get("time"))
-                    if fk not in seen_keys:
-                        bucket.append(f)
-                        seen_keys.add(fk)
-                cache_obj["items"][sym] = bucket
-                cache_obj["fetchtime"][sym] = ts_ms
-            elif sym in cache_obj["items"] and sym in cache_obj["fetchtime"]:
-                cache_obj["fetchtime"][sym] = ts_ms
-        save_json_state(cache_file, cache_obj)
-        if is_snapshot:
-            self._fills_ws_seeded = True
-        self._last_fills_touch_ms = ts_ms
-
-    def _touch_fills_cache_if_needed(self, ts_ms: int) -> None:
-        if not self._fills_ws_seeded or (ts_ms - self._last_fills_touch_ms) < 15_000:
-            return
-        try:
-            cache_file = self._resolve_fills_cache_file()
-            loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-            if isinstance(loaded, dict) and isinstance(loaded.get("fetchtime"), dict) and isinstance(loaded.get("items"), dict):
-                with self._lock:
-                    symbols = self._symbols
-                changed = False
-                for sym in symbols:
-                    if sym in loaded["fetchtime"] and sym in loaded["items"]:
-                        loaded["fetchtime"][sym] = ts_ms
-                        changed = True
-                if changed:
-                    save_json_state(cache_file, loaded)
-                self._last_fills_touch_ms = ts_ms
-        except Exception:
-            pass
-
-    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
-        try:
-            envelope = _json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(envelope, dict):
-                return
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
-            channel = envelope.get("channel")
-            if channel == "userFills":
-                self._handle_user_fills(envelope.get("data"), ts_ms=ts_ms)
-                return
-            if channel != "allMids":
-                return
-            data = envelope.get("data")
-            mids = data.get("mids") if isinstance(data, dict) else None
-            if not isinstance(mids, dict):
-                return
-            with self._lock:
-                symbols = self._symbols
-            for sym in symbols:
-                px = None
-                for k in self._candidate_mids_keys(sym):
-                    raw_val = casefold_get(mids, k)
-                    if not isinstance(raw_val, bool):
-                        px = safe_pos_float(raw_val, default=None)
-                    if px is not None:
-                        break
-                if px is not None:
-                    with self._lock:
-                        self._prices[sym] = px
-                    self._notify_subscribers(sym, [[ts_ms, px]])
-            self._touch_fills_cache_if_needed(ts_ms)
-        except Exception:
-            return
-
-
-class KrakenPriceStream(_VenuePriceStreamBase):
-    """Real-time Kraken public WebSocket v1 `ticker` stream feeding CacheCurrentPriceManager."""
-
-    DEFAULT_WS_URL = "wss://ws.kraken.com"
-
-    def __init__(self, symbols=None, *, ws_url: str = DEFAULT_WS_URL):
-        super().__init__(symbols=symbols, ws_url=ws_url)
-        self._ws_pairs: list[str] = []
-        self._pair_to_symbol: dict[str, str] = {}
-        for sym in self._symbols:
-            self._register_symbol_pair(sym)
-
-    def _register_symbol_pair(self, sym: str) -> None:
-        split = split_symbol_assets(sym)
-        ws_pair = f"{split[0]}/{split[1]}" if split else sym
-        if ws_pair not in self._ws_pairs:
-            self._ws_pairs.append(ws_pair)
-        self._pair_to_symbol[ws_pair.upper()] = sym
-        self._pair_to_symbol[clean_symbol_key(sym)] = sym
-        for alias_group in (("BTC", "XBT"), ("DOGE", "XDG")):
-            if split and split[0] in alias_group:
-                for alias in alias_group:
-                    self._pair_to_symbol[f"{alias}/{split[1]}"] = sym
-                    self._pair_to_symbol[f"{alias}{split[1]}"] = sym
-
-    def add_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s in self._subscribed:
-                return False
-            self._subscribed.add(norm_s)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
-            self._register_symbol_pair(norm_s)
-        return True
-
-    def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s not in self._subscribed:
-                return False
-            self._subscribed.discard(norm_s)
-            self._symbols = tuple(s for s in self._symbols if s != norm_s)
-            self._prices.pop(norm_s, None)
-            self._last_emit_ts_ms.pop(norm_s, None)
-            self._last_emit_price.pop(norm_s, None)
-            self._ws_pairs.clear()
-            self._pair_to_symbol.clear()
-            for sym in self._symbols:
-                self._register_symbol_pair(sym)
-        return True
-
-    def _build_subscribe_payload(self) -> str:
-        with self._lock:
-            pairs = list(self._ws_pairs)
-        return _json.dumps({
-            "event": "subscribe",
-            "pair": pairs,
-            "subscription": {"name": "ticker"},
-        })
-
-    def _resolve_symbol(self, pair_label: str) -> Optional[str]:
-        raw_u = str(pair_label or "").strip().upper()
-        if not raw_u:
-            return None
-        with self._lock:
-            return (
-                self._pair_to_symbol.get(raw_u)
-                or self._pair_to_symbol.get(clean_symbol_key(raw_u))
-            )
-
-    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
-        try:
-            msg = _json.loads(raw) if isinstance(raw, str) else raw
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
-            if isinstance(msg, dict):
-                ev = str(msg.get("event") or "").strip().lower()
-                if ev == "heartbeat" or (ev == "systemstatus" and str(msg.get("status") or "").strip().lower() == "online"):
-                    with self._lock:
-                        known_prices = list(self._prices.items())
-                    for sym, px in known_prices:
-                        self._notify_subscribers(sym, [[ts_ms, px]])
-                return
-            if not isinstance(msg, list) or len(msg) < 4:
-                return
-            if msg[-2] != "ticker" or not isinstance(msg[1], dict):
-                return
-            sym = self._resolve_symbol(str(msg[-1] or ""))
-            if not sym:
-                return
-            ticker = msg[1]
-            c_raw = ticker.get("c")
-            b_raw = ticker.get("b")
-            a_raw = ticker.get("a")
-            c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
-            b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
-            a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
-            from providers.base import MarketDataProvider
-
-            price = MarketDataProvider.clamp_price_to_bbo_mid(c_val, b_val, a_val)
-            if price is None:
-                return
-            with self._lock:
-                self._prices[sym] = price
-            self._notify_subscribers(sym, [[ts_ms, price]])
-        except Exception:
-            return
-
-
-def _fetch_price_with_deadline(
-    market_api,
-    symbol,
-    pool,
-    deadline_sec=_NB_FETCH_DEADLINE_SEC,
-    provider_name=None,
-):
-    """Bound the poller's wait while the provider owns the network-call timeout."""
-    kwargs = {"symbol": symbol}
-    if provider_name is not None:
-        kwargs["provider_name"] = provider_name
-
-    def _poll():
-        with live_price_fetch_context():
-            return market_api.get_current_price(**kwargs)
-
-    fut = pool.submit(_poll)
-    try:
-        return fut.result(timeout=deadline_sec)
-    except _futures.TimeoutError:
-        fut.cancel()
-        raise
-
-
-class _NonBinanceTrendPoller:
-    """Own the non-Binance WebSocket streams, fallback poller thread, and executor lifecycle."""
-
-    def __init__(self, thread, pool, stop_event, ws_streams=None):
-        self.thread = thread
-        self.pool = pool
-        self.stop_event = stop_event
-        self.ws_streams = tuple(ws_streams or ())
-
-    def stop(self, timeout=5.0):
-        self.stop_event.set()
-        for ws in self.ws_streams:
-            try:
-                stop_ev = getattr(ws, "_stop_event", None)
-                if stop_ev is not None:
-                    stop_ev.set()
-            except Exception:
-                pass
-        eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        if eff_timeout is None:
-            eff_timeout = 5.0
-        total_deadline = time.monotonic() + eff_timeout
-        ws_budget = min(2.0, eff_timeout)
-        ws_deadline = time.monotonic() + ws_budget
-        for ws in self.ws_streams:
-            try:
-                rem = max(0.05, ws_deadline - time.monotonic())
-                ws.stop(timeout=rem)
-            except Exception:
-                pass
-        if self.thread is not threading.current_thread():
-            self.thread.join(timeout=max(0.0, total_deadline - time.monotonic()))
-        self.pool.shutdown(wait=False, cancel_futures=True)
-        try:
-            for th in list(getattr(self.pool, "_threads", ())):
-                _futures.thread._threads_queues.pop(th, None)
-        except Exception:
-            pass
-        return not self.thread.is_alive()
-
-
-def _start_nonbinance_trend_poller(
-    cpm,
-    symbols,
-    interval_sec=10,
-    fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
-    provider_names=None,
-    *,
-    start_ws=None,
-):
-    """Feed short trends for non-Binance symbols using WebSocket-first + REST fallback.
-
-    Mirrors the Binance architecture symmetrically:
-    - Starts public WebSocket streams (`HyperliquidPriceStream`, `KrakenPriceStream`) that push
-      live ticks directly into `cpm.on_items_update(symbol, [[ts_ms, price]])`.
-    - The background poller checks `cpm._real_ws_is_healthy(s)` before polling REST, executing
-      `_fetch_price_with_deadline` ONLY when a symbol's WebSocket stream is disconnected or stale.
-    """
-    symbols = tuple(str(symbol or "").strip() for symbol in symbols)
-    bindings = {
-        str(symbol or "").strip().upper(): str(provider_name or "").strip()
-        for symbol, provider_name in dict(provider_names or {}).items()
-    }
-    missing = [
-        symbol
-        for symbol in symbols
-        if (
-            not symbol
-            or not bindings.get(symbol.upper())
-            or normalize_venue_name(bindings[symbol.upper()], default="") == "binance"
-        )
-    ]
-    if missing:
-        raise ValueError(
-            "explicit provider bindings are required for non-Binance symbols: "
-            + ", ".join(missing)
-        )
-    cpm.bind_providers(bindings)
-
-    if start_ws is None:
-        auto_ws_env = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS", "1").strip().lower()
-        enable_ws = auto_ws_env not in ("0", "false", "no", "off") and "pytest" not in sys.modules
-    else:
-        enable_ws = _parse_bool_flag(start_ws, default=False)
-
-    ws_streams = []
-    if enable_ws and hasattr(cpm, "on_items_update"):
-        for venue_key, ws_name, build_ws in (
-            ("hyperliquid", "HyperliquidPriceWS", lambda syms: HyperliquidPriceStream(syms, market_api=getattr(cpm, "market_api", None))),
-            ("kraken", "KrakenPriceWS", KrakenPriceStream),
-        ):
-            v_syms = [s for s in symbols if normalize_venue_name(bindings[s.upper()], default="") == venue_key]
-            if v_syms:
-                ws_inst = build_ws(v_syms)
-                if hasattr(cpm, "attach_ws_manager"):
-                    cpm.attach_ws_manager(ws_inst)
-                else:
-                    ws_inst.subscribe(cpm)
-                ws_inst.start(name=ws_name, daemon=True)
-                ws_streams.append(ws_inst)
-
-    pool = _futures.ThreadPoolExecutor(
-        max_workers=max(2, len(symbols)), thread_name_prefix="NBTrendFetch"
-    )
-    stop_event = threading.Event()
-
-    def run():
-        rth_seeded: set[str] = set()
-        empty_backoff_ts: dict[str, float] = {}
-        cpm_cache = getattr(cpm, "cache", None)
-        extract_fn = getattr(cpm, "_extract_price_and_ts", None)
-        if isinstance(cpm_cache, dict) and callable(extract_fn):
-            for s in symbols:
-                try:
-                    cached_px, _ = extract_fn(cpm_cache.get(s))
-                    if safe_pos_float(cached_px, default=None) is not None:
-                        rth_seeded.add(s)
-                except Exception:
-                    pass
-        if ws_streams:
-            real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
-            if callable(real_ws_fn):
-                for _ in range(20):
-                    if stop_event.is_set() or all(real_ws_fn(s) for s in symbols):
-                        break
-                    stop_event.wait(0.1)
-        while not stop_event.is_set():
-            for s in symbols:
-                if stop_event.is_set():
-                    break
-                real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
-                if callable(real_ws_fn) and real_ws_fn(s):
-                    continue
-                rth_gate_active = (
-                    os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
-                    or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
-                )
-                now_ts = time.time()
-                if rth_gate_active and not is_symbol_market_open(s, now_ts):
-                    if s in rth_seeded:
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = now_ts
-                        continue
-                    last_empty = empty_backoff_ts.get(s, 0.0)
-                    if last_empty > 0.0 and (now_ts - last_empty) < 300.0:
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = now_ts
-                        continue
-                elif rth_gate_active:
-                    last_empty = empty_backoff_ts.get(s, 0.0)
-                    if last_empty > 0.0 and (now_ts - last_empty) < 60.0:
-                        continue
-                try:
-                    p = _fetch_price_with_deadline(
-                        cpm.market_api,
-                        s,
-                        pool,
-                        fetch_deadline_sec,
-                        provider_name=bindings[s.upper()],
-                    )
-                    pf = safe_pos_float(p, default=None)
-                    if pf is not None:
-                        rth_seeded.add(s)
-                        empty_backoff_ts.pop(s, None)
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = time.time()
-                        cpm._push_price(s, pf)
-                    else:
-                        empty_backoff_ts[s] = time.time()
-                except _futures.TimeoutError:
-                    builtins.print(
-                        f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "
-                        f"(poll deadline — probably DNS or the network) — skipping, retrying next cycle"
-                    )
-                except Exception as _e:
-                    builtins.print(f"[NB-trend] {s}: {_e}")
-            stop_event.wait(interval_sec)
-
-    t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
-    t.start()
-    return _NonBinanceTrendPoller(t, pool, stop_event, ws_streams=ws_streams)
+__all__ = [
+    "CM_DYNAMIC_WINDOW_MAX_SEC",
+    "CM_DYNAMIC_WINDOW_MIN_SEC",
+    "CM_PUBLISHED_TREND_WINDOWS_SEC",
+    "CacheLongTrend",
+    "CacheLongTrendManager",
+    "CacheShortTrend",
+    "CacheShortTrendManager",
+    "CacheTrendManagerBase",
+    "HyperliquidPriceStream",
+    "KrakenPriceStream",
+    "_NB_FETCH_DEADLINE_SEC",
+    "_NonBinanceTrendPoller",
+    "_VenuePriceStreamBase",
+    "_fetch_price_with_deadline",
+    "_start_nonbinance_trend_poller",
+]
 
 
 def __getattr__(name: str):
-    if name == "get_short_trend_manager":
-        fn = _cm_attr("get_short_trend_manager")
+    if name in ("get_short_trend_manager", "get_long_trend_manager"):
+        fn = _cm_attr(name)
         if fn is not None:
             return fn
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

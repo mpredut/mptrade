@@ -1,20 +1,13 @@
-"""Independent base contract and shared persistence mixins for cache managers.
+"""Pure abstract base contract (Level 1) for transactional cache managers.
 
-Provides:
-- ``CacheManagerInterface``: Abstract base contract for in-memory state,
-  transactional ``.meta`` + ``.previous`` generation persistence, generic JSON
-  snapshots, generic JSONL append/compaction/rotation, price pub/sub, polling,
-  and synchronization thread lifecycle.
-- ``CacheAccountManagerBase`` (alias ``AccountCacheManagerBase``): Intermediate
-  base class for versioned account caches (``Order`` and ``Trade``) with schema
-  v2 manifests, ``.previous`` crash recovery, and reader version synchronization.
-- ``CachePriceSeriesMixin`` (alias ``_PriceSeriesCacheMixin``): Shared mixin for
-  rolling and sparse price-series caches.
+Provides ``CacheManagerInterface(ABC)``, which encapsulates in-memory state,
+transactional ``.meta`` + ``.previous`` generation persistence, generic JSON
+snapshots, generic JSONL append/compaction/rotation, price pub/sub, polling,
+and synchronization thread lifecycle without any domain-specific branches.
 """
 
 from __future__ import annotations
 
-import bisect
 import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -26,11 +19,9 @@ from typing import Optional
 import weakref
 
 from binance_api import bapi as api
-from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
-    is_us_rth_open,
     load_dotenv as _load_dotenv,
     required_float_env,
     required_int_env,
@@ -38,7 +29,6 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
-    safe_pos_float,
     safe_pos_int,
     strict_ascii_int,
 )
@@ -48,7 +38,6 @@ from cachepaths import (
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
 )
 import instrument_registry as sym
-from instrument_registry import is_equity_symbol
 from lock import FileLock
 from providers.base import (
     _parse_bool_flag,
@@ -67,7 +56,6 @@ from state_io import (
     previous_generation_path,
     prune_rotated_archives,
     read_json_dict,
-    read_recovering_previous,
     restore_previous_generation,
     stage_previous_generation,
     truncate_file_bytes,
@@ -135,7 +123,7 @@ _ORIG_BASE_ATTRS = {
 
 
 def _cm_override(name: str, default=None):
-    """Resolve an attribute from ``cachebase`` or ``cacheManager`` when patched in tests."""
+    """Resolve an attribute from ``cacheInterface`` or ``cacheManager`` when patched in tests."""
     orig = _ORIG_BASE_ATTRS.get(name)
     local_val = globals().get(name, default)
     if orig is not None and local_val is not orig:
@@ -144,7 +132,7 @@ def _cm_override(name: str, default=None):
         name,
         local_val,
         defaults=(orig,) if orig is not None else (),
-        modules=("cacheManager",),
+        modules=("cacheManager", "cacheaccount", "cacheprice"),
     )
 
 
@@ -218,7 +206,7 @@ def _jsonl_line(symbol, item) -> str:
 
 
 class CacheManagerInterface(ABC):
-    """Independent base contract for transactional cache persistence and polling."""
+    """Independent base contract (Level 1) for transactional cache persistence and polling."""
 
     _live_instances = weakref.WeakSet()
     _filter_fetchtimes_to_symbols = False
@@ -1240,295 +1228,3 @@ class CacheManagerInterface(ABC):
 
     def enable_save_state_to_file(self):
         self.save_state = True
-
-
-class CacheAccountManagerBase(CacheManagerInterface, ABC):
-    """Abstract base contract for versioned account caches (``Order`` and ``Trade``)."""
-
-    _is_trade_account_cache = False
-    _is_order_account_cache = False
-
-    def _is_account_cache(self):
-        return True
-
-    @abstractmethod
-    def _is_valid_item(self, item) -> bool:
-        """Validate one account row before memory or disk admission."""
-
-    _snapshot_data_version = staticmethod(_cache_integrity.snapshot_data_version)
-    _trade_data_version = staticmethod(_cache_integrity.trade_data_version)
-    _trade_records_digest = staticmethod(_cache_integrity.trade_records_digest)
-    _trade_semantic_signature = staticmethod(_cache_integrity.trade_semantic_signature)
-    _dedupe_trade_items_by_id = staticmethod(_cache_integrity.dedupe_trade_items_by_id)
-    _counts_for_records = staticmethod(_cache_integrity.counts_for_records)
-    _nonzero_counts = staticmethod(_cache_integrity.nonzero_counts)
-
-    def _account_meta_snapshot(
-        self,
-        *,
-        data_version,
-        fetchtime,
-        counts,
-        rest_sync_cursor=None,
-        stream_id="",
-        revision=0,
-        committed_bytes=None,
-        content_digest=None,
-    ):
-        return _cache_integrity.build_account_meta_snapshot(
-            data_version=data_version,
-            fetchtime=fetchtime,
-            counts=counts,
-            rest_sync_cursor=rest_sync_cursor,
-            stream_id=stream_id,
-            revision=revision,
-            committed_bytes=committed_bytes,
-            content_digest=content_digest,
-            schema_version=_CACHE_META_SCHEMA_VERSION,
-        )
-
-    def _apply_manifest_identity_locked(self, metadata, counts):
-        version = str(metadata["data_version"])
-        self._persisted_data_version = version
-        self._persisted_stream_id = str(metadata.get("stream_id") or "")
-        self._persisted_revision = int(metadata.get("revision") or 0)
-        self._persisted_committed_bytes = int(metadata.get("committed_bytes") or 0)
-        self._persisted_content_digest = str(metadata.get("content_digest") or "")
-        self._loaded_data_version = version
-        self._loaded_stream_id = self._persisted_stream_id
-        self._loaded_revision = self._persisted_revision
-        self._loaded_committed_bytes = self._persisted_committed_bytes
-        self._loaded_content_digest = self._persisted_content_digest
-        self._loaded_counts = dict(counts)
-        self._account_cache_dirty = False
-        return version
-
-    def _remember_account_commit_locked(self, metadata):
-        """Remember and publish one durable account-cache version."""
-        version = self._apply_manifest_identity_locked(
-            metadata, metadata.get("counts") or {}
-        )
-        if self._is_canonical_account_cache():
-            try:
-                account_cache_health.record_persisted_version(self.cls_name, version)
-            except Exception as exc:
-                builtins.print(
-                    f"[{self.cls_name}][Error] could not publish durable "
-                    f"cache version {version}: {exc}"
-                )
-
-    def _validate_account_rows_locked(self):
-        """Reject any financial row that strict readers could not accept."""
-        _cache_integrity.validate_account_cache_state(
-            cls_name=self.cls_name,
-            is_trade_cache=bool(
-                self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-            ),
-            is_order_cache=bool(
-                self._is_order_account_cache or self.cls_name in _ORDER_CACHE_CLASSES
-            ),
-            cache=self.cache,
-            fetchtime_per_symbol=self.fetchtime_per_symbol,
-            rest_sync_cursor_per_symbol=self._rest_sync_cursor_per_symbol,
-            is_valid_item_fn=self._is_valid_item,
-        )
-
-    def _account_reader_reason(self):
-        is_trade = bool(
-            self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-        )
-        prefix = "trade" if is_trade else "order"
-        return f"{prefix}_cache_reader_not_current"
-
-    def _stage_prior_account_generation_locked(
-        self, previous_metadata, validate_recovering_fn
-    ):
-        """Validate and stage the prior certified generation before overwriting active data."""
-        if previous_metadata is not None:
-            validate_recovering_fn(previous_metadata)
-            return self._stage_previous_generation(), True
-        if os.path.exists(self.filename):
-            return self._stage_previous_generation(), True
-        self._discard_generation_file(self._previous_generation_path())
-        return None, False
-
-    def _load_versioned_account_meta(self, *, optional=False, required_version=None):
-        """Load and validate the small durable account-cache manifest."""
-        is_trade = bool(
-            self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-        )
-        return _cache_integrity.load_versioned_account_meta_file(
-            meta_file_path(self.filename),
-            is_trade_cache=is_trade,
-            reader_reason=self._account_reader_reason(),
-            optional=optional,
-            required_version=required_version,
-            schema_version=_CACHE_META_SCHEMA_VERSION,
-        )
-
-    def _read_snapshot_recovering_previous_locked(self, reader_fn, metadata):
-        return read_recovering_previous(
-            self.filename,
-            lambda candidate_path: reader_fn(metadata, path=candidate_path),
-            backup_path=self._previous_generation_path(),
-        )
-
-    @abstractmethod
-    def _ensure_account_version(self, required_version: str) -> None:
-        """Synchronize in-memory state with ``required_version``; subclasses override."""
-        raise account_cache_health.AccountCacheNotReady(self._account_reader_reason())
-
-    def ensure_persisted_version(self, required_version):
-        """Bring this process to the exact durable account-cache version."""
-        required_version = str(required_version or "")
-        if not self._is_account_cache() or not required_version:
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            )
-        with self.lock:
-            if (
-                self._loaded_data_version == required_version
-                and not self._account_cache_dirty
-            ):
-                return
-        with self._reader_reload_lock:
-            with self.lock:
-                if (
-                    self._loaded_data_version == required_version
-                    and not self._account_cache_dirty
-                ):
-                    return
-            self._ensure_account_version(required_version)
-
-    def sync_account_reader_if_needed(self):
-        """Refresh a read-only account cache when durable disk state advances."""
-        if not self._is_account_cache() or self.save_state:
-            return
-        for _attempt in range(2):
-            try:
-                metadata = self._load_versioned_account_meta(optional=True)
-                if metadata is not None:
-                    version = str(metadata.get("data_version") or "")
-                    with self.lock:
-                        loaded_version = self._loaded_data_version
-                        dirty = self._account_cache_dirty
-                        mem_ts = self._mem_max_ts()
-                    file_ts = self._persisted_max_ts()
-                    if version and version != loaded_version:
-                        if not dirty or file_ts >= mem_ts:
-                            self.ensure_persisted_version(version)
-                    return
-                self.resync_mem_file()
-                return
-            except account_cache_health.AccountCacheNotReady as exc:
-                if _attempt == 0:
-                    continue
-                print(f"[{self.cls_name}][Warning] reader sync skipped: {exc}")
-            except Exception as exc:
-                print(f"[{self.cls_name}][Warning] reader sync skipped: {exc}")
-                return
-
-    @staticmethod
-    def _is_valid_trade_fill_row(trade) -> bool:
-        if not isinstance(trade, dict):
-            return False
-        required_keys = (
-            "symbol",
-            "id",
-            "orderId",
-            "price",
-            "qty",
-            "time",
-            "isBuyer",
-        )
-        if not all(key in trade for key in required_keys):
-            return False
-        return (
-            isinstance(trade["symbol"], str)
-            and bool(trade["symbol"].strip())
-            and _strict_int_field(trade["id"], min_value=0) is not None
-            and _strict_int_field(trade["orderId"], min_value=1) is not None
-            and safe_pos_float(trade["price"], default=None) is not None
-            and safe_pos_float(trade["qty"], default=None) is not None
-            and _strict_int_field(trade["time"], min_value=1) is not None
-            and isinstance(trade["isBuyer"], bool)
-        )
-
-    def _paginate_validated_trades(self, symbol, startTime, row_label: str = "trade"):
-        """Paginate through ``get_my_trades`` and validate every returned fill row."""
-        rows = apiorders.paginate_my_trades(
-            self.api_client.client, symbol, startTime, limit=1000, strict=True
-        )
-        for row in rows:
-            if (
-                not self._is_valid_trade_fill_row(row)
-                or str(row["symbol"]).upper() != str(symbol).upper()
-            ):
-                raise RuntimeError(
-                    f"{self.cls_name} received a malformed Binance {row_label} row: {row!r}"
-                )
-        return rows
-
-
-AccountCacheManagerBase = CacheAccountManagerBase
-
-
-class CachePriceSeriesMixin:
-    """Shared price-series fetchtime, remote initialization, and symbol helpers."""
-
-    cls_name = "CachePriceSeriesMixin"
-
-    def rebuild_fetchtimes(self):
-        if not self.cache:
-            return {}
-        last_times = {}
-        for symbol in self.symbols:
-            entries = self.cache.get(symbol, [])
-            if isinstance(entries, list) and entries:
-                max_ts = max(
-                    (CacheManagerInterface._entry_timestamp_ms(entry) for entry in entries),
-                    default=0,
-                )
-                if max_ts > 0:
-                    last_times[symbol] = max_ts
-        return last_times
-
-    def get_remote_items(self, symbol, startTime):
-        if (
-            is_equity_symbol(symbol)
-            and "PYTEST_CURRENT_TEST" not in os.environ
-            and not is_us_rth_open()
-        ):
-            with self.lock:
-                if self.cache.get(symbol):
-                    return []
-        try:
-            get_cpm = _cm_override("get_current_price_manager", None)
-            if not callable(get_cpm):
-                import cacheManager as _cm_mod
-
-                get_cpm = _cm_mod.get_current_price_manager
-            entry = get_cpm(start_sync=False).get_price(symbol)
-        except Exception as e:
-            print(f"[{getattr(self, 'cls_name', self.__class__.__name__)}][Error] get_price {symbol}: {e}")
-            return []
-
-        if not entry or entry[1] is None:
-            return []
-        ts_ms, price = entry
-        ts_val = safe_pos_int(ts_ms, default=None)
-        price_val = safe_pos_float(price, default=None)
-        if ts_val is None or price_val is None:
-            return []
-        with self.lock:
-            entries = self.cache.get(symbol)
-            if entries and ts_val < CacheManagerInterface._entry_timestamp_ms(entries[-1]):
-                return []
-
-        return [[ts_val, price_val]]
-
-    def get_all_symbols_from_cache(self):
-        return self.symbols
-
-
-_PriceSeriesCacheMixin = CachePriceSeriesMixin

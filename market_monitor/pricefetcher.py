@@ -19,8 +19,10 @@ from botcore import exact_pos_int, is_us_rth_open, required_env, safe_pos_float,
 from cachepaths import cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
-# Import the base classes from cacheManager
-from cacheManager import CacheFactory, CacheManagerInterface
+# Import the base classes and factory
+from cacheInterface import CacheManagerInterface
+from cacheManager import CacheFactory
+from cacheprice import CachePriceManagerBase
 # Market-data facade. market_api imports binance_api.bapi without importing pricefetcher,
 # so this direction is safe. BinancePricePlatform uses the facade as its price client.
 import providers.market_api as _market_api
@@ -578,7 +580,7 @@ class PricePlatformFactory:
 # CacheAllPriceFetcherManager
 # ============================================
 
-class CacheAllPriceFetcherManager(CacheManagerInterface):
+class CacheAllPriceFetcherManager(CachePriceManagerBase):
     def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None,
                  read_only=False, max_symbols: Optional[int] = None):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
