@@ -242,13 +242,16 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
 
 def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_dir):
     import pytest
+    from cacheprice import (
+        Cache24PriceManager,
+        Cache365PriceManager,
+        CacheCurrentPriceManager,
+        CacheSparsePriceManager,
+    )
     from intelligence.sentiment.collectors.microstructure_collector import (
-        Archive365AndSparsePriceCollector,
         CompositeSymbolPriceSeriesLoader,
-        Dense24hPriceSeriesCollector,
         EquityYahoo5dChartCollector,
         Fleet24hAndMicrostructureEnricher,
-        LiveCurrentPriceOverlayCollector,
         MicrostructureCacheCollectorBase,
         PriceSeriesCacheCollectorBase,
         SymbolMicrostructureSnapshotCollector,
@@ -329,14 +332,20 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert isinstance(arb_ev, MicrostructureEvaluatorBase)
     assert isinstance(cd_ev, MicrostructureEvaluatorBase)
 
-    assert isinstance(TelemetryCollectorFactory.get_price_series_loader(), CompositeSymbolPriceSeriesLoader)
+    loader = TelemetryCollectorFactory.get_price_series_loader()
+    assert isinstance(loader, CompositeSymbolPriceSeriesLoader)
+    assert loader.price_24_cls is Cache24PriceManager
+    assert loader.price_365_cls is Cache365PriceManager
+    assert loader.price_sparse_cls is CacheSparsePriceManager
+    assert loader.current_price_cls is CacheCurrentPriceManager
+    assert Cache365PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_365_price_BTCUSDC.jsonl"
+    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
+    assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
+    assert CacheCurrentPriceManager.disk_filename_for_symbol() == "cache_current_price.json"
     assert isinstance(TelemetryCollectorFactory.get_microstructure_collector(), SymbolMicrostructureSnapshotCollector)
     assert isinstance(TelemetryCollectorFactory.get_fleet_enricher(), Fleet24hAndMicrostructureEnricher)
     assert isinstance(TelemetryCollectorFactory.get_yahoo_chart_collector(), EquityYahoo5dChartCollector)
     assert isinstance(TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator), PretradeTelemetryOrchestrator)
-    assert issubclass(Dense24hPriceSeriesCollector, PriceSeriesCacheCollectorBase)
-    assert issubclass(Archive365AndSparsePriceCollector, PriceSeriesCacheCollectorBase)
-    assert issubclass(LiveCurrentPriceOverlayCollector, PriceSeriesCacheCollectorBase)
 
     class _CustomAuditStage(PretradePillarCollectorBase):
         def evaluate(self, ctx: PretradeEvaluationContext) -> None:

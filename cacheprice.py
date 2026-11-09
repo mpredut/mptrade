@@ -92,11 +92,23 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
+    FILE_PREFIX: Optional[str] = None
+    FILE_EXT: Optional[str] = None
+    DEFAULT_FILENAME: Optional[str] = None
 
     def __init__(self, *args, **kwargs):
         if type(self) is CachePriceManagerBase:
             raise TypeError("Cannot instantiate abstract class CachePriceManagerBase")
         super().__init__(*args, **kwargs)
+
+    @classmethod
+    def disk_filename_for_symbol(cls, symbol: str = "") -> str:
+        """Return the canonical cache filename for ``symbol`` owned by this concrete price cache class."""
+        if cls.DEFAULT_FILENAME:
+            return cls.DEFAULT_FILENAME
+        if cls.FILE_PREFIX and cls.FILE_EXT:
+            return f"{cls.FILE_PREFIX}{symbol}.{cls.FILE_EXT}"
+        return ""
 
     def rebuild_fetchtimes(self):
         if not self.cache:
@@ -153,6 +165,9 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 class CacheSparsePriceManager(CachePriceManagerBase):
     """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
 
+    FILE_PREFIX = "cache_sparse_price_"
+    FILE_EXT = "jsonl"
+
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
             api_client = _cm_override("api", api)
@@ -171,6 +186,8 @@ class Cache24PriceManager(CachePriceManagerBase):
     """Collect maximum-granularity prices (Level 3) over the latest ``KEEP_HOURS``."""
 
     KEEP_HOURS = 24
+    FILE_PREFIX = "cache_24_price_"
+    FILE_EXT = "json"
     _filter_fetchtimes_to_symbols = True
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
@@ -328,6 +345,8 @@ class Cache365PriceManager(Cache24PriceManager):
     KEEP_HOURS = CM_LONG_ARCHIVE_MONTHS * 30 * 24
     RETENTION_DAYS = CM_LONG_ARCHIVE_MONTHS * 30
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
+    FILE_PREFIX = "cache_365_price_"
+    FILE_EXT = "jsonl"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -713,6 +732,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     WS_TIMEOUT_SEC = 15
     STALE_THRESHOLD_MS = 5_000
     FREQ_WINDOW_SEC = 60
+    DEFAULT_FILENAME = "cache_current_price.json"
 
     def __init__(
         self,

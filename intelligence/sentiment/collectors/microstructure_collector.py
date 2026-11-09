@@ -19,6 +19,13 @@ from cachepaths import (
     resolve_cache_dir_path,
     split_symbol_assets,
 )
+from cacheprice import (
+    Cache24PriceManager,
+    Cache365PriceManager,
+    CacheCurrentPriceManager,
+    CachePriceManagerBase,
+    CacheSparsePriceManager,
+)
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -296,13 +303,13 @@ def _compute_price_series_memo_signature(
     stat_list = []
     for sp in _cand_cache_paths(
         cachedb_dir,
-        *(f"cache_24_price_{c}.json" for c in cands),
+        *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
         *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
-        *(f"cache_sparse_price_{c}.jsonl" for c in cands),
-        *(f"cache_365_price_{c}.jsonl" for c in cands),
+        *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
+        *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
         *(f"cache_365_price_{c}.json" for c in cands),
     ):
-        for cand_sp in (sp, sp + ".previous") if "cache_24_price_" in sp else (sp,):
+        for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
             try:
                 st = os.stat(cand_sp)
                 stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
@@ -336,7 +343,7 @@ def _load_raw_24h_series_from_disk(
     series_24h: list = []
     span_24h_ms = 0.0
     for cand in cands:
-        for p24_path in _cand_cache_paths(cachedb_dir, f"cache_24_price_{cand}.json"):
+        for p24_path in _cand_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
             raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
@@ -425,10 +432,13 @@ def _load_raw_archive_and_watcher_series(
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
     cands_upper_tup = tuple(sorted(cands_upper))
     for cand in (cands if (include_7d or need_24h_supplement or is_eq_sym_load) else ()):
+        f_sparse = CacheSparsePriceManager.disk_filename_for_symbol(cand)
+        f_365 = Cache365PriceManager.disk_filename_for_symbol(cand)
+        f_365_legacy = f"cache_365_price_{cand}.json"
         primary_names = (
-            (f"cache_sparse_price_{cand}.jsonl", f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json")
+            (f_sparse, f_365, f_365_legacy)
             if not need_24h_supplement
-            else (f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl")
+            else (f_365, f_365_legacy, f_sparse)
         )
         cand_arch: list = []
         for arch_path in _cand_cache_paths(cachedb_dir, *primary_names):
@@ -442,9 +452,9 @@ def _load_raw_archive_and_watcher_series(
             if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
                 for sp_path in _cand_cache_paths(
                     cachedb_dir,
-                    f"cache_sparse_price_{cand}.jsonl",
-                    f"cache_365_price_{cand}.jsonl",
-                    f"cache_365_price_{cand}.json",
+                    f_sparse,
+                    f_365,
+                    f_365_legacy,
                 ):
                     if sp_rows := _read_archive_series_file(
                         sp_path, cands, cands_upper, cands_upper_tup, _rj, is_default_rj, max_b=512 * 1024
@@ -1848,88 +1858,6 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
         return cands, eff_quotes, is_eq_sym, is_eq_sym_load
 
 
-class Dense24hPriceSeriesCollector(PriceSeriesCacheCollectorBase):
-    """Concrete collector (Level 3) for ``cache_24_price_<SYM>.json`` and stitched 24h OHLC bars."""
-
-    cls_name = "Dense24hPriceSeriesCollector"
-
-    def collect(
-        self,
-        cachedb_dir: str,
-        symbol: str,
-        *,
-        cands: Optional[List[str]] = None,
-        is_eq_sym_load: Optional[bool] = None,
-        read_json_fn: Any = None,
-        **kwargs: Any,
-    ) -> Tuple[list, float]:
-        if cands is None or is_eq_sym_load is None:
-            cands, _, _, is_eq_sym_load = self.resolve_candidate_symbols(symbol)
-        _rj = read_json_fn or _resolve_read_json_cached()
-        return _load_raw_24h_series_from_disk(cachedb_dir, symbol, cands, bool(is_eq_sym_load), _rj)
-
-
-class Archive365AndSparsePriceCollector(PriceSeriesCacheCollectorBase):
-    """Concrete collector (Level 3) for ``cache_365_price_<SYM>.jsonl``, ``cache_sparse_price.jsonl``, and ``price_watcher_state.json``."""
-
-    cls_name = "Archive365AndSparsePriceCollector"
-
-    def collect(
-        self,
-        cachedb_dir: str,
-        symbol: str,
-        *,
-        cands: Optional[List[str]] = None,
-        include_7d: bool = True,
-        need_24h_supplement: bool = True,
-        has_24h_series: bool = False,
-        is_eq_sym_load: Optional[bool] = None,
-        read_json_fn: Any = None,
-        is_default_rj: bool = True,
-        **kwargs: Any,
-    ) -> Tuple[List[Any], List[Tuple[float, float]], List[Tuple[float, float]], float]:
-        if cands is None or is_eq_sym_load is None:
-            cands, _, _, is_eq_sym_load = self.resolve_candidate_symbols(symbol)
-        _rj = read_json_fn or _resolve_read_json_cached()
-        return _load_raw_archive_and_watcher_series(
-            cachedb_dir,
-            symbol,
-            cands,
-            include_7d,
-            need_24h_supplement,
-            has_24h_series,
-            bool(is_eq_sym_load),
-            _rj,
-            is_default_rj,
-        )
-
-
-class LiveCurrentPriceOverlayCollector(PriceSeriesCacheCollectorBase):
-    """Concrete collector (Level 3) for overlaying ``cache_current_price.json`` ticks onto 24h series."""
-
-    cls_name = "LiveCurrentPriceOverlayCollector"
-
-    def collect(
-        self,
-        cachedb_dir: str,
-        symbol: str,
-        *,
-        series_24h: Optional[list] = None,
-        current_price_items: Optional[Dict[str, Any]] = None,
-        cands: Optional[List[str]] = None,
-        is_eq_sym_load: Optional[bool] = None,
-        **kwargs: Any,
-    ) -> list:
-        if cands is None or is_eq_sym_load is None:
-            cands, _, _, is_eq_sym_load = self.resolve_candidate_symbols(symbol)
-        return _overlay_live_current_price_ticks(
-            list(series_24h or []),
-            current_price_items,
-            cands,
-            bool(is_eq_sym_load),
-        )
-
-
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
     """Concrete collector (Level 3) for Yahoo 5d/5m equity chart backfill and disk persistence."""
 
@@ -1978,20 +1906,18 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
 
 
 class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
-    """Concrete composite loader (Level 3) that orchestrates 24h, 365d/sparse, watcher, and live price collectors."""
+    """Concrete composite loader (Level 3) that reads & merges artifacts produced by the ``CachePriceManagerBase`` hierarchy:
+    - ``Cache24PriceManager`` (``cache_24_price_<SYM>.json``)
+    - ``Cache365PriceManager`` (``cache_365_price_<SYM>.jsonl`` — dense long-horizon archive)
+    - ``CacheSparsePriceManager`` (``cache_sparse_price_<SYM>.jsonl`` — sparse long-horizon archive)
+    - ``CacheCurrentPriceManager`` (``cache_current_price.json`` — live ticks)
+    """
 
     cls_name = "CompositeSymbolPriceSeriesLoader"
-
-    def __init__(
-        self,
-        dense_24h_collector: Optional[Dense24hPriceSeriesCollector] = None,
-        archive_collector: Optional[Archive365AndSparsePriceCollector] = None,
-        live_overlay_collector: Optional[LiveCurrentPriceOverlayCollector] = None,
-    ) -> None:
-        super().__init__()
-        self.dense_24h_collector = dense_24h_collector or Dense24hPriceSeriesCollector()
-        self.archive_collector = archive_collector or Archive365AndSparsePriceCollector()
-        self.live_overlay_collector = live_overlay_collector or LiveCurrentPriceOverlayCollector()
+    price_24_cls: type[CachePriceManagerBase] = Cache24PriceManager
+    price_365_cls: type[CachePriceManagerBase] = Cache365PriceManager
+    price_sparse_cls: type[CachePriceManagerBase] = CacheSparsePriceManager
+    current_price_cls: type[CachePriceManagerBase] = CacheCurrentPriceManager
 
     def collect(
         self,
@@ -2025,32 +1951,30 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             except Exception:
                 memo_key = None
 
-        series_24h, span_24h_ms = self.dense_24h_collector.collect(
-            cachedb_dir, symbol, cands=cands, is_eq_sym_load=is_eq_sym_load, read_json_fn=_rj
+        series_24h, span_24h_ms = _load_raw_24h_series_from_disk(
+            cachedb_dir, symbol, cands, is_eq_sym_load, _rj
         )
         need_24h_supplement = span_24h_ms < 3600000.0 * 18
-        archive_pts, sparse_7d_pts, watcher_7d_pts, watcher_cutoff_24h = self.archive_collector.collect(
+        archive_pts, sparse_7d_pts, watcher_7d_pts, watcher_cutoff_24h = _load_raw_archive_and_watcher_series(
             cachedb_dir,
             symbol,
-            cands=cands,
-            include_7d=include_7d,
-            need_24h_supplement=need_24h_supplement,
-            has_24h_series=bool(series_24h),
-            is_eq_sym_load=is_eq_sym_load,
-            read_json_fn=_rj,
-            is_default_rj=is_default_rj,
+            cands,
+            include_7d,
+            need_24h_supplement,
+            bool(series_24h),
+            is_eq_sym_load,
+            _rj,
+            is_default_rj,
         )
         series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms = extract_archive_24h_and_7d_slices(
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
         _LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
-        series_24h = self.live_overlay_collector.collect(
-            cachedb_dir,
-            symbol,
-            series_24h=series_24h,
-            current_price_items=current_price_items,
-            cands=cands,
-            is_eq_sym_load=is_eq_sym_load,
+        series_24h = _overlay_live_current_price_ticks(
+            series_24h,
+            current_price_items,
+            cands,
+            is_eq_sym_load,
         )
         series_24h = session_policy.normalize_24h_series(series_24h, symbol)
         vals_7d = append_newer_24h_to_7d_vals(vals_7d, series_24h, arch_7d_end_ts)
@@ -2210,12 +2134,9 @@ def enrich_24h_and_microstructure(
 
 
 __all__ = [
-    "Archive365AndSparsePriceCollector",
     "CompositeSymbolPriceSeriesLoader",
-    "Dense24hPriceSeriesCollector",
     "EquityYahoo5dChartCollector",
     "Fleet24hAndMicrostructureEnricher",
-    "LiveCurrentPriceOverlayCollector",
     "MicrostructureCacheCollectorBase",
     "PriceSeriesCacheCollectorBase",
     "SymbolMicrostructureSnapshotCollector",
