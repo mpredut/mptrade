@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import time as _time
+from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -26,6 +27,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import _VENUE_DEFAULT_FEE_SPECS
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorInterface,
     _auto_px_decimals,
     _parse_ts_px_row,
     _prices_diverged,
@@ -1424,7 +1426,143 @@ def reconcile_sibling_flow_and_liq_regimes(
                 m_sib["cvd_regime"] = "spot_absorbing"
 
 
+def rescale_orderbook_walls_to_price(m_info: Dict[str, Any], target_px: float, ob_mid_px: float) -> float:
+    """Rescale orderbook mid price, top-of-book bid/ask, and liquidity walls proportionally to `target_px`."""
+    scale_r = target_px / ob_mid_px
+    px_dec = _auto_px_decimals(target_px)
+    rounded_px = round(target_px, px_dec)
+    m_info["ob_mid_price"] = rounded_px
+    for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+        if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
+            m_info[k_sc] = round(v_sc * scale_r, px_dec)
+    return rounded_px
+
+
+def is_ob_mid_fresher_than_series(
+    cur_px: float,
+    ob_mid_px: float,
+    ob_ts_sec: float,
+    now_ts: float,
+    last_series_pt: Optional[Tuple[float, float]],
+    *,
+    is_exact_ob_sym: bool,
+    ref_flat_px: Optional[float] = None,
+) -> bool:
+    """Return True when an exact-symbol orderbook mid price is >60s newer than a stale/flat 24h series tail."""
+    if not is_exact_ob_sym or _prices_diverged(cur_px, ob_mid_px):
+        return False
+    if not (0.0 < ob_ts_sec <= now_ts + 300.0) or last_series_pt is None or last_series_pt[0] <= 0.0:
+        return False
+    if (ob_ts_sec * 1000.0 - last_series_pt[0]) <= 60_000.0:
+        return False
+    check_px = ref_flat_px if (ref_flat_px is not None and ref_flat_px > 0.0) else cur_px
+    return (now_ts - ob_ts_sec) <= 300.0 or abs(check_px - last_series_pt[1]) <= 1e-6
+
+
+class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
+    """Abstract base contract (Level 2) for orderbook depth, CVD flow, liquidation clusters, and cross-venue evaluators."""
+
+    cls_name = "MicrostructureEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is MicrostructureEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class MicrostructureEvaluatorBase")
+        super().__init__()
+
+    rescale_orderbook_walls_to_price = staticmethod(rescale_orderbook_walls_to_price)
+    is_ob_mid_fresher_than_series = staticmethod(is_ob_mid_fresher_than_series)
+    align_equity_orderbook_to_spot = staticmethod(align_equity_orderbook_to_spot)
+
+
+class OrderbookCvdFlowEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) for multi-horizon taker flow, synthetic spot CVD, and spot-vs-perp flow regime."""
+
+    cls_name = "OrderbookCvdFlowEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        price_info: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        m_info = data if isinstance(data, dict) else {}
+        enrich_microstructure_cvd(m_info, price_info)
+        return m_info
+
+
+class LiquidationClusterEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) for leverage-tier LONG/SHORT liquidation clusters and structural magnet bias."""
+
+    cls_name = "LiquidationClusterEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        micro_info: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        p_info = data if isinstance(data, dict) else {}
+        return compute_liquidation_clusters(p_info, micro_info)
+
+
+class CrossVenueSiblingArbEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) for sibling flow reconciliation and net fee-adjusted cross-venue arbitrage."""
+
+    cls_name = "CrossVenueSiblingArbEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        symbol: str = "",
+        price_info: Optional[Dict[str, Any]] = None,
+        microstructure_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        price_trends_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        m_info = data if isinstance(data, dict) else {}
+        if isinstance(microstructure_map, dict) and isinstance(price_trends_map, dict):
+            reconcile_sibling_flow_and_liq_regimes(microstructure_map, price_trends_map)
+            if symbol:
+                compute_cross_venue_arb_metrics(
+                    symbol,
+                    m_info,
+                    price_info or price_trends_map.get(symbol, {}),
+                    microstructure_map,
+                    price_trends_map,
+                )
+        return m_info
+
+
+class MicrostructureCycleDeltaEvaluator(MicrostructureEvaluatorBase):
+    """Concrete evaluator (Level 3) for rolling 5m cycle deltas on orderbook imbalance, CVD, and whale positioning."""
+
+    cls_name = "MicrostructureCycleDeltaEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        cache_dir: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        m_map = data if isinstance(data, dict) else {}
+        update_microstructure_cycle_deltas(cache_dir, m_map, now_ts=now_ts)
+        return m_map
+
+
 __all__ = [
+    "CrossVenueSiblingArbEvaluator",
+    "LiquidationClusterEvaluator",
+    "MicrostructureCycleDeltaEvaluator",
+    "MicrostructureEvaluatorBase",
+    "OrderbookCvdFlowEvaluator",
     "_MICRO_PRICE_ANCHOR_KEYS",
     "_blend_structural_liq_anchor",
     "_first_variant_dict",
@@ -1435,7 +1573,9 @@ __all__ = [
     "compute_liquidation_clusters",
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
+    "is_ob_mid_fresher_than_series",
     "reconcile_sibling_flow_and_liq_regimes",
+    "rescale_orderbook_walls_to_price",
     "sync_sibling_symbol_telemetry",
     "update_microstructure_cycle_deltas",
 ]

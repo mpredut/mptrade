@@ -5,11 +5,12 @@ import math
 import os
 import statistics
 import time as _time
-from typing import Any, Dict, List, Optional, Tuple
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from cachepaths import cache_path, canonical_base_asset
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
-from intelligence.macro_sentiment_ssot import normalize_epoch_sec, safe_float, safe_pos_float
+from intelligence.macro_sentiment_ssot import normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
 from state_io import read_json_recovering, save_json_state
 
 KalmanTrend: Any = None
@@ -1407,3 +1408,996 @@ def _apply_24h_series_enrichment(
                         or vol_1h_inflated
                     ):
                         entry["adapt_dca_pct"] = dca_th_m
+
+
+_RTH_VP_ANCHOR_KEYS: Tuple[str, ...] = (
+    "poc_px",
+    "sec_poc_px",
+    "hvn2_px",
+    "lvn_px",
+    "val_px",
+    "vah_px",
+    "profile_shape",
+    "vp_source",
+)
+_STALE_SHORT_24H_KEYS: Tuple[str, ...] = (
+    "chg_1m_pct",
+    "chg_3m_pct",
+    "chg_5m_pct",
+    "recent_tape_15m",
+    "low_15m",
+    "high_15m",
+    "pos_15m_pct",
+    "span_15m_pct",
+)
+_SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (
+    "kalman_vel",
+    "kalman_vel_std",
+    "kalman_trend",
+    "slope_90s",
+    "growth_90s",
+    "trend_90s",
+    "slope_3_7m",
+    "growth_3_7m",
+    "trend_3_7m",
+    "slope_15m",
+    "growth_15m",
+    "trend_15m",
+    "slope_2_5h",
+    "growth_2_5h",
+    "trend_2_5h",
+    "gradient_recent_fast",
+    "gradient_recent",
+)
+
+
+def sort_ts_rows(rows: list) -> list:
+    """Sort price-series rows ascending by parsed timestamp only when out-of-order rows exist."""
+    if len(rows) < 2:
+        return rows
+    prev_t = -1.0
+    for r in rows:
+        pt = _parse_ts_px_row(r)
+        if pt is not None:
+            if pt[0] < prev_t:
+                keyed = [(p[0], r_item) for r_item in rows if (p := _parse_ts_px_row(r_item)) is not None]
+                keyed.sort(key=lambda x: x[0])
+                return [r_item for _, r_item in keyed]
+            prev_t = pt[0]
+    return rows
+
+
+def prepend_older_non_diverged_points(cur_ser: list, cand_ser: list) -> list:
+    """Prepend older points from `cand_ser` to `cur_ser` when prices are non-diverged."""
+    if not cur_ser or not cand_ser:
+        return cur_ser
+    cur_p0 = _parse_ts_px_row(cur_ser[0])
+    sib_p0, sib_p1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
+    if cur_p0 and sib_p0 and sib_p1 and sib_p0[0] < cur_p0[0] and not _prices_diverged(sib_p1[1], cur_p0[1]):
+        older_pts = [r for r in cand_ser if (pt := _parse_ts_px_row(r)) is not None and pt[0] < cur_p0[0]]
+        if older_pts:
+            return older_pts + cur_ser
+    return cur_ser
+
+
+def strip_off_rth_flat_poller_tail(rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+    """Strip or downsample flat off-RTH poller tails on equity price series."""
+    is_eq_sym_load = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+    if not is_eq_sym_load or len(rows) < 3:
+        return rows
+    if len(rows) >= 10:
+        for split_idx in range(len(rows) - 1, max(4, len(rows) - 4), -1):
+            p_prev = _parse_ts_px_row(rows[split_idx - 1])
+            p_cur = _parse_ts_px_row(rows[split_idx])
+            p_last = _parse_ts_px_row(rows[-1])
+            if (
+                p_prev is not None
+                and p_cur is not None
+                and p_last is not None
+                and (p_cur[0] - p_prev[0]) > 2 * 3600 * 1000
+                and (p_last[0] - p_cur[0]) < 15 * 60 * 1000
+            ):
+                rows = rows[:split_idx]
+                break
+    last_ohlc_idx = max(
+        (
+            i
+            for i, r in enumerate(rows)
+            if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+        ),
+        default=-1,
+    )
+    if 1 <= last_ohlc_idx < len(rows) - 1:
+        last_ohlc_pt = _parse_ts_px_row(rows[last_ohlc_idx])
+        tail_pts = [pt for r in rows[last_ohlc_idx + 1 :] if (pt := _parse_ts_px_row(r)) is not None]
+        if (
+            last_ohlc_pt is not None
+            and tail_pts
+            and (tail_pts[-1][0] - last_ohlc_pt[0]) > 20 * 60 * 1000
+            and max(p[1] for p in tail_pts) == min(p[1] for p in tail_pts)
+            and abs(tail_pts[0][1] - last_ohlc_pt[1]) <= 1e-6
+        ):
+            return rows[: last_ohlc_idx + 1]
+    last_pt = _parse_ts_px_row(rows[-1])
+    if last_pt is not None and isinstance(rows[-1], (list, tuple)) and len(rows[-1]) < 3:
+        flat_start = len(rows) - 1
+        while flat_start > 0:
+            prev_r = rows[flat_start - 1]
+            prev_pt = _parse_ts_px_row(prev_r)
+            if (
+                prev_pt is not None
+                and isinstance(prev_r, (list, tuple))
+                and len(prev_r) < 3
+                and abs(prev_pt[1] - last_pt[1]) <= 1e-6
+            ):
+                flat_start -= 1
+            else:
+                break
+        anchor_idx = flat_start
+        if anchor_idx > 0:
+            before_pt = _parse_ts_px_row(rows[anchor_idx - 1])
+            if before_pt is not None and abs(before_pt[1] - last_pt[1]) <= 1e-6:
+                anchor_idx -= 1
+        anchor_pt = _parse_ts_px_row(rows[anchor_idx]) if 1 <= anchor_idx < len(rows) - 1 else None
+        if anchor_pt is not None and (last_pt[0] - anchor_pt[0]) > 20 * 60 * 1000:
+            next_flat_pt = _parse_ts_px_row(rows[anchor_idx + 1]) if (anchor_idx + 1) < len(rows) else None
+            gap_after_anchor_ms = (next_flat_pt[0] - anchor_pt[0]) if next_flat_pt is not None else 0.0
+            rth_open_at_last = False
+            if gap_after_anchor_ms <= 20 * 60 * 1000:
+                try:
+                    if is_market_open_fn is None:
+                        from instrument_registry import is_symbol_market_open as is_market_open_fn
+                    rth_open_at_last = bool(is_market_open_fn(symbol, last_pt[0] / 1000.0))
+                except Exception:
+                    rth_open_at_last = False
+            if not rth_open_at_last or gap_after_anchor_ms > 20 * 60 * 1000:
+                return rows[: anchor_idx + 1]
+            downsampled_flat = [rows[anchor_idx]]
+            last_kept_t = anchor_pt[0]
+            for r_fl in rows[anchor_idx + 1 : -1]:
+                pt_fl = _parse_ts_px_row(r_fl)
+                if pt_fl is not None and (pt_fl[0] - last_kept_t) >= 55000.0:
+                    downsampled_flat.append(r_fl)
+                    last_kept_t = pt_fl[0]
+            downsampled_flat.append(rows[-1])
+            return rows[:anchor_idx] + downsampled_flat
+    return rows
+
+
+def merge_equity_ohlc24_into_raw_series(raw_ser: list, ohlc24_pts: list) -> list:
+    """Merge 24h OHLC volume-bearing bars into raw equity 24h series when non-diverged."""
+    ohlc_bars = [
+        r
+        for r in sort_ts_rows(ohlc24_pts or [])
+        if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+    ]
+    if (
+        len(ohlc_bars) >= 4
+        and (ohlc_0 := _parse_ts_px_row(ohlc_bars[0])) is not None
+        and (ohlc_last := _parse_ts_px_row(ohlc_bars[-1])) is not None
+        and (ser_last := _parse_ts_px_row(raw_ser[-1])) is not None
+        and not _prices_diverged(ohlc_last[1], ser_last[1])
+    ):
+        by_bar_ts = {}
+        for r_s in raw_ser:
+            if (pt_s := _parse_ts_px_row(r_s)) is not None:
+                if (
+                    (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and (safe_pos_float(r_s[2], default=0.0) or 0.0) > 0.0)
+                    or pt_s[0] < ohlc_0[0]
+                    or pt_s[0] > ohlc_last[0]
+                    or (pt_s[0] >= ohlc_last[0] - 15 * 60 * 1000 and not _prices_diverged(pt_s[1], ohlc_last[1]))
+                ):
+                    by_bar_ts[pt_s[0]] = r_s
+        for r_o in ohlc_bars:
+            if (pt_o := _parse_ts_px_row(r_o)) is not None:
+                by_bar_ts[pt_o[0]] = r_o
+        return [by_bar_ts[k] for k in sorted(by_bar_ts)]
+    return raw_ser
+
+
+def collapse_watcher_equity_series(w_rows: list, is_eq_w: bool) -> Tuple[list, list, Optional[float]]:
+    """Collapse flat runs in `cache_watcher_all_price` for equities and extract 7d points and 24h cutoff."""
+    w_rows = sort_ts_rows(w_rows or [])
+    if len(w_rows) < 10 or (w_last := _parse_ts_px_row(w_rows[-1])) is None:
+        return [], [], None
+    w_24 = [pt for r in w_rows if (pt := _parse_ts_px_row(r)) is not None and pt[0] >= w_last[0] - 86400.0 * 1000.0]
+    if len(w_24) < 10 or (w_24[-1][0] - w_24[0][0]) < 3600.0 * 1000.0:
+        return [], [], None
+    if not is_eq_w:
+        return list(w_rows), [], None
+    w_parsed = [[pt[0], round(pt[1], 4)] for r in w_rows if (pt := _parse_ts_px_row(r)) is not None]
+    raw_last_ts = w_parsed[-1][0]
+    watcher_7d_pts = [pt for pt in w_parsed if pt[0] >= raw_last_ts - 7.05 * 86400.0 * 1000.0]
+    runs: List[List[List[float]]] = []
+    for pt in w_parsed:
+        if not runs or abs(pt[1] - runs[-1][-1][1]) > 1e-9:
+            runs.append([pt])
+        else:
+            runs[-1].append(pt)
+    last_active_ts = runs[-1][0][0] if len(runs[-1]) >= 4 else raw_last_ts
+    watcher_cutoff_24h = (
+        raw_last_ts - 86400.0 * 1000.0
+        if (raw_last_ts - last_active_ts) <= 6.0 * 3600.0 * 1000.0
+        else last_active_ts - 86400.0 * 1000.0
+    )
+    anchor_targets = (
+        watcher_cutoff_24h,
+        last_active_ts - 86400.0 * 1000.0,
+        last_active_ts - 43200.0 * 1000.0,
+        last_active_ts - 21600.0 * 1000.0,
+    )
+    collapsed_w: list = []
+    for r_idx, r_pts in enumerate(runs):
+        if len(r_pts) < 4:
+            collapsed_w.extend(r_pts)
+        elif r_idx == len(runs) - 1:
+            collapsed_w.append(r_pts[0])
+        else:
+            keep_idx = {0, len(r_pts) - 1}
+            for t_anc in anchor_targets:
+                if r_pts[0][0] <= t_anc <= r_pts[-1][0]:
+                    best_i = min(range(len(r_pts)), key=lambda i: abs(r_pts[i][0] - t_anc))
+                    keep_idx.add(best_i)
+            for k_i in sorted(keep_idx):
+                collapsed_w.append(r_pts[k_i])
+    return collapsed_w, watcher_7d_pts, watcher_cutoff_24h
+
+
+def extract_archive_24h_and_7d_slices(
+    archive_pts: list,
+    sparse_7d_pts: list,
+    watcher_7d_pts: list,
+    series_24h: list,
+    symbol: str,
+    need_24h_supplement: bool,
+    watcher_cutoff_24h: Optional[float],
+) -> Tuple[list, list, float, float]:
+    """Slice 24h supplement and 7d values from archive/sparse/watcher points, filtering zero-vol price spikes."""
+    vals_7d: list = []
+    arch_7d_end_ts = 0.0
+    arch_7d_span_ms = 0.0
+    if not archive_pts:
+        return series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms
+    try:
+        if (last_pt := _parse_ts_px_row(archive_pts[-1])) is not None:
+            if (
+                str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+                and series_24h
+                and isinstance(series_24h[-1], (list, tuple))
+                and len(series_24h[-1]) >= 3
+                and isinstance(archive_pts[-1], (list, tuple))
+                and len(archive_pts[-1]) >= 3
+                and (s24_end_pt := _parse_ts_px_row(series_24h[-1])) is not None
+                and s24_end_pt[0] == last_pt[0]
+                and safe_nonneg_float(series_24h[-1][2], -1.0) == safe_nonneg_float(archive_pts[-1][2], -2.0)
+                and abs(s24_end_pt[1] - last_pt[1]) > 1e-4
+            ):
+                series_24h = list(series_24h[:-1]) + [[series_24h[-1][0], last_pt[1], *series_24h[-1][2:]]]
+            cutoff_24h = watcher_cutoff_24h if watcher_cutoff_24h is not None else (last_pt[0] - 86400.0 * 1000.0)
+            cutoff_7d = last_pt[0] - 7.0 * 86400.0 * 1000.0
+            pts_24, pts_7d_vals, pts_7d_ts = [], [], []
+            parsed_arch = [
+                (
+                    pt[0],
+                    pt[1],
+                    safe_pos_float(row[2], default=None) if isinstance(row, (list, tuple)) and len(row) >= 3 else None,
+                    row[0] if isinstance(row, (list, tuple)) and row else pt[0],
+                )
+                for row in archive_pts
+                if (pt := _parse_ts_px_row(row)) is not None
+            ]
+            has_arch_vol = any(v is not None for _, _, v, _ in parsed_arch)
+            clean_arch = []
+            for idx_a, item_a in enumerate(parsed_arch):
+                if has_arch_vol and 0 < idx_a < len(parsed_arch) - 1 and item_a[2] is None:
+                    prev_a = clean_arch[-1] if clean_arch else parsed_arch[idx_a - 1]
+                    next_idx_a = idx_a + 1
+                    while (
+                        next_idx_a < len(parsed_arch) - 1
+                        and parsed_arch[next_idx_a][2] is None
+                        and abs(parsed_arch[next_idx_a][1] - item_a[1]) <= 1e-9
+                    ):
+                        next_idx_a += 1
+                    next_a = parsed_arch[next_idx_a]
+                    if prev_a[2] is not None or next_a[2] is not None:
+                        ref_mid = 0.5 * (prev_a[1] + next_a[1])
+                        if (
+                            ref_mid > 0.0
+                            and abs(prev_a[1] - next_a[1]) / ref_mid <= 0.025
+                            and abs(item_a[1] - ref_mid) / ref_mid > 0.025
+                        ):
+                            continue
+                clean_arch.append(item_a)
+            older_24_arch = []
+            for pt_t, pt_p, pt_v, raw_t0 in clean_arch:
+                if pt_t >= cutoff_7d:
+                    pts_7d_vals.append(pt_p)
+                    pts_7d_ts.append(pt_t)
+                if need_24h_supplement:
+                    row_24 = [raw_t0, pt_p, pt_v] if pt_v is not None else [raw_t0, pt_p]
+                    if pt_t >= cutoff_24h:
+                        pts_24.append(row_24)
+                    elif pt_t >= last_pt[0] - 36.0 * 3600.0 * 1000.0:
+                        older_24_arch.append(row_24)
+            if (
+                need_24h_supplement
+                and older_24_arch
+                and (
+                    not pts_24
+                    or (
+                        (p24_0 := _parse_ts_px_row(pts_24[0])) is not None
+                        and (p24_1 := _parse_ts_px_row(pts_24[-1])) is not None
+                        and (p24_1[0] - p24_0[0]) < 18.0 * 3600.0 * 1000.0
+                    )
+                )
+            ):
+                pts_24 = [older_24_arch[-1], *pts_24]
+            if len(watcher_7d_pts) >= 2:
+                pts_7d_vals = [pt[1] for pt in watcher_7d_pts]
+                pts_7d_ts = [pt[0] for pt in watcher_7d_pts]
+            arch_7d_end_ts = pts_7d_ts[-1] if pts_7d_ts else last_pt[0]
+            if len(pts_7d_ts) >= 2:
+                arch_7d_span_ms = max(0.0, pts_7d_ts[-1] - pts_7d_ts[0])
+            if sparse_7d_pts and (sp_last := _parse_ts_px_row(sparse_7d_pts[-1])) is not None:
+                merged_sp = (
+                    prepend_older_non_diverged_points(archive_pts, sparse_7d_pts)
+                    if last_pt[0] >= sp_last[0]
+                    else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts)
+                )
+                sp_cutoff_7d = max(last_pt[0], sp_last[0]) - 7.0 * 86400.0 * 1000.0
+                sp_pts = [pt for row in merged_sp if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
+                if len(sp_pts) >= 2:
+                    pts_7d_vals = [pt[1] for pt in sp_pts]
+                    arch_7d_end_ts = sp_pts[-1][0]
+                    arch_7d_span_ms = max(0.0, sp_pts[-1][0] - sp_pts[0][0])
+            if len(pts_7d_vals) >= 2:
+                vals_7d = pts_7d_vals
+            if need_24h_supplement and pts_24:
+                series_24h = prepend_older_non_diverged_points(series_24h, pts_24) if series_24h else pts_24
+    except Exception:
+        pass
+    return series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms
+
+
+def normalize_and_dedup_24h_series(series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+    """Normalize, sort, deduplicate, filter zero-volume spikes, and strip off-RTH flat tails on 24h series."""
+    if not series_24h:
+        return []
+    cleaned_24h = []
+    prev_t = -1.0
+    is_sorted = True
+    for row in series_24h:
+        if (pt := _parse_ts_px_row(row)) is not None:
+            if pt[0] < prev_t:
+                is_sorted = False
+            prev_t = pt[0]
+            if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None:
+                cleaned_24h.append([pt[0], pt[1], vol_v])
+            else:
+                cleaned_24h.append([pt[0], pt[1]])
+    if not is_sorted:
+        cleaned_24h.sort(key=lambda x: x[0])
+    if len(cleaned_24h) < 2:
+        return []
+    dedup_24h = [cleaned_24h[0]]
+    for pt in cleaned_24h[1:]:
+        if pt[0] > dedup_24h[-1][0]:
+            dedup_24h.append(pt)
+        else:
+            dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
+    _has_pos_vol_24h = lambda row_d: len(row_d) >= 3 and (safe_pos_float(row_d[2], default=0.0) or 0.0) > 0.0
+    if len(dedup_24h) >= 3 and any(_has_pos_vol_24h(p) for p in dedup_24h):
+        filtered_24h = [dedup_24h[0]]
+        for idx_d in range(1, len(dedup_24h) - 1):
+            cur_d = dedup_24h[idx_d]
+            prev_d = filtered_24h[-1]
+            if not _has_pos_vol_24h(cur_d):
+                next_idx_d = idx_d + 1
+                while (
+                    next_idx_d < len(dedup_24h) - 1
+                    and not _has_pos_vol_24h(dedup_24h[next_idx_d])
+                    and abs(dedup_24h[next_idx_d][1] - cur_d[1]) <= 1e-9
+                ):
+                    next_idx_d += 1
+                next_d = dedup_24h[next_idx_d]
+                if _has_pos_vol_24h(prev_d) or _has_pos_vol_24h(next_d):
+                    ref_mid = 0.5 * (prev_d[1] + next_d[1])
+                    if (
+                        ref_mid > 0.0
+                        and abs(prev_d[1] - next_d[1]) / ref_mid <= 0.025
+                        and abs(cur_d[1] - ref_mid) / ref_mid > 0.025
+                    ):
+                        continue
+            filtered_24h.append(cur_d)
+        filtered_24h.append(dedup_24h[-1])
+        dedup_24h = strip_off_rth_flat_poller_tail(filtered_24h, symbol, is_market_open_fn=is_market_open_fn)
+    return dedup_24h if len(dedup_24h) >= 2 else []
+
+
+def append_newer_24h_to_7d_vals(vals_7d: list, series_24h: list, arch_7d_end_ts: float) -> list:
+    """Append newer non-diverged prices from `series_24h` onto `vals_7d`."""
+    if not vals_7d or not series_24h:
+        return vals_7d
+    appended_newer = False
+    if arch_7d_end_ts > 0.0:
+        for pt in series_24h:
+            if pt[0] > arch_7d_end_ts and (pt_px := safe_pos_float(pt[1], default=None)) is not None:
+                if vals_7d[-1] != pt_px and not _prices_diverged(pt_px, vals_7d[-1]):
+                    vals_7d.append(pt_px)
+                appended_newer = True
+    if not appended_newer and (latest_px := safe_pos_float(series_24h[-1][1], default=None)) is not None:
+        if vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
+            vals_7d.append(latest_px)
+    return vals_7d
+
+
+def normalize_yahoo_5d_chart_bars(
+    chart_res: Any,
+    raw_series_24h: list,
+    now_ts: float,
+    *,
+    eq_rth_open: bool = False,
+) -> Tuple[List[List[Any]], List[List[Any]], List[List[Any]], bool, bool, float, int]:
+    """Parse Yahoo 5d/5m chart payload, prune off-RTH zero-vol tail gaps, slice 24h window, and stitch sub-5m ticks."""
+    pts_5d: List[List[Any]] = []
+    if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+        pts_5d = sorted(
+            (
+                (
+                    [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                    if len(bar) >= 3
+                    else [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                )
+                for bar in chart_res[1]
+                if isinstance(bar, (list, tuple))
+                and len(bar) >= 2
+                and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                and (px_f := safe_pos_float(bar[1], default=None)) is not None
+            ),
+            key=lambda pt: pt[0],
+        )
+    elif isinstance(chart_res, dict):
+        q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
+        vols = q_obj.get("volume") or []
+        pts_5d = sorted(
+            (
+                [
+                    int(ts_f if ts_f > 1e11 else ts_f * 1000),
+                    round(c_f, 4),
+                    safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
+                ]
+                for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
+                if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
+            ),
+            key=lambda pt: pt[0],
+        )
+    if not pts_5d:
+        return [], [], [], False, False, 0.0, 0
+    chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
+    now_ms_i = int(now_ts * 1000)
+    raw_last_5d_ts = int(pts_5d[-1][0])
+    if len(pts_5d) >= 10:
+        for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):
+            if (
+                (pts_5d[split_idx][0] - pts_5d[split_idx - 1][0]) > 2 * 3600 * 1000
+                and (pts_5d[-1][0] - pts_5d[split_idx][0]) < 15 * 60 * 1000
+            ):
+                pts_5d = pts_5d[:split_idx]
+                break
+        last_pos_v_idx = max(
+            (
+                idx_v
+                for idx_v, pt_v in enumerate(pts_5d)
+                if len(pt_v) >= 3 and (safe_pos_float(pt_v[2], default=0.0) or 0.0) > 0.0
+            ),
+            default=-1,
+        )
+        if 4 <= last_pos_v_idx < len(pts_5d) - 1:
+            while len(pts_5d) - 1 > last_pos_v_idx:
+                tail_gap_idx = next(
+                    (
+                        zv_idx
+                        for zv_idx in range(len(pts_5d) - 1, last_pos_v_idx, -1)
+                        if (pts_5d[zv_idx][0] - pts_5d[zv_idx - 1][0]) > 20 * 60 * 1000
+                    ),
+                    None,
+                )
+                if tail_gap_idx is None:
+                    break
+                tail_span_ms = pts_5d[-1][0] - pts_5d[tail_gap_idx][0]
+                tail_is_live = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                if tail_span_ms < 15 * 60 * 1000 and not tail_is_live:
+                    pts_5d = pts_5d[:tail_gap_idx]
+                else:
+                    break
+    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
+    chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
+    anchor_24h_ms = min(now_ms_i, int(pts_5d[-1][0])) if pts_5d else now_ms_i
+    cutoff_24h_ms = anchor_24h_ms - 86400 * 1000
+    pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+    if pts_24h_bars and (pts_24h_bars[-1][0] - pts_24h_bars[0][0]) < 18 * 3600 * 1000:
+        older_bars = [pt for pt in pts_5d if pt[0] < cutoff_24h_ms]
+        if older_bars:
+            pts_24h_bars = [older_bars[-1], *pts_24h_bars]
+    if len(pts_24h_bars) < 10:
+        pts_24h_bars = list(pts_5d[-78:])
+    pts_24h = list(pts_24h_bars)
+    if rth_bar_fresh and raw_series_24h and pts_24h:
+        last_bar_ts = pts_24h[-1][0]
+        recent_bar_pxs = [
+            b[1]
+            for b in pts_24h_bars
+            if isinstance(b, (list, tuple)) and len(b) >= 2 and b[0] >= last_bar_ts - 15 * 60 * 1000
+        ]
+        if len(pts_24h_bars) >= 2 and isinstance(pts_24h_bars[-2], (list, tuple)) and len(pts_24h_bars[-2]) >= 2:
+            recent_bar_pxs.append(pts_24h_bars[-2][1])
+        bar_win_lo = min(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+        bar_win_hi = max(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+        upper_sub5m_ms = (now_ms_i + 5000) if eq_rth_open else min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
+        recent_sub5m = [
+            pt
+            for pt in raw_series_24h
+            if isinstance(pt, (list, tuple))
+            and len(pt) >= 2
+            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= upper_sub5m_ms
+            and not _prices_diverged(pt[1], pts_24h[-1][1])
+            and (pt[0] >= last_bar_ts or (bar_win_lo * 0.995 <= pt[1] <= bar_win_hi * 1.005))
+        ]
+        if recent_sub5m:
+            by_ts = {pt[0]: pt for pt in pts_24h}
+            for r_pt in recent_sub5m:
+                by_ts.setdefault(r_pt[0], r_pt)
+            pts_24h = [by_ts[k] for k in sorted(by_ts)]
+    return pts_5d, pts_24h_bars, pts_24h, rth_bar_fresh, chart_tick_fresh, chart_px, raw_last_5d_ts
+
+
+def evaluate_post_rth_24h_override(
+    matched_series_24h: list,
+    m24: Dict[str, Any],
+    sym_px_cur: float,
+    now_ts: float,
+    *,
+    is_eq_sym: bool,
+    entry: Optional[Dict[str, Any]] = None,
+    compute_24h_fn: Any = None,
+) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
+    """Evaluate post-RTH / off-RTH equity price override on 24h series while preserving RTH Volume Profile anchors."""
+    eff_compute_24h = compute_24h_fn or compute_24h_price_metrics
+    s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
+    s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
+    post_rth_px_override: Optional[float] = None
+    post_rth_series_replaced = False
+    if (
+        is_eq_sym
+        and m24
+        and s24_p1 is not None
+        and (
+            (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
+            or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
+        )
+    ):
+        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
+            post_rth_px_override = round(sym_px_cur, 4)
+            if len(matched_series_24h) >= 2:
+                rth_vp_anchors = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}
+                last_bar_tail = (
+                    list(matched_series_24h[-1][2:])
+                    if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
+                    else []
+                )
+                override_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], post_rth_px_override, *last_bar_tail]]
+                m24 = eff_compute_24h(override_series_24h) or m24
+                if rth_vp_anchors:
+                    for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
+                        m24.pop(k_vp_clr, None)
+                    m24.update(rth_vp_anchors)
+                if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005:
+                    post_rth_series_replaced = True
+                    matched_series_24h = override_series_24h
+                    if isinstance(entry, dict):
+                        for k_ov in _SHORT_SLOPE_OVERRIDE_KEYS:
+                            entry.pop(k_ov, None)
+            if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
+                m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
+        for k_stale in _STALE_SHORT_24H_KEYS:
+            m24.pop(k_stale, None)
+    return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
+
+
+def prune_stale_equity_short_metrics(
+    entry: Optional[Dict[str, Any]],
+    m24: Dict[str, Any],
+    matched_series_24h: list,
+    now_ts: float,
+    *,
+    is_eq_sym: bool,
+    post_rth_series_replaced: bool = False,
+) -> None:
+    """Prune stale 90s/3.7m/15m slopes and range metrics when equity RTH bars are stale."""
+    if not is_eq_sym or not isinstance(entry, dict):
+        return
+    if not post_rth_series_replaced and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
+        for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+            entry.pop(k_stale_90, None)
+    if not post_rth_series_replaced and (
+        not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct"))
+        or (
+            matched_series_24h
+            and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
+            and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+        )
+    ):
+        for k_stale_s in (
+            "slope_90s",
+            "growth_90s",
+            "trend_90s",
+            "slope_3_7m",
+            "growth_3_7m",
+            "trend_3_7m",
+            "gradient_recent_fast",
+        ):
+            entry.pop(k_stale_s, None)
+
+
+class TelemetryEvaluatorInterface(ABC):
+    """Pure abstract base contract (Level 1) for stateless quantitative telemetry evaluators.
+
+    Modeled on ``CacheManagerInterface(ABC)``: evaluators receive normalized series/snapshot
+    data and ``now_ts``, perform pure mathematical computation without disk/network I/O,
+    and return a dictionary of computed metrics.
+    """
+
+    cls_name = "TelemetryEvaluatorInterface"
+
+    def __init__(self) -> None:
+        if type(self) is TelemetryEvaluatorInterface:
+            raise TypeError("Cannot instantiate abstract class TelemetryEvaluatorInterface")
+
+    @abstractmethod
+    def evaluate(self, data: Any, *, now_ts: Optional[float] = None, **kwargs: Any) -> Dict[str, Any]:
+        """Compute and return pure quantitative metrics for ``data`` at ``now_ts``."""
+
+
+class PriceSeriesEvaluatorBase(TelemetryEvaluatorInterface, ABC):
+    """Abstract base contract (Level 2) for price-series, volume-profile, swing-wave, and trend evaluators."""
+
+    cls_name = "PriceSeriesEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is PriceSeriesEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class PriceSeriesEvaluatorBase")
+        super().__init__()
+
+    parse_ts_px_row = staticmethod(_parse_ts_px_row)
+    extract_sorted_ts_px = staticmethod(_extract_sorted_ts_px)
+    round_opt_px = staticmethod(round_opt_px)
+    auto_px_decimals = staticmethod(_auto_px_decimals)
+    pct_delta = staticmethod(pct_delta)
+    range_position_pct = staticmethod(range_position_pct)
+    prices_diverged = staticmethod(_prices_diverged)
+
+
+class VolumeProfileEvaluator(PriceSeriesEvaluatorBase):
+    """Concrete evaluator (Level 3) for 24h TPO / Volume Profile (VWAP, POC, VAH, VAL) and horizon range position."""
+
+    cls_name = "VolumeProfileEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        cur_px: Optional[float] = None,
+        decimals: Optional[int] = None,
+        num_bins: int = 24,
+        value_area_pct: float = 0.70,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return compute_volume_profile_metrics(
+            data,
+            num_bins=num_bins,
+            value_area_pct=value_area_pct,
+            decimals=decimals,
+        )
+
+
+class Horizon24hPriceEvaluator(PriceSeriesEvaluatorBase):
+    """Concrete evaluator (Level 3) for 24h multi-horizon price changes, tape, volatility, and volume profile."""
+
+    cls_name = "Horizon24hPriceEvaluator"
+
+    def evaluate(self, data: Any, *, now_ts: Optional[float] = None, **kwargs: Any) -> Dict[str, Any]:
+        return compute_24h_price_metrics(data)
+
+
+class Structural7dWaveEvaluator(PriceSeriesEvaluatorBase):
+    """Concrete evaluator (Level 3) for 7d structural range, swing-wave extrema, and BTC cross-asset beta."""
+
+    cls_name = "Structural7dWaveEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        cur_px: Optional[float] = None,
+        decimals: Optional[int] = None,
+        btc_m24: Optional[Dict[str, Any]] = None,
+        sym_m24: Optional[Dict[str, Any]] = None,
+        btc_vals_7d: Optional[List[float]] = None,
+        btc_cur_px: Optional[float] = None,
+        symbol: str = "",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        out = compute_7d_range_metrics(data, decimals=decimals)
+        if symbol and (btc_m24 or btc_vals_7d):
+            out.update(
+                compute_cross_btc_metrics(
+                    symbol,
+                    sym_m24 or {},
+                    btc_m24 or {},
+                    sym_vals_7d=data if isinstance(data, list) else None,
+                    btc_vals_7d=btc_vals_7d,
+                    sym_cur_px=cur_px,
+                    btc_cur_px=btc_cur_px,
+                )
+            )
+        return out
+
+
+class ShortTrendAndKalmanEvaluator(PriceSeriesEvaluatorBase):
+    """Concrete evaluator (Level 3) for 90s/222s/900s/9000s polynomial slopes, Kalman velocity, and live price geometry."""
+
+    cls_name = "ShortTrendAndKalmanEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        now_ts: Optional[float] = None,
+        entry: Optional[Dict[str, Any]] = None,
+        short_trend_item: Optional[Dict[str, Any]] = None,
+        live_24trend_doc: Optional[Dict[str, Any]] = None,
+        live_px: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        target = entry if isinstance(entry, dict) else {}
+        if isinstance(short_trend_item, dict):
+            apply_short_trend_item(target, short_trend_item)
+        if isinstance(live_24trend_doc, dict):
+            apply_live_24trend_windows(target, live_24trend_doc)
+        if isinstance(data, list) and len(data) >= 2:
+            if not any(target.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
+                target.update(_compute_short_slopes_from_series(data))
+            if target.get("kalman_vel") is None:
+                if kal := _compute_kalman_from_series(data):
+                    target.update(kal)
+        if live_px is not None and live_px > 0.0:
+            target["price"] = live_px
+            recalculate_live_price_geometry(target, live_px)
+        return target
+
+
+class AssetSessionPolicy(ABC):
+    """Abstract base contract (Level 2) for asset-class session rules and series normalization."""
+
+    cls_name = "AssetSessionPolicy"
+
+    def __init__(self) -> None:
+        if type(self) is AssetSessionPolicy:
+            raise TypeError("Cannot instantiate abstract class AssetSessionPolicy")
+
+    @property
+    @abstractmethod
+    def is_equity(self) -> bool:
+        """Whether this asset class follows cash-equity session rules (RTH / extended hours)."""
+
+    @property
+    @abstractmethod
+    def supports_yahoo_5d_chart_backfill(self) -> bool:
+        """Whether 24h/7d series should be backfilled from Yahoo 5d 5m chart bars when local series is sparse/stale."""
+
+    @abstractmethod
+    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
+        """Whether symbol participates in USD/USDC/USDT cross-venue sibling orderbook arbitrage."""
+
+    @abstractmethod
+    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
+        """Return True if regular trading session is open at ``now_ts``."""
+
+    @abstractmethod
+    def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        """Normalize raw 24h series according to asset-class session rules."""
+
+    @abstractmethod
+    def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
+        """Merge stitched 24h OHLC bars into the raw 24h series."""
+
+    @abstractmethod
+    def collapse_watcher_series(self, w_rows: list) -> list:
+        """Collapse redundant flat poller ticks in watcher series."""
+
+    @abstractmethod
+    def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        """Deduplicate and session-normalize the 24h series."""
+
+    @abstractmethod
+    def evaluate_post_rth_override(
+        self,
+        matched_series_24h: list,
+        m24: Dict[str, Any],
+        sym_px_cur: float,
+        now_ts: float,
+        *,
+        entry: Optional[Dict[str, Any]] = None,
+        compute_24h_fn: Any = None,
+    ) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
+        """Evaluate post-session price override while preserving session Volume Profile anchors."""
+
+    @abstractmethod
+    def prune_stale_short_metrics(
+        self,
+        entry: Optional[Dict[str, Any]],
+        m24: Dict[str, Any],
+        matched_series_24h: list,
+        now_ts: float,
+        *,
+        post_rth_series_replaced: bool = False,
+    ) -> None:
+        """Prune stale short-horizon slopes when session bars are no longer live."""
+
+
+class Crypto24x7SessionPolicy(AssetSessionPolicy):
+    """Specialized session policy for 24/7 continuous crypto spot & perpetual instruments."""
+
+    cls_name = "Crypto24x7SessionPolicy"
+
+    @property
+    def is_equity(self) -> bool:
+        return False
+
+    @property
+    def supports_yahoo_5d_chart_backfill(self) -> bool:
+        return False
+
+    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
+        sym_u = str(symbol or "").strip().upper()
+        return sym_u.endswith(("USDC", "USDT", "USD")) and not sym_u.endswith(("_EQ", "_US_EQ"))
+
+    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
+        return True
+
+    def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        return sort_ts_rows(rows)
+
+    def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
+        return prepend_older_non_diverged_points(raw_ser, ohlc24_pts)
+
+    def collapse_watcher_series(self, w_rows: list) -> list:
+        return collapse_watcher_equity_series(w_rows, is_eq_w=False)
+
+    def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
+
+    def evaluate_post_rth_override(
+        self,
+        matched_series_24h: list,
+        m24: Dict[str, Any],
+        sym_px_cur: float,
+        now_ts: float,
+        *,
+        entry: Optional[Dict[str, Any]] = None,
+        compute_24h_fn: Any = None,
+    ) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
+        return matched_series_24h, m24, None, False
+
+    def prune_stale_short_metrics(
+        self,
+        entry: Optional[Dict[str, Any]],
+        m24: Dict[str, Any],
+        matched_series_24h: list,
+        now_ts: float,
+        *,
+        post_rth_series_replaced: bool = False,
+    ) -> None:
+        return None
+
+
+class EquityRthSessionPolicy(AssetSessionPolicy):
+    """Specialized session policy for RTH-gated equities (`_EQ` / `_US_EQ`)."""
+
+    cls_name = "EquityRthSessionPolicy"
+
+    @property
+    def is_equity(self) -> bool:
+        return True
+
+    @property
+    def supports_yahoo_5d_chart_backfill(self) -> bool:
+        return True
+
+    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
+        return False
+
+    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
+        if is_market_open_fn is None:
+            try:
+                from instrument_registry import is_symbol_market_open as is_market_open_fn
+            except Exception:
+                return False
+        try:
+            return bool(is_market_open_fn(symbol, now_ts))
+        except Exception:
+            return False
+
+    def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        return strip_off_rth_flat_poller_tail(rows, symbol, is_market_open_fn=is_market_open_fn)
+
+    def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
+        return merge_equity_ohlc24_into_raw_series(raw_ser, ohlc24_pts)
+
+    def collapse_watcher_series(self, w_rows: list) -> list:
+        return collapse_watcher_equity_series(w_rows, is_eq_w=True)
+
+    def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
+        return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
+
+    def evaluate_post_rth_override(
+        self,
+        matched_series_24h: list,
+        m24: Dict[str, Any],
+        sym_px_cur: float,
+        now_ts: float,
+        *,
+        entry: Optional[Dict[str, Any]] = None,
+        compute_24h_fn: Any = None,
+    ) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
+        return evaluate_post_rth_24h_override(
+            matched_series_24h,
+            m24,
+            sym_px_cur,
+            now_ts,
+            is_eq_sym=True,
+            entry=entry,
+            compute_24h_fn=compute_24h_fn,
+        )
+
+    def prune_stale_short_metrics(
+        self,
+        entry: Optional[Dict[str, Any]],
+        m24: Dict[str, Any],
+        matched_series_24h: list,
+        now_ts: float,
+        *,
+        post_rth_series_replaced: bool = False,
+    ) -> None:
+        prune_stale_equity_short_metrics(
+            entry,
+            m24,
+            matched_series_24h,
+            now_ts,
+            is_eq_sym=True,
+            post_rth_series_replaced=post_rth_series_replaced,
+        )
+
+
+_CRYPTO_24X7_POLICY = Crypto24x7SessionPolicy()
+_EQUITY_RTH_POLICY = EquityRthSessionPolicy()
+_CUSTOM_SESSION_POLICIES: List[Tuple[Callable[[str], bool], AssetSessionPolicy]] = []
+
+
+def register_asset_session_policy(predicate: Callable[[str], bool], policy: AssetSessionPolicy) -> None:
+    """Register a custom AssetSessionPolicy for new instrument classes without modifying existing evaluators (OCP)."""
+    _CUSTOM_SESSION_POLICIES.append((predicate, policy))
+
+
+def resolve_asset_session_policy(symbol: str) -> AssetSessionPolicy:
+    """Resolve the polymorphic AssetSessionPolicy for ``symbol``."""
+    sym_u = str(symbol or "").strip().upper()
+    for pred, pol in _CUSTOM_SESSION_POLICIES:
+        if pred(sym_u):
+            return pol
+    if sym_u.endswith(("_EQ", "_US_EQ")):
+        return _EQUITY_RTH_POLICY
+    return _CRYPTO_24X7_POLICY
+

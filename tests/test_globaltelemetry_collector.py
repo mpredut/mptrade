@@ -240,3 +240,110 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
         assert "api.kraken.com" in urls_called[0]
 
 
+def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_dir):
+    import pytest
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        Archive365AndSparsePriceCollector,
+        CompositeSymbolPriceSeriesLoader,
+        Dense24hPriceSeriesCollector,
+        EquityYahoo5dChartCollector,
+        Fleet24hAndMicrostructureEnricher,
+        LiveCurrentPriceOverlayCollector,
+        MicrostructureCacheCollectorBase,
+        PriceSeriesCacheCollectorBase,
+        SymbolMicrostructureSnapshotCollector,
+        TelemetryCacheCollectorInterface,
+        TelemetryCollectorFactory,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        PretradeEvaluationContext,
+        PretradePillarCollectorBase,
+        PretradeTelemetryOrchestrator,
+        collect_pretrade_telemetry,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        CrossVenueSiblingArbEvaluator,
+        LiquidationClusterEvaluator,
+        MicrostructureCycleDeltaEvaluator,
+        MicrostructureEvaluatorBase,
+        OrderbookCvdFlowEvaluator,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        AssetSessionPolicy,
+        Crypto24x7SessionPolicy,
+        EquityRthSessionPolicy,
+        Horizon24hPriceEvaluator,
+        PriceSeriesEvaluatorBase,
+        ShortTrendAndKalmanEvaluator,
+        Structural7dWaveEvaluator,
+        TelemetryEvaluatorInterface,
+        VolumeProfileEvaluator,
+        resolve_asset_session_policy,
+    )
+
+    for abstract_cls in (
+        TelemetryEvaluatorInterface,
+        PriceSeriesEvaluatorBase,
+        MicrostructureEvaluatorBase,
+        AssetSessionPolicy,
+        TelemetryCacheCollectorInterface,
+        PriceSeriesCacheCollectorBase,
+        MicrostructureCacheCollectorBase,
+        PretradePillarCollectorBase,
+    ):
+        with pytest.raises(TypeError):
+            abstract_cls()
+
+    crypto_pol = resolve_asset_session_policy("BTCUSDC")
+    eq_pol = resolve_asset_session_policy("NVDA_US_EQ")
+    assert isinstance(crypto_pol, Crypto24x7SessionPolicy)
+    assert isinstance(eq_pol, EquityRthSessionPolicy)
+    assert crypto_pol.is_equity is False and eq_pol.is_equity is True
+    assert crypto_pol.supports_cross_venue_sibling_arb("BTCUSDC") is True
+    assert eq_pol.supports_cross_venue_sibling_arb("NVDA_US_EQ") is False
+
+    series = [[1_700_000_000_000 + i * 3600_000, 100.0 + i * 0.5, 1000.0] for i in range(25)]
+    vp_ev = VolumeProfileEvaluator()
+    h24_ev = Horizon24hPriceEvaluator()
+    s7d_ev = Structural7dWaveEvaluator()
+    stk_ev = ShortTrendAndKalmanEvaluator()
+    assert isinstance(vp_ev, PriceSeriesEvaluatorBase)
+    assert "poc_px" in vp_ev.evaluate(series)
+    m24 = h24_ev.evaluate(series)
+    assert m24.get("chg_24h_pct") == 12.0 and "poc_px" in m24 and "bounce_24h_low_pct" in m24
+    m7d = s7d_ev.evaluate([100.0, 105.0, 98.0, 112.0], cur_px=112.0)
+    assert m7d.get("high_7d") == 112.0
+    st_out = stk_ev.evaluate(series, live_px=112.5)
+    assert st_out.get("price") == 112.5
+
+    cvd_ev = OrderbookCvdFlowEvaluator()
+    liq_ev = LiquidationClusterEvaluator()
+    arb_ev = CrossVenueSiblingArbEvaluator()
+    cd_ev = MicrostructureCycleDeltaEvaluator()
+    assert isinstance(cvd_ev, MicrostructureEvaluatorBase)
+    m_sample = {"ob_imbalance": 0.62, "taker_buy_sell_ratio": 1.25, "cvd_15m_usd": 500_000.0, "oi_usd": 10_000_000.0}
+    cvd_ev.evaluate(m_sample, price_info={"price": 112.0, "chg_15m_pct": 0.4})
+    assert "cvd_regime" in m_sample
+    liq_res = liq_ev.evaluate({"price": 112.0, "low_24h": 100.0, "high_24h": 115.0}, micro_info=m_sample)
+    assert "long_liq_px" in liq_res
+    assert isinstance(arb_ev, MicrostructureEvaluatorBase)
+    assert isinstance(cd_ev, MicrostructureEvaluatorBase)
+
+    assert isinstance(TelemetryCollectorFactory.get_price_series_loader(), CompositeSymbolPriceSeriesLoader)
+    assert isinstance(TelemetryCollectorFactory.get_microstructure_collector(), SymbolMicrostructureSnapshotCollector)
+    assert isinstance(TelemetryCollectorFactory.get_fleet_enricher(), Fleet24hAndMicrostructureEnricher)
+    assert isinstance(TelemetryCollectorFactory.get_yahoo_chart_collector(), EquityYahoo5dChartCollector)
+    assert isinstance(TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator), PretradeTelemetryOrchestrator)
+    assert issubclass(Dense24hPriceSeriesCollector, PriceSeriesCacheCollectorBase)
+    assert issubclass(Archive365AndSparsePriceCollector, PriceSeriesCacheCollectorBase)
+    assert issubclass(LiveCurrentPriceOverlayCollector, PriceSeriesCacheCollectorBase)
+
+    class _CustomAuditStage(PretradePillarCollectorBase):
+        def evaluate(self, ctx: PretradeEvaluationContext) -> None:
+            ctx.telemetry["Custom Polymorphic Pillar"] = f"{ctx.symbol}:{ctx.session_policy.cls_name}"
+
+    custom_tel = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=temp_cache_dir, stages=(_CustomAuditStage(),))
+    assert custom_tel == {"Custom Polymorphic Pillar": "BTCUSDC:Crypto24x7SessionPolicy"}
+
+
+
