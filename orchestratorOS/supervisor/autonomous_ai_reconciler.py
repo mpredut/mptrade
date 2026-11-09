@@ -86,8 +86,6 @@ from providers.execution_audit import (
 )
 import instrument as _instrument_preload  # noqa: F401 — preload with core modules to prevent mid-deploy split-commit lazy import races
 
-_parse_finite_float = safe_float
-
 load_dotenv()
 
 logger = logging.getLogger("orchestratorOS.supervisor")

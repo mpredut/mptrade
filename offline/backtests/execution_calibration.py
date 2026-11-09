@@ -8,9 +8,9 @@ from typing import Iterable
 
 from botcore import (
     _parse_bool_flag,
-    clean_finite_floats as _clean_finite_floats,
+    clean_finite_floats,
     normalize_epoch_sec,
-    safe_float as _f,
+    safe_float,
 )
 from cachepaths import normalize_venue_name
 from providers.base import normalize_side
@@ -18,9 +18,6 @@ from providers.base import normalize_side
 
 def _ts_sec(val: object, default: float = 0.0) -> float:
     return normalize_epoch_sec(val, default=default, allow_zero=True) or default
-
-
-_as_bool = _parse_bool_flag
 
 
 _CLIENT_ORDER_ID_PATTERNS = {
@@ -43,11 +40,11 @@ def _client_order_id_valid(venue: object, client_order_id: object) -> bool | Non
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
-    pct = _f(percentile, default=None)
+    pct = safe_float(percentile, default=None)
     if pct is None:
         return None
     pct = min(100.0, max(0.0, pct))
-    clean = _clean_finite_floats(values)
+    clean = clean_finite_floats(values)
     if not clean:
         return None
     ordered = sorted(clean)
@@ -61,7 +58,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 
 def distribution(values: list[float]) -> dict:
-    clean_values = _clean_finite_floats(values)
+    clean_values = clean_finite_floats(values)
     return {
         "count": len(clean_values),
         "min": min(clean_values) if clean_values else None,
@@ -101,12 +98,12 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         statuses = [
             event for event in history if event.get("event") in STATUS_EVENTS
         ]
-        qty = _f(requested.get("qty"), 0.0)
+        qty = safe_float(requested.get("qty"), 0.0)
         status_rows = []
         for status in statuses:
-            filled = _f(status.get("filled_qty"), 0.0)
-            cost = _f(status.get("cost"), 0.0)
-            fee = _f(status.get("fee"), 0.0)
+            filled = safe_float(status.get("filled_qty"), 0.0)
+            cost = safe_float(status.get("cost"), 0.0)
+            fee = safe_float(status.get("fee"), 0.0)
             status_rows.append((status, filled, cost, fee))
         latest = max(
             status_rows,
@@ -127,10 +124,10 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         requested_price = requested.get("price")
         deviation_bps = None
         if requested_price is not None and avg_fill is not None and direction != 0.0:
-            reference = _f(requested_price, 0.0)
+            reference = safe_float(requested_price, 0.0)
             if reference > 0:
                 deviation_bps = direction * (avg_fill / reference - 1.0) * 10_000
-        is_market = _as_bool(requested.get("market"), False)
+        is_market = _parse_bool_flag(requested.get("market"), False)
         market_shortfall_bps = None
         reference_price = requested.get("reference_price")
         if (
@@ -139,7 +136,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             and avg_fill is not None
             and direction != 0.0
         ):
-            reference = _f(reference_price, 0.0)
+            reference = safe_float(reference_price, 0.0)
             if reference > 0:
                 market_shortfall_bps = (
                     direction * (avg_fill / reference - 1.0) * 10_000
@@ -223,7 +220,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     first_valid_by_venue = {}
     for order in sorted(
         supported_client_ids,
-        key=lambda item: _f(item.get("accepted_ts"), 0.0),
+        key=lambda item: safe_float(item.get("accepted_ts"), 0.0),
     ):
         venue = str(order.get("venue") or "")
         if order["client_order_id_valid"] and venue not in first_valid_by_venue:

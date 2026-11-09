@@ -51,10 +51,6 @@ def last_error_is_auth_failure() -> bool:
     return _LAST_ERROR_IS_AUTH
 
 
-def _disabled() -> bool:
-    return _external_notifications_disabled()
-
-
 def load_env() -> None:
     """Load config.env (versioned) and .env (secrets) without overriding the process env."""
     load_env_stack()
@@ -122,7 +118,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     """Send one email. Returns True on SMTP acceptance (or a suppressed duplicate)."""
     global _LAST_ERROR_IS_AUTH
     _LAST_ERROR_IS_AUTH = False
-    if _disabled():
+    if _external_notifications_disabled():
         return True
     cfg = _config()
     if cfg is None:

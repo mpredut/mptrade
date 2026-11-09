@@ -17,14 +17,6 @@ from typing import Any, Mapping, Sequence
 from botcore import safe_float, safe_nonneg_float
 
 
-def _finite_float(value: Any) -> float | None:
-    return safe_float(value, default=None)
-
-
-def _safe_tolerance(value: Any, default: float = 1e-10) -> float:
-    return safe_nonneg_float(value, default=default)
-
-
 def relative_to_baseline(
     candidate: Sequence[Mapping[str, Any]],
     baseline: Sequence[Mapping[str, Any]],
@@ -34,7 +26,7 @@ def relative_to_baseline(
     tolerance: float = 1e-10,
 ) -> dict[str, Any]:
     """Compute relative win, loss, tie counts and mean return delta against baseline."""
-    tol = _safe_tolerance(tolerance)
+    tol = safe_nonneg_float(tolerance, default=1e-10)
     base_by_key = {
         window[key_field]: window
         for window in baseline
@@ -47,8 +39,8 @@ def relative_to_baseline(
         w_key = window.get(key_field)
         if not isinstance(w_key, Hashable) or w_key not in base_by_key:
             continue
-        c_val = _finite_float(window.get(metric_field))
-        b_val = _finite_float(base_by_key[window[key_field]].get(metric_field))
+        c_val = safe_float(window.get(metric_field), default=None)
+        b_val = safe_float(base_by_key[window[key_field]].get(metric_field), default=None)
         if c_val is not None and b_val is not None:
             deltas.append(c_val - b_val)
     if not deltas:
@@ -69,9 +61,9 @@ def relative_to_baseline(
 def _summary_metrics(summary: Mapping[str, Any]) -> tuple[float, float, float] | None:
     if not isinstance(summary, Mapping):
         return None
-    mean_ret = _finite_float(summary.get("mean_return_pct"))
-    worst_ret = _finite_float(summary.get("worst_return_pct"))
-    worst_dd = _finite_float(summary.get("worst_max_drawdown_pct"))
+    mean_ret = safe_float(summary.get("mean_return_pct"), default=None)
+    worst_ret = safe_float(summary.get("worst_return_pct"), default=None)
+    worst_dd = safe_float(summary.get("worst_max_drawdown_pct"), default=None)
     if mean_ret is None or worst_ret is None or worst_dd is None:
         return None
     return mean_ret, worst_ret, worst_dd
@@ -87,7 +79,7 @@ def dominates(
 
     Strictly better in at least one dimension.
     """
-    tol = _safe_tolerance(tolerance)
+    tol = safe_nonneg_float(tolerance, default=1e-10)
     left_vals = _summary_metrics(left)
     right_vals = _summary_metrics(right)
     if left_vals is None or right_vals is None:
@@ -137,7 +129,7 @@ def pareto_frontier(
 
 def format_number(value: float | None, signed: bool = False) -> str:
     """Format floating point numbers consistently across report tables."""
-    fval = _finite_float(value)
+    fval = safe_float(value, default=None)
     if fval is None:
         return "n/a"
     return f"{fval:+.3f}" if signed else f"{fval:.3f}"

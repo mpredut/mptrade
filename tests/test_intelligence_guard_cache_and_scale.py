@@ -8230,23 +8230,23 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
 
 def test_iteration57_agy_store_drawprices_trailing_and_t212_strategy_safety(monkeypatch):
     import numpy as np
-    from orchestratorOS.agy.summary_store import _safe_step_count, get_thread_step_count
-    from orchestratorOS.agy.topics import _safe_int, prepare_topic_session
+    from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
+    from orchestratorOS.agy.topics import prepare_topic_session, safe_int
     from visuals.drawprices import to_series, min_max_scale
     from kraken.trailing_stop import KrakenTrailing
 
-    # 1. summary_store._safe_step_count and topics._safe_int
-    assert _safe_step_count(True) == 0
-    assert _safe_step_count(float("nan")) == 0
-    assert _safe_step_count(float("inf")) == 0
-    assert _safe_step_count("-5") == 0
-    assert _safe_step_count("12.0") == 12
+    # 1. summary_store.safe_nonneg_int and topics.safe_int
+    assert safe_nonneg_int(True) == 0
+    assert safe_nonneg_int(float("nan")) == 0
+    assert safe_nonneg_int(float("inf")) == 0
+    assert safe_nonneg_int("-5") == 0
+    assert safe_nonneg_int("12.0") == 12
     monkeypatch.setattr("orchestratorOS.agy.summary_store.read_summary_row", lambda base, cid: {"step_count": True, "status": "IDLE"})
     assert get_thread_step_count("cid1", "/tmp") == (False, 0, "IDLE")
 
-    assert _safe_int(True, 7) == 7
-    assert _safe_int(float("nan"), 7) == 7
-    assert _safe_int("15.0", 0) == 15
+    assert safe_int(True, 7) == 7
+    assert safe_int(float("nan"), 7) == 7
+    assert safe_int("15.0", 0) == 15
     with pytest.raises(ValueError):
         prepare_topic_session("auto_cryptotrade_executor", compact_steps=float("nan"))
 
@@ -10867,10 +10867,10 @@ def test_iteration99_state_io_botcore_utils_and_alertnotifiers_safety(tmp_path, 
     monkeypatch.setenv("MP_TEST_POS_INT", "15")
     assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 15
 
-    assert alertnotifiers._safe_pos_int(True, 7) == 7
-    assert alertnotifiers._safe_pos_int(-3, 7) == 7
-    assert alertnotifiers._safe_pos_int(2.5, 7) == 7
-    assert alertnotifiers._safe_pos_int("12", 7) == 12
+    assert alertnotifiers.exact_pos_int(True, 7) == 7
+    assert alertnotifiers.exact_pos_int(-3, 7) == 7
+    assert alertnotifiers.exact_pos_int(2.5, 7) == 7
+    assert alertnotifiers.exact_pos_int("12", 7) == 12
 
     msg = alertnotifiers.AlertNotifier.format_bot_event(
         {"name": "Started", "source": "BTC_bot", "added_at": 1700000000}
@@ -13146,15 +13146,15 @@ def test_iteration126_composite_bypass_trigger_bounds_and_survival_allow_network
 
 def test_iteration127_prune_threads_replay_provider_rtrade_pair_and_state_store_safety(tmp_path):
     """Verify Iteration 127 prune_llm_threads boolean/CSV normalization, ReplayMarketDataProvider fee_pct/cur_px guards, OrderTicket/PairCoordinator checkpoint validation, and JsonStateStore string fail_closed."""
-    from orchestratorOS.admin.prune_llm_threads import _as_bool, prune_old_cli_threads
+    from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
     from providers.replay_provider import ReplayMarketDataProvider
     from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
     from strategies.state_store import JsonStateStore
 
-    # 1. prune_llm_threads._as_bool and missing db_path with string flags
-    assert _as_bool("false", True) is False
-    assert _as_bool("0", True) is False
-    assert _as_bool("true", False) is True
+    # 1. prune_llm_threads._parse_bool_flag and missing db_path with string flags
+    assert _parse_bool_flag("false", True) is False
+    assert _parse_bool_flag("0", True) is False
+    assert _parse_bool_flag("true", False) is True
     assert prune_old_cli_threads(cli_base=str(tmp_path), dry_run="false", all_threads_in_project="false", exclude_cids="cid1, cid2") == (0, 0)
 
     # 2. ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order
@@ -15849,9 +15849,9 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     _, w_decay = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="false")
     assert w_plateau[0] > w_decay[0]
 
-    # 3. alertnotifiers: _as_bool_flag default preservation, check_alert(nan), and save_to_file empty filename fallback
-    assert an._as_bool_flag("invalid_token", default=True) is True
-    assert an._as_bool_flag("false", default=True) is False
+    # 3. alertnotifiers: _parse_bool_flag default preservation, check_alert(nan), and save_to_file empty filename fallback
+    assert an._parse_bool_flag("invalid_token", default=True) is True
+    assert an._parse_bool_flag("false", default=True) is False
     called_notify = []
     monkeypatch.setattr(an, "notify", lambda *a, **kw: called_notify.append((a, kw)))
     an.check_alert(float("nan"), "should not fire")

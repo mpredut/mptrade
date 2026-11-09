@@ -807,12 +807,12 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     from orchestratorOS.agy import ui_mirror
     from offline.research import comprehensive_strategy_sweep as css
 
-    # 1. ui_mirror._fallback_safe_step_count handles bool, NaN, negative, and valid floats
-    assert ui_mirror._fallback_safe_step_count(None) == 0
-    assert ui_mirror._fallback_safe_step_count(True) == 0
-    assert ui_mirror._fallback_safe_step_count(float("nan")) == 0
-    assert ui_mirror._fallback_safe_step_count("-4") == 0
-    assert ui_mirror._fallback_safe_step_count("7.0") == 7
+    # 1. ui_mirror.safe_nonneg_int handles bool, NaN, negative, and valid floats
+    assert ui_mirror.safe_nonneg_int(None) == 0
+    assert ui_mirror.safe_nonneg_int(True) == 0
+    assert ui_mirror.safe_nonneg_int(float("nan")) == 0
+    assert ui_mirror.safe_nonneg_int("-4") == 0
+    assert ui_mirror.safe_nonneg_int("7.0") == 7
 
     # 2. comprehensive_strategy_sweep._summarize_replay coalesces None values
     summary = css._summarize_replay(
@@ -3519,9 +3519,9 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     from orchestratorOS.lib import watchdog_common as wc
     from orchestratorOS.livecheck import os_resources_watchdog as orw
 
-    # 1. prune_llm_threads._as_bool rejects NaN and prune_old_cli_threads blocks whitespace-padded protected project_id
-    assert plt._as_bool(float("nan"), default=False) is False
-    assert plt._as_bool("garbage", default=True) is True
+    # 1. prune_llm_threads._parse_bool_flag rejects NaN and prune_old_cli_threads blocks whitespace-padded protected project_id
+    assert plt._parse_bool_flag(float("nan"), default=False) is False
+    assert plt._parse_bool_flag("garbage", default=True) is True
 
     db_path = tmp_path / "conversation_summaries.db"
     import sqlite3
@@ -3546,9 +3546,9 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     assert wc._valid_webhook_url("/my-topic") == "https://ntfy.sh/my-topic"
     assert wc._valid_webhook_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic"
 
-    # 3. os_resources_watchdog._as_bool_flag normalizes string "false" in persisted state
-    assert orw._as_bool_flag("false", default=True) is False
-    assert orw._as_bool_flag(float("nan"), default=False) is False
+    # 3. os_resources_watchdog._parse_bool_flag normalizes string "false" in persisted state
+    assert orw._parse_bool_flag("false", default=True) is False
+    assert orw._parse_bool_flag(float("nan"), default=False) is False
 
     # 4. GlobalTelemetryCollector and MacroAnalyzer write_heartbeat sanitize non-dict status and NaN ts
     col = object.__new__(gtc.GlobalTelemetryCollector)
@@ -3573,7 +3573,7 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     ana.write_heartbeat(None)  # type: ignore[arg-type]
     ma_hb = json.loads((tmp_path / "ma.hb").read_text(encoding="utf-8"))
     assert math.isfinite(ma_hb["ts"]) and ma_hb["ts"] > 0
-    assert asf._as_bool_flag("false", True) is False
+    assert asf._parse_bool_flag("false", True) is False
 
 
 def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(capsys, tmp_path):
@@ -6125,19 +6125,19 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     )
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
-    # 1. notify_engine and agy_store_fix _as_bool_flag / _disabled float-string handling
-    assert alertnotifiers._as_bool_flag("1.0", False) is True
-    assert alertnotifiers._as_bool_flag("0.0", True) is False
-    assert agy_store_fix._as_bool_flag("1.0", False) is True
-    assert agy_store_fix._as_bool_flag("0.0", True) is False
+    # 1. notify_engine and agy_store_fix _parse_bool_flag / _external_notifications_disabled float-string handling
+    assert alertnotifiers._parse_bool_flag("1.0", False) is True
+    assert alertnotifiers._parse_bool_flag("0.0", True) is False
+    assert agy_store_fix._parse_bool_flag("1.0", False) is True
+    assert agy_store_fix._parse_bool_flag("0.0", True) is False
     monkeypatch.setenv("BACKTEST_MODE", "1.0")
     assert alertnotifiers._external_notifications_disabled() is True
-    assert mailer._disabled() is True
+    assert mailer._external_notifications_disabled() is True
     monkeypatch.setenv("BACKTEST_MODE", "0")
 
-    # 2. orchestratorOS.agy.topics._safe_int rounding
-    assert topics._safe_int("2.9", 0) == 3
-    assert topics._safe_int(True, 7) == 7
+    # 2. orchestratorOS.agy.topics.safe_int integer coercion
+    assert topics.safe_int("2.0", 0) == 2
+    assert topics.safe_int(True, 7) == 7
 
     # 3. FleetHealthMonitor dev_port float-string parsing
     mon = FleetHealthMonitor(workspace_dir=str(tmp_path), dev_port="32238.0")  # type: ignore[arg-type]

@@ -20,11 +20,11 @@ from lock import FileLock
 from botcore import (
     _is_unmodified_root_key,
     _parse_bool_flag,
-    exact_pos_int as _safe_pos_int,
+    exact_pos_int,
     float_env,
     int_env,
     normalize_epoch_sec,
-    obj_attr as _alert_attr,
+    obj_attr,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -214,9 +214,6 @@ def _resolve_gate_now(now: Optional[float]) -> float:
     if nf is not None and nf < 32503680000.0:
         return nf
     return time.time()
-
-
-_as_bool_flag = _parse_bool_flag
 
 
 def _delivery_state_path() -> Path:
@@ -656,7 +653,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
 
     if len(items) == 1:
         it = items[0]
-        cnt = _safe_pos_int(it.get("count", 1), 1)
+        cnt = exact_pos_int(it.get("count", 1), 1)
         raw_title = str(it.get("title") or "Alert")
         out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
         out_body = str(it.get("body") or "")
@@ -664,7 +661,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
 
     body_lines = []
     for idx, it in enumerate(items, 1):
-        cnt = _safe_pos_int(it.get("count", 1), 1)
+        cnt = exact_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
         repeat_tag = f" (×{cnt})" if cnt > 1 else ""
         compact_body = _strip_log_tails_and_compact(str(it.get("body") or ""))
@@ -791,7 +788,7 @@ def pass_common_gate(
        (NOTIFICATION_GATE_SECONDS, default 10m).
     """
     now_ts = _resolve_gate_now(now)
-    urgent = _as_bool_flag(urgent, False)
+    urgent = _parse_bool_flag(urgent, False)
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -820,7 +817,7 @@ def pass_common_gate(
             if _canonical_topic_key(item.get("topic")) == t_key and (
                 item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint
             ):
-                item["count"] = _safe_pos_int(item.get("count", 1), 1) + 1
+                item["count"] = exact_pos_int(item.get("count", 1), 1) + 1
                 last_map[fingerprint] = now_ts
                 last_map[sim_key] = now_ts
                 _save_delivery_state(path, state)
@@ -899,7 +896,7 @@ def pop_due_bulk_batch(
 ) -> Optional[tuple[str, str, str, str]]:
     """Consumer: pop and synthesize the next due per-topic batch once the central single-gate opens."""
     now_ts = _resolve_gate_now(now)
-    force = _as_bool_flag(force, False)
+    force = _parse_bool_flag(force, False)
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     if not path.exists() and not path.with_name(path.name + ".previous").exists():
@@ -1043,7 +1040,7 @@ class AlertNotifier:
     @staticmethod
     def alert_symbol(alert: Any) -> str:
         """Return the symbol from either a PriceAlert object or new-coin mapping."""
-        return _alert_attr(alert, "symbol", "N/A")
+        return obj_attr(alert, "symbol", "N/A")
 
     @staticmethod
     def utf8_header(value: str) -> str:
@@ -1111,13 +1108,13 @@ class AlertNotifier:
                 lines.append(AlertNotifier.format_new_coin_message(alert))
                 continue
 
-            alert_type = _alert_attr(alert, "alert_type", "")
-            symbol = _alert_attr(alert, "symbol", "N/A")
-            pct_change = safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
-            current_price = safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
-            ref_price = safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
-            ref_time_val = _alert_attr(alert, "reference_time") or _alert_attr(alert, "timestamp")
-            url = _alert_attr(alert, "url")
+            alert_type = obj_attr(alert, "alert_type", "")
+            symbol = obj_attr(alert, "symbol", "N/A")
+            pct_change = safe_float(obj_attr(alert, "percent_change", 0.0), 0.0)
+            current_price = safe_float(obj_attr(alert, "current_price", 0.0), 0.0)
+            ref_price = safe_float(obj_attr(alert, "reference_price", 0.0), 0.0)
+            ref_time_val = obj_attr(alert, "reference_time") or obj_attr(alert, "timestamp")
+            url = obj_attr(alert, "url")
 
             direction = "U" if alert_type == "up" else "D"
             reference_time = AlertNotifier.format_human_readable_time(ref_time_val)
@@ -1170,19 +1167,19 @@ class AlertNotifier:
                         body = alert.get("body") or alert.get("name") or str(alert)
                         f.write(f"[{now_iso}] {alert.get('symbol', 'N/A')}: {body}\n")
                 else:
-                    ref_ts = _alert_attr(alert, "reference_time") or _alert_attr(alert, "timestamp")
+                    ref_ts = obj_attr(alert, "reference_time") or obj_attr(alert, "timestamp")
                     reference_time = AlertNotifier.format_human_readable_time(ref_ts)
-                    sym = _alert_attr(alert, "symbol", "N/A")
-                    atype = _alert_attr(alert, "alert_type", "")
-                    pchg = safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
-                    cprice = safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
-                    rprice = safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
+                    sym = obj_attr(alert, "symbol", "N/A")
+                    atype = obj_attr(alert, "alert_type", "")
+                    pchg = safe_float(obj_attr(alert, "percent_change", 0.0), 0.0)
+                    cprice = safe_float(obj_attr(alert, "current_price", 0.0), 0.0)
+                    rprice = safe_float(obj_attr(alert, "reference_price", 0.0), 0.0)
                     f.write(
                         f"[{now_iso}] {sym} - {atype} - {pchg:+.2f}%\n"
                         f"  Price: ${cprice:.4f}\n"
                         f"  Reference: ${rprice:.4f} (at {reference_time})\n"
                     )
-                    if url := _alert_attr(alert, "url"):
+                    if url := obj_attr(alert, "url"):
                         f.write(f"  Link: {url}\n")
                 f.write("-" * 50 + "\n")
             return True
@@ -1219,7 +1216,7 @@ class AlertNotifier:
         alerts = list(alerts)
         subject = subject or AlertNotifier.email_subject(alerts)
         message = AlertNotifier.format_batch_message(alerts)
-        if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+        if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
             # The orchestrator parses child stdout; same schema as its retry queue.
             return _emit_orchestrator_intent(
                 {"__orchestrator_intent__": "email", "subject": subject, "message": message},
@@ -1234,7 +1231,7 @@ class AlertNotifier:
             return False
         if _external_notifications_disabled():
             return True
-        if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+        if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
             return _emit_orchestrator_intent(
                 {
                     "__orchestrator_intent__": "ntfy_webhook",
@@ -1251,22 +1248,22 @@ class AlertNotifier:
              enable_email=False, enable_phone_webhook=False, webhook_url=None,
              filename="alerts.log"):
         alerts = [alert] if not isinstance(alert, list) else alert
-        if _as_bool_flag(enable_console, True):
+        if _parse_bool_flag(enable_console, True):
             for item in alerts:
                 AlertNotifier.print_to_console(item)
-        if _as_bool_flag(enable_file, True):
+        if _parse_bool_flag(enable_file, True):
             for item in alerts:
                 AlertNotifier.save_to_file(item, filename=filename)
-        if _as_bool_flag(enable_email, False):
+        if _parse_bool_flag(enable_email, False):
             AlertNotifier.send_email_batch(alerts)
-        if _as_bool_flag(enable_phone_webhook, False):
+        if _parse_bool_flag(enable_phone_webhook, False):
             AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
 
 def _external_notifications_disabled() -> bool:
     """Return True when external notifications (ntfy, email, orchestrator intents) are suppressed."""
     return any(
-        _as_bool_flag(os.environ.get(k, ""), False)
+        _parse_bool_flag(os.environ.get(k, ""), False)
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     )
 
@@ -1284,7 +1281,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     if is_fake_alert_text(title, body, symbol, source):
         return
     alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
-    if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
+    if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         if re.search(r"\[auto_[a-z0-9_]+", str(title or "")):
             from notify_engine.server import _topic_for_category
@@ -1299,7 +1296,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     else:
         from notify_engine.server import NotificationServer
         NotificationServer().dispatch_alerts([alert])
-    if _as_bool_flag(email, False):
+    if _parse_bool_flag(email, False):
         from notify_engine.mailer import is_email_mirrored
         from notify_engine.server import _topic_for_category
         if not is_email_mirrored(_topic_for_category(title, source)):
@@ -1308,7 +1305,7 @@ def notify(title: str, body: str, source: str, symbol: str,
 
 def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
     """Dispatches a trade alert notification if condition is met."""
-    if _as_bool_flag(condition, False):
+    if _parse_bool_flag(condition, False):
         try:
             notify("Trade Alert", str(message), "tradeall", symbol)
         except Exception:
@@ -1349,7 +1346,7 @@ def _dispatch_order_event_notification(
     """Dispatch a standardized order placement or execution notification."""
     sym_s = str(symbol or "TRADE").strip() or "TRADE"
     owner_norm = str(owner or "").strip().lower()
-    if owner_norm == "ai_executor" and not _as_bool_flag(allow_ai_executor, True):
+    if owner_norm == "ai_executor" and not _parse_bool_flag(allow_ai_executor, True):
         return False
     px_f = safe_pos_float(price, default=0.0) or 0.0
     qty_f = safe_pos_float(quantity, default=0.0) or 0.0

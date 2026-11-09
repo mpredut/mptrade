@@ -62,9 +62,6 @@ def _managed_script(proc):
     return None
 
 
-_as_bool_flag = _parse_bool_flag
-
-
 def _restart_allowed(state, script, now):
     rh = state.get("restart_history")
     if not isinstance(rh, dict):
@@ -213,7 +210,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         item = tracked.get(key, {"high": 0, "normal": 0, "alerted": False, "last_alert": 0})
         if not isinstance(item, dict):
             item = {"high": 0, "normal": 0, "alerted": False, "last_alert": 0}
-        alerted = _as_bool_flag(item.get("alerted"), False)
+        alerted = _parse_bool_flag(item.get("alerted"), False)
         item["alerted"] = alerted
         last_alert = safe_float(item.get("last_alert", 0), 0.0)
         if last_alert > now or last_alert < 0.0:

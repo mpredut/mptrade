@@ -109,9 +109,6 @@ def is_automated_thread(title: str, preview: str) -> bool:
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
-_as_bool = _parse_bool_flag
-
-
 def prune_old_cli_threads(
     cli_base: Optional[str] = None,
     retention_days: float = DEFAULT_RETENTION_DAYS,
@@ -122,8 +119,8 @@ def prune_old_cli_threads(
     max_threads: Optional[int] = DEFAULT_MAX_AUTONOMOUS_THREADS,
 ) -> Tuple[int, int]:
     """Delete automated LLM threads older than retention_days or beyond max_threads. Returns (count, bytes)."""
-    dry_run = _as_bool(dry_run, False)
-    all_threads_in_project = _as_bool(all_threads_in_project, False)
+    dry_run = _parse_bool_flag(dry_run, False)
+    all_threads_in_project = _parse_bool_flag(all_threads_in_project, False)
     base = resolve_bot_cli_base(cli_base)
     if not dry_run and cli_base is None:
         try:

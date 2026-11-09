@@ -39,9 +39,6 @@ from orchestratorOS.agy.summary_store import (
 )
 from state_io import durable_replace_file
 
-_fallback_safe_step_count = safe_nonneg_int
-_safe_step_count = safe_nonneg_int
-
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")
 
 UI_TRAJECTORY_SOURCE = 1   # trajectory_meta.source of conversations created in the UI (CLI print mode = 17)
@@ -70,8 +67,8 @@ def sync_topic_thread_from_ui(
     bot_row = read_summary_row(dst_base, cid)
     if str((ui_row or {}).get("status") or "") == "CASCADE_RUN_STATUS_RUNNING":
         return False
-    ui_steps = _safe_step_count((ui_row or {}).get("step_count"))
-    bot_steps = _safe_step_count((bot_row or {}).get("step_count"))
+    ui_steps = safe_nonneg_int((ui_row or {}).get("step_count"))
+    bot_steps = safe_nonneg_int((bot_row or {}).get("step_count"))
     bot_db = conversation_db(dst_base, cid)
     bot_exists = os.path.exists(bot_db)
     ui_mtime = max((os.stat(p).st_mtime for p in (ui_db, ui_db + "-wal") if os.path.exists(p)), default=0.0)
@@ -147,7 +144,7 @@ def mirror_topic_thread_to_ui(
     if row is None or not os.path.exists(os.path.join(dst_base, "conversation_summaries.db")):
         return False
     _, ui_steps, ui_status = get_thread_step_count(cid, dst_base)
-    bot_steps = _safe_step_count(row.get("step_count"))
+    bot_steps = safe_nonneg_int(row.get("step_count"))
     if ui_status == "CASCADE_RUN_STATUS_RUNNING":
         return False
     if ui_steps > bot_steps:

@@ -45,7 +45,6 @@ from state_io import (
     save_json_state,
 )
 
-parse_finite_float = safe_float
 _default_read_json_recovering = read_json_recovering
 _default_save_json_state = save_json_state
 
@@ -147,14 +146,7 @@ SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# 2. Shared Primitive Coercion & JSON Sanitization Helpers
-# ---------------------------------------------------------------------------
-
-as_bool_flag = _parse_bool_flag
-
-
-# ---------------------------------------------------------------------------
-# 3. `procs.conf` Manifest & Process Target Resolution SSOT
+# 2. `procs.conf` Manifest & Process Target Resolution SSOT
 # ---------------------------------------------------------------------------
 
 def _extract_script_tokens(pattern: str, cmd: str) -> Set[str]:

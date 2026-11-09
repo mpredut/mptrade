@@ -10,7 +10,7 @@ import pytest
 
 from orchestratorOS.livecheck.fleet_health_monitor import (
     FleetHealthMonitor,
-    OvernightMonitorReport,
+    FleetHealthReport,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.supervisor.autonomous_ai_reconciler import (
@@ -436,7 +436,7 @@ def test_monitor_run_cycle_report(mock_workspace, monkeypatch):
     monkeypatch.setattr(monitor, "_is_process_running", lambda pat: True)
 
     report = monitor.run_cycle(persist=True)
-    assert isinstance(report, OvernightMonitorReport)
+    assert isinstance(report, FleetHealthReport)
     assert report.fleet_healthy is True
     assert report.dev_backtest_status["running"] is True
     assert report.autonomous_ai_mode == "enforce"

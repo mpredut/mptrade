@@ -8,9 +8,9 @@ from typing import Iterable
 
 from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel, FeeModel
-from offline.backtests.execution_calibration import _clean_finite_floats as _present
 from offline.backtests.walk_forward import summarize_test_windows
 from botcore import (
+    clean_finite_floats,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -148,22 +148,22 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
-    present = _present(values)
+    present = clean_finite_floats(values)
     return statistics.fmean(present) if present else None
 
 
 def _median(values: Iterable[float | int | None]) -> float | None:
-    present = _present(values)
+    present = clean_finite_floats(values)
     return statistics.median(present) if present else None
 
 
 def _minimum(values: Iterable[float | int | None]) -> float | None:
-    present = _present(values)
+    present = clean_finite_floats(values)
     return min(present) if present else None
 
 
 def _maximum(values: Iterable[float | int | None]) -> float | None:
-    present = _present(values)
+    present = clean_finite_floats(values)
     return max(present) if present else None
 
 

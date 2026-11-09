@@ -27,7 +27,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag, load_key_value_conf, parse_dotenv, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, load_key_value_conf, safe_pos_float, safe_pos_int
 from cachepaths import resolve_cachedb_filepath
 from state_io import save_json_state
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -67,9 +67,6 @@ class FleetHealthReport:
     autonomous_ai_mode: str
     dev_backtest_status: Dict[str, Any]
     system_resources: Dict[str, Any]
-
-
-OvernightMonitorReport = FleetHealthReport
 
 
 class FleetHealthMonitor:
@@ -284,5 +281,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-AutonomousOvernightMonitor = FleetHealthMonitor

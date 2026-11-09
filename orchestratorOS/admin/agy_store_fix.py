@@ -107,24 +107,11 @@ def fix_summary(raw: bytes, title: str) -> bytes:
     return summary_ui_visible(raw, title, reset_running=True)
 
 
-def raw_title(raw: bytes) -> str:
-    return summary_annotation_title(raw)
-
-
 def pbtxt_title(cid: str) -> str:
     return read_annotation_title(CLI, cid)
 
 
 # ---------------------------------------------------------------- file helpers
-def checkpoint(path: str) -> bool:
-    """Flush the WAL into the main file. Returns False if it could not be done safely."""
-    return checkpoint_db(path)
-
-
-def drop_sidecars(path: str) -> None:
-    drop_wal_sidecars(path, force=False)
-
-
 def same_file(a: str, b: str) -> bool:
     try:
         return os.path.samefile(a, b)
@@ -185,11 +172,8 @@ def webrtc_mesh_status() -> str:
 
 
 # ---------------------------------------------------------------- pre
-_as_bool_flag = _parse_bool_flag
-
-
 def mode_pre(force: bool = False) -> int:
-    force = _as_bool_flag(force, False)
+    force = _parse_bool_flag(force, False)
     if not force and os.environ.get("AGY_FIX_HOME") is None and unit_active():
         log.error("daemon is active; refusing to run 'pre' (use --force to override)")
         return 2
@@ -221,17 +205,17 @@ def mode_pre(force: bool = False) -> int:
             if cid in known_cids:
                 continue
             p1 = os.path.join(D1, name)
-            checkpoint(p2)
+            checkpoint_db(p2)
             os.makedirs(del_dir, exist_ok=True)
             shutil.move(p2, os.path.join(del_dir, name))
-            drop_sidecars(p2)
+            drop_wal_sidecars(p2, force=False)
             if os.path.exists(p1):
-                checkpoint(p1)
+                checkpoint_db(p1)
                 try:
                     os.remove(p1)
                 except OSError:
                     pass
-                drop_sidecars(p1)
+                drop_wal_sidecars(p1, force=False)
             ann_file = os.path.join(ANN, cid + ".pbtxt")
             if os.path.exists(ann_file):
                 try:
@@ -250,37 +234,37 @@ def mode_pre(force: bool = False) -> int:
             continue
         if os.path.exists(p2):
             if same_file(p1, p2):
-                if checkpoint(p1):
+                if checkpoint_db(p1):
                     os.remove(p1)
-                    drop_sidecars(p1)
+                    drop_wal_sidecars(p1, force=False)
                     unlinked += 1
                 else:
                     skipped += 1
                 continue
             # diverged copies: keep the newer in D2, back up the other one, never overwrite silently
             diverged += 1
-            if os.stat(p1).st_mtime_ns > os.stat(p2).st_mtime_ns and checkpoint(p1) and checkpoint(p2):
+            if os.stat(p1).st_mtime_ns > os.stat(p2).st_mtime_ns and checkpoint_db(p1) and checkpoint_db(p2):
                 backup_file(p2, stamp)
                 durable_replace_file(p1, p2)
-                drop_sidecars(p1)
-            elif checkpoint(p1):
+                drop_wal_sidecars(p1, force=False)
+            elif checkpoint_db(p1):
                 backup_file(p1, stamp)
                 os.remove(p1)
-                drop_sidecars(p1)
+                drop_wal_sidecars(p1, force=False)
             else:
                 skipped += 1
             continue
-        if not checkpoint(p1):
+        if not checkpoint_db(p1):
             skipped += 1
             continue
         shutil.move(p1, p2)
-        drop_sidecars(p1)
+        drop_wal_sidecars(p1, force=False)
         moved += 1
 
     # leftover WAL/SHM sidecars on the real files
     for p2 in glob.glob(os.path.join(glob.escape(D2), "*.db")):
-        if checkpoint(p2):
-            drop_sidecars(p2)
+        if checkpoint_db(p2):
+            drop_wal_sidecars(p2, force=False)
 
     # normalise mtimes to whole seconds so stored fileModTimes (seconds) always >= disk mtime
     mt = {}
@@ -324,7 +308,7 @@ def repair_summaries(mt: dict) -> int:
         for cid, title, raw in rows:
             raw = bytes(raw or b"")
             if cid in mt:
-                ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or raw_title(raw)
+                ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or summary_annotation_title(raw)
                 new = fix_summary(raw, ttl)
                 con.execute(
                     "UPDATE conversation_summaries SET title=?, source='', status='CASCADE_RUN_STATUS_IDLE', "
@@ -434,8 +418,8 @@ def mode_post(timeout: int = 50) -> int:
             p2 = os.path.join(D2, os.path.basename(p1))
             if os.path.lexists(p2) or os.path.islink(p1):
                 continue
-            if checkpoint(p1):
-                drop_sidecars(p1)
+            if checkpoint_db(p1):
+                drop_wal_sidecars(p1, force=False)
                 try:
                     os.link(p1, p2)
                     linked += 1

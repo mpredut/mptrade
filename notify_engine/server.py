@@ -14,6 +14,7 @@ from typing import Dict, Any, List
 
 from botcore import (
     load_env_stack,
+    obj_attr,
     required_env,
     safe_float,
     safe_nonneg_float,
@@ -26,7 +27,6 @@ from notify_engine.alertnotifiers import (
     _GATE_ACCEPTED_REASONS,
     _GATE_SUPPRESSED_REASONS,
     _TRADE_MARKERS,
-    _alert_attr,
     _alerts_are_urgent,
     _canonical_topic_key,
     _external_notifications_disabled,
@@ -157,7 +157,7 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
 
 class NotificationServer:
     def __init__(self):
-        self._ensure_environment()
+        _ensure_env_loaded()
         self.ntfy_token = self._load_ntfy_token()
         self.rules = self._load_rules()
         self.cooldowns: Dict[str, float] = {}
@@ -166,9 +166,6 @@ class NotificationServer:
         # Persistent Queue File
         self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
-
-    def _ensure_environment(self) -> None:
-        _ensure_env_loaded()
 
     def _load_ntfy_token(self) -> str:
         tok = os.environ.get("NTFY_TOKEN", "").strip()
@@ -398,8 +395,8 @@ class NotificationServer:
         items = []
         symbols = []
         for a in alerts:
-            sym = _alert_attr(a, "symbol", "N/A")
-            atype = _alert_attr(a, "alert_type", "")
+            sym = obj_attr(a, "symbol", "N/A")
+            atype = obj_attr(a, "alert_type", "")
             dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
             if sym and sym != "N/A":
                 if sym not in symbols:
@@ -424,7 +421,7 @@ class NotificationServer:
         count = len(alerts)
         symbols = []
         for a in alerts:
-            sym = _alert_attr(a, "symbol", "N/A")
+            sym = obj_attr(a, "symbol", "N/A")
             if sym and sym != "N/A" and sym not in symbols:
                 symbols.append(sym)
         syms_str = ", ".join(symbols)
@@ -449,34 +446,34 @@ class NotificationServer:
             has_alert_type = ("alert_type" in first) if isinstance(first, dict) else hasattr(first, "alert_type")
             if alert_type == "price_alert" or has_alert_type:
                 if len(alerts) == 1:
-                    sym = _alert_attr(first, "symbol", "N/A")
-                    atype = _alert_attr(first, "alert_type", "alert")
-                    pchg = safe_float(_alert_attr(first, "percent_change", 0.0), 0.0)
+                    sym = obj_attr(first, "symbol", "N/A")
+                    atype = obj_attr(first, "alert_type", "alert")
+                    pchg = safe_float(obj_attr(first, "percent_change", 0.0), 0.0)
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
                     title = self._format_price_alerts_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
-                source = _alert_attr(first, "source") or "price_alert"
+                source = obj_attr(first, "source") or "price_alert"
             elif alert_type == "new_coin_discovered":
                 if len(alerts) == 1:
-                    sym = _alert_attr(first, "symbol", "N/A")
+                    sym = obj_attr(first, "symbol", "N/A")
                     title = f"New Coin: {sym}"
                 else:
                     title = self._format_new_coins_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
-                source = _alert_attr(first, "source") or "price_alert"
+                source = obj_attr(first, "source") or "price_alert"
             else:
-                base_name = _alert_attr(first, "name") or _alert_attr(first, "title") or "Alert"
+                base_name = obj_attr(first, "name") or obj_attr(first, "title") or "Alert"
                 if len(alerts) == 1:
                     title = base_name
-                    body = _alert_attr(first, "body") or (
-                        "" if alert_type == "bot_event" else (_alert_attr(first, "message") or _alert_attr(first, "symbol") or "")
+                    body = obj_attr(first, "body") or (
+                        "" if alert_type == "bot_event" else (obj_attr(first, "message") or obj_attr(first, "symbol") or "")
                     )
                 else:
                     title = f"{base_name} ({len(alerts)})"
                     body = AlertNotifier.format_batch_message(alerts)
-                source = _alert_attr(first, "source") or ""
+                source = obj_attr(first, "source") or ""
 
         title = "" if isinstance(title, bool) else str(title or "Alert")
         body = "" if isinstance(body, bool) else str(body or "")
@@ -528,7 +525,7 @@ class NotificationServer:
                 full_title = cleaned_title
 
         # Block synthetic/fake test instruments from ever leaking to external topics
-        all_syms = " ".join(str(_alert_attr(a, "symbol", "")) for a in alerts)
+        all_syms = " ".join(str(obj_attr(a, "symbol", "")) for a in alerts)
         if is_fake_alert_text(full_title, body, all_syms):
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True

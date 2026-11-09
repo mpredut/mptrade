@@ -14,7 +14,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_float as _parse_finite_float, safe_pos_float
+from botcore import safe_float
 from cachepaths import cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, normalize_venue_name
 from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
@@ -28,21 +28,14 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     recalculate_live_price_geometry,
-    round_opt_px as _round_opt_px,
+    round_opt_px,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     reconcile_sibling_flow_and_liq_regimes,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    resolve_symbol_price as _resolve_symbol_price,
+    resolve_symbol_price,
     resolve_venue_fee_and_limits,
-)
-from orchestratorOS.agy.topics import topic_spec
-from orchestratorOS.lib.technical_repair_ssot import (
-    ALL_DIAGNOSED_CATEGORIES,
-    ALL_REPAIR_ACTIONS,
-    AUDITED_CONFIG_FILES,
-    DIAGNOSED_SEVERITIES,
 )
 from providers.base import format_actor_tag, normalize_timestamp_ms
 
@@ -57,7 +50,7 @@ def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
 
 def _format_quote_breakdown(bd: Any, primary_asset: Any) -> str:
     if isinstance(bd, dict) and (len(bd) > 1 or any(k != primary_asset for k in bd)):
-        return f" ({', '.join(f'{bk}=${_parse_finite_float(bv, 0.0):,.2f}' for bk, bv in bd.items())})"
+        return f" ({', '.join(f'{bk}=${safe_float(bv, 0.0):,.2f}' for bk, bv in bd.items())})"
     return ""
 
 
@@ -65,7 +58,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
     if cyc.get("pos_peak") is not None and not _same_anchor_px(cyc.get("pos_peak"), cyc.get("avg_cost_px")):
-        pk_dd = _parse_finite_float(cyc.get("dd_from_peak_pct"), None)
+        pk_dd = safe_float(cyc.get("dd_from_peak_pct"), None)
         pk_dd_val = (pk_dd + 0.0) if pk_dd is not None else cyc.get("dd_from_peak_pct")
         pk_sfx = f" (dd_from_peak={pk_dd_val}%)" if pk_dd_val is not None else ""
         extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
@@ -78,15 +71,15 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     exit_kind = cyc.get("last_exit_kind")
     exit_kind_sfx = f" ({exit_kind})" if exit_kind else ""
     dd_val = cyc.get("pnl_vs_avg_pct") if cyc.get("pnl_vs_avg_pct") is not None else cyc.get("dd_pct")
-    dd_f = _parse_finite_float(dd_val, None)
+    dd_f = safe_float(dd_val, None)
     dd_field = (
         f"pnl_vs_avg={dd_f:+.2f}%"
         if dd_f is not None and dd_f > 0.0
         else f"dd={f'{dd_val}%' if dd_val is not None else 'N/A'}"
     )
-    lb_px_f = _parse_finite_float(cyc.get("last_buy_price"), None)
-    avg_c_f = _parse_finite_float(cyc.get("avg_cost_px"), None)
-    spot_px_f = _parse_finite_float(cyc.get("_spot_px"), None)
+    lb_px_f = safe_float(cyc.get("last_buy_price"), None)
+    avg_c_f = safe_float(cyc.get("avg_cost_px"), None)
+    spot_px_f = safe_float(cyc.get("_spot_px"), None)
     lb_pnl_sfx = ""
     if (
         lb_px_f is not None
@@ -125,7 +118,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
 def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> str:
     """Format `[low, high] pos_<horizon>=X% (dd_high=..., bounce_low=..., span=...)` for 24h or 7d."""
     lo, hi = pinfo.get(f"low_{horizon}"), pinfo.get(f"high_{horizon}")
-    lo_f, hi_f = _parse_finite_float(lo, 0.0), _parse_finite_float(hi, 0.0)
+    lo_f, hi_f = safe_float(lo, 0.0), safe_float(hi, 0.0)
     pos_sfx = ""
     if px_f > 0 and lo_f > 0 and hi_f > lo_f:
         fb_rng = _compute_horizon_range_dict(px_f, lo_f, hi_f, horizon)
@@ -134,8 +127,8 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
             for k in (f"pos_{horizon}_pct", f"dd_{horizon}_high_pct", f"bounce_{horizon}_low_pct", f"span_{horizon}_pct")
         )
         pos_sfx = (
-            f" pos_{horizon}={pos_v}% (dd_high={_parse_finite_float(dd_v, 0.0):+.2f}%, "
-            f"bounce_low={_parse_finite_float(bnc_v, 0.0):+.2f}%, span={spn_v}%)"
+            f" pos_{horizon}={pos_v}% (dd_high={safe_float(dd_v, 0.0):+.2f}%, "
+            f"bounce_low={safe_float(bnc_v, 0.0):+.2f}%, span={spn_v}%)"
         )
     return f"{horizon}_range=[{lo}, {hi}]{pos_sfx}"
 
@@ -151,20 +144,8 @@ def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) 
     return f"{summary_s}{_age_sfx(mb_raw, parens=True)}" if summary_s else ""
 
 
-_AI_THREAT_LEVEL_MAP = {
-    "CRITICAL_SHOCK": "HIGH_VOLATILITY_SHOCK",
-    "CRITICAL": "HIGH_VOLATILITY",
-}
-_AI_BRAKE_MAP = {
-    "HARD_VETO_NEW_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-    "BLOCK_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-    "HALT_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-    "VETO_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-}
-
-
 def _fmt_liq_usd(val: Any) -> str:
-    vf = _parse_finite_float(val, 0.0)
+    vf = safe_float(val, 0.0)
     if vf >= 1_000_000_000.0:
         return f"${vf / 1_000_000_000.0:.2f}B"
     if vf >= 1_000_000.0:
@@ -187,7 +168,7 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
 
 
 def _fmt_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
-    vf = _parse_finite_float(val, 0.0)
+    vf = safe_float(val, 0.0)
     if abs(vf) < 5e-8:
         vf = 0.0
     elif 0.0 < abs(vf) < 1e-4:
@@ -224,10 +205,10 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     mb_rot_parts: List[str] = []
     if mb:
         if mb.get("eth_btc_ratio") is not None:
-            eb_c = f" ({_parse_finite_float(mb.get('eth_btc_chg_24h_pct'), 0.0):+.2f}% 24h)" if mb.get("eth_btc_chg_24h_pct") is not None else ""
+            eb_c = f" ({safe_float(mb.get('eth_btc_chg_24h_pct'), 0.0):+.2f}% 24h)" if mb.get("eth_btc_chg_24h_pct") is not None else ""
             mb_rot_parts.append(f"ETH/BTC={mb.get('eth_btc_ratio')}{eb_c}")
         if mb.get("eth_price") is not None:
-            eth_c = f" ({_parse_finite_float(mb.get('eth_chg_24h_pct'), 0.0):+.2f}% 24h)" if mb.get("eth_chg_24h_pct") is not None else ""
+            eth_c = f" ({safe_float(mb.get('eth_chg_24h_pct'), 0.0):+.2f}% 24h)" if mb.get("eth_chg_24h_pct") is not None else ""
             mb_rot_parts.append(f"ETH=${mb.get('eth_price')}{eth_c}")
         if mb.get("btc_vol_share_pct") is not None:
             mb_rot_parts.append(f"BTCDOM={mb.get('btc_vol_share_pct')}%")
@@ -261,10 +242,10 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             "CB_Prem=" not in sa_flow_delta
             and " vs " in sa_flow_delta
             and isinstance(mb_bench, dict)
-            and (cb_v := _parse_finite_float(mb_bench.get("coinbase_premium_bps"), None)) is not None
+            and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None
         ):
             sa_flow_delta = sa_flow_delta.replace(" vs ", f", CB_Prem={cb_v:+.1f}bps vs ", 1)
-    if not sa_flow_delta and sa and (_parse_finite_float(sa.get("age_min"), 0.0) or 0.0) >= 5.0:
+    if not sa_flow_delta and sa and (safe_float(sa.get("age_min"), 0.0) or 0.0) >= 5.0:
         micro_map = getattr(sensors, "microstructure", None) or {}
         btc_m = (
             micro_map.get("BTCUSDC")
@@ -275,12 +256,12 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         )
         if isinstance(btc_m, dict):
             d_parts: List[str] = []
-            tr_v = _parse_finite_float(btc_m.get("taker_buy_sell_ratio"), None)
-            cvd_v = _parse_finite_float(btc_m.get("cvd_15m_usd"), None)
-            tr5_v = _parse_finite_float(btc_m.get("taker_ratio_5m"), None)
-            cvd5_v = _parse_finite_float(btc_m.get("cvd_5m_usd"), None)
-            tr1h_v = _parse_finite_float(btc_m.get("taker_ratio_1h"), None)
-            cvd1h_v = _parse_finite_float(btc_m.get("cvd_1h_usd"), None)
+            tr_v = safe_float(btc_m.get("taker_buy_sell_ratio"), None)
+            cvd_v = safe_float(btc_m.get("cvd_15m_usd"), None)
+            tr5_v = safe_float(btc_m.get("taker_ratio_5m"), None)
+            cvd5_v = safe_float(btc_m.get("cvd_5m_usd"), None)
+            tr1h_v = safe_float(btc_m.get("taker_ratio_1h"), None)
+            cvd1h_v = safe_float(btc_m.get("cvd_1h_usd"), None)
             if tr_v is not None:
                 d_parts.append(f"taker_ratio={tr_v:.2f}")
             elif tr1h_v is not None:
@@ -297,7 +278,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
                 d_parts.append(f"1h_tr={tr1h_v:.2f}")
             if cvd_v is not None and cvd1h_v is not None:
                 d_parts.append(f"cvd_1h={cvd1h_v / 1e6:+.2f}M")
-            if isinstance(mb_bench, dict) and (cb_v := _parse_finite_float(mb_bench.get("coinbase_premium_bps"), None)) is not None:
+            if isinstance(mb_bench, dict) and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None:
                 d_parts.append(f"CB_Prem={cb_v:+.1f}bps")
             if d_parts:
                 sa_flow_delta = f"({', '.join(d_parts)} vs {sa.get('age_min')}m-old summary)"
@@ -535,7 +516,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         sym, raw_pinfo = sym_group[0]
         pinfo = dict(raw_pinfo)
         px = pinfo.get("price")
-        px_f = _parse_finite_float(px, 0.0)
+        px_f = safe_float(px, 0.0)
         px_str = _fmt_px(px_f, px)
         sib_lbl = ""
         if len(sym_group) > 1:
@@ -549,7 +530,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 "low_15m", "high_15m", "recent_tape_15m",
             }
             for sib_sym, sib_info in sym_group[1:]:
-                s_px = _parse_finite_float(sib_info.get("price"), 0.0)
+                s_px = safe_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
                     has_own_vp = pinfo.get("poc_px") is not None
                     has_own_bottom = pinfo.get("bottom_structure_6h") is not None
@@ -571,8 +552,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                                 backfilled_geom = True
                         elif (
                             sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast")
-                            and abs(_parse_finite_float(pinfo.get(sk), 0.0)) < 5e-8
-                            and abs(_parse_finite_float(sv, 0.0)) >= 5e-8
+                            and abs(safe_float(pinfo.get(sk), 0.0)) < 5e-8
+                            and abs(safe_float(sv, 0.0)) >= 5e-8
                         ):
                             pinfo[sk] = sv
                 if s_px > 0:
@@ -599,7 +580,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         )
         if "chg_15m_pct" in pinfo or any(pinfo.get(k) is not None for k in _m24_h_keys):
             all_horizons = "".join(
-                f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
+                f"{h_lbl}={safe_float(pinfo.get(h_k), 0.0):+.2f}% "
                 for h_lbl, h_k in (
                     ("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"),
                     ("15m", "chg_15m_pct"), ("30m", "chg_30m_pct"), ("1h", "chg_1h_pct"),
@@ -617,16 +598,16 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         if all(pinfo.get(k) is not None for k in ("poc_px", "val_px", "vah_px")):
             fb_vp = _build_vp_position_dict(
                 px_f,
-                _parse_finite_float(pinfo.get("poc_px"), 0.0),
-                _parse_finite_float(pinfo.get("val_px"), 0.0),
-                _parse_finite_float(pinfo.get("vah_px"), 0.0),
+                safe_float(pinfo.get("poc_px"), 0.0),
+                safe_float(pinfo.get("val_px"), 0.0),
+                safe_float(pinfo.get("vah_px"), 0.0),
             )
             poc_d, val_d, vah_d = (
-                _parse_finite_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
+                safe_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
                 for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
             )
             va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
-            va_pos = round(max(-100.0, min(200.0, _parse_finite_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
+            va_pos = round(max(-100.0, min(200.0, safe_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
             sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
             sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
             lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
@@ -654,8 +635,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     if h_lbl == "7d" and is_sub24h_dup_7d:
                         continue
                     if h_k in pinfo and h_k in btc_entry:
-                        a_v = _parse_finite_float(pinfo.get(h_k), None)
-                        b_v = _parse_finite_float(btc_entry.get(h_k), None)
+                        a_v = safe_float(pinfo.get(h_k), None)
+                        b_v = safe_float(btc_entry.get(h_k), None)
                         if a_v is not None and b_v is not None:
                             vs_btc_parts.append(f"{h_lbl}={a_v - b_v:+.2f}%")
             if vs_btc_parts:
@@ -663,12 +644,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             cross_parts = (
                 ([f"pos={pinfo['alt_btc_pos_24h_pct']}%"] if pinfo.get("alt_btc_pos_24h_pct") is not None else [])
                 + [
-                    f"{c_lbl}={_parse_finite_float(pinfo.get(c_k), 0.0):+.2f}%"
+                    f"{c_lbl}={safe_float(pinfo.get(c_k), 0.0):+.2f}%"
                     for c_lbl, c_k in (("dd_high", "alt_btc_dd_24h_high_pct"), ("bounce_low", "alt_btc_bounce_24h_low_pct"))
                     if pinfo.get(c_k) is not None
                 ]
                 + [
-                    f"{sc_lbl}={_parse_finite_float(pinfo.get(sc_k), 0.0):.2f}"
+                    f"{sc_lbl}={safe_float(pinfo.get(sc_k), 0.0):.2f}"
                     for sc_lbl, sc_k in (("beta", "beta_btc_24h"), ("corr", "corr_btc_24h"))
                     if pinfo.get(sc_k) is not None
                 ]
@@ -687,7 +668,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
 
         if "chg_7d_pct" in pinfo and not is_sub24h_dup_7d:
             extras.append(
-                f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
+                f"7d={safe_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
                 f"{_format_horizon_range(pinfo, px_f, '7d')}"
             )
         is_dup_swing = (
@@ -696,11 +677,11 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             and (pinfo.get("swing_low_px"), pinfo.get("swing_high_px")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
         )
         if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None and not is_dup_swing:
-            sw_ral = _parse_finite_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
-            sw_pb = _parse_finite_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
+            sw_ral = safe_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
+            sw_pb = safe_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
             maj_sfx = (
                 f", major_low={pinfo.get('major_swing_low_px')}"
-                f"(rally={_parse_finite_float(pinfo.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
+                f"(rally={safe_float(pinfo.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
                 if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None
                 else ""
             )
@@ -717,12 +698,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
             )
         if any(k in pinfo for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
-            s90_v = _parse_finite_float(pinfo.get("slope_90s"), None)
+            s90_v = safe_float(pinfo.get("slope_90s"), None)
             s90_pfx = f"90s={_fmt_slope_val(s90_v, 5)}, " if s90_v is not None else ""
-            gr_v = _parse_finite_float(pinfo.get("gradient_recent"), None)
+            gr_v = safe_float(pinfo.get("gradient_recent"), None)
             grad_rec_sfx = f", grad_rec={_fmt_slope_val(gr_v, 4)}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
-            gf_v = _parse_finite_float(pinfo.get("gradient_recent_fast"), None)
-            eps_v = _parse_finite_float(pinfo.get("epsilon"), None)
+            gf_v = safe_float(pinfo.get("gradient_recent_fast"), None)
+            eps_v = safe_float(pinfo.get("epsilon"), None)
             fast_sfx = (
                 f", grad_fast={_fmt_slope_val(gf_v, 4)}/eps={_fmt_slope_val(eps_v, 4, signed=False)}"
                 if gf_v is not None and eps_v is not None
@@ -731,12 +712,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             g_parts = [
                 f"{g_lbl}={_fmt_slope_val(gv, 5)}"
                 for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
-                if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
+                if (gv := safe_float(pinfo.get(g_k), None)) is not None
             ]
             s_parts = [
                 f"{s_lbl}={_fmt_slope_val(sv, 5)}"
                 for s_lbl, s_k in (("90s", "slope_90s"), ("3.7m", "slope_3_7m"), ("15m", "slope_15m"), ("2.5h", "slope_2_5h"))
-                if (sv := _parse_finite_float(pinfo.get(s_k), None)) is not None
+                if (sv := safe_float(pinfo.get(s_k), None)) is not None
             ]
             s_core = (
                 f"{s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
@@ -751,7 +732,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"g_coeff({', '.join(g_parts)})")
         if pinfo.get("vol_1h_pct") is not None:
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
-        if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
+        if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
@@ -795,7 +776,7 @@ def _format_microstructure_section(
                 and canonical_base_asset(other_s) == canonical_base_asset(s)
                 and "USD" in compatible_quote_suffixes(other_s)
                 and other_m.get("bid_depth_usd") is not None
-                and abs(_parse_finite_float(other_m.get("bid_depth_usd"), 0.0) - _parse_finite_float(m.get("bid_depth_usd"), 0.0)) > 1.0
+                and abs(safe_float(other_m.get("bid_depth_usd"), 0.0) - safe_float(m.get("bid_depth_usd"), 0.0)) > 1.0
                 for other_s, other_m in microstructure.items()
             )
             if has_distinct_usd_sib:
@@ -853,19 +834,19 @@ def _format_microstructure_section(
                 if mv is not None and (same_q_3b or mk not in _px_keys_3b):
                     if minfo.get(mk) is None or (
                         mk in ("bid_wall_usd", "ask_wall_usd")
-                        and (_parse_finite_float(minfo.get(mk), 0.0) or 0.0) <= 0.0
-                        and (_parse_finite_float(mv, 0.0) or 0.0) > 0.0
+                        and (safe_float(minfo.get(mk), 0.0) or 0.0) <= 0.0
+                        and (safe_float(mv, 0.0) or 0.0) > 0.0
                     ):
                         minfo[mk] = mv
         sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
-        cur_px = _resolve_symbol_price(sym, prices_and_trends)
+        cur_px = resolve_symbol_price(sym, prices_and_trends)
         bw_px = minfo.get("bid_wall_px")
         aw_px = minfo.get("ask_wall_px")
-        bw_px_f = _parse_finite_float(bw_px, 0.0)
-        aw_px_f = _parse_finite_float(aw_px, 0.0)
-        b_bid = _parse_finite_float(minfo.get("best_bid"), 0.0)
-        b_ask = _parse_finite_float(minfo.get("best_ask"), 0.0)
-        ob_mid = _parse_finite_float(minfo.get("ob_mid_price"), 0.0) or (
+        bw_px_f = safe_float(bw_px, 0.0)
+        aw_px_f = safe_float(aw_px, 0.0)
+        b_bid = safe_float(minfo.get("best_bid"), 0.0)
+        b_ask = safe_float(minfo.get("best_ask"), 0.0)
+        ob_mid = safe_float(minfo.get("ob_mid_price"), 0.0) or (
             (b_bid + b_ask) / 2.0 if b_bid > 0 and b_ask > 0 else 0.0
         )
         if ob_mid > 0 and (
@@ -947,8 +928,8 @@ def _format_microstructure_section(
                         o_copy.update(compute_liquidation_clusters(o_p, o_copy))
                     sib_view[other_s] = o_copy
             reconcile_sibling_flow_and_liq_regimes(sib_view, prices_and_trends)
-        d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
-        d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
+        d1_b = safe_float(minfo.get("depth_1pct_bid_usd"), 0.0)
+        d1_a = safe_float(minfo.get("depth_1pct_ask_usd"), 0.0)
         depth_1pct_sfx = (
             f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
             if (d1_b > 0.0 or d1_a > 0.0)
@@ -957,10 +938,10 @@ def _format_microstructure_section(
 
         cvd_sfx = ""
         if (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None:
-            cvd_u = _parse_finite_float(cvd_usd_raw, 0.0)
+            cvd_u = safe_float(cvd_usd_raw, 0.0)
             usd_s = f"{'+' if cvd_u >= 0.0 else '-'}{_fmt_liq_usd(abs(cvd_u))}"
             cvd_b = minfo.get("cvd_15m_base")
-            cvd_b_s = f"{_parse_finite_float(cvd_b, 0.0):+.3f}".rstrip("0").rstrip(".") if cvd_b is not None else ""
+            cvd_b_s = f"{safe_float(cvd_b, 0.0):+.3f}".rstrip("0").rstrip(".") if cvd_b is not None else ""
             if cvd_b_s in ("+", "-", ""):
                 cvd_b_s = "+0"
             cvd_sfx = (
@@ -974,27 +955,27 @@ def _format_microstructure_section(
                 ("1h", "taker_ratio_1h", "cvd_1h_usd"),
                 ("4h", "taker_ratio_4h", "cvd_4h_usd"),
             ):
-                tr_v = _parse_finite_float(minfo.get(tr_k), None)
-                c_v = _parse_finite_float(minfo.get(cvd_k), None)
+                tr_v = safe_float(minfo.get(tr_k), None)
+                c_v = safe_float(minfo.get(cvd_k), None)
                 if tr_v is not None and c_v is not None:
                     c_s = f"{'+' if c_v >= 0.0 else '-'}{_fmt_liq_usd(abs(c_v))}"
                     mh_parts.append(f"{h_lbl}=tr:{tr_v:.2f}/cvd:{c_s}")
             if mh_parts:
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-            if (sp_cvd := _parse_finite_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
+            if (sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
                 cvd_sfx += f", spot_cvd_15m={sp_s}"
 
         basis_sfx = ""
         basis_parts: List[str] = []
-        eq_no_oi_3b = sym_is_eq_3b and (_parse_finite_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-        if not sym_is_eq_3b and (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+        eq_no_oi_3b = sym_is_eq_3b and (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
+        if not sym_is_eq_3b and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
             basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
-        if not sym_is_eq_3b and (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None:
+        if not sym_is_eq_3b and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
             basis_parts.append(f"funding_ann={f_ann:+.1f}%")
-        if (arb_bps := _parse_finite_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
+        if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
-            if (net_b := _parse_finite_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
+            if (net_b := safe_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
                 basis_parts.append(f"net_buy_edge={net_b:+.1f}bps(best_buy={minfo['best_buy_venue']})")
         if basis_parts:
             basis_sfx = f", {', '.join(basis_parts)}"
@@ -1010,8 +991,8 @@ def _format_microstructure_section(
             ):
                 if minfo.get(px_k) is None:
                     continue
-                l_px = _parse_finite_float(minfo.get(px_k), 0.0)
-                l_d = _parse_finite_float(
+                l_px = safe_float(minfo.get(px_k), 0.0)
+                l_d = safe_float(
                     minfo.get(dist_k),
                     ((l_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and l_px > 0 else 0.0,
                 )
@@ -1024,18 +1005,18 @@ def _format_microstructure_section(
             cd_parts: List[str] = []
             if cd_map.get("dt_min") is not None:
                 cd_parts.append(f"dt={cd_map['dt_min']}m")
-            if (d_ob := _parse_finite_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
+            if (d_ob := safe_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
                 cd_parts.append(f"d_ob={d_ob:+.3f}")
-            if (d_cvd := _parse_finite_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
+            if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
                 cd_parts.append(f"d_cvd={'+' if d_cvd >= 0 else '-'}{_fmt_liq_usd(abs(d_cvd))}")
-            if (d_wl := _parse_finite_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
+            if (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
                 cd_parts.append(f"d_whale_long={d_wl:+.2f}%")
-            if (d_oi := _parse_finite_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
+            if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
                 cd_parts.append(f"d_oi={d_oi:+.2f}%")
             if len(cd_parts) > 1:
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
-        l1_oi_v = _parse_finite_float(minfo.get("native_l1_oi_usd"), None)
-        oi_v = _parse_finite_float(minfo.get("oi_usd"), None)
+        l1_oi_v = safe_float(minfo.get("native_l1_oi_usd"), None)
+        oi_v = safe_float(minfo.get("oi_usd"), None)
         oi_lbl = (
             f"{minfo.get('oi_usd')} (l1_oi={_fmt_liq_usd(l1_oi_v)})"
             if (l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
@@ -1085,15 +1066,15 @@ def _format_microstructure_section(
 def _same_anchor_px(a: Any, b: Any) -> bool:
     if a is None or b is None:
         return False
-    af, bf = _parse_finite_float(a, None), _parse_finite_float(b, None)
+    af, bf = safe_float(a, None), safe_float(b, None)
     return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 1e-5) if (af is not None and bf is not None) else (a == b)
 
 
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
     """Format a single tradable position line for Section 3C."""
     t_extra = ""
-    px_f = _parse_finite_float(pos.get("price"), 0.0)
-    avg_buy_f = _parse_finite_float(pos.get("active_avg_buy_px"), None)
+    px_f = safe_float(pos.get("price"), 0.0)
+    avg_buy_f = safe_float(pos.get("active_avg_buy_px"), None)
     base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
     for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
         ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", ()),
@@ -1110,12 +1091,12 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 px_k in ("tactical_avg_buy_px", "swing_subcycle_avg_px")
                 and avg_buy_f is not None
                 and avg_buy_f > 0.0
-                and (_parse_finite_float(pos.get(px_k), 0.0) or 0.0) >= avg_buy_f
+                and (safe_float(pos.get(px_k), 0.0) or 0.0) >= avg_buy_f
             ):
                 continue
             pct_val = pos.get(pct_k)
             if pct_val is None and px_f > 0.0:
-                anchor_f = _parse_finite_float(pos.get(px_k), 0.0)
+                anchor_f = safe_float(pos.get(px_k), 0.0)
                 if anchor_f > 0.0:
                     if px_k == "trailing_peak" and anchor_f < px_f:
                         anchor_f = px_f
@@ -1139,7 +1120,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     fb_fees = resolve_venue_fee_and_limits(
         str(venue or "t212"),
         str(pos.get("symbol") or ""),
-        price=_parse_finite_float(pos.get("price"), 0.0),
+        price=safe_float(pos.get("price"), 0.0),
         free_quote=pos.get("free_quote"),
         free_base=pos.get("free_base"),
         locked_quote_usd=pos.get("locked_quote_usd"),
@@ -1149,24 +1130,24 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     )
     eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
     for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
-        cap_v = _parse_finite_float(eff_pos.get(cap_k), None)
+        cap_v = safe_float(eff_pos.get(cap_k), None)
         if cap_v is not None and max_usd > 0 and cap_v > max_usd:
             eff_pos[cap_k] = round(float(max_usd), 2)
-    taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
-    maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
+    taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
+    maker_bps = safe_float(eff_pos.get("maker_fee_bps"), 15.0)
     if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) >= 1:
-        held_pos_q = (_parse_finite_float(pos.get("free_base"), 0.0) or 0.0) + (
-            _parse_finite_float(pos.get("locked_base_qty"), 0.0) or 0.0
+        held_pos_q = (safe_float(pos.get("free_base"), 0.0) or 0.0) + (
+            safe_float(pos.get("locked_base_qty"), 0.0) or 0.0
         )
         eff_lots = open_lots[-4:]
-        tot_lot_q = sum(_parse_finite_float(lt.get("qty"), 0.0) or 0.0 for lt in eff_lots if isinstance(lt, dict))
+        tot_lot_q = sum(safe_float(lt.get("qty"), 0.0) or 0.0 for lt in eff_lots if isinstance(lt, dict))
         if held_pos_q > 0.0 and tot_lot_q > held_pos_q * 1.02:
             clipped_rev: List[Dict[str, Any]] = []
             rem_q = held_pos_q
             for lt in reversed(eff_lots):
                 if not isinstance(lt, dict) or rem_q <= 1e-8:
                     continue
-                lq = _parse_finite_float(lt.get("qty"), 0.0) or 0.0
+                lq = safe_float(lt.get("qty"), 0.0) or 0.0
                 if lq <= 0.0:
                     continue
                 take_q = round(min(lq, rem_q), 6)
@@ -1180,11 +1161,11 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         for lt in eff_lots:
             if not isinstance(lt, dict):
                 continue
-            l_q = _parse_finite_float(lt.get("qty"), None)
-            l_px = _round_opt_px(lt.get("entry_px"), 6)
+            l_q = safe_float(lt.get("qty"), None)
+            l_px = round_opt_px(lt.get("entry_px"), 6)
             if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0 and l_q * l_px >= 1.0:
                 l_pnl_pct = ((px_f - l_px) / l_px) * 100.0 if px_f > 0.0 else 0.0
-                l_pnl_s = f"({_parse_finite_float(l_pnl_pct, 0.0):+.2f}%)" if px_f > 0.0 else ""
+                l_pnl_s = f"({safe_float(l_pnl_pct, 0.0):+.2f}%)" if px_f > 0.0 else ""
                 lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
                 valid_lots.append((l_q, l_px, l_pnl_pct))
         if len(lot_parts) > 1 or (
@@ -1206,7 +1187,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             if prof_usd >= 10.0 and prof_cost > 0.0:
                 prof_avg_pct = ((prof_usd - prof_cost) / prof_cost) * 100.0
                 t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{base_lbl}@{prof_avg_pct:+.2f}%)"
-    if (lifo_p := _parse_finite_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
+    if (lifo_p := safe_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     fee_tier = eff_pos.get("fee_tier") or "STANDARD"
     sp_part = f", spread={eff_pos.get('spread_bps')}bps" if eff_pos.get("spread_bps") is not None else ""
@@ -1216,7 +1197,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     )
     lim_parts: List[str] = []
     if eff_pos.get("exchange_min_notional_usd") is not None:
-        lim_parts.append(f"min_notional=${_parse_finite_float(eff_pos.get('exchange_min_notional_usd'), 0.0):g}")
+        lim_parts.append(f"min_notional=${safe_float(eff_pos.get('exchange_min_notional_usd'), 0.0):g}")
     for lim_pfx, lim_k in (
         ("min_qty=", "min_qty"),
         ("step=", "step_size"),
@@ -1236,15 +1217,15 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         if fb_val is not None and val_usd is not None
         else (f"{fb_val}" if fb_val is not None else "N/A")
     )
-    if (lb_q := _parse_finite_float(eff_pos.get("locked_base_qty"), None)) is not None and lb_q > 0.0:
-        lb_u = _parse_finite_float(eff_pos.get("locked_base_usd"), None)
+    if (lb_q := safe_float(eff_pos.get("locked_base_qty"), None)) is not None and lb_q > 0.0:
+        lb_u = safe_float(eff_pos.get("locked_base_usd"), None)
         lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
         fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
     fq_val = pos.get("free_quote")
     base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
     quote_lbl = pos.get("quote") or "USD"
     fq_str = f"${fq_val}{_format_quote_breakdown(pos.get('free_quote_breakdown'), quote_lbl)}" if fq_val is not None else "N/A"
-    if (lq_u := _parse_finite_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
+    if (lq_u := safe_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
     return (
         f"    - [{venue}] {pos.get('symbol')}: free_{base_lbl}={fb_str}, "
@@ -1259,7 +1240,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
 
     def _side_summary(key: str) -> str:
         entry = oinfo.get(key) if isinstance(oinfo.get(key), dict) else {}
-        px = _round_opt_px(entry.get("price"), 6)
+        px = round_opt_px(entry.get("price"), 6)
         if px is None:
             return "none"
         ts = normalize_timestamp_ms(entry.get("ts_ms"), default=0) or 0
@@ -1280,10 +1261,10 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
         return f"{qty_pfx}{px}{meta_sfx}"
 
-    last_b_px = _round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
-    avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
+    last_b_px = round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
+    avg_b_px = round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
-    tac_b_px = _round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
+    tac_b_px = round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
     tac_b_str = (
         f" | Tactical Sub-Cycle Avg BUY={tac_b_px}"
         if tac_b_px
@@ -1292,7 +1273,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         and not _same_anchor_px(tac_b_px, last_b_px)
         else ""
     )
-    sw_b_px = _round_opt_px(oinfo.get("swing_subcycle_avg_px"), 6)
+    sw_b_px = round_opt_px(oinfo.get("swing_subcycle_avg_px"), 6)
     sw_b_str = (
         f" | Swing Sub-Cycle Avg BUY={sw_b_px}"
         if sw_b_px
@@ -1303,17 +1284,17 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         and not _same_anchor_px(sw_b_px, last_b_px)
         else ""
     )
-    lifo_v = _parse_finite_float(oinfo.get("lifo_realized_pnl_usd"), None)
+    lifo_v = safe_float(oinfo.get("lifo_realized_pnl_usd"), None)
     lifo_str = f" | Sub-Cycle LIFO Realized PnL=${lifo_v:+.2f}" if lifo_v is not None and abs(lifo_v) >= 0.01 else ""
     markout_parts: List[str] = []
-    if (bm_v := _parse_finite_float(oinfo.get("buy_markout_bps"), None)) is not None:
+    if (bm_v := safe_float(oinfo.get("buy_markout_bps"), None)) is not None:
         markout_parts.append(f"buy={bm_v:+.0f}bps")
-    if (sm_v := _parse_finite_float(oinfo.get("sell_markout_bps"), None)) is not None:
+    if (sm_v := safe_float(oinfo.get("sell_markout_bps"), None)) is not None:
         markout_parts.append(f"sell={sm_v:+.0f}bps")
     markout_str = f" | Post-Trade Markout({', '.join(markout_parts)})" if markout_parts else ""
-    r_buys = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
+    r_buys = [f"{b.get('qty')}@{round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
     tranches_str = f" | Recent BUY Tranches=[{', '.join(r_buys)}]" if len(r_buys) > 1 else ""
-    r_sells = [f"{s.get('qty')}@{_round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
+    r_sells = [f"{s.get('qty')}@{round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
     sell_tranches_str = f" | Recent SELL Tranches=[{', '.join(r_sells)}]" if len(r_sells) > 1 else ""
     last_act_tag = oinfo.get("last_action_actor_tag") or format_actor_tag(
         oinfo.get("last_action_actor"),
@@ -1341,31 +1322,31 @@ def _format_portfolio_section(
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
         pre_parts = [
-            f"unified_nav=${_parse_finite_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
-            f"invested=${_parse_finite_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
-            f"free_cash=${_parse_finite_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
+            f"unified_nav=${safe_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
+            f"invested=${safe_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
+            f"free_cash=${safe_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
         ]
-        if (lq_pre := _parse_finite_float(pre.get("locked_quote_usd"), 0.0)) > 0.0:
+        if (lq_pre := safe_float(pre.get("locked_quote_usd"), 0.0)) > 0.0:
             pre_parts.append(f"locked_quote=${lq_pre:,.2f} ({pre.get('locked_quote_pct')}%)")
         pre_parts.extend([
             f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
             f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
-            f"intraday_var_95=${_parse_finite_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
+            f"intraday_var_95=${safe_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
         ])
         if pre.get("intraday_cvar_975_usd") is not None:
             pre_parts.append(
-                f"cvar_975=${_parse_finite_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
+                f"cvar_975=${safe_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
             )
         if pre.get("vol_target_tranche_usd") is not None:
-            pre_parts.append(f"vol_target_tranche=${_parse_finite_float(pre.get('vol_target_tranche_usd'), 0.0):,.0f}")
+            pre_parts.append(f"vol_target_tranche=${safe_float(pre.get('vol_target_tranche_usd'), 0.0):,.0f}")
         if pre.get("subcycle_lifo_realized_pnl_usd") is not None:
-            pre_parts.append(f"subcycle_lifo_pnl=${_parse_finite_float(pre.get('subcycle_lifo_realized_pnl_usd'), 0.0):+.2f}")
+            pre_parts.append(f"subcycle_lifo_pnl=${safe_float(pre.get('subcycle_lifo_realized_pnl_usd'), 0.0):+.2f}")
         if pre.get("est_recent_fee_drag_usd") is not None:
-            pre_parts.append(f"est_fee_drag=${_parse_finite_float(pre.get('est_recent_fee_drag_usd'), 0.0):.2f}")
+            pre_parts.append(f"est_fee_drag=${safe_float(pre.get('est_recent_fee_drag_usd'), 0.0):.2f}")
         pt_parts: List[str] = []
-        if (em_v := _parse_finite_float(pre.get("avg_entry_markout_bps"), None)) is not None:
+        if (em_v := safe_float(pre.get("avg_entry_markout_bps"), None)) is not None:
             pt_parts.append(f"entry={em_v:+.0f}bps")
-        if (xm_v := _parse_finite_float(pre.get("avg_exit_markout_bps"), None)) is not None:
+        if (xm_v := safe_float(pre.get("avg_exit_markout_bps"), None)) is not None:
             pt_parts.append(f"exit={xm_v:+.0f}bps")
         if pre.get("post_trade_win_rate_pct") is not None:
             pt_parts.append(f"win_rate={pre.get('post_trade_win_rate_pct')}%")
@@ -1384,20 +1365,20 @@ def _format_portfolio_section(
         tv_extras: List[str] = []
         if ps.get("total_value_usdc_age_min") is not None:
             tv_extras.append(f"snapshot_age={ps['total_value_usdc_age_min']}m")
-        if (live_bn := _parse_finite_float(ps.get("live_binance_equity_usdc"), None)) is not None and live_bn > 0.0:
+        if (live_bn := safe_float(ps.get("live_binance_equity_usdc"), None)) is not None and live_bn > 0.0:
             tv_extras.append(f"live_reconciled=${live_bn:,.2f} USDC")
         tv_sfx = f" ({', '.join(tv_extras)})" if tv_extras else ""
-        lines.append(f"  * Total Binance Portfolio Value: ${_parse_finite_float(ps.get('total_value_usdc'), 0.0):,.2f} USDC{tv_sfx}")
+        lines.append(f"  * Total Binance Portfolio Value: ${safe_float(ps.get('total_value_usdc'), 0.0):,.2f} USDC{tv_sfx}")
     if ps.get("venue_quote_cash"):
         cash_parts: List[str] = []
         for v in ps["venue_quote_cash"].values():
             if not isinstance(v, dict):
                 continue
             part = (
-                f"{v.get('venue')} {v.get('asset')}=${_parse_finite_float(v.get('free'), 0.0):,.2f}"
+                f"{v.get('venue')} {v.get('asset')}=${safe_float(v.get('free'), 0.0):,.2f}"
                 f"{_format_quote_breakdown(v.get('breakdown'), v.get('asset'))}"
             )
-            if (lq_v := _parse_finite_float(v.get("locked_quote_usd"), 0.0)) > 0.0:
+            if (lq_v := safe_float(v.get("locked_quote_usd"), 0.0)) > 0.0:
                 part += f" [locked_quote_usd=${lq_v:,.2f}]"
             cash_parts.append(part)
         if cash_parts:
@@ -1430,7 +1411,7 @@ def _format_portfolio_section(
                 and not (
                     k in ("orig_qty", "remaining_qty")
                     and v == o.get("qty")
-                    and (_parse_finite_float(o.get("filled_qty"), 0.0) or 0.0) == 0.0
+                    and (safe_float(o.get("filled_qty"), 0.0) or 0.0) == 0.0
                 )
             }
             if isinstance(o, dict)
@@ -1452,7 +1433,7 @@ def _format_portfolio_section(
             p_v_norm = normalize_venue_name(p_it.get("venue"))
             p_sym_u = str(p_it["symbol"]).strip().upper()
             p_cands = (p_sym_u, *cache_symbol_variants(p_sym_u, include_base=True))
-            if (p_px := _parse_finite_float(p_it.get("price"), None)) is not None and p_px > 0.0:
+            if (p_px := safe_float(p_it.get("price"), None)) is not None and p_px > 0.0:
                 for cand_s in p_cands:
                     pos_px_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), p_px)
                 pos_px_by_vs[(p_v_norm, p_sym_u)] = p_px
@@ -1461,7 +1442,7 @@ def _format_portfolio_section(
                     pos_open_lots_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), p_ol)
                 pos_open_lots_by_vs[(p_v_norm, p_sym_u)] = p_ol
             if p_it.get("lifo_realized_pnl_usd") is not None:
-                if (lp_v := _parse_finite_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
+                if (lp_v := safe_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
                     for cand_s in p_cands:
                         pos_lifo_pnl_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), lp_v)
                     pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
@@ -1476,7 +1457,7 @@ def _format_portfolio_section(
                 if isinstance(c_data, dict):
                     c_up = str(c_sym).strip().upper()
                     lp_sym = pos_lifo_pnl_by_vs.get((venue_id, c_up), pos_lifo_pnl_by_vs.get(("", c_up)))
-                    c_rpnl = _parse_finite_float(c_data.get("realized_pnl_usd"), None)
+                    c_rpnl = safe_float(c_data.get("realized_pnl_usd"), None)
                     if lp_sym is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_sym > c_rpnl:
                         c_data = {**c_data, "realized_pnl_usd": lp_sym}
                     if c_data.get("_spot_px") is None:
@@ -1491,7 +1472,7 @@ def _format_portfolio_section(
         if isinstance(xs_raw, dict):
             xs: Any = {k: v for k, v in xs_raw.items() if v is not None}
             if isinstance(xs.get("holdings"), dict):
-                xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if _parse_finite_float(hv, 0.0) >= 1e-4}
+                xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if safe_float(hv, 0.0) >= 1e-4}
             if isinstance(xs.get("t212_sibling_cycle"), dict):
                 sib_cyc_cp = {
                     ck: cv
@@ -1500,7 +1481,7 @@ def _format_portfolio_section(
                 }
                 sib_sym_u = str(xs.get("t212_sibling") or "").strip().upper()
                 lp_sib = pos_lifo_pnl_by_vs.get(("t212", sib_sym_u), pos_lifo_pnl_by_vs.get(("", sib_sym_u)))
-                sib_rpnl = _parse_finite_float(sib_cyc_cp.get("realized_pnl_usd"), None)
+                sib_rpnl = safe_float(sib_cyc_cp.get("realized_pnl_usd"), None)
                 if lp_sib is not None and sib_rpnl is not None and sib_rpnl < 0.0 and lp_sib > sib_rpnl:
                     sib_cyc_cp["realized_pnl_usd"] = lp_sib
                 xs["t212_sibling_cycle"] = sib_cyc_cp
@@ -1586,7 +1567,7 @@ def _format_portfolio_section(
             return (
                 isinstance(item, dict)
                 and item.get("status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
-                and _parse_finite_float(item.get("age_min"), 0.0) > 30.0
+                and safe_float(item.get("age_min"), 0.0) > 30.0
                 and any(
                     str(oid) in shown_open_oids
                     for oid in (item.get("order_id"), item.get("orderId"), item.get("client_order_id"), item.get("clientOrderId"))
@@ -1670,7 +1651,7 @@ def _format_portfolio_section(
                         continue
                     v_st = str(it.get("venue_status") or "").upper()
                     it_st = str(it.get("status") or "").upper()
-                    age_h = _parse_finite_float(it.get("age_h"), 0.0)
+                    age_h = safe_float(it.get("age_h"), 0.0)
                     if (
                         v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED")
                         or it_st in ("CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REJECTED", "BLOCKED_BY_GUARD")

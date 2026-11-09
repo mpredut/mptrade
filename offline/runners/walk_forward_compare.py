@@ -68,9 +68,6 @@ DEFAULT_FEE_STRESS = {
 }
 
 
-_as_bool = _parse_bool_flag
-
-
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
     for raw in (
         cli_venue if not isinstance(cli_venue, bool) else None,
@@ -266,7 +263,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
         raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
         fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
-        fx_invert = _as_bool(fx_model.get("invert", False), False)
+        fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
         fx_records = None
         if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
             fx_path = Path(fx_model["frozen_file"])

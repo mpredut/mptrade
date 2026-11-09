@@ -13,7 +13,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 ### my import
-from botcore import clean_finite_floats as _clean_finite_floats, safe_float, safe_pos_int
+from botcore import clean_finite_floats, safe_float, safe_pos_int
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get, symbols_for
 from state_io import atomic_write_json
@@ -94,7 +94,7 @@ def min_max_scale(arr: np.ndarray):
     try:
         arr_f = np.asarray(arr, dtype=np.float64)
     except (TypeError, ValueError):
-        clean = _clean_finite_floats(arr)
+        clean = clean_finite_floats(arr)
         if not clean:
             return np.array([], dtype=np.float64), 0.0, 0.0
         arr_f = np.asarray(clean, dtype=np.float64)
@@ -115,7 +115,7 @@ def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
     try:
         arr_f = np.asarray(arr_scaled, dtype=np.float64)
     except (TypeError, ValueError):
-        clean = _clean_finite_floats(arr_scaled)
+        clean = clean_finite_floats(arr_scaled)
         if not clean:
             return np.array([], dtype=np.float64)
         arr_f = np.asarray(clean, dtype=np.float64)
@@ -195,7 +195,7 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     hz = safe_pos_int(horizon, default=None)
     if hz is None:
         return np.array([], dtype=np.float64)
-    clean_p = _clean_finite_floats(prices)
+    clean_p = clean_finite_floats(prices)
     n = len(clean_p)
     if n == 0:
         return np.array([], dtype=np.float64)
@@ -268,7 +268,7 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
 
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."
-    prices = np.asarray(_clean_finite_floats(prices), dtype=np.float64)
+    prices = np.asarray(clean_finite_floats(prices), dtype=np.float64)
 
     if len(prices) < window + 5:
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."

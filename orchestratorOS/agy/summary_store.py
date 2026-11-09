@@ -129,9 +129,6 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
     return resolved
 
 
-_safe_step_count = safe_nonneg_int
-
-
 def _visible_dir_if_cli_store(cli_base: str) -> str:
     if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
         return visible_conversations_dir(cli_base)
@@ -157,7 +154,7 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
         return (exists, 0, "")
     raw_status = row.get("status")
     status_str = raw_status.strip() if isinstance(raw_status, str) else ""
-    return (exists, _safe_step_count(row.get("step_count")), status_str)
+    return (exists, safe_nonneg_int(row.get("step_count")), status_str)
 
 
 def read_annotation_title(cli_base: str, cid: str) -> str:

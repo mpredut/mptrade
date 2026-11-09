@@ -62,13 +62,9 @@ def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
     return float(total_comb / (1 << active))
 
 
-def _finite(value) -> float | None:
-    return safe_float(value, default=None)
-
-
 def _diff(left, right) -> float:
-    lv = _finite(left)
-    rv = _finite(right)
+    lv = safe_float(left, default=None)
+    rv = safe_float(right, default=None)
     if lv is None or rv is None:
         return float("nan")
     return lv - rv
@@ -76,8 +72,8 @@ def _diff(left, right) -> float:
 
 def _relative_change(baseline, candidate) -> float | None:
     """Relative change only for a positive, comparable base."""
-    base = _finite(baseline)
-    cand = _finite(candidate)
+    base = safe_float(baseline, default=None)
+    cand = safe_float(candidate, default=None)
     if base is None or cand is None or base <= 0:
         return None
     return (cand - base) / base
@@ -238,7 +234,7 @@ def evaluate_risk_adjusted_promotion(
         wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(
             drawdown_improvements, tolerance
         )
-        cand_mean_return = _finite(candidate_aggregate.get("mean_return_pct"))
+        cand_mean_return = safe_float(candidate_aggregate.get("mean_return_pct"), default=None)
         mean_delta = _diff(
             candidate_aggregate.get("mean_return_pct"),
             base_aggregate.get("mean_return_pct"),
@@ -251,14 +247,14 @@ def evaluate_risk_adjusted_promotion(
             base_aggregate.get("worst_max_drawdown_pct"),
             candidate_aggregate.get("worst_max_drawdown_pct"),
         )
-        base_cvar = _finite(base_aggregate.get("worst_cvar_95_pct"))
-        candidate_cvar = _finite(candidate_aggregate.get("worst_cvar_95_pct"))
+        base_cvar = safe_float(base_aggregate.get("worst_cvar_95_pct"), default=None)
+        candidate_cvar = safe_float(candidate_aggregate.get("worst_cvar_95_pct"), default=None)
         cvar_improvement = (
             candidate_cvar - base_cvar
             if base_cvar is not None and candidate_cvar is not None else None
         )
-        base_exposure = _finite(base_aggregate.get("mean_exposure_pct"))
-        candidate_exposure = _finite(candidate_aggregate.get("mean_exposure_pct"))
+        base_exposure = safe_float(base_aggregate.get("mean_exposure_pct"), default=None)
+        candidate_exposure = safe_float(candidate_aggregate.get("mean_exposure_pct"), default=None)
         exposure_delta = (
             candidate_exposure - base_exposure
             if base_exposure is not None and candidate_exposure is not None else None
