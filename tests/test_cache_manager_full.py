@@ -434,11 +434,6 @@ class TestCacheOrderManager(unittest.TestCase):
             mgr = self._make()
             self.assertIsNone(mgr.rebuild_fetchtimes())
 
-        with self.subTest(msg="get_all_symbols_from_cache"):
-            mgr = self._make()
-            mgr.cache = {"BTC": [], "ETH": []}
-            self.assertEqual(set(mgr.get_all_symbols_from_cache()), {"BTC", "ETH"})
-
         with self.subTest(msg="mutable_order_update_is_persisted"):
             mgr = self._make()
             mgr.enable_save_state_to_file()

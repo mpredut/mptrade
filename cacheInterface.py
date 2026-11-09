@@ -310,10 +310,6 @@ class CacheManagerInterface(ABC):
             except Exception as e:
                 print(f"[{self.cls_name}] Error notifying subscriber {sub}: {e}")
 
-    def get_all_symbols_from_cache(self):
-        with self.lock:
-            return list(self.cache.keys())
-
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""
         return None

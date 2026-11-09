@@ -379,35 +379,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         return str(cache_path(fname))
 
     @classmethod
-    def create_for_venue(
-        cls,
-        venue: str = "binance",
-        *,
-        sync_ts=60,
-        symbols=None,
-        filename: Optional[str] = None,
-        api_client=None,
-        read_only: Optional[bool] = None,
-        append_persist: Optional[bool] = None,
-        stream_format: Optional[str] = None,
-        start_sync: Optional[bool] = None,
-    ) -> CacheTradeManager:
-        """Instantiate a ``CacheTradeManager`` configured for ``venue`` and stream persistence format."""
-        v_norm = cls._normalize_trade_venue(venue, filename, symbols)
-        eff_ro = (v_norm != "binance") if read_only is None else _parse_bool_flag(read_only, default=False)
-        return cls(
-            sync_ts=sync_ts,
-            symbols=symbols,
-            filename=filename,
-            api_client=api_client,
-            read_only=eff_ro,
-            venue=v_norm,
-            append_persist=append_persist,
-            stream_format=stream_format,
-            start_sync=start_sync,
-        )
-
-    @classmethod
     def load_sanitized_trade_snapshot(cls, path: Optional[str] = None, *, venue: str = "kraken") -> dict:
         """Load and sanitize a venue JSON trade snapshot ``{'items': ..., 'fetchtime': ...}`` with ``.previous`` recovery."""
         target = str(path) if path else cls.resolve_cache_filepath(venue=venue)

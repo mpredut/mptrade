@@ -685,10 +685,8 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         CacheAccountManagerBase,
         CacheTradeManager,
     )
-    from intelligence.sentiment.collectors import (
-        FearGreedCollector,
-        MarketBreadthCollector,
-    )
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.internal.guards.guard_decision import (
         OrderGuardEvaluatorBase,
         OrderGuardEvaluatorFactory,
@@ -721,8 +719,8 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     ):
         assert issubclass(CacheTradeManager, CacheAccountManagerBase)
         assert CacheTradeManager.disk_filename(expected_venue) == expected_fname
-        trd_inst = CacheTradeManager.create_for_venue(
-            expected_venue,
+        trd_inst = CacheTradeManager(
+            venue=expected_venue,
             filename=os.path.join(temp_cache_dir, expected_fname),
             start_sync=False,
         )
@@ -798,17 +796,19 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     }
 
     # 4. Level-3 evaluators inherit from Level-2 bases, register in TelemetryEvaluatorFactory, and evaluate statelessly
-    from intelligence.sentiment.evaluators import (
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         CrossVenueSiblingArbEvaluator,
         CrossVenueTrendsEnricherEvaluator,
-        Horizon24hPriceEvaluator,
         LiquidationClusterEvaluator,
         MicrostructureCycleDeltaEvaluator,
         MicrostructureEvaluatorBase,
         OrderbookCvdFlowEvaluator,
+        SiblingSymbolTelemetrySyncEvaluator,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        Horizon24hPriceEvaluator,
         PriceSeriesEvaluatorBase,
         ShortTrendAndKalmanEvaluator,
-        SiblingSymbolTelemetrySyncEvaluator,
         Structural7dWaveEvaluator,
         TelemetryEvaluatorFactory,
         VolumeProfileEvaluator,
@@ -1190,8 +1190,8 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     from cacheaccount import CacheTradeManager
     import order_guard
 
-    krk_tm = CacheTradeManager.create_for_venue(
-        "kraken",
+    krk_tm = CacheTradeManager(
+        venue="kraken",
         filename=os.path.join(temp_cache_dir, "cache_trade_kraken.json"),
         start_sync=False,
     )
@@ -1201,8 +1201,8 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     )
     assert krk_tm.get_last_opposite_fill_price("BTCUSD", "SELL") == pytest.approx(67890.0)
 
-    t212_tm = CacheTradeManager.create_for_venue(
-        "t212",
+    t212_tm = CacheTradeManager(
+        venue="t212",
         filename=os.path.join(temp_cache_dir, "cache_trade_t212.json"),
         start_sync=False,
     )

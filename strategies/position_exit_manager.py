@@ -25,11 +25,8 @@ from botcore import (
     safe_pos_float,
 )
 from .spot_rules import check_fast_profit_reversal
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
 
-try:
-    from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
-except ImportError:
-    from intelligence import resolve_cached_volatility_1h, vol_ratio_to_pct
 
 
 def _clean_symbol_str(symbol: Any) -> str:

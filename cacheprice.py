@@ -184,9 +184,6 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 
         return [[ts_val, price_val]]
 
-    def get_all_symbols_from_cache(self):
-        return self.symbols
-
 
 class CacheSparsePriceManager(CachePriceManagerBase):
     """Store sparse three-minute price samples (Level 3) for two years in JSONL."""

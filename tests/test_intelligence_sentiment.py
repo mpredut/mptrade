@@ -1306,7 +1306,8 @@ def test_unified_ai_agent_base_classes_and_query_topic_json():
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
     from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
-    from intelligence.sentiment.guards import HighStakeGuard, PostStopReentryGuard, PreTradeLLMGuardBase
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, PreTradeLLMGuardBase
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 
     assert issubclass(HighStakeGuard, PreTradeLLMGuardBase)
@@ -1335,9 +1336,10 @@ def test_unified_ai_agent_base_classes_and_query_topic_json():
 def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
     """Verify PostStopReentryGuard and HighStakeGuard adapt cached decisions across enforce <-> shadow modes."""
     from intelligence.sentiment.gemini_client import GeminiClient
-    from intelligence.sentiment.guards import HighStakeGuard, PostStopReentryGuard
     from intelligence.sentiment.guards import high_stake_guard as hsg_mod
     from intelligence.sentiment.guards import post_stop_reentry_guard as psg_mod
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 
     psg_mod._POST_STOP_DECISION_CACHE.clear()
     hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
