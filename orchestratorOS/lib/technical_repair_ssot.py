@@ -33,7 +33,6 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
-    sanitize_heartbeat_status,
 )
 from cachepaths import normalize_venue_name, resolve_cachedb_filepath
 from providers.base import extract_order_id

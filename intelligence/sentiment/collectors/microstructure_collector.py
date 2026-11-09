@@ -142,20 +142,15 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_cross_btc_metrics,
     compute_swing_wave_metrics,
     compute_volume_profile_metrics,
-    evaluate_post_rth_24h_override,
     extract_archive_24h_and_7d_slices,
-    merge_equity_ohlc24_into_raw_series,
-    normalize_and_dedup_24h_series,
     normalize_yahoo_5d_chart_bars,
     pct_delta,
     prepend_older_non_diverged_points,
-    prune_stale_equity_short_metrics,
     range_position_pct,
     recalculate_live_price_geometry,
     resolve_asset_session_policy,
     round_opt_px,
     sort_ts_rows,
-    strip_off_rth_flat_poller_tail,
 )
 from instrument_registry import casefold_get, is_equity_symbol
 from state_io import (

@@ -35,7 +35,6 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     resolve_read_json_cached,
     safe_float,
-    safe_nonneg_float,
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
@@ -75,10 +74,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _STALE_SHORT_24H_KEYS,
     AssetSessionPolicy,
     _apply_24h_series_enrichment,
-    _auto_px_decimals,
     _compute_kalman_from_series,
     _compute_short_slopes_from_series,
-    _load_stitched_24h_ohlc_points,
     _parse_ts_px_row,
     _prices_diverged,
     apply_live_24trend_windows,
@@ -86,12 +83,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
-    compute_volume_profile_metrics,
-    normalize_yahoo_5d_chart_bars,
     pct_delta,
-    prune_stale_equity_short_metrics,
     recalculate_live_price_geometry,
-    resolve_asset_session_policy,
     round_opt_px,
 )
 from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open
@@ -1851,9 +1844,6 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
         """Enrich ``ctx.telemetry`` using the normalized snapshot in ``ctx``."""
 
 
-PretradeTelemetryStage = PretradePillarCollectorBase
-
-
 class Pillar2AndRegimeStage(PretradePillarCollectorBase):
     """Concrete pillar collector (Level 3): Pillar 2 Orderbook/Funding/Whale + Pillar 3 Regime snapshots."""
 
@@ -2405,7 +2395,6 @@ __all__ = [
     "PretradeStructural7dStage",
     "PretradeTelemetryOrchestrator",
     "PretradeTelemetrySnapshot",
-    "PretradeTelemetryStage",
     "QuantitativeSeriesAndMicrostructureStage",
     "RecentFillsExecutionStage",
     "collect_pretrade_telemetry",

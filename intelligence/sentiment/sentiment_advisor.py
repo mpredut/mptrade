@@ -17,7 +17,6 @@ from intelligence.macro_sentiment_ssot import (
     normalize_risk_level,
     obj_attr,
     obj_float,
-    record_dynamic_crisis_terms_from_assessment,
     resolve_global_trading_session,
     resolve_now_ts,
     safe_nonneg_ts,

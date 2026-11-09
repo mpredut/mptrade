@@ -1458,7 +1458,7 @@ class TestCacheFactory(unittest.TestCase):
         with self.subTest("start_sync_false_never_queries_remote_when_cache_missing_or_empty"):
             _reset()
             empty_dir = tempfile.mkdtemp()
-            with patch.object(cm.u, "cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
+            with patch("utils.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
                  patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
                  patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:

@@ -1979,11 +1979,11 @@ def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_
     )
     from intelligence.sentiment.collectors.macro_telemetry_collector import compute_deribit_options_surface
     from intelligence.sentiment.collectors.portfolio_collector import (
-        _infer_symbol_venue_and_fees_bps,
         compute_enterprise_portfolio_risk_metrics,
         harvest_recent_orders_and_enrich_positions,
         sync_sibling_symbol_telemetry,
     )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
 
     # 1. parse_live_macro_release_surprises ignores 'at 08:30' and 'flat 0.2%' while matching 'Est. 3.1%' / 'Prev. 3.2%'
     surprises = parse_live_macro_release_surprises(
@@ -2364,10 +2364,8 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
 
     # 8. Fee tuple unpacking, 7d>=24h range invariant, VA regime vs va_pos, and local L2 spot_cvd isolation
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        _infer_symbol_venue_and_fees_bps,
-        sync_sibling_symbol_telemetry,
-    )
+    from intelligence.sentiment.collectors.portfolio_collector import sync_sibling_symbol_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
     from intelligence.sentiment.evaluators.price_series_evaluator import _build_vp_position_dict
 
     venue, maker_bps, taker_bps, half_sp = _infer_symbol_venue_and_fees_bps("HYPEUSD", {"spread_bps": 4.0})

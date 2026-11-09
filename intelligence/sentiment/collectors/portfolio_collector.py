@@ -30,7 +30,6 @@ from intelligence.macro_sentiment_ssot import (
     resolve_save_json_state,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_ts,
     safe_pos_float,
 )
 import intelligence.sentiment.collectors.microstructure_collector as _mc
@@ -39,22 +38,12 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     TelemetryCollectorFactory,
     _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
-    discover_reference_microstructure_symbols,
     enrich_24h_and_microstructure,
-    ensure_fresh_symbol_microstructure,
-    load_symbol_microstructure,
-    load_symbol_price_series,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _MICRO_PRICE_ANCHOR_KEYS,
     _first_variant_dict,
-    _infer_symbol_venue_and_fees_bps,
-    compute_cross_venue_arb_metrics,
-    compute_liquidation_clusters,
     enrich_cross_venue_trends,
-    enrich_microstructure_cvd,
     sync_sibling_symbol_telemetry,
-    update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     _VENUE_DEFAULT_FEE_SPECS,
@@ -73,21 +62,11 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _apply_24h_series_enrichment,
-    _auto_px_decimals,
-    _build_vp_position_dict,
-    _compute_horizon_range_dict,
     _compute_kalman_from_series,
     _compute_short_slopes_from_series,
     _extract_ohlc_series_points,
     _load_stitched_24h_ohlc_points,
-    _parse_ts_px_row,
     _prices_diverged,
-    apply_short_trend_item,
-    compute_7d_range_metrics,
-    compute_24h_price_metrics,
-    compute_cross_btc_metrics,
-    compute_volume_profile_metrics,
-    pct_delta,
     recalculate_live_price_geometry,
     round_opt_px,
 )

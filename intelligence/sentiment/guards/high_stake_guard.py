@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import _parse_bool_flag, resolve_patched_attr

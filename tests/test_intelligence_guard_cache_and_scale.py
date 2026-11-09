@@ -15936,7 +15936,7 @@ def test_iteration165_credentials_cache_manager_and_cachetrend_hygiene(tmp_path,
     assert pair.key == "key_val" and pair.secret == "sec_val" and pair.profile == "Bot"
 
     # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
-    monkeypatch.setattr(cm.u, "cache_path", lambda fn: str(tmp_path / fn))
+    monkeypatch.setattr("utils.cache_path", lambda fn: str(tmp_path / fn))
     tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
     assert tm.symbols == ["BTCUSDC"]
     assert tm.read_only is True

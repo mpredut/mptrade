@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import threading
 import time
 from typing import Any, Dict, Optional

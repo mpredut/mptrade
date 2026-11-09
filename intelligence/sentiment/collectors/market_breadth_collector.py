@@ -15,11 +15,9 @@ from intelligence.macro_sentiment_ssot import (
     get_breadth_quote_suffixes,
     get_breadth_top_mover_min_volume_usd,
     get_market_breadth_endpoint_url,
-    is_cache_fresh,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_ts,
 )
 
 from intelligence.sentiment.collectors.microstructure_collector import (

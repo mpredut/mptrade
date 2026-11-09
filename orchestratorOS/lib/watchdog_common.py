@@ -18,7 +18,6 @@ if str(ROOT) not in sys.path:
 
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from botcore import (  # noqa: E402, F401 (re-exports for watchdogs)
-    _parse_bool_flag,  # noqa: F401
     load_env_stack,
     required_bool_env,  # noqa: F401
     required_float_env,  # noqa: F401

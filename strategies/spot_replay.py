@@ -24,7 +24,7 @@ from offline.backtests.execution import (
 from offline.backtests.metrics import calculate_performance_metrics, round_metric
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
-from strategies.spot_engine import StratParams, Strategy, notify
+from strategies.spot_engine import StratParams
 
 _REPLAY_PRECISION = PairPrecision(5, 8, 0.0, "REPLAY")
 _LAST_REPLAY_DIAG: dict = {}

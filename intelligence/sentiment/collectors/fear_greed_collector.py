@@ -3,17 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-import time
 from typing import Any, Dict, Optional, Tuple
 
 from intelligence.macro_sentiment_ssot import (
     CachedHttpJsonCollector,
     fetch_public_json,
     get_fear_greed_endpoint_url,
-    is_cache_fresh,
     resolve_now_ts,
     safe_float,
-    safe_nonneg_ts,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     TelemetryCacheCollectorInterface,

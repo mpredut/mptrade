@@ -19,7 +19,6 @@ from providers.market_api import api as mkt      # Single guarded proxy (Instrum
 from state_io import append_text_line
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
-    DEFAULT_SAMPLE_RATE_SEC,
     PriceTrendAnalyzer,
     PriceWindow,
     RECENT_GRADIENT_SECONDS,

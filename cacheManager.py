@@ -17,58 +17,36 @@ The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
 
 from __future__ import annotations
 
-import bisect
 import builtins
-from collections import defaultdict, deque
-from datetime import datetime
 import json
 import os
 import sys
 import threading
 import time
 from typing import Optional
-import uuid
 
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
-    is_us_rth_open,
     load_dotenv,
     safe_nonneg_float,
-    safe_pos_float,
-    safe_pos_int,
     single_instance,
     touch_module_heartbeat,
 )
 from cacheInterface import (
-    CM_APPEND_MAX_FILE_BYTES,
-    CM_DEDUP_WINDOW,
     CM_LONG_ARCHIVE_FLUSH_SEC,
     CM_LONG_ARCHIVE_MEMORY_ROWS,
     CM_LONG_ARCHIVE_MONTHS,
     CM_LONG_ARCHIVE_SAMPLE_SEC,
-    CM_RESYNC_INTERVAL_SEC,
-    CM_RETENTION_CHECK_INTERVAL_SEC,
-    CM_RETENTION_DAYS,
-    CM_ROTATE_ARCHIVE_COUNT,
-    CM_ROTATE_KEEP_FRACTION,
     CacheManagerInterface,
     WS_EVENT_LOG_ENABLED,
     WS_LOSS_TIMEOUT_SEC,
     WS_ONLY_MODE,
-    _ACCOUNT_CACHE_CLASSES,
-    _CACHE_META_SCHEMA_VERSION,
     _CONFIG_ROOT,
-    _ORDER_CACHE_CLASSES,
-    _TRADE_CACHE_CLASSES,
-    _cm_override,
     _coerce_symbol_list,
-    _jsonl_line,
     _monotonic_time,
-    _norm_symbol_keys,
-    _now_time,
     _strict_int_field,
 )
 from cacheaccount import (
@@ -77,15 +55,7 @@ from cacheaccount import (
     CacheOrderManager,
     CacheTradeManager,
 )
-import cacheintegrity as _cache_integrity
-from cachepaths import (
-    canonical_base_asset,
-    canonical_symbol_key,
-    clean_symbol_key,
-    compute_venue_nav_breakdown,
-    migrate_legacy_filename_if_needed,
-    normalize_venue_name,
-)
+from cachepaths import migrate_legacy_filename_if_needed
 from cacheprice import (
     Cache24PriceManager,
     Cache365PriceManager,
@@ -94,13 +64,9 @@ from cacheprice import (
     CacheSparsePriceManager,
     HyperliquidPriceStream,
     KrakenPriceStream,
-    _NB_FETCH_DEADLINE_SEC,
-    _NonBinanceTrendPoller,
-    _VenuePriceStreamBase,
     _fetch_price_with_deadline,
     _start_nonbinance_trend_poller,
 )
-import cachetrend as _cache_trend
 from cachetrend import (
     CM_DYNAMIC_WINDOW_MAX_SEC,
     CM_DYNAMIC_WINDOW_MIN_SEC,
@@ -110,39 +76,13 @@ from cachetrend import (
     CacheTrendManagerBase,
 )
 import instrument_registry as sym
-from instrument_registry import casefold_get, is_equity_symbol, tracked_price_instruments
-from lock import FileLock
-import providers.market_api as _market_api
-from providers.base import (
-    _parse_bool_flag,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-    extract_timestamp_ms,
-    extract_timestamp_s,
-    live_price_fetch_context,
-    normalize_side,
-    normalize_timestamp_ms,
-)
+from instrument_registry import tracked_price_instruments
+from providers.base import _parse_bool_flag
 from state_io import (
-    atomic_gzip_file,
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json,
-    commit_file_and_meta,
-    discard_generation_file,
-    generation_lock_path,
-    meta_file_path,
-    previous_generation_path,
-    prune_rotated_archives,
-    read_json_dict,
-    read_recovering_previous,
-    read_tail_lines,
-    restore_previous_generation,
-    stage_previous_generation,
-    truncate_file_bytes,
 )
-import utils as u
 
 load_dotenv()
 
