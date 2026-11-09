@@ -1534,6 +1534,9 @@ class EmailMirrorTest(unittest.TestCase):
             format_notify_price,
             format_notify_qty,
             format_owner_tags,
+            format_trade_notification,
+            format_trade_venue_tag,
+            strip_owner_tags,
         )
         from notify_engine.server import NotificationServer
 
@@ -1542,6 +1545,28 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(format_owner_tags("order_retry"), ("", ""))
         self.assertEqual(format_owner_tags("order_retry", ignore=("unspecified", "unknown")), (" [order_retry]", " (order_retry)"))
         self.assertEqual(format_owner_tags("alt:12345"), ("", ""))
+        self.assertEqual(format_trade_venue_tag("binance", "assetguardian"), "[binance:assetguardian]")
+        self.assertEqual(format_trade_venue_tag("binance", "unspecified"), "[binance]")
+        self.assertEqual(
+            format_trade_notification("FILLED", "BUY", "TAOUSDC", "212.50", 1.7379, 370.52, "USDC", "721818232", venue="binance", owner="assetguardian"),
+            ("BUY TAOUSDC@212.50 [binance:assetguardian]", "FILLED ~370.52 USDC (qty: 1.7379, order: 721818232)"),
+        )
+        self.assertEqual(
+            format_trade_notification("PLACED", "SELL", "TAOUSDC", "224.20", 7.1932, 1612.72, "USDC", "721977719", venue="binance", owner="tradeall"),
+            ("SELL TAOUSDC@224.20 [binance:tradeall]", "PLACED ~1612.72 USDC (qty: 7.1932, order: 721977719)"),
+        )
+        self.assertEqual(strip_owner_tags("BUY TAOUSDC@212.50 [binance:assetguardian]").strip(), "BUY TAOUSDC@212.50")
+        with mock.patch.object(self.server, "_send_ntfy", return_value=True) as mock_send_ntfy:
+            self.server.dispatch_alerts([{
+                "type": "bot_event",
+                "name": "BUY TAOUSDC@212.50 [binance:assetguardian]",
+                "body": "FILLED ~370.52 USDC (qty: 1.7379, order: 721818232)",
+                "source": "monitortrades",
+                "symbol": "TAOUSDC",
+            }], bot_name="monitortrades")
+            mock_send_ntfy.assert_called_once()
+            self.assertEqual(mock_send_ntfy.call_args[0][0], "BUY TAOUSDC@212.50 [binance:assetguardian]")
+            self.assertEqual(mock_send_ntfy.call_args[0][3], "t-trades")
         self.assertEqual(format_notify_qty(0.015), "0.015")
         self.assertEqual(format_notify_qty(0.0), "0")
         self.assertEqual(format_notify_price(75180.5), "75,180.50")

@@ -193,14 +193,17 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
     if not _should_notify_order_launched(owner):
         return
     try:
-        qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
+        qty, px, val, quote, side, _, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
         px_disp = format_price_log(px)
+        t_title, t_body = alert.format_trade_notification(
+            "PLACED", side, symbol, px_disp, qty, val, quote, order_id, venue="binance", owner=owner
+        )
         print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
         alert.notify(
-            title=f"📝 {side} {symbol} @ {px_disp}{owner_tag}",
-            body=f"Order {order_id}{owner_body} placed on venue. Qty: {qty:.4f} {symbol} (~{val:.2f} {quote})",
+            title=t_title,
+            body=t_body,
             source="monitororder",
             symbol=str(symbol),
             price=px,

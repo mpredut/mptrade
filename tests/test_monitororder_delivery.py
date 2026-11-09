@@ -249,8 +249,8 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_called_once_with(
-                title="📝 BUY TAOUSDC @ 283.92",
-                body="Order 2001 placed on venue. Qty: 0.5000 TAOUSDC (~141.96 USDC)",
+                title="BUY TAOUSDC@283.92 [binance]",
+                body="PLACED ~141.96 USDC (qty: 0.5000, order: 2001)",
                 source="monitororder",
                 symbol="TAOUSDC",
                 price=283.92,

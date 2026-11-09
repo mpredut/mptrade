@@ -73,11 +73,17 @@ _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
 )
 _KNOWN_OWNERS = (
-    "MANUAL", "TRADEALL", "MONITORORDER", "RTRADE", "MONITORTRADES",
+    "MANUAL", "TRADEALL", "MONITORORDER", "RTRADE", "MONITORTRADES", "ORDER_RETRY",
     "ASSETGUARDIAN", "AI_EXECUTOR", "SPOT_DCA", "TRAILING_STOP", "ORDER_MANAGER", "HL_BOT",
 )
 _OWNER_PAT = "|".join(_KNOWN_OWNERS)
-_OWNER_TAG_RE = re.compile(rf"\[({_OWNER_PAT})\]|\(({_OWNER_PAT})\)", flags=re.IGNORECASE)
+_VENUE_PAT = "BINANCE|KRAKEN|HYPERLIQUID|HL|T212|TRADING212"
+_OWNER_TAG_RE = re.compile(
+    rf"\[(?:(?:{_VENUE_PAT}):)?({_OWNER_PAT})\]"
+    rf"|\[({_VENUE_PAT})\]"
+    rf"|\((?:(?:{_VENUE_PAT}):)?({_OWNER_PAT})\)",
+    flags=re.IGNORECASE,
+)
 _GATE_SUPPRESSED_REASONS = (
     "duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped",
 )
@@ -102,6 +108,60 @@ def format_owner_tags(
     if not s or s.lower() in ignore or s.lower().startswith("alt:"):
         return "", ""
     return f" [{s}]", f" ({s})"
+
+
+def format_trade_venue_tag(
+    venue: Any = "binance",
+    owner: Any = None,
+    *,
+    ignore: tuple[str, ...] = ("unspecified", "unknown", "order_retry"),
+) -> str:
+    """Return ``'[venue:owner]'`` when owner is valid, else ``'[venue]'``."""
+    v = "" if isinstance(venue, bool) or venue is None else str(venue).strip().lower()
+    _, owner_body = format_owner_tags(owner, ignore=ignore)
+    o = owner_body.strip(" ()").lower() if owner_body else ""
+    if v and o:
+        return f"[{v}:{o}]"
+    if v:
+        return f"[{v}]"
+    return f"[{o}]" if o else ""
+
+
+def format_trade_notification(
+    status: str,
+    side: Any,
+    symbol: Any,
+    price_str: Any,
+    qty: Any,
+    val: Any,
+    quote: Any,
+    order_id: Any,
+    *,
+    venue: Any = "binance",
+    owner: Any = None,
+    fills_count: int = 1,
+    cum_qty: Optional[float] = None,
+    cum_val: Optional[float] = None,
+    cum_fills: int = 0,
+) -> tuple[str, str]:
+    """Build canonical ``(title, body)`` for TRADES notifications:
+    Title: ``BUY/SELL <SYMBOL>@<PRICE> [venue:module]``
+    Body:  ``FILLED/PLACED ~<VAL> <QUOTE> (qty: <QTY>, order: <ID>)``
+    """
+    side_s = str(side or "").strip().upper() or "ORDER"
+    sym_s = str(symbol or "").strip().upper()
+    vtag = format_trade_venue_tag(venue, owner)
+    title = f"{side_s} {sym_s}@{price_str} {vtag}".strip()
+    st_s = str(status or "FILLED").strip().upper()
+    qf = safe_pos_float(qty, default=0.0) or 0.0
+    vf = safe_pos_float(val, default=0.0) or 0.0
+    q_ccy = str(quote or "USDC").strip().upper() or "USDC"
+    fills_part = f", {fills_count} fills" if fills_count > 1 else ""
+    cum_sfx = ""
+    if cum_fills > fills_count and cum_qty is not None and cum_val is not None:
+        cum_sfx = f" [total: ~{cum_val:.2f} {q_ccy}, qty: {cum_qty:.4f}, {cum_fills} fills]"
+    body = f"{st_s} ~{vf:.2f} {q_ccy} (qty: {qf:.4f}, order: {order_id}{fills_part}){cum_sfx}"
+    return title, body
 
 
 def format_notify_qty(qty: Any) -> str:

@@ -208,24 +208,42 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     )
                 except Exception:
                     owner = "unspecified"
-                owner_tag, owner_body = alert.format_owner_tags(owner)
+                _, owner_body = alert.format_owner_tags(owner)
                 total_qty = sum(extract_order_qty(t) for t in group)
                 total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
                 quote = (cachepaths.split_symbol_assets(sym_name) or ("", ""))[1] or "USD"
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
+                cum_qty = None
+                cum_val = None
                 if len(all_group) > len(group):
                     cum_qty = sum(extract_order_qty(t) for t in all_group)
                     cum_val = sum(extract_order_qty(t) * extract_order_price(t) for t in all_group)
                     fill_suffix += f" [total: {cum_qty:.4f} {sym_name} (~{cum_val:.2f} {quote}), {len(all_group)} fills]"
                 avg_px_str = format_price_log(avg_price)
+                t_title, t_body = alert.format_trade_notification(
+                    "FILLED",
+                    side,
+                    sym_name,
+                    avg_px_str,
+                    total_qty,
+                    total_val,
+                    quote,
+                    oid,
+                    venue="binance",
+                    owner=owner,
+                    fills_count=len(group),
+                    cum_qty=cum_qty,
+                    cum_val=cum_val,
+                    cum_fills=len(all_group),
+                )
                 print(
                     f"[MONITORTRADES] 🎉 New executed order{owner_body}: {side} {total_qty:.6f} "
                     f"{sym_name} @ {avg_px_str} (orderId={oid}{fill_suffix})"
                 )
                 alert.notify(
-                    title=f"🎉 {side} {sym_name} @ {avg_px_str}{owner_tag}",
-                    body=f"Order {oid}{owner_body} executed! Filled: {total_qty:.4f} {sym_name} (~{total_val:.2f} {quote}){fill_suffix}",
+                    title=t_title,
+                    body=t_body,
                     source="monitortrades",
                     symbol=sym_name,
                     price=avg_price,

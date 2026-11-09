@@ -511,15 +511,14 @@ class NotificationServer:
         if is_price or is_macro_bot or has_auto_topic_tag:
             full_title = cleaned_title
         elif topic == trades_topic or cat == "TRADES":
-            # For trade notifications, show only provider in brackets without coin
+            # For trade notifications, preserve trailing [venue:module] / [venue] tag or prepend [Provider]
             provider = _resolve_provider_label(bot_name, source)
-            if provider:
-                if bot_name and cleaned_title.startswith(f"[{bot_name}]"):
-                    cleaned_title = cleaned_title[len(f"[{bot_name}]"):].strip()
-                if cleaned_title.startswith(f"[{provider}]"):
-                    full_title = cleaned_title
-                else:
-                    full_title = f"[{provider}] {cleaned_title}"
+            if bot_name and cleaned_title.startswith(f"[{bot_name}]"):
+                cleaned_title = cleaned_title[len(f"[{bot_name}]"):].strip()
+            if re.search(r"\[(?:binance|kraken|hyperliquid|hl|t212)(?::[a-z0-9_]+)?\]\s*$", cleaned_title, flags=re.IGNORECASE):
+                full_title = cleaned_title
+            elif provider and not cleaned_title.startswith(f"[{provider}]"):
+                full_title = f"[{provider}] {cleaned_title}"
             else:
                 full_title = cleaned_title
         else:
