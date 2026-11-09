@@ -1198,6 +1198,8 @@ def _seed_t212_and_hyperliquid_initial_prices(
     inst_by_sym: Dict[str, Any],
     now_ts: float,
     _rj: Any,
+    *,
+    allow_network: bool = True,
 ) -> Tuple[set[str], Dict[str, float]]:
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
@@ -1221,7 +1223,8 @@ def _seed_t212_and_hyperliquid_initial_prices(
             if bticker and bticker not in t212_seed_tickers and (bticker in prices_and_trends or b_free > 0.0):
                 t212_seed_tickers.append(bticker)
     if (
-        t212_seed_tickers
+        allow_network
+        and t212_seed_tickers
         and not any(t in inst_by_sym for t in t212_seed_tickers)
         and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached)
     ):
@@ -1266,7 +1269,13 @@ def _seed_t212_and_hyperliquid_initial_prices(
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
         ensure_fresh_symbol_microstructure(
-            cache_dir, hl_sym, now_ts=now_ts, max_age_ob_sec=180.0, max_age_whale_sec=360.0, include_derivatives=True
+            cache_dir,
+            hl_sym,
+            now_ts=now_ts,
+            max_age_ob_sec=180.0,
+            max_age_whale_sec=360.0,
+            include_derivatives=True,
+            allow_network=allow_network,
         )
         hl_m_seed = load_symbol_microstructure(cache_dir, hl_sym, _rj) if hl_sym not in prices_and_trends else None
         if hl_sym not in prices_and_trends and (
@@ -1300,7 +1309,12 @@ def _enrich_symbol_with_yahoo_5d_chart(
     t212_seeded_from_cache: set[str],
     t212_pos_ts: Dict[str, float],
     now_ts: float,
+    *,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> Tuple[list, Dict[str, Any], List[float], float, Optional[float], bool]:
+    if not allow_network:
+        return matched_series_24h, m24, active_7d_vals, sym_px_cur, post_rth_px_override, post_rth_series_replaced
     is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
     _ensure_cacheprice_classes_bound()
     p24_eq_path = (
@@ -1426,9 +1440,10 @@ def _enrich_symbol_with_yahoo_5d_chart(
                 prices_and_trends[sym].pop(k_7d_opt, None)
             prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
             active_7d_vals = list(vals_5d)
-        _persist_refreshed_equity_chart_cache(
-            cache_dir, sym, p24_eq_path, pts_24h_to_save, pts_24h_bars, pts_5d, raw_matched_series_24h, rth_bar_fresh, now_ts
-        )
+        if persist:
+            _persist_refreshed_equity_chart_cache(
+                cache_dir, sym, p24_eq_path, pts_24h_to_save, pts_24h_bars, pts_5d, raw_matched_series_24h, rth_bar_fresh, now_ts
+            )
     except Exception:
         pass
     return matched_series_24h, m24, active_7d_vals, sym_px_cur, post_rth_px_override, post_rth_series_replaced
@@ -1447,6 +1462,8 @@ def _enrich_symbol_microstructure_entry(
     is_eq_sym: bool,
     now_ts: float,
     _rj: Any,
+    *,
+    allow_network: bool = True,
 ) -> None:
     if is_eq_sym or "USD" in compatible_quote_suffixes(sym):
         ensure_fresh_symbol_microstructure(
@@ -1456,6 +1473,7 @@ def _enrich_symbol_microstructure_entry(
             max_age_ob_sec=180.0,
             max_age_whale_sec=360.0,
             include_derivatives=True,
+            allow_network=allow_network,
         )
     if not (m_info := load_symbol_microstructure(cache_dir, sym, _rj)):
         return
@@ -1528,6 +1546,9 @@ def _enrich_single_symbol_24h_and_microstructure(
     t212_pos_ts: Dict[str, float],
     now_ts: float,
     _rj: Any,
+    *,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> None:
     sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
     is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
@@ -1618,13 +1639,13 @@ def _enrich_single_symbol_24h_and_microstructure(
             prices_and_trends[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
         else:
             prices_and_trends[sym].pop("_partial_7d_span_ms", None)
-    ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
+    ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym) if allow_network else None
     s24_is_live_clock = (
         raw_s24_last_ts_ms <= 0.0
         or abs(now_ts * 1000.0 - raw_s24_last_ts_ms) <= 30 * 60 * 1000.0
         or sym in (inst_by_sym or {})
     )
-    if callable(ohlc_fn) and s24_is_live_clock:
+    if allow_network and callable(ohlc_fn) and s24_is_live_clock:
         if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
             try:
                 pts_24h = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0)
@@ -1656,7 +1677,14 @@ def _enrich_single_symbol_24h_and_microstructure(
             except Exception:
                 pass
     upgrade_tpo_vp_from_ohlc(
-        sym, m24, sym_px_cur, now_ts, s24_is_live_clock=s24_is_live_clock, ohlc_fn=ohlc_fn, inst_by_sym=inst_by_sym
+        sym,
+        m24,
+        sym_px_cur,
+        now_ts,
+        s24_is_live_clock=s24_is_live_clock,
+        ohlc_fn=ohlc_fn,
+        inst_by_sym=inst_by_sym,
+        allow_network=allow_network,
     )
     prices_and_trends[sym].pop("_partial_7d_span_ms", None)
     is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
@@ -1678,6 +1706,8 @@ def _enrich_single_symbol_24h_and_microstructure(
             t212_seeded_from_cache,
             t212_pos_ts,
             now_ts,
+            allow_network=allow_network,
+            persist=persist,
         )
     )
     if m24:
@@ -1708,6 +1738,7 @@ def _enrich_single_symbol_24h_and_microstructure(
         is_eq_sym,
         now_ts,
         _rj,
+        allow_network=allow_network,
     )
 
 
@@ -1720,9 +1751,11 @@ def _enrich_discovered_reference_microstructure_symbols(
     btc_series_24h: list,
     now_ts: float,
     _rj: Any,
+    *,
+    allow_network: bool = True,
 ) -> None:
     for msym in discover_reference_microstructure_symbols(cache_dir, microstructure, _rj):
-        if "USD" in compatible_quote_suffixes(msym) and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached):
+        if allow_network and "USD" in compatible_quote_suffixes(msym) and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached):
             ensure_fresh_symbol_microstructure(
                 cache_dir,
                 msym.upper(),
@@ -1730,6 +1763,7 @@ def _enrich_discovered_reference_microstructure_symbols(
                 max_age_ob_sec=180.0,
                 max_age_whale_sec=360.0,
                 include_derivatives=True,
+                allow_network=allow_network,
             )
         if not (m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj)):
             continue
@@ -1791,7 +1825,7 @@ def _enrich_discovered_reference_microstructure_symbols(
         elif p_ref is None:
             ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
             ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
-            if not ser_24h and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and is_live_network_backfill_enabled():
+            if not ser_24h and allow_network and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and is_live_network_backfill_enabled():
                 try:
                     krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_by_sym)
                     if callable(krk_ohlc_fn):
@@ -2085,6 +2119,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         inst_by_sym: Optional[Dict[str, Any]] = None,
         now_ts: Optional[float] = None,
         read_json_fn: Any = None,
+        allow_network: bool = True,
+        persist: bool = True,
         **kwargs: Any,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         pt_map = prices_and_trends if isinstance(prices_and_trends, dict) else {}
@@ -2097,7 +2133,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True
         )
         t212_seeded_from_cache, t212_pos_ts = _seed_t212_and_hyperliquid_initial_prices(
-            cachedb_dir, workspace_dir, pt_map, cp_map, inst_map, eff_now, _rj
+            cachedb_dir, workspace_dir, pt_map, cp_map, inst_map, eff_now, _rj, allow_network=allow_network
         )
         for sym in list(pt_map.keys()):
             _enrich_single_symbol_24h_and_microstructure(
@@ -2114,9 +2150,11 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 t212_pos_ts,
                 eff_now,
                 _rj,
+                allow_network=allow_network,
+                persist=persist,
             )
         _enrich_discovered_reference_microstructure_symbols(
-            cachedb_dir, pt_map, m_map, cp_map, inst_map, btc_series_24h, eff_now, _rj
+            cachedb_dir, pt_map, m_map, cp_map, inst_map, btc_series_24h, eff_now, _rj, allow_network=allow_network
         )
         return pt_map, m_map
 
@@ -2178,6 +2216,9 @@ def enrich_24h_and_microstructure(
     inst_by_sym: Dict[str, Any],
     now_ts: float,
     read_json_fn: Any = None,
+    *,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
     TelemetryCollectorFactory.get_fleet_enricher().collect(
@@ -2190,6 +2231,8 @@ def enrich_24h_and_microstructure(
         inst_by_sym=inst_by_sym,
         now_ts=now_ts,
         read_json_fn=read_json_fn,
+        allow_network=allow_network,
+        persist=persist,
     )
 
 

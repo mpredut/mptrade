@@ -673,6 +673,8 @@ def _harvest_tradable_positions_and_orders_impl(
     cache_dir: Optional[str] = None,
     verified_open_venues: Optional[set[str]] = None,
     allow_empty_inst_recovery: bool = False,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     from instrument_registry import casefold_get
 
@@ -702,7 +704,7 @@ def _harvest_tradable_positions_and_orders_impl(
         key = (v_name, asset.upper())
         if key in balance_memo:
             return balance_memo[key]
-        free_fn = getattr(getattr(inst_obj, "_provider", None), "free_balance", None)
+        free_fn = getattr(getattr(inst_obj, "_provider", None), "free_balance", None) if allow_network else None
         val_f: Optional[float] = None
         if callable(free_fn):
             try:
@@ -753,7 +755,7 @@ def _harvest_tradable_positions_and_orders_impl(
             prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
             prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
             px_from_cached_pos = False
-            if px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and is_live_network_backfill_enabled()):
+            if allow_network and (px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and is_live_network_backfill_enabled())):
                 try:
                     get_px_fn = getattr(inst._provider, "get_current_price", None)
                     if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
@@ -772,7 +774,7 @@ def _harvest_tradable_positions_and_orders_impl(
                 sym_entry["price"] = px
             quote_breakdown: Optional[Dict[str, float]] = None
             bd_key = f"breakdown:{v_norm}:{quote.upper()}"
-            if quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
+            if allow_network and quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
                 try:
                     if isinstance(raw_bd := bd_fn(), dict) and raw_bd:
                         quote_breakdown = {str(k): round(vf, 2) for k, v in raw_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
@@ -837,8 +839,8 @@ def _harvest_tradable_positions_and_orders_impl(
             )
             updated_bals[pos_bkey_cur] = {**pos_entry, "ts": eff_pos_ts}
 
-            if callable(open_fn := getattr(inst, "open_orders", None)):
-                oo_key = f"open_orders:{v_norm}:{sym}"
+            oo_key = f"open_orders:{v_norm}:{sym}"
+            if allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
                 sym_open_ok = False
                 try:
                     if isinstance(raw_open := open_fn(), list):
@@ -871,7 +873,19 @@ def _harvest_tradable_positions_and_orders_impl(
                             order_ts_map=order_ts_map,
                         )
                     )
-    elif allow_empty_inst_recovery and cached_bals:
+            elif oo_key in cached_bals:
+                open_orders_list.extend(
+                    _normalize_open_orders_list(
+                        cached_bals.get(oo_key),
+                        venue,
+                        sym,
+                        known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
+                        now_ts=now_ts_oo,
+                        order_ts_map=order_ts_map,
+                    )
+                )
+    elif (allow_empty_inst_recovery or not allow_network) and cached_bals:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
@@ -977,7 +991,7 @@ def _harvest_tradable_positions_and_orders_impl(
         gateway_max_usd=gateway_max_usd,
     )
 
-    if bcache_path and updated_bals and (is_live_network_backfill_enabled() or os.path.exists(bcache_path)):
+    if persist and allow_network and bcache_path and updated_bals and (is_live_network_backfill_enabled() or os.path.exists(bcache_path)):
         try:
             merged_bals = {**cached_bals, **updated_bals}
             if merged_bals != cached_bals:
@@ -1674,6 +1688,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         gateway_max_usd: float = 2000.0,
         verified_open_venues: Optional[set[str]] = None,
         allow_empty_inst_recovery: bool = False,
+        allow_network: bool = True,
+        persist: bool = True,
         **kwargs: Any,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
         return _harvest_tradable_positions_and_orders_impl(
@@ -1686,6 +1702,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             cache_dir=cachedb_dir or None,
             verified_open_venues=verified_open_venues,
             allow_empty_inst_recovery=allow_empty_inst_recovery,
+            allow_network=allow_network,
+            persist=persist,
         )
 
 
@@ -1838,6 +1856,8 @@ def harvest_tradable_positions_and_orders(
     cache_dir: Optional[str] = None,
     verified_open_venues: Optional[set[str]] = None,
     allow_empty_inst_recovery: bool = False,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     return TelemetryCollectorFactory.create("portfolio_tradable_positions").collect(
@@ -1851,6 +1871,8 @@ def harvest_tradable_positions_and_orders(
         gateway_max_usd=gateway_max_usd,
         verified_open_venues=verified_open_venues,
         allow_empty_inst_recovery=allow_empty_inst_recovery,
+        allow_network=allow_network,
+        persist=persist,
     )
 
 

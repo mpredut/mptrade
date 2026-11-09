@@ -108,6 +108,12 @@ class TelemetrySensorSnapshot:
     portfolio_summary: Dict[str, Any] = field(default_factory=dict)
     fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
     system_and_vpn: Dict[str, Any] = field(default_factory=dict)
+    snapshot_id: str = ""
+    source: str = ""
+    asset_scope: str = ""
+    ts: float = 0.0
+    evaluated_at_ts: float = 0.0
+    age_sec: float = 0.0
 
 
 @dataclass
@@ -187,6 +193,8 @@ class AutonomousAIReconciler:
         include_fleet: bool = True,
         include_market_portfolio: bool = True,
         asset_scope: str = "all",
+        allow_network: bool = True,
+        persist: bool = True,
     ) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         scope = (asset_scope or "all").strip().lower()
@@ -202,6 +210,12 @@ class AutonomousAIReconciler:
                 self.workspace_dir
             )
         if not include_market_portfolio:
+            snapshot.snapshot_id = f"sensors_only:{scope}:{int(round(now_ts * 1000.0))}"
+            snapshot.source = "cachedb_read_only"
+            snapshot.asset_scope = scope
+            snapshot.ts = now_ts
+            snapshot.evaluated_at_ts = now_ts
+            snapshot.age_sec = 0.0
             return snapshot
 
         return populate_market_and_portfolio_snapshot(
@@ -214,6 +228,24 @@ class AutonomousAIReconciler:
             now_ts=now_ts,
             read_json_fn=_read_json,
             log=logger,
+            allow_network=allow_network,
+            persist=persist,
+        )
+
+    def read_sensors_telemetry(
+        self,
+        *,
+        include_fleet: bool = False,
+        include_market_portfolio: bool = True,
+        asset_scope: str = "all",
+    ) -> TelemetrySensorSnapshot:
+        """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network calls and 0 disk writes."""
+        return self.harvest_sensors_telemetry(
+            include_fleet=include_fleet,
+            include_market_portfolio=include_market_portfolio,
+            asset_scope=asset_scope,
+            allow_network=False,
+            persist=False,
         )
 
     def _audit_workspace_configs(self) -> Dict[str, Any]:

@@ -831,3 +831,133 @@ def test_external_collectors_and_survival_producer_consumer_decoupling(
     assert os.path.exists(mhist_path)
 
 
+def test_read_market_and_portfolio_snapshot_read_only_consumer(
+    temp_cache_dir: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verify Step 3: read_market_and_portfolio_snapshot performs 0 live venue/network calls and 0 disk writes while stamping snapshot identity and age."""
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        read_market_and_portfolio_snapshot,
+    )
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
+    from state_io import save_json_state
+
+    monkeypatch.setenv("MPTRADE_ENABLE_LIVE_BACKFILL", "1")
+    now_ts = 1700000500.0
+
+    # Seed cachedb files including venue_balances_state.json and stale market_breadth
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_current_price.json"),
+        {"ts": now_ts - 15.0, "items": {"BTCUSDC": {"price": 65000.0, "ts": now_ts - 15.0}}},
+        indent=2,
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_short_trend.json"),
+        {"ts": now_ts - 15.0, "items": {"BTCUSDC": {"trend": 1, "growth_coefficient": 0.012}}},
+        indent=2,
+    )
+    save_json_state(
+        os.path.join(temp_cache_dir, "market_breadth_collect.json"),
+        {
+            "advance_ratio": 0.55,
+            "median_change_pct": 1.2,
+            "mean_change_pct": 1.4,
+            "dispersion_std": 2.1,
+            "regime": "BULLISH_BROAD",
+            "total_symbols": 10,
+            "total_count": 10,
+            "advancing": 6,
+            "declining": 4,
+            "ts": now_ts - 7200.0,  # Stale (>30m), would normally trigger live MarketBreadthCollector refresh
+        },
+        indent=2,
+    )
+    bals_path = os.path.join(temp_cache_dir, "venue_balances_state.json")
+    save_json_state(
+        bals_path,
+        {
+            "binance:BTC": 0.25,
+            "binance:USDC": 1500.0,
+            "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1500.0},
+            "open_orders:binance:BTCUSDC": [
+                {"orderId": "ord-1", "symbol": "BTCUSDC", "side": "SELL", "price": 68000.0, "origQty": 0.1}
+            ],
+        },
+        indent=2,
+    )
+
+    # Create a dummy instrument whose live provider methods fail if invoked
+    class _FailingProvider:
+        def free_balance(self, asset: str):
+            raise AssertionError(f"live free_balance({asset}) must not be called in read_snapshot mode")
+
+        def get_current_price(self, symbol: str):
+            raise AssertionError(f"live get_current_price({symbol}) must not be called in read_snapshot mode")
+
+        def usd_cash_breakdown(self):
+            raise AssertionError("live usd_cash_breakdown() must not be called in read_snapshot mode")
+
+    class _DummyInst:
+        symbol = "BTCUSDC"
+        provider_name = "binance"
+        base = "BTC"
+        quote = "USDC"
+        params = {"trailing.pct": 2.5}
+        _provider = _FailingProvider()
+
+        def open_orders(self):
+            raise AssertionError("live open_orders() must not be called in read_snapshot mode")
+
+    class _DummyGateway:
+        max_notional_usd = 2000.0
+
+        def load_all_intents(self):
+            return []
+
+        def load_tradable_instruments(self, **_kwargs):
+            return {"binance:BTCUSDC": _DummyInst()}
+
+    # Ensure instruments.conf exists in workspace so load_tradable_instruments is exercised
+    with open(os.path.join(temp_cache_dir, "instruments.conf"), "w", encoding="utf-8") as fh:
+        fh.write("BTCUSDC\n")
+
+    mhist_path = os.path.join(temp_cache_dir, "microstructure_cycle_history.json")
+    if os.path.exists(mhist_path):
+        os.remove(mhist_path)
+    bals_mtime_before = os.path.getmtime(bals_path)
+
+    snap = TelemetrySensorSnapshot()
+    out = read_market_and_portfolio_snapshot(
+        snap,
+        cache_dir=temp_cache_dir,
+        workspace_dir=temp_cache_dir,
+        logs_dirs=[],
+        intent_gateway=_DummyGateway(),
+        scope="crypto",
+        now_ts=now_ts,
+    )
+
+    assert out is snap
+    assert snap.source == "cachedb_read_only"
+    assert snap.asset_scope == "crypto"
+    assert snap.snapshot_id.startswith("market_portfolio:crypto:")
+    assert snap.ts == pytest.approx(now_ts - 15.0)
+    assert snap.evaluated_at_ts == pytest.approx(now_ts)
+    assert snap.age_sec == pytest.approx(15.0)
+
+    # Verify positions and open orders were reconstructed from cached venue_balances_state.json without live calls
+    positions = snap.portfolio_summary.get("tradable_positions") or []
+    assert len(positions) == 1
+    assert positions[0]["symbol"] == "BTCUSDC"
+    assert positions[0]["free_base"] == pytest.approx(0.25)
+    assert positions[0]["free_quote"] == pytest.approx(1500.0)
+    open_orders = snap.portfolio_summary.get("open_orders") or []
+    assert len(open_orders) == 1
+    assert open_orders[0]["order_id"] == "ord-1"
+
+    # Verify 0 disk mutations occurred during read-only snapshot population
+    assert not os.path.exists(mhist_path)
+    assert os.path.getmtime(bals_path) == pytest.approx(bals_mtime_before)
+
+
+

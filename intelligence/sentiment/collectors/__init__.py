@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         harvest_macro_and_news_sensors,
         harvest_portfolio_and_venue_cycles,
         populate_market_and_portfolio_snapshot,
+        read_market_and_portfolio_snapshot,
     )
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
     from intelligence.sentiment.collectors.microstructure_collector import (
@@ -31,7 +32,10 @@ if TYPE_CHECKING:
         load_symbol_best_recent_fills,
         load_venue_trailing_maps,
     )
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        collect_pretrade_telemetry,
+        read_pretrade_telemetry_snapshot,
+    )
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
         MACRO_BENCHMARK_SPECS,
         apply_asset_scope_filter,
@@ -158,6 +162,8 @@ _LAZY_IMPORTS: dict[str, str] = {
     "parse_venue_cycle_state": "intelligence.sentiment.evaluators.portfolio_evaluator",
     "pct_delta": "intelligence.sentiment.evaluators.price_series_evaluator",
     "populate_market_and_portfolio_snapshot": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "read_market_and_portfolio_snapshot": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "read_pretrade_telemetry_snapshot": "intelligence.sentiment.collectors.pretrade_telemetry_collector",
     "range_position_pct": "intelligence.sentiment.evaluators.price_series_evaluator",
     "recalculate_live_price_geometry": "intelligence.sentiment.evaluators.price_series_evaluator",
     "reconcile_venue_cycles_with_recent_orders": "intelligence.sentiment.evaluators.portfolio_evaluator",

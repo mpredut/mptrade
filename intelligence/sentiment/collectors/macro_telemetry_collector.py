@@ -337,7 +337,13 @@ def _read_first_cached_dict(
 
 
 def _harvest_macro_and_news_sensors_impl(
-    cache_dir: str, now_ts: float, read_json_fn: Any = None, *, scope: str = "",
+    cache_dir: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+    *,
+    scope: str = "",
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     now_ts = resolve_now_ts(now_ts)
@@ -463,7 +469,7 @@ def _harvest_macro_and_news_sensors_impl(
                     update_summary_line=True,
                 ) or enriched
             macro_sensors[attr] = enriched
-    if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
+    if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
         from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 
         stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
@@ -510,15 +516,16 @@ def _harvest_macro_and_news_sensors_impl(
                         if (rot_v := getattr(breadth_snap, rot_k, None)) is not None:
                             mb_payload[rot_k] = rot_v
                     mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
-                    _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                    _save_fn(mb_path, mb_payload, indent=2)
+                    if persist:
+                        _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+                        _save_fn(mb_path, mb_payload, indent=2)
                     macro_sensors["market_breadth"] = _with_age_min(mb_payload, mb_path)
             except Exception:
                 pass
         bench_cur = macro_sensors.get("macro_benchmarks")
         bench_age = safe_float(bench_cur.get("age_min") if isinstance(bench_cur, dict) else None, 999.0)
         if bench_cur is None or bench_age is None or bench_age > stale_age_min:
-            if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=True), dict) and live_mb:
+            if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=persist), dict) and live_mb:
                 macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
 
     breaking_news: List[Dict[str, Any]] = []
@@ -680,7 +687,7 @@ def _harvest_macro_and_news_sensors_impl(
             gt_cur["headlines_analyzed"] = len(valid_news)
             gt_cur["ts"] = now_ts
             gt_cur["age_min"] = 0.0
-            if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
+            if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
                     geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
@@ -701,7 +708,7 @@ def _harvest_macro_and_news_sensors_impl(
             gt_cur["headlines_analyzed"] = len(valid_news)
             gt_cur["ts"] = now_ts
             gt_cur["age_min"] = 0.0
-            if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
+            if persist and allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
                     geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
@@ -840,15 +847,22 @@ def _populate_market_and_portfolio_snapshot_impl(
     now_ts: float,
     read_json_fn: Any = None,
     log: Optional[Any] = None,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
     now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
     try:
-        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj, scope=scope)
+        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(
+            cache_dir, now_ts, _rj, scope=scope, allow_network=allow_network, persist=persist
+        )
     except TypeError:
-        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
+        try:
+            macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj, scope=scope)
+        except TypeError:
+            macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
         setattr(snapshot, attr, val)
     if str(scope or "").strip().lower() == "equities":
@@ -908,12 +922,39 @@ def _populate_market_and_portfolio_snapshot_impl(
             inst_map = {}
             inst_load_failed = True
 
-        tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
-            inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
-            known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
-            verified_open_venues=verified_open_venues,
-            allow_empty_inst_recovery=inst_load_failed,
-        )
+        try:
+            tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
+                inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+                verified_open_venues=verified_open_venues,
+                allow_empty_inst_recovery=inst_load_failed,
+                allow_network=allow_network,
+                persist=persist,
+            )
+        except TypeError:
+            tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
+                inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+                verified_open_venues=verified_open_venues,
+                allow_empty_inst_recovery=inst_load_failed,
+            )
+    elif not allow_network and cache_dir:
+        try:
+            tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
+                {}, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+                verified_open_venues=verified_open_venues,
+                allow_empty_inst_recovery=True,
+                allow_network=False,
+                persist=False,
+            )
+        except TypeError:
+            tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
+                {}, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+                verified_open_venues=verified_open_venues,
+                allow_empty_inst_recovery=True,
+            )
 
     if tradable_positions:
         snapshot.portfolio_summary["tradable_positions"] = tradable_positions
@@ -926,18 +967,42 @@ def _populate_market_and_portfolio_snapshot_impl(
         snapshot.portfolio_summary["trailing_peaks"] = trailing_map
 
     watcher_price_items = watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
-    enrich_cross_venue_trends(
-        snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
-    )
+    try:
+        enrich_cross_venue_trends(
+            snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items,
+            allow_network=False if not allow_network else None,
+        )
+    except TypeError:
+        enrich_cross_venue_trends(
+            snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
+        )
 
     cur_p_items = prices_data.get("items", {}) if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict) else {}
-    enrich_24h_and_microstructure(
-        cache_dir, workspace_dir, snapshot.prices_and_trends, snapshot.microstructure, cur_p_items, inst_by_sym, now_ts, _rj
-    )
-    enrich_cross_venue_trends(
-        snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
-    )
-    sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts)
+    try:
+        enrich_24h_and_microstructure(
+            cache_dir, workspace_dir, snapshot.prices_and_trends, snapshot.microstructure, cur_p_items, inst_by_sym, now_ts, _rj,
+            allow_network=allow_network, persist=persist,
+        )
+    except TypeError:
+        enrich_24h_and_microstructure(
+            cache_dir, workspace_dir, snapshot.prices_and_trends, snapshot.microstructure, cur_p_items, inst_by_sym, now_ts, _rj
+        )
+    try:
+        enrich_cross_venue_trends(
+            snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items,
+            allow_network=False if not allow_network else None,
+        )
+    except TypeError:
+        enrich_cross_venue_trends(
+            snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
+        )
+    try:
+        sync_sibling_symbol_telemetry(
+            snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts,
+            persist_cycle_deltas=(persist and allow_network),
+        )
+    except TypeError:
+        sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts)
 
     kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
         cache_dir, workspace_dir, logs_dirs, snapshot.portfolio_summary, snapshot.prices_and_trends,
@@ -1030,6 +1095,25 @@ def _populate_market_and_portfolio_snapshot_impl(
             snapshot.portfolio_summary, snapshot.prices_and_trends, snapshot.microstructure
         ):
             snapshot.portfolio_summary["portfolio_risk_engine"] = risk_eng
+
+    scope_label = str(scope or "all").strip().lower() or "all"
+    snap_source = "cachedb_read_only" if not allow_network and not persist else "live_harvest"
+    snap_ts = extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None
+    if snap_ts is None:
+        sensor_ts_candidates = [
+            ts_v
+            for s_val in macro_sensors.values()
+            if isinstance(s_val, dict) and (ts_v := extract_timestamp_s(s_val)) is not None
+        ]
+        snap_ts = max(sensor_ts_candidates) if sensor_ts_candidates else now_ts
+    snap_age_sec = round(max(0.0, now_ts - snap_ts), 3)
+    if not getattr(snapshot, "snapshot_id", ""):
+        snapshot.snapshot_id = f"market_portfolio:{scope_label}:{int(round(snap_ts * 1000.0))}"
+    snapshot.source = snap_source
+    snapshot.asset_scope = scope_label
+    snapshot.ts = snap_ts
+    snapshot.evaluated_at_ts = now_ts
+    snapshot.age_sec = snap_age_sec
     return snapshot
 
 
@@ -1084,6 +1168,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
         now_ts: float = 0.0,
         read_json_fn: Any = None,
         scope: str = "",
+        allow_network: bool = True,
+        persist: bool = True,
         **kwargs: Any,
     ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
         return _harvest_macro_and_news_sensors_impl(
@@ -1091,6 +1177,8 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             now_ts,
             read_json_fn,
             scope=scope,
+            allow_network=allow_network,
+            persist=persist,
         )
 
 
@@ -1173,6 +1261,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         now_ts: float = 0.0,
         read_json_fn: Any = None,
         log: Optional[Any] = None,
+        allow_network: bool = True,
+        persist: bool = True,
         **kwargs: Any,
     ) -> Any:
         return _populate_market_and_portfolio_snapshot_impl(
@@ -1185,6 +1275,40 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             now_ts=now_ts,
             read_json_fn=read_json_fn,
             log=log,
+            allow_network=allow_network,
+            persist=persist,
+        )
+
+    def read_snapshot(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        snapshot: Any = None,
+        workspace_dir: str = "",
+        logs_dirs: Optional[List[str]] = None,
+        intent_gateway: Any = None,
+        scope: str = "crypto",
+        now_ts: float = 0.0,
+        read_json_fn: Any = None,
+        log: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network I/O and 0 disk writes."""
+        return self.collect(
+            cachedb_dir,
+            symbol,
+            snapshot=snapshot,
+            workspace_dir=workspace_dir,
+            logs_dirs=logs_dirs,
+            intent_gateway=intent_gateway,
+            scope=scope,
+            now_ts=now_ts,
+            read_json_fn=read_json_fn,
+            log=log,
+            allow_network=False,
+            persist=False,
+            **kwargs,
         )
 
 
@@ -1218,7 +1342,13 @@ def collect_macro_benchmarks_snapshot(
 
 
 def harvest_macro_and_news_sensors(
-    cache_dir: str, now_ts: float, read_json_fn: Any = None, *, scope: str = "",
+    cache_dir: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+    *,
+    scope: str = "",
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     return TelemetryCollectorFactory.create("macro_and_news_sensors").collect(
@@ -1227,6 +1357,8 @@ def harvest_macro_and_news_sensors(
         now_ts=now_ts,
         read_json_fn=read_json_fn,
         scope=scope,
+        allow_network=allow_network,
+        persist=persist,
     )
 
 
@@ -1283,9 +1415,40 @@ def populate_market_and_portfolio_snapshot(
     now_ts: float,
     read_json_fn: Any = None,
     log: Optional[Any] = None,
+    allow_network: bool = True,
+    persist: bool = True,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
     return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot").collect(
+        cache_dir,
+        "*",
+        snapshot=snapshot,
+        workspace_dir=workspace_dir,
+        logs_dirs=logs_dirs,
+        intent_gateway=intent_gateway,
+        scope=scope,
+        now_ts=now_ts,
+        read_json_fn=read_json_fn,
+        log=log,
+        allow_network=allow_network,
+        persist=persist,
+    )
+
+
+def read_market_and_portfolio_snapshot(
+    snapshot: Any,
+    *,
+    cache_dir: str,
+    workspace_dir: str,
+    logs_dirs: List[str],
+    intent_gateway: Any,
+    scope: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+    log: Optional[Any] = None,
+) -> Any:
+    """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network calls and 0 disk writes."""
+    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot").read_snapshot(
         cache_dir,
         "*",
         snapshot=snapshot,
@@ -1328,5 +1491,6 @@ __all__ = [
     "harvest_macro_and_news_sensors",
     "harvest_portfolio_and_venue_cycles",
     "populate_market_and_portfolio_snapshot",
+    "read_market_and_portfolio_snapshot",
     "reconcile_live_venue_equity_summary",
 ]
