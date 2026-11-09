@@ -14,7 +14,12 @@ from guard_hierarchy import (
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
@@ -63,8 +68,11 @@ class MarketIntelligenceEvaluation:
     metrics: Dict[str, object] = field(default_factory=dict)
 
 
-class CompositeMarketIntelligence:
+class CompositeMarketIntelligence(OrderGuardEvaluatorBase):
     """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm across all pillars."""
+
+    cls_name = "CompositeMarketIntelligence"
+    GUARD_ID = "composite_market_intelligence"
 
     def __init__(
         self,
@@ -79,6 +87,7 @@ class CompositeMarketIntelligence:
         gemini_guard: Optional[HighStakeGuard] = None,
         geopolitical_guard: Optional[GeopoliticalShockGuard] = None,
     ):
+        super().__init__()
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
         self.gradient_triggers: Dict[str, LinearGradientTrigger] = {}
         self.liquidation_trigger = LiquidationCapitulationTrigger()
@@ -411,3 +420,16 @@ class CompositeMarketIntelligence:
                 "geopolitical_threat": obj_attr(geopolitical_assessment, "threat_level"),
             },
         )
+
+    def check(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        **kwargs: object,
+    ) -> GuardDecision:
+        """Polymorphic ``OrderGuardEvaluatorBase.check()`` entrypoint delegating to ``evaluate_guards()``."""
+        return self.evaluate_guards(symbol, side, price, **kwargs)  # type: ignore[arg-type]
+
+
+OrderGuardEvaluatorFactory.register(CompositeMarketIntelligence.GUARD_ID, CompositeMarketIntelligence)

@@ -764,7 +764,7 @@ def resolve_venue_runtime_dir(
     ws_dir = _clean_path_str(workspace_dir)
     if v_norm == "binance":
         if c_dir:
-            return resolve_cache_dir_path(c_dir, fallback_default=True) or get_cachedb_dir()
+            return c_dir
         if ws_dir:
             return os.path.join(ws_dir, "cachedb")
         return get_cachedb_dir()

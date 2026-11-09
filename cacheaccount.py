@@ -26,7 +26,7 @@ import uuid
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
 import binance_cache_health as account_cache_health
-from botcore import normalize_epoch_sec, resolve_now_ts, safe_pos_float
+from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_now_ts, safe_pos_float
 from cacheInterface import (
     CacheManagerInterface,
     _ACCOUNT_CACHE_CLASSES,
@@ -396,7 +396,7 @@ class CacheTradeManager(CacheAccountManagerBase):
     ) -> CacheTradeManager:
         """Instantiate a ``CacheTradeManager`` configured for ``venue`` and stream persistence format."""
         v_norm = cls._normalize_trade_venue(venue, filename, symbols)
-        eff_ro = (v_norm != "binance") if read_only is None else bool(read_only)
+        eff_ro = (v_norm != "binance") if read_only is None else _parse_bool_flag(read_only, default=False)
         return cls(
             sync_ts=sync_ts,
             symbols=symbols,
@@ -523,7 +523,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         else:
             eff_symbols = list(symbols) if isinstance(symbols, (list, tuple, set)) else (symbols if symbols is not None else [])
         if append_persist is not None:
-            eff_append_persist = bool(append_persist)
+            eff_append_persist = _parse_bool_flag(append_persist, default=False)
         elif stream_format is not None:
             fmt = str(stream_format).strip().lower().lstrip(".")
             if fmt not in ("jsonl", "json"):
@@ -532,7 +532,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         else:
             eff_append_persist = self.venue == "binance" or eff_filename.lower().endswith(".jsonl")
         self.stream_format = "jsonl" if eff_append_persist else "json"
-        eff_read_only = (not bool(start_sync)) if start_sync is not None else bool(read_only)
+        eff_read_only = (
+            (not _parse_bool_flag(start_sync, default=False))
+            if start_sync is not None
+            else _parse_bool_flag(read_only, default=False)
+        )
         if eff_append_persist and api_client is None:
             api_client = _cm_override("api", api)
         super().__init__(

@@ -286,12 +286,14 @@ class TelemetryCollectorFactory:
             "intelligence.external.collectors.orderbook_depth_collector",
             "intelligence.external.collectors.derivatives_telemetry_collector",
             "intelligence.external.collectors.whale_positioning_collector",
+            "intelligence.external.collectors.bybit_liquidations_collector",
             "intelligence.macro.news_feed_collector",
             "intelligence.sentiment.collectors.microstructure_collector",
             "intelligence.sentiment.collectors.fear_greed_collector",
             "intelligence.sentiment.collectors.market_breadth_collector",
             "intelligence.sentiment.collectors.portfolio_collector",
             "intelligence.sentiment.collectors.macro_telemetry_collector",
+            "intelligence.sentiment.collectors.pretrade_telemetry_collector",
         ):
             try:
                 __import__(mod_name)
@@ -299,7 +301,7 @@ class TelemetryCollectorFactory:
                 pass
 
     @classmethod
-    def create(cls, collector_id: str, *, start_sync: bool = False) -> Any:
+    def create(cls, collector_id: str, *, start_sync: bool = False, **kwargs: Any) -> Any:
         key = str(collector_id)
         collector_cls = cls._registry.get(key)
         if collector_cls is None:
@@ -307,6 +309,14 @@ class TelemetryCollectorFactory:
             collector_cls = cls._registry.get(key)
         if collector_cls is None:
             raise KeyError(f"Unknown telemetry collector id: {key}")
+        if kwargs:
+            sync_flag = _parse_bool_flag(start_sync, default=False)
+            try:
+                return collector_cls(start_sync=sync_flag, **kwargs)
+            except TypeError:
+                inst = collector_cls(**kwargs)
+                inst.start_sync = sync_flag
+                return inst
         return cls.get_collector(collector_cls, start_sync=start_sync)
 
     @classmethod
@@ -316,7 +326,7 @@ class TelemetryCollectorFactory:
         *,
         start_sync: bool = False,
     ) -> Any:
-        sync_flag = bool(start_sync)
+        sync_flag = _parse_bool_flag(start_sync, default=False)
         key = f"{collector_cls.__name__}:producer" if sync_flag else collector_cls.__name__
         inst = cls._instances.get(key)
         if inst is None:
@@ -390,6 +400,41 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             return str(symbol)
         return str(symbol_or_cache_dir)
 
+    def _invoke_fetch_with_cache_dir(
+        self,
+        symbol_or_cache_dir: str,
+        symbol: Optional[str] = None,
+        *,
+        allow_network: Optional[bool] = None,
+        now: Optional[float] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        fetch_fn = getattr(self, "fetch", None)
+        if not callable(fetch_fn):
+            return None
+        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
+        kw_dir = (kwargs or {}).get("cache_dir") or (kwargs or {}).get("cachedb_dir")
+        override_dir: Optional[str] = None
+        if kw_dir is not None and str(kw_dir).strip():
+            override_dir = str(kw_dir).strip()
+        elif symbol is not None and str(symbol).strip() and str(symbol_or_cache_dir or "").strip():
+            override_dir = str(symbol_or_cache_dir).strip()
+        eff_now = now if now is not None else (kwargs or {}).get("now_ts")
+        prev_dir = self.cache_dir
+        dir_changed = (
+            override_dir is not None
+            and override_dir != "cachedb"
+            and str(override_dir) != str(prev_dir or "")
+        )
+        if dir_changed:
+            self.cache_dir = override_dir
+            self._cache.clear()
+        try:
+            return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
+        finally:
+            if dir_changed:
+                self.cache_dir = prev_dir
+
     def read_snapshot(
         self,
         symbol_or_cache_dir: str = "cachedb",
@@ -399,12 +444,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         **kwargs: Any,
     ) -> Optional[Any]:
         """Read-only consumer accessor: return fresh snapshot from memory/disk cache in 0 ms without network or disk writes."""
-        fetch_fn = getattr(self, "fetch", None)
-        if not callable(fetch_fn):
-            return None
-        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
-        eff_now = now if now is not None else kwargs.get("now_ts")
-        return fetch_fn(eff_sym, allow_network=False, now=eff_now)
+        return self._invoke_fetch_with_cache_dir(
+            symbol_or_cache_dir, symbol, allow_network=False, now=now, kwargs=kwargs
+        )
 
     def refresh_snapshot(
         self,
@@ -415,12 +457,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         **kwargs: Any,
     ) -> Optional[Any]:
         """Producer accessor: fetch live snapshot from external venue and persist to disk cache."""
-        fetch_fn = getattr(self, "fetch", None)
-        if not callable(fetch_fn):
-            return None
-        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
-        eff_now = now if now is not None else kwargs.get("now_ts")
-        return fetch_fn(eff_sym, allow_network=True, now=eff_now)
+        return self._invoke_fetch_with_cache_dir(
+            symbol_or_cache_dir, symbol, allow_network=True, now=now, kwargs=kwargs
+        )
 
     @classmethod
     def disk_prefix(cls) -> str:
@@ -438,12 +477,9 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         **kwargs: Any,
     ) -> Optional[Any]:
         """Polymorphic collector entrypoint delegating to ``fetch(symbol, allow_network=..., now=...)``."""
-        fetch_fn = getattr(self, "fetch", None)
-        if not callable(fetch_fn):
-            return None
-        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
-        eff_now = now if now is not None else kwargs.get("now_ts")
-        return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
+        return self._invoke_fetch_with_cache_dir(
+            symbol_or_cache_dir, symbol, allow_network=allow_network, now=now, kwargs=kwargs
+        )
 
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)

@@ -2184,6 +2184,7 @@ class TelemetryEvaluatorFactory:
 
     _instances: Dict[str, TelemetryEvaluatorInterface] = {}
     _registry: Dict[str, type[TelemetryEvaluatorInterface]] = {}
+    _defaults_loaded: bool = False
 
     @classmethod
     def register(
@@ -2194,9 +2195,28 @@ class TelemetryEvaluatorFactory:
         cls._registry[str(evaluator_id)] = evaluator_cls
 
     @classmethod
+    def _ensure_default_evaluators_registered(cls) -> None:
+        if cls._defaults_loaded:
+            return
+        cls._defaults_loaded = True
+        for mod_name in (
+            "intelligence.sentiment.evaluators.microstructure_evaluator",
+            "intelligence.sentiment.evaluators.portfolio_evaluator",
+            "intelligence.sentiment.evaluators.tca_risk_evaluator",
+            "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+        ):
+            try:
+                __import__(mod_name)
+            except Exception:
+                pass
+
+    @classmethod
     def create(cls, evaluator_id: str) -> Any:
         key = str(evaluator_id)
         evaluator_cls = cls._registry.get(key)
+        if evaluator_cls is None:
+            cls._ensure_default_evaluators_registered()
+            evaluator_cls = cls._registry.get(key)
         if evaluator_cls is None:
             raise KeyError(f"Unknown telemetry evaluator id: {key}")
         return cls.get_evaluator(evaluator_cls)

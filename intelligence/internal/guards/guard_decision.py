@@ -228,6 +228,7 @@ class OrderGuardEvaluatorFactory:
             "intelligence.sentiment.guards.high_stake_guard",
             "intelligence.sentiment.guards.post_stop_reentry_guard",
             "intelligence.macro.geopolitical_guard",
+            "intelligence.composite",
             "qlimit_order_guard",
             "external_order_guard",
             "llm_order_guard",

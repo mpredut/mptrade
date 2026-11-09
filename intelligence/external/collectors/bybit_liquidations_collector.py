@@ -28,6 +28,10 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
+from intelligence.external.collectors.base_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+)
 from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
 from providers.base import normalize_side
 
@@ -71,14 +75,20 @@ class LiquidationSummary:
         return self.long_liq_usd + self.short_liq_usd
 
 
-class BybitLiquidationCollector:
+class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
     """Thread-safe background collector tracking rolling liquidation volumes from Bybit."""
+
+    cls_name = "BybitLiquidationCollector"
+    COLLECTOR_ID = "external_bybit_liquidations"
 
     def __init__(
         self,
         symbols: Optional[List[str]] = None,
         retention_sec: float = MAX_RETENTION_SEC,
+        *,
+        start_sync: bool = False,
     ) -> None:
+        super().__init__(start_sync=bool(start_sync))
         self._symbols = parse_symbol_list(symbols) or list(DEFAULT_SYMBOLS)
         self._retention = safe_pos_float(retention_sec, default=MAX_RETENTION_SEC) or MAX_RETENTION_SEC
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
@@ -329,6 +339,51 @@ class BybitLiquidationCollector:
         recent_rate = recent / max(eff_win, 1.0)
         base_rate = base / max(eff_base, 1.0)
         return recent_rate / base_rate if base_rate > 0 else 0.0
+
+    def collect(
+        self,
+        symbol_or_cache_dir: str = "cachedb",
+        symbol: Optional[str] = None,
+        *,
+        window_sec: float = 300.0,
+        now: Optional[float] = None,
+        **kwargs: Any,
+    ) -> LiquidationSummary:
+        """Polymorphic ``TelemetryCacheCollectorInterface`` entrypoint delegating to ``get_summary()``."""
+        eff_sym = (
+            str(symbol)
+            if (symbol is not None and str(symbol).strip())
+            else str(symbol_or_cache_dir)
+        )
+        eff_now = now if now is not None else kwargs.get("now_ts")
+        return self.get_summary(eff_sym, window_sec=window_sec, now=eff_now)
+
+    def read_snapshot(
+        self,
+        symbol_or_cache_dir: str = "cachedb",
+        symbol: Optional[str] = None,
+        *,
+        window_sec: float = 300.0,
+        now: Optional[float] = None,
+        **kwargs: Any,
+    ) -> LiquidationSummary:
+        """Read-only consumer accessor returning aggregated liquidation summary from in-memory window."""
+        return self.collect(symbol_or_cache_dir, symbol, window_sec=window_sec, now=now, **kwargs)
+
+    def refresh_snapshot(
+        self,
+        symbol_or_cache_dir: str = "cachedb",
+        symbol: Optional[str] = None,
+        *,
+        window_sec: float = 300.0,
+        now: Optional[float] = None,
+        **kwargs: Any,
+    ) -> LiquidationSummary:
+        """Return aggregated liquidation summary from in-memory window."""
+        return self.collect(symbol_or_cache_dir, symbol, window_sec=window_sec, now=now, **kwargs)
+
+
+TelemetryCollectorFactory.register(BybitLiquidationCollector.COLLECTOR_ID, BybitLiquidationCollector)
 
 
 class LiquidationSignal(BybitLiquidationCollector):

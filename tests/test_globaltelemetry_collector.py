@@ -1243,11 +1243,13 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         resolve_venue_trailing_state_path,
     )
     from external_order_guard import ExternalOrderGuardsEvaluator
+    from intelligence.composite import CompositeMarketIntelligence
     from intelligence.external.collectors.base_collector import (
         TelemetryCacheCollectorInterface,
         TelemetryCollectorFactory,
         _DiskBackedSymbolCollector,
     )
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
@@ -1283,6 +1285,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         ("external_orderbook_depth", OrderbookDepthCollector),
         ("external_derivatives_telemetry", DerivativesTelemetryCollector),
         ("external_whale_positioning", WhalePositioningCollector),
+        ("external_bybit_liquidations", BybitLiquidationCollector),
         ("macro_news_feed", NewsFeedCollector),
     ):
         assert issubclass(col_cls, TelemetryCacheCollectorInterface)
@@ -1293,6 +1296,11 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         assert consumer is not producer
         assert consumer.is_read_only_consumer() is True
         assert producer.is_read_only_consumer() is False
+
+    bybit_col = TelemetryCollectorFactory.create("external_bybit_liquidations", start_sync=False)
+    bybit_col.record_event("BTCUSDT", "Sell", 75000.0, ts=1_750_000_000.0)
+    liq_snap = bybit_col.read_snapshot(temp_cache_dir, "BTCUSDT", window_sec=300.0, now=1_750_000_010.0)
+    assert liq_snap.symbol == "BTCUSDT" and liq_snap.short_liq_usd == pytest.approx(75000.0)
 
     ob_col = OrderbookDepthCollector(cache_dir=temp_cache_dir, start_sync=False)
     assert ob_col.read_snapshot("UNLISTEDUSDC", now=1_750_000_000.0) is None
@@ -1326,6 +1334,7 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         ("sentiment_post_stop_reentry_llm", PostStopReentryGuard),
         ("llm_order_guards", LLMOrderGuardsEvaluator),
         ("macro_geopolitical_shock", GeopoliticalShockGuard),
+        ("composite_market_intelligence", CompositeMarketIntelligence),
     )
     for guard_id, guard_cls in expected_guards:
         assert issubclass(guard_cls, OrderGuardEvaluatorBase)
@@ -1343,15 +1352,22 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     ts_guard = OrderGuardEvaluatorFactory.create("internal_trend_significance")
     assert ts_guard.check(None, [100.0, 101.0]).allowed is True
 
+    comp_guard = OrderGuardEvaluatorFactory.create("composite_market_intelligence")
+    assert comp_guard.check("BTCUSDC", "BUY", 70000.0, gradient=0.0005, epsilon=0.001).allowed is False
+
     # Area 3: Parameterized Runtime State Path Resolution in cachepaths.py
     ws_dir = os.path.join(temp_cache_dir, "ws")
     for v_name, sub_dir in (("kraken", "kraken"), ("hyperliquid", "hyperliquid"), ("t212", "212trading")):
         os.makedirs(os.path.join(ws_dir, sub_dir), exist_ok=True)
+    assert resolve_venue_runtime_dir("binance", cache_dir="cachedb") == "cachedb"
     assert resolve_venue_runtime_dir("binance", cache_dir=temp_cache_dir) == temp_cache_dir
     assert resolve_venue_runtime_dir("kraken", workspace_dir=ws_dir) == os.path.join(ws_dir, "kraken")
     assert resolve_venue_runtime_dir("hyperliquid", workspace_dir=ws_dir) == os.path.join(ws_dir, "hyperliquid")
     assert resolve_venue_runtime_dir("t212", workspace_dir=ws_dir) == os.path.join(ws_dir, "212trading")
 
+    assert resolve_venue_trailing_state_path("binance", cache_dir="cachedb") == os.path.join(
+        "cachedb", TRAILING_STATE_FILENAME
+    )
     assert resolve_venue_trailing_state_path("binance", cache_dir=temp_cache_dir) == os.path.join(
         temp_cache_dir, TRAILING_STATE_FILENAME
     )
@@ -1361,6 +1377,17 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     assert resolve_venue_trailing_state_path(
         "t212", workspace_dir=ws_dir, filename=TRAILING_PEAKS_FILENAME
     ) == os.path.join(ws_dir, "212trading", TRAILING_PEAKS_FILENAME)
+
+    from cacheaccount import CacheTradeManager
+
+    tm_str_flag = CacheTradeManager(
+        60,
+        [],
+        os.path.join(temp_cache_dir, "str_flag_trade.jsonl"),
+        read_only="false",
+        start_sync="true",
+    )
+    assert tm_str_flag.read_only is False
 
     krk_st = resolve_venue_cycle_state_path("TAOUSD", workspace_dir=ws_dir)
     hl_st = resolve_venue_cycle_state_path("HYPE_LONG", venue="hyperliquid", workspace_dir=ws_dir)

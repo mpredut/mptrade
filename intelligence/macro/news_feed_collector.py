@@ -269,9 +269,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
     def _retention_window_sec(self) -> float:
         return max(self.rolling_window_sec * 8.0, 172800.0)
 
-    def _load_history(self) -> None:
+    def _load_history(self, now_ts: Optional[float] = None) -> None:
         hist_file = self._effective_history_file()
-        now = time.time()
+        now = resolve_now_ts(now_ts)
         retention_sec = self._retention_window_sec()
         try:
             data = read_json_file(hist_file, default=None, recover_previous=True)
@@ -757,6 +757,36 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         logger.warning("Failed to fetch any RSS news feeds. Using cached fallback if available.")
         return self._cached_snapshot
 
+    def _invoke_fetch_with_cache_dir(
+        self,
+        cachedb_dir: str = "",
+        *,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        allow_network: Optional[bool] = None,
+    ) -> Optional[NewsFeedSnapshot]:
+        c_dir = str(cachedb_dir or "").strip()
+        if c_dir and c_dir != "cachedb":
+            fname = _NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json"
+            target_hist = c_dir if c_dir.endswith(".json") else os.path.join(c_dir, fname)
+            prev_hist = self.history_file
+            prev_pool = dict(self._aggregated_pool)
+            prev_seen = dict(self._seen_first_ts)
+            prev_snap = self._cached_snapshot
+            try:
+                self.history_file = target_hist
+                self._aggregated_pool = {}
+                self._seen_first_ts = {}
+                self._cached_snapshot = None
+                self._load_history(now_ts=now_ts)
+                return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
+            finally:
+                self.history_file = prev_hist
+                self._aggregated_pool = prev_pool
+                self._seen_first_ts = prev_seen
+                self._cached_snapshot = prev_snap
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
+
     def collect(
         self,
         cachedb_dir: str = "",
@@ -768,7 +798,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         **kwargs: Any,
     ) -> Optional[NewsFeedSnapshot]:
         """Polymorphic ``TelemetryCacheCollectorInterface`` entrypoint delegating to ``fetch()``."""
-        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
+        return self._invoke_fetch_with_cache_dir(
+            cachedb_dir, force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network
+        )
 
     def read_snapshot(
         self,
@@ -779,7 +811,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         **kwargs: Any,
     ) -> Optional[NewsFeedSnapshot]:
         """Read-only consumer entrypoint: return disk-loaded history pool snapshot with 0 network calls and 0 disk writes."""
-        return self.fetch(force_refresh=False, now_ts=now_ts, allow_network=False)
+        return self._invoke_fetch_with_cache_dir(
+            cachedb_dir, force_refresh=False, now_ts=now_ts, allow_network=False
+        )
 
     def refresh_snapshot(
         self,
@@ -791,7 +825,9 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         **kwargs: Any,
     ) -> Optional[NewsFeedSnapshot]:
         """Producer entrypoint: fetch RSS feeds over network and persist aggregated history to disk."""
-        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=True)
+        return self._invoke_fetch_with_cache_dir(
+            cachedb_dir, force_refresh=force_refresh, now_ts=now_ts, allow_network=True
+        )
 
 
 TelemetryCollectorFactory.register(NewsFeedCollector.COLLECTOR_ID, NewsFeedCollector)
