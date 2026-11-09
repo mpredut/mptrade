@@ -338,6 +338,7 @@ class Instrument:
         cas_f = safe_pos_float(kwargs.pop("applied_scale", None), default=None)
         caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
         applied_scale = caller_applied_scale
+        is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
         profit_margin = safe_float(caller_profit_margin, default=None)
 
         retry_kwargs = {
@@ -406,7 +407,7 @@ class Instrument:
                 round_px = getattr(self._provider, "round_price", None)
                 if callable(round_px):
                     px_f = safe_pos_float(round_px(self.symbol, price), default=None)
-                    if px_f is not None:
+                    if px_f is not None and not (caller_supplied_cache_permit and side_u == "BUY" and px_f > price):
                         price = px_f
 
             # 1. Provider-agnostic daily trade cap (30 orders / 24h per symbol and side).
@@ -502,7 +503,7 @@ class Instrument:
                 apply_policy=not bypass_quantity_policy,
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
-                regime_context=(None if (caller_applied_scale < 1.0 or bypass_profit_guard) else regime_context),
+                regime_context=(None if (caller_applied_scale < 1.0 or bypass_profit_guard or is_monitor_replace) else regime_context),
                 known_balance=known_balance,
             )
             qty = decision.final_qty
@@ -517,6 +518,7 @@ class Instrument:
 
             if (
                 not bypass_profit_guard
+                and not is_monitor_replace
                 and regime_context is not None
                 and side_u == "BUY"
                 and qty > 0
@@ -577,7 +579,7 @@ class Instrument:
                     print(f"[{self.symbol}] {side_u} deferred by medium-term trend (4h-24h {regime_label})")
                     reason = "medium_trend_deferred"
                     return None
-                elif medium_trend_action == "scale" and adverse_medium_trend:
+                elif medium_trend_action == "scale" and adverse_medium_trend and not is_monitor_replace:
                     scale_factor = _parse_scale_factor(medium_trend_scale_cfg, default=0.5)
                     if scale_factor <= 0.0:
                         reason = "medium_trend_qty_zero"
@@ -615,12 +617,13 @@ class Instrument:
                 ):
                     reason = "profit_guard"
                     return None
-                qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                    qty, guard_price, is_market, enforce_business_minimum,
-                    regime_context, applied_scale, side_u=side_u)
-                if refusal:
-                    reason = refusal
-                    return None
+                if not is_monitor_replace:
+                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                        qty, guard_price, is_market, enforce_business_minimum,
+                        regime_context, applied_scale, side_u=side_u)
+                    if refusal:
+                        reason = refusal
+                        return None
 
             if _is_aborted(abort_if):
                 reason = "aborted_by_caller"

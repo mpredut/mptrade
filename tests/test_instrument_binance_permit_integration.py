@@ -377,6 +377,71 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         self.assertEqual(result["orderId"], 503)
         self.assertEqual(client.calls[0][1]["quantity"], 0.5)
 
+    def test_monitor_order_replace_buy_with_subtick_price_and_permit_succeeds_without_double_scaling(self):
+        events = []
+        client = _FakeClient(events)
+        fake_bapi = _FakeBapi(client, events)
+        provider = BinanceProvider()
+        api = MarketApi([provider])
+        instrument = Instrument(
+            name="BTC", symbol="BTCUSDC", provider="Binance",
+            base="BTC", quote="USDC", api=api)
+        status = CacheHealthStatus(
+            ready=True, reason="ok", order_age_sec=1.0,
+            trade_age_sec=1.0,
+            order_cache_version="orders-v1",
+            trade_cache_version="trades-v1",
+        )
+        ctx = {"regime": "bear"}
+
+        def fake_profit_guard(_prov, _sym, _side, _px, _margin, **kwargs):
+            order_guard._record_context_suggested_scale(
+                kwargs.get("regime_context"), "BUY", 0.5, "whale_divergence")
+            return True
+
+        subtick_buy_price = 98.899  # round(98.899, 2) -> 98.90 (> 98.899), floor -> 98.89
+        with (
+            patch.object(market_api, "_bapi", fake_bapi),
+            patch.object(placeorder, "api", fake_bapi),
+            patch.object(placeorder, "client", client),
+            patch.object(placeorder, "require_account_cache_for_submit", return_value=status),
+            patch.object(placeorder.cfg, "is_trade_enabled", return_value=True),
+            patch.object(provider, "profit_guard_window_ref", return_value=None),
+            patch.object(
+                provider, "policy_cap_quantity",
+                side_effect=lambda _symbol, _side, _price, _qty,
+                                   available_qty, **_kwargs:
+                    min(2.0, available_qty)),
+            patch.object(
+                provider, "fee_cap_quantity",
+                side_effect=lambda _symbol, _side, _price,
+                                   available_qty: available_qty),
+            patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
+            patch.object(order_guard, "profit_guard", side_effect=fake_profit_guard),
+            patch.object(instrument_module._outcomes_log, "log_order_outcome"),
+        ):
+            permit = provider.preflight_order(
+                "BTCUSDC", "BUY", 1.5, subtick_buy_price,
+                market=False, kind="monitor_order_replace")
+            outcome = {}
+            result = instrument.place(
+                "BUY", subtick_buy_price, 1.5, smart=False,
+                kind="monitor_order_replace",
+                bypass_guards={"G_PROF"},
+                wait_for_trend=False,
+                caller_owns_retry=True,
+                cache_permit=permit,
+                regime_context=ctx,
+                medium_trend_action="scale",
+                medium_trend_scale=0.5,
+                _outcome_context=outcome)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["orderId"], 501)
+        self.assertEqual(float(client.calls[0][1]["price"]), 98.89)
+        self.assertEqual(client.calls[0][1]["quantity"], 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()
