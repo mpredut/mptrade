@@ -2214,6 +2214,14 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertIs(st_mgr.get_window("BTC/USDC"), st_mgr.get_window("BTCUSDC"))
         self.assertIs(st_mgr.get_analyzer("BTC/USDC"), st_mgr.get_analyzer("BTCUSDC"))
 
+        # Read-only venue trade caches (KrakenTrade, HyperliquidTrade, T212Trade) do not pass duplicate read_only or start sync
+        cm.CacheFactory._instances.pop("KrakenTrade", None)
+        cm.CacheFactory._sync_started.discard("KrakenTrade")
+        kt_mgr = cm.get_cache_manager("KrakenTrade", symbols=["SOLUSD"], start_sync=True)
+        self.assertTrue(kt_mgr.read_only)
+        self.assertNotIn("KrakenTrade", cm.CacheFactory._sync_started)
+        cm.CacheFactory._instances.pop("KrakenTrade", None)
+
         # tradeall.sanitize_pipe_field and rtrade revision/config validation
         import tradeall
         import rtrade

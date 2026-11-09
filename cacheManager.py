@@ -352,6 +352,8 @@ class CacheFactory:
                     for key, value in config.items()
                     if key not in {"class", "filename", "sync_ts", "prefix", "ext"}
                 }
+                cfg_read_only = bool(extra_kwargs.pop("read_only", False))
+                eff_read_only = cfg_read_only or (not start_sync)
                 if symbols is None:
                     if name == "AssetValue":
                         symbols = ["TOTAL"]
@@ -375,7 +377,7 @@ class CacheFactory:
                         sync_ts=current_price_sync_ts,
                         start_sync=False,
                         provider_names=provider_names,
-                        read_only=not start_sync,
+                        read_only=eff_read_only,
                     )
                     sync_ts = instance.sync_ts
                 elif "prefix" in config:
@@ -386,7 +388,7 @@ class CacheFactory:
                             filename=f"{prefix}{s}.{ext}",
                             symbols=[s],
                             api_client=api,
-                            read_only=not start_sync,
+                            read_only=eff_read_only,
                             **extra_kwargs,
                         )
                         for s in symbols
@@ -397,13 +399,17 @@ class CacheFactory:
                         filename=config["filename"],
                         symbols=symbols,
                         api_client=api,
-                        read_only=not start_sync,
+                        read_only=eff_read_only,
                         **extra_kwargs,
                     )
 
                 cls._instances[name] = instance
 
-            if start_sync and name not in cls._sync_started:
+            if (
+                start_sync
+                and not cls._CONFIG[name].get("read_only")
+                and name not in cls._sync_started
+            ):
                 if sync_ts is None:
                     sync_ts = cls._CONFIG[name]["sync_ts"]()
                 for manager in cls._iter_managers(cls._instances[name]):
@@ -764,6 +770,8 @@ if __name__ == "__main__":
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
     for name, config in CacheFactory._CONFIG.items():
+        if config.get("read_only"):
+            continue
         if name == "365Price":
             _arch_syms = tracked_price_instruments(role="archive")[0]
             cache = get_cache_manager(
