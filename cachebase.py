@@ -1242,14 +1242,18 @@ class CacheManagerInterface(ABC):
         self.save_state = True
 
 
-class CacheAccountManagerBase(CacheManagerInterface):
-    """Shared base contract for versioned account caches (``Order`` and ``Trade``)."""
+class CacheAccountManagerBase(CacheManagerInterface, ABC):
+    """Abstract base contract for versioned account caches (``Order`` and ``Trade``)."""
 
     _is_trade_account_cache = False
     _is_order_account_cache = False
 
     def _is_account_cache(self):
         return True
+
+    @abstractmethod
+    def _is_valid_item(self, item) -> bool:
+        """Validate one account row before memory or disk admission."""
 
     _snapshot_data_version = staticmethod(_cache_integrity.snapshot_data_version)
     _trade_data_version = staticmethod(_cache_integrity.trade_data_version)
@@ -1369,6 +1373,7 @@ class CacheAccountManagerBase(CacheManagerInterface):
             backup_path=self._previous_generation_path(),
         )
 
+    @abstractmethod
     def _ensure_account_version(self, required_version: str) -> None:
         """Synchronize in-memory state with ``required_version``; subclasses override."""
         raise account_cache_health.AccountCacheNotReady(self._account_reader_reason())

@@ -5,10 +5,10 @@
 
 # Core Tenets
 - **Single Source of Truth (SSOT) & Reuse-First:** Consolidate logic into canonical modules; generalize and reuse existing classes/primitives before creating new ones. Always import canonical SSOT modules directly (never legacy aliases in `botcore._MERGED_MODULE_TARGETS`).
-- **Separation of Concerns (SoC) & Layered Class Design (Model: `cacheManager.py`):**
+- **Separation of Concerns (SoC) & Layered Class Design (Model: `cachebase.py` / `cacheManager.py`):**
   - Keep files small, modular, and strictly isolated to a single domain responsibility across layers (*Transport/Providers*, *Persistence/Cache*, *Order Gateway & Guards*, *Strategy & Exit Engine*, *Orchestration/Supervision*).
-  - Follow `cacheManager.py` (`CacheManagerInterface` base contract → specialized domain subclasses → `CacheFactory` / `get_*_manager()` accessors) as the reference blueprint for class hierarchies.
-  - Solve cross-cutting bugs and rules inside the responsible base class or layer (`CacheManagerInterface`, `BaseSpotMixin`, `Instrument.place()`, `order_guard.py`) so all callers inherit the behavior automatically, rather than scattering per-caller `if/else` patches across bots.
+  - Follow the `cachebase.py` / `cacheManager.py` hierarchy (`CacheManagerInterface` pure abstract base → specialized abstract/domain bases like `CacheAccountManagerBase` → concrete instantiable leaf classes registered in `CacheFactory` / `get_*_manager()` accessors) as the reference blueprint for polymorphic class design.
+  - Solve cross-cutting bugs and rules inside the responsible base class or layer (`CacheManagerInterface`, `CacheAccountManagerBase`, `BaseSpotMixin`, `Instrument.place()`, `order_guard.py`) so all callers inherit the behavior automatically, rather than scattering per-caller `if/else` patches across bots.
 - **Horizontal & Vertical Scalability (Open-Closed, Strict DAG, Pure Compute & Idempotency):**
   - *Horizontal (Open-Closed / Registry-Driven):* Extend venues, guards, collectors, and strategies via polymorphic subclasses and declarative registries (`instrument_registry.py`, `guard_hierarchy.py`, `CacheFactory`)—never by scattering `if venue/strategy == ...` branches across core modules.
   - *Vertical (Strict Acyclic Layering):* Enforce one-way dependencies (`botcore/utils` → `state_io/cachepaths` → `providers/caches` → `instrument/order_guard` → `strategies` → `orchestrators`); lower layers must never import higher layers.
