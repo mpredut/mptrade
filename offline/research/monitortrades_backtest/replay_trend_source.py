@@ -49,13 +49,6 @@ from providers.base import normalize_side
 # cacheManager.CacheShortTrendManager (the window is_trend_up() relies on).
 DEFAULT_WINDOW_SECONDS = 3.7 * 60
 
-# The proposed ranges (user, 29 Jul) for A/B sensitivity sweeps — NOT default
-# values, only starting points for a future backtest on a medium/long horizon.
-SMALL_WINDOW_RANGE_SEC = (60.0, 7 * 60.0)          # 1-7 minute
-MEDIUM_WINDOW_RANGE_SEC = (1.5 * 3600.0, 6 * 3600.0)  # 1.5-6 ore
-# The long horizon: the interval is not decided yet (user: "I don't know") — to be settled later,
-# based on a backtest of the interval rather than assumed a priori.
-
 
 class ReplayTrendSource:
     """One PriceWindow per symbol, fed by hand from the replay ticks —

@@ -308,8 +308,6 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert isinstance(crypto_pol, Crypto24x7SessionPolicy)
     assert isinstance(eq_pol, EquityRthSessionPolicy)
     assert crypto_pol.is_equity is False and eq_pol.is_equity is True
-    assert crypto_pol.supports_cross_venue_sibling_arb("BTCUSDC") is True
-    assert eq_pol.supports_cross_venue_sibling_arb("NVDA_US_EQ") is False
 
     series = [[1_700_000_000_000 + i * 3600_000, 100.0 + i * 0.5, 1000.0] for i in range(25)]
     vp_ev = VolumeProfileEvaluator()
@@ -363,7 +361,7 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
         95000.5,
     ]
     assert CachePriceManagerBase.extract_jsonl_series_point({"s": "ETHUSDC", "i": [1700000000000, 3000.0]}, {"BTCUSDC"}) is None
-    assert isinstance(TelemetryCollectorFactory.get_microstructure_collector(), SymbolMicrostructureSnapshotCollector)
+    assert isinstance(TelemetryCollectorFactory.get_collector(SymbolMicrostructureSnapshotCollector), SymbolMicrostructureSnapshotCollector)
     assert isinstance(TelemetryCollectorFactory.get_fleet_enricher(), Fleet24hAndMicrostructureEnricher)
     assert isinstance(TelemetryCollectorFactory.get_yahoo_chart_collector(), EquityYahoo5dChartCollector)
     assert isinstance(TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator), PretradeTelemetryOrchestrator)
@@ -871,7 +869,7 @@ def test_external_collectors_and_survival_producer_consumer_decoupling(
     monkeypatch.setattr(eog, "_derivatives_collector", None)
 
     # 1. External order guard initializes collectors as read-only consumers (start_sync=False)
-    wh_reader, ob_reader, dt_reader = eog.ensure_external_collector_readers()
+    wh_reader, ob_reader, dt_reader = eog.get_whale_collector(), eog.get_orderbook_collector(), eog.get_derivatives_collector()
     for col in (wh_reader, ob_reader, dt_reader):
         assert col.start_sync is False
         assert col.is_read_only_consumer() is True

@@ -80,18 +80,6 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     )
 
 
-def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
-    """Inspect the running macro intelligence analyzer daemon."""
-    return _with_formatted_hb_age(
-        inspect_daemon_heartbeat(
-            cache_dir,
-            ("macro_analyzer.heartbeat",),
-            max_alive_age_sec=300.0,
-            include_symbols=False,
-        )
-    )
-
-
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Consolidate full multi-pillar state for a symbol."""
     symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip().upper()

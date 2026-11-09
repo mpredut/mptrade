@@ -13,7 +13,6 @@ from botcore import (
     _parse_bool_flag,
     bool_env,
     exact_nonneg_int,
-    exact_pos_int,
     extract_current_price_item,
     is_shared_disk_cache_enabled,
     register_module_aliases,
@@ -867,25 +866,6 @@ class MarketDataProvider(ABC):
         bids.sort(key=lambda x: x[0], reverse=True)
         asks.sort(key=lambda x: x[0])
         return {"bids": bids, "asks": asks}
-
-    @staticmethod
-    def clamp_orderbook_limit(
-        limit: Any,
-        *,
-        default: int = 200,
-        min_limit: int = 5,
-        max_limit: int = 500,
-    ) -> int:
-        """Clamp an orderbook depth limit to ``[min_limit, max_limit]``."""
-        raw = exact_pos_int(limit, default=None)
-        if raw is None:
-            raw_f = safe_pos_float(limit, default=None)
-            raw = int(raw_f) if (raw_f is not None and int(raw_f) > 0) else default
-        return max(min_limit, min(max_limit, raw))
-
-    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
-        """Return normalized L2 orderbook ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}`` for ``symbol``."""
-        return None
 
     def _matching_ssot_cache_keys(self, mapping: dict, symbol: str, match_fn: Any = None) -> list[str]:
         if callable(match_fn):

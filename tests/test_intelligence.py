@@ -3661,7 +3661,6 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
     ts.confirm_trend()
     assert ts.is_trend_fresh() is True
     assert ts.check_trend_expiration() is False
-    assert ts.get_confirmed_trend_duration() == pytest.approx(30.0)
 
     # 3. shadow_signals.KalmanStateTracker.update normalizes symbol case and migrates existing _state entry
     tracker = shadow_signals.KalmanStateTracker(state_path=None, compute_vol=False)

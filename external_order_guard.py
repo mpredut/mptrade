@@ -65,11 +65,6 @@ def get_derivatives_collector():
     return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry_collector", "DerivativesTelemetryCollector")
 
 
-def ensure_external_collector_readers() -> Tuple[Any, Any, Any]:
-    """Initialize and return read-only external telemetry collector consumers (whale, orderbook, derivatives)."""
-    return get_whale_collector(), get_orderbook_collector(), get_derivatives_collector()
-
-
 def check_external_order_guards(
     symbol: str,
     side: str,

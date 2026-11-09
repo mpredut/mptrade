@@ -64,7 +64,6 @@ from .strategy_executor import (
 )
 from market_regime import (
     ClosedPriceSeries,
-    CompositeMarketRegimeDecision,
     MarketRegimeContext,
     MarketRegimeDecision,
     MarketRegimeEvaluator,
@@ -151,31 +150,6 @@ class BinanceProvider(MarketDataProvider):
         return _get_bapi().get_current_price(symbol)
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        return None
-
-    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
-        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            return None
-        from botcore import fetch_public_json
-        from cachepaths import resolve_binance_lookup_symbol
-
-        sym_u = symbol.strip().upper()
-        lim = self.clamp_orderbook_limit(limit)
-        lookup_sym = resolve_binance_lookup_symbol(sym_u)
-        for cand_sym in dict.fromkeys((sym_u, lookup_sym)):
-            if not cand_sym:
-                continue
-            try:
-                raw = fetch_public_json(
-                    f"https://api.binance.com/api/v3/depth?symbol={cand_sym}&limit={lim}",
-                    timeout=4.0,
-                    user_agent="mptrade-orderbook/1.0",
-                )
-                norm = self.normalize_orderbook_payload(raw)
-                if norm is not None:
-                    return norm
-            except Exception:
-                continue
         return None
 
     def supports_symbol(self, symbol: str) -> bool:
@@ -1070,19 +1044,6 @@ class MarketApi:
             all_evidence, asset_symbol=symbol, use_case=use_case, weights=weights
         )
         return MarketRegimeBundle(composite, asset_short, asset_long, tuple(benchmark_resolutions))
-
-    def composite_market_regime(
-        self, symbol: str, *, benchmarks=(), provider_name=None,
-        benchmark_provider_name=None, use_case="balanced", weights=None,
-        strength_threshold=None, allow_fallback=True,
-    ) -> CompositeMarketRegimeDecision:
-        """Blend asset horizons with explicitly configured crypto benchmarks."""
-        return self.market_regime_bundle(
-            symbol, benchmarks=benchmarks, provider_name=provider_name,
-            benchmark_provider_name=benchmark_provider_name, use_case=use_case,
-            weights=weights, strength_threshold=strength_threshold,
-            allow_fallback=allow_fallback,
-        ).composite
 
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price=None, *, market: bool = False,

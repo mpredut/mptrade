@@ -820,7 +820,7 @@ def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(
     assert ok_neg is True and clamped_neg == 200.0
 
     gw.save_all_intents([{"intent_id": "i1", "status": " pending ", "decision": "HOLD"}])
-    assert len(gw.get_pending_intents()) == 1
+    assert len(gw.load_all_intents()) == 1
 
     # 4. GeopoliticalShockGuard normalizes percentage downscale_factor and checks BID/LONG
     gsg = GeopoliticalShockGuard(downscale_factor=40.0)

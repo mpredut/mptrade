@@ -801,10 +801,6 @@ class PriceWindow:
             return
         self.process_price(price)
 
-    @classmethod
-    def from_existing_window(cls, existing_prices, window_size, symbol=""):
-        return cls(symbol, window_size, initial_prices=existing_prices)
-
     @staticmethod
     def _sample_rate_from_entries(entries) -> float:
         """Return the median sampling gap in seconds for [ts_ms, price] entries."""
@@ -927,10 +923,6 @@ class PriceWindow:
                 return None, None
             max_price = self.get_max()
             return max_price, self._centroid_index_for(max_price)
-
-    def current_window_size(self):
-        with self._lock:
-            return len(self.prices)
 
     def _is_trend_buf_synced(self) -> bool:
         n = len(self.prices)

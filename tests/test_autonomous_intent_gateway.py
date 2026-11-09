@@ -90,10 +90,7 @@ def test_intent_persistence(temp_workspace):
     loaded = gw.load_all_intents()
     assert len(loaded) == 1
     assert loaded[0]["intent_id"] == "test_1"
-
-    pending = gw.get_pending_intents()
-    assert len(pending) == 1
-    assert pending[0]["symbol"] == "BTCUSDC"
+    assert loaded[0]["symbol"] == "BTCUSDC"
 
 
 def test_process_intent_low_confidence_rejected(temp_workspace):

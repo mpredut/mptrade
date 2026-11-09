@@ -467,9 +467,6 @@ class AuditedStrategyExecutor:
         ok, raw = self._call_trend_opt("trend_direction", symbol, max_age_sec)
         return raw if ok else MarketDataProvider.trend_direction(self, symbol, max_age_sec=max_age_sec)
 
-    def get_orderbook(self, symbol: str, limit: int = 200):
-        return self._call_opt("get_orderbook", symbol, limit)
-
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         return self._call_opt("position_cost_basis", symbol, held_qty, since_s)
 

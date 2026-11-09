@@ -43,7 +43,6 @@ LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
 DATASET_CSV = ROOT / "offline" / "research" / "hype_dataset" / "HYPEUSDC_240m_hlspot.csv"
 SHADOW_OHLC_JSON = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.ohlc.json"
-SHADOW_JSONL = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.jsonl"
 
 
 def define_candidate_grid() -> dict[str, dict]:

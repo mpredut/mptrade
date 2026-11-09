@@ -1030,11 +1030,6 @@ def is_system_os_error_report(report: Any) -> bool:
     return _report_has_action_in(report, SYSTEM_OS_ERROR_ACTIONS)
 
 
-def is_error_report(report: Any) -> bool:
-    """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
-    return is_bot_or_code_error_report(report) or is_system_os_error_report(report)
-
-
 def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[str]:
     """Select targeted pytest files covering ``real_target`` so live-VM patch verification completes quickly."""
     tests_dir = os.path.join(workspace_dir, "tests")

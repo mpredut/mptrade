@@ -179,7 +179,7 @@ class TestPlaceOrderMechanics(unittest.TestCase):
             with patch.object(po.api, "get_current_price", return_value=100.0), \
                  patch.object(po.api, "get_free_balance", return_value=1000.0), \
                  patch.object(po, "PLACE_ORDER_MIN_NOTIONAL", 100.0), \
-                 patch.object(po, "place_BUY_order", return_value={"orderId": 1}) as pbuy:
+                 patch.object(po, "_submit_binance_order", return_value={"orderId": 1}) as pbuy:
                 with self.assertRaisesRegex(SubmissionRefused, "below_min_notional"):
                     po.place_order_mechanics("BUY", SYMBOL, 100.0, 0.5, force=False)
             pbuy.assert_not_called()
@@ -200,7 +200,7 @@ class TestPlaceOrderMechanics(unittest.TestCase):
         with self.subTest(msg="zero available returns none"):
             with patch.object(po.api, "get_current_price", return_value=100.0), \
                  patch.object(po.api, "get_free_balance", return_value=0.0), \
-                 patch.object(po, "place_BUY_order") as pbuy:
+                 patch.object(po, "_submit_binance_order") as pbuy:
                 order = po.place_order_mechanics("BUY", SYMBOL, 100.0, 5.0)
             self.assertIsNone(order)
             pbuy.assert_not_called()

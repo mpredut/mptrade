@@ -333,11 +333,9 @@ def test_place_order_smart_delegates_to_common_pipeline_with_motivation():
 
 
 def test_legacy_adapter_preserves_none_quantity_for_common_decision():
-    with (patch.object(po, "_resolve_qty", return_value=3.25) as resolve,
-          patch.object(po, "_guarded_market_place", return_value=None) as place):
+    with patch.object(po, "_guarded_market_place", return_value=None) as place:
         po.place_safe_order("BUY", TAO_SYMBOL, 225.0, None)
 
-    resolve.assert_not_called()
     assert place.call_args.args[:4] == (TAO_SYMBOL, "BUY", 225.0, None)
 
 
@@ -543,8 +541,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(fetched_ages, [("SELL", 86400.0), ("BUY", 86400.0)])
 
-        w = pw.PriceWindow.from_existing_window([100.0, 101.0, 102.0], 5, symbol="BTCUSDC")
-        self.assertEqual(w.current_window_size(), 3)
+        w = pw.PriceWindow("BTCUSDC", 5, initial_prices=[100.0, 101.0, 102.0])
+        self.assertEqual(len(w.prices), 3)
         w.sample_rate_sec = 0
         self.assertEqual(w.recent_n, 2)
         trend, _, _, _ = pw.instant_trend_from_prices([100.0, 101.0, 102.0], None)

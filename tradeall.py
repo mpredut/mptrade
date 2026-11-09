@@ -437,15 +437,6 @@ class TrendState:
         print(f"{self.confirm_count} times trend confirmed: {self.state} at {u.timeToHMS(self.last_confirmation_time)}")
         return self.confirm_count
 
-    def get_confirmed_trend_duration(self):
-        st = self._norm_ts(self.start_time)
-        lct = self._norm_ts(self.last_confirmation_time)
-        if st is None or lct is None:
-            raise ValueError("Start and confirmation time must be set")
-        if lct <= st:
-            raise ValueError("Start time must be before confirmation time")
-        return lct - st
-
     def get_started_trend_time(self):
         st = self._norm_ts(self.start_time)
         if st is None:
@@ -947,12 +938,6 @@ class TrendCoordinator:
                 print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)
         return snapshot
-
-    def get_cached_trend(self, symbol):
-        return self.instant_mgr.get_snapshot(symbol)
-
-    def get_all_cached_trends(self):
-        return self.instant_mgr.get_all_snapshots()
 
     # Main event-driven loop and heartbeat.
     def run(self):

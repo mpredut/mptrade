@@ -647,9 +647,6 @@ class TestRebuyGuardsKraken(Base):
         _, s_ms, e_ms, to_f = resolve_ohlc_time_window_ms(end_ms=100_000_000, lookback_hours=1, timeout=15)
         self.assertEqual(e_ms - s_ms, 3600 * 1000)
         self.assertEqual(to_f, 15.0)
-        self.assertEqual(MarketDataProvider.clamp_orderbook_limit(1), 5)
-        self.assertEqual(MarketDataProvider.clamp_orderbook_limit(9999), 500)
-        self.assertEqual(MarketDataProvider.clamp_orderbook_limit("bad"), 200)
         self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSD"))
         oo_rec = build_open_order_entry(
             {"cl_ord_id": "abc123", "status": "open", "time": 1700000000},

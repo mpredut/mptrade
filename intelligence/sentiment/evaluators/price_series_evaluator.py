@@ -2262,10 +2262,6 @@ class AssetSessionPolicy(ABC):
         """Whether this asset class follows cash-equity session rules (RTH / extended hours)."""
 
     @abstractmethod
-    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
-        """Whether symbol participates in USD/USDC/USDT cross-venue sibling orderbook arbitrage."""
-
-    @abstractmethod
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         """Normalize raw 24h series according to asset-class session rules."""
 
@@ -2312,10 +2308,6 @@ class Crypto24x7SessionPolicy(AssetSessionPolicy):
     def is_equity(self) -> bool:
         return False
 
-    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
-        sym_u = str(symbol or "").strip().upper()
-        return sym_u.endswith(("USDC", "USDT", "USD")) and not sym_u.endswith(("_EQ", "_US_EQ"))
-
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return sort_ts_rows(rows)
 
@@ -2357,9 +2349,6 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     @property
     def is_equity(self) -> bool:
         return True
-
-    def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
-        return False
 
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return strip_off_rth_flat_poller_tail(rows, symbol, is_market_open_fn=is_market_open_fn)

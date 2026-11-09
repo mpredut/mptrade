@@ -4259,7 +4259,7 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
         WhalePositioningCollector,
         WhalePositioningSnapshot,
     )
-    from intelligence.cli import get_daemon_status, get_macro_analyzer_status, inspect_symbol_intelligence
+    from intelligence.cli import get_daemon_status, inspect_symbol_intelligence
 
     # 1. ParabolicSurgeGuard clock-skew & NaN/future history resilience
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5, window_seconds=3600.0)
@@ -4375,7 +4375,6 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
         encoding="utf-8",
     )
     assert get_daemon_status(str(tmp_path))["running"] is True
-    assert get_macro_analyzer_status(str(tmp_path))["running"] is True
     rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
     assert rep["pillar2_external"]["whale"] is not None
 

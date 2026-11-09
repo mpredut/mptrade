@@ -153,13 +153,6 @@ class AutonomousIntentGateway:
         """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
         return save_durable_intents_state(self.intents_file, intents, log=logger)
 
-    def get_pending_intents(self) -> List[Dict[str, Any]]:
-        """Returns all intents with PENDING status."""
-        return [
-            i for i in self.load_all_intents()
-            if str(i.get("status") or "").strip().upper() == "PENDING"
-        ]
-
     def load_tradable_instruments(
         self,
         *,

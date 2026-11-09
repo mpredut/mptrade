@@ -237,11 +237,6 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         "url": "https://coinmarketcap.com/currencies/real-world-services/",
     }
 
-    def test_alert_symbol_dict_and_obj(self):
-        self.assertEqual(AlertNotifier.alert_symbol(self.NEW_COIN), "RWS")
-        alert = PriceAlert("TAO", "up", 100.0, 90.0, 11.0, 5.0)
-        self.assertEqual(AlertNotifier.alert_symbol(alert), "TAO")
-
     def test_save_to_file_handles_new_coin_dict(self):
         path = os.path.join(tempfile.mkdtemp(), "alerts.log")
         self.assertTrue(AlertNotifier.save_to_file(self.NEW_COIN, filename=path))
@@ -288,7 +283,6 @@ class TestNewCoinDictRobustness(unittest.TestCase):
 
     def test_non_ascii_symbol_preserved(self):
         coin = dict(self.NEW_COIN, symbol="小蝌蚪", name="小蝌蚪 Coin")
-        self.assertEqual(AlertNotifier.alert_symbol(coin), "小蝌蚪")
         self.assertIn("小蝌蚪", AlertNotifier.format_batch_message([coin]))
         hdr = AlertNotifier.utf8_header("(1): 小蝌蚪")
         self.assertEqual(hdr.encode("latin-1").decode("utf-8"), "(1): 小蝌蚪")

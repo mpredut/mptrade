@@ -324,12 +324,6 @@ class TelemetryCollectorFactory:
         return cls.get_collector(CompositeSymbolPriceSeriesLoader, start_sync=start_sync)
 
     @classmethod
-    def get_microstructure_collector(cls, *, start_sync: bool = False) -> Any:
-        from intelligence.sentiment.collectors.microstructure_collector import SymbolMicrostructureSnapshotCollector
-
-        return cls.get_collector(SymbolMicrostructureSnapshotCollector, start_sync=start_sync)
-
-    @classmethod
     def get_fleet_enricher(cls, *, start_sync: bool = False) -> Any:
         from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
 

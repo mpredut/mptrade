@@ -329,21 +329,6 @@ class KrakenProvider(MarketDataProvider):
             print(f"[Kraken] price {symbol}: {e}")
             return None
 
-    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
-        from cachepaths import resolve_kraken_lookup_symbol
-
-        lim = self.clamp_orderbook_limit(limit)
-        pair = resolve_kraken_lookup_symbol(str(symbol).strip())
-        try:
-            res = self._client()._public("Depth", {"pair": pair, "count": lim})
-            if isinstance(res, dict):
-                return self.normalize_orderbook_payload({"result": res} if "bids" not in res else res)
-        except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] orderbook {symbol}: {e}")
-        return None
-
     def min_order_qty(self, symbol: str) -> float:
         """Return public pair minimum volume, caching only a positive result.
 

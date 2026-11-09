@@ -289,38 +289,6 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] get_current_price({symbol}) failed: {e}")
             return None
 
-    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
-        self.validate_symbol(symbol)
-        lim = self.clamp_orderbook_limit(limit)
-        c = self._hl()
-        pair = self._pair()
-        try:
-            if c is not None and pair is not None and hasattr(getattr(c, "info", None), "l2_snapshot"):
-                raw = c.info.l2_snapshot(pair)
-                norm = self.normalize_orderbook_payload(raw)
-                if norm is not None:
-                    return {
-                        "bids": list(norm.get("bids") or [])[:lim],
-                        "asks": list(norm.get("asks") or [])[:lim],
-                    }
-            from botcore import fetch_json_post
-
-            raw = fetch_json_post(
-                "https://api.hyperliquid.xyz/info",
-                {"type": "l2Book", "coin": self._token},
-                timeout=4.0,
-            )
-            norm = self.normalize_orderbook_payload(raw)
-            if norm is not None:
-                return {
-                    "bids": list(norm.get("bids") or [])[:lim],
-                    "asks": list(norm.get("asks") or [])[:lim],
-                }
-            return None
-        except Exception as e:  # noqa: BLE001
-            print(f"[HL] get_orderbook({symbol}) failed: {e}")
-            return None
-
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending granular spot closes over the last ``lookback_h`` hours."""
         self.validate_symbol(symbol)

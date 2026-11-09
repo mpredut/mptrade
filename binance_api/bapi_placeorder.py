@@ -128,17 +128,6 @@ class _AccountCacheSubmitPermit:
         return self._scope.expires_at
 
 
-def _resolve_qty(qty):
-    """Normalize the quantity model used by the placement pipeline.
-
-    ``qty=None`` means use the maximum allowed by weight limits and the real-balance
-    clamp rather than an arbitrary numeric placeholder. An explicit quantity remains
-    unchanged here; downstream safety guards may still cap it without changing the
-    caller's stated intent.
-    """
-    return float("inf") if qty is None else qty
-
-
 def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     auto_qty = required_qty is None
     order_type = "" if isinstance(order_type, bool) or not isinstance(order_type, str) else _normalize_side(order_type)
@@ -357,11 +346,6 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     except BinanceAPIException as exc:
         print(f"Binance {side} submission failed: {exc}")
         return None
-
-
-def place_BUY_order(symbol, price, qty, client_order_id=None):
-    return _submit_binance_order(
-        "BUY", symbol, qty, price=price, client_order_id=client_order_id)
 
 
 def _last_opposite_fill_price(symbol, order_type):

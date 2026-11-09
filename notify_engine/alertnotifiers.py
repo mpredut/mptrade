@@ -1025,11 +1025,6 @@ class AlertNotifier:
         return isinstance(alert, dict) and alert.get("type") == "new_coin_discovered"
 
     @staticmethod
-    def alert_symbol(alert: Any) -> str:
-        """Return the symbol from either a PriceAlert object or new-coin mapping."""
-        return obj_attr(alert, "symbol", "N/A")
-
-    @staticmethod
     def utf8_header(value: str) -> str:
         """Encode an HTTP header while preserving non-ASCII symbols.
 

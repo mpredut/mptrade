@@ -274,8 +274,8 @@ class MarketApiLifecycleTest(unittest.TestCase):
         self.assertIn("stale_source", decision.reason)
 
     def test_composite_market_regime_supports_multiple_crypto_benchmarks(self):
-        decision = self.api.composite_market_regime(
-            "ABCUSD", benchmarks=("BTCUSD", "ETHUSD"))
+        decision = self.api.market_regime_bundle(
+            "ABCUSD", benchmarks=("BTCUSD", "ETHUSD")).composite
         self.assertTrue(decision.actionable)
         self.assertEqual(decision.regime, "bull")
         self.assertEqual(len(decision.components), 6)
