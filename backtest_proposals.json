@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-08T14:10:44",
+    "ts": "2026-11-09T02:10:55",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -10,6 +10,20 @@
     "margin_vs_current": {
       "half1": 41.34,
       "half2": 2.15
+    },
+    "dev_commit": "db3f930e"
+  },
+  {
+    "ts": "2026-11-09T02:10:55",
+    "full_key": "BINANCE_ARB.mt.maxage_days",
+    "section": "BINANCE_ARB",
+    "key": "mt.maxage_days",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 13.25,
+    "winner_value": 7.0,
+    "margin_vs_current": {
+      "half1": 171.51,
+      "half2": 171.07
     },
     "dev_commit": "db3f930e"
   }
