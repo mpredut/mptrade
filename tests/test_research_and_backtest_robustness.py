@@ -5723,12 +5723,12 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     assert st_hl["orders"][0]["amount"] == 0.0
     assert st_hl["orders"][0]["ts"] == pytest.approx(1000.5)
 
-    # 4. t212_client_mod._clean_single_order_id rejects negative strings and normalizes '+789.0' -> '789'
+    # 4. t212_client_mod.clean_order_id rejects negative strings and normalizes '+789.0' -> '789'
     t212_client_mod = importlib.import_module("212trading.t212_client")
-    assert t212_client_mod._clean_single_order_id(" +789.0 ") == "789"
-    assert t212_client_mod._clean_single_order_id("-5") is None
-    assert t212_client_mod._clean_single_order_id("+0") is None
-    assert t212_client_mod._clean_single_order_id("-12.0") is None
+    assert t212_client_mod.clean_order_id(" +789.0 ") == "789"
+    assert t212_client_mod.clean_order_id("-5") is None
+    assert t212_client_mod.clean_order_id("+0") is None
+    assert t212_client_mod.clean_order_id("-12.0") is None
 
     # 5. 212trading/strategy.py _sanitize_t212_state normalizes order amount/ts and replay handles string OHLC
     t212_strat_mod = importlib.import_module("212trading.strategy")
@@ -5843,8 +5843,8 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
     import order_retry as oret
     from rtrade_pair_store import RTradePairStore
 
-    # 1. accepted_order_persistence._clean_single_order_id and active_intents._clean_single_order_id reject negative/zero and normalize '+123.0'
-    for fn in (aop._clean_single_order_id, ai._clean_single_order_id):
+    # 1. accepted_order_persistence.clean_order_id and active_intents.clean_order_id reject negative/zero and normalize '+123.0'
+    for fn in (aop.clean_order_id, ai.clean_order_id):
         assert fn(-5) is None
         assert fn("-5") is None
         assert fn("-5.0") is None
@@ -5911,11 +5911,11 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     from providers import kraken_provider as pkraken
     from providers.strategy_executor import ProviderError
 
-    # 1. providers.base._clean_single_order_id normalizes '+12345.0' and rejects '+0.0'
-    assert pbase._clean_single_order_id("+12345.0") == "12345"
-    assert pbase._clean_single_order_id("+12345") == "12345"
-    assert pbase._clean_single_order_id("+0.0") is None
-    assert pbase._clean_single_order_id("-0.0") is None
+    # 1. providers.base.clean_order_id normalizes '+12345.0' and rejects '+0.0'
+    assert pbase.clean_order_id("+12345.0") == "12345"
+    assert pbase.clean_order_id("+12345") == "12345"
+    assert pbase.clean_order_id("+0.0") is None
+    assert pbase.clean_order_id("-0.0") is None
 
     # 2. providers.quantity.clean_order_id_str rejects negative/non-integer floats and normalizes '+777.0'
     assert pqty.clean_order_id_str(-5) == ""
@@ -5969,13 +5969,13 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     from lock import trade_cooldown as tcd_mod
     from providers import execution_audit as ea_mod
 
-    # 1. spot_engine._clean_order_id and _sanitize_spot_state
-    assert se._clean_order_id(frozenset({"a"})) is None
-    assert se._clean_order_id(12.5) is None
-    assert se._clean_order_id("-abc") is None
-    assert se._clean_order_id("+0.0") is None
-    assert se._clean_order_id("+123.0") == "123"
-    assert se._clean_order_id("+123") == "123"
+    # 1. spot_engine.clean_order_id and _sanitize_spot_state
+    assert se.clean_order_id(frozenset({"a"})) is None
+    assert se.clean_order_id(12.5) is None
+    assert se.clean_order_id("-abc") is None
+    assert se.clean_order_id("+0.0") is None
+    assert se.clean_order_id("+123.0") == "123"
+    assert se.clean_order_id("+123") == "123"
     san = se.Strategy._sanitize_spot_state(
         {
             "orders": [
@@ -5987,8 +5987,8 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     assert san["orders"][0]["side"] == "buy"
     assert san["orders"][0]["ts"] == 0.0
 
-    # 2. spot_rules._bool_flag and non-iterable shadow_prices
-    assert sr._bool_flag("1.0") is True
+    # 2. spot_rules._parse_bool_flag and non-iterable shadow_prices
+    assert sr._parse_bool_flag("1.0") is True
     assert sr.check_fast_profit_reversal(120.0, 100.0, 5.0, 2.0, True, 60.0, 1.0) == (False, 20.0, 0.0)  # type: ignore[arg-type]
     assert sr.check_slow_grind_exhaustion(
         120.0, 100.0, 0.0, 864000.0, 7.0, 15.0, 120.0, "not_a_list", 900.0, 1.5, 2.5, sma_value=0.0  # type: ignore[arg-type]
@@ -6004,10 +6004,10 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     mgr.record_hard_tp(True, 1000.0)  # type: ignore[arg-type]
     assert mgr.hard_tp_last == {}
 
-    # 4. rtrade_pair._clean_single_order_id
+    # 4. rtrade_pair.clean_order_id
     for bad in (frozenset({"x"}), -5, -5.0, 12.5, "-5", "-abc", "+0.0", "-0.0"):
-        assert rp._clean_single_order_id(bad) is None
-    assert rp._clean_single_order_id("+789.0") == "789"
+        assert rp.clean_order_id(bad) is None
+    assert rp.clean_order_id("+789.0") == "789"
     assert rp._parse_bool_flag("1.0") is True
 
     # 5. lock.cooldown and lock.trade_cooldown hardening

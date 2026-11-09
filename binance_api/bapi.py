@@ -36,7 +36,6 @@ is_order_repriceable_by_monitororder = rc.is_order_repriceable_by_monitororder
 order_matches_owner = rc.order_matches_owner
 create_client_order_id = rc.create_client_order_id
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _load_dotenv()
 BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
     "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC"

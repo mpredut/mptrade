@@ -23,6 +23,7 @@ from botcore import (
     exact_nonneg_int,
     normalize_epoch_sec,
     required_float_env,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -414,7 +415,7 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
 
 def process_once(mkt, now=None):
     """Advance each due outbox record by at most one non-blocking lifecycle step."""
-    now = oq._clean_now_sec(now)
+    now = resolve_now_ts(now)
     snapshot = oq.load_validated()
 
     to_retry, to_observe, to_reconcile_cancel, live_producer_reconciliation, expired = [], [], [], [], []

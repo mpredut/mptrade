@@ -32,7 +32,7 @@ except ImportError:
     ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-from botcore import _clean_single_order_id, normalize_side
+from botcore import clean_order_id, normalize_side
 from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.base import MarketDataProvider
@@ -585,7 +585,7 @@ class T212Client:
         when history is unavailable or not yet updated so strict reconciliation retries
         without assuming a fill.
         """
-        target_oid = _clean_single_order_id(order_id)
+        target_oid = clean_order_id(order_id)
         if target_oid is None:
             return None
         matches: list[tuple[dict, dict | None]] = []
@@ -723,7 +723,7 @@ class T212Client:
         return candidates[-1] if candidates else None
 
     def get_order_status(self, order_id) -> dict | bool | None:
-        target_oid = _clean_single_order_id(order_id)
+        target_oid = clean_order_id(order_id)
         if target_oid is None:
             return None
         status, body = http_get(
@@ -749,7 +749,7 @@ class T212Client:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""
-        target_oid = _clean_single_order_id(order_id)
+        target_oid = clean_order_id(order_id)
         if target_oid is None:
             return False
         self._pace_order()

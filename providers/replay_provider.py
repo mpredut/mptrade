@@ -77,15 +77,15 @@ def backtest_isolation_context(quiet: bool = False):
                 log.enable_print()
 
 
-def _clean_ts(val: float) -> float:
-    return require_finite_float(val, error_msg="SimClock timestamp must be a finite number, not bool/None")
-
-
 class SimClock:
     """Callable simulated time source whose ``ts`` (or ``value``) is set by its driver."""
 
     def __init__(self, initial_ts: float | None = None):
-        self.ts: float = time.time() if initial_ts is None else _clean_ts(initial_ts)
+        self.ts: float = (
+            time.time()
+            if initial_ts is None
+            else require_finite_float(initial_ts, error_msg="SimClock timestamp must be a finite number, not bool/None")
+        )
 
     @property
     def value(self) -> float:
@@ -93,7 +93,7 @@ class SimClock:
 
     @value.setter
     def value(self, new_val: float) -> None:
-        self.ts = _clean_ts(new_val)
+        self.ts = require_finite_float(new_val, error_msg="SimClock timestamp must be a finite number, not bool/None")
 
     def __call__(self) -> float:
         return self.ts

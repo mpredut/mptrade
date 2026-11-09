@@ -85,7 +85,6 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     _QTY_KEYS,
     _TIMESTAMP_KEYS,
     _UNFILLED_ORDER_STATUSES,
-    _clean_single_order_id,
     _derive_128bit_client_order_id,
     _first_mapped,
     _first_nonempty_str,

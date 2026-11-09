@@ -13,9 +13,9 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from botcore import (
-    _clean_single_order_id,
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_order_id,
     exact_pos_int,
     load_root_config,
     normalize_side,
@@ -528,7 +528,7 @@ def _claim_client_order_id(record) -> str | None:
     if not isinstance(record, dict):
         return None
     pk = record.get("place_kwargs")
-    return _clean_single_order_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+    return clean_order_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
 
 
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
@@ -536,16 +536,16 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     try:
         if not isinstance(claim, dict):
             return False
-        claim_id = _clean_single_order_id(claim.get("id"))
-        expected_order_id = _clean_single_order_id(order_retry_module.order_id_from_response(order))
+        claim_id = clean_order_id(claim.get("id"))
+        expected_order_id = clean_order_id(order_retry_module.order_id_from_response(order))
         expected_client_id = _claim_client_order_id(claim)
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
         for record in (order_retry_module.load_all() or ()):
-            if not isinstance(record, dict) or _clean_single_order_id(record.get("id")) != claim_id:
+            if not isinstance(record, dict) or clean_order_id(record.get("id")) != claim_id:
                 continue
             current_client_id = _claim_client_order_id(record)
-            current_order_id = _clean_single_order_id(record.get("order_id"))
+            current_order_id = clean_order_id(record.get("order_id"))
             return (
                 str(record.get("lifecycle") or "").strip().lower() == "accepted"
                 and current_order_id == expected_order_id
@@ -581,7 +581,7 @@ def complete_accepted_claim(
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
     try:
-        order_id = _clean_single_order_id(order_retry_module.order_id_from_response(order))
+        order_id = clean_order_id(order_retry_module.order_id_from_response(order))
     except Exception:
         order_id = None
     claim_dict = claim if isinstance(claim, dict) else {}

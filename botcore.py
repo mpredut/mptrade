@@ -1631,9 +1631,6 @@ def clean_order_id(val: object) -> str | None:
     return text[1:] if text.startswith("+") and text[1:].isdigit() else text
 
 
-_clean_single_order_id = clean_order_id
-
-
 def clean_order_id_str(val: object) -> str:
     """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
     return clean_order_id(val) or ""

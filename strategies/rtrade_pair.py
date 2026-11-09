@@ -20,7 +20,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.base import _clean_single_order_id, normalize_side
+from providers.base import clean_order_id, normalize_side
 
 
 _MAX_LIMIT_REVISION = 1_000_000
@@ -63,7 +63,7 @@ class OrderTicket:
     revision: int = 0
 
     def __post_init__(self):
-        clean_oid = _clean_single_order_id(self.order_id)
+        clean_oid = clean_order_id(self.order_id)
         self.side = normalize_side(self.side)
         px = safe_pos_float(self.price, default=None)
         q = safe_pos_float(self.qty, default=None)
@@ -74,7 +74,7 @@ class OrderTicket:
             self.revision, max_val=_MAX_LIMIT_REVISION, error_msg="ticket rtrade invalid"
         )
         if self.pair_id is not None:
-            clean_pid = _clean_single_order_id(self.pair_id)
+            clean_pid = clean_order_id(self.pair_id)
             if clean_pid is None:
                 raise ValueError("ticket rtrade invalid")
             self.pair_id = clean_pid
@@ -280,7 +280,7 @@ class PairCoordinator:
             raise ValueError("the rtrade mid must be finite")
         buy_price, sell_price = quote_prices(
             mid, self.policy.adjustment_fraction, self.policy.price_decimals)
-        clean_pid = _clean_single_order_id(pair_id if pair_id is not None else self.pair_id_factory())
+        clean_pid = clean_order_id(pair_id if pair_id is not None else self.pair_id_factory())
         if clean_pid is None:
             raise ValueError("invalid rtrade pair_id")
         self.pair_id = clean_pid
@@ -367,7 +367,7 @@ class PairCoordinator:
             raise ValueError("incomplete rtrade checkpoint")
         obj = cls(venue, state["qty"], policy, start_side=state["start_side"],
                   clock=clock, sleeper=sleeper)
-        clean_pair_id = _clean_single_order_id(state.get("pair_id"))
+        clean_pair_id = clean_order_id(state.get("pair_id"))
         if clean_pair_id is None:
             raise ValueError("invalid rtrade checkpoint pair_id")
         obj.pair_id = clean_pair_id
@@ -423,14 +423,14 @@ class PairCoordinator:
         try:
             cleaned_snaps = {}
             for order_id, snapshot in raw_snapshots.items():
-                clean_oid = _clean_single_order_id(order_id)
+                clean_oid = clean_order_id(order_id)
                 if clean_oid is None or not isinstance(snapshot, dict):
                     raise TypeError("invalid snapshot entry")
                 cleaned_snaps[clean_oid] = OrderSnapshot(**snapshot)
             obj.snapshots = cleaned_snaps
         except TypeError as exc:
             raise ValueError("invalid rtrade checkpoint snapshots") from exc
-        clean_stop_oid = _clean_single_order_id(state.get("stop_order_id"))
+        clean_stop_oid = clean_order_id(state.get("stop_order_id"))
         obj.stop_ticket = (
             next((t for t in obj.tickets if t.order_id == clean_stop_oid), None)
             if clean_stop_oid is not None else None

@@ -74,10 +74,6 @@ def _definitive_submit_failure(status: int, payload) -> bool:
     return "rejected" in str(payload or "").lower()
 
 
-def _live() -> bool:
-    return bool_env("T212_LIVE_ORDERS", _T212_DIR)
-
-
 def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
     """Return whether two T212 ticker strings refer to the same equity instrument."""
     base_a = canonical_base_asset(sym_a)

@@ -101,9 +101,6 @@ def build_comparison(args) -> dict:
     }
 
 
-_fmt = benchmark._format
-
-
 def markdown_report(report: dict) -> str:
     lines = [
         "# HYPE financial candidate comparison", "",
@@ -122,15 +119,15 @@ def markdown_report(report: dict) -> str:
             dd_wtl = risk["drawdown_wins_ties_losses"]
             calmar_delta = safe_float(risk["median_calmar_improvement_ratio"], default=None)
             calmar_pct_val = calmar_delta * 100.0 if calmar_delta is not None else None
-            calmar_fmt = _fmt(calmar_pct_val, signed=True)
+            calmar_fmt = benchmark._format(calmar_pct_val, signed=True)
             calmar_cell = f"{calmar_fmt}%" if calmar_fmt != "n/a" else "n/a"
             lines.append(
                 f"| `{name}` | `{scenario_name}` | "
-                f"{_fmt(aggregate['mean_return_pct'], signed=True)} | "
-                f"{_fmt(gate['mean_return_delta_pp'], signed=True)} | "
-                f"{_fmt(aggregate['worst_return_pct'], signed=True)} | "
-                f"{_fmt(gate['worst_return_delta_pp'], signed=True)} | "
-                f"{_fmt(gate['worst_drawdown_delta_pp'], signed=True)} | "
+                f"{benchmark._format(aggregate['mean_return_pct'], signed=True)} | "
+                f"{benchmark._format(gate['mean_return_delta_pp'], signed=True)} | "
+                f"{benchmark._format(aggregate['worst_return_pct'], signed=True)} | "
+                f"{benchmark._format(gate['worst_return_delta_pp'], signed=True)} | "
+                f"{benchmark._format(gate['worst_drawdown_delta_pp'], signed=True)} | "
                 f"{wtl['wins']}/{wtl['ties']}/{wtl['losses']} | "
                 f"{calmar_cell} | "
                 f"{dd_wtl['wins']}/{dd_wtl['ties']}/{dd_wtl['losses']} | "

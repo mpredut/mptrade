@@ -6,7 +6,6 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
-    _clean_single_order_id,
     _parse_bool_flag,
     clean_order_id,
     clean_order_id_str,

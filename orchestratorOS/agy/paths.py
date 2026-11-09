@@ -28,17 +28,12 @@ def expand_config_path(raw_path: str) -> str:
     return os.path.expanduser(os.path.expandvars(cleaned)) if cleaned else ""
 
 
-def resolve_bot_home_dir() -> str:
-    """Isolated HOME of the agy-bot wrapper (AGY_BOT_HOME)."""
-    return expand_config_path(required_env("AGY_BOT_HOME"))
-
-
 def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
     """Antigravity store used by autonomous LLM calls: explicit path or AGY_BOT_HOME/.gemini/antigravity-cli."""
     expanded = expand_config_path(cli_base) if isinstance(cli_base, (str, os.PathLike)) else ""
     if expanded:
         return expanded
-    return os.path.join(resolve_bot_home_dir(), AGY_STORE_SUBDIR)
+    return os.path.join(expand_config_path(required_env("AGY_BOT_HOME")), AGY_STORE_SUBDIR)
 
 
 def resolve_ui_cli_base(ui_cli_base: Optional[str] = None) -> str:

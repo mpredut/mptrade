@@ -28,9 +28,6 @@ fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
 normalize_closed_candles = _hl_md.normalize_closed_candles
 
 
-_post = _hl_md._post_info
-
-
 def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
     """Resolve the ``@index`` API name from ``spotMeta``, with no hardcoded index."""
     if not isinstance(spot_meta, dict):
@@ -131,7 +128,7 @@ def main() -> int:
         end_ms - args.lookback_days * 24 * 60 * 60 * 1000
         if args.lookback_days is not None else 0
     )
-    spot_meta = _post({"type": "spotMeta"})
+    spot_meta = _hl_md._post_info({"type": "spotMeta"})
     if not isinstance(spot_meta, dict):
         raise RuntimeError("invalid spotMeta response")
     coin = resolve_spot_pair(args.token, args.quote, spot_meta)

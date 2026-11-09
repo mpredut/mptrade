@@ -13839,11 +13839,11 @@ def test_iteration138_t212_client_provider_and_order_manager_id_hygiene(monkeypa
     t212_client_mod = importlib.import_module("212trading.t212_client")
     T212Client = t212_client_mod.T212Client
 
-    # 1. t212_client_mod._clean_single_order_id normalizes integer floats and rejects sentinel strings / containers
-    assert t212_client_mod._clean_single_order_id(12345.0) == "12345"
-    assert t212_client_mod._clean_single_order_id(" 999 ") == "999"
+    # 1. t212_client_mod.clean_order_id normalizes integer floats and rejects sentinel strings / containers
+    assert t212_client_mod.clean_order_id(12345.0) == "12345"
+    assert t212_client_mod.clean_order_id(" 999 ") == "999"
     for bad in ("nan", "null", "none", "inf", 12.5, ["123"], {"id": 1}, True, None):
-        assert t212_client_mod._clean_single_order_id(bad) is None
+        assert t212_client_mod.clean_order_id(bad) is None
 
     cli = T212Client("test-key", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
     assert cli.get_order_status("nan") is None
@@ -14193,23 +14193,23 @@ def test_iteration144_spot_engine_rtrade_pair_and_spot_rules_hygiene():
     from types import SimpleNamespace
     from strategies import spot_rules as sr
     from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
-    from strategies.spot_engine import StratParams, Strategy, _clean_order_id, _parse_bool_flag
+    from strategies.spot_engine import StratParams, Strategy, clean_order_id, _parse_bool_flag
 
-    # 1. spot_rules._bool_flag rejects NaN and containers
-    assert sr._bool_flag(float("nan")) is False
-    assert sr._bool_flag(["true"]) is False
-    assert sr._bool_flag("0") is False
-    assert sr._bool_flag("true") is True
-    assert sr._bool_flag(1) is True
+    # 1. spot_rules._parse_bool_flag rejects NaN and containers
+    assert sr._parse_bool_flag(float("nan")) is False
+    assert sr._parse_bool_flag(["true"]) is False
+    assert sr._parse_bool_flag("0") is False
+    assert sr._parse_bool_flag("true") is True
+    assert sr._parse_bool_flag(1) is True
 
-    # 2. spot_engine._parse_bool_flag, _clean_order_id, and _sanitize_spot_state
+    # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_spot_state
     assert _parse_bool_flag("false") is False
     assert _parse_bool_flag("0") is False
     assert _parse_bool_flag(float("nan")) is False
-    assert _clean_order_id(12345.0) == "12345"
-    assert _clean_order_id("nan") is None
-    assert _clean_order_id("0") is None
-    assert _clean_order_id(["1"]) is None
+    assert clean_order_id(12345.0) == "12345"
+    assert clean_order_id("nan") is None
+    assert clean_order_id("0") is None
+    assert clean_order_id(["1"]) is None
 
     fake_client = SimpleNamespace(
         pair_precision=lambda pair: SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.01)
@@ -14408,9 +14408,9 @@ def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_a
         sys.modules.pop("hl_strat_t146", None)
 
     for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
-        assert hl_mod._clean_single_order_id(bad_oid) is None
-    assert hl_mod._clean_single_order_id(555.0) == "555"
-    assert hl_mod._clean_single_order_id("555.0") == "555"
+        assert hl_mod.clean_order_id(bad_oid) is None
+    assert hl_mod.clean_order_id(555.0) == "555"
+    assert hl_mod.clean_order_id("555.0") == "555"
 
     sanitized_hl = hl_mod._sanitize_state(
         {
@@ -14480,13 +14480,13 @@ def test_iteration147_kraken_cachemanager_shadow_live_and_hl_signals_hygiene(tmp
     from kraken import kraken_cachemanager as kcm
     from kraken import shadow_live as ksl
 
-    # 1. kraken_cachemanager._clean_single_order_id, _normalize, and _load_initial_cache
+    # 1. kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache
     for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
-        assert kcm._clean_single_order_id(bad_id) is None
+        assert kcm.clean_order_id(bad_id) is None
         assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
 
-    assert kcm._clean_single_order_id(777.0) == "777"
-    assert kcm._clean_single_order_id("777.0") == "777"
+    assert kcm.clean_order_id(777.0) == "777"
+    assert kcm.clean_order_id("777.0") == "777"
     norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
     assert norm_ok["id"] == "777"
 
@@ -14615,11 +14615,11 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     import accepted_order_persistence as aop
     from rtrade_pair_store import RTradePairStore
 
-    # 1. active_intents: _clean_single_order_id, _parse_bool_flag, _first, _intent_row, _walk
+    # 1. active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk
     for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
-        assert ai._clean_single_order_id(bad) is None
-    assert ai._clean_single_order_id(777.0) == "777"
-    assert ai._clean_single_order_id("777.0") == "777"
+        assert ai.clean_order_id(bad) is None
+    assert ai.clean_order_id(777.0) == "777"
+    assert ai.clean_order_id("777.0") == "777"
     assert ai._parse_bool_flag("false", True) is False
     assert ai._parse_bool_flag("true", False) is True
     assert ai._parse_bool_flag(float("nan"), True) is True

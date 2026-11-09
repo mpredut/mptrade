@@ -24,7 +24,7 @@ from botcore import (
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import (
-    _clean_single_order_id as _clean_order_id,
+    clean_order_id,
     extract_order_side,
     extract_remaining_qty,
     normalize_side,
@@ -431,22 +431,22 @@ class Strategy(BaseSpotMixin):
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
         return {
-            "txid": _clean_order_id(pending.get("order_id")) or "",
+            "txid": clean_order_id(pending.get("order_id")) or "",
             "side": str(pending["side"]).lower(),
             "vol": eff_vol,
             "price": safe_pos_float(pending.get("requested_price"), 0.0),
             "amount": amount,
             "kind": pending.get("kind"),
             "market": _parse_bool_flag(market_val, False),
-            "intent_id": _clean_order_id(pending.get("intent_id")),
+            "intent_id": clean_order_id(pending.get("intent_id")),
             "ts": safe_pos_float(pending.get("created_at"), self._now()),
         }
 
     def _adopt_pending_order(self, pending: dict) -> None:
-        order_id = _clean_order_id(pending.get("order_id"))
+        order_id = clean_order_id(pending.get("order_id"))
         if not order_id:
             return
-        if not any(_clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
+        if not any(clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
             self.s["orders"].append(self._order_from_pending(pending))
         self.s["pending_intent"] = None
         self._save()
@@ -456,7 +456,7 @@ class Strategy(BaseSpotMixin):
         if not pending or self.dry_run:
             return
         submit_error = pending.get("submit_error") or pending.get("refusal_reason")
-        if not _clean_order_id(pending.get("order_id")) and self._insufficient_funds_error(submit_error):
+        if not clean_order_id(pending.get("order_id")) and self._insufficient_funds_error(submit_error):
             self.s["ledger_reconcile_required"] = True
             if not _parse_bool_flag(pending.get("market"), False):
                 self._record_placement_backoff(

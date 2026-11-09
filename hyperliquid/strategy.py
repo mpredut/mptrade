@@ -36,7 +36,7 @@ from common import (
     required_bool_env, safe_float, safe_int,
     safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
-from providers.base import _clean_single_order_id, normalize_scalar_order_id
+from providers.base import clean_order_id, normalize_scalar_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token as _safe_state_token
@@ -378,7 +378,7 @@ class Strategy(BaseSpotMixin):
             active = {
                 clean_id
                 for o in (orders_fn(self.coin) or [])
-                if isinstance(o, dict) and (clean_id := _clean_single_order_id(o.get("oid"))) is not None
+                if isinstance(o, dict) and (clean_id := clean_order_id(o.get("oid"))) is not None
             }
         except Exception as e:
             orders_ok = False
@@ -386,7 +386,7 @@ class Strategy(BaseSpotMixin):
             active = {
                 clean_id
                 for o in self.s["orders"]
-                if isinstance(o, dict) and (clean_id := _clean_single_order_id(o.get("oid"))) is not None
+                if isinstance(o, dict) and (clean_id := clean_order_id(o.get("oid"))) is not None
             }
 
         prev = self.s["qty"]
@@ -395,7 +395,7 @@ class Strategy(BaseSpotMixin):
         if qty_now > prev + 1e-9:        # position opened or increased
             fq = qty_now - prev
             filled_open = next(
-                (o for o in self.s["orders"] if o.get("role") == "open" and _clean_single_order_id(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "open" and clean_order_id(o.get("oid")) not in active),
                 None,
             ) or next(
                 (o for o in self.s["orders"] if o.get("role") == "open"),
@@ -423,7 +423,7 @@ class Strategy(BaseSpotMixin):
             )
         elif qty_now < prev - 1e-9:      # position reduced by take profit
             filled_close = next(
-                (o for o in self.s["orders"] if o.get("role") == "close" and _clean_single_order_id(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "close" and clean_order_id(o.get("oid")) not in active),
                 None,
             )
             filled_close_px = (
@@ -446,7 +446,7 @@ class Strategy(BaseSpotMixin):
 
         for o in list(self.s["orders"]):
             if not _is_live_order_oid(o.get("oid")): continue
-            if _clean_single_order_id(o.get("oid")) not in active:
+            if clean_order_id(o.get("oid")) not in active:
                 self._remove(o)
             elif orders_ok and self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")

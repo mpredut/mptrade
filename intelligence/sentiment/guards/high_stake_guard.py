@@ -52,7 +52,6 @@ logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_LLM_GUARD_CACHE_TTL_SEC = 600.0
-DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 HIGH_STAKE_NOTIONAL_JUMP_RATIO = 1.0
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, ...], tuple[float, GuardDecision]] = {}
 
@@ -340,7 +339,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
 
     GUARD_NAME = "HighStakeGuard"
     TOPIC_KEY = "guard_high_stake"
-    DEFAULT_CACHE_TTL_SEC = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
+    DEFAULT_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 
     def __init__(
         self,

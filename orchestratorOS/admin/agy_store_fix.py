@@ -101,16 +101,6 @@ UNIT = "antigravity-cli-daemon.service"
 log = logging.getLogger("agy_store_fix")
 
 
-# ---------------------------------------------------------------- summary helpers
-def fix_summary(raw: bytes, title: str) -> bytes:
-    """UI-visible summary (source dropped, title applied) with a stale RUNNING status reset to IDLE."""
-    return summary_ui_visible(raw, title, reset_running=True)
-
-
-def pbtxt_title(cid: str) -> str:
-    return read_annotation_title(CLI, cid)
-
-
 # ---------------------------------------------------------------- file helpers
 def same_file(a: str, b: str) -> bool:
     try:
@@ -308,8 +298,8 @@ def repair_summaries(mt: dict) -> int:
         for cid, title, raw in rows:
             raw = bytes(raw or b"")
             if cid in mt:
-                ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or summary_annotation_title(raw)
-                new = fix_summary(raw, ttl)
+                ttl = topic_titles.get(cid) or read_annotation_title(CLI, cid) or (title or "").strip() or summary_annotation_title(raw)
+                new = summary_ui_visible(raw, ttl, reset_running=True)
                 con.execute(
                     "UPDATE conversation_summaries SET title=?, source='', status='CASCADE_RUN_STATUS_IDLE', "
                     "not_fully_idle=0, raw_summary=? WHERE conversation_id=?", (ttl, new, cid))

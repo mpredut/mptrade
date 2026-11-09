@@ -28,11 +28,11 @@ from providers.base import extract_order_id, extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
-    from .ipo_common import _clean_single_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from .ipo_common import clean_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     from .t212_client import T212Client
 except ImportError:
-    from ipo_common import _clean_single_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from ipo_common import clean_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     try:
         from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     except ImportError:
@@ -249,7 +249,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
     """Return complete, terminal_failed, waiting, or retryable."""
-    order_id = _clean_single_order_id(record.get("order_id"))
+    order_id = clean_order_id(record.get("order_id"))
     if order_id is not None:
         info = poll_order_until_terminal(client, order_id, record["ticker"], desktop)
         if info is None:
@@ -443,7 +443,7 @@ def place_order_with_retry(
         if outcome == "waiting":
             # Do not report success merely because an unproven intent was durably
             # queued. A known venue order may safely remain open/status-unknown.
-            return _clean_single_order_id(record.get("order_id")) is not None
+            return clean_order_id(record.get("order_id")) is not None
     else:
         before_qty = _portfolio_qty(client, ticker)
         if before_qty is None:

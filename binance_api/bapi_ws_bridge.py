@@ -14,8 +14,7 @@ from binance_api.bapi_ws_normalize import (
 )
 from botcore import _parse_bool_flag, normalize_class_name, register_module_aliases, safe_pos_float
 from instrument_registry import casefold_get
-import log  # keep print behavior aligned with the rest of the runtime
-_ = log
+import log  # noqa: F401 — keep print behavior aligned with the rest of the runtime
 
 ORDER_CACHE_CLASSES = frozenset({"CacheOrderManager"})
 TRADE_CACHE_CLASSES = frozenset({"CacheTradeManager"})

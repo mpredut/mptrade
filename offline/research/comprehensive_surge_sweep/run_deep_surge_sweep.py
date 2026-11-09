@@ -395,15 +395,6 @@ def _init_worker(
     _WORKER_STATE["fee_pct"] = fee_pct
 
 
-def _evaluate_worker_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    return evaluate_single_candidate(
-        candidate,
-        _WORKER_STATE["asset_data"],
-        _WORKER_STATE["initial_cash"],
-        _WORKER_STATE["fee_pct"],
-    )
-
-
 def _evaluate_worker_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return evaluate_candidate_group(
         group,

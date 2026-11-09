@@ -279,16 +279,6 @@ def _seed_cached_half(symbol: str, params: dict, series: list, res: dict | None,
     _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
 
 
-def _eval_symbol_baseline(symbol: str, base: str):
-    half1, half2 = _split_series(symbol)
-    if len(half1) < 100 or len(half2) < 100:
-        return symbol, None, None, None, {}, {}
-    base_params = dict(rb.SYMBOLS[symbol]["params"])
-    _, _, _, r1, diag1 = _eval_one_half((symbol, base, base_params, 0))
-    _, _, _, r2, diag2 = _eval_one_half((symbol, base, base_params, 1))
-    return symbol, base_params, r1, r2, diag1, diag2
-
-
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     grid_values = scan_backtest_ranges(INSTRUMENTS_CONF).get(full_key)
     if not grid_values:

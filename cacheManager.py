@@ -713,10 +713,6 @@ def _append_trade_from_execution_report(event):
     )
 
 
-def _refresh_asset_value_from_ws_event():
-    _bapi_ws_bridge.refresh_asset_value_from_ws_event(cache_getter=_ws_cache_getter)
-
-
 def _persist_ws_updated_caches(event_type):
     _bapi_ws_bridge.persist_ws_updated_caches(
         event_type, cache_getter=_ws_cache_getter

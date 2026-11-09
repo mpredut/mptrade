@@ -35,7 +35,6 @@ from instrument_registry import symbols_for                     # noqa: E402
 MAXAGE = 17 * 24 * 3600   # ca trade_watch.position (referinta botului)
 SYMBOLS = symbols_for("binance")
 import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
-base_of = utils.base_asset
 
 
 from botcore import safe_float
@@ -86,7 +85,7 @@ def order_key(o):
 def main():
     failures = []
     for s in SYMBOLS:
-        base = base_of(s)
+        base = utils.base_asset(s)
         print(f"\n==== {s} (base={base}) ====")
 
         # 1) free_balance ------------------------------------------------------

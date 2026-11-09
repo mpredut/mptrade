@@ -32,7 +32,7 @@ except ImportError:
         _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
     )
 from botcore import (
-    _clean_single_order_id,
+    clean_order_id,
     exact_nonneg_int,
     exact_pos_int,
     normalize_side,
@@ -371,7 +371,7 @@ class KrakenClient:
     def _clean_txid(txid: object) -> str:
         if isinstance(txid, float):
             raise ValueError(f"invalid Kraken txid: {txid!r}")
-        cleaned = _clean_single_order_id(txid)
+        cleaned = clean_order_id(txid)
         if cleaned is None:
             raise ValueError(f"invalid Kraken txid: {txid!r}")
         return cleaned

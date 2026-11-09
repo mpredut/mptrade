@@ -26,7 +26,6 @@ REQUEST_RECVWINDOW_MS = 30 * 1000
 # and continue their loops. Apply REQUEST_TIMEOUT_SEC to every request.
 REQUEST_TIMEOUT_SEC = 10
 
-_resync_started = False
 _resync_thread = None
 _resync_stop_event = threading.Event()
 _resync_lock = threading.Lock()
@@ -123,12 +122,11 @@ def _install_recvwindow_retry(cl):
 
 def _start_periodic_resync():
     """Periodically resynchronize from a daemon thread to compensate for WSL drift."""
-    global _resync_started, _resync_thread
+    global _resync_thread
     with _resync_lock:
         if _resync_thread is not None and _resync_thread.is_alive():
             return
         _resync_stop_event.clear()
-        _resync_started = True
 
         def loop():
             while not _resync_stop_event.wait(TIME_RESYNC_INTERVAL_SEC):
@@ -148,7 +146,7 @@ def stop_periodic_resync(timeout=2.0):
     Repeated calls are safe, allowing tests, batch processes, and controlled shutdowns
     to leave no Binance activity after execution ends.
     """
-    global _resync_started, _resync_thread
+    global _resync_thread
     with _resync_lock:
         thread = _resync_thread
         _resync_stop_event.set()
@@ -160,7 +158,6 @@ def stop_periodic_resync(timeout=2.0):
     with _resync_lock:
         if _resync_thread is thread and (thread is None or not thread.is_alive()):
             _resync_thread = None
-            _resync_started = False
 
     return thread is None or not thread.is_alive()
 

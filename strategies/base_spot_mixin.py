@@ -24,7 +24,7 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
-from providers.base import clean_order_id as _clean_order_id, normalize_side
+from providers.base import clean_order_id, normalize_side
 from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
@@ -395,13 +395,13 @@ def sanitize_common_spot_state(
                 if not isinstance(o, dict):
                     continue
                 if order_id_key in o and o.get(order_id_key) is not None:
-                    o[order_id_key] = _clean_order_id(o.get(order_id_key))
+                    o[order_id_key] = clean_order_id(o.get(order_id_key))
                 if "side" in o and not isinstance(o.get("side"), bool):
                     s_norm = normalize_side(o.get("side"))
                     if s_norm in ("BUY", "SELL"):
                         o["side"] = s_norm.lower() if lowercase_order_side else s_norm
                 if "intent_id" in o:
-                    o["intent_id"] = _clean_order_id(o.get("intent_id"))
+                    o["intent_id"] = clean_order_id(o.get("intent_id"))
                 for pk in order_pos_float_keys:
                     if pk in o:
                         o[pk] = safe_pos_float(o.get(pk), 0.0)
@@ -423,7 +423,7 @@ def sanitize_common_spot_state(
     if isinstance(pi, dict):
         for id_k in ("order_id", "intent_id"):
             if id_k in pi and pi.get(id_k) is not None:
-                pi[id_k] = _clean_order_id(pi.get(id_k))
+                pi[id_k] = clean_order_id(pi.get(id_k))
         if "market" in pi:
             pi["market"] = _parse_bool_flag(pi.get("market"), False)
         meta = pi.get("metadata")

@@ -47,7 +47,6 @@ from intelligence.internal.guards.guard_decision import (
 from intelligence.macro_sentiment_ssot import check_cooldown_gate
 from state_io import read_json_dict_cached, save_json_state
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 load_dotenv()
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")

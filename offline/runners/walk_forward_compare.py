@@ -186,9 +186,6 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
-_SPOT_PARAM_DEFAULTS = dict(StratParams._DEFAULT_DICT_FIELDS)
-
-
 def _load_hl_replay():
     return load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
 

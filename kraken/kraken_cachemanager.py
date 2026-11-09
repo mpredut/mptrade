@@ -47,7 +47,7 @@ from credentials import CredentialConfigurationError, kraken_credentials
 from cachepaths import cache_path
 from instrument_registry import symbols_for
 from providers.base import (
-    _clean_single_order_id,
+    clean_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -143,7 +143,7 @@ def _build_kraken_cache_fill(
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    clean_txid = _clean_single_order_id(txid)
+    clean_txid = clean_order_id(txid)
     if not isinstance(tr, dict) or clean_txid is None:
         return {}
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
@@ -187,7 +187,7 @@ def _load_initial_cache(path):
             for row in v:
                 if not isinstance(row, dict):
                     continue
-                clean_id = _clean_single_order_id(row.get("id"))
+                clean_id = clean_order_id(row.get("id"))
                 if clean_id is None:
                     continue
                 t_f = safe_pos_float(row.get("time"), None)
@@ -228,7 +228,7 @@ def _ledger_to_fills(ledger):
     for x in ledger.values():
         if not isinstance(x, dict):
             continue
-        clean_refid = _clean_single_order_id(x.get("refid"))
+        clean_refid = clean_order_id(x.get("refid"))
         if clean_refid is not None:
             by_ref.setdefault(clean_refid, []).append(x)
     fills = []

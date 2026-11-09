@@ -7,7 +7,7 @@ SINGLE source of truth for price thresholds and prevents live/backtest divergenc
 from __future__ import annotations
 
 from botcore import (
-    _parse_bool_flag as _bool_flag,
+    _parse_bool_flag,
     are_close,
     normalize_epoch_sec,
     safe_float,
@@ -122,7 +122,7 @@ def reentry_hybrid_blocked(
     if px_f is None or px_f <= 0:
         return True, "invalid_price"
 
-    if _bool_flag(is_bull):
+    if _parse_bool_flag(is_bull):
         peak_cand = safe_float(post_sell_peak, default=None)
         peak = max(sell_f, peak_cand if (peak_cand is not None and peak_cand > 0) else px_f, px_f)
         pullback_f = safe_float(pullback_pct, 0.0)
@@ -195,7 +195,7 @@ def dynamic_trend_trail_pct(
     """Calculate ratcheted trailing stop distance based on peak unrealized gain."""
     base = max(0.0, safe_float(base_trail_pct, 8.0))
     min_t = safe_float(min_trail_pct, 3.0)
-    eff_min = max(min_t, 5.0) if _bool_flag(surge_guard_active) else min_t
+    eff_min = max(min_t, 5.0) if _parse_bool_flag(surge_guard_active) else min_t
     floor = min(base, max(0.0, eff_min))
     thresh = max(0.0, safe_float(gain_threshold_pct, 6.0))
     k = max(0.0, safe_float(ratchet_k, 0.5))
@@ -279,7 +279,7 @@ def check_parabolic_surge_exhaustion(
     pos_surge = sg_f > 0 and (current_gain_pct >= sg_f or peak_gain_pct >= sg_f)
     wm_f, sm_f = safe_float(window_move_pct, default=None), safe_float(surge_move_pct, default=None)
     win_surge = wm_f is not None and sm_f is not None and sm_f > 0 and wm_f >= sm_f and current_gain_pct >= sg_f * 0.8
-    if not (_bool_flag(surge_active) or pos_surge or win_surge):
+    if not (_parse_bool_flag(surge_active) or pos_surge or win_surge):
         return False, ""
     pullback = (peak_f - px_f) / peak_f * 100.0
     if pullback >= ep_f:

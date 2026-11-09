@@ -26,6 +26,7 @@ from botcore import (
     required_bool_env,
     required_float_env,
     required_int_env,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -249,10 +250,6 @@ def _client_order_id(record_id, revision, prefix="OR"):
 
 # Standardized canonical alias in providers.base: extract_order_id.
 order_id_from_response = extract_order_id
-
-
-def _clean_now_sec(now=None) -> float:
-    return safe_pos_float(now, default=float(time.time()))
 
 
 def valid_record(rec):
@@ -995,7 +992,7 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None, s
         return False
     if submission_state not in {None, "refused", "unknown"}:
         raise ValueError(f"invalid submission state: {submission_state!r}")
-    now = _clean_now_sec(now)
+    now = resolve_now_ts(now)
     changed = False
     with _locked_queue() as existing:
         for rec in existing:
@@ -1076,7 +1073,7 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None, provider_
     """Move one exact pre-submit revision to durable accepted tracking."""
     if not record_id or isinstance(record_id, bool):
         return False
-    now = _clean_now_sec(now)
+    now = resolve_now_ts(now)
     changed = False
     with _locked_queue() as existing:
         for rec in existing:
@@ -1113,7 +1110,7 @@ def claim(ids, now=None, lease_sec=None):
     ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
-    now = _clean_now_sec(now)
+    now = resolve_now_ts(now)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
     if lease_f is None:
         raise ValueError("claim lease must be finite and positive")
@@ -1161,7 +1158,7 @@ def complete_claim(
         raise ValueError(f"invalid non-failure deferral reason: {failure_reason!r}")
     if submission_state not in {None, "refused", "unknown"}:
         raise ValueError(f"invalid submission state: {submission_state!r}")
-    now = _clean_now_sec(now)
+    now = resolve_now_ts(now)
     changed = False
     with _locked_queue() as existing:
         remaining = []

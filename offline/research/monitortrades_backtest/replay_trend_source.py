@@ -203,21 +203,6 @@ def _is_trend_up_tuple(
     return gc > 0 or (gc == 0 and final_trend > 0)
 
 
-def _instant_trend_from_slice(
-    prices: Sequence[float],
-    sample_rate_sec: float,
-    symbol: Optional[str] = None,
-) -> Tuple[int, float, float, float]:
-    """The same formula as PriceWindow.get_instant_trend(), applied directly to a
-    a list of prices (without rebuilding a PriceWindow) — for slices computed
-    PE CERERE dintr-un buffer brut. Intoarce (final_trend, growth_coefficient,
-    slope_full, gradient_recent), identical in signature to get_instant_trend().
-    30 Jul: a thin wrapper over pw.instant_trend_from_prices() (the single source of
-    of the formula, extracted so it is not duplicated — cacheManager.py now uses
-    the same function for the live dynamic window)."""
-    return pw.instant_trend_from_prices(prices, sample_rate_sec, symbol=symbol)
-
-
 class DynamicReplayTrendSource:
     """A RAW (ts, price) buffer per symbol, covering max(the timeouts used) —
     instead of a FIXED PriceWindow window. is_trend_up_at(symbol, timeout_sec)
@@ -269,7 +254,7 @@ class DynamicReplayTrendSource:
             return False
         eps = pw.PriceWindow._std_of_gradient(prices) if len(prices) >= 3 else 0.0
         return _is_trend_up_tuple(
-            _instant_trend_from_slice(prices, sample_rate, symbol=symbol),
+            pw.instant_trend_from_prices(prices, sample_rate, symbol=symbol),
             eps=eps,
             n_samples=len(prices),
         )
@@ -306,8 +291,9 @@ class DynamicReplayTrendSource:
         prices, _sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 3:
             return True   # Not enough data -> the safe behaviour: wait.
-        _final_trend, growth_coefficient, _slope_full, _gradient_recent = \
-            _instant_trend_from_slice(prices, _sample_rate, symbol=symbol)
+        _final_trend, growth_coefficient, _slope_full, _gradient_recent = (
+            pw.instant_trend_from_prices(prices, _sample_rate, symbol=symbol)
+        )
         g = growth_coefficient
         if use_noise_gate:
             cand_ek = safe_nonneg_float(epsilon_k, default=None)

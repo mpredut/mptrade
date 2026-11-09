@@ -25,7 +25,7 @@ from botcore import ensure_local_module_priority  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from ipo_common import (
-    _clean_single_order_id, log as _log, notify, are_close, required_env, required_float_env,
+    clean_order_id, log as _log, notify, are_close, required_env, required_float_env,
     required_bool_env, _parse_bool_flag, safe_float,
     safe_pos_float, safe_nonneg_float,
     normalize_epoch_sec,
@@ -197,7 +197,7 @@ def _sanitize_t212_state(st: dict) -> dict:
         ps = st["pending_submit"]
         ps_side = str(ps.get("side") or "").strip().upper()
         ps_qty, ps_limit = safe_pos_float(ps.get("qty"), None), safe_pos_float(ps.get("limit"), None)
-        ps_intent = _clean_single_order_id(ps.get("intent_id"))
+        ps_intent = clean_order_id(ps.get("intent_id"))
         if ps_side not in ("BUY", "SELL") or ps_qty is None or ps_limit is None or ps_intent is None:
             st["pending_submit"] = None
         else:
@@ -217,7 +217,7 @@ def _sanitize_t212_state(st: dict) -> dict:
         for o in raw_orders:
             if not isinstance(o, dict):
                 continue
-            clean_oid = _clean_single_order_id(o.get("id"))
+            clean_oid = clean_order_id(o.get("id"))
             o_side = str(o.get("side") or "").strip().upper()
             if clean_oid is None or o_side not in ("BUY", "SELL"):
                 continue
@@ -236,7 +236,7 @@ def _sanitize_t212_state(st: dict) -> dict:
             if "ts" in o_copy and o_copy.get("ts") is not None:
                 o_copy["ts"] = normalize_epoch_sec(o_copy.get("ts"), default=0.0, allow_zero=True)
             if "intent_id" in o_copy:
-                o_copy["intent_id"] = _clean_single_order_id(o.get("intent_id"))
+                o_copy["intent_id"] = clean_order_id(o.get("intent_id"))
             for bk in ("cancel_requested", "dca_counted"):
                 if bk in o_copy:
                     o_copy[bk] = _parse_bool_flag(o_copy.get(bk), False)
