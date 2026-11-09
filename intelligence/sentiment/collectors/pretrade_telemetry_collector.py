@@ -1828,10 +1828,10 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     cls_name = "PretradePillarCollectorBase"
 
-    def __init__(self) -> None:
+    def __init__(self, *, start_sync: bool = False) -> None:
         if type(self) is PretradePillarCollectorBase:
             raise TypeError("Cannot instantiate abstract class PretradePillarCollectorBase")
-        super().__init__(start_sync=False)
+        super().__init__(start_sync=start_sync)
 
     def collect(self, cachedb_dir: str, symbol: str, *, ctx: Optional[PretradeEvaluationContext] = None, **kwargs: Any) -> Dict[str, Any]:
         if ctx is not None:
@@ -2124,6 +2124,7 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
     """Concrete orchestrator (Level 3) executing the polymorphic ``PretradePillarCollectorBase`` pipeline."""
 
     cls_name = "PretradeTelemetryOrchestrator"
+    COLLECTOR_ID = "pretrade_telemetry_orchestrator"
 
     def __init__(
         self,
@@ -2283,6 +2284,17 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
             pass
         return status
 
+    def refresh_snapshot(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "",
+        *,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, bool]:
+        """Producer entrypoint alias delegating to ``refresh_caches()``."""
+        return self.refresh_caches(cachedb_dir=cachedb_dir, symbol=symbol, now_ts=now_ts)
+
     def collect(
         self,
         cachedb_dir: str,
@@ -2308,6 +2320,9 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
         return ctx.telemetry
 
 
+TelemetryCollectorFactory.register(PretradeTelemetryOrchestrator.COLLECTOR_ID, PretradeTelemetryOrchestrator)
+
+
 def read_pretrade_telemetry_snapshot(
     symbol: str,
     regime_context: Optional[Any] = None,
@@ -2320,7 +2335,7 @@ def read_pretrade_telemetry_snapshot(
     stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
 ) -> PretradeTelemetrySnapshot:
     """Read-only consumer function returning an explicit ``PretradeTelemetrySnapshot`` from local ``cachedb/``."""
-    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator)
+    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=False)
     return orchestrator.read_snapshot(
         cachedb_dir,
         symbol,
@@ -2340,7 +2355,7 @@ def refresh_pretrade_telemetry_caches(
     now_ts: Optional[float] = None,
 ) -> Dict[str, bool]:
     """Producer-only function refreshing pre-trade caches (microstructure, T212 position prices, Yahoo 5d equity chart)."""
-    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator)
+    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=True)
     return orchestrator.refresh_caches(cachedb_dir=cachedb_dir, symbol=symbol, now_ts=now_ts)
 
 

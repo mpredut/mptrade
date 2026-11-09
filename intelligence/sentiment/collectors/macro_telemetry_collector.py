@@ -1132,10 +1132,10 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     cls_name = "MacroTelemetryCollectorBase"
 
-    def __init__(self) -> None:
+    def __init__(self, *, start_sync: bool = False) -> None:
         if type(self) is MacroTelemetryCollectorBase:
             raise TypeError("Cannot instantiate abstract class MacroTelemetryCollectorBase")
-        super().__init__()
+        super().__init__(start_sync=start_sync)
 
 
 class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
@@ -1151,10 +1151,19 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
         *,
         now_ts: Optional[float] = None,
         timeout_sec: float = 3.5,
+        allow_network: bool = True,
         persist: bool = True,
         fetch_fn: Optional[Callable[..., Any]] = None,
+        read_json_fn: Any = None,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
+        if not allow_network and fetch_fn is None:
+            return _read_first_cached_dict(
+                cachedb_dir,
+                "macro_benchmarks_files",
+                "macro_benchmarks_collect.json",
+                read_json_fn=read_json_fn,
+            )[0]
         return _collect_macro_benchmarks_snapshot_impl(
             cachedb_dir,
             now_ts=now_ts,
@@ -1321,6 +1330,38 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             **kwargs,
         )
 
+    def refresh_snapshot(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        snapshot: Any = None,
+        workspace_dir: str = "",
+        logs_dirs: Optional[List[str]] = None,
+        intent_gateway: Any = None,
+        scope: str = "crypto",
+        now_ts: float = 0.0,
+        read_json_fn: Any = None,
+        log: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Producer entrypoint: populate `TelemetrySensorSnapshot` with live collection and disk persistence."""
+        return self.collect(
+            cachedb_dir,
+            symbol,
+            snapshot=snapshot,
+            workspace_dir=workspace_dir,
+            logs_dirs=logs_dirs,
+            intent_gateway=intent_gateway,
+            scope=scope,
+            now_ts=now_ts,
+            read_json_fn=read_json_fn,
+            log=log,
+            allow_network=True,
+            persist=True,
+            **kwargs,
+        )
+
 
 for _macro_collector_cls in (
     MacroBenchmarksSnapshotCollector,
@@ -1341,7 +1382,7 @@ def collect_macro_benchmarks_snapshot(
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
-    return TelemetryCollectorFactory.create("macro_benchmarks_snapshot").collect(
+    return TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=True).collect(
         cache_dir,
         "*",
         now_ts=now_ts,
@@ -1361,7 +1402,7 @@ def harvest_macro_and_news_sensors(
     persist: bool = True,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
-    return TelemetryCollectorFactory.create("macro_and_news_sensors").collect(
+    return TelemetryCollectorFactory.create("macro_and_news_sensors", start_sync=allow_network).collect(
         cache_dir,
         "*",
         now_ts=now_ts,
@@ -1376,7 +1417,7 @@ def harvest_initial_prices_and_trends(
     cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
-    return TelemetryCollectorFactory.create("macro_initial_prices_trends").collect(
+    return TelemetryCollectorFactory.create("macro_initial_prices_trends", start_sync=False).collect(
         cache_dir,
         "*",
         prices_data=prices_data,
@@ -1399,7 +1440,7 @@ def harvest_portfolio_and_venue_cycles(
     now_ts: Optional[float] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
-    return TelemetryCollectorFactory.create("macro_portfolio_venue_cycles").collect(
+    return TelemetryCollectorFactory.create("macro_portfolio_venue_cycles", start_sync=False).collect(
         cache_dir,
         "*",
         workspace_dir=workspace_dir,
@@ -1429,7 +1470,7 @@ def populate_market_and_portfolio_snapshot(
     persist: bool = True,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
-    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot").collect(
+    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=allow_network).collect(
         cache_dir,
         "*",
         snapshot=snapshot,
@@ -1458,7 +1499,7 @@ def read_market_and_portfolio_snapshot(
     log: Optional[Any] = None,
 ) -> Any:
     """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network calls and 0 disk writes."""
-    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot").read_snapshot(
+    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=False).read_snapshot(
         cache_dir,
         "*",
         snapshot=snapshot,

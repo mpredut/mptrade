@@ -1595,10 +1595,10 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     cls_name = "PortfolioCacheCollectorBase"
 
-    def __init__(self) -> None:
+    def __init__(self, *, start_sync: bool = False) -> None:
         if type(self) is PortfolioCacheCollectorBase:
             raise TypeError("Cannot instantiate abstract class PortfolioCacheCollectorBase")
-        super().__init__()
+        super().__init__(start_sync=start_sync)
         _ensure_cacheprice_classes_bound()
 
     @property
@@ -1896,7 +1896,7 @@ def harvest_tradable_positions_and_orders(
     persist: bool = True,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
-    return TelemetryCollectorFactory.create("portfolio_tradable_positions").collect(
+    return TelemetryCollectorFactory.create("portfolio_tradable_positions", start_sync=allow_network).collect(
         cache_dir or "",
         "*",
         inst_map=inst_map,
@@ -1919,7 +1919,7 @@ def load_symbol_best_recent_fills(
     read_json_fn: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Load the most recent venue fills dict for `symbol` across order caches and execution_audit fallback."""
-    return TelemetryCollectorFactory.create("portfolio_symbol_recent_fills").collect(
+    return TelemetryCollectorFactory.create("portfolio_symbol_recent_fills", start_sync=False).collect(
         cachedb_dir,
         symbol,
         quote_variants=quote_variants,
@@ -1943,7 +1943,7 @@ def harvest_recent_orders_and_enrich_positions(
     allow_network: bool = True,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
-    return TelemetryCollectorFactory.create("portfolio_recent_orders").collect(
+    return TelemetryCollectorFactory.create("portfolio_recent_orders", start_sync=allow_network).collect(
         cache_dir,
         "*",
         inst_by_sym=inst_by_sym,

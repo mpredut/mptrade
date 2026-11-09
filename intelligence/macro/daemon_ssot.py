@@ -660,8 +660,20 @@ class CachedTopicAssessmentAgent:
 
     gemini_client: Any
     cache_ttl_sec: float
+    start_sync: bool = False
+    _explicit_start_sync: Optional[bool] = None
     _cached_assessment: Optional[Any]
     _last_eval_ts: float
+
+    def _init_sync_mode(self, start_sync: Optional[bool] = None) -> None:
+        self._explicit_start_sync = None if start_sync is None else bool(start_sync)
+        self.start_sync = bool(start_sync)
+
+    def is_read_only_consumer(self, allow_llm: Optional[bool] = None) -> bool:
+        """True when this assessment agent operates in read-only consumer mode (``start_sync=False``)."""
+        if allow_llm is not None:
+            return not bool(allow_llm)
+        return not bool(self.start_sync)
 
     def _effective_state_file(self) -> str:
         raw_f = getattr(self, self.STATE_FILE_ATTR, None) or self.DEFAULT_STATE_FILE

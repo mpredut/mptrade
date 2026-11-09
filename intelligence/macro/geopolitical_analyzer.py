@@ -72,7 +72,10 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         cache_ttl_sec: Optional[float] = None,
         fallback_retry_ttl_sec: Optional[float] = None,
         state_file: str = DEFAULT_STATE_FILE,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
+        self._init_sync_mode(start_sync)
         self.gemini_client = gemini_client or GeminiClient()
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, required_float_env("MACRO_LLM_INTERVAL_SEC"))
         self.fallback_retry_ttl_sec = safe_nonneg_ts(
@@ -208,10 +211,25 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         *,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
+        allow_llm: Optional[bool] = None,
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
         force_refresh = _parse_bool_flag(force_refresh, False)
         now = resolve_now_ts(now_ts)
+        eff_allow_llm = bool(
+            allow_llm
+            if allow_llm is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+        if not eff_allow_llm:
+            return self._cached_assessment or GeopoliticalThreatAssessment(
+                threat_level="NORMAL",
+                risk_score=0.1,
+                summary="No cached geopolitical assessment available.",
+                recommended_brake="NONE",
+                headlines_analyzed=0,
+                ts=now,
+            )
         effective_ttl = (
             self.fallback_retry_ttl_sec
             if (self._cached_assessment is not None and self._cached_assessment.is_fallback)

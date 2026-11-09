@@ -61,7 +61,10 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         gemini_client: Optional[GeminiClient] = None,
         cache_ttl_sec: float = DEFAULT_SENTIMENT_INTERVAL_SEC,
         cache_file: str = DEFAULT_CACHE_FILE,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
+        self._init_sync_mode(start_sync)
         self.gemini_client = gemini_client or GeminiClient()
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, DEFAULT_SENTIMENT_INTERVAL_SEC)
         self.cache_file = cache_file
@@ -100,9 +103,17 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         macro_benchmarks: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
+        allow_llm: Optional[bool] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
         now = resolve_now_ts(now_ts)
+        eff_allow_llm = bool(
+            allow_llm
+            if allow_llm is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+        if not eff_allow_llm:
+            return self._cached_assessment
         if self._cached_assessment and is_cache_fresh(
             self._last_eval_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
         ):

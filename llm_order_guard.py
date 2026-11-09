@@ -254,7 +254,10 @@ def check_geopolitical_order_guards(
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
         from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-        analyzer = GeopoliticalThreatAnalyzer()
+        try:
+            analyzer = GeopoliticalThreatAnalyzer(start_sync=False)
+        except TypeError:
+            analyzer = GeopoliticalThreatAnalyzer()
         cached_geo = (
             analyzer.read_assessment()
             if callable(getattr(analyzer, "read_assessment", None))

@@ -1071,4 +1071,72 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     assert nf_snap is not None and nf_snap.total_fetched == 0
 
 
+def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_cache_dir):
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.sentiment.collectors.microstructure_collector import TelemetryCollectorFactory
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from state_io import save_json_state
+
+    # 1. TelemetryCollectorFactory start_sync consumer vs producer separation
+    mb_consumer = TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=False)
+    mb_producer = TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=True)
+    assert mb_consumer is not mb_producer
+    assert mb_consumer.is_read_only_consumer() is True
+    assert mb_producer.is_read_only_consumer() is False
+
+    # MacroBenchmarksSnapshotCollector.read_snapshot reads from disk with 0 network calls
+    save_json_state(
+        os.path.join(temp_cache_dir, "macro_benchmarks_collect.json"),
+        {"ts": 1_750_000_000.0, "equity_regime": "RISK_ON", "items": {"SPY": {"price": 550.0}}},
+    )
+    cached_mb = mb_consumer.read_snapshot(temp_cache_dir)
+    assert isinstance(cached_mb, dict)
+    assert cached_mb["equity_regime"] == "RISK_ON"
+
+    # EquityYahoo5dChartCollector.read_snapshot returns empty tuple with 0 network calls
+    yc_consumer = TelemetryCollectorFactory.get_yahoo_chart_collector(start_sync=False)
+    assert yc_consumer.is_read_only_consumer() is True
+    assert yc_consumer.read_snapshot(temp_cache_dir, "NVDA_US_EQ") == ([], [], [], False, False, 0.0, 0)
+
+    # 2. CachedTopicAssessmentAgent (GeopoliticalThreatAnalyzer & SentimentAdvisor) consumer vs producer
+    geo_path = os.path.join(temp_cache_dir, "geopolitical_eval.json")
+    adv_path = os.path.join(temp_cache_dir, "sentiment_eval.json")
+    save_json_state(
+        geo_path,
+        {
+            "threat_level": "ELEVATED",
+            "risk_score": 0.65,
+            "summary": "Cached geopolitical warning.",
+            "recommended_brake": "DOWNSCALE_50",
+            "headlines_analyzed": 3,
+            "ts": 1_750_000_000.0,
+        },
+    )
+    save_json_state(
+        adv_path,
+        {
+            "market_bias": "CAUTION",
+            "risk_level": "HIGH",
+            "confidence": 0.8,
+            "summary": "Cached advisor caution.",
+            "key_risks": ["liquidity"],
+            "recommended_action": "REDUCE",
+            "ts": 1_750_000_000.0,
+        },
+    )
+
+    geo_consumer = GeopoliticalThreatAnalyzer(state_file=geo_path, start_sync=False)
+    adv_consumer = SentimentAdvisor(cache_file=adv_path, start_sync=False)
+    assert geo_consumer.is_read_only_consumer() is True
+    assert adv_consumer.is_read_only_consumer() is True
+    assert geo_consumer.assess(None, force_refresh=True).threat_level == "ELEVATED"
+    assert adv_consumer.review(force_refresh=True).market_bias == "CAUTION"
+
+    daemon = MacroAnalyzer(cache_dir=temp_cache_dir)
+    assert daemon.geopolitical_analyzer.is_read_only_consumer() is False
+    assert daemon.sentiment_advisor.is_read_only_consumer() is False
+
+
+
 

@@ -103,10 +103,12 @@ class MacroAnalyzer:
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_eval.json"),
+            start_sync=True,
         )
         self.sentiment_advisor = SentimentAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_eval.json"),
+            start_sync=True,
         )
         self.gemini_advisor = self.sentiment_advisor
 
@@ -133,7 +135,7 @@ class MacroAnalyzer:
         from intelligence.macro.news_feed_collector import NewsFeedCollector
 
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-        nc = NewsFeedCollector(history_file=cand_path)
+        nc = NewsFeedCollector(history_file=cand_path, start_sync=False)
         return _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=explicit_now is not None)
 
     def _maybe_notify_assessment(
