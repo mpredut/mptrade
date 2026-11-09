@@ -1502,6 +1502,10 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
         "08:00:04 Traceback (most recent call last): ad-hoc python -c\n",
         encoding="utf-8",
     )
+    (log_dir / "app_2026-11-03.log").write_text(
+        "08:00:04 Traceback (most recent call last): ad-hoc python -\n",
+        encoding="utf-8",
+    )
     (log_dir / "rtrade_2026-11-03.log").write_text(
         "08:00:05 [GUARD] BUY TAOUSDC: real guard intervention\n",
         encoding="utf-8",

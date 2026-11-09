@@ -327,7 +327,7 @@ class _DailyFileHandler(logging.Handler):
                     folder = _log_folder
                     suppress_default = _suppress_default_folder_writes
                 if folder == os.path.normpath(os.path.abspath(_DEFAULT_LOG_FOLDER)) and (
-                    suppress_default or self._app_name.lower() in {"__main__", "c"}
+                    suppress_default or self._app_name.lower() in {"__main__", "c", "app"}
                 ):
                     return
                 if (

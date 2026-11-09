@@ -707,7 +707,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
         re.IGNORECASE,
     )
-    ignored_test_prefixes = (".", "pytest_", "__main___", "py.test_", "c_", "inspect_")
+    ignored_test_prefixes = (".", "pytest_", "__main___", "py.test_", "c_", "app_", "inspect_")
 
     for l_dir in logs_dirs:
         if not os.path.isdir(l_dir):
