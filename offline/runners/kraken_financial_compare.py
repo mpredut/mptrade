@@ -31,6 +31,7 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file  # noq
 DEFAULT_BASELINE = (
     ROOT / "offline" / "research" / "hype_dataset" / "financial_baseline_v1.json"
 )
+_fmt = benchmark._format
 
 
 def _scenario_summary(report: dict) -> dict:

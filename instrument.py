@@ -112,9 +112,9 @@ class Instrument:
             target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
         elif "prefix" not in target_kwargs:
             try:
-                from binance_api.order_id_context import get_process_name
+                from binance_api.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
                 pname = get_process_name()
-                if pname and pname not in {"PY", "PYTEST", "MAIN", "UNITTE"}:
+                if pname and pname in KNOWN_BOT_PROCESS_CODES:
                     target_kwargs["prefix"] = f"{pname}_OR"
             except Exception:
                 pass

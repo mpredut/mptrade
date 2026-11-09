@@ -384,7 +384,7 @@ def test_runtime_services_dependency_injection_and_zero_pytest_branches():
             "git",
             "grep",
             "-nE",
-            r"PYTEST_CURRENT_TEST|\"pytest\" in sys\.modules|\"unittest\" in sys\.modules|\"unittest\" not in sys\.modules",
+            r"PYTEST_CURRENT_TEST|\"pytest\" in sys\.modules|\"unittest\" in sys\.modules|\"unittest\" not in sys\.modules|\"PYTEST\"|\"UNITTE\"",
             "--",
             "*.py",
             ":!tests",

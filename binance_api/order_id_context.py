@@ -51,6 +51,7 @@ BOT_PREFIX_MAP.update({
     "T_": "trade", "T2_": "trade2", "T3_": "trade3", "T4_": "trade4", "T5_": "trade5",
 })
 _SORTED_BOT_PREFIXES = tuple(sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True))
+KNOWN_BOT_PROCESS_CODES = frozenset(_PROCESS_NAME_OVERRIDES.values()) | frozenset({"MN", "AI"})
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 

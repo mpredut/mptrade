@@ -166,6 +166,10 @@ def _ntfy(title: str, body: str) -> None:
         pass
 
 
+def _alert_state() -> dict:
+    return read_json_dict(ALERT_STATE, default={}, recover_previous=True)
+
+
 def _save_alert_state(st: dict) -> None:
     try:
         save_json_state(ALERT_STATE, st)
@@ -182,7 +186,7 @@ def run_alerts(kr: list[dict]) -> list[str]:
     realert_hours = abs(_policy_float("RISK_DD_REALERT_HOURS"))
     worsen_pct = abs(_policy_float("RISK_DD_WORSEN_PCT"))
     now = datetime.now(timezone.utc)
-    st = read_json_dict(ALERT_STATE, default={}, recover_previous=True)
+    st = _alert_state()
     fired = []
     for r in kr:
         if not isinstance(r, dict):
