@@ -153,7 +153,7 @@ EOF
 
     local failed_tests=""
     if [ "$rc" -ne 0 ] && [ -f "$LOG_FILE.run" ]; then
-        failed_tests="$(grep -E '^FAILED ' "$LOG_FILE.run" 2>/dev/null | sed 's/^FAILED //' | head -n 5 | paste -sd ', ' - || true)"
+        failed_tests="$(grep -E '^FAILED ' "$LOG_FILE.run" 2>/dev/null | sed 's/^FAILED //' | head -n 5 | paste -sd ',' - | sed 's/,/, /g' || true)"
     fi
     rm -f "$LOG_FILE.run"
     if [ "$rc" -ne 0 ]; then

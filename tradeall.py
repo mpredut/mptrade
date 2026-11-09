@@ -43,11 +43,6 @@ TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in se
 ORDER_EXPIRY_HOURS = required_float_env("TRADEALL_ORDER_EXPIRY_HOURS")
 EXP_TIME_BUY_ORDER = ORDER_EXPIRY_HOURS * 3600  # Configurable order expiration horizon.
 EXP_TIME_SELL_ORDER = EXP_TIME_BUY_ORDER
-TIME_SLEEP_EVALUATE = TIME_SLEEP_GET_PRICE + 60  # seconds to sleep for buy/sell evaluation
-# Allow six orders per expiration period, hence the division by six.
-TIME_SLEEP_PLACE_ORDER = TIME_SLEEP_EVALUATE + EXP_TIME_SELL_ORDER/ 6 + 4*79  # seconds to sleep for order placement
-
-SELL_BUY_THRESHOLD = 5  # Threshold for the number of consecutive signals
 
 # July 23: the parameters below were hard-coded constants. They now come from
 # environment variables. Missing trading configuration aborts startup.
@@ -1003,8 +998,6 @@ if __name__ == "__main__":
     )
     print(f" --------- {len(trades)}")
     print(f" my trades of today : {trades}")
-
-    order_ids = []
 
     # Price chain: WebSocket market data -> CacheCurrentPrice -> Cache24 -> PriceWindow.
     # Create CacheCurrentPrice before Cache24 with the correct sync_ts; otherwise

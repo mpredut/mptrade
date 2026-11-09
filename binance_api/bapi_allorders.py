@@ -161,10 +161,6 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
                     'side': side,
                 })
 
-        #print(f"Filtered filled trades ({'ALL' if order_type is None else order_type}): {len(filtered_trades)} from {len(trades)} trades")
-        for t in filtered[:5]:
-            print(t)
-
         if not filtered:
             return []
         
@@ -183,9 +179,6 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             qty_out = _round_fill_val(raw_qty)
             px_out = _round_fill_val(data['price_qty'] / raw_qty) if raw_qty > 0 else 0
             result.append(_build_trade_order_record(oid, px_out, qty_out, data['timestamp'], data['side']))
-
-        for r in result[:5]:
-            print(r)
 
         return result
 
@@ -210,8 +203,7 @@ def get_recent_filled_orders(order_type, symbol, max_age_seconds):
     current_time = time.time()
     if(len(all_filled_orders) < 1) :
         return []
-    
-    print(f"have {len(all_filled_orders)} orders. ignore oldest.")
+
     for order in all_filled_orders:
         ts_ms = extract_timestamp_ms(order, default=0) or 0
         age_sec = current_time - ts_ms / 1000.0

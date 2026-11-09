@@ -1,7 +1,6 @@
 """Root intelligence package unifying internal, external, sentiment, and macro geopolitical regimes."""
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -13,6 +12,7 @@ if TYPE_CHECKING:
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
@@ -93,6 +93,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "FundingCrowdingGuard": "intelligence.external.guards.funding_crowding_guard",
     "WhaleDivergenceGuard": "intelligence.external.guards.whale_divergence_guard",
     "OrderbookWallGuard": "intelligence.external.guards.orderbook_wall_guard",
+    "SmartStopLossGuard": "intelligence.external.guards.smart_stop_loss_guard",
     # Pillar 3: Sentiment & LLM telemetry
     "GeminiClient": "intelligence.sentiment.gemini_client",
     "FearGreedCollector": "intelligence.sentiment.collectors.fear_greed_collector",
@@ -121,9 +122,12 @@ _LAZY_IMPORTS: dict[str, str] = {
 _SUBMODULES = frozenset({
     "cli",
     "composite",
+    "daemon",
     "external",
+    "globaltelemetry_collector",
     "internal",
     "macro",
+    "macro_analyzer",
     "macro_sentiment_ssot",
     "sentiment",
 })

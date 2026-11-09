@@ -45,7 +45,6 @@ from intelligence.macro_sentiment_ssot import (
     write_daemon_heartbeat_files,
 )
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 
 logger = logging.getLogger("intelligence.daemon")

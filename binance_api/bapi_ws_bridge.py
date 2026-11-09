@@ -254,7 +254,6 @@ def handle_binance_ws_event(
     """Dispatch one Binance user-data WebSocket event into the account caches."""
     if not isinstance(event, dict):
         return
-    print("cacheManager handler call from binance ....")
     raw_event_type = event.get("e")
     if not isinstance(raw_event_type, str) or not raw_event_type.strip():
         return
@@ -266,6 +265,8 @@ def handle_binance_ws_event(
         if log_enabled is None
         else ws_health._as_bool(log_enabled, default=ws_health.WS_EVENT_LOG_ENABLED)
     )
+    if should_log:
+        print("cacheManager handler call from binance ....")
     getter = cache_getter or _default_cache_getter
 
     if event_type == "executionReport":

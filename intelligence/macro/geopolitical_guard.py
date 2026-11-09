@@ -11,7 +11,6 @@ from intelligence.macro_sentiment_ssot import (
     normalize_recommended_brake,
     normalize_threat_level,
     obj_attr,
-    obj_float,
 )
 
 

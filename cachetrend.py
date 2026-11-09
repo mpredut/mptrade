@@ -25,7 +25,7 @@ import threading
 import time
 import weakref
 from collections import defaultdict
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import pricewindow as pw
 import utils as u

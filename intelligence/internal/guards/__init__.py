@@ -1,7 +1,6 @@
 """Risk and market state guards (Brakes and Vetoes)."""
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -9,6 +8,7 @@ if TYPE_CHECKING:
     from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
     from intelligence.internal.guards.noise_guard import NoiseFloorGuard
     from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
 
 _LAZY_IMPORTS: dict[str, str] = {
     "GuardDecision": "intelligence.internal.guards.guard_decision",
@@ -16,6 +16,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "ParabolicSurgeGuard": "intelligence.internal.guards.parabolic_guard",
     "WeibullExhaustionGuard": "intelligence.internal.guards.exhaustion_guard",
     "NoiseFloorGuard": "intelligence.internal.guards.noise_guard",
+    "TrendSignificanceGuard": "intelligence.internal.guards.trend_significance_guard",
 }
 
 from botcore import bind_lazy_module_exports

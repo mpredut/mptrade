@@ -47,7 +47,6 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import collect_
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 from state_io import save_json_state
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 
 logger = logging.getLogger("intelligence.telemetry_collector")

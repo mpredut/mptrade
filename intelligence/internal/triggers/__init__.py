@@ -1,12 +1,12 @@
 """Directional entry and exit triggers."""
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
     from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 
 _LAZY_IMPORTS: dict[str, str] = {
@@ -16,6 +16,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "KalmanTrend": "intelligence.internal.triggers.kalman_trigger",
     "KalmanTrendTrigger": "intelligence.internal.triggers.kalman_trigger",
     "LinearGradientTrigger": "intelligence.internal.triggers.gradient_trigger",
+    "MeanReversionTrigger": "intelligence.internal.triggers.mean_reversion_trigger",
 }
 
 from botcore import bind_lazy_module_exports

@@ -237,8 +237,6 @@ class BybitLiquidationCollector:
         items: List[Tuple[float, str, float]],
         cutoff: float,
         max_ts: Optional[float] = None,
-        *,
-        require_pos_notional: bool = False,
     ) -> Tuple[float, float, int, int, float]:
         long_usd = short_usd = last_ts = 0.0
         long_n = short_n = 0
@@ -277,7 +275,7 @@ class BybitLiquidationCollector:
         win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
 
         long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(
-            items, now_ts - win_sec, max_ts=now_ts + 5.0, require_pos_notional=True
+            items, now_ts - win_sec, max_ts=now_ts + 5.0
         )
         total = long_usd + short_usd
         return LiquidationSummary(
@@ -332,8 +330,6 @@ class BybitLiquidationCollector:
         base_rate = base / max(eff_base, 1.0)
         return recent_rate / base_rate if base_rate > 0 else 0.0
 
-
-import sys as _sys
 
 BYBIT_URL = BYBIT_WS_URL
 _safe_pos_float = safe_pos_float

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from botcore import _parse_bool_flag, normalize_epoch_sec, safe_float
+from botcore import _parse_bool_flag, normalize_epoch_sec
 from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
@@ -32,7 +32,6 @@ from intelligence.macro.lexicon_ssot import (
     filter_valid_severity_keywords,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
-    has_financial_or_geopolitical_context,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
     match_high_severity_keywords,

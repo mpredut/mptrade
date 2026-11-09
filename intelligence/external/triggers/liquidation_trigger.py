@@ -11,7 +11,7 @@ from typing import Optional
 
 from botcore import clean_scale, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import snap_attr
-from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
+from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,

@@ -24,16 +24,13 @@ from intelligence.macro_sentiment_ssot import (
     split_headlines_digest,
 )
 from intelligence.macro.lexicon_ssot import (
-    ACUTE_SHOCK_PHRASES,
     demote_dynamic_acute_terms,
     get_active_acute_shock_phrases,
     has_acute_shock_keywords,
-    headlines_are_semantic_duplicates,
     record_dynamic_crisis_terms_from_assessment,
 )
 from intelligence.macro.calendar_ssot import resolve_global_trading_session
 from intelligence.sentiment.gemini_client import GeminiClient
-from orchestratorOS.agy.topics import topic_spec
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from cachepaths import cache_path
 from state_io import read_json_dict, save_json_state

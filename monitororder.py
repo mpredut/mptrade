@@ -634,10 +634,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             tracked_set.trim(5000)
 
 
-MONITOR_BETWEEN_ORDERS_INTERVAL = 2
 MONITOR_OPEN_ORDER_INTERVAL = required_int_env("MONITOR_OPEN_ORDER_INTERVAL")
-MONITOR_CLOSE_ORDER_INTERVAL = MONITOR_OPEN_ORDER_INTERVAL
-max_age_seconds = 3 * 24 * 3600  # Maximum age for treating filled orders as recent (three days).
 
 
 def warmup_open_orders():
@@ -665,10 +662,8 @@ def monitor_orders():
     warmup_open_orders()
 
     monitor_open_orders_lasttime = time.time() - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
-    monitor_close_orders_by_age_lasttime = time.time() - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
     hb_intervals = {
         "open_order": MONITOR_OPEN_ORDER_INTERVAL,
-        "close_order": MONITOR_CLOSE_ORDER_INTERVAL,
     }
     touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=list(sym.symbols), intervals=hb_intervals)
 
@@ -677,18 +672,14 @@ def monitor_orders():
             currenttime = time.time()
             if currenttime < monitor_open_orders_lasttime:
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
-            if currenttime < monitor_close_orders_by_age_lasttime:
-                monitor_close_orders_by_age_lasttime = currenttime - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
             if currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL:
                 for symbol in sym.symbols:
                     for side in ("SELL", "BUY"):
                         monitor_open_orders_by_type(symbol, side)
                 monitor_open_orders_lasttime = currenttime
-            if currenttime - monitor_close_orders_by_age_lasttime > MONITOR_CLOSE_ORDER_INTERVAL:
-                monitor_close_orders_by_age_lasttime = currenttime
 
             touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
-            time.sleep(min(MONITOR_OPEN_ORDER_INTERVAL, MONITOR_CLOSE_ORDER_INTERVAL))
+            time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
 
         except BinanceAPIException as e:
             print(f"Binance API error: {e}")

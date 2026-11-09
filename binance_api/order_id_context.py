@@ -152,9 +152,10 @@ def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool
     """Determine whether an open Binance order is eligible for monitororder repricing.
 
     Safety invariant:
-    - Only orders owned by 'tradeall' or 'monitororder' may be adjusted toward market price.
+    - Only orders owned by bots in REPRICEABLE_BOTS ('tradeall', 'monitororder', 'assetguardian')
+      may be adjusted toward market price.
     - Grid orders ('rtrade'), protective stops ('spot_dca'), stop-loss ('monitortrades'),
-      emergency guard ('assetguardian'), manual app/web orders, and unknown orders are protected
+      manual app/web orders, and unknown orders are protected
       and must NEVER be cancelled or modified by monitororder.
     - Unspecified/empty clientOrderId (e.g. legacy test mocks) is allowed for test compatibility.
     """

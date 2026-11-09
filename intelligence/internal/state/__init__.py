@@ -1,11 +1,15 @@
 """Raw statistical metrics and empirical states."""
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from intelligence.internal.state.survival import get_trend_survival_metrics
+    from intelligence.internal.state.persistence import (
+        calculate_hurst_exponent,
+        calculate_mann_kendall,
+        classify_hurst_regime,
+    )
+    from intelligence.internal.state.survival import estimate_T, get_trend_survival_metrics, hybrid_T
     from intelligence.internal.state.volatility import (
         adaptive_thresholds,
         calculate_volatility_1h,
@@ -27,6 +31,11 @@ _LAZY_IMPORTS: dict[str, str] = {
     "resolve_cached_volatility_1h": "intelligence.internal.state.volatility",
     "resolve_cached_volatility_1h_pct": "intelligence.internal.state.volatility",
     "get_trend_survival_metrics": "intelligence.internal.state.survival",
+    "estimate_T": "intelligence.internal.state.survival",
+    "hybrid_T": "intelligence.internal.state.survival",
+    "calculate_mann_kendall": "intelligence.internal.state.persistence",
+    "calculate_hurst_exponent": "intelligence.internal.state.persistence",
+    "classify_hurst_regime": "intelligence.internal.state.persistence",
 }
 
 _SUBMODULES = frozenset({"persistence", "survival", "volatility"})

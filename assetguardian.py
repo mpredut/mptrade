@@ -860,7 +860,7 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
 
 
 def _clear_inactive_trend_defer(symbol, kind, state):
-    """Reset the 180s clock when its tier signal is no longer crossed."""
+    """Reset the trend_defer clock when its tier signal is no longer crossed."""
     if not isinstance(state, dict) or "trend_defer" not in state:
         return state
     state = dict(state)
