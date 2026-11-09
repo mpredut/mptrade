@@ -221,9 +221,6 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     return result
 
 
-extract_short_trend_slope = pw.extract_short_trend_slope
-
-
 _EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost", "sell_defer_started_at")
 
 
@@ -827,7 +824,7 @@ class TrailingAdapterBase:
                 import cacheManager as cm
 
                 snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
-            return extract_short_trend_slope(snap, pair) if snap else 0.0
+            return pw.extract_short_trend_slope(snap, pair) if snap else 0.0
         except Exception:
             return 0.0
 

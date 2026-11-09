@@ -27,7 +27,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import (
     _parse_bool_flag,
-    is_us_rth_open as _is_us_rth_open,
+    is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
     safe_float,
@@ -399,7 +399,7 @@ class AutonomousAIReconciler:
             scope == "equities"
             and not _parse_bool_flag(force_rth_open, False)
             and not _parse_bool_flag(os.environ.get("FORCE_SHARE_RTH_OPEN"), False)
-            and not _is_us_rth_open(now)
+            and not is_us_rth_open(now)
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
             logger.info("[SHARE EXECUTOR] %s", msg)
@@ -443,7 +443,7 @@ class AutonomousAIReconciler:
             mode=self.mode,
             now_ts=now,
             intent_gateway=self.intent_gateway,
-            is_rth_open_fn=_is_us_rth_open,
+            is_rth_open_fn=is_us_rth_open,
         )
         if trade_executed:
             executed = True

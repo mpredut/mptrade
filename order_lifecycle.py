@@ -19,7 +19,7 @@ from botcore import (
     exact_pos_int,
     load_root_config,
     normalize_side,
-    obj_attr as _regime_attr,
+    obj_attr,
     register_module_aliases,
     required_float_env,
     required_int_env,
@@ -537,7 +537,7 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
         if not isinstance(claim, dict):
             return False
         claim_id = clean_order_id(claim.get("id"))
-        expected_order_id = clean_order_id(order_retry_module.order_id_from_response(order))
+        expected_order_id = extract_order_id(order)
         expected_client_id = _claim_client_order_id(claim)
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
@@ -580,10 +580,7 @@ def complete_accepted_claim(
         if attempt + 1 < ACCEPTED_TRACKING_PERSIST_ATTEMPTS:
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
-    try:
-        order_id = clean_order_id(order_retry_module.order_id_from_response(order))
-    except Exception:
-        order_id = None
+    order_id = extract_order_id(order)
     claim_dict = claim if isinstance(claim, dict) else {}
     client_order_id = _claim_client_order_id(claim_dict)
     owner = ""
@@ -696,7 +693,7 @@ def log_order_outcome(
         if regime_context is not None and not isinstance(
             regime_context, (bool, int, float, str, bytes, list, tuple, set, frozenset)
         ):
-            sf = safe_float(_regime_attr(regime_context, "strength", None), default=None)
+            sf = safe_float(obj_attr(regime_context, "strength", None), default=None)
             strength_str = f"{sf:.4f}" if sf is not None else ""
 
             def _clean_regime_str(val) -> str:
@@ -711,12 +708,12 @@ def log_order_outcome(
                 return ""
 
             cols.extend([
-                _clean_regime_str(_regime_attr(regime_context, "regime", "")),
+                _clean_regime_str(obj_attr(regime_context, "regime", "")),
                 strength_str,
-                _clean_regime_str(_regime_attr(regime_context, "source", "")),
-                _clean_bool_field(_regime_attr(regime_context, "fresh", None)),
-                _clean_bool_field(_regime_attr(regime_context, "fallback_used", None)),
-                _clean_regime_str(_regime_attr(regime_context, "reason", "")),
+                _clean_regime_str(obj_attr(regime_context, "source", "")),
+                _clean_bool_field(obj_attr(regime_context, "fresh", None)),
+                _clean_bool_field(obj_attr(regime_context, "fallback_used", None)),
+                _clean_regime_str(obj_attr(regime_context, "reason", "")),
             ])
         append_text_line(path, "|".join(sanitize_pipe_field(c) for c in cols))
     except Exception as e:

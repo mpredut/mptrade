@@ -22,7 +22,7 @@ from binance_api import bapi as api
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     required_float_env,
     required_int_env,
     resolve_patched_attr,
@@ -63,7 +63,7 @@ from state_io import (
 import utils as u
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv()
+load_dotenv()
 
 CM_RETENTION_DAYS = required_float_env("CM_RETENTION_DAYS")
 CM_RETENTION_CHECK_INTERVAL_SEC = required_float_env("CM_RETENTION_CHECK_INTERVAL_SEC")
@@ -103,7 +103,6 @@ _ws_health_lock = _bapi_ws_bridge._ws_health_lock
 _ws_available = _bapi_ws_bridge._ws_available
 _ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
 _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-_ws_needs_rest_resync = _bapi_ws_bridge._ws_needs_rest_resync
 
 _CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
 _TRADE_CACHE_CLASSES = {"CacheTradeManager"}
@@ -208,6 +207,18 @@ class CacheManagerInterface(ABC):
 
     _live_instances = weakref.WeakSet()
     _filter_fetchtimes_to_symbols = False
+    FILE_PREFIX: Optional[str] = None
+    FILE_EXT: Optional[str] = None
+    DEFAULT_FILENAME: Optional[str] = None
+
+    @classmethod
+    def disk_filename_for_symbol(cls, symbol: str = "") -> str:
+        """Return the canonical cache filename for ``symbol`` owned by this concrete cache class."""
+        if cls.DEFAULT_FILENAME:
+            return cls.DEFAULT_FILENAME
+        if cls.FILE_PREFIX and cls.FILE_EXT:
+            return f"{cls.FILE_PREFIX}{symbol}.{cls.FILE_EXT}"
+        return ""
 
     # ── Periodically enforced retention and rotation policy for append caches ──
     RETENTION_DAYS = CM_RETENTION_DAYS

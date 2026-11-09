@@ -20,7 +20,7 @@ from botcore import (
     _parse_bool_flag,
     exact_int,
     format_price_log,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     normalize_epoch_sec,
     required_bool_env,
     required_env,
@@ -83,7 +83,7 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
         )
 
 
-_load_dotenv()
+load_dotenv()
 
 WAIT_FOR_ORDER = required_float_env("RTRADE_WAIT_FOR_ORDER_SEC")
 MIN_adjustment_percent = required_float_env("RTRADE_MIN_ADJUSTMENT_PCT")

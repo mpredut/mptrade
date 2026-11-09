@@ -35,7 +35,7 @@ from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
     is_us_rth_open,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -144,13 +144,12 @@ from state_io import (
 )
 import utils as u
 
-_load_dotenv()
+load_dotenv()
 
 _ws_health_lock = _bapi_ws_bridge._ws_health_lock
 _ws_available = _bapi_ws_bridge._ws_available
 _ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
 _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-_ws_needs_rest_resync = _bapi_ws_bridge._ws_needs_rest_resync
 
 
 def _mark_ws_available(value):
@@ -241,7 +240,7 @@ def get_current_price_manager(
                 else CURRENT_PRICE_SYNC_INTERVAL_SEC
             ),
             symbols=_syms,
-            filename="cache_current_price.json",
+            filename=CacheCurrentPriceManager.DEFAULT_FILENAME,
             ws_manager=ws_manager,
             provider_names=provider_names,
             api_client=api,
@@ -262,7 +261,7 @@ _short_trend_lock = threading.RLock()
 
 
 def get_short_trend_manager(
-    symbols=None, filename="cache_short_trend.json", writer=False
+    symbols=None, filename=CacheShortTrendManager.DEFAULT_FILENAME, writer=False
 ):
     """Return the CacheShortTrendManager singleton."""
     global _short_trend_instance
@@ -338,6 +337,12 @@ class CacheFactory:
         if not callable(sync_ts):
             interval_val = sync_ts
             sync_ts = lambda _v=interval_val: _v
+        if filename is None:
+            filename = getattr(manager_class, "DEFAULT_FILENAME", None)
+        if prefix is None:
+            prefix = getattr(manager_class, "FILE_PREFIX", None)
+        if ext is None:
+            ext = getattr(manager_class, "FILE_EXT", None)
         entry = {
             "class": manager_class,
             "filename": filename,
@@ -576,55 +581,41 @@ class CacheFactory:
 CacheFactory.register(
     "Trade",
     CacheTradeManager,
-    filename="cache_trade.jsonl",
     sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "Order",
     CacheOrderManager,
-    filename="cache_order.json",
     sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "SparsePrice",
     CacheSparsePriceManager,
-    filename=None,
-    prefix="cache_sparse_price_",
-    ext="jsonl",
     sync_ts=lambda: SPARSE_PRICE_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "24Price",
     Cache24PriceManager,
-    filename=None,
-    prefix="cache_24_price_",
-    ext="json",
     sync_ts=lambda: PRICE_24_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "365Price",
     Cache365PriceManager,
-    filename=None,
-    prefix="cache_365_price_",
-    ext="jsonl",
     sync_ts=lambda: PRICE_365_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "CurrentPrice",
     CacheCurrentPriceManager,
-    filename="cache_current_price.json",
     sync_ts=lambda: CURRENT_PRICE_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "LongTrend",
     CacheLongTrendManager,
-    filename="cache_long_trend.json",
     sync_ts=lambda: LONG_TREND_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
     "AssetValue",
     CacheAssetValueManager,
-    filename="cache_asset_value.jsonl",
     sync_ts=lambda: ASSET_VALUE_SYNC_INTERVAL_SEC,
 )
 
@@ -685,8 +676,6 @@ def ensure_account_cache_readers(status):
 # ── Real-time Binance user stream -> cache actions ────────────────────────────
 
 _ws_bridge = _bapi_ws_bridge._ws_bridge
-_ws_bridge_lock = _bapi_ws_bridge._ws_bridge_lock
-_ws_event_stats = _bapi_ws_bridge._ws_event_stats
 
 
 def _ws_cache_getter(name, symbols=None, *, start_sync=False):

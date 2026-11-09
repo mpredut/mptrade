@@ -7,6 +7,7 @@ import threading
 import time
 
 from binance_api import bapi as api
+from binance_api.order_id_context import resolve_order_owner
 from providers.base import (
     extract_client_order_id,
     extract_order_id,
@@ -1186,7 +1187,7 @@ def _is_rtrade_order(order):
     if not isinstance(order, dict):
         return False
     cid = extract_client_order_id(order, default="") or ""
-    return cid.startswith(("RT_", "MO_RT_")) or api.resolve_order_owner(cid) == "rtrade"
+    return cid.startswith(("RT_", "MO_RT_")) or resolve_order_owner(cid) == "rtrade"
 
 
 def _resolve_blocking_sell_orders(symbol, open_sells):

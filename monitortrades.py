@@ -10,10 +10,10 @@ from binance_api import bapi_trades as apitrades
 from botcore import (
     _parse_bool_flag,
     format_price_log,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     normalize_epoch_sec,
     parse_dotenv,
-    parse_ratio_or_pct as _parse_mt_ratio,
+    parse_ratio_or_pct,
     required_bool_env,
     required_float_env,
     resolve_now_ts,
@@ -80,7 +80,7 @@ from strategies.position_exit_manager import (
 import instrument_registry as sym
 import utils as u
 
-_load_dotenv()
+load_dotenv()
 
 MT_ARE_CLOSE_TOLERANCE_PCT = required_float_env("MT_ARE_CLOSE_TOLERANCE_PCT")
 MT_MAIN_LOOP_SLEEP_SEC = required_float_env("MT_MAIN_LOOP_SLEEP_SEC")
@@ -592,23 +592,23 @@ def _load_mt_conf(path=None):
         raise ValueError(f"monitortrades.conf: invalid tp_reference={parsed['tp_reference']!r}")
 
     MT_SL_TREND_DEFER_MAX_SEC = float(parsed["sl_trend_defer_max_s"])
-    MT_SL_BOUNCE_MIN_RECOVERY_PCT = _parse_mt_ratio(parsed["sl_bounce_min_recovery_pct"])
-    MT_SL_BOUNCE_PULLBACK_PCT = _parse_mt_ratio(parsed["sl_bounce_pullback_pct"])
+    MT_SL_BOUNCE_MIN_RECOVERY_PCT = parse_ratio_or_pct(parsed["sl_bounce_min_recovery_pct"])
+    MT_SL_BOUNCE_PULLBACK_PCT = parse_ratio_or_pct(parsed["sl_bounce_pullback_pct"])
     MT_SL_BOUNCE_RATCHET_ENABLED = _parse_mt_bool("sl_bounce_ratchet_enabled", parsed["sl_bounce_ratchet_enabled"])
     MT_SL_BOUNCE_RATCHET_K = float(parsed["sl_bounce_ratchet_k"])
-    MT_SL_BOUNCE_MIN_PULLBACK_PCT = _parse_mt_ratio(parsed["sl_bounce_min_pullback_pct"])
+    MT_SL_BOUNCE_MIN_PULLBACK_PCT = parse_ratio_or_pct(parsed["sl_bounce_min_pullback_pct"])
     MT_SL_STRUCTURAL_BREAK_ENABLED = _parse_mt_bool("sl_structural_break_enabled", parsed["sl_structural_break_enabled"])
-    MT_SL_DISASTER_BUFFER_RATIO = _parse_mt_ratio(parsed["sl_disaster_buffer_ratio"], pct_cutoff=0.999999999)
+    MT_SL_DISASTER_BUFFER_RATIO = parse_ratio_or_pct(parsed["sl_disaster_buffer_ratio"], pct_cutoff=0.999999999)
     MT_SL_DISASTER_VOL_MULTIPLIER = float(parsed["sl_disaster_vol_multiplier"])
-    MT_SL_DISASTER_BUFFER_MIN_PCT = _parse_mt_ratio(parsed["sl_disaster_buffer_min_pct"])
+    MT_SL_DISASTER_BUFFER_MIN_PCT = parse_ratio_or_pct(parsed["sl_disaster_buffer_min_pct"])
 
     MT_TP_TREND_RIDE_ENABLED = _parse_mt_bool("tp_trend_ride_enabled", parsed["tp_trend_ride_enabled"])
-    MT_TP_PULLBACK_PCT = _parse_mt_ratio(parsed["tp_pullback_pct"])
+    MT_TP_PULLBACK_PCT = parse_ratio_or_pct(parsed["tp_pullback_pct"])
     MT_TP_RATCHET_ENABLED = _parse_mt_bool("tp_ratchet_enabled", parsed["tp_ratchet_enabled"])
     MT_TP_RATCHET_K = float(parsed["tp_ratchet_k"])
-    MT_TP_RATCHET_MIN_PULLBACK_PCT = _parse_mt_ratio(parsed["tp_ratchet_min_pullback_pct"])
-    MT_TP_PROFIT_FLOOR_RATIO = _parse_mt_ratio(parsed["tp_profit_floor_ratio"], pct_cutoff=0.999999999)
-    MT_TP_PROFIT_FLOOR_MIN_PCT = _parse_mt_ratio(parsed["tp_profit_floor_min_pct"])
+    MT_TP_RATCHET_MIN_PULLBACK_PCT = parse_ratio_or_pct(parsed["tp_ratchet_min_pullback_pct"])
+    MT_TP_PROFIT_FLOOR_RATIO = parse_ratio_or_pct(parsed["tp_profit_floor_ratio"], pct_cutoff=0.999999999)
+    MT_TP_PROFIT_FLOOR_MIN_PCT = parse_ratio_or_pct(parsed["tp_profit_floor_min_pct"])
     MT_TP_STAGNATION_MAX_SEC = float(parsed["tp_stagnation_max_s"])
     MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
     MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(parsed["reentry_post_stop_cooldown_s"])

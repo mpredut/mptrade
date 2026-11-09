@@ -30,7 +30,7 @@ import order_lifecycle
 from botcore import (
     float_env,
     format_price_log,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     lru_dict_put,
     required_float_env,
     required_int_env,
@@ -39,7 +39,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 
-_load_dotenv()
+load_dotenv()
 
 MAX_PROC = required_float_env("MONITOR_MAX_PROC")
 MAX_TRACKED_ORDER_IDS = 10_000

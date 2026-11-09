@@ -25,7 +25,7 @@ from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
-from state_io import atomic_write_json, atomic_write_text, read_json_file as _load_json  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 
 
 DEFAULT_BASELINE = (
@@ -41,7 +41,7 @@ def _scenario_summary(report: dict) -> dict:
 
 
 def build_comparison(args) -> dict:
-    baseline_report = _load_json(args.baseline)
+    baseline_report = read_json_file(args.baseline)
     if not isinstance(baseline_report, dict) or not isinstance(baseline_report.get("strategy_params"), dict):
         raise ValueError("baseline report must be a JSON object containing strategy_params")
     base_params = benchmark.strat_params_from_dict(baseline_report["strategy_params"])

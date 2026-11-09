@@ -735,10 +735,10 @@ class OrderRetryStoreTest(unittest.TestCase):
             self.assertEqual(oq.get(rid)["order_id"], "91")
 
         with self.subTest(msg="order_id_parser_handles_provider_shapes"):
-            self.assertEqual(oq.order_id_from_response({"orderId": 1}), "1")
-            self.assertEqual(oq.order_id_from_response({"id": "two"}), "two")
-            self.assertEqual(oq.order_id_from_response({"txid": ["three"]}), "three")
-            self.assertIsNone(oq.order_id_from_response({"status": "NEW"}))
+            self.assertEqual(oq.extract_order_id({"orderId": 1}), "1")
+            self.assertEqual(oq.extract_order_id({"id": "two"}), "two")
+            self.assertEqual(oq.extract_order_id({"txid": ["three"]}), "three")
+            self.assertIsNone(oq.extract_order_id({"status": "NEW"}))
 
         with self.subTest(msg="success_does_not_delete_newer_refresh"):
             self._reset_env()

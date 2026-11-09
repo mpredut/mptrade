@@ -16,7 +16,7 @@ import utils as u
 from botcore import (
     _parse_bool_flag,
     is_live_network_backfill_enabled,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     lru_dict_put,
     normalize_epoch_sec,
     normalize_trend_direction,
@@ -42,7 +42,7 @@ from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv()
+load_dotenv()
 
 # Intentionally retained dead code for reference: an alternative shared-memory
 # IPC approach for trends instead of the current priceanalysis.json file.

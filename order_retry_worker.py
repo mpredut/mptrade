@@ -151,7 +151,7 @@ def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
     """Populate orig_qty from venue order_status when absent on the reconciled payload."""
     if oq.extract_orig_qty(order) is None and hasattr(mkt, "order_status"):
         try:
-            oid = oq.order_id_from_response(order)
+            oid = oq.extract_order_id(order)
             if oid:
                 st = mkt.order_status(symbol, oid, provider_name=provider_name)
                 if st and getattr(st, "orig_qty", None):
@@ -177,7 +177,7 @@ def _reconcile_client_order(mkt, symbol, client_order_id, *, provider_name=None)
     if not isinstance(order, dict):
         print(f"[order_retry] malformed reconciliation response {symbol}/{client_order_id}: {type(order).__name__}")
         return _RECONCILE_UNAVAILABLE, None
-    if oq.order_id_from_response(order) is None:
+    if oq.extract_order_id(order) is None:
         print(f"[order_retry] reconciliation response has no order ID {symbol}/{client_order_id}")
         return _RECONCILE_UNAVAILABLE, None
     return _RECONCILE_FOUND, order
@@ -267,7 +267,7 @@ def _complete_reconciled_order(
     existing_order = _hydrate_missing_order_orig_qty(mkt, symbol, existing_order, provider_name=provider_name)
     if not oq.complete_claim(r, "accepted", now, order=existing_order, provider_name=provider_name):
         return False
-    oid = oq.order_id_from_response(existing_order)
+    oid = oq.extract_order_id(existing_order)
     audit_kw = {"order_id": oid, "live_producer": True} if live_producer else {"order_id": oid}
     _audit_event(r, "order_recovered", **audit_kw)
     label = "RECONCILED live producer" if live_producer else "RECONCILED"
@@ -578,7 +578,7 @@ def process_once(mkt, now=None):
         sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
         if sq is not None:
             oq._set_record_qty(r, sq)
-        accepted = oq.order_id_from_response(order) is not None
+        accepted = oq.extract_order_id(order) is not None
         if not accepted and outcome_context.get("state") != "refused":
             reconciliation_state, recovered = _reconcile_client_order(
                 mkt, symbol, client_order_id, provider_name=provider_name
@@ -597,9 +597,9 @@ def process_once(mkt, now=None):
             _audit_event(r, "submit_requested", **req_audit_kw)
             _audit_event(
                 r, "submit_accepted",
-                order_id=oq.order_id_from_response(order), qty=r.get("qty"), price=price,
+                order_id=oq.extract_order_id(order), qty=r.get("qty"), price=price,
             )
-            print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {price} orderId={oq.order_id_from_response(order)}")
+            print(f"[order_retry] ACCEPTED {r.get('side')} {symbol} @ {price} orderId={oq.extract_order_id(order)}")
         else:
             submission_state = outcome_context.get("state") or "unknown"
             refusal_reason = outcome_context.get("reason") or (

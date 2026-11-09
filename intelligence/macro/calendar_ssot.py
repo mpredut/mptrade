@@ -26,7 +26,7 @@ from botcore import (
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
-    split_csv as _split_csv,
+    split_csv,
 )
 
 
@@ -107,7 +107,7 @@ _WEEKDAY_SESSION_WINDOWS_EET: Tuple[Tuple[int, int, str, str, bool, bool, str, s
 def get_session_transition_checkpoints_eet() -> Tuple[Tuple[int, int, str], ...]:
     """Load intraday session transition checkpoints from ``macro_intelligence.conf``."""
     parsed: List[Tuple[int, int, str]] = []
-    for item in _split_csv(_ssot._cfg_str("sessions", "checkpoints_eet")):
+    for item in split_csv(_ssot._cfg_str("sessions", "checkpoints_eet")):
         parts = item.split(":")
         if len(parts) >= 3:
             try:
@@ -216,7 +216,7 @@ def did_cross_session_checkpoint(
 def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
     """Load weekday macro economic & liquidity calendar windows from ``macro_intelligence.conf``."""
     parsed: List[Tuple[int, int, str, str]] = []
-    for item in _split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
+    for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
         parts = [p.strip() for p in item.split("|")]
         if len(parts) >= 3 and ":" in parts[0]:
             try:
@@ -230,7 +230,7 @@ def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
 def get_macro_calendar_routine_labels() -> Dict[str, str]:
     """Load optional routine session fallback labels (4th pipe field) keyed by event code from ``macro_intelligence.conf``."""
     labels: Dict[str, str] = {}
-    for item in _split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
+    for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
         parts = [p.strip() for p in item.split("|")]
         if len(parts) >= 4 and parts[1] and parts[3]:
             labels[parts[1]] = parts[3]
@@ -239,12 +239,12 @@ def get_macro_calendar_routine_labels() -> Dict[str, str]:
 
 def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
     """Load macro economic calendar keywords from ``macro_intelligence.conf``."""
-    return _split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
+    return split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
 
 
 def get_fomc_decision_dates() -> Set[str]:
     """Load official Federal Reserve FOMC rate decision dates (YYYY-MM-DD) from ``macro_intelligence.conf``."""
-    return set(_split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
+    return set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
 
 
 def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -> List[Dict[str, Any]]:

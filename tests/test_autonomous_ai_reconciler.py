@@ -1254,11 +1254,11 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
     from visuals import drawprices
     import numpy as np
 
-    assert parse_shadow._f(None) == 0.0
-    assert parse_shadow._f(True) == 0.0
-    assert parse_shadow._f(float("nan")) == 0.0
-    assert parse_shadow._i(None) == 0
-    assert parse_shadow._i(True) == 0
+    assert parse_shadow.safe_float(None) == 0.0
+    assert parse_shadow.safe_float(True) == 0.0
+    assert parse_shadow.safe_float(float("nan")) == 0.0
+    assert parse_shadow.safe_int(None) == 0
+    assert parse_shadow.safe_int(True) == 0
     assert parse_shadow._last_valid_record(['{"pair": "HYPEUSD"}', "{bad json"]) == {"pair": "HYPEUSD"}
 
     assert kraken_pnl_backfill.safe_float(None) == 0.0
@@ -1378,12 +1378,12 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert "- Macro Sentiment Advisor:" not in share_prompt
 
     # Outside US RTH, auto_sharetrade_executor skips LLM evaluation unless force_rth_open=True
-    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler._is_us_rth_open", return_value=False):
+    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler.is_us_rth_open", return_value=False):
         closed_rep = reconciler.run_cycle(topic_key="auto_sharetrade_executor")
     assert "closed; cycle skipped" in closed_rep.summary
     assert len(captured_prompts) == 2
 
-    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler._is_us_rth_open", return_value=False):
+    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler.is_us_rth_open", return_value=False):
         forced_rep = reconciler.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     assert forced_rep.summary == "ok"
     assert len(captured_prompts) == 3

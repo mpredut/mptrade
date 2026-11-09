@@ -9,7 +9,7 @@ import signal
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     normalize_scalar_order_id,
     required_float_env,
     safe_float,
@@ -31,12 +31,7 @@ from providers.order_ohlc_utils import (
 )
 from providers.quantity import resolve_assets
 
-resolve_order_owner = rc.resolve_order_owner
-is_order_repriceable_by_monitororder = rc.is_order_repriceable_by_monitororder
-order_matches_owner = rc.order_matches_owner
-create_client_order_id = rc.create_client_order_id
-
-_load_dotenv()
+load_dotenv()
 BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
     "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC"
 )

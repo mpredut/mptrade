@@ -25,7 +25,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key as _clean_regime_symbol_key, normalize_venue_name
+from cachepaths import canonical_symbol_key, normalize_venue_name
 
 
 def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[float]:
@@ -174,7 +174,7 @@ class MarketRegimeContext:
             if not isinstance(symbol, str) or not symbol.strip():
                 return False
             if self.symbol is not None:
-                if not isinstance(self.symbol, str) or _clean_regime_symbol_key(self.symbol) != _clean_regime_symbol_key(symbol):
+                if not isinstance(self.symbol, str) or canonical_symbol_key(self.symbol) != canonical_symbol_key(symbol):
                     return False
             elif require_identity:
                 return False
@@ -996,10 +996,10 @@ class MarketRegimeService:
                 ),
                 "",
             )
-        asset_key = _clean_regime_symbol_key(asset_symbol)
+        asset_key = canonical_symbol_key(asset_symbol)
         selected = {}
         for item in directional:
-            item_key = _clean_regime_symbol_key(item.symbol)
+            item_key = canonical_symbol_key(item.symbol)
             key = (item_key, item.role)
             selected.setdefault(key, item)
 
@@ -1009,18 +1009,18 @@ class MarketRegimeService:
         benchmark_symbols = tuple(dict.fromkeys(
             item.symbol
             for item in directional
-            if _clean_regime_symbol_key(item.symbol) != asset_key
+            if canonical_symbol_key(item.symbol) != asset_key
             and item.role in {"benchmark_short", "benchmark_long"}
         ))
         benchmarks = tuple(
             (
                 symbol,
                 selected.get(
-                    (_clean_regime_symbol_key(symbol), "benchmark_short"),
+                    (canonical_symbol_key(symbol), "benchmark_short"),
                     None,
                 ),
                 selected.get(
-                    (_clean_regime_symbol_key(symbol), "benchmark_long"),
+                    (canonical_symbol_key(symbol), "benchmark_long"),
                     None,
                 ),
             )

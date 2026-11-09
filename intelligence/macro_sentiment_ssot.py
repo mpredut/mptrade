@@ -69,7 +69,7 @@ from botcore import (
     safe_pos_float,
     safe_thresh,
     sanitize_heartbeat_status,
-    split_csv as _split_csv,
+    split_csv,
 )
 from cachepaths import (
     cache_path,
@@ -94,7 +94,6 @@ from state_io import (
 )
 
 save_json_state = _default_save_json_state
-read_json_dict_recovering = _default_read_json_dict_recovering
 read_json_cached = _default_read_json_dict_recovering
 
 logger = logging.getLogger(__name__)
@@ -207,7 +206,7 @@ def has_new_acute_shock_headline(
 def _parse_kv_map(raw: str) -> Dict[str, str]:
     return {
         k.strip(): v.strip()
-        for item in _split_csv(raw, upper=True)
+        for item in split_csv(raw, upper=True)
         if ":" in item and (k := item.split(":", 1)[0]).strip() and (v := item.split(":", 1)[1]).strip()
     }
 
@@ -345,7 +344,7 @@ def resolve_derived_telemetry_intervals(
 
 
 def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", key), lower=lower, upper=not lower)
+    return split_csv(_cfg_str("taxonomies", key), lower=lower, upper=not lower)
 
 
 def get_market_biases() -> Tuple[str, ...]:
@@ -437,7 +436,7 @@ def _require_feed_str(key: str) -> str:
 
 
 def _require_feed_csv(key: str) -> Tuple[str, ...]:
-    vals = _split_csv(_cfg_str("feeds", key), upper=True)
+    vals = split_csv(_cfg_str("feeds", key), upper=True)
     if not vals:
         raise ValueError(f"Missing required [feeds] {key} in macro_intelligence.conf")
     return vals
@@ -470,7 +469,7 @@ def get_cboe_index_tickers() -> Tuple[str, ...]:
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
     raw = _require_feed_str("macro_benchmark_specs")
     specs: List[Tuple[str, str, str]] = []
-    for item in _split_csv(raw, lower=False, upper=False):
+    for item in split_csv(raw, lower=False, upper=False):
         parts = [p.strip() for p in item.split(":")]
         if len(parts) == 3 and all(parts):
             specs.append((parts[0].upper(), parts[1].upper(), parts[2].lower()))
@@ -507,7 +506,7 @@ def get_breadth_top_mover_min_volume_usd() -> float:
 
 
 def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("cache_files", group_key))
+    return split_csv(_cfg_str("cache_files", group_key))
 
 
 def _normalize_taxonomy(

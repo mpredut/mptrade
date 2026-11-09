@@ -30,7 +30,7 @@ import utils as u
 from botcore import (
     diff_percent,
     is_live_network_backfill_enabled,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     normalize_epoch_sec,
     required_env,
     required_float_env,
@@ -69,7 +69,7 @@ from providers.base import (
 )
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv()
+load_dotenv()
 
 # Dynamic window bounds for on-demand short-trend queries over Cache24.
 CM_DYNAMIC_WINDOW_MIN_SEC = required_float_env("CM_DYNAMIC_WINDOW_MIN_SEC")
@@ -156,6 +156,9 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
 class CacheLongTrendManager(CacheTrendManagerBase):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
+    DEFAULT_FILENAME = "cache_long_trend.json"
+    SOURCE_ANALYSIS_FILENAME = "priceanalysis.json"
+
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
             api_client = _cm_attr("api", None)
@@ -216,6 +219,16 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     other cache managers, while preserving the top-level ``{symbol: snapshot_dict}``
     JSON format expected by all direct readers.
     """
+
+    DEFAULT_FILENAME = "cache_short_trend.json"
+    LIVE_TREND_SUBDIR = "24trend"
+    LIVE_FILE_PREFIX = "live_"
+    LIVE_FILE_EXT = "json"
+
+    @classmethod
+    def live_window_relpath_for_symbol(cls, symbol: str) -> str:
+        """Return the canonical relative path (``24trend/live_<SYM>.json``) for per-symbol live trend windows."""
+        return os.path.join(cls.LIVE_TREND_SUBDIR, f"{cls.LIVE_FILE_PREFIX}{symbol}.{cls.LIVE_FILE_EXT}")
 
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
     UPWARD_EPSILON_K  = 0.25    # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.

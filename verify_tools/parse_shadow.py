@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import safe_float as _f, safe_int as _i
+from botcore import safe_float, safe_int
 from state_io import read_text_lines
 
 
@@ -29,7 +29,7 @@ def _last_valid_record(lines: list[str]) -> dict | None:
 def _print_section(label: str, section: object, hours_per_bar: float) -> None:
     if not isinstance(section, dict) or not section:
         return
-    bars = _i(section.get("bars"), 0)
+    bars = safe_int(section.get("bars"), 0)
     print(f"{label}: {bars} bars ({bars * hours_per_bar / 24:.1f} days), Buy&Hold: {section.get('buyhold_pct')}%\n")
     print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
     print("  " + "-" * 63)
@@ -37,7 +37,7 @@ def _print_section(label: str, section: object, hours_per_bar: float) -> None:
     for k, v in cfgs.items():
         if not isinstance(v, dict):
             continue
-        print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
+        print(f"  {k:<26} {safe_float(v.get('net_pct')):>8.2f} {safe_float(v.get('total_pct')):>9.2f} {safe_float(v.get('maxdd_pct')):>9.2f} {safe_int(v.get('cycles')):>7}")
 
 
 def main() -> None:

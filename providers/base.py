@@ -836,7 +836,7 @@ class MarketDataProvider(ABC):
         if not isinstance(snap, dict):
             return 0.0
         try:
-            from trailing_core import extract_short_trend_slope
+            from pricewindow import extract_short_trend_slope
 
             slope = safe_float(extract_short_trend_slope(snap, symbol), default=0.0)
             if slope != 0.0:

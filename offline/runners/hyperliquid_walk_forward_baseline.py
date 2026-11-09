@@ -39,7 +39,6 @@ from offline.backtests.evaluation import (
 
 _hl_md = load_venue_module("hyperliquid", "market_data.py", "hl_wf_md")
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
-fetch_funding_history = _hl_md.fetch_funding_history
 
 _hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter

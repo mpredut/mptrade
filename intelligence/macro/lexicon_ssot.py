@@ -12,7 +12,7 @@ from botcore import (
     obj_attr,
     resolve_now_ts,
     safe_float,
-    split_csv as _split_csv,
+    split_csv,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_dict_cached, save_json_state
@@ -157,7 +157,7 @@ def _get_stopwords_set() -> Set[str]:
     cached = _SEED_SETS_CACHE.get("stopwords")
     if cached is not None and cached[0] == raw:
         return cached[1]
-    res = set(_split_csv(raw, lower=True))
+    res = set(split_csv(raw, lower=True))
     _SEED_SETS_CACHE["stopwords"] = (raw, res)
     return res
 
@@ -167,7 +167,7 @@ def _get_crisis_stems_set() -> Set[str]:
     cached = _SEED_SETS_CACHE.get("crisis_stems")
     if cached is not None and cached[0] == raw:
         return cached[1]
-    res = set(_split_csv(raw, lower=True))
+    res = set(split_csv(raw, lower=True))
     _SEED_SETS_CACHE["crisis_stems"] = (raw, res)
     return res
 
@@ -179,7 +179,7 @@ def _get_seed_terms_set() -> Set[str]:
     cached = _SEED_SETS_CACHE.get("seed_terms")
     if cached is not None and cached[0] == key_sig:
         return cached[1]
-    res = set(_split_csv(raw_h, lower=True)) | set(_split_csv(raw_a, lower=True))
+    res = set(split_csv(raw_h, lower=True)) | set(split_csv(raw_a, lower=True))
     _SEED_SETS_CACHE["seed_terms"] = (key_sig, res)
     return res
 
@@ -892,13 +892,13 @@ def demote_dynamic_acute_terms(
 
 
 def get_active_severity_keywords(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = _split_csv(_ssot._cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
+    seed = split_csv(_ssot._cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ())
     return tuple(dict.fromkeys((*seed, *dyn)))
 
 
 def get_active_acute_shock_phrases(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = _split_csv(_ssot._cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    seed = split_csv(_ssot._cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ())
     return tuple(dict.fromkeys((*seed, *dyn)))
 
@@ -1062,7 +1062,7 @@ def build_equity_tickers_rss_url() -> str:
 
 def get_equity_entity_keywords() -> Tuple[str, ...]:
     """Return configured equity company/ticker keywords plus active tracked equity base symbols."""
-    cfg_kws = list(_split_csv(_ssot._cfg_str("feeds", "equity_entity_keywords"), lower=True))
+    cfg_kws = list(split_csv(_ssot._cfg_str("feeds", "equity_entity_keywords"), lower=True))
     try:
         from cachepaths import canonical_base_asset
         from instrument_registry import is_equity_symbol, tracked_price_instruments
@@ -1094,7 +1094,7 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
     return tuple(
         dict.fromkeys(
             (
-                *_split_csv(_ssot._cfg_str("feeds", "specialized_rss_urls")),
+                *split_csv(_ssot._cfg_str("feeds", "specialized_rss_urls")),
                 *([eq_url] if eq_url else []),
                 *([dyn_url] if dyn_url else []),
             )
@@ -1104,7 +1104,7 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
 
 def get_excluded_reference_sources() -> Tuple[str, ...]:
     """Load static encyclopedia/dictionary reference sources excluded from live breaking news."""
-    return _split_csv(_ssot._cfg_str("feeds", "excluded_reference_sources"), lower=True)
+    return split_csv(_ssot._cfg_str("feeds", "excluded_reference_sources"), lower=True)
 
 
 def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:

@@ -49,7 +49,6 @@ logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guar
 
 DEFAULT_TIMEOUT_SEC = 120.0
 DEFAULT_FALLBACK = "allow"
-DEFAULT_POST_STOP_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 _POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}
 _POST_STOP_NOTIFY_CACHE: Dict[Tuple[str, str], float] = {}
 
@@ -67,7 +66,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
     TOPIC_KEY = "guard_post_stop"
     DEFAULT_TIMEOUT_SEC = DEFAULT_TIMEOUT_SEC
     DEFAULT_FALLBACK = DEFAULT_FALLBACK
-    DEFAULT_CACHE_TTL_SEC = DEFAULT_POST_STOP_CACHE_TTL_SEC
+    DEFAULT_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 
     def __init__(
         self,
@@ -244,7 +243,7 @@ def get_post_stop_reentry_guard(
         "fallback_action": str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK,
         "mode": resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce"),
         "notify_enabled": True if raw_notify is None else _parse_bool_flag(raw_notify, default=False),
-        "cache_ttl_sec": safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC),
+        "cache_ttl_sec": safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_LLM_GUARD_CACHE_TTL_SEC),
     }
     if gemini_client is not None:
         return PostStopReentryGuard(gemini_client=gemini_client, **cfg)

@@ -497,14 +497,11 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
 
     class _DummyRetry:
         @staticmethod
-        def order_id_from_response(o):
-            return "ord1"
-        @staticmethod
         def load_all():
             return ["not_a_dict", {"id": "c1", "place_kwargs": "bad"}]
 
-    assert aop._accepted_is_durable(_DummyRetry, "not_a_dict", {}) is False
-    assert aop._accepted_is_durable(_DummyRetry, {"id": "c1", "place_kwargs": "bad"}, {}) is False
+    assert aop._accepted_is_durable(_DummyRetry, "not_a_dict", {"orderId": "ord1"}) is False
+    assert aop._accepted_is_durable(_DummyRetry, {"id": "c1", "place_kwargs": "bad"}, {"orderId": "ord1"}) is False
 
 
 def test_order_id_context_and_pricefetcher_hardening(tmp_path):

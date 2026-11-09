@@ -21,7 +21,7 @@ from typing import Optional
 from botcore import (
     exact_int,
     exact_nonneg_int,
-    load_dotenv as _load_dotenv,
+    load_dotenv,
     normalize_side,
     required_bool_env,
     required_float_env,
@@ -52,7 +52,7 @@ from providers.strategy_executor import OrderStatus, SubmissionRefused
 from state_io import atomic_write_jsonl, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv()
+load_dotenv()
 
 RETRY_ENABLED = required_bool_env("RETRY_ENABLED")
 RETRY_INTERVAL_SEC = required_float_env("RETRY_INTERVAL_SEC")
@@ -246,10 +246,6 @@ def _client_order_id(record_id, revision, prefix="OR"):
     overhead = len(pfx) + 1 + len(rev_str) + 1
     hash_len = max(8, min(24, 36 - overhead))
     return f"{pfx}_{record_id[:hash_len]}_{rev_str}"[:36]
-
-
-# Standardized canonical alias in providers.base: extract_order_id.
-order_id_from_response = extract_order_id
 
 
 def valid_record(rec):

@@ -25,7 +25,6 @@ _hl_md = load_venue_module("hyperliquid", "market_data.py", "local_hl_market_dat
 API_URL = _hl_md.API_URL
 INTERVALS = _hl_md.INTERVALS
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
-normalize_closed_candles = _hl_md.normalize_closed_candles
 
 
 def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:

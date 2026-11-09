@@ -14655,25 +14655,19 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
 
     # 2. accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels
     class DummyRetryMod:
-        def __init__(self, oid, records):
-            self._oid = oid
+        def __init__(self, records):
             self._records = records
-
-        def order_id_from_response(self, _order):
-            return self._oid
 
         def load_all(self):
             return self._records
 
     claim = {"id": "1001.0", "place_kwargs": {"client_order_id": "CID-1"}}
     mod_ok = DummyRetryMod(
-        777.0,
         [{"id": "1001", "lifecycle": "accepted", "order_id": "777", "place_kwargs": {"client_order_id": "CID-1"}}],
     )
-    assert aop._accepted_is_durable(mod_ok, claim, {"orderId": 777}) is True
+    assert aop._accepted_is_durable(mod_ok, claim, {"orderId": 777.0}) is True
 
     mod_bad_sentinel = DummyRetryMod(
-        "0",
         [{"id": "1001", "lifecycle": "accepted", "order_id": "0", "place_kwargs": {"client_order_id": "CID-1"}}],
     )
     assert aop._accepted_is_durable(mod_bad_sentinel, claim, {"orderId": "0"}) is False
@@ -15730,10 +15724,6 @@ def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tm
         @staticmethod
         def load_all():
             return None
-
-        @staticmethod
-        def order_id_from_response(order):
-            return "555.0"
 
     monkeypatch.setattr(aop.time, "sleep", lambda _s: None)
     notified = []

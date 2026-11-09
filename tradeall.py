@@ -32,11 +32,11 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # config.env before reading any environment variables below.
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
-from botcore import (exact_nonneg_int, exact_pos_int, format_price_log, load_dotenv as _load_dotenv,
+from botcore import (exact_nonneg_int, exact_pos_int, format_price_log, load_dotenv,
                      normalize_epoch_sec, required_bool_env, required_float_env,
                      required_int_env, resolve_now_ts, safe_nonneg_float, safe_pos_float,
                      sanitize_pipe_field, touch_module_heartbeat)
-_load_dotenv()
+load_dotenv()
 
 
 TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.
