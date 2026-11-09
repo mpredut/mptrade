@@ -2168,6 +2168,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("AI stocks hammered by midterm shock as data center buildout becomes a 'war of attrition'", ["war"]),
         ("Iran War Fuels Louisiana LNG Interest, Complicates Woodside Dealmaking - Natural Gas Intelligence", ["war", "iran war"]),
         ("Russia secretly bolstered Iran's missile arsenal before war with US, records uncover - Fox News", ["war", "missile"]),
+        ("Who are the seafarers caught in the US-Israeli war on Iran?", ["war"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
@@ -2206,6 +2207,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         "TSMC Makes the Chips for Both Nvidia and AMD. Here's What a $5,000 Investment Could Be Worth by 2030.",
         "Forget Nvidia. Here's the Company Behind the Chips",
         "Why SpaceX Stock Is Up Today",
+        "Applied Materials, Cisco, Berkshire Hathaway, Nvidia, Micron and Alphabet are part of Zacks Earnings Preview",
     ):
         assert is_excluded_reference_news_item(etf_blurb) is True
     assert is_excluded_reference_news_item(

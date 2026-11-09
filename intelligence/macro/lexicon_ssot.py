@@ -33,7 +33,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
     "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
     "emergency sanction", "supply shock", "warfare cyber", "bank collapse",
-    "naval cruise",
+    "naval cruise", "houthi cruise",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -66,9 +66,9 @@ _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "journalists", "liberators", "memorial", "mosquito", "mosquitoes",
     "mosquitos", "museum", "myanmar", "mystery", "netflix", "pack", "packing",
     "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
-    "retirees", "retirement", "review", "rsf", "season", "social", "streets",
-    "tourist", "tourists", "trailer", "tunnels", "vacation", "vatican",
-    "veteran", "veterans", "vulture", "wwi", "wwii",
+    "retirees", "retirement", "review", "rsf", "seafarer", "seafarers", "season",
+    "social", "streets", "tourist", "tourists", "trailer", "tunnels", "vacation",
+    "vatican", "veteran", "veterans", "vulture", "wwi", "wwii",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
@@ -212,12 +212,12 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "fallout", "false", "fare", "features", "five", "fleet", "florida", "follow", "followed", "following", "follows",
     "forced", "four", "fresh", "functioning", "funding", "golf", "harward", "headlines", "heighten",
     "highlight", "highlights", "history", "horrific", "household", "households", "humanitarian", "hurt", "identified", "intel",
-    "institute", "introduces", "investigation", "involvement", "island", "jet", "join",
+    "institute", "intercepted", "introduces", "investigation", "involvement", "island", "jet", "join",
     "keyword", "kinetic", "landing", "later", "latest", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
     "losers", "losses", "macro", "media", "members", "michigan", "midterm", "midterms",
     "mobile", "moderate", "monroe", "mounting", "mutual", "narrative", "nine", "non", "normal",
-    "noting", "official", "officials", "one", "ongoing", "orderly", "outlook",
+    "noting", "official", "officials", "old", "one", "ongoing", "orderly", "outlook",
     "peacefully", "persistent", "physical", "plane", "plant", "playbook", "played", "plunge",
     "plunged", "plunges", "plunging", "political", "poses", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
@@ -581,6 +581,8 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "better buy",
     "just delivered fantastic news for",
     "investment could be worth",
+    "are part of zacks",
+    "zacks analyst blog",
     "wants to be the nvidia of",
     "should you buy ",
     "names at fire-sale prices",
