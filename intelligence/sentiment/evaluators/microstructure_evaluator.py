@@ -83,10 +83,22 @@ def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bo
     changed = False
     if abs(spot_px - ob_mid_m) > 1e-6:
         scale_r = spot_px / ob_mid_m
+        raw_bid = safe_pos_float(m_info.get("best_bid"), default=None)
+        raw_ask = safe_pos_float(m_info.get("best_ask"), default=None)
         m_info["ob_mid_price"] = round(spot_px, px_dec)
         for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
             if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
                 m_info[k_sc] = round(v_sc * scale_r, px_dec)
+        if (
+            raw_bid is not None
+            and raw_ask is not None
+            and raw_bid < raw_ask
+            and (safe_pos_float(m_info.get("best_bid"), default=0.0) or 0.0)
+            >= (safe_pos_float(m_info.get("best_ask"), default=0.0) or 0.0)
+        ):
+            ba_dec = max(px_dec, 4)
+            m_info["best_bid"] = round(raw_bid * scale_r, ba_dec)
+            m_info["best_ask"] = round(raw_ask * scale_r, ba_dec)
         changed = True
     if (safe_pos_float(m_info.get("spread_bps"), default=0.0) or 0.0) > 200.0:
         half_sp_eq = max(0.005, round(spot_px * 0.001, 4))

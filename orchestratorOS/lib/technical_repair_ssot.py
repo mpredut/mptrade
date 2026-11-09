@@ -837,6 +837,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 (
                                     "Failed to recover daemon" in cleaned
                                     or "Error: not signed in:" in cleaned
+                                    or "Error: failed to start service:" in cleaned
+                                    or "antigravity-cli-daemon.service failed" in cleaned
                                     or "ui_sync_idle_sec" in cleaned
                                     or "[manage_agy] ERROR:" in cleaned
                                     or "[ws] error: ping/pong timed out" in cleaned

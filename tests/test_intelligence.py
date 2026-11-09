@@ -9116,3 +9116,89 @@ def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tm
     assert [x["symbol"] for x in ps_eq["active_retry_queue"]] == ["COIN_US_EQ"]
     assert ps_eq.get("last_cycle_execution_status", {}).get("symbol") == "COIN_US_EQ"
 
+
+def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daemon_timeout_recovery(tmp_path):
+    import json
+    from cachepaths import cache_symbol_variants
+    from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
+    from intelligence.sentiment.evaluators.microstructure_evaluator import align_equity_orderbook_to_spot
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Reconcile active_avg_buy_px when fresh open_lots cover >= 98% of wallet balance and unfiltered > 115%
+    cdir = tmp_path / "cachedb"
+    (cdir / "orders").mkdir(parents=True, exist_ok=True)
+    now_ms = 1_794_190_000_000
+    old_dust_ts = now_ms - 30 * 86400 * 1000
+    fresh_buy_ts = now_ms - 8 * 3600 * 1000
+    (cdir / "orders" / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {"orderId": 1, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": "77595.77", "executedQty": "0.02023", "time": old_dust_ts, "updateTime": old_dust_ts},
+                        {"orderId": 2, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": "74356.88", "executedQty": "0.02367", "time": fresh_buy_ts, "updateTime": fresh_buy_ts},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.023677, "locked_base": 0.0}}),
+        encoding="utf-8",
+    )
+    btc_fills = load_symbol_best_recent_fills(
+        str(cdir),
+        "BTCUSDC",
+        cache_symbol_variants("BTCUSDC", include_base=False),
+    )
+    assert btc_fills is not None
+    assert btc_fills["active_avg_buy_px"] == pytest.approx(74356.88)
+    assert len(btc_fills["open_lots"]) == 1
+    assert btc_fills["open_lots"][0]["qty"] == pytest.approx(0.02367)
+
+    # Also verify enrich_positions_with_orders_and_cycles preserves open_lots within 14d of newest_open_lot_ts even if last_buy was harvested later
+    recent_orders = {
+        "TAOUSDC": {
+            "active_avg_buy_px": 250.365224,
+            "active_cycle_rem_qty": 8.3306,
+            "last_buy": {"price": 213.2, "qty": 1.7715, "ts_ms": now_ms - 3600_000},
+            "open_lots": [
+                {"lot_id": "L527", "qty": 1.4268, "price": 237.1, "ts_ms": now_ms - 6 * 86400 * 1000},
+                {"lot_id": "L517", "qty": 0.5441, "price": 254.7, "ts_ms": now_ms - (14 * 86400 * 1000 + 600_000) - 3600_000},
+            ],
+        }
+    }
+    # Shift L517 so it is 7.6d older than L527, even though >14d older than harvested last_buy
+    recent_orders["TAOUSDC"]["open_lots"][1]["ts_ms"] = recent_orders["TAOUSDC"]["open_lots"][0]["ts_ms"] - int(7.6 * 86400 * 1000)
+    tao_pos = [{"venue": "binance", "symbol": "TAOUSDC", "free_base": 8.331, "locked_base": 0.0, "price": 215.2}]
+    enrich_positions_with_orders_and_cycles(tao_pos, {}, {}, {"binance": recent_orders}, recent_orders, {}, {}, {}, {})
+    assert len(recent_orders["TAOUSDC"]["open_lots"]) == 2
+
+    # 2. align_equity_orderbook_to_spot preserves 4-decimal precision when 2-decimal rounding collapses tight spread
+    ob_nvda = {"best_bid": 186.76, "best_ask": 186.77, "ob_mid_price": 186.765, "spread_bps": 0.54}
+    align_equity_orderbook_to_spot(ob_nvda, 175.96)
+    assert ob_nvda["best_bid"] < ob_nvda["best_ask"]
+    assert ob_nvda["best_bid"] == pytest.approx(175.9553, abs=1e-4)
+    assert ob_nvda["best_ask"] == pytest.approx(175.9647, abs=1e-4)
+
+    # 3. harvest_log_anomalies_from_dirs suppresses self-recovered antigravity-cli-daemon start timeout
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "manage_agy.log").write_text(
+        "\n".join(
+            [
+                "Error: failed to start service: exit status 1 (output: Job for antigravity-cli-daemon.service failed because a timeout was exceeded.",
+                "See \"systemctl status --user antigravity-cli-daemon.service\" for details.)",
+                "[manage_agy] Remote-control daemon started.",
+                "Daemon status: active",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    anoms = harvest_log_anomalies_from_dirs([str(log_dir)], 24.0)
+    assert anoms.error_count == 0
+
+

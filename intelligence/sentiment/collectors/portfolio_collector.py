@@ -1127,6 +1127,74 @@ def load_symbol_best_recent_fills(
                         fills["last_buy"]["ts_ms"] = cyc_lb_ts
                     if fills.get("last_sell") is None and cyc_ls is not None:
                         fills["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
+    if isinstance(fills, dict) and isinstance(open_lots_raw := fills.get("open_lots"), list) and open_lots_raw:
+        newest_lot_ts = max(
+            [int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in open_lots_raw if isinstance(x, dict)],
+            default=0,
+        )
+        fresh_lots = [
+            lot
+            for lot in open_lots_raw[-4:]
+            if isinstance(lot, dict)
+            and safe_float(lot.get("entry_px"), 0.0) > 0
+            and (
+                newest_lot_ts <= 0
+                or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))
+                or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
+            )
+        ]
+        if fresh_lots:
+            held_cur_f = -1.0
+            if cachedb_dir and best_venue:
+                vb_p_f = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+                vb_d_f = _rj(vb_p_f) if os.path.exists(vb_p_f) else None
+                if isinstance(vb_d_f, dict):
+                    for cand_v in dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in scoped_variants if str(c).strip())]):
+                        if isinstance(p_d := vb_d_f.get(f"pos:{best_venue}:{cand_v}"), dict):
+                            fb_v = safe_nonneg_float(
+                                p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
+                                default=None,
+                            )
+                            lb_v = safe_pos_float(p_d.get("locked_base_qty") or p_d.get("locked"), default=0.0) or 0.0
+                            if fb_v is not None:
+                                held_cur_f = fb_v + lb_v
+                                break
+                    if held_cur_f < 0.0 and base_upper:
+                        if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
+                            held_cur_f = raw_b_v
+            fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+            if held_cur_f > 1e-8 and len(fresh_lots) < len(open_lots_raw):
+                unfiltered_q = safe_pos_float(fills.get("active_cycle_rem_qty"), 0.0) or sum(
+                    safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in open_lots_raw if isinstance(lt, dict)
+                )
+                if fresh_q >= held_cur_f * 0.98 and unfiltered_q > held_cur_f * 1.15:
+                    fresh_cost = sum(
+                        (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
+                        for lt in fresh_lots
+                    )
+                    if fresh_cost > 0.0:
+                        fresh_vwap = round(fresh_cost / fresh_q, 6)
+                        fills["active_avg_buy_px"] = fresh_vwap
+                        fills["active_cycle_rem_qty"] = round(fresh_q, 6)
+                        if (tac_cur := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None and abs(
+                            tac_cur - fresh_vwap
+                        ) <= max(1e-6, fresh_vwap * 1e-5):
+                            fills.pop("tactical_avg_buy_px", None)
+            if held_cur_f > 1e-8 and fresh_q > held_cur_f * 1.02:
+                clipped_rev: List[Dict[str, Any]] = []
+                rem_q = held_cur_f
+                for lt in reversed(fresh_lots):
+                    if rem_q <= 1e-8:
+                        continue
+                    lq = safe_pos_float(lt.get("qty"), 0.0) or 0.0
+                    if lq <= 0.0:
+                        continue
+                    take_q = round(min(lq, rem_q), 6)
+                    if take_q > 1e-8:
+                        clipped_rev.append({**lt, "qty": take_q})
+                        rem_q -= take_q
+                fresh_lots = list(reversed(clipped_rev))
+            fills["open_lots"] = fresh_lots
     return fills
 
 

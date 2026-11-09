@@ -1090,9 +1090,9 @@ def enrich_positions_with_orders_and_cycles(
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
             open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
-            newest_lot_ts = max(
-                [int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in [*open_lots, *( [lb] if isinstance(lb, dict) else [] )] if isinstance(x, dict)],
-                default=0,
+            newest_lot_ts = (
+                max([int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in open_lots if isinstance(x, dict)], default=0)
+                or (int(safe_pos_float(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0)
             )
             fresh_lots = [
                 lot for lot in open_lots[-4:]
@@ -1107,6 +1107,33 @@ def enrich_positions_with_orders_and_cycles(
             if not is_flat_after_exit and "open_lots" in pos:
                 if fresh_lots:
                     pos["open_lots"] = fresh_lots
+                    if held_cur > 1e-8 and len(fresh_lots) < len(open_lots):
+                        fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+                        unfiltered_q = safe_pos_float(ro.get("active_cycle_rem_qty"), 0.0) or sum(
+                            safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in open_lots if isinstance(lt, dict)
+                        )
+                        if fresh_q >= held_cur * 0.98 and unfiltered_q > held_cur * 1.15:
+                            fresh_cost = sum(
+                                (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
+                                for lt in fresh_lots
+                            )
+                            if fresh_cost > 0.0:
+                                fresh_vwap = round(fresh_cost / fresh_q, 6)
+                                ro["active_avg_buy_px"] = fresh_vwap
+                                ro["open_lots"] = fresh_lots
+                                ro["active_cycle_rem_qty"] = round(fresh_q, 6)
+                                set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
+                                if (tac_cur := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None and abs(
+                                    tac_cur - fresh_vwap
+                                ) <= max(1e-6, fresh_vwap * 1e-5):
+                                    ro.pop("tactical_avg_buy_px", None)
+                                    pos.pop("tactical_avg_buy_px", None)
+                                    pos.pop("pnl_vs_tactical_avg_pct", None)
+                                if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
+                                    sw_cur - fresh_vwap
+                                ) / max(fresh_vwap, 1e-9) < 0.002:
+                                    pos.pop("swing_subcycle_avg_px", None)
+                                    pos.pop("pnl_vs_swing_avg_pct", None)
                 else:
                     pos.pop("open_lots", None)
             low_buy_px = (
