@@ -590,6 +590,138 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
     assert "yahoo_chart" in network_calls
 
 
+def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts(temp_cache_dir: str):
+    """Verify 3-tier polymorphic collectors/evaluators across portfolio, TCA/risk, and macro telemetry and cache contract reuse."""
+    from cacheaccount import CacheAssetValueManager, CacheOrderManager
+    from cacheprice import Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CacheSparsePriceManager
+    from cachetrend import CacheLongTrendManager, CacheShortTrendManager
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        InitialPricesAndTrendsCollector,
+        MacroAndNewsSensorsCollector,
+        MacroBenchmarksSnapshotCollector,
+        MacroTelemetryCollectorBase,
+        MarketAndPortfolioSnapshotOrchestrator,
+        PortfolioAndVenueCyclesCollector,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        TelemetryCacheCollectorInterface,
+        TelemetryCollectorFactory,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        BotRuntimeStatesCollector,
+        KrakenXstocksCollector,
+        PortfolioCacheCollectorBase,
+        RecentOrdersAndPositionEnricherCollector,
+        SymbolBestRecentFillsCollector,
+        TradablePositionsAndOrdersCollector,
+        VenueCyclesCollector,
+        VenueTrailingMapsCollector,
+        _resolve_order_cache_files,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        AssetScopeFilterEvaluator,
+        CrossAssetRegimeEvaluator,
+        DeribitOptionsSurfaceEvaluator,
+        EquityMacroRegimeEvaluator,
+        FuturesPremarketLeadEvaluator,
+        InstitutionalPostureDivergenceEvaluator,
+        LiveVenueEquityReconciliationEvaluator,
+        MacroTelemetryEvaluatorBase,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        PortfolioEvaluatorBase,
+        PositionCostBasisEnrichmentEvaluator,
+        SymbolRecentFillsEvaluator,
+        VenueCycleReconciliationEvaluator,
+        VenueCycleStateEvaluator,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorInterface
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        CrossMarketContextEvaluator,
+        EnterprisePortfolioRiskEvaluator,
+        OpenLimitOrdersTcaEvaluator,
+        TcaRiskEvaluatorBase,
+        VenueFeeAndLimitsEvaluator,
+    )
 
+    # 1. Level-2 abstract base classes enforce non-instantiation and inherit Level-1 contracts
+    for l2_col_cls in (PortfolioCacheCollectorBase, MacroTelemetryCollectorBase):
+        assert issubclass(l2_col_cls, TelemetryCacheCollectorInterface)
+        with pytest.raises(TypeError):
+            l2_col_cls()
 
+    for l2_eval_cls in (PortfolioEvaluatorBase, TcaRiskEvaluatorBase, MacroTelemetryEvaluatorBase):
+        assert issubclass(l2_eval_cls, TelemetryEvaluatorInterface)
+        with pytest.raises(TypeError):
+            l2_eval_cls()
+
+    # 2. All Level-3 portfolio & macro collectors are registered in TelemetryCollectorFactory
+    expected_collectors = (
+        ("portfolio_trailing_maps", VenueTrailingMapsCollector, PortfolioCacheCollectorBase),
+        ("portfolio_venue_cycles", VenueCyclesCollector, PortfolioCacheCollectorBase),
+        ("portfolio_kraken_xstocks", KrakenXstocksCollector, PortfolioCacheCollectorBase),
+        ("portfolio_tradable_positions", TradablePositionsAndOrdersCollector, PortfolioCacheCollectorBase),
+        ("portfolio_symbol_recent_fills", SymbolBestRecentFillsCollector, PortfolioCacheCollectorBase),
+        ("portfolio_recent_orders", RecentOrdersAndPositionEnricherCollector, PortfolioCacheCollectorBase),
+        ("portfolio_bot_runtime_states", BotRuntimeStatesCollector, PortfolioCacheCollectorBase),
+        ("macro_benchmarks_snapshot", MacroBenchmarksSnapshotCollector, MacroTelemetryCollectorBase),
+        ("macro_and_news_sensors", MacroAndNewsSensorsCollector, MacroTelemetryCollectorBase),
+        ("macro_initial_prices_trends", InitialPricesAndTrendsCollector, MacroTelemetryCollectorBase),
+        ("macro_portfolio_venue_cycles", PortfolioAndVenueCyclesCollector, MacroTelemetryCollectorBase),
+        ("macro_market_portfolio_snapshot", MarketAndPortfolioSnapshotOrchestrator, MacroTelemetryCollectorBase),
+    )
+    for col_id, col_cls, base_cls in expected_collectors:
+        assert issubclass(col_cls, base_cls)
+        inst = TelemetryCollectorFactory.create(col_id)
+        assert isinstance(inst, col_cls)
+        assert TelemetryCollectorFactory.get_collector(col_cls) is inst
+
+    # 3. Cache hierarchy filename & schema contracts are reused
+    assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
+    assert CacheCurrentPriceManager.DEFAULT_FILENAME == "cache_current_price.json"
+    assert CacheShortTrendManager.DEFAULT_FILENAME == "cache_short_trend.json"
+    assert CacheShortTrendManager.LIVE_WINDOW_SUBDIR == "24trend"
+    assert CacheLongTrendManager.DEFAULT_FILENAME == "cache_long_trend.json"
+    assert CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME == "priceanalysis.json"
+    assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
+    assert Cache365PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_365_price_BTCUSDC.jsonl"
+    assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
+
+    av_rec = {
+        "t": 1700000000,
+        "i": {
+            "total_value_usdc": 12500.5,
+            "venues_usd": {"binance": 12500.5, "kraken": 3500.0},
+            "portfolio_total_usd": 16000.5,
+        },
+    }
+    av_summary = CacheAssetValueManager.extract_asset_value_summary(av_rec, now_ts=1700000300.0)
+    assert av_summary == {
+        "total_value_usdc": 12500.5,
+        "venues_value_usd": {"binance": 12500.5, "kraken": 3500.0},
+        "portfolio_total_usd": 16000.5,
+        "total_value_usdc_age_min": 5.0,
+    }
+
+    # 4. Level-3 evaluators inherit from Level-2 bases and evaluate statelessly
+    for eval_cls, l2_base in (
+        (VenueCycleStateEvaluator, PortfolioEvaluatorBase),
+        (SymbolRecentFillsEvaluator, PortfolioEvaluatorBase),
+        (VenueCycleReconciliationEvaluator, PortfolioEvaluatorBase),
+        (PositionCostBasisEnrichmentEvaluator, PortfolioEvaluatorBase),
+        (VenueFeeAndLimitsEvaluator, TcaRiskEvaluatorBase),
+        (OpenLimitOrdersTcaEvaluator, TcaRiskEvaluatorBase),
+        (EnterprisePortfolioRiskEvaluator, TcaRiskEvaluatorBase),
+        (CrossMarketContextEvaluator, TcaRiskEvaluatorBase),
+        (FuturesPremarketLeadEvaluator, MacroTelemetryEvaluatorBase),
+        (EquityMacroRegimeEvaluator, MacroTelemetryEvaluatorBase),
+        (CrossAssetRegimeEvaluator, MacroTelemetryEvaluatorBase),
+        (DeribitOptionsSurfaceEvaluator, MacroTelemetryEvaluatorBase),
+        (InstitutionalPostureDivergenceEvaluator, MacroTelemetryEvaluatorBase),
+        (AssetScopeFilterEvaluator, MacroTelemetryEvaluatorBase),
+        (LiveVenueEquityReconciliationEvaluator, MacroTelemetryEvaluatorBase),
+    ):
+        assert issubclass(eval_cls, l2_base)
+        ev = eval_cls()
+        assert isinstance(ev, TelemetryEvaluatorInterface)
 

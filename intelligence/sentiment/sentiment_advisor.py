@@ -165,22 +165,25 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             )
             btc_chg_24h_live: Optional[float] = None
             struct_lines: List[str] = []
+            import intelligence.sentiment.collectors.microstructure_collector as _mc
+            from intelligence.sentiment.collectors.microstructure_collector import (
+                compute_24h_price_metrics,
+                load_symbol_price_series,
+            )
+            from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
+
+            _mc._ensure_cacheprice_classes_bound()
             for ccy in get_deribit_options_currencies():
                 if not any(
                     os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
                     for fn in (
                         f"price_24h_{ccy}USDC.json",
                         f"price_24h_{ccy}USDT.json",
-                        f"cache_24_price_{ccy}USDC.json",
-                        f"cache_24_price_{ccy}USDT.json",
+                        _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDC"),
+                        _mc.Cache24PriceManager.disk_filename_for_symbol(f"{ccy}USDT"),
                     )
                 ):
                     continue
-                from intelligence.sentiment.collectors.microstructure_collector import (
-                    compute_24h_price_metrics,
-                    load_symbol_price_series,
-                )
-                from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
 
                 c_pts, _ = load_symbol_price_series(cache_dir, f"{ccy}USDC", include_7d=False)
                 c_m = compute_24h_price_metrics(c_pts) if c_pts else {}

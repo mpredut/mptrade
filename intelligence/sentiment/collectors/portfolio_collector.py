@@ -1,6 +1,7 @@
 """Portfolio positions, venue DCA cycles, trailing peaks, recent fills, and runtime states collector."""
 from __future__ import annotations
 
+from abc import ABC
 import glob as _glob
 import logging
 import os
@@ -28,7 +29,11 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_ts,
     safe_pos_float,
 )
+import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+    _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
     discover_reference_microstructure_symbols,
     enrich_24h_and_microstructure,
@@ -112,6 +117,17 @@ def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
 
 def _resolve_save_json_state() -> Any:
     return resolve_save_json_state(local_fn=save_json_state)
+
+def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
+    _ensure_cacheprice_classes_bound()
+    bn_file = getattr(_mc.CacheOrderManager, "DEFAULT_FILENAME", "cache_order.json")
+    return (
+        (bn_file, "binance"),
+        ("cache_trade_kraken.json", "kraken"),
+        ("cache_trade_hyperliquid.json", "hyperliquid"),
+        ("cache_trade_t212.json", "t212"),
+    )
+
 
 _ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
     ("cache_order.json", "binance"),
@@ -337,13 +353,12 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     return by_sym
 
 
-def harvest_venue_cycles(
+def _harvest_venue_cycles_impl(
     workspace_dir: str,
     prices_and_trends: Dict[str, Any],
     fallback_prices: Dict[str, float],
     read_json_fn: Any = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
     _rj = _resolve_read_json_cached(read_json_fn)
 
     def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
@@ -391,13 +406,12 @@ def harvest_venue_cycles(
     return kraken_cycles, hyperliquid_cycles, all_t212_cycles
 
 
-def harvest_kraken_xstocks(
+def _harvest_kraken_xstocks_impl(
     kraken_dir: str,
     prices_and_trends: Dict[str, Any],
     all_t212_cycles: Dict[str, Any],
     read_json_fn: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
     _rj = _resolve_read_json_cached(read_json_fn)
     cand_paths = [
         p for p in (os.path.join(kraken_dir, "xstock_state.json"), os.path.join(kraken_dir, ".xstock_state.json"))
@@ -453,10 +467,9 @@ def harvest_kraken_xstocks(
     return xst_summary
 
 
-def load_venue_trailing_maps(
+def _load_venue_trailing_maps_impl(
     cache_dir: str, workspace_dir: str, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
-    """Load trailing peak maps from cachedb/trailing_state.json and kraken/trailing_state.json."""
     _rj = _resolve_read_json_cached(read_json_fn)
     trailing_map: Dict[str, Dict[str, Any]] = {}
     trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
@@ -649,7 +662,7 @@ def _apply_open_orders_locked_balances(
                 updated_bals[pos_bkey] = {**pos_entry, "ts": prev_b_ts} if prev_b_ts is not None else dict(pos_entry)
 
 
-def harvest_tradable_positions_and_orders(
+def _harvest_tradable_positions_and_orders_impl(
     inst_map: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
     trailing_map: Dict[str, Dict[str, Any]],
@@ -661,7 +674,6 @@ def harvest_tradable_positions_and_orders(
     verified_open_venues: Optional[set[str]] = None,
     allow_empty_inst_recovery: bool = False,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
-    """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     from instrument_registry import casefold_get
 
     tradable_positions: List[Dict[str, Any]] = []
@@ -711,12 +723,22 @@ def harvest_tradable_positions_and_orders(
     pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]] = {}
 
     if isinstance(inst_map, dict) and inst_map:
+        merged_params_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for _inst_cand in inst_map.values():
+            _c_sym = str(getattr(_inst_cand, "symbol", "") or "").strip().upper()
+            _c_ven = normalize_venue_name(str(getattr(_inst_cand, "provider_name", "") or "").strip().lower())
+            if _c_sym and _c_ven and isinstance(_c_p := getattr(_inst_cand, "params", None), dict) and _c_p:
+                merged_params_by_vs.setdefault((_c_ven, _c_sym), {}).update(_c_p)
+        seen_vs: set[tuple[str, str]] = set()
         for inst in inst_map.values():
             sym = str(getattr(inst, "symbol", "") or "").strip().upper()
             venue = str(getattr(inst, "provider_name", "") or "").strip().lower()
             if not sym or not venue:
                 continue
             v_norm = normalize_venue_name(venue)
+            if (v_norm, sym) in seen_vs:
+                continue
+            seen_vs.add((v_norm, sym))
             res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
             base, quote = res_b or sym, res_q or "USD"
             if sym not in inst_by_sym or v_norm in ("binance", "kraken", "t212"):
@@ -768,7 +790,9 @@ def harvest_tradable_positions_and_orders(
                 updated_bals[f"cash:{v_norm}:{quote.upper()}"] = dict(cash_entry)
 
             pos_val_usd = round(base_free * px_f, 2) if base_free is not None and px_f > 0 else None
-            params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+            params = merged_params_by_vs.get((v_norm, sym)) or (
+                getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+            )
             sym_quotes = compatible_quote_suffixes(sym, quote)
             t_state = _first_variant_dict(
                 trailing_by_venue.get(v_norm, {}),
@@ -921,6 +945,26 @@ def harvest_tradable_positions_and_orders(
     if isinstance(verified_open_venues, set):
         verified_open_venues.update(live_open_ok_venues - failed_open_venues)
 
+    if len(open_orders_list) > 1:
+        deduped_open: List[Dict[str, Any]] = []
+        seen_open_keys: set[tuple[str, str, str]] = set()
+        for oo_item in open_orders_list:
+            if not isinstance(oo_item, dict):
+                deduped_open.append(oo_item)
+                continue
+            oo_oid = str(oo_item.get("order_id") or oo_item.get("orderId") or "").strip()
+            if oo_oid:
+                oo_k = (
+                    normalize_venue_name(oo_item.get("venue")),
+                    str(oo_item.get("symbol") or "").strip().upper(),
+                    oo_oid,
+                )
+                if oo_k in seen_open_keys:
+                    continue
+                seen_open_keys.add(oo_k)
+            deduped_open.append(oo_item)
+        open_orders_list = deduped_open
+
     _apply_open_orders_locked_balances(
         open_orders_list,
         tradable_positions,
@@ -975,13 +1019,12 @@ def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, An
     return merged
 
 
-def load_symbol_best_recent_fills(
+def _load_symbol_best_recent_fills_impl(
     cachedb_dir: str,
     symbol: str,
     quote_variants: Sequence[str],
     read_json_fn: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Load the most recent venue fills dict for `symbol` across order caches and execution_audit fallback."""
     from instrument_registry import casefold_get
 
     _rj = _resolve_read_json_cached(read_json_fn)
@@ -1010,7 +1053,7 @@ def load_symbol_best_recent_fills(
     )
     sym_quotes = compatible_quote_suffixes(sym_upper)
     base_upper = canonical_base_asset(sym_upper)
-    for ord_file, cache_venue in _ORDER_CACHE_FILES:
+    for ord_file, cache_venue in _resolve_order_cache_files():
         if (is_eq_sym and cache_venue != "t212") or (is_crypto_pair and cache_venue == "t212"):
             continue
         ord_data = _rj(os.path.join(cachedb_dir, ord_file))
@@ -1213,7 +1256,7 @@ def load_symbol_best_recent_fills(
     return fills
 
 
-def harvest_recent_orders_and_enrich_positions(
+def _harvest_recent_orders_and_enrich_positions_impl(
     cache_dir: str,
     inst_by_sym: Dict[str, Any],
     tradable_positions: List[Dict[str, Any]],
@@ -1227,7 +1270,6 @@ def harvest_recent_orders_and_enrich_positions(
     gateway_max_usd: float = 2000.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
     _rj = _resolve_read_json_cached(read_json_fn)
     if (known_ai_order_ids is None or ai_intents is None) and cache_dir:
         cached_intents = _load_cached_ai_intents_list(cache_dir, _rj)
@@ -1282,7 +1324,7 @@ def harvest_recent_orders_and_enrich_positions(
             allowed_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
 
     audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    for order_cache_name, cache_venue in _ORDER_CACHE_FILES:
+    for order_cache_name, cache_venue in _resolve_order_cache_files():
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             v_ai_intents = _venue_intents(cache_venue)
@@ -1420,13 +1462,12 @@ def harvest_recent_orders_and_enrich_positions(
     return recent_orders
 
 
-def harvest_bot_runtime_states(
+def _harvest_bot_runtime_states_impl(
     cache_dir: str,
     now_ts: Any = None,
     read_json_fn: Any = None,
     tradable_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
     if callable(now_ts) and read_json_fn is None:
         read_json_fn, now_ts = now_ts, None
     eff_now = resolve_now_ts(now_ts)
@@ -1530,7 +1571,360 @@ def harvest_bot_runtime_states(
     return out
 
 
+class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
+    """Abstract base contract (Level 2) for account/portfolio domain cache collectors.
+
+    Modeled on ``CacheAccountManagerBase(CacheManagerInterface, ABC)``: encapsulates
+    shared order/fill cache bindings (`CacheOrderManager`, venue trade caches, and
+    execution_audit fallback) and portfolio state readers.
+    """
+
+    cls_name = "PortfolioCacheCollectorBase"
+
+    def __init__(self) -> None:
+        if type(self) is PortfolioCacheCollectorBase:
+            raise TypeError("Cannot instantiate abstract class PortfolioCacheCollectorBase")
+        super().__init__()
+
+
+class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for Binance and Kraken trailing peak state maps."""
+
+    cls_name = "VenueTrailingMapsCollector"
+    COLLECTOR_ID = "portfolio_trailing_maps"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        workspace_dir: str = "",
+        read_json_fn: Any = None,
+        **kwargs: Any,
+    ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
+        return _load_venue_trailing_maps_impl(cachedb_dir, workspace_dir, read_json_fn=read_json_fn)
+
+
+class VenueCyclesCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for Kraken, Hyperliquid, and Trading212 DCA `.state_*.json` cycles."""
+
+    cls_name = "VenueCyclesCollector"
+    COLLECTOR_ID = "portfolio_venue_cycles"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        workspace_dir: str = "",
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        fallback_prices: Optional[Dict[str, float]] = None,
+        read_json_fn: Any = None,
+        **kwargs: Any,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        return _harvest_venue_cycles_impl(
+            workspace_dir or cachedb_dir,
+            prices_and_trends or {},
+            fallback_prices or {},
+            read_json_fn=read_json_fn,
+        )
+
+
+class KrakenXstocksCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for Kraken read-only xStocks holdings and T212 sibling linkage."""
+
+    cls_name = "KrakenXstocksCollector"
+    COLLECTOR_ID = "portfolio_kraken_xstocks"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        kraken_dir: str = "",
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        all_t212_cycles: Optional[Dict[str, Any]] = None,
+        read_json_fn: Any = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        return _harvest_kraken_xstocks_impl(
+            kraken_dir or cachedb_dir,
+            prices_and_trends or {},
+            all_t212_cycles or {},
+            read_json_fn=read_json_fn,
+        )
+
+
+class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for spot wallet balances, trailing peaks, and resting open orders."""
+
+    cls_name = "TradablePositionsAndOrdersCollector"
+    COLLECTOR_ID = "portfolio_tradable_positions"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        inst_map: Optional[Dict[str, Any]] = None,
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        trailing_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        trailing_by_venue: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+        known_ai_order_ids: Optional[set[str]] = None,
+        gateway_max_usd: float = 2000.0,
+        verified_open_venues: Optional[set[str]] = None,
+        allow_empty_inst_recovery: bool = False,
+        **kwargs: Any,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+        return _harvest_tradable_positions_and_orders_impl(
+            inst_map or {},
+            prices_and_trends if isinstance(prices_and_trends, dict) else {},
+            trailing_map or {},
+            trailing_by_venue or {},
+            known_ai_order_ids=known_ai_order_ids,
+            gateway_max_usd=gateway_max_usd,
+            cache_dir=cachedb_dir or None,
+            verified_open_venues=verified_open_venues,
+            allow_empty_inst_recovery=allow_empty_inst_recovery,
+        )
+
+
+class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for single-symbol recent fills across `CacheOrderManager` and venue trade caches."""
+
+    cls_name = "SymbolBestRecentFillsCollector"
+    COLLECTOR_ID = "portfolio_symbol_recent_fills"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str,
+        *,
+        quote_variants: Sequence[str] = (),
+        read_json_fn: Any = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        return _load_symbol_best_recent_fills_impl(cachedb_dir, symbol, quote_variants, read_json_fn=read_json_fn)
+
+
+class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for fleet-wide recent fills and position cost-basis reconciliation."""
+
+    cls_name = "RecentOrdersAndPositionEnricherCollector"
+    COLLECTOR_ID = "portfolio_recent_orders"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        inst_by_sym: Optional[Dict[str, Any]] = None,
+        tradable_positions: Optional[List[Dict[str, Any]]] = None,
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        kraken_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        hyperliquid_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        t212_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        read_json_fn: Any = None,
+        known_ai_order_ids: Optional[set[str]] = None,
+        gateway_max_usd: float = 2000.0,
+        ai_intents: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _harvest_recent_orders_and_enrich_positions_impl(
+            cachedb_dir,
+            inst_by_sym or {},
+            tradable_positions if isinstance(tradable_positions, list) else [],
+            prices_and_trends if isinstance(prices_and_trends, dict) else {},
+            kraken_cycles if isinstance(kraken_cycles, dict) else {},
+            hyperliquid_cycles if isinstance(hyperliquid_cycles, dict) else {},
+            t212_cycles if isinstance(t212_cycles, dict) else {},
+            read_json_fn,
+            known_ai_order_ids=known_ai_order_ids,
+            gateway_max_usd=gateway_max_usd,
+            ai_intents=ai_intents,
+        )
+
+
+class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
+    """Concrete collector (Level 3) for order_retry_queue, monitortrades, assetguardian, and smart_stop_loss states."""
+
+    cls_name = "BotRuntimeStatesCollector"
+    COLLECTOR_ID = "portfolio_bot_runtime_states"
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str = "*",
+        *,
+        now_ts: Any = None,
+        read_json_fn: Any = None,
+        tradable_positions: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _harvest_bot_runtime_states_impl(
+            cachedb_dir,
+            now_ts=now_ts,
+            read_json_fn=read_json_fn,
+            tradable_positions=tradable_positions,
+        )
+
+
+for _port_col_cls in (
+    VenueTrailingMapsCollector,
+    VenueCyclesCollector,
+    KrakenXstocksCollector,
+    TradablePositionsAndOrdersCollector,
+    SymbolBestRecentFillsCollector,
+    RecentOrdersAndPositionEnricherCollector,
+    BotRuntimeStatesCollector,
+):
+    TelemetryCollectorFactory.register(_port_col_cls.COLLECTOR_ID, _port_col_cls)
+
+
+def harvest_venue_cycles(
+    workspace_dir: str,
+    prices_and_trends: Dict[str, Any],
+    fallback_prices: Dict[str, float],
+    read_json_fn: Any = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
+    return TelemetryCollectorFactory.create("portfolio_venue_cycles").collect(
+        workspace_dir,
+        "*",
+        workspace_dir=workspace_dir,
+        prices_and_trends=prices_and_trends,
+        fallback_prices=fallback_prices,
+        read_json_fn=read_json_fn,
+    )
+
+
+def harvest_kraken_xstocks(
+    kraken_dir: str,
+    prices_and_trends: Dict[str, Any],
+    all_t212_cycles: Dict[str, Any],
+    read_json_fn: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
+    return TelemetryCollectorFactory.create("portfolio_kraken_xstocks").collect(
+        kraken_dir,
+        "*",
+        kraken_dir=kraken_dir,
+        prices_and_trends=prices_and_trends,
+        all_t212_cycles=all_t212_cycles,
+        read_json_fn=read_json_fn,
+    )
+
+
+def load_venue_trailing_maps(
+    cache_dir: str, workspace_dir: str, read_json_fn: Any = None,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
+    """Load trailing peak maps from cachedb/trailing_state.json and kraken/trailing_state.json."""
+    return TelemetryCollectorFactory.create("portfolio_trailing_maps").collect(
+        cache_dir,
+        "*",
+        workspace_dir=workspace_dir,
+        read_json_fn=read_json_fn,
+    )
+
+
+def harvest_tradable_positions_and_orders(
+    inst_map: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    trailing_map: Dict[str, Dict[str, Any]],
+    trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
+    gateway_max_usd: float = 2000.0,
+    cache_dir: Optional[str] = None,
+    verified_open_venues: Optional[set[str]] = None,
+    allow_empty_inst_recovery: bool = False,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
+    return TelemetryCollectorFactory.create("portfolio_tradable_positions").collect(
+        cache_dir or "",
+        "*",
+        inst_map=inst_map,
+        prices_and_trends=prices_and_trends,
+        trailing_map=trailing_map,
+        trailing_by_venue=trailing_by_venue,
+        known_ai_order_ids=known_ai_order_ids,
+        gateway_max_usd=gateway_max_usd,
+        verified_open_venues=verified_open_venues,
+        allow_empty_inst_recovery=allow_empty_inst_recovery,
+    )
+
+
+def load_symbol_best_recent_fills(
+    cachedb_dir: str,
+    symbol: str,
+    quote_variants: Sequence[str],
+    read_json_fn: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Load the most recent venue fills dict for `symbol` across order caches and execution_audit fallback."""
+    return TelemetryCollectorFactory.create("portfolio_symbol_recent_fills").collect(
+        cachedb_dir,
+        symbol,
+        quote_variants=quote_variants,
+        read_json_fn=read_json_fn,
+    )
+
+
+def harvest_recent_orders_and_enrich_positions(
+    cache_dir: str,
+    inst_by_sym: Dict[str, Any],
+    tradable_positions: List[Dict[str, Any]],
+    prices_and_trends: Dict[str, Any],
+    kraken_cycles: Dict[str, Dict[str, Any]],
+    hyperliquid_cycles: Dict[str, Dict[str, Any]],
+    t212_cycles: Dict[str, Dict[str, Any]],
+    read_json_fn: Any = None,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
+    gateway_max_usd: float = 2000.0,
+    ai_intents: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
+    return TelemetryCollectorFactory.create("portfolio_recent_orders").collect(
+        cache_dir,
+        "*",
+        inst_by_sym=inst_by_sym,
+        tradable_positions=tradable_positions,
+        prices_and_trends=prices_and_trends,
+        kraken_cycles=kraken_cycles,
+        hyperliquid_cycles=hyperliquid_cycles,
+        t212_cycles=t212_cycles,
+        read_json_fn=read_json_fn,
+        known_ai_order_ids=known_ai_order_ids,
+        gateway_max_usd=gateway_max_usd,
+        ai_intents=ai_intents,
+    )
+
+
+def harvest_bot_runtime_states(
+    cache_dir: str,
+    now_ts: Any = None,
+    read_json_fn: Any = None,
+    tradable_positions: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
+    return TelemetryCollectorFactory.create("portfolio_bot_runtime_states").collect(
+        cache_dir,
+        "*",
+        now_ts=now_ts,
+        read_json_fn=read_json_fn,
+        tradable_positions=tradable_positions,
+    )
+
+
 __all__ = [
+    "BotRuntimeStatesCollector",
+    "KrakenXstocksCollector",
+    "PortfolioCacheCollectorBase",
+    "RecentOrdersAndPositionEnricherCollector",
+    "SymbolBestRecentFillsCollector",
+    "TradablePositionsAndOrdersCollector",
+    "VenueCyclesCollector",
+    "VenueTrailingMapsCollector",
     "_VENUE_DEFAULT_FEE_SPECS",
     "_apply_24h_series_enrichment",
     "_compute_kalman_from_series",

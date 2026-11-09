@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import (
     extract_current_price_item,
     is_live_network_backfill_enabled,
+    load_dotenv,
     load_local_module,
     safe_pos_int,
 )
@@ -30,12 +31,23 @@ CacheCurrentPriceManager: Any = None
 CachePriceManagerBase: Any = None
 CacheSparsePriceManager: Any = None
 CacheShortTrendManager: Any = None
+CacheLongTrendManager: Any = None
+CacheOrderManager: Any = None
+CacheTradeManager: Any = None
+CacheAssetValueManager: Any = None
 
 
 def _ensure_cacheprice_classes_bound() -> None:
-    global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager, CacheShortTrendManager
-    if Cache24PriceManager is not None and CacheShortTrendManager is not None:
+    global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
+    global CacheShortTrendManager, CacheLongTrendManager, CacheOrderManager, CacheTradeManager, CacheAssetValueManager
+    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderManager is not None:
         return
+    load_dotenv()
+    from cacheaccount import (
+        CacheAssetValueManager as _CAV,
+        CacheOrderManager as _COrd,
+        CacheTradeManager as _CTrd,
+    )
     from cacheprice import (
         Cache24PriceManager as _C24,
         Cache365PriceManager as _C365,
@@ -43,7 +55,10 @@ def _ensure_cacheprice_classes_bound() -> None:
         CachePriceManagerBase as _CPBase,
         CacheSparsePriceManager as _CSparse,
     )
-    from cachetrend import CacheShortTrendManager as _CST
+    from cachetrend import (
+        CacheLongTrendManager as _CLT,
+        CacheShortTrendManager as _CST,
+    )
 
     Cache24PriceManager = _C24
     Cache365PriceManager = _C365
@@ -51,6 +66,10 @@ def _ensure_cacheprice_classes_bound() -> None:
     CachePriceManagerBase = _CPBase
     CacheSparsePriceManager = _CSparse
     CacheShortTrendManager = _CST
+    CacheLongTrendManager = _CLT
+    CacheOrderManager = _COrd
+    CacheTradeManager = _CTrd
+    CacheAssetValueManager = _CAV
     if "CompositeSymbolPriceSeriesLoader" in globals():
         CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
         CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
@@ -2102,9 +2121,26 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
 
 
 class TelemetryCollectorFactory:
-    """Singleton registry and factory for price-series and microstructure collectors (modeled on ``CacheFactory``)."""
+    """Singleton registry and factory for price-series, microstructure, portfolio, and macro collectors (modeled on ``CacheFactory``)."""
 
     _instances: Dict[str, TelemetryCacheCollectorInterface] = {}
+    _registry: Dict[str, type[TelemetryCacheCollectorInterface]] = {}
+
+    @classmethod
+    def register(
+        cls,
+        collector_id: str,
+        collector_cls: type[TelemetryCacheCollectorInterface],
+    ) -> None:
+        cls._registry[str(collector_id)] = collector_cls
+
+    @classmethod
+    def create(cls, collector_id: str) -> Any:
+        key = str(collector_id)
+        collector_cls = cls._registry.get(key)
+        if collector_cls is None:
+            raise KeyError(f"Unknown telemetry collector id: {key}")
+        return cls.get_collector(collector_cls)
 
     @classmethod
     def get_collector(cls, collector_cls: type[TelemetryCacheCollectorInterface]) -> Any:

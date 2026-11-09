@@ -1,6 +1,7 @@
 """Macro benchmarks, breaking news sensors, snapshot orchestrator, and pre-trade LLM telemetry collector."""
 from __future__ import annotations
 
+from abc import ABC
 from datetime import datetime, timezone
 import glob as _glob
 import logging
@@ -38,11 +39,15 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
     split_headlines_digest,
 )
+import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
     enrich_24h_and_microstructure,
     resolve_cached_btc_24h_change_pct,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
+    _load_cached_ai_intents_list,
     harvest_bot_runtime_states,
     harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
@@ -112,7 +117,7 @@ def _resolve_macro_ssot_attr(name: str, local_val: Any, default_val: Any) -> Any
     )
 
 
-def collect_macro_benchmarks_snapshot(
+def _collect_macro_benchmarks_snapshot_impl(
     cache_dir: str = "cachedb",
     *,
     now_ts: Optional[float] = None,
@@ -331,7 +336,7 @@ def _read_first_cached_dict(
     return read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn=eff_rj)
 
 
-def harvest_macro_and_news_sensors(
+def _harvest_macro_and_news_sensors_impl(
     cache_dir: str, now_ts: float, read_json_fn: Any = None, *, scope: str = "",
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
@@ -735,7 +740,7 @@ def harvest_macro_and_news_sensors(
     return macro_sensors, breaking_news
 
 
-def harvest_initial_prices_and_trends(
+def _harvest_initial_prices_and_trends_impl(
     cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
@@ -756,15 +761,20 @@ def harvest_initial_prices_and_trends(
     for sym, px in price_map.items():
         prices_and_trends.setdefault(sym, {"price": px, "trend": 0, "growth_coefficient": 0.0})
 
-    if os.path.isdir(live_24trend_dir := str(resolve_cachedb_filepath(os.path.join(cache_dir, "24trend")))):
-        for lt_path in sorted(_glob.glob(os.path.join(live_24trend_dir, "live_*.json"))):
-            sym = os.path.basename(lt_path)[len("live_") : -len(".json")].upper()
+    _mc._ensure_cacheprice_classes_bound()
+    st_cls = _mc.CacheShortTrendManager
+    lw_subdir = st_cls.LIVE_TREND_SUBDIR
+    lw_prefix = st_cls.LIVE_FILE_PREFIX
+    lw_ext = f".{st_cls.LIVE_FILE_EXT}"
+    if os.path.isdir(live_24trend_dir := str(resolve_cachedb_filepath(os.path.join(cache_dir, lw_subdir)))):
+        for lt_path in sorted(_glob.glob(os.path.join(live_24trend_dir, f"{lw_prefix}*{lw_ext}"))):
+            sym = os.path.basename(lt_path)[len(lw_prefix) : -len(lw_ext)].upper()
             if sym and isinstance(lt_win := _rj(lt_path), dict):
                 apply_live_24trend_windows(prices_and_trends.setdefault(sym, {}), lt_win, fallback_price=price_map.get(sym))
     return prices_and_trends
 
 
-def harvest_portfolio_and_venue_cycles(
+def _harvest_portfolio_and_venue_cycles_impl(
     cache_dir: str,
     workspace_dir: str,
     logs_dirs: List[str],
@@ -779,25 +789,11 @@ def harvest_portfolio_and_venue_cycles(
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
     _rj = read_json_fn or read_json_cached
-    last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
-    if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
-        av_inner = last_av["i"]
-        portfolio_summary["total_value_usdc"] = av_inner.get("total_value_usdc")
-        if isinstance(av_inner.get("venues_usd"), dict) and av_inner["venues_usd"]:
-            portfolio_summary["venues_value_usd"] = av_inner["venues_usd"]
-        if av_inner.get("portfolio_total_usd") is not None:
-            portfolio_summary["portfolio_total_usd"] = av_inner.get("portfolio_total_usd")
-        av_ts_s = normalize_epoch_sec(
-            extract_timestamp_s(last_av)
-            or extract_timestamp_s(av_inner)
-            or last_av.get("t")
-            or av_inner.get("t")
-            or av_inner.get("datetime_local"),
-            allow_iso=True,
-        )
-        eff_now_s = resolve_now_ts(now_ts)
-        if av_ts_s is not None and eff_now_s is not None:
-            portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
+    _mc._ensure_cacheprice_classes_bound()
+    av_cls = _mc.CacheAssetValueManager
+    last_av = read_last_jsonl_dict(os.path.join(cache_dir, av_cls.DEFAULT_FILENAME), tail_bytes=2048)
+    if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
+        portfolio_summary.update(av_summary)
 
     kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
         workspace_dir, prices_and_trends, build_cycle_fallback_prices(microstructure, watcher_price_items), _rj,
@@ -833,7 +829,7 @@ def harvest_portfolio_and_venue_cycles(
     return kraken_cycles, hyperliquid_cycles, t212_cycles
 
 
-def populate_market_and_portfolio_snapshot(
+def _populate_market_and_portfolio_snapshot_impl(
     snapshot: Any,
     *,
     cache_dir: str,
@@ -860,10 +856,11 @@ def populate_market_and_portfolio_snapshot(
         snapshot.market_breadth = None
         snapshot.sentiment_advisor = None
 
-    prices_data = _rj(os.path.join(cache_dir, "cache_current_price.json"))
-    trends_data = _rj(os.path.join(cache_dir, "cache_short_trend.json"))
-    long_trends_data = _rj(os.path.join(cache_dir, "cache_long_trend.json"))
-    priceanalysis_data = _rj(os.path.join(cache_dir, "priceanalysis.json"))
+    _mc._ensure_cacheprice_classes_bound()
+    prices_data = _rj(os.path.join(cache_dir, _mc.CacheCurrentPriceManager.DEFAULT_FILENAME))
+    trends_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.DEFAULT_FILENAME))
+    long_trends_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.DEFAULT_FILENAME))
+    priceanalysis_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME))
     t_trend_data = _rj(os.path.join(cache_dir, "cache_T_trend.json"))
     kalman_data = _rj(os.path.join(cache_dir, "cache_kalman_trend.json"))
     watcher_all_price_data = _rj(os.path.join(cache_dir, "cache_watcher_all_price.json"))
@@ -882,13 +879,7 @@ def populate_market_and_portfolio_snapshot(
         except Exception:
             intents_data = None
     if intents_data is None:
-        intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
-        raw_intents = _rj_any(intents_path)
-        if raw_intents is None and intents_path != os.path.join(cache_dir, "autonomous_trade_intents_state.json"):
-            raw_intents = _rj_any(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
-        if isinstance(raw_intents, dict):
-            raw_intents = raw_intents.get("intents")
-        intents_data = raw_intents if isinstance(raw_intents, list) else None
+        intents_data = _load_cached_ai_intents_list(cache_dir, _rj_any) or None
     known_ai_oids = collect_known_ai_order_ids(intents_data)
     gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 
@@ -1042,11 +1033,283 @@ def populate_market_and_portfolio_snapshot(
     return snapshot
 
 
+class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
+    """Abstract base contract (Level 2) for macro benchmarks, news sensors, and unified snapshot orchestrators."""
+
+    cls_name = "MacroTelemetryCollectorBase"
+
+    def __init__(self) -> None:
+        if type(self) is MacroTelemetryCollectorBase:
+            raise TypeError("Cannot instantiate abstract class MacroTelemetryCollectorBase")
+        super().__init__()
+
+
+class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) fetching SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y/IBIT/Deribit DVOL benchmarks."""
+
+    cls_name = "MacroBenchmarksSnapshotCollector"
+    COLLECTOR_ID = "macro_benchmarks_snapshot"
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        now_ts: Optional[float] = None,
+        timeout_sec: float = 3.5,
+        persist: bool = True,
+        fetch_fn: Optional[Callable[..., Any]] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        return _collect_macro_benchmarks_snapshot_impl(
+            cachedb_dir,
+            now_ts=now_ts,
+            timeout_sec=timeout_sec,
+            persist=persist,
+            fetch_fn=fetch_fn,
+        )
+
+
+class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) harvesting Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, and Breaking News."""
+
+    cls_name = "MacroAndNewsSensorsCollector"
+    COLLECTOR_ID = "macro_and_news_sensors"
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        now_ts: float = 0.0,
+        read_json_fn: Any = None,
+        scope: str = "",
+        **kwargs: Any,
+    ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
+        return _harvest_macro_and_news_sensors_impl(
+            cachedb_dir,
+            now_ts,
+            read_json_fn,
+            scope=scope,
+        )
+
+
+class InitialPricesAndTrendsCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) building initial prices_and_trends from CacheCurrentPriceManager & CacheShortTrendManager."""
+
+    cls_name = "InitialPricesAndTrendsCollector"
+    COLLECTOR_ID = "macro_initial_prices_trends"
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        prices_data: Any = None,
+        trends_data: Any = None,
+        read_json_fn: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Dict[str, Any]]:
+        return _harvest_initial_prices_and_trends_impl(
+            cachedb_dir,
+            prices_data,
+            trends_data,
+            read_json_fn,
+        )
+
+
+class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) harvesting CacheAssetValueManager summary, venue cycles, Kraken xStocks, and cross-market context."""
+
+    cls_name = "PortfolioAndVenueCyclesCollector"
+    COLLECTOR_ID = "macro_portfolio_venue_cycles"
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        workspace_dir: str = "",
+        logs_dirs: Optional[List[str]] = None,
+        portfolio_summary: Optional[Dict[str, Any]] = None,
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        microstructure: Optional[Dict[str, Any]] = None,
+        watcher_price_items: Any = None,
+        inst_by_sym: Optional[Dict[str, Any]] = None,
+        read_json_fn: Any = None,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        return _harvest_portfolio_and_venue_cycles_impl(
+            cachedb_dir,
+            workspace_dir,
+            list(logs_dirs or ()),
+            portfolio_summary if isinstance(portfolio_summary, dict) else {},
+            prices_and_trends if isinstance(prices_and_trends, dict) else {},
+            microstructure if isinstance(microstructure, dict) else {},
+            watcher_price_items,
+            inst_by_sym if isinstance(inst_by_sym, dict) else {},
+            read_json_fn,
+            now_ts=now_ts,
+        )
+
+
+class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
+    """Concrete collector (Level 3) orchestrating full market, macro, microstructure, and portfolio telemetry into TelemetrySensorSnapshot."""
+
+    cls_name = "MarketAndPortfolioSnapshotOrchestrator"
+    COLLECTOR_ID = "macro_market_portfolio_snapshot"
+
+    def collect(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        snapshot: Any = None,
+        workspace_dir: str = "",
+        logs_dirs: Optional[List[str]] = None,
+        intent_gateway: Any = None,
+        scope: str = "crypto",
+        now_ts: float = 0.0,
+        read_json_fn: Any = None,
+        log: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Any:
+        return _populate_market_and_portfolio_snapshot_impl(
+            snapshot,
+            cache_dir=cachedb_dir,
+            workspace_dir=workspace_dir,
+            logs_dirs=list(logs_dirs or ()),
+            intent_gateway=intent_gateway,
+            scope=scope,
+            now_ts=now_ts,
+            read_json_fn=read_json_fn,
+            log=log,
+        )
+
+
+for _macro_collector_cls in (
+    MacroBenchmarksSnapshotCollector,
+    MacroAndNewsSensorsCollector,
+    InitialPricesAndTrendsCollector,
+    PortfolioAndVenueCyclesCollector,
+    MarketAndPortfolioSnapshotOrchestrator,
+):
+    TelemetryCollectorFactory.register(_macro_collector_cls.COLLECTOR_ID, _macro_collector_cls)
+
+
+def collect_macro_benchmarks_snapshot(
+    cache_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+    timeout_sec: float = 3.5,
+    persist: bool = True,
+    fetch_fn: Optional[Callable[..., Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
+    return TelemetryCollectorFactory.create("macro_benchmarks_snapshot").collect(
+        cache_dir,
+        "*",
+        now_ts=now_ts,
+        timeout_sec=timeout_sec,
+        persist=persist,
+        fetch_fn=fetch_fn,
+    )
+
+
+def harvest_macro_and_news_sensors(
+    cache_dir: str, now_ts: float, read_json_fn: Any = None, *, scope: str = "",
+) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
+    """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
+    return TelemetryCollectorFactory.create("macro_and_news_sensors").collect(
+        cache_dir,
+        "*",
+        now_ts=now_ts,
+        read_json_fn=read_json_fn,
+        scope=scope,
+    )
+
+
+def harvest_initial_prices_and_trends(
+    cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
+    return TelemetryCollectorFactory.create("macro_initial_prices_trends").collect(
+        cache_dir,
+        "*",
+        prices_data=prices_data,
+        trends_data=trends_data,
+        read_json_fn=read_json_fn,
+    )
+
+
+def harvest_portfolio_and_venue_cycles(
+    cache_dir: str,
+    workspace_dir: str,
+    logs_dirs: List[str],
+    portfolio_summary: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    watcher_price_items: Any,
+    inst_by_sym: Dict[str, Any],
+    read_json_fn: Any = None,
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
+    return TelemetryCollectorFactory.create("macro_portfolio_venue_cycles").collect(
+        cache_dir,
+        "*",
+        workspace_dir=workspace_dir,
+        logs_dirs=logs_dirs,
+        portfolio_summary=portfolio_summary,
+        prices_and_trends=prices_and_trends,
+        microstructure=microstructure,
+        watcher_price_items=watcher_price_items,
+        inst_by_sym=inst_by_sym,
+        read_json_fn=read_json_fn,
+        now_ts=now_ts,
+    )
+
+
+def populate_market_and_portfolio_snapshot(
+    snapshot: Any,
+    *,
+    cache_dir: str,
+    workspace_dir: str,
+    logs_dirs: List[str],
+    intent_gateway: Any,
+    scope: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+    log: Optional[Any] = None,
+) -> Any:
+    """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
+    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot").collect(
+        cache_dir,
+        "*",
+        snapshot=snapshot,
+        workspace_dir=workspace_dir,
+        logs_dirs=logs_dirs,
+        intent_gateway=intent_gateway,
+        scope=scope,
+        now_ts=now_ts,
+        read_json_fn=read_json_fn,
+        log=log,
+    )
+
+
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
 
 __all__ = [
+    "InitialPricesAndTrendsCollector",
     "MACRO_BENCHMARK_SPECS",
+    "MacroAndNewsSensorsCollector",
+    "MacroBenchmarksSnapshotCollector",
+    "MacroTelemetryCollectorBase",
+    "MarketAndPortfolioSnapshotOrchestrator",
+    "PortfolioAndVenueCyclesCollector",
     "_MACRO_EXTRA_TELEMETRY_KEYS",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",

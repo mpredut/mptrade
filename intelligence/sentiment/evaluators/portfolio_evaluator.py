@@ -1,6 +1,7 @@
 """Stateless order-lot accounting (FIFO/LIFO), venue DCA cycle state parsing, and position cost-basis reconciliation evaluators."""
 from __future__ import annotations
 
+from abc import ABC
 import os
 import time as _time
 from typing import Any, Dict, List, Optional
@@ -17,7 +18,12 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from intelligence.sentiment.evaluators.price_series_evaluator import _prices_diverged, pct_delta, round_opt_px
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    TelemetryEvaluatorInterface,
+    _prices_diverged,
+    pct_delta,
+    round_opt_px,
+)
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     _VENUE_DEFAULT_FEE_SPECS,
     build_cross_market_context,
@@ -60,7 +66,7 @@ def set_pos_anchor(
         pos[pct_key] = pct_delta(cur_px, a_f)
 
 
-def parse_venue_cycle_state(
+def _parse_venue_cycle_state_impl(
     st_data: Dict[str, Any],
     symbol: str,
     prices_and_trends: Dict[str, Any],
@@ -157,7 +163,7 @@ def parse_venue_cycle_state(
     return cyc_entry
 
 
-def extract_symbol_recent_fills(
+def _extract_symbol_recent_fills_impl(
     orders_list: list,
     *,
     known_ai_order_ids: Optional[set[str]] = None,
@@ -669,7 +675,7 @@ def _populate_cycle_fallback_recent_order(
     return ro
 
 
-def reconcile_venue_cycles_with_recent_orders(
+def _reconcile_venue_cycles_with_recent_orders_impl(
     kraken_cycles: Dict[str, Dict[str, Any]],
     hyperliquid_cycles: Dict[str, Dict[str, Any]],
     t212_cycles: Dict[str, Dict[str, Any]],
@@ -986,17 +992,20 @@ def _resolve_cycle_high_since(
     best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
     now_ms = int(_time.time() * 1000)
     if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
+        import intelligence.sentiment.collectors.microstructure_collector as _mc
+
+        _mc._ensure_cacheprice_classes_bound()
         for cand in dict.fromkeys(cands):
-            for pfx in ("cache_365_price_", "cache_sparse_price_"):
-                arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{pfx}{cand}.jsonl")))
+            for mgr_cls in (_mc.Cache365PriceManager, _mc.CacheSparsePriceManager):
+                arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
                 if not os.path.exists(arch_path):
                     continue
                 try:
                     for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
-                        item = rec.get("i") if isinstance(rec, dict) else (rec if isinstance(rec, (list, tuple)) else None)
-                        if isinstance(item, (list, tuple)) and len(item) >= 2:
-                            t_f = safe_pos_float(item[0], default=0.0) or 0.0
-                            p_f = safe_pos_float(item[1], default=0.0) or 0.0
+                        pt = mgr_cls.extract_jsonl_series_point(rec)
+                        if pt is not None and len(pt) >= 2:
+                            t_f = safe_pos_float(pt[0], default=0.0) or 0.0
+                            p_f = safe_pos_float(pt[1], default=0.0) or 0.0
                             t_ms = int(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
                             if t_ms >= oldest_ts_ms and p_f > best_high:
                                 best_high = p_f
@@ -1007,7 +1016,7 @@ def _resolve_cycle_high_since(
     return best_high
 
 
-def enrich_positions_with_orders_and_cycles(
+def _enrich_positions_with_orders_and_cycles_impl(
     tradable_positions: List[Dict[str, Any]],
     prices_and_trends: Dict[str, Any],
     inst_by_sym: Dict[str, Any],
@@ -1428,7 +1437,228 @@ def enrich_positions_with_orders_and_cycles(
                     cyc["dd_from_peak_pct"] = pct_delta(c_px, eff_c_pk)
 
 
+class PortfolioEvaluatorBase(TelemetryEvaluatorInterface, ABC):
+    """Abstract base contract (Level 2) for stateless portfolio, order-lot, and venue cycle evaluators."""
+
+    cls_name = "PortfolioEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is PortfolioEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class PortfolioEvaluatorBase")
+        super().__init__()
+
+
+class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
+    """Concrete evaluator (Level 3) normalizing venue `.state_*.json` DCA cycle records."""
+
+    cls_name = "VenueCycleStateEvaluator"
+
+    def evaluate(
+        self,
+        st_data: Dict[str, Any],
+        symbol: str = "",
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        *,
+        avg_decimals: int = 6,
+        fallback_prices: Optional[Dict[str, float]] = None,
+        include_meta: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _parse_venue_cycle_state_impl(
+            st_data,
+            symbol,
+            prices_and_trends or {},
+            avg_decimals=avg_decimals,
+            fallback_prices=fallback_prices,
+            include_meta=include_meta,
+        )
+
+
+class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
+    """Concrete evaluator (Level 3) computing FIFO/LIFO lot accounting and recent fill summaries."""
+
+    cls_name = "SymbolRecentFillsEvaluator"
+
+    def evaluate(
+        self,
+        orders_list: list,
+        *,
+        known_ai_order_ids: Optional[set[str]] = None,
+        audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
+        ai_intents: Optional[List[Dict[str, Any]]] = None,
+        symbol: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        return _extract_symbol_recent_fills_impl(
+            orders_list,
+            known_ai_order_ids=known_ai_order_ids,
+            audit_origin_map=audit_origin_map,
+            ai_intents=ai_intents,
+            symbol=symbol,
+        )
+
+
+class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
+    """Concrete evaluator (Level 3) reconciling venue DCA cycles against recent fills and live wallet balances."""
+
+    cls_name = "VenueCycleReconciliationEvaluator"
+
+    def evaluate(
+        self,
+        kraken_cycles: Dict[str, Dict[str, Any]],
+        hyperliquid_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        t212_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        venue_recent_orders: Optional[Dict[str, Dict[str, Any]]] = None,
+        live_held_by_venue_sym: Optional[Dict[tuple[str, str], float]] = None,
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[tuple[str, str], int]:
+        return _reconcile_venue_cycles_with_recent_orders_impl(
+            kraken_cycles,
+            hyperliquid_cycles or {},
+            t212_cycles or {},
+            venue_recent_orders or {},
+            live_held_by_venue_sym or {},
+            prices_and_trends or {},
+        )
+
+
+class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
+    """Concrete evaluator (Level 3) enriching tradable positions and venue cycles with cost basis, LIFO PnL, and trailing peaks."""
+
+    cls_name = "PositionCostBasisEnrichmentEvaluator"
+
+    def evaluate(
+        self,
+        tradable_positions: List[Dict[str, Any]],
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        inst_by_sym: Optional[Dict[str, Any]] = None,
+        venue_recent_orders: Optional[Dict[str, Dict[str, Any]]] = None,
+        recent_orders: Optional[Dict[str, Any]] = None,
+        kraken_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        hyperliquid_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        t212_cycles: Optional[Dict[str, Dict[str, Any]]] = None,
+        cyc_sell_ts_map: Optional[Dict[tuple[str, str], int]] = None,
+        *,
+        gateway_max_usd: float = 2000.0,
+        cache_dir: str = "",
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        _enrich_positions_with_orders_and_cycles_impl(
+            tradable_positions,
+            prices_and_trends or {},
+            inst_by_sym or {},
+            venue_recent_orders if isinstance(venue_recent_orders, dict) else {},
+            recent_orders if isinstance(recent_orders, dict) else {},
+            kraken_cycles if isinstance(kraken_cycles, dict) else {},
+            hyperliquid_cycles if isinstance(hyperliquid_cycles, dict) else {},
+            t212_cycles if isinstance(t212_cycles, dict) else {},
+            cyc_sell_ts_map if isinstance(cyc_sell_ts_map, dict) else {},
+            gateway_max_usd=gateway_max_usd,
+            cache_dir=cache_dir,
+        )
+        return tradable_positions
+
+
+_VENUE_CYCLE_STATE_EVALUATOR = VenueCycleStateEvaluator()
+_SYMBOL_RECENT_FILLS_EVALUATOR = SymbolRecentFillsEvaluator()
+_VENUE_CYCLE_RECONCILIATION_EVALUATOR = VenueCycleReconciliationEvaluator()
+_POSITION_COST_BASIS_ENRICHMENT_EVALUATOR = PositionCostBasisEnrichmentEvaluator()
+
+
+def parse_venue_cycle_state(
+    st_data: Dict[str, Any],
+    symbol: str,
+    prices_and_trends: Dict[str, Any],
+    *,
+    avg_decimals: int = 6,
+    fallback_prices: Optional[Dict[str, float]] = None,
+    include_meta: bool = False,
+) -> Dict[str, Any]:
+    """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
+    return _VENUE_CYCLE_STATE_EVALUATOR.evaluate(
+        st_data,
+        symbol,
+        prices_and_trends,
+        avg_decimals=avg_decimals,
+        fallback_prices=fallback_prices,
+        include_meta=include_meta,
+    )
+
+
+def extract_symbol_recent_fills(
+    orders_list: list,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
+    audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
+    ai_intents: Optional[List[Dict[str, Any]]] = None,
+    symbol: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
+    return _SYMBOL_RECENT_FILLS_EVALUATOR.evaluate(
+        orders_list,
+        known_ai_order_ids=known_ai_order_ids,
+        audit_origin_map=audit_origin_map,
+        ai_intents=ai_intents,
+        symbol=symbol,
+    )
+
+
+def reconcile_venue_cycles_with_recent_orders(
+    kraken_cycles: Dict[str, Dict[str, Any]],
+    hyperliquid_cycles: Dict[str, Dict[str, Any]],
+    t212_cycles: Dict[str, Dict[str, Any]],
+    venue_recent_orders: Dict[str, Dict[str, Any]],
+    live_held_by_venue_sym: Dict[tuple[str, str], float],
+    prices_and_trends: Dict[str, Any],
+) -> Dict[tuple[str, str], int]:
+    """Reconcile `.state_*.json` DCA cycles against recent fills and live wallet balances; return `(venue, sym) -> sell_ts_ms`."""
+    return _VENUE_CYCLE_RECONCILIATION_EVALUATOR.evaluate(
+        kraken_cycles,
+        hyperliquid_cycles,
+        t212_cycles,
+        venue_recent_orders,
+        live_held_by_venue_sym,
+        prices_and_trends,
+    )
+
+
+def enrich_positions_with_orders_and_cycles(
+    tradable_positions: List[Dict[str, Any]],
+    prices_and_trends: Dict[str, Any],
+    inst_by_sym: Dict[str, Any],
+    venue_recent_orders: Dict[str, Dict[str, Any]],
+    recent_orders: Dict[str, Any],
+    kraken_cycles: Dict[str, Dict[str, Any]],
+    hyperliquid_cycles: Dict[str, Dict[str, Any]],
+    t212_cycles: Dict[str, Dict[str, Any]],
+    cyc_sell_ts_map: Dict[tuple[str, str], int],
+    *,
+    gateway_max_usd: float = 2000.0,
+    cache_dir: str = "",
+) -> None:
+    """Enrich `tradable_positions` and venue cycles in-place with cost-basis anchors, LIFO PnL, trailing peaks, and venue fee/limits."""
+    _POSITION_COST_BASIS_ENRICHMENT_EVALUATOR.evaluate(
+        tradable_positions,
+        prices_and_trends,
+        inst_by_sym,
+        venue_recent_orders,
+        recent_orders,
+        kraken_cycles,
+        hyperliquid_cycles,
+        t212_cycles,
+        cyc_sell_ts_map,
+        gateway_max_usd=gateway_max_usd,
+        cache_dir=cache_dir,
+    )
+
+
 __all__ = [
+    "PortfolioEvaluatorBase",
+    "PositionCostBasisEnrichmentEvaluator",
+    "SymbolRecentFillsEvaluator",
+    "VenueCycleReconciliationEvaluator",
+    "VenueCycleStateEvaluator",
     "_VENUE_DEFAULT_FEE_SPECS",
     "_populate_cycle_fallback_recent_order",
     "_sync_cycle_wallet_qty_and_avg",

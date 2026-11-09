@@ -1,6 +1,7 @@
 """Limit-order TCA, venue fee/limit resolution, enterprise portfolio risk engine, and cross-market context evaluators."""
 from __future__ import annotations
 
+from abc import ABC
 import math
 import sys as _sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
-from intelligence.sentiment.evaluators.price_series_evaluator import pct_delta
+from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorInterface, pct_delta
 from instrument_registry import casefold_get
 from providers.quantity import venue_fee_cap_quantity
 
@@ -70,7 +71,7 @@ def resolve_symbol_price(
     return 0.0
 
 
-def resolve_venue_fee_and_limits(
+def _resolve_venue_fee_and_limits_impl(
     venue: str,
     symbol: str,
     inst: Any = None,
@@ -216,7 +217,7 @@ def resolve_venue_fee_and_limits(
     return out
 
 
-def enrich_open_limit_orders_tca(
+def _enrich_open_limit_orders_tca_impl(
     open_orders: List[Dict[str, Any]],
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
@@ -367,7 +368,7 @@ def enrich_open_limit_orders_tca(
     return open_orders
 
 
-def compute_enterprise_portfolio_risk_metrics(
+def _compute_enterprise_portfolio_risk_metrics_impl(
     portfolio_summary: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
@@ -546,7 +547,7 @@ def compute_enterprise_portfolio_risk_metrics(
     return out_risk
 
 
-def build_cross_market_context(
+def _build_cross_market_context_impl(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
     all_t212_cycles: Optional[Dict[str, Any]] = None,
@@ -732,7 +733,191 @@ def build_cross_market_context(
     return ctx
 
 
+class TcaRiskEvaluatorBase(TelemetryEvaluatorInterface, ABC):
+    """Abstract base contract (Level 2) for stateless limit-order TCA, fee/limit resolution, and enterprise risk evaluators."""
+
+    cls_name = "TcaRiskEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is TcaRiskEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class TcaRiskEvaluatorBase")
+        super().__init__()
+
+
+class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
+    """Concrete evaluator (Level 3) resolving venue fee tiers, maker/taker bps, and effective order size limits."""
+
+    cls_name = "VenueFeeAndLimitsEvaluator"
+
+    def evaluate(
+        self,
+        venue: str,
+        symbol: str = "",
+        inst: Any = None,
+        *,
+        price: float = 0.0,
+        free_quote: Optional[float] = None,
+        free_base: Optional[float] = None,
+        locked_quote_usd: Optional[float] = None,
+        locked_base_qty: Optional[float] = None,
+        spread_bps: Optional[float] = None,
+        gateway_max_usd: float = 2000.0,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _resolve_venue_fee_and_limits_impl(
+            venue,
+            symbol,
+            inst,
+            price=price,
+            free_quote=free_quote,
+            free_base=free_base,
+            locked_quote_usd=locked_quote_usd,
+            locked_base_qty=locked_base_qty,
+            spread_bps=spread_bps,
+            gateway_max_usd=gateway_max_usd,
+        )
+
+
+class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
+    """Concrete evaluator (Level 3) enriching open limit orders with wall queue position, front-run price, and 1h fill probability."""
+
+    cls_name = "OpenLimitOrdersTcaEvaluator"
+
+    def evaluate(
+        self,
+        open_orders: List[Dict[str, Any]],
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        microstructure: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        return _enrich_open_limit_orders_tca_impl(
+            open_orders,
+            prices_and_trends or {},
+            microstructure or {},
+        )
+
+
+class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
+    """Concrete evaluator (Level 3) computing Unified NAV, BTC-Beta, 24h Correlation, 95% VaR, and subcycle LIFO PnL."""
+
+    cls_name = "EnterprisePortfolioRiskEvaluator"
+
+    def evaluate(
+        self,
+        portfolio_summary: Dict[str, Any],
+        prices_and_trends: Optional[Dict[str, Any]] = None,
+        microstructure: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _compute_enterprise_portfolio_risk_metrics_impl(
+            portfolio_summary,
+            prices_and_trends or {},
+            microstructure or {},
+        )
+
+
+class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
+    """Concrete evaluator (Level 3) building raw, objective cross-market bellwether telemetry (Crypto <-> US Equities)."""
+
+    cls_name = "CrossMarketContextEvaluator"
+
+    def evaluate(
+        self,
+        prices_and_trends: Dict[str, Any],
+        microstructure: Optional[Dict[str, Any]] = None,
+        all_t212_cycles: Optional[Dict[str, Any]] = None,
+        macro_benchmarks: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _build_cross_market_context_impl(
+            prices_and_trends,
+            microstructure or {},
+            all_t212_cycles=all_t212_cycles,
+            macro_benchmarks=macro_benchmarks,
+        )
+
+
+_VENUE_FEE_AND_LIMITS_EVALUATOR = VenueFeeAndLimitsEvaluator()
+_OPEN_LIMIT_ORDERS_TCA_EVALUATOR = OpenLimitOrdersTcaEvaluator()
+_ENTERPRISE_PORTFOLIO_RISK_EVALUATOR = EnterprisePortfolioRiskEvaluator()
+_CROSS_MARKET_CONTEXT_EVALUATOR = CrossMarketContextEvaluator()
+
+
+def resolve_venue_fee_and_limits(
+    venue: str,
+    symbol: str,
+    inst: Any = None,
+    *,
+    price: float = 0.0,
+    free_quote: Optional[float] = None,
+    free_base: Optional[float] = None,
+    locked_quote_usd: Optional[float] = None,
+    locked_base_qty: Optional[float] = None,
+    spread_bps: Optional[float] = None,
+    gateway_max_usd: float = 2000.0,
+) -> Dict[str, Any]:
+    """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
+    return _VENUE_FEE_AND_LIMITS_EVALUATOR.evaluate(
+        venue,
+        symbol,
+        inst,
+        price=price,
+        free_quote=free_quote,
+        free_base=free_base,
+        locked_quote_usd=locked_quote_usd,
+        locked_base_qty=locked_base_qty,
+        spread_bps=spread_bps,
+        gateway_max_usd=gateway_max_usd,
+    )
+
+
+def enrich_open_limit_orders_tca(
+    open_orders: List[Dict[str, Any]],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Enrich resting open limit orders with Orderbook Wall Queue Position, Front-Run Price, and 1h Fill Probability (Layer II.3)."""
+    return _OPEN_LIMIT_ORDERS_TCA_EVALUATOR.evaluate(
+        open_orders,
+        prices_and_trends,
+        microstructure,
+    )
+
+
+def compute_enterprise_portfolio_risk_metrics(
+    portfolio_summary: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute Global Enterprise Portfolio Risk Engine metrics (Unified NAV, Cash %, BTC-Beta, 24h Correlation, 95% VaR, LIFO Alpha)."""
+    return _ENTERPRISE_PORTFOLIO_RISK_EVALUATOR.evaluate(
+        portfolio_summary,
+        prices_and_trends,
+        microstructure,
+    )
+
+
+def build_cross_market_context(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    all_t212_cycles: Optional[Dict[str, Any]] = None,
+    macro_benchmarks: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
+    return _CROSS_MARKET_CONTEXT_EVALUATOR.evaluate(
+        prices_and_trends,
+        microstructure,
+        all_t212_cycles=all_t212_cycles,
+        macro_benchmarks=macro_benchmarks,
+    )
+
+
 __all__ = [
+    "CrossMarketContextEvaluator",
+    "EnterprisePortfolioRiskEvaluator",
+    "OpenLimitOrdersTcaEvaluator",
+    "TcaRiskEvaluatorBase",
+    "VenueFeeAndLimitsEvaluator",
     "_VENUE_DEFAULT_FEE_SPECS",
     "build_cross_market_context",
     "compute_enterprise_portfolio_risk_metrics",

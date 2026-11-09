@@ -1,6 +1,7 @@
 """Macro benchmark options surface, summary formatting, asset scope filtering, and live flow divergence evaluators."""
 from __future__ import annotations
 
+from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -21,6 +22,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorInterface
 
 
 MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
@@ -43,7 +45,7 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
 })
 
 
-def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
+def _compute_futures_premarket_lead_impl(data: Any) -> Dict[str, Any]:
     """Compute pre-market / extended-hours US index futures lead (NQ=F vs QQQ, ES=F vs SPY)."""
     if not isinstance(data, dict):
         return {}
@@ -91,7 +93,7 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
     return out
 
 
-def compute_equity_macro_regime(data: Any) -> str:
+def _compute_equity_macro_regime_impl(data: Any) -> str:
     """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
     if not isinstance(data, dict):
         return "NEUTRAL"
@@ -139,7 +141,7 @@ def compute_equity_macro_regime(data: Any) -> str:
     return "NEUTRAL"
 
 
-def compute_cross_asset_regime(
+def _compute_cross_asset_regime_impl(
     data: Any,
     *,
     btc_chg_24h_pct: Optional[float] = None,
@@ -224,7 +226,7 @@ def compute_cross_asset_regime(
     return "NEUTRAL"
 
 
-def compute_deribit_options_surface(
+def _compute_deribit_options_surface_impl(
     books: Any,
     *,
     currency: str = "BTC",
@@ -375,7 +377,7 @@ def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -
     return regime
 
 
-def apply_asset_scope_filter(
+def _apply_asset_scope_filter_impl(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
     portfolio_summary: Dict[str, Any],
@@ -529,7 +531,7 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
     return cycle_fallback_prices
 
 
-def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> None:
+def _reconcile_live_venue_equity_summary_impl(portfolio_summary: Dict[str, Any]) -> None:
     """Reconcile live multi-venue spot equity from `tradable_positions` and `venue_quote_cash` via SSOT `compute_venue_nav_breakdown`."""
     if not isinstance(portfolio_summary, dict):
         return
@@ -639,7 +641,7 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                         sp_list[0]["snapshot_age_min"] = 0.0
 
 
-def evaluate_institutional_posture_divergence(
+def _evaluate_institutional_posture_divergence_impl(
     cached_act: Any,
     cached_bias: Any,
     cached_text: Any,
@@ -1114,8 +1116,239 @@ def format_bottom_structure_6h_parts(
     return str(b_struct), b_parts
 
 
+class MacroTelemetryEvaluatorBase(TelemetryEvaluatorInterface, ABC):
+    """Abstract base contract (Level 2) for stateless macro benchmark, Deribit options surface, and cross-asset evaluators."""
+
+    cls_name = "MacroTelemetryEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is MacroTelemetryEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class MacroTelemetryEvaluatorBase")
+        super().__init__()
+
+
+class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) computing US index futures pre-market/extended-hours lead (NQ=F vs QQQ, ES=F vs SPY)."""
+
+    cls_name = "FuturesPremarketLeadEvaluator"
+
+    def evaluate(self, data: Any, **kwargs: Any) -> Dict[str, Any]:
+        return _compute_futures_premarket_lead_impl(data)
+
+
+class EquityMacroRegimeEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) classifying US equity & macro rate regime ('RISK_ON', 'RISK_OFF', 'NEUTRAL')."""
+
+    cls_name = "EquityMacroRegimeEvaluator"
+
+    def evaluate(self, data: Any, **kwargs: Any) -> str:
+        return _compute_equity_macro_regime_impl(data)
+
+
+class CrossAssetRegimeEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) classifying symmetric US Equity vs Crypto Institutional correlation regime."""
+
+    cls_name = "CrossAssetRegimeEvaluator"
+
+    def evaluate(
+        self,
+        data: Any,
+        *,
+        btc_chg_24h_pct: Optional[float] = None,
+        **kwargs: Any,
+    ) -> str:
+        return _compute_cross_asset_regime_impl(data, btc_chg_24h_pct=btc_chg_24h_pct)
+
+
+class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) computing Deribit options surface metrics (RV, VRP, Put/Call OI ratio, 25d Skew)."""
+
+    cls_name = "DeribitOptionsSurfaceEvaluator"
+
+    def evaluate(
+        self,
+        books: Any,
+        *,
+        currency: str = "BTC",
+        dvol: Optional[float] = None,
+        rv: Optional[float] = None,
+        btc_dvol: Optional[float] = None,
+        btc_rv: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return _compute_deribit_options_surface_impl(
+            books,
+            currency=currency,
+            dvol=dvol,
+            rv=rv,
+            btc_dvol=btc_dvol,
+            btc_rv=btc_rv,
+        )
+
+
+class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) detecting institutional cross-asset, Coinbase premium, ETF, futures lead, or skew divergence."""
+
+    cls_name = "InstitutionalPostureDivergenceEvaluator"
+
+    def evaluate(
+        self,
+        cached_act: Any,
+        cached_bias: Any = None,
+        cached_text: Any = None,
+        macro_benchmarks: Any = None,
+        *,
+        live_tr: Optional[float] = None,
+        flow_lbl: str = "",
+        **kwargs: Any,
+    ) -> Optional[Dict[str, str]]:
+        return _evaluate_institutional_posture_divergence_impl(
+            cached_act,
+            cached_bias,
+            cached_text,
+            macro_benchmarks,
+            live_tr=live_tr,
+            flow_lbl=flow_lbl,
+        )
+
+
+class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) filtering prices_and_trends, microstructure, and portfolio_summary by asset_scope."""
+
+    cls_name = "AssetScopeFilterEvaluator"
+
+    def evaluate(
+        self,
+        prices_and_trends: Dict[str, Any],
+        microstructure: Optional[Dict[str, Any]] = None,
+        portfolio_summary: Optional[Dict[str, Any]] = None,
+        scope: str = "",
+        inst_by_sym: Optional[Dict[str, Any]] = None,
+        t212_cycles: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        return _apply_asset_scope_filter_impl(
+            prices_and_trends,
+            microstructure or {},
+            portfolio_summary if isinstance(portfolio_summary, dict) else {},
+            scope,
+            inst_by_sym or {},
+            t212_cycles or {},
+        )
+
+
+class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
+    """Concrete evaluator (Level 3) reconciling live multi-venue spot equity from tradable_positions and venue_quote_cash."""
+
+    cls_name = "LiveVenueEquityReconciliationEvaluator"
+
+    def evaluate(self, portfolio_summary: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+        _reconcile_live_venue_equity_summary_impl(portfolio_summary)
+        return portfolio_summary
+
+
+_FUTURES_PREMARKET_LEAD_EVALUATOR = FuturesPremarketLeadEvaluator()
+_EQUITY_MACRO_REGIME_EVALUATOR = EquityMacroRegimeEvaluator()
+_CROSS_ASSET_REGIME_EVALUATOR = CrossAssetRegimeEvaluator()
+_DERIBIT_OPTIONS_SURFACE_EVALUATOR = DeribitOptionsSurfaceEvaluator()
+_INSTITUTIONAL_POSTURE_DIVERGENCE_EVALUATOR = InstitutionalPostureDivergenceEvaluator()
+_ASSET_SCOPE_FILTER_EVALUATOR = AssetScopeFilterEvaluator()
+_LIVE_VENUE_EQUITY_RECONCILIATION_EVALUATOR = LiveVenueEquityReconciliationEvaluator()
+
+
+def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
+    """Compute pre-market / extended-hours US index futures lead (NQ=F vs QQQ, ES=F vs SPY)."""
+    return _FUTURES_PREMARKET_LEAD_EVALUATOR.evaluate(data)
+
+
+def compute_equity_macro_regime(data: Any) -> str:
+    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
+    return _EQUITY_MACRO_REGIME_EVALUATOR.evaluate(data)
+
+
+def compute_cross_asset_regime(
+    data: Any,
+    *,
+    btc_chg_24h_pct: Optional[float] = None,
+) -> str:
+    """Classify the symmetric US Equity vs Crypto Institutional correlation regime."""
+    return _CROSS_ASSET_REGIME_EVALUATOR.evaluate(data, btc_chg_24h_pct=btc_chg_24h_pct)
+
+
+def compute_deribit_options_surface(
+    books: Any,
+    *,
+    currency: str = "BTC",
+    dvol: Optional[float] = None,
+    rv: Optional[float] = None,
+    btc_dvol: Optional[float] = None,
+    btc_rv: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compute Deribit options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy) for any currency (BTC, ETH)."""
+    return _DERIBIT_OPTIONS_SURFACE_EVALUATOR.evaluate(
+        books,
+        currency=currency,
+        dvol=dvol,
+        rv=rv,
+        btc_dvol=btc_dvol,
+        btc_rv=btc_rv,
+    )
+
+
+def apply_asset_scope_filter(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    portfolio_summary: Dict[str, Any],
+    scope: str,
+    inst_by_sym: Dict[str, Any],
+    t212_cycles: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Filter prices_and_trends, microstructure, and portfolio_summary by asset_scope ('equities' | 'crypto')."""
+    return _ASSET_SCOPE_FILTER_EVALUATOR.evaluate(
+        prices_and_trends,
+        microstructure,
+        portfolio_summary,
+        scope,
+        inst_by_sym,
+        t212_cycles,
+    )
+
+
+def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> None:
+    """Reconcile live multi-venue spot equity from `tradable_positions` and `venue_quote_cash` via SSOT `compute_venue_nav_breakdown`."""
+    _LIVE_VENUE_EQUITY_RECONCILIATION_EVALUATOR.evaluate(portfolio_summary)
+
+
+def evaluate_institutional_posture_divergence(
+    cached_act: Any,
+    cached_bias: Any,
+    cached_text: Any,
+    macro_benchmarks: Any,
+    *,
+    live_tr: Optional[float] = None,
+    flow_lbl: str = "",
+) -> Optional[Dict[str, str]]:
+    """Detect institutional cross-asset, Coinbase premium, ETF, futures lead, or options skew divergence vs a cached posture."""
+    return _INSTITUTIONAL_POSTURE_DIVERGENCE_EVALUATOR.evaluate(
+        cached_act,
+        cached_bias,
+        cached_text,
+        macro_benchmarks,
+        live_tr=live_tr,
+        flow_lbl=flow_lbl,
+    )
+
+
 __all__ = [
+    "AssetScopeFilterEvaluator",
+    "CrossAssetRegimeEvaluator",
+    "DeribitOptionsSurfaceEvaluator",
+    "EquityMacroRegimeEvaluator",
+    "FuturesPremarketLeadEvaluator",
+    "InstitutionalPostureDivergenceEvaluator",
+    "LiveVenueEquityReconciliationEvaluator",
     "MACRO_BENCHMARK_SPECS",
+    "MacroTelemetryEvaluatorBase",
     "_MACRO_EXTRA_TELEMETRY_KEYS",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
