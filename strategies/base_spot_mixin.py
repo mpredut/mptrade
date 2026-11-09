@@ -28,7 +28,6 @@ from providers.base import clean_order_id as _clean_order_id, normalize_side
 from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
-    clean_pos_float as _clean_pos_float,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
 
@@ -117,10 +116,10 @@ def adapt_ladder_rungs(
     remaining: list[tuple[float, float]], held: float, min_tranche_qty: float = 0.01
 ) -> list[tuple[float, float]]:
     """Dynamically clamp remaining rungs so each order has viable trading quantity."""
-    held_f = _clean_pos_float(held)
+    held_f = safe_pos_float(held, None)
     if not remaining or held_f is None or held_f <= 1e-9:
         return []
-    min_q = _clean_pos_float(min_tranche_qty) or 0.01
+    min_q = safe_pos_float(min_tranche_qty, 0.01)
     max_viable_rungs = max(1, int(held_f / max(1e-6, min_q)))
     if len(remaining) <= max_viable_rungs:
         return list(remaining)
@@ -367,7 +366,7 @@ def sanitize_common_spot_state(
         clean_lst: list[float] = []
         if isinstance(raw_lst, list):
             for item in raw_lst:
-                val_f = _clean_pos_float(item)
+                val_f = safe_pos_float(item, None)
                 if val_f is not None and val_f not in clean_lst:
                     clean_lst.append(val_f)
         state[lkey] = clean_lst
@@ -559,14 +558,10 @@ class BaseSpotMixin:
             return None
         return safe_pos_float(cost / qty, default=None) if self._exit_manager_mode == "t212" else cost / qty
 
-    _avg_cost = _avg
-
     def _qty_for(self, amount: float, price: float) -> float:
         amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
         dec = getattr(self, "vol_dec", getattr(self, "sz_dec", 8))
         return round(amt_f / px_f, dec) if (amt_f is not None and px_f is not None) else 0.0
-
-    _sz_for = _qty_for
 
     def _apply_buy_fill_accounting(
         self, order: dict, qty: float, price: float, *, fallback_to_notional: bool = False
@@ -610,8 +605,6 @@ class BaseSpotMixin:
     def _remove(self, o: dict) -> None:
         if o in self.s["orders"]:
             self.s["orders"].remove(o)
-
-    _remove_order = _remove
 
     def _mark_order_cancel_requested(self, o: dict, id_key: str) -> bool:
         o["cancel_requested"] = True
@@ -664,7 +657,7 @@ class BaseSpotMixin:
             self.exit_manager.restore_reentry_state(self._symbol_id)
 
     def _record_tp_sold_level(self, level: object) -> None:
-        lvl_f = _clean_pos_float(level)
+        lvl_f = safe_pos_float(level, None)
         if lvl_f is not None:
             sold = self.s.setdefault("tp_sold_levels", [])
             if lvl_f not in sold:
@@ -1029,7 +1022,7 @@ class BaseSpotMixin:
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across spot and equity engines."""
         is_spot = self._exit_manager_mode == "spot"
-        lsp = update_post_sell_anchors(self.s, price, include_last_sell_alias=is_spot, track_stop_sl_low=is_spot)
+        lsp = update_post_sell_anchors(self.s, price, track_stop_sl_low=is_spot)
         if not lsp:
             return True, "no_last_sell"
 
@@ -1150,15 +1143,11 @@ class BaseSpotMixin:
         if blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
             allowed, reason = False, blocked_tick[2]
         else:
-            allowed, reason = (
-                self._evaluate_reentry_gate(price, regime, tick_time)
-                if is_spot
-                else self._evaluate_reentry_gate(price)
-            )
+            allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
         if not allowed:
             self._log_msg(f"  [STRAT] re-entry blocked: {reason}")
             return False
-        if self.s.get("last_sell_price") or (self.s.get("last_sell") if is_spot else None):
+        if self.s.get("last_sell_price"):
             self._log_msg(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
         if self.s[self._spent_state_key] + entry_amt > budget:
             self._restore_reentry_state()
@@ -1262,7 +1251,7 @@ class BaseSpotMixin:
                     continue
                 status_log_fn(price)
                 _delay()
-            if getattr(self, "_state_write_failed", False) or getattr(self, "_state_save_failed", False):
+            if getattr(self, "_state_write_failed", False):
                 self._save()
         except KeyboardInterrupt:
             self._log_msg("  [STRAT] stopped manually.")

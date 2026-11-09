@@ -4330,13 +4330,13 @@ def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_sh
     enrich_sentiment_advisor_live_flow_divergence(sa, {"BTCUSDC": {"taker_ratio_1h": 1.05}})
     assert "live_flow_divergence" not in sa
 
-    # 6. BaseSpotMixin._run_self_healing_loop flushes dirty state on stop when _state_save_failed is True
+    # 6. BaseSpotMixin._run_strategy_loop flushes dirty state on stop when _state_write_failed is True
     saved_calls = []
 
     class _DummySpot(BaseSpotMixin):
         def __init__(self):
             self.p = types.SimpleNamespace(check_minutes=0.01)
-            self._state_save_failed = True
+            self._state_write_failed = True
 
         def _mod_global(self, name, default):
             return default
@@ -4346,7 +4346,7 @@ def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_sh
 
         def _save(self):
             saved_calls.append(True)
-            self._state_save_failed = False
+            self._state_write_failed = False
 
     stop_ev = threading.Event()
     stop_ev.set()

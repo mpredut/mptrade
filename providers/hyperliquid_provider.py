@@ -815,13 +815,9 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_by_client_id({symbol},{client_order_id}): {e}") from e
 
-    @staticmethod
-    def _parse_oid(order_id: object, caller: str) -> int:
-        return require_int_order_id(order_id, f"{caller}({order_id})")
-
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)
-        oid = self._parse_oid(order_id, "order_status")
+        oid = require_int_order_id(order_id, f"order_status({order_id})")
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -876,7 +872,7 @@ class HyperliquidProvider(MarketDataProvider):
                 if raw_f_oid is None or isinstance(raw_f_oid, bool):
                     continue
                 try:
-                    f_oid = self._parse_oid(raw_f_oid, "order_status")
+                    f_oid = require_int_order_id(raw_f_oid, f"order_status({raw_f_oid})")
                 except ProviderError:
                     continue
                 if f_oid != oid:
@@ -959,7 +955,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self.validate_symbol(symbol)
-        oid = self._parse_oid(order_id, "cancel_order")
+        oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         pair = self._pair()
         if pair is None:
             raise ProviderError(

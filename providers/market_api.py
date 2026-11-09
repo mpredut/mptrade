@@ -36,6 +36,7 @@ from .base import (
     clean_order_id,
     compute_fills_cost_basis,
     extract_order_fee,
+    extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -62,7 +63,6 @@ from .strategy_executor import (
     ProviderError,
     SubmissionRefused,
     candle_interval,
-    extract_order_id,
     reconciliation_capabilities_of,
 )
 from market_regime import (
@@ -118,25 +118,10 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         return None
 
 
-_clean_client_order_id = clean_order_id
-
-
 def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
     if raw is None or raw == "":
         return 0.0
     return safe_nonneg_float(raw, default=None)
-
-
-def _require_pos_since_s(since_s: Any) -> float:
-    return require_pos_float(since_s, "since_s")
-
-
-def _resolve_evaluated_at(now: Any) -> float:
-    return time.time() if now is None else require_finite_float(now, "now")
-
-
-def _parse_binance_order_id(order_id: Any, context: str) -> int:
-    return require_int_order_id(order_id, context)
 
 
 class BinanceProvider(MarketDataProvider):
@@ -223,7 +208,7 @@ class BinanceProvider(MarketDataProvider):
         import binance_cache_health as health
         import cacheManager as cm
 
-        since_s = _require_pos_since_s(since_s)
+        since_s = require_pos_float(since_s, "since_s")
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
         symbol = symbol.strip().upper()
@@ -285,7 +270,7 @@ class BinanceProvider(MarketDataProvider):
             if None in (price_f, orig_f, exec_f):
                 raise ProviderError(f"open_orders({symbol}): invalid or negative numeric field in order")
             try:
-                oid_int = _parse_binance_order_id(order.get("orderId"), f"open_orders({symbol})")
+                oid_int = require_int_order_id(order.get("orderId"), f"open_orders({symbol})")
             except ProviderError as exc:
                 raise ProviderError(f"open_orders({symbol}): missing or invalid orderId in order") from exc
             raw_side, raw_status = order.get("side"), order.get("status")
@@ -299,7 +284,7 @@ class BinanceProvider(MarketDataProvider):
                     price=price_f,
                     orig_qty=orig_f,
                     executed_qty=exec_f,
-                    client_order_id=_clean_client_order_id(order.get("clientOrderId")),
+                    client_order_id=clean_order_id(order.get("clientOrderId")),
                     has_explicit_coid=True,
                     status=str(raw_status or "NEW").strip().upper(),
                 )
@@ -524,7 +509,7 @@ class BinanceProvider(MarketDataProvider):
             if not isinstance(trade, dict):
                 continue
             try:
-                if _parse_binance_order_id(trade.get("orderId"), "_order_fee_quote") != order_id:
+                if require_int_order_id(trade.get("orderId"), "_order_fee_quote") != order_id:
                     continue
             except ProviderError:
                 continue
@@ -544,7 +529,7 @@ class BinanceProvider(MarketDataProvider):
         return total
 
     def order_status(self, symbol: str, order_id: str):
-        oid = _parse_binance_order_id(order_id, f"order_status({order_id})")
+        oid = require_int_order_id(order_id, f"order_status({order_id})")
 
         try:
             o = _get_bapi().client.get_order(symbol=symbol, orderId=oid)
@@ -594,7 +579,7 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        oid = _parse_binance_order_id(order_id, f"cancel_order({order_id})")
+        oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         self._execute_confirmed_cancel(order_id, lambda: _get_bapi().cancel_order(symbol, oid))
 
 
@@ -709,7 +694,7 @@ class MarketApi:
         side = normalize_side(side)
         if not side:
             raise ValueError("side must be BUY or SELL")
-        since_s = _require_pos_since_s(since_s)
+        since_s = require_pos_float(since_s, "since_s")
 
         def _opt_nonneg(val: Any, name: str) -> Optional[float]:
             if val is None:
@@ -786,7 +771,7 @@ class MarketApi:
             symbol, provider_name, "lookup_by_client_order_id", "order_by_client_id"
         )
         clean_coid = (
-            _clean_client_order_id(client_order_id)
+            clean_order_id(client_order_id)
             if isinstance(client_order_id, (str, int)) and not isinstance(client_order_id, bool)
             else None
         )
@@ -896,7 +881,7 @@ class MarketApi:
         trend_duration_seconds=0.0,
     ) -> MarketRegimeContext:
         """Resolve one reusable short-horizon context at the composition root."""
-        evaluated_at = _resolve_evaluated_at(now)
+        evaluated_at = time.time() if now is None else require_finite_float(now, "now")
         use_runtime_snapshot = _parse_bool_flag(use_runtime_snapshot, True)
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         if snapshot_max_age_seconds is None:
@@ -1016,7 +1001,7 @@ class MarketApi:
         include_alternates = _parse_bool_flag(include_alternates, False)
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        evaluated_at = _resolve_evaluated_at(now)
+        evaluated_at = time.time() if now is None else require_finite_float(now, "now")
         if snapshot_max_age_seconds is None:
             snapshot_max_age_seconds = (
                 service.default_snapshot_max_age_seconds())

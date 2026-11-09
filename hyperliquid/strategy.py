@@ -614,7 +614,7 @@ class Strategy(BaseSpotMixin):
                     log(f"  [STRAT] plafon {self.p.max_budget} {self.ccy} reached")
                 return
             px = price * (1 - self.sign * d)
-            self._place("open", self._sz_for(self.p.entry_amount, px), px, "ENTRY", self.p.entry_amount)
+            self._place("open", self._qty_for(self.p.entry_amount, px), px, "ENTRY", self.p.entry_amount)
             return
         # STOP-LOSS: cap losses when the position moves too far against us, preventing runaway DCA.
         if self._check_stop_loss(price):
@@ -648,7 +648,7 @@ class Strategy(BaseSpotMixin):
             px = price * (1 - self.sign * d)
             if not self.replay_mode:
                 log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) — DCA")
-            self._place("open", self._sz_for(self.p.dca_amount, px), px, "DCA", self.p.dca_amount)
+            self._place("open", self._qty_for(self.p.dca_amount, px), px, "DCA", self.p.dca_amount)
 
     # -- loop ------------------------------------------------------------------
     def run(self) -> None:

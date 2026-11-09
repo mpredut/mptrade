@@ -34,8 +34,8 @@ from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
 
 from intelligence.internal.state.volatility import (
-    adaptive_thresholds, resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
+    resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct,
 )
 
 from . import spot_rules as sr
@@ -48,13 +48,11 @@ from .base_spot_mixin import (
     sanitize_common_spot_state,
 )
 from .state_store import (
-    JsonStateStore, build_strategy_exit_manager,
-    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
-    compute_adaptive_reentry_pullback_pct, find_open_order,
-    state_path_for as _shared_state_path_for, update_post_sell_anchors,
+    JsonStateStore,
+    state_path_for as _shared_state_path_for,
 )
 from .position_exit_manager import (
-    ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot,
+    ExitAction, PositionExitManager,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -655,7 +653,7 @@ class Strategy(BaseSpotMixin):
         return ok
 
     def _cancel_if_stale_buy(self, o: dict, price: float) -> None:
-        age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
+        age = (self._now() - (safe_nonneg_float(o.get("ts")) or 0.0)) / 60
         if (
             o.get("side") == "buy"
             and not o.get("cancel_requested")
@@ -972,7 +970,7 @@ class Strategy(BaseSpotMixin):
         if self.s["qty"] > 1e-12 or self.s["orders"] or self.s["cycle"] != 1 or self.s["spent"] > 0:
             log("  [STRAT] adopt: the state is not fresh — NOT adopting (cycle in progress)")
             return
-        qty = _clean_nonneg_float(self.p.adopt_qty) or 0.0
+        qty = safe_nonneg_float(self.p.adopt_qty) or 0.0
         if qty <= 0:
             try:
                 precision = self.client.pair_precision(self.pair)
@@ -983,7 +981,7 @@ class Strategy(BaseSpotMixin):
             if raw_bal is None:
                 qty = 0.0
             else:
-                clean_bal = _clean_nonneg_float(raw_bal)
+                clean_bal = safe_nonneg_float(raw_bal, None)
                 if clean_bal is None:
                     log("  ! [STRAT] adopt: invalid balance on the base asset")
                     return
@@ -1040,7 +1038,7 @@ class Strategy(BaseSpotMixin):
         idx = -self._surge_window_bars() - (1 if self.replay_mode else 0)
         if abs(idx) > len(closes):
             return None
-        past_price = _clean_pos_float(closes[idx])
+        past_price = safe_pos_float(closes[idx], None)
         if past_price is None:
             return None
         return (price - past_price) / past_price * 100.0
@@ -1050,7 +1048,7 @@ class Strategy(BaseSpotMixin):
         n_i = safe_pos_int(n, default=None)
         if not closes or n_i is None or len(closes) < n_i:
             return None
-        window = [cf for c in closes[-n_i:] if (cf := _clean_pos_float(c)) is not None]
+        window = [cf for c in closes[-n_i:] if (cf := safe_pos_float(c, None)) is not None]
         return sum(window) / n_i if len(window) == n_i else None
 
     # -- Common market regime and trend overlay --------------------------------
@@ -1318,7 +1316,7 @@ class Strategy(BaseSpotMixin):
             if ledger_val is None:
                 log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
                 return True
-            ledger_qty = _clean_nonneg_float(ledger_val)
+            ledger_qty = safe_nonneg_float(ledger_val, None)
             if ledger_qty is None:
                 log("  ! [STRAT] ledger reconciliation unavailable (invalid balance); decisions blocked")
                 return True
@@ -1349,7 +1347,7 @@ class Strategy(BaseSpotMixin):
         if ledger_qty <= tolerance:
             if held > 1e-12:
                 log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
-                prev_cost = _clean_nonneg_float(self.s.get("cost")) or 0.0
+                prev_cost = safe_nonneg_float(self.s.get("cost")) or 0.0
                 prev_avg = (prev_cost / held) if (held > 0 and prev_cost > 0) else 0.0
                 inferred_exit_kind = "SL" if (prev_avg > 0 and price < prev_avg) else "TP"
                 defaults = _new_state()
@@ -1419,7 +1417,7 @@ class Strategy(BaseSpotMixin):
                             dict_rows,
                             key=lambda item: (_row_ts_sec(item[1]), item[0]),
                         )
-                        cand_px = _clean_pos_float(latest_buy.get("price"))
+                        cand_px = safe_pos_float(latest_buy.get("price"), None)
                         if cand_px is not None:
                             fill_px = cand_px
                         cand_ts_sec = _row_ts_sec(latest_buy)
@@ -1450,13 +1448,13 @@ class Strategy(BaseSpotMixin):
         self, price: float, timestamp: float | None = None, high: float | None = None
     ) -> tuple[float, float, float, float, float | None] | None:
         """Stage 1: Validate market price, sync venue ledger, record shadow ticks, and check adoption."""
-        clean_price = _clean_pos_float(price)
+        clean_price = safe_pos_float(price, None)
         if clean_price is None:
             log("  ! [STRAT] invalid price — deferring step")
             return None
         price = clean_price
         if high is not None:
-            high = _clean_pos_float(high)
+            high = safe_pos_float(high, None)
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return None
@@ -1584,12 +1582,12 @@ class Strategy(BaseSpotMixin):
             )
             existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
             if isinstance(existing_ride, dict) and existing_ride.get("buy_price") is not None:
-                ride_bp = _clean_pos_float(existing_ride.get("buy_price"))
+                ride_bp = safe_pos_float(existing_ride.get("buy_price"), None)
                 if ride_bp is None or not math.isclose(ride_bp, avg, rel_tol=1e-9, abs_tol=1e-12):
                     self.exit_manager.tp_ride_state.pop(self.pair, None)
                     existing_ride = None
             if isinstance(existing_ride, dict):
-                cur_peak = _clean_pos_float(existing_ride.get("peak_price")) or 0.0
+                cur_peak = safe_pos_float(existing_ride.get("peak_price"), 0.0)
                 if high > cur_peak:
                     existing_ride["peak_price"] = high
                     existing_ride["peak_gain"] = high_snap.gain_ratio
@@ -1657,7 +1655,7 @@ class Strategy(BaseSpotMixin):
                 base_tp_pct=self.p.takeprofit_pct,
             )
 
-        trail_armed = _clean_pos_float(self.s.get("trail_peak")) is not None
+        trail_armed = safe_pos_float(self.s.get("trail_peak"), None) is not None
         trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
         tp_ref_price = high if high is not None else price
         if trend_hold_active and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp)):
@@ -1762,7 +1760,7 @@ class Strategy(BaseSpotMixin):
         except Exception as exc:
             log(f"  [STRAT] DCA deferred: quote balance unavailable ({exc})")
             return
-        clean_quote = _clean_nonneg_float(free_quote)
+        clean_quote = safe_nonneg_float(free_quote, None)
         if clean_quote is None:
             log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
             return

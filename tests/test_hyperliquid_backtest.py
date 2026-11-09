@@ -832,7 +832,7 @@ def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
 def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     import json
     from unittest.mock import MagicMock, patch
-    from providers.market_api import _clean_client_order_id
+    from providers.market_api import clean_order_id
 
     _spec = importlib.util.spec_from_file_location("hl_md_case_test", os.path.join(_HL_DIR, "market_data.py"))
     _hl_md = importlib.util.module_from_spec(_spec)
@@ -879,10 +879,10 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     assert strat.s["cost"] == 0.0
     assert strat.s["spent"] == 0.0
 
-    # _clean_client_order_id rejects negative numeric strings and booleans
-    assert _clean_client_order_id("-123") is None
-    assert _clean_client_order_id(True) is None
-    assert _clean_client_order_id("valid-coid-1") == "valid-coid-1"
+    # clean_order_id rejects negative numeric strings and booleans
+    assert clean_order_id("-123") is None
+    assert clean_order_id(True) is None
+    assert clean_order_id("valid-coid-1") == "valid-coid-1"
 
 
 # ─── Delta-Neutral & Funding Scanner Tests (from test_dn.py & test_funding_scan.py) ───

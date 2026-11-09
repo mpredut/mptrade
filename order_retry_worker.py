@@ -154,7 +154,7 @@ def _accepted_order(order):
 
 def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
     """Populate orig_qty from venue order_status when absent on the reconciled payload."""
-    if oq.order_qty_from_response(order) is None and hasattr(mkt, "order_status"):
+    if oq.extract_orig_qty(order) is None and hasattr(mkt, "order_status"):
         try:
             oid = oq.order_id_from_response(order)
             if oid:

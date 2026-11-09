@@ -32,6 +32,7 @@ from .base import (
     MarketDataProvider,
     aggregate_fills_by_order_id,
     bool_env,
+    extract_order_id,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -43,7 +44,6 @@ from .strategy_executor import (
     PairPrecision,
     ProviderError,
     SubmissionRefused,
-    extract_order_id,
 )
 from credentials import t212_credentials
 

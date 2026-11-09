@@ -583,9 +583,6 @@ def aggregate_fills_by_order_id(
     ]
 
 
-_normalize_order = normalize_order
-
-
 def build_open_order_entry(
     raw: Any,
     *,

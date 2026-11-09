@@ -5916,13 +5916,13 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     assert pbase._clean_single_order_id("+0.0") is None
     assert pbase._clean_single_order_id("-0.0") is None
 
-    # 2. providers.quantity._clean_fill_id rejects negative/non-integer floats and normalizes '+777.0'
-    assert pqty._clean_fill_id(-5) == ""
-    assert pqty._clean_fill_id(-5.0) == ""
-    assert pqty._clean_fill_id(12.5) == ""
-    assert pqty._clean_fill_id("-5.0") == ""
-    assert pqty._clean_fill_id("+0.0") == ""
-    assert pqty._clean_fill_id("+777.0") == "777"
+    # 2. providers.quantity.clean_order_id_str rejects negative/non-integer floats and normalizes '+777.0'
+    assert pqty.clean_order_id_str(-5) == ""
+    assert pqty.clean_order_id_str(-5.0) == ""
+    assert pqty.clean_order_id_str(12.5) == ""
+    assert pqty.clean_order_id_str("-5.0") == ""
+    assert pqty.clean_order_id_str("+0.0") == ""
+    assert pqty.clean_order_id_str("+777.0") == "777"
 
     # 3. MarketApi._clean_order_id_arg rejects '-12.5' and normalizes '+888.0'
     for bad_oid in ("-12.5", "-5", "+0.0", "-0.0", 0, -1, True):
@@ -6003,24 +6003,22 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     mgr.record_hard_tp(True, 1000.0)  # type: ignore[arg-type]
     assert mgr.hard_tp_last == {}
 
-    # 4. rtrade_pair._clean_pair_id and _clean_ticket_order_id
+    # 4. rtrade_pair._clean_single_order_id
     for bad in (frozenset({"x"}), -5, -5.0, 12.5, "-5", "-abc", "+0.0", "-0.0"):
-        assert rp._clean_pair_id(bad) is None
-        assert rp._clean_ticket_order_id(bad) is None
-    assert rp._clean_pair_id("+789.0") == "789"
-    assert rp._clean_ticket_order_id("+789.0") == "789"
+        assert rp._clean_single_order_id(bad) is None
+    assert rp._clean_single_order_id("+789.0") == "789"
     assert rp._parse_bool_flag("1.0") is True
 
     # 5. lock.cooldown and lock.trade_cooldown hardening
     assert cd_mod._as_bool_flag("0.0", True) is False
     assert cd_mod._as_bool_flag("1.0", False) is True
-    assert tcd_mod._clean_pair_id("-5") is None
-    assert tcd_mod._clean_pair_id("+0.0") is None
-    assert tcd_mod._clean_pair_id("+321.0") == "321"
-    assert tcd_mod._clean_order_id_meta(-5) is None
-    assert tcd_mod._clean_order_id_meta(12.5) is None
-    assert tcd_mod._clean_order_id_meta("-5.0") is None
-    assert tcd_mod._clean_order_id_meta("+654.0") == "654"
+    assert tcd_mod.clean_order_id("-5") is None
+    assert tcd_mod.clean_order_id("+0.0") is None
+    assert tcd_mod.clean_order_id("+321.0") == "321"
+    assert tcd_mod.normalize_scalar_order_id(-5) is None
+    assert tcd_mod.normalize_scalar_order_id(12.5) is None
+    assert tcd_mod.normalize_scalar_order_id("-5.0") is None
+    assert tcd_mod.normalize_scalar_order_id("+654.0") == "654"
 
     # 6. execution_audit._json_safe_value with Decimal and _parse_bool_flag
     assert ea_mod._json_safe_value({"d": Decimal("12.34"), "nan_d": Decimal("NaN")}) == {"d": 12.34}

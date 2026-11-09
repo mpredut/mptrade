@@ -16,14 +16,6 @@ from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager
 
 
-def clean_pos_float(val: object, default: float | None = None) -> float | None:
-    return safe_pos_float(val, default=default)
-
-
-def clean_nonneg_float(val: object, default: float | None = None) -> float | None:
-    return safe_nonneg_float(val, default=default)
-
-
 def find_open_order(state: dict, side: str) -> dict | None:
     """Return the first open order in ``state['orders']`` matching ``side`` (case-insensitive)."""
     if not isinstance(state, dict) or isinstance(side, bool):
@@ -141,15 +133,12 @@ def update_post_sell_anchors(
     state: dict,
     price: float,
     *,
-    include_last_sell_alias: bool = True,
     track_stop_sl_low: bool = False,
 ) -> float | None:
     """Resolve ``last_sell_price`` and update ``post_sell_peak`` / ``post_sell_trough`` (and optional ``sl_low``)."""
     if not isinstance(state, dict):
         return None
     lsp = safe_pos_float(state.get("last_sell_price"), None)
-    if not lsp and include_last_sell_alias:
-        lsp = safe_pos_float(state.get("last_sell"), None)
     if not lsp:
         return None
     px_f = safe_pos_float(price, None)

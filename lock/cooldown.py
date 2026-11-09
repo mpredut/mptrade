@@ -450,22 +450,13 @@ def _cooldown():
     return _cd
 
 
-_clean_pair_id = clean_order_id
-_clean_order_id_meta = normalize_scalar_order_id
-_norm_side = normalize_side
-
-
-def _valid_pair_id(pair_id) -> bool:
-    return _clean_pair_id(pair_id) is not None
-
-
 def reserve_trade(
     side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None, pair_id=None
 ):
     """Atomically check and reserve placement rights for ``symbol``."""
-    clean_cid = _clean_order_id_meta(client_order_id)
-    norm_side = _norm_side(side)
-    clean_pid = _clean_pair_id(pair_id)
+    clean_cid = normalize_scalar_order_id(client_order_id)
+    norm_side = normalize_side(side)
+    clean_pid = clean_order_id(pair_id)
     if clean_pid is not None:
         return _cooldown().reserve_group_member(
             symbol, cooldown_sec, clean_pid, norm_side,
@@ -484,16 +475,16 @@ def release_trade(symbol):
 
 def release_pair_leg(symbol, pair_id, side):
     """Release a committed leg only after it is canceled successfully."""
-    clean_pid = _clean_pair_id(pair_id)
+    clean_pid = clean_order_id(pair_id)
     if clean_pid is None:
         return False
     return _cooldown().release_group_member(
-        symbol, clean_pid, _norm_side(side), keep_group=True)
+        symbol, clean_pid, normalize_side(side), keep_group=True)
 
 
 def update_binance_order_id(symbol, order_id):
     """Attach the Binance order ID after successful placement."""
-    _cooldown().update(symbol, binance_order_id=_clean_order_id_meta(order_id))
+    _cooldown().update(symbol, binance_order_id=normalize_scalar_order_id(order_id))
 
 
 class _TradeReservation:
@@ -511,16 +502,16 @@ class _TradeReservation:
         return self._res.info
 
     def commit(self, binance_order_id=None):
-        self._res.commit(binance_order_id=_clean_order_id_meta(binance_order_id))
+        self._res.commit(binance_order_id=normalize_scalar_order_id(binance_order_id))
 
 
 @contextlib.contextmanager
 def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                pair_id=None):
     """Provide RAII for an exclusive cooldown or one leg of a pair."""
-    clean_cid = _clean_order_id_meta(client_order_id)
-    norm_side = _norm_side(side)
-    clean_pid = _clean_pair_id(pair_id)
+    clean_cid = normalize_scalar_order_id(client_order_id)
+    norm_side = normalize_side(side)
+    clean_pid = clean_order_id(pair_id)
     if clean_pid is not None:
         with _cooldown().group_slot(
                 symbol, cooldown_sec, clean_pid, norm_side,

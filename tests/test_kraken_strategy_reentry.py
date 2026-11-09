@@ -1104,7 +1104,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         st.p.reentry_drop_pct = 2.0
         st.p.reentry_bear_bounce_pct = 1.0
         st.p.surge_dynamic = True
-        st.s["last_sell"] = 100.0
+        st.s["last_sell_price"] = 100.0
         st.s["post_sell_trough"] = 100.0
         st.s["cycle"] = 1
 

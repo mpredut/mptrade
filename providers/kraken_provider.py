@@ -36,6 +36,7 @@ from .base import (
     build_open_order_entry,
     build_price_history_points,
     extract_order_fee,
+    extract_order_id,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -46,7 +47,6 @@ from .strategy_executor import (
     PairPrecision,
     ProviderError,
     SubmissionRefused,
-    extract_order_id,
 )
 from cachepaths import _LEGACY_KRAKEN_X_BASES, cache_path, canonical_base_asset
 from credentials import CredentialProfileMissingError, kraken_credentials
@@ -774,12 +774,8 @@ class KrakenProvider(MarketDataProvider):
                 return {"orderId": clean_oid, "status": raw.get("status")}
         return None
 
-    def cancel_order_by_id(self, symbol: str, order_id: str) -> None:
-        """Cancel by id, treating an already closed or missing order as success.
-
-        The explicit method name avoids future ambiguity; cancel_order below is the
-        StrategyExecutor contract alias.
-        """
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        """Cancel by id, treating an already closed or missing order as success."""
         clean_id = _clean_kraken_order_id(order_id, "cancel_order")
         try:
             result = self._query_with_bot_fallback(lambda cli: cli.cancel_order(clean_id)) or {}
@@ -796,9 +792,6 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"cancel_order {order_id}: Kraken did not confirm the cancellation ({result})"
             )
-
-    def cancel_order(self, symbol: str, order_id: str) -> None:  # contract StrategyExecutor
-        self.cancel_order_by_id(symbol, order_id)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         try:

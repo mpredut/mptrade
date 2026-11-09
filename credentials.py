@@ -44,12 +44,18 @@ if not _keys_blocked:
     sys.modules["keys.apikeys"] = sys.modules[__name__]
 
 
-class CredentialConfigurationError(RuntimeError):
-    """A credential profile is missing, incomplete, or ambiguous."""
+if not isinstance(globals().get("CredentialConfigurationError"), type) or not issubclass(
+    globals()["CredentialConfigurationError"], RuntimeError
+):
+    class CredentialConfigurationError(RuntimeError):
+        """A credential profile is missing, incomplete, or ambiguous."""
 
 
-class CredentialProfileMissingError(CredentialConfigurationError):
-    """None of the approved profiles is configured."""
+if not isinstance(globals().get("CredentialProfileMissingError"), type) or not issubclass(
+    globals()["CredentialProfileMissingError"], CredentialConfigurationError
+):
+    class CredentialProfileMissingError(CredentialConfigurationError):
+        """None of the approved profiles is configured."""
 
 
 @dataclass(frozen=True)

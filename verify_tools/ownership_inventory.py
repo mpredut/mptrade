@@ -30,9 +30,6 @@ from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noq
 from providers.quantity import resolve_assets  # noqa: E402
 
 
-_truthy = _parse_bool_flag
-
-
 @dataclass(frozen=True)
 class Owner:
     owner_id: str
@@ -143,11 +140,11 @@ def _python_symbols(root: Path) -> tuple[list[str], str]:
             parser = load_ini_config(conf_path, must_exist=False, inline_comments=True)
             for section in parser.sections():
                 vals = parser[section]
-                if normalize_venue_name(vals.get("provider", "")) == "binance" and _truthy(vals.get("enabled"), True):
+                if normalize_venue_name(vals.get("provider", "")) == "binance" and _parse_bool_flag(vals.get("enabled"), True):
                     s = vals.get("symbol", "").strip()
                     if s and s not in syms:
                         syms.append(s)
-                    if _truthy(vals.get("role.rtrade")) and s:
+                    if _parse_bool_flag(vals.get("role.rtrade")) and s:
                         tao = s
             if not tao and "TAOUSDC" in syms:
                 tao = "TAOUSDC"
@@ -198,8 +195,8 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         pattern=kraken_bot,
         configured=_pattern(patterns, kraken_bot) is not None,
         enabled=(
-            _truthy(kraken_env.get("STRAT_EXECUTE"))
-            and not _truthy(kraken_env.get("KRAKEN_BOT_OBSERVE_ONLY"))
+            _parse_bool_flag(kraken_env.get("STRAT_EXECUTE"))
+            and not _parse_bool_flag(kraken_env.get("KRAKEN_BOT_OBSERVE_ONLY"))
         ),
         source="kraken/config.env", commands=commands,
     ))
@@ -214,7 +211,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         symbol=kraken_pair, role="protective", coordination="free-balance-only",
         pattern="kraken/trailing_stop.py",
         configured=_pattern(patterns, "kraken/trailing_stop.py") is not None,
-        enabled=_truthy(trailing_env.get("KRAKEN_TRAILING_ENABLED")),
+        enabled=_parse_bool_flag(trailing_env.get("KRAKEN_TRAILING_ENABLED")),
         source="kraken/trailing.conf", commands=commands,
     ))
 
@@ -226,7 +223,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         base=dn_pair, quote="USDC", role="primary", coordination="delta-neutral",
         pattern="dn_bot.py$",
         configured=_pattern(patterns, "dn_bot.py$") is not None,
-        enabled=_truthy(hl_env.get("STRAT_EXECUTE")),
+        enabled=_parse_bool_flag(hl_env.get("STRAT_EXECUTE")),
         source="hyperliquid/config.env", commands=commands,
     ))
 
@@ -242,16 +239,16 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         role="primary", coordination="spot-dca", pattern="hl_bot.py",
         configured=_pattern(patterns, "hl_bot.py") is not None,
         enabled=(
-            _truthy(hl_env.get("STRAT_EXECUTE"))
-            and _truthy(hl_env.get("HL_LIVE_ORDERS"))
-            and not _truthy(hl_env.get("HL_BOT_OBSERVE_ONLY"))
+            _parse_bool_flag(hl_env.get("STRAT_EXECUTE"))
+            and _parse_bool_flag(hl_env.get("HL_LIVE_ORDERS"))
+            and not _parse_bool_flag(hl_env.get("HL_BOT_OBSERVE_ONLY"))
         ),
         source="hyperliquid/hl_bot.py", commands=commands,
     ))
 
     monitor_pattern = "monitortrades.py"
     monitor_configured = _pattern(patterns, monitor_pattern) is not None
-    trade_enabled = _truthy(
+    trade_enabled = _parse_bool_flag(
         trade_settings.get("trade_enabled")
         or trade_settings.get("TRADE_ENABLED")
         or root_env.get("TRADE_ENABLED")
@@ -270,21 +267,21 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         }
         live_gates = {
             "binance": True,
-            "kraken": _truthy(kraken_env.get("KRAKEN_LIVE_ORDERS")),
-            "hyperliquid": _truthy(hl_env.get("HL_LIVE_ORDERS")),
-            "t212": _truthy(t212_env.get("T212_LIVE_ORDERS")),
+            "kraken": _parse_bool_flag(kraken_env.get("KRAKEN_LIVE_ORDERS")),
+            "hyperliquid": _parse_bool_flag(hl_env.get("HL_LIVE_ORDERS")),
+            "t212": _parse_bool_flag(t212_env.get("T212_LIVE_ORDERS")),
         }
         for section in parser.sections():
             values = parser[section]
             mt_role = values.get("role.mt")
-            if mt_role is not None and not _truthy(mt_role):
+            if mt_role is not None and not _parse_bool_flag(mt_role):
                 continue
             venue = normalize_venue_name(values.get("provider", "unknown")) or "unknown"
             symbol = values.get("symbol", section).strip()
             enabled = (
-                _truthy(values.get("enabled"), True)
+                _parse_bool_flag(values.get("enabled"), True)
                 and trade_enabled
-                and not _truthy(root_env.get("MT_NOTIFY_ONLY"))
+                and not _parse_bool_flag(root_env.get("MT_NOTIFY_ONLY"))
                 and live_gates.get(venue, False)
             )
             env = venue_envs.get(venue, {})
@@ -317,9 +314,9 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             symbol=symbol, role="primary", coordination="t212-bot",
             pattern=t212_pattern, configured=t212_configured,
             enabled=(
-                _truthy(profile_env.get("STRAT_ENABLED"))
-                and _truthy(profile_env.get("STRAT_EXECUTE"))
-                and not _truthy(profile_env.get("T212_BOT_OBSERVE_ONLY"))
+                _parse_bool_flag(profile_env.get("STRAT_ENABLED"))
+                and _parse_bool_flag(profile_env.get("STRAT_EXECUTE"))
+                and not _parse_bool_flag(profile_env.get("T212_BOT_OBSERVE_ONLY"))
             ),
             source=f"212trading/{path.name}", commands=commands,
         ))
@@ -337,7 +334,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         enabled = True
         if owner_id == "binance-trailing":
             trailing = _env(root / "binance_api" / "trailing.conf", root / ".env")
-            enabled = _truthy(trailing.get("TRAILING_ENABLED"))
+            enabled = _parse_bool_flag(trailing.get("TRAILING_ENABLED"))
         for symbol in owned_symbols:
             owners.append(_record(
                 owner_id=owner_id, venue="binance", account_ref=binance_ref,

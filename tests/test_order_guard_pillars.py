@@ -1196,11 +1196,11 @@ def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeyp
     import order_outcomes_log as ool
     import verify_tools.ownership_inventory as oi
 
-    # 1. ownership_inventory._truthy strips inline comments & accepts "1.0"
-    assert oi._truthy("true # inline comment", default=False) is True
-    assert oi._truthy("1.0", default=False) is True
-    assert oi._truthy(" # comment only ", default=True) is True
-    assert oi._truthy(False, default=True) is False
+    # 1. ownership_inventory._parse_bool_flag strips inline comments & accepts "1.0"
+    assert oi._parse_bool_flag("true # inline comment", default=False) is True
+    assert oi._parse_bool_flag("1.0", default=False) is True
+    assert oi._parse_bool_flag(" # comment only ", default=True) is True
+    assert oi._parse_bool_flag(False, default=True) is False
 
     # 2. ownership_inventory._commands handles subprocess errors cleanly
     monkeypatch.setattr(

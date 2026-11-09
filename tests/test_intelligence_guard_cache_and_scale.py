@@ -445,12 +445,12 @@ class TestCase5HistoryFailClosed:
         # 1. Missing count in result
         fake_client.cancel_order.return_value = {}
         with pytest.raises(ProviderError, match="missing count in Kraken response"):
-            kp.cancel_order_by_id("HYPEUSD", "ORD-123")
+            kp.cancel_order("HYPEUSD", "ORD-123")
 
         # 2. Zero count
         fake_client.cancel_order.return_value = {"count": 0}
         with pytest.raises(ProviderError, match="did not confirm the cancellation"):
-            kp.cancel_order_by_id("HYPEUSD", "ORD-123")
+            kp.cancel_order("HYPEUSD", "ORD-123")
 
     def test_hyperliquid_fails_closed_on_invalid_user_fills_or_open_orders_type(self, monkeypatch):
         from providers.hyperliquid_provider import HyperliquidProvider
@@ -6802,16 +6802,16 @@ def test_iteration38_headroom_cancel_opposite_and_provider_base_nan_bool_safety(
 def test_iteration39_binance_filters_strategy_executor_market_api_nan_bool_safety():
     from types import SimpleNamespace
     import pytest
-    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool
+    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool_flag
     from providers.strategy_executor import ProviderError, SubmissionOutcome
     from providers.market_api import BinanceProvider
     from providers.quantity import decide_quantity
 
-    # 1. binance_filters._decimal rejects bool and _parse_bool handles string "false"
+    # 1. binance_filters._decimal rejects bool and _parse_bool_flag handles string "false"
     with pytest.raises(BinanceFilterError):
         _decimal(True, name="qty")
-    assert _parse_bool("false") is False
-    assert _parse_bool("true") is True
+    assert _parse_bool_flag("false") is False
+    assert _parse_bool_flag("true") is True
     rules = BinanceOrderRules.from_symbol_info({
         "baseAsset": "BTC",
         "quoteAsset": "USDC",
@@ -6886,7 +6886,7 @@ def test_iteration40_kraken_hyperliquid_rollback_outcomes_nan_bool_safety(monkey
     with pytest.raises(ProviderError):
         kp.preflight_order("HYPEUSD", "SELL", True, price=20.0)
     with pytest.raises(ProviderError):
-        kp.cancel_order_by_id("HYPEUSD", "OID1")
+        kp.cancel_order("HYPEUSD", "OID1")
     with pytest.raises(ProviderError):
         kp.pair_precision("HYPEUSD")
 
@@ -7599,7 +7599,7 @@ def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety
     assert st._portfolio_position() is None
     st.s["qty"] = 2.0
     st.s["cost_usd"] = float("nan")
-    assert st._avg_cost() is None
+    assert st._avg() is None
     assert st.reconcile(float("nan")) is False
     assert st.reconcile(True) is False
     st.step(float("nan"))
@@ -9705,11 +9705,11 @@ def test_iteration81_protobuf_self_heal_agy_store_fix_and_config_safety(monkeypa
     assert agy_store_fix.daemon_known_cids() == set()
     assert agy_store_fix.summary_row_cids() == set()
 
-    # 3. config._parse_bool handles NaN/Inf and unrecognized strings by falling back to default
-    assert config._parse_bool(float("nan"), default=False) is False
-    assert config._parse_bool(float("nan"), default=True) is True
-    assert config._parse_bool("unknown_token", default=True) is True
-    assert config._parse_bool("unknown_token", default=False) is False
+    # 3. config._parse_bool_flag handles NaN/Inf and unrecognized strings by falling back to default
+    assert config._parse_bool_flag(float("nan"), default=False) is False
+    assert config._parse_bool_flag(float("nan"), default=True) is True
+    assert config._parse_bool_flag("unknown_token", default=True) is True
+    assert config._parse_bool_flag("unknown_token", default=False) is False
 
 
 def test_iteration82_topics_extract_json_ws_normalize_and_resources_watchdog():
@@ -9865,7 +9865,7 @@ def test_iteration85_decide_quantity_sell_scale_bool_env_and_binance_filters(mon
     import pytest
     from providers.quantity import decide_quantity
     from providers.base import bool_env
-    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _parse_bool
+    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
 
     # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
     class _DummyProvider:
@@ -9897,9 +9897,9 @@ def test_iteration85_decide_quantity_sell_scale_bool_env_and_binance_filters(mon
     monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "invalid_token")
     assert bool_env("TEST_BOOL_ENV_FLAG", default=True) is True
 
-    # 3. providers.binance_filters._parse_bool handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset
-    assert _parse_bool(float("nan"), default=False) is False
-    assert _parse_bool("unknown", default=True) is True
+    # 3. providers.binance_filters._parse_bool_flag handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset
+    assert _parse_bool_flag(float("nan"), default=False) is False
+    assert _parse_bool_flag("unknown", default=True) is True
     with pytest.raises(BinanceFilterError, match="baseAsset and quoteAsset must not be boolean"):
         BinanceOrderRules.from_symbol_info({
             "baseAsset": True,
@@ -11751,9 +11751,9 @@ def test_iteration111_kraken_hyperliquid_and_t212_provider_safety():
     with pytest.raises(ProviderError):
         k_prov.order_status("XXBTZUSD", "   ")
     with pytest.raises(ProviderError):
-        k_prov.cancel_order_by_id("XXBTZUSD", True)
+        k_prov.cancel_order("XXBTZUSD", True)
     with pytest.raises(ProviderError):
-        k_prov.cancel_order_by_id("XXBTZUSD", "")
+        k_prov.cancel_order("XXBTZUSD", "")
 
     k_prov._client = lambda: SimpleNamespace(
         pair_info=lambda _s: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": 0.01, "base": "   "}
@@ -12769,14 +12769,16 @@ def test_iteration122_provider_order_id_precision_and_status_safety():
     assert extract_order_id({"orderId": 123.5}) is None
     assert extract_order_id({"orderId": 12345.0}) == "12345"
 
-    # 2. HyperliquidProvider._parse_oid preserves 64-bit integer precision (> 2**53)
+    # 2. require_int_order_id preserves 64-bit integer precision (> 2**53)
+    from providers.base import require_int_order_id
+
     big_oid = 9007199254740993  # 2**53 + 1
-    assert HyperliquidProvider._parse_oid(big_oid, "order_status") == big_oid
-    assert HyperliquidProvider._parse_oid(str(big_oid), "order_status") == big_oid
+    assert require_int_order_id(big_oid, "order_status") == big_oid
+    assert require_int_order_id(str(big_oid), "order_status") == big_oid
     with pytest.raises(ProviderError):
-        HyperliquidProvider._parse_oid(123.5, "order_status")
+        require_int_order_id(123.5, "order_status")
     with pytest.raises(ProviderError):
-        HyperliquidProvider._parse_oid("nan", "order_status")
+        require_int_order_id("nan", "order_status")
 
     # 3. MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id
     for bad_id in (float("nan"), float("inf"), "nan", "INF", "null", 12.5, {"bad": 1}):
@@ -14766,7 +14768,7 @@ def test_iteration151_order_outcomes_log_binance_cache_health_and_providers_hygi
     import order_outcomes_log as ool
     import binance_cache_health as bch
     from providers.execution_audit import _parse_bool_flag as ea_parse_bool
-    from providers.market_api import MarketApi, _parse_binance_order_id, _parse_bool_flag as ma_parse_bool
+    from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
     from providers.replay_provider import ReplayMarketDataProvider, load_price_series
     from providers.strategy_executor import ProviderError
 
@@ -14819,11 +14821,11 @@ def test_iteration151_order_outcomes_log_binance_cache_health_and_providers_hygi
     assert ma_parse_bool("false", True) is False
     assert ma_parse_bool("true", False) is True
 
-    assert _parse_binance_order_id("12345.0", "ctx") == 12345
-    assert _parse_binance_order_id(12345.0, "ctx") == 12345
+    assert require_int_order_id("12345.0", "ctx") == 12345
+    assert require_int_order_id(12345.0, "ctx") == 12345
     for bad_oid in (0, -1, "0", "-5", "nan", "null", True, ["1"], None):
         with pytest.raises(ProviderError):
-            _parse_binance_order_id(bad_oid, "ctx")
+            require_int_order_id(bad_oid, "ctx")
         with pytest.raises(ProviderError):
             MarketApi._clean_order_id_arg(bad_oid, "Binance")
     assert MarketApi._clean_order_id_arg("98765.0", "Binance") == "98765"
@@ -14869,7 +14871,7 @@ def test_iteration152_hl_kraken_t212_providers_boolean_and_id_hygiene():
     with pytest.raises(ProviderError):
         krk.order_status("HYPEUSD", "0")
     with pytest.raises(ProviderError):
-        krk.cancel_order_by_id("HYPEUSD", "0")
+        krk.cancel_order("HYPEUSD", "0")
 
     # 3. T212Provider _orders_live rejects NaN / "false" / containers
     assert t212_bool("false", True) is False
@@ -15649,13 +15651,13 @@ def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, m
     assert stored["binance_order_id"] == "123"
 
     # 2. trade_cooldown: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
-    assert tc._valid_pair_id("None") is False
-    assert tc._valid_pair_id("0") is False
-    assert tc._valid_pair_id("0.0") is False
-    assert tc._valid_pair_id(float("nan")) is False
-    assert tc._clean_order_id_meta("999.0") == "999"
-    assert tc._clean_order_id_meta("0") is None
-    assert tc._clean_order_id_meta("None") is None
+    assert tc.clean_order_id("None") is None
+    assert tc.clean_order_id("0") is None
+    assert tc.clean_order_id("0.0") is None
+    assert tc.clean_order_id(float("nan")) is None
+    assert tc.normalize_scalar_order_id("999.0") == "999"
+    assert tc.normalize_scalar_order_id("0") is None
+    assert tc.normalize_scalar_order_id("None") is None
 
     # 3. order_outcomes_log: sanitizes regime_context fields and non-numeric price/qty strings
     monkeypatch.setattr(olog, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
@@ -15776,8 +15778,8 @@ def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp
     botcore.load_dotenv(str(env_file), override="true")
     assert botcore.os.environ["ITER162_TEST_KEY"] == "from_file"
 
-    # 2. config: _parse_bool with default="false" and _read_properties_file with quoted # and invalid path
-    assert cfg._parse_bool("unknown_token", default="false") is False
+    # 2. config: _parse_bool_flag with default="false" and _read_properties_file with quoted # and invalid path
+    assert cfg._parse_bool_flag("unknown_token", default="false") is False
     assert cfg._read_properties_file(True) == {}
     prop_file = tmp_path / "props.env"
     prop_file.write_text('QUOTED_HASH="abc#def" # inline comment\nTRADE_ENABLED="false"\n', encoding="utf-8")
@@ -15904,11 +15906,11 @@ def test_iteration164_providers_base_market_api_kraken_and_t212_hygiene(tmp_path
     custom_api.market_regime_context("BTCUSDC", use_runtime_snapshot="false", allow_fallback="false", now=1700000000.0)
     assert snap_called == []
 
-    # 3. KrakenProvider: _fills_from_api(None) and cancel_order_by_id with count="1.0"
+    # 3. KrakenProvider: _fills_from_api(None) and cancel_order with count="1.0"
     kp = KrakenProvider(client=SimpleNamespace(cancel_order=lambda oid: {"count": "1.0"}))
     assert kp._fills_from_api(None) == []
     assert kp._fills_from_api(True) == []
-    kp.cancel_order_by_id("HYPEUSD", "OQCLML-BW3P3-BUCMWZ")
+    kp.cancel_order("HYPEUSD", "OQCLML-BW3P3-BUCMWZ")
 
     # 4. T212Provider: _position(None, strict="false") returns None without raising ProviderError
     tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
@@ -16083,9 +16085,9 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     assert bf.decimal_places(Decimal("0.001")) == 3
     assert bf.decimal_places("0.0001") == 4
     assert bf.decimal_places(0.01) == 2
-    assert bf._parse_bool("", default=True) is True
-    assert bf._parse_bool("y", default=False) is True
-    assert bf._parse_bool("n", default=True) is False
+    assert bf._parse_bool_flag("", default=True) is True
+    assert bf._parse_bool_flag("y", default=False) is True
+    assert bf._parse_bool_flag("n", default=True) is False
     with pytest.raises(bf.BinanceFilterError):
         bf.decimal_places(True)
     with pytest.raises(bf.BinanceFilterError):
@@ -16099,7 +16101,7 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     assert qty_mod._parse_bool_flag(2, default=False) is True
     assert qty_mod._parse_bool_flag("y", default=False) is True
     assert qty_mod._parse_bool_flag("n", default=True) is False
-    assert qty_mod._clean_fill_id(frozenset({"1"})) == ""
+    assert qty_mod.clean_order_id_str(frozenset({"1"})) == ""
 
     # 3. providers.http_resilience.mount_connect_retry with string numbers and raise_on_status="false"
     mounted = {}
@@ -16237,13 +16239,13 @@ def test_iteration170_market_api_and_strategy_executor_hygiene(monkeypatch):
     from providers import market_api as mapi
     from providers import strategy_executor as sexec
 
-    # 1. market_api._parse_bool_flag and _parse_binance_order_id
+    # 1. market_api._parse_bool_flag and require_int_order_id
     assert mapi._parse_bool_flag("y", False) is True
     assert mapi._parse_bool_flag("n", True) is False
     assert mapi._parse_bool_flag(2, False) is True
-    assert mapi._parse_binance_order_id("+12345.0", "ctx") == 12345
+    assert mapi.require_int_order_id("+12345.0", "ctx") == 12345
     with pytest.raises(sexec.ProviderError):
-        mapi._parse_binance_order_id(frozenset({1}), "ctx")
+        mapi.require_int_order_id(frozenset({1}), "ctx")
 
     # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
     captured = {}

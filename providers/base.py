@@ -91,7 +91,6 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     _first_nonempty_str,
     _is_fresh_obs_ts,
     _nonneg_abs_float,
-    _normalize_order,
     _parse_epoch_or_iso_s,
     _pos_abs_float,
     _ts_ms_to_s,

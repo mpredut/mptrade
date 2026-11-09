@@ -35,8 +35,6 @@ QUOTE_SUFFIXES = (
     "EUR", "GBP", "RON", "BTC", "ETH", "USD",
 )
 
-_clean_fill_id = clean_order_id_str
-
 
 def remaining_average_cost(fills, held_qty):
     """Reconstruct moving-average acquisition cost from chronological real fills."""
@@ -49,7 +47,7 @@ def remaining_average_cost(fills, held_qty):
         for row in fills:
             if not isinstance(row, dict):
                 return None
-            identity = _clean_fill_id(row.get("id"))
+            identity = clean_order_id_str(row.get("id"))
             side = normalize_side(row.get("side"))
             if not identity or identity in seen or side not in {"BUY", "SELL"}:
                 return None
@@ -599,9 +597,6 @@ def binance_filter_refusal_reason(error: Exception) -> str:
     return f"binance_filter_refused:{text}"
 
 
-_parse_bool = _parse_bool_flag
-
-
 def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:
     if isinstance(value, bool):
         raise BinanceFilterError(f"invalid {name}: {value!r}")
@@ -666,12 +661,12 @@ class BinanceOrderRules:
         if notional:
             min_notional = _decimal(notional.get("minNotional", 0), name="minNotional")
             max_notional = _decimal(notional.get("maxNotional", 0), name="maxNotional")
-            min_market = _parse_bool(notional.get("applyMinToMarket", False))
-            max_market = _parse_bool(notional.get("applyMaxToMarket", False))
+            min_market = _parse_bool_flag(notional.get("applyMinToMarket", False))
+            max_market = _parse_bool_flag(notional.get("applyMaxToMarket", False))
         elif minimum:
             min_notional = _decimal(minimum.get("minNotional", 0), name="minNotional")
             max_notional = Decimal(0)
-            min_market = _parse_bool(minimum.get("applyToMarket", False))
+            min_market = _parse_bool_flag(minimum.get("applyToMarket", False))
             max_market = False
         else:
             min_notional = max_notional = Decimal(0)
@@ -706,7 +701,7 @@ class BinanceOrderRules:
     def normalize(
         self, *, quantity, price=None, market: bool = False, reference_price=None, business_min_notional=0
     ) -> tuple[Decimal, Decimal | None]:
-        market = _parse_bool(market, default=False)
+        market = _parse_bool_flag(market, default=False)
         qty = _decimal(quantity, name="quantity", allow_zero=False)
         step = self.market_step if market else self.lot_step
         minimum = self.market_min if market else self.lot_min

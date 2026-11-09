@@ -22,6 +22,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from .order_ohlc_utils import extract_order_id
 
 
 class ProviderError(Exception):
@@ -245,12 +246,6 @@ def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
     if not isinstance(capabilities, OrderReconciliationCapabilities):
         raise ProviderError(f"{name}: invalid reconciliation capabilities")
     return capabilities
-
-
-from .order_ohlc_utils import extract_order_id, extract_orig_qty  # noqa: E402
-
-# Compatibility alias retained for existing imports.
-extract_order_qty = extract_orig_qty
 
 
 @runtime_checkable

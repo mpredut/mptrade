@@ -190,15 +190,15 @@ def _run_once(
                                 force_full=market,
                             )
                             if complete:
-                                engine._remove_order(order)
+                                engine._remove(order)
                             price = execution.market_price(side, open_) if market else float(order["limit"])
                             if side == "sell":
                                 quantity = min(quantity, engine.s["qty"])
                                 if quantity <= 1e-12:
-                                    engine._remove_order(order)
+                                    engine._remove(order)
                                     continue
                                 fill_order["qty"] = quantity
-                                avg = engine._avg_cost() or price
+                                avg = engine._avg() or price
                                 _gross, _fee, net = _strat._sell_pnl(avg, price, quantity, params.fx_fee_pct)
                                 if complete and fill_order.get("level") is not None:
                                     engine._record_tp_sold_level(fill_order["level"])
@@ -212,13 +212,13 @@ def _run_once(
                 if engine.s["orders"]:
                     for order in list(engine.s["orders"]):
                         if engine._buy_is_stale(order, float(close)):
-                            engine._remove_order(order)
+                            engine._remove(order)
             trend_closes.append(float(close))
             engine.fx_to_usd = rate
             engine.step(float(close))
 
             qty = engine.s["qty"]
-            avg = engine._avg_cost()
+            avg = engine._avg()
             unrealized_usd = (float(close) - avg) * qty if avg and qty > 1e-9 else 0.0
             open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
             equity_curve.append(initial_capital + realized_net_account + (unrealized_usd - open_buy_fee_usd) / rate)
@@ -227,7 +227,7 @@ def _run_once(
         _strat.log, _strat.notify = original_log, original_notify
 
     qty = engine.s["qty"]
-    avg = engine._avg_cost()
+    avg = engine._avg()
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
     return build_replay_summary(

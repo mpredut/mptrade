@@ -249,9 +249,8 @@ def _client_order_id(record_id, revision, prefix="OR"):
     return f"{pfx}_{record_id[:hash_len]}_{rev_str}"[:36]
 
 
-# Standardized canonical aliases in providers.base: extract_order_id and extract_orig_qty.
+# Standardized canonical alias in providers.base: extract_order_id.
 order_id_from_response = extract_order_id
-order_qty_from_response = extract_orig_qty
 
 
 def _clean_now_sec(now=None) -> float:

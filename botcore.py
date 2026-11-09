@@ -774,8 +774,6 @@ ROOT_DIR = _REPO_ROOT
 CONFIG_ENV_PATH = os.path.join(_REPO_ROOT, "config.env")
 CONFIG_TXT_PATH = os.path.join(_REPO_ROOT, "config.txt")
 
-_parse_bool = _parse_bool_flag
-
 
 def _file_mtime(path: str) -> float:
     try:
@@ -802,13 +800,13 @@ def load_config():
             kl = k.lower()
             if kl == "trade_enabled":
                 if str(v).strip() != "":
-                    new_config["trade_enabled"] = _parse_bool(v, default=True)
+                    new_config["trade_enabled"] = _parse_bool_flag(v, default=True)
             elif allow_other:
                 new_config[kl] = v
 
     env_trade = os.environ.get("TRADE_ENABLED")
     if env_trade is not None and env_trade.strip() != "":
-        new_config["trade_enabled"] = _parse_bool(env_trade, default=True)
+        new_config["trade_enabled"] = _parse_bool_flag(env_trade, default=True)
     new_config.setdefault("trade_enabled", True)
 
     _CONFIG_MTIME = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
@@ -835,7 +833,7 @@ def is_trade_enabled() -> bool:
         cur_mtime = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
         if cur_mtime != _CONFIG_MTIME:
             load_config()
-    return _parse_bool(config_cache.get("trade_enabled", True), default=True)
+    return _parse_bool_flag(config_cache.get("trade_enabled", True), default=True)
 
 
 watcher_thread = globals().get("watcher_thread")

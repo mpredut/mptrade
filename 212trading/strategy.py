@@ -50,7 +50,6 @@ from strategies.base_spot_mixin import (
     sanitize_common_spot_state,
 )
 from strategies.state_store import (
-    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
     state_path_for as _shared_state_path_for,
 )
 from strategies.position_exit_manager import (
@@ -197,7 +196,7 @@ def _sanitize_t212_state(st: dict) -> dict:
     if isinstance(st.get("pending_submit"), dict):
         ps = st["pending_submit"]
         ps_side = str(ps.get("side") or "").strip().upper()
-        ps_qty, ps_limit = _clean_pos_float(ps.get("qty")), _clean_pos_float(ps.get("limit"))
+        ps_qty, ps_limit = safe_pos_float(ps.get("qty"), None), safe_pos_float(ps.get("limit"), None)
         ps_intent = T212Client._clean_order_id(ps.get("intent_id"))
         if ps_side not in ("BUY", "SELL") or ps_qty is None or ps_limit is None or ps_intent is None:
             st["pending_submit"] = None
@@ -205,7 +204,7 @@ def _sanitize_t212_state(st: dict) -> dict:
             ps_copy = dict(ps)
             ps_copy.update(
                 side=ps_side, qty=ps_qty, limit=ps_limit, intent_id=ps_intent,
-                market=_parse_bool_flag(ps.get("market"), False), level=_clean_pos_float(ps.get("level")),
+                market=_parse_bool_flag(ps.get("market"), False), level=safe_pos_float(ps.get("level"), None),
             )
             if "ts" in ps_copy and ps_copy.get("ts") is not None:
                 ps_copy["ts"] = normalize_epoch_sec(ps_copy.get("ts"), default=0.0, allow_zero=True)
@@ -222,18 +221,18 @@ def _sanitize_t212_state(st: dict) -> dict:
             o_side = str(o.get("side") or "").strip().upper()
             if clean_oid is None or o_side not in ("BUY", "SELL"):
                 continue
-            o_qty = _clean_pos_float(o.get("qty"))
+            o_qty = safe_pos_float(o.get("qty"), None)
             o_market = _parse_bool_flag(o.get("market"), False)
-            o_limit = _clean_nonneg_float(o.get("limit"), -1.0) if o_market else _clean_pos_float(o.get("limit"))
+            o_limit = safe_nonneg_float(o.get("limit"), -1.0) if o_market else safe_pos_float(o.get("limit"), None)
             if o_qty is None or o_limit is None or o_limit < 0.0:
                 continue
             o_copy = dict(o)
             o_copy.update(
                 id=clean_oid, side=o_side, qty=o_qty, limit=o_limit,
-                market=o_market, level=_clean_pos_float(o.get("level")),
+                market=o_market, level=safe_pos_float(o.get("level"), None),
             )
             if "amount" in o_copy and o_copy.get("amount") is not None:
-                o_copy["amount"] = _clean_pos_float(o_copy.get("amount"))
+                o_copy["amount"] = safe_pos_float(o_copy.get("amount"), None)
             if "ts" in o_copy and o_copy.get("ts") is not None:
                 o_copy["ts"] = normalize_epoch_sec(o_copy.get("ts"), default=0.0, allow_zero=True)
             if "intent_id" in o_copy:
@@ -289,7 +288,7 @@ class Strategy(BaseSpotMixin):
             audit=self.execution_audit, venue="T212",
         )
         self.fx_to_usd = (
-            self._fx_to_usd(params.currency) if fx_to_usd is None else (_clean_pos_float(fx_to_usd) or 1.0)
+            self._fx_to_usd(params.currency) if fx_to_usd is None else (safe_pos_float(fx_to_usd) or 1.0)
         )
         self.state_file = state_path_for(ticker)
         self._state_write_failed = False
@@ -309,14 +308,14 @@ class Strategy(BaseSpotMixin):
             return safe_pos_float(get_eur_usd(), default=1.08)
         if ccy == "RON":
             return 1.0 / safe_pos_float(get_usd_ron(), default=4.65)
-        rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))
+        rate = safe_pos_float(get_price_usd(f"{ccy}USD=X"), None)
         if rate:
             return rate
         log(f"  ! {ccy}/USD rate unavailable - treating amounts as USD (1:1). Check STRAT_CURRENCY!")
         return 1.0
 
     def _qty_for_amount(self, amount: float, price: float) -> float:
-        amt_f, px_f, fx_f = _clean_pos_float(amount), _clean_pos_float(price), _clean_pos_float(self.fx_to_usd)
+        amt_f, px_f, fx_f = safe_pos_float(amount, None), safe_pos_float(price, None), safe_pos_float(self.fx_to_usd, None)
         if amt_f is None or px_f is None or fx_f is None:
             return 0.0
         usd = safe_pos_float(amt_f * fx_f, default=None)
@@ -456,7 +455,7 @@ class Strategy(BaseSpotMixin):
             self._persist_pending_submit(pending)
             return "filled"
 
-        misses = max(0, int(_clean_nonneg_float(pending.get("lookup_misses"), 0.0))) + 1
+        misses = max(0, int(safe_nonneg_float(pending.get("lookup_misses"), 0.0))) + 1
         pending["lookup_misses"] = misses
         if misses < 2:
             self._persist_pending_submit(pending)
@@ -474,7 +473,7 @@ class Strategy(BaseSpotMixin):
         self.s["qty"] = real_qty
         self.s["cost_usd"] = real_qty * avg_price
         if not sync_spent_only_when_held or real_qty > 1e-9:
-            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
+            fx_rate = safe_pos_float(self.fx_to_usd) or 1.0
             self.s["spent_cash"] = round(real_qty * avg_price / fx_rate, 2)
 
     def _close_cycle(
@@ -507,7 +506,7 @@ class Strategy(BaseSpotMixin):
         tag = "[PAPER] " if self.dry_run else ""
         if order["side"] == "BUY":
             self._apply_buy_fill_accounting(order, qty, price)
-            avg = self._avg_cost()
+            avg = self._avg()
             log(f"  [STRAT] {tag}BUY FILLED {qty} @ {price:.2f} USD ({order.get('kind')})  "
                 f"qty_total={self.s['qty']:.2f} avg={avg:.2f}")
             notify(
@@ -519,7 +518,7 @@ class Strategy(BaseSpotMixin):
             self._cancel_open("SELL")
         else:
             qty = min(qty, self.s["qty"])
-            avg = self._avg_cost() or price
+            avg = self._avg() or price
             gross, fee, net = _sell_pnl(avg, price, qty, self.p.fx_fee_pct)
             self.s["realized_pnl_usd"] += gross
             self.s["realized_net_usd"] += net
@@ -549,8 +548,8 @@ class Strategy(BaseSpotMixin):
 
     # -- Placement & Cancellation ----------------------------------------------
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
-        lim_f = _clean_pos_float(limit)
-        amt_f = _clean_pos_float(amount)
+        lim_f = safe_pos_float(limit, None)
+        amt_f = safe_pos_float(amount, None)
         if lim_f is None or amt_f is None or round(lim_f, 2) <= 0:
             log("  ! [STRAT] invalid BUY amount/limit — skipping")
             return False
@@ -588,8 +587,8 @@ class Strategy(BaseSpotMixin):
 
     def _place_sell(self, qty: float, limit: float, level: float | None = None,
                     kind: str = "TP", *, market: bool = False) -> bool:
-        qty_f = _clean_pos_float(qty)
-        lim_f = _clean_pos_float(limit)
+        qty_f = safe_pos_float(qty, None)
+        lim_f = safe_pos_float(limit, None)
         if qty_f is None or lim_f is None or round(lim_f, 2) <= 0:
             log("  ! [STRAT] invalid SELL qty/limit — sending no order")
             return False
@@ -597,7 +596,7 @@ class Strategy(BaseSpotMixin):
         if qty <= 0:
             log("  ! [STRAT] SELL qty 0 after rounding — keeping the dust, sending no order")
             return False
-        level = _clean_pos_float(level)
+        level = safe_pos_float(level, None)
         tag = f"+{level:g}%" if level is not None else ""
         if self.dry_run:
             order_type = "MKT" if market else f"@ {limit:.2f}"
@@ -632,7 +631,7 @@ class Strategy(BaseSpotMixin):
                 return False
             if _owned <= 1e-6:
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
-                exit_px = _clean_pos_float(self.s.get("last_sell_price")) or limit
+                exit_px = safe_pos_float(self.s.get("last_sell_price")) or limit
                 self._close_cycle(exit_px, exit_kind=kind)
                 self.s["locked_zero_until"] = self._now() + 300
                 self._save()
@@ -683,7 +682,7 @@ class Strategy(BaseSpotMixin):
             return True
         if self.p.ladder_min_free <= 0:
             return False
-        p = ref_price or self._avg_cost() or 0.0
+        p = ref_price or self._avg() or 0.0
         if p <= 0:
             return False
         min_dust = max(5.0, self.p.ladder_min_free * 1.5)
@@ -692,7 +691,7 @@ class Strategy(BaseSpotMixin):
 
     def _sellable_qty(self, held: float, ref_price: float | None = None) -> float:
         """Return the maximum safely sellable quantity avoiding T212 min-opened-position."""
-        p = ref_price or self._avg_cost() or 0.0
+        p = ref_price or self._avg() or 0.0
         if self._is_dust(held, p):
             return 0.0
         q_round = round(held, 2)
@@ -741,7 +740,7 @@ class Strategy(BaseSpotMixin):
             self.s["tp_fail_until"] = {}
         fails = self.s["tp_fail_until"]
         for lvl, (q, lim) in desired.items():
-            if lvl in open_sells or now < _clean_nonneg_float(fails.get(str(lvl)), 0.0):
+            if lvl in open_sells or now < safe_nonneg_float(fails.get(str(lvl)), 0.0):
                 continue
             if self.s.get("pending_submit"):
                 break
@@ -757,15 +756,15 @@ class Strategy(BaseSpotMixin):
         """Return whether a resting limit BUY should be cancelled and placed again."""
         if str(order.get("side") or "").strip().upper() != "BUY" or order.get("market"):
             return False
-        order_ts = _clean_nonneg_float(order.get("ts"), 0.0)
-        order_lim = _clean_pos_float(order.get("limit"))
+        order_ts = safe_nonneg_float(order.get("ts"), 0.0)
+        order_lim = safe_pos_float(order.get("limit"), None)
         if order_lim is None or (self._now() - order_ts) / 60 <= self.p.order_ttl_min:
             return False
         return price * (1 - self.p.entry_discount_pct / 100) > order_lim * 1.003
 
     # -- Reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> bool:
-        px = _clean_pos_float(price)
+        px = safe_pos_float(price, None)
         if px is None:
             return False
         if self.dry_run:
@@ -779,10 +778,10 @@ class Strategy(BaseSpotMixin):
                 if o not in self.s["orders"]:
                     continue
                 if side == "BUY":
-                    self._remove_order(o)
+                    self._remove(o)
                     self._apply_fill(o, o["qty"], o["limit"])
                 elif o.get("market") or price >= o["limit"]:
-                    self._remove_order(o)
+                    self._remove(o)
                     if o.get("level") is not None:
                         self._record_tp_sold_level(o["level"])
                     self._apply_fill(o, o["qty"], price if o.get("market") else o["limit"])
@@ -869,9 +868,9 @@ class Strategy(BaseSpotMixin):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
                     fill_oid = str(latest.get("orderId") or latest.get("id") or "").strip()
-                    raw_ts = _clean_pos_float(latest.get("timestamp") or latest.get("time"))
+                    raw_ts = safe_pos_float(latest.get("timestamp") or latest.get("time"), None)
                     fill_ts_s = (raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts) if raw_ts is not None else None
-                    last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
+                    last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
                     stale_hist = bool(
                         (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))
                         or (side == "SELL" and fill_ts_s is not None and last_sell_ts is not None and fill_ts_s <= last_sell_ts + 0.5)
@@ -880,12 +879,12 @@ class Strategy(BaseSpotMixin):
                         latest_any = hist_fn(self.ticker, side=None, refresh=False)
                         if isinstance(latest_any, dict):
                             any_side = str(latest_any.get("side") or "").strip().upper()
-                            any_ts_raw = _clean_pos_float(latest_any.get("timestamp") or latest_any.get("time"))
+                            any_ts_raw = safe_pos_float(latest_any.get("timestamp") or latest_any.get("time"), None)
                             any_ts_s = (any_ts_raw / 1000.0 if any_ts_raw > 1e11 else any_ts_raw) if any_ts_raw is not None else None
                             if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
                                 stale_hist = True
-                    fill_qty = _clean_pos_float(latest.get("executedQty") or latest.get("qty"))
-                    fill_px = _clean_pos_float(latest.get("price"))
+                    fill_qty = safe_pos_float(latest.get("executedQty") or latest.get("qty"), None)
+                    fill_px = safe_pos_float(latest.get("price"), None)
                     if (
                         not stale_hist
                         and fill_qty is not None
@@ -920,10 +919,10 @@ class Strategy(BaseSpotMixin):
             active = {str(o["id"]) for o in self.s["orders"]}
 
         prev_qty = self.s["qty"]
-        prev_avg = self._avg_cost() or real_avg
+        prev_avg = self._avg() or real_avg
         status_cache: dict[str, object] = {}
 
-        if real_qty > prev_qty + 1e-6 and self._now() < _clean_nonneg_float(self.s.get("locked_zero_until"), 0.0):
+        if real_qty > prev_qty + 1e-6 and self._now() < safe_nonneg_float(self.s.get("locked_zero_until"), 0.0):
             log("  [STRAT] adoption ignored — stale portfolio (recent not-owned, lock active)")
             return False
         if real_qty > prev_qty + 1e-6:
@@ -935,9 +934,9 @@ class Strategy(BaseSpotMixin):
             raw_marginal = (real_avg * real_qty - prev_avg * prev_qty) / fq if (fq > 0 and real_avg > 0) else 0.0
             fp = (
                 exact_price
-                or (_clean_pos_float(raw_marginal) if raw_marginal > 0 else None)
-                or _clean_pos_float((source_order or {}).get("limit"))
-                or _clean_pos_float(real_avg)
+                or (safe_pos_float(raw_marginal, None) if raw_marginal > 0 else None)
+                or safe_pos_float((source_order or {}).get("limit"), None)
+                or safe_pos_float(real_avg, None)
                 or price
             )
             eff_real_avg = real_avg if real_avg > 0 else (prev_avg if (prev_avg and prev_avg > 0) else fp)
@@ -1030,9 +1029,9 @@ class Strategy(BaseSpotMixin):
                         and safe_nonneg_float(status.filled_qty, default=0.0) > 1e-9
                     ):
                         self._record_tp_sold_level(o["level"])
-                    self._remove_order(o)
+                    self._remove(o)
                 elif status == "not_found":
-                    misses = max(0, int(_clean_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
+                    misses = max(0, int(safe_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
                     o["lookup_misses"] = misses
                     if misses >= (2 if o.get("cancel_requested") else 3):
                         log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")
@@ -1041,7 +1040,7 @@ class Strategy(BaseSpotMixin):
                             and safe_nonneg_float(o.get("applied_fill_qty"), default=0.0) > 1e-9
                         ):
                             self._record_tp_sold_level(o["level"])
-                        self._remove_order(o)
+                        self._remove(o)
                 continue
             o.pop("lookup_misses", None)
             if self._buy_is_stale(o, price):
@@ -1111,8 +1110,8 @@ class Strategy(BaseSpotMixin):
         if self.p.tp_mdhtp_enabled and self.exit_manager and self.ticker in self.exit_manager.tp_ride_state:
             return False
 
-        avg = self._avg_cost()
-        peak = _clean_pos_float(self.s.get("pos_peak")) or 0.0
+        avg = self._avg()
+        peak = safe_pos_float(self.s.get("pos_peak")) or 0.0
         if not peak or peak <= 0:
             self.s["pos_peak"] = peak = max(avg or price, price)
         if price > peak:
@@ -1132,7 +1131,7 @@ class Strategy(BaseSpotMixin):
             )
 
         drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
-        if drop_pct < self.p.trail_pct or self._now() < _clean_nonneg_float(self.s.get("tr_fail_until"), 0.0):
+        if drop_pct < self.p.trail_pct or self._now() < safe_nonneg_float(self.s.get("tr_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
             if not self.s.get("tr_alerted"):
@@ -1151,7 +1150,7 @@ class Strategy(BaseSpotMixin):
             return False
         if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
             return True
-        avg = self._avg_cost()
+        avg = self._avg()
         if not avg:
             return False
         loss_pct = (avg - price) / avg * 100
@@ -1175,7 +1174,7 @@ class Strategy(BaseSpotMixin):
                 exit_reason = decision.reason if should_exit_sl else ""
 
             if should_exit_sl:
-                if self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0):
+                if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
                     return False
                 if pending_sl is None:
                     self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
@@ -1201,7 +1200,7 @@ class Strategy(BaseSpotMixin):
             self.s["sl_pending"] = False
             self.s.pop("sl_fail_until", None)
             return False
-        if self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0):
+        if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
             if not self.s.get("sl_alerted"):
@@ -1217,7 +1216,7 @@ class Strategy(BaseSpotMixin):
     def _check_loss_alert(self, price: float) -> None:
         """Send an informational alert for each new unrealized-loss band."""
         step = self.p.loss_alert_step
-        avg = self._avg_cost()
+        avg = self._avg()
         if step <= 0 or not avg:
             return
         loss_pct = (avg - price) / avg * 100
@@ -1236,7 +1235,7 @@ class Strategy(BaseSpotMixin):
         rb = self.s.get("sl_rebuy")
         if not isinstance(rb, dict) or not rb:
             return
-        prev_low = _clean_pos_float(rb.get("low"))
+        prev_low = safe_pos_float(rb.get("low"), None)
         rb["low"] = min(prev_low, price) if prev_low is not None else price
         target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
         if price < target and not are_close(price, target, self.p.reentry_tolerance_pct):
@@ -1262,17 +1261,17 @@ class Strategy(BaseSpotMixin):
     # -- Step Pipeline Sub-Stages ----------------------------------------------
     def _step_sync_market(self, price: float) -> tuple[float, float, float, bool] | None:
         """Stage 1: Validate market price, normalize held quantity, check loss alerts, and observe_only."""
-        px = _clean_pos_float(price)
+        px = safe_pos_float(price, None)
         if px is None:
             return None
         price = px
-        held = _clean_nonneg_float(self.s.get("qty"), 0.0)
+        held = safe_nonneg_float(self.s.get("qty"), 0.0)
         self.s["qty"] = held
         self._check_loss_alert(price)
         if self.observe_only:
             if held > 1e-9:
-                avg = self._avg_cost()
-                peak = _clean_pos_float(self.s.get("pos_peak")) or 0.0
+                avg = self._avg()
+                peak = safe_pos_float(self.s.get("pos_peak")) or 0.0
                 if peak <= 0:
                     self.s["pos_peak"] = max(avg or price, price)
                 elif price > peak:
@@ -1281,7 +1280,7 @@ class Strategy(BaseSpotMixin):
                 self._cancel_all_orders()
             return None
         disc = 1 - self.p.entry_discount_pct / 100
-        in_backoff = self._now() < _clean_nonneg_float(self.s.get("buy_backoff_until"), 0.0)
+        in_backoff = self._now() < safe_nonneg_float(self.s.get("buy_backoff_until"), 0.0)
         return price, held, disc, in_backoff
 
     def _step_evaluate_exits(self, price: float) -> bool:
@@ -1371,7 +1370,7 @@ class Strategy(BaseSpotMixin):
                 return True
 
             fresh_held = self.s["qty"]
-            raw_sf = _clean_pos_float(pending_exit.get("sell_fraction"))
+            raw_sf = safe_pos_float(pending_exit.get("sell_fraction"), None)
             sell_fraction = min(1.0, raw_sf) if raw_sf is not None else 1.0
             target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
             sell_qty = self._sellable_qty(target_qty, price)
@@ -1396,7 +1395,7 @@ class Strategy(BaseSpotMixin):
         elif decision is not None and decision.action == ExitAction.HOLD:
             if self.ticker in self.exit_manager.tp_ride_state:
                 ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
-                peak_px = _clean_pos_float(ride_state.get("peak_price")) or price
+                peak_px = safe_pos_float(ride_state.get("peak_price")) or price
                 self.s["trail_peak"] = peak_px
                 self._cancel_open("SELL")
                 log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
@@ -1432,7 +1431,7 @@ class Strategy(BaseSpotMixin):
         prag_dca = self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100) if self.s["last_buy_price"] else None
         in_sl_state = bool(
             self.s.get("sl_pending")
-            or (self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0))
+            or (self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0))
             or (self.ticker in self.exit_manager.sl_bounce_state if self.exit_manager else False)
         )
         if not (
@@ -1463,7 +1462,7 @@ class Strategy(BaseSpotMixin):
         self, price: float, held: float, disc: float, *, in_backoff: bool
     ) -> None:
         """Stage 4: Evaluate take-profit (MDHTP, ladder, or single TP) and DCA order dispatch."""
-        if self._dispatch_take_profit(price, self._avg_cost(), held):
+        if self._dispatch_take_profit(price, self._avg(), held):
             return
         self._dispatch_dca_buy(price, disc, in_backoff=in_backoff)
 
@@ -1501,7 +1500,7 @@ class Strategy(BaseSpotMixin):
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
         def _log_status(price: float) -> None:
-            avg = self._avg_cost()
+            avg = self._avg()
             net = self.s.get("realized_net_usd", 0.0)
             fees = self.s.get("fees_usd", 0.0)
             if avg:

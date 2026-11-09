@@ -9,7 +9,6 @@ from __future__ import annotations
 from botcore import (
     _parse_bool_flag as _bool_flag,
     are_close,
-    diff_percent,
     normalize_epoch_sec,
     safe_float,
 )

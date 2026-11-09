@@ -190,7 +190,7 @@ class T212ReplayTest(unittest.TestCase):
             )
             self.assertEqual(engine.s["qty"], 1.0)
             self.assertAlmostEqual(engine.s["cost_usd"], 100.0)
-            self.assertAlmostEqual(engine._avg_cost(), 100.0)
+            self.assertAlmostEqual(engine._avg(), 100.0)
 
         with self.subTest(msg="dust_sell_does_not_create_zero_quantity_order"):
             params = _params()

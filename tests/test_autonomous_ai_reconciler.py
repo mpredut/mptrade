@@ -7976,7 +7976,7 @@ def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_can
     fb_cli = _WorkingFallbackClient()
     prov = KrakenProvider(client=_DeniedPrimaryClient())
     monkeypatch.setattr(prov, "_order_query_fallback_client", lambda: fb_cli)
-    prov.cancel_order_by_id("TAOUSD", "O-CANCEL-ME-1")
+    prov.cancel_order("TAOUSD", "O-CANCEL-ME-1")
     assert fb_cli.cancelled == ["O-CANCEL-ME-1"]
 
 
