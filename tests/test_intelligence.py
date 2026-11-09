@@ -7228,7 +7228,6 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
             return _MockT212Client()
 
     monkeypatch.setattr(t212_prov_mod, "T212Provider", _MockT212Provider)
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     refreshed = ms_col_mod._refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)
     assert refreshed is True
     assert vb_data["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(199.06)
@@ -7503,9 +7502,10 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
     assert len(s24_c) == 3 and s24_c[-1][1] == 76200.0
 
     # _resolve_fallback_ohlc_fn caches provider OHLC callable across calls and _wrap_cached_ohlc_fn caches OHLC responses
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("MPTRADE_ALLOW_LIVE_BACKFILL", "1")
     fn1 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
     fn2 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
+    monkeypatch.delenv("MPTRADE_ALLOW_LIVE_BACKFILL", raising=False)
     assert callable(fn1) and fn1 is fn2
     calls = []
 
@@ -7529,11 +7529,10 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
     from intelligence.sentiment.evaluators import price_series_evaluator as pse
     from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
 
-    # 1. Discrepancy BR: _load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache outside pytest
+    # 1. Discrepancy BR: _load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache
     cdir_ohlc = tmp_path / "ohlc_cache_dir"
     cdir_ohlc.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(pse, "cache_path", lambda name: cdir_ohlc / name)
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     now_s = time.time()
     base_ts = int(now_s - 20 * 3600)
     ohlc_calls = []
@@ -7554,7 +7553,6 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
     pse._OHLC_24H_DISK_MEMO.clear()
     pts2 = pse._load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts2) == 41 and len(ohlc_calls) == 1
-    monkeypatch.setenv("PYTEST_CURRENT_TEST", "1")
 
     # 2. Discrepancy BS: Breaking News Feed ranks financial/macro/geopolitical context above non-macro/tabloid filler
     assert is_off_topic_general_news_title("Mamdani: ‘it’s morning again in America’ after blue wave") is True

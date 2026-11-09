@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
 
-from botcore import extract_current_price_item, fetch_public_json
+from botcore import extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
 from cachepaths import (
     canonical_base_asset,
     normalize_venue_name,
@@ -458,7 +458,7 @@ def harvest_macro_and_news_sensors(
                     update_summary_line=True,
                 ) or enriched
             macro_sensors[attr] = enriched
-    if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+    if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
         from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 
         stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
@@ -675,7 +675,7 @@ def harvest_macro_and_news_sensors(
             gt_cur["headlines_analyzed"] = len(valid_news)
             gt_cur["ts"] = now_ts
             gt_cur["age_min"] = 0.0
-            if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+            if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
                     geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
@@ -696,7 +696,7 @@ def harvest_macro_and_news_sensors(
             gt_cur["headlines_analyzed"] = len(valid_news)
             gt_cur["ts"] = now_ts
             gt_cur["age_min"] = 0.0
-            if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+            if read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
                     geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))

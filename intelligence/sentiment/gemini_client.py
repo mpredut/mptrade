@@ -16,6 +16,7 @@ from botcore import (
     _parse_bool_flag,
     fetch_json_post,
     is_cache_fresh,
+    is_unmocked_llm_query_allowed,
     load_dotenv,
     optional_env,
     required_env,
@@ -196,7 +197,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if not repo_dir or not os.path.isdir(repo_dir):
             return None
         default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if "PYTEST_CURRENT_TEST" in os.environ and os.path.abspath(repo_dir) == default_root:
+        if not is_unmocked_llm_query_allowed() and os.path.abspath(repo_dir) == default_root:
             return None
         try:
             proc = _ORIG_SUBPROCESS_RUN(
@@ -390,7 +391,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
             return None
 
-        in_pytest = "PYTEST_CURRENT_TEST" in os.environ
+        allow_unmocked = is_unmocked_llm_query_allowed(getattr(self, "_allow_unmocked_queries", None))
         cli_mocked = (
             hasattr(subprocess.run, "_mock_name")
             or subprocess.run is not _ORIG_SUBPROCESS_RUN
@@ -404,12 +405,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
             or hasattr(fetch_json_post, "_mock_name")
             or fetch_json_post is not _ORIG_FETCH_JSON_POST
         )
-        if in_pytest and not cli_mocked and not rest_mocked:
-            logger.debug("Gemini LLM external query suppressed under pytest.")
+        if not allow_unmocked and not cli_mocked and not rest_mocked:
+            logger.debug("Gemini LLM external query suppressed by runtime policy.")
             return None
 
         # 2. Local authenticated CLI runner (subscription mode)
-        if self.cli_path and os.path.exists(self.cli_path) and (not in_pytest or cli_mocked):
+        if self.cli_path and os.path.exists(self.cli_path) and (allow_unmocked or cli_mocked):
             topic_lock: Optional[threading.Lock] = None
             topic_lock_transferred = False
             prev_repo_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)

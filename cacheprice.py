@@ -42,6 +42,8 @@ from binance_api.bapi_ws import (
     WS_RECV_TIMEOUT,
 )
 from botcore import (
+    is_live_network_backfill_enabled,
+    is_rth_gate_enabled,
     is_us_rth_open,
     safe_nonneg_float,
     safe_pos_float,
@@ -127,7 +129,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     def get_remote_items(self, symbol, startTime):
         if (
             is_equity_symbol(symbol)
-            and "PYTEST_CURRENT_TEST" not in os.environ
+            and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open)
             and not is_us_rth_open()
         ):
             with self.lock:
@@ -909,7 +911,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 normalize_venue_name(self.provider_name_for(symbol) or "") == "t212"
                 or is_equity_symbol(symbol)
             )
-            if is_rth_sym and "PYTEST_CURRENT_TEST" not in os.environ:
+            if is_rth_sym and is_rth_gate_enabled(
+                getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
+            ):
                 now_s = _now_time()
                 if (now_s - self._rth_empty_backoff_ts.get(symbol, 0.0)) < 60.0:
                     continue
@@ -1058,12 +1062,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         sym_mod = _cm_override("sym", sym)
         if (
             entry is not None
-            and (
-                os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
-                or (
-                    "PYTEST_CURRENT_TEST" not in os.environ
-                    and "unittest" not in sys.modules
-                )
+            and is_rth_gate_enabled(
+                getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
             )
             and hasattr(sym_mod, "is_symbol_market_open")
             and not sym_mod.is_symbol_market_open(target_sym)
@@ -1217,6 +1217,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         ws_url: str = DEFAULT_WS_URL,
         user_address: Optional[str] = None,
         fills_cache_path: Optional[str] = None,
+        resolve_env_user_address: Optional[bool] = None,
     ):
         super().__init__(symbols=symbols, ws_url=ws_url)
         self.market_api = market_api
@@ -1224,7 +1225,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         self._fills_cache_path = fills_cache_path
         self._fills_ws_seeded = False
         self._last_fills_touch_ms = 0
-        if user_address is None and "pytest" not in sys.modules:
+        if user_address is None and is_live_network_backfill_enabled(resolve_env_user_address):
             from providers.base import env_value
 
             hl_dir = os.path.join(
@@ -1647,7 +1648,7 @@ def _start_nonbinance_trend_poller(
         )
         enable_ws = (
             auto_ws_env not in ("0", "false", "no", "off")
-            and "pytest" not in sys.modules
+            and is_live_network_backfill_enabled()
         )
     else:
         enable_ws = _parse_bool_flag(start_ws, default=False)
@@ -1710,9 +1711,8 @@ def _start_nonbinance_trend_poller(
                 real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
                 if callable(real_ws_fn) and real_ws_fn(s):
                     continue
-                rth_gate_active = os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1" or (
-                    "PYTEST_CURRENT_TEST" not in os.environ
-                    and "unittest" not in sys.modules
+                rth_gate_active = is_rth_gate_enabled(
+                    getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
                 now_ts = time.time()
                 if rth_gate_active and not is_symbol_market_open(s, now_ts):

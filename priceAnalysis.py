@@ -15,6 +15,7 @@ from datetime import datetime
 import utils as u
 from botcore import (
     _parse_bool_flag,
+    is_live_network_backfill_enabled,
     load_dotenv as _load_dotenv,
     lru_dict_put,
     normalize_epoch_sec,
@@ -292,7 +293,7 @@ def _load_sorted_price_series(
                         cur_span_s = norm_data[-1][0] - norm_data[0][0]
                         if cur_span_s >= min_req_span_s:
                             break
-        if cur_span_s < min_req_span_s and "PYTEST_CURRENT_TEST" not in os.environ:
+        if cur_span_s < min_req_span_s and is_live_network_backfill_enabled():
             ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
             if ohlc_pts:
                 older_ohlc = [pt for pt in ohlc_pts if pt[0] < oldest_ts - 1.0]

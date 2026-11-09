@@ -8,7 +8,10 @@ import random
 import re as _re
 import time
 import nacl.signing
-import numpy as np
+try:
+    import numpy as np
+except Exception:
+    np = None  # type: ignore[assignment]
 
 import botcore
 from cachepaths import (

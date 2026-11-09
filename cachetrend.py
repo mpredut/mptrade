@@ -29,6 +29,7 @@ import pricewindow as pw
 import utils as u
 from botcore import (
     diff_percent,
+    is_live_network_backfill_enabled,
     load_dotenv as _load_dotenv,
     normalize_epoch_sec,
     required_env,
@@ -601,7 +602,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if (
             self.writer
             and self._full_eval_thread is not None
-            and ("PYTEST_CURRENT_TEST" not in os.environ or getattr(self, "_enable_kalman_tracker", False))
+            and is_live_network_backfill_enabled(getattr(self, "_enable_kalman_tracker", None))
         ):
             try:
                 import shadow_signals

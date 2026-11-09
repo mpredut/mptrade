@@ -23,6 +23,7 @@ from botcore import (
     exact_pos_int,
     float_env,
     int_env,
+    is_live_network_backfill_enabled,
     normalize_epoch_sec,
     obj_attr,
     parse_dotenv,
@@ -378,13 +379,13 @@ def _canonical_topic_key(topic: Any) -> str:
 
 
 def _config_notification_int(key: str, default: int) -> int:
-    """Resolve a notification interval from env/config.env, defaulting to 0 in unconfigured pytest runs."""
+    """Resolve a notification interval from env/config.env, defaulting to 0 when unconfigured in non-live mode."""
     raw = os.environ.get(key)
     has_explicit_env = raw is not None and str(raw).strip() != "" and not _is_unmodified_root_key(key)
     if has_explicit_env:
         return _positive_int_env(key, default)
     dedup_s = float_env("NOTIFICATION_DEDUP_SECONDS")
-    if dedup_s == 0.0 or "PYTEST_CURRENT_TEST" in os.environ:
+    if dedup_s == 0.0 or not is_live_network_backfill_enabled():
         return 0
     if raw is not None and str(raw).strip() != "":
         return _positive_int_env(key, default)

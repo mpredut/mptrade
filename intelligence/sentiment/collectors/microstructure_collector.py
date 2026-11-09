@@ -8,7 +8,12 @@ import time as _time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import extract_current_price_item, load_local_module, safe_pos_int
+from botcore import (
+    extract_current_price_item,
+    is_live_network_backfill_enabled,
+    load_local_module,
+    safe_pos_int,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -19,13 +24,35 @@ from cachepaths import (
     resolve_cache_dir_path,
     split_symbol_assets,
 )
-from cacheprice import (
-    Cache24PriceManager,
-    Cache365PriceManager,
-    CacheCurrentPriceManager,
-    CachePriceManagerBase,
-    CacheSparsePriceManager,
-)
+Cache24PriceManager: Any = None
+Cache365PriceManager: Any = None
+CacheCurrentPriceManager: Any = None
+CachePriceManagerBase: Any = None
+CacheSparsePriceManager: Any = None
+
+
+def _ensure_cacheprice_classes_bound() -> None:
+    global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
+    if Cache24PriceManager is not None:
+        return
+    from cacheprice import (
+        Cache24PriceManager as _C24,
+        Cache365PriceManager as _C365,
+        CacheCurrentPriceManager as _CCP,
+        CachePriceManagerBase as _CPBase,
+        CacheSparsePriceManager as _CSparse,
+    )
+
+    Cache24PriceManager = _C24
+    Cache365PriceManager = _C365
+    CacheCurrentPriceManager = _CCP
+    CachePriceManagerBase = _CPBase
+    CacheSparsePriceManager = _CSparse
+    if "CompositeSymbolPriceSeriesLoader" in globals():
+        CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
+        CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
+        CompositeSymbolPriceSeriesLoader.price_sparse_cls = _CSparse
+        CompositeSymbolPriceSeriesLoader.current_price_cls = _CCP
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -155,17 +182,14 @@ def _wrap_cached_ohlc_fn(
         return resolved_fn
 
     def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
-        if "PYTEST_CURRENT_TEST" in os.environ:
-            fn = _get_raw_fn()
-            return fn(s_arg, interval_min) if callable(fn) else None
-        ck = (prov_key, str(s_arg or "").strip().upper(), int(interval_min))
+        fn = _get_raw_fn()
+        if not callable(fn):
+            return None
+        ck = (prov_key, id(fn), str(s_arg or "").strip().upper(), int(interval_min))
         now_s = _time.time()
         hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
         if hit is not None and 0.0 <= (now_s - hit[0]) < ttl_sec:
             return hit[1]
-        fn = _get_raw_fn()
-        if not callable(fn):
-            return None
         res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
             if len(_FALLBACK_OHLC_SERIES_CACHE) > 128:
@@ -187,7 +211,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         or inst_map.get(sym_clean)
     )
     ohlc_fn = getattr(getattr(inst_obj, "_provider", None), "ohlc_series", None)
-    if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
+    if callable(ohlc_fn) or not is_live_network_backfill_enabled():
         return ohlc_fn if callable(ohlc_fn) else None
     try:
         prov_key = ""
@@ -300,6 +324,7 @@ def _compute_price_series_memo_signature(
     is_eq_sym: bool,
     current_price_items: Optional[Dict[str, Any]],
 ) -> Tuple[Tuple[Any, ...], Tuple[Any, ...]]:
+    _ensure_cacheprice_classes_bound()
     stat_list = []
     for sp in _cand_cache_paths(
         cachedb_dir,
@@ -340,6 +365,7 @@ def _load_raw_24h_series_from_disk(
     is_eq_sym_load: bool,
     _rj: Any,
 ) -> Tuple[list, float]:
+    _ensure_cacheprice_classes_bound()
     series_24h: list = []
     span_24h_ms = 0.0
     for cand in cands:
@@ -427,6 +453,7 @@ def _load_raw_archive_and_watcher_series(
     _rj: Any,
     is_default_rj: bool,
 ) -> Tuple[list, list, list, Optional[float]]:
+    _ensure_cacheprice_classes_bound()
     archive_pts: list = []
     sparse_7d_pts: list = []
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
@@ -774,13 +801,13 @@ def ensure_fresh_symbol_microstructure(
     include_derivatives: bool = False,
 ) -> None:
     """Trigger on-demand orderbook, derivatives, or whale collector fetches when cached files are missing or stale."""
-    if "PYTEST_CURRENT_TEST" in os.environ or not cache_dir:
+    if not is_live_network_backfill_enabled() or not cache_dir:
         return
     eff_cache_dir = resolve_cache_dir_path(cache_dir)
     if not eff_cache_dir or not os.path.isdir(eff_cache_dir):
         return
     sym_u = str(symbol or "").strip().upper()
-    if not sym_u or "PYTEST_CURRENT_TEST" in os.environ:
+    if not sym_u:
         return
     eff_now = resolve_now_ts(now_ts)
     is_eq = is_equity_symbol(sym_u)
@@ -898,12 +925,19 @@ def _refresh_stale_t212_cached_positions(
     """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in `cached_bals` from Trading212 live portfolio."""
     global _LAST_T212_PORTFOLIO_POLL_TS
     if (
-        "PYTEST_CURRENT_TEST" in os.environ
-        or not isinstance(cached_bals, dict)
+        not isinstance(cached_bals, dict)
         or not bcache_path
         or not os.path.exists(bcache_path)
     ):
         return False
+    if not is_live_network_backfill_enabled():
+        try:
+            from providers import t212_provider as _t212_prov_mod
+
+            if getattr(_t212_prov_mod.T212Provider, "__module__", "") == "providers.t212_provider":
+                return False
+        except Exception:
+            return False
     t212_ts_vals = [
         safe_pos_float(bval.get("ts"), default=0.0) or 0.0
         for bkey, bval in cached_bals.items()
@@ -1003,7 +1037,7 @@ def upgrade_tpo_vp_from_ohlc(
         ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
     if not (
         callable(ohlc_fn)
-        or "PYTEST_CURRENT_TEST" not in os.environ
+        or is_live_network_backfill_enabled()
         or os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
     ):
         return
@@ -1062,7 +1096,7 @@ def fetch_and_normalize_equity_yahoo_chart(
     else:
         _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
         chart_res = _chart(canonical_base_asset(sym) or sym, rng="5d", interval="5m")
-        if "PYTEST_CURRENT_TEST" not in os.environ:
+        if is_live_network_backfill_enabled():
             _EQ_YAHOO_CHART_MEMO[sym] = (now_ts, chart_res)
     return normalize_yahoo_5d_chart_bars(chart_res, raw_series_24h, now_ts, eq_rth_open=eq_rth_open)
 
@@ -1078,7 +1112,7 @@ def _persist_refreshed_equity_chart_cache(
     rth_bar_fresh: bool,
     now_ts: float,
 ) -> None:
-    if not (cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ):
+    if not (cache_dir and os.path.isdir(cache_dir) and is_live_network_backfill_enabled()):
         return
     try:
         from state_io import atomic_write_jsonl, read_json_dict, save_json_state, write_meta_json
@@ -1222,7 +1256,7 @@ def _seed_t212_and_hyperliquid_initial_prices(
                 pos_ts_val = cp_ts_sec
         if pos_ts_val is not None:
             t212_pos_ts[ticker] = pos_ts_val
-        elif "PYTEST_CURRENT_TEST" in os.environ and bcache_mtime > 0.0:
+        elif not is_live_network_backfill_enabled() and bcache_mtime > 0.0:
             t212_pos_ts[ticker] = bcache_mtime
         t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
         cur_t_px = safe_pos_float(t_entry.get("price"), default=0.0) or 0.0
@@ -1283,7 +1317,7 @@ def _enrich_symbol_with_yahoo_5d_chart(
         if cache_dir and is_eq_sym
         else ""
     )
-    memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
+    memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and is_live_network_backfill_enabled()) else None
     memo_ttl_s = 240.0
     eq_rth_open = False
     if is_eq_sym:
@@ -1298,7 +1332,7 @@ def _enrich_symbol_with_yahoo_5d_chart(
     memo_chart_fresh = bool(memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < memo_ttl_s)
     eq_cache_stale = bool(
         is_eq_sym
-        and "PYTEST_CURRENT_TEST" not in os.environ
+        and is_live_network_backfill_enabled()
         and (
             memo_chart is not None
             or eq_rth_open
@@ -1311,7 +1345,7 @@ def _enrich_symbol_with_yahoo_5d_chart(
             or not os.path.exists(p24_eq_path)
         )
     )
-    if not ((not m24 and (is_t212_inst or (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ))) or eq_cache_stale):
+    if not ((not m24 and (is_t212_inst or (is_eq_sym and is_live_network_backfill_enabled()))) or eq_cache_stale):
         return matched_series_24h, m24, active_7d_vals, sym_px_cur, post_rth_px_override, post_rth_series_replaced
 
     try:
@@ -1332,7 +1366,7 @@ def _enrich_symbol_with_yahoo_5d_chart(
             sym_px_cur <= 0.0
             or abs(sym_px_cur - chart_px) < 1e-4
             or (
-                (not is_t212_inst or ("PYTEST_CURRENT_TEST" not in os.environ and eq_cache_stale))
+                (not is_t212_inst or (is_live_network_backfill_enabled() and eq_cache_stale))
                 and chart_tick_fresh
                 and not _prices_diverged(sym_px_cur, chart_px)
                 and (
@@ -1764,7 +1798,7 @@ def _enrich_discovered_reference_microstructure_symbols(
         elif p_ref is None:
             ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
             ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
-            if not ser_24h and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and "PYTEST_CURRENT_TEST" not in os.environ:
+            if not ser_24h and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and is_live_network_backfill_enabled():
                 try:
                     krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_by_sym)
                     if callable(krk_ohlc_fn):
@@ -1914,10 +1948,13 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     """
 
     cls_name = "CompositeSymbolPriceSeriesLoader"
-    price_24_cls: type[CachePriceManagerBase] = Cache24PriceManager
-    price_365_cls: type[CachePriceManagerBase] = Cache365PriceManager
-    price_sparse_cls: type[CachePriceManagerBase] = CacheSparsePriceManager
-    current_price_cls: type[CachePriceManagerBase] = CacheCurrentPriceManager
+    price_24_cls: Any = None
+    price_365_cls: Any = None
+    price_sparse_cls: Any = None
+    current_price_cls: Any = None
+
+    def __init__(self) -> None:
+        _ensure_cacheprice_classes_bound()
 
     def collect(
         self,

@@ -8,6 +8,7 @@ import time as _time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from botcore import is_live_network_backfill_enabled
 from cachepaths import cache_path, canonical_base_asset
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
@@ -15,6 +16,7 @@ from state_io import read_json_recovering, save_json_state
 
 KalmanTrend: Any = None
 _OHLC_24H_DISK_MEMO: Dict[Tuple[str, int, int], List[List[Any]]] = {}
+_LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, int] = {}
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
@@ -1013,60 +1015,58 @@ def _load_stitched_24h_ohlc_points(
     cache_dir: Optional[str] = None,
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
-    in_pytest = "PYTEST_CURRENT_TEST" in os.environ
     allow_offline_disk = os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
     sym_u = str(sym or "").strip().upper()
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""
     disk_fallback_pts: List[List[Any]] = []
-    if (not in_pytest or (allow_offline_disk and not callable(ohlc_fn))) and sym_u and sym_u.replace("_", "").isalnum():
+    if sym_u and sym_u.replace("_", "").isalnum():
         try:
             cpath = (
                 os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json")
                 if cache_dir and os.path.exists(os.path.join(cache_dir, f"cache_ohlc_24h_{sym_u}.json"))
                 else str(cache_path(f"cache_ohlc_24h_{sym_u}.json"))
             )
-            st = os.stat(cpath)
-            age_s = _time.time() - st.st_mtime
-            max_disk_age = 7200.0 if allow_offline_disk else 3600.0
-            if 0.0 <= age_s < max_disk_age:
-                mkey = (cpath, st.st_mtime_ns, st.st_size)
-                raw_pts = _OHLC_24H_DISK_MEMO.get(mkey)
-                if raw_pts is None:
-                    d_obj = read_json_recovering(cpath)
-                    cand_pts = d_obj.get("points") if isinstance(d_obj, dict) else d_obj
-                    if isinstance(cand_pts, list):
-                        raw_pts = [
+            can_read_disk = (
+                not callable(ohlc_fn)
+                or allow_offline_disk
+                or is_live_network_backfill_enabled()
+                or _LAST_OHLC_WRITER_ID_BY_PATH.get(cpath) == id(ohlc_fn)
+            )
+            if can_read_disk:
+                st = os.stat(cpath)
+                age_s = _time.time() - st.st_mtime
+                max_disk_age = 7200.0 if allow_offline_disk else 3600.0
+                if 0.0 <= age_s < max_disk_age:
+                    mkey = (cpath, st.st_mtime_ns, st.st_size)
+                    raw_pts = _OHLC_24H_DISK_MEMO.get(mkey)
+                    if raw_pts is None:
+                        d_obj = read_json_recovering(cpath)
+                        cand_pts = d_obj.get("points") if isinstance(d_obj, dict) else d_obj
+                        if isinstance(cand_pts, list):
+                            raw_pts = [
+                                list(p)
+                                for p in cand_pts
+                                if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
+                            ]
+                            if len(_OHLC_24H_DISK_MEMO) > 64:
+                                _OHLC_24H_DISK_MEMO.clear()
+                            _OHLC_24H_DISK_MEMO[mkey] = raw_pts
+                    if raw_pts:
+                        filt = [
                             list(p)
-                            for p in cand_pts
-                            if isinstance(p, (list, tuple)) and len(p) >= 2 and (safe_pos_float(p[1], 0.0) or 0.0) > 0.0
+                            for p in raw_pts
+                            if float(p[0]) >= cutoff_ms - 300000.0
+                            and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
                         ]
-                        if len(_OHLC_24H_DISK_MEMO) > 64:
-                            _OHLC_24H_DISK_MEMO.clear()
-                        _OHLC_24H_DISK_MEMO[mkey] = raw_pts
-                if raw_pts:
-                    filt = [
-                        list(p)
-                        for p in raw_pts
-                        if float(p[0]) >= cutoff_ms - 300000.0
-                        and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
-                    ]
-                    if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
-                        if age_s < 240.0 or allow_offline_disk or not callable(ohlc_fn):
-                            return filt
-                        disk_fallback_pts = filt
+                        if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
+                            if age_s < 240.0 or allow_offline_disk or not callable(ohlc_fn):
+                                return filt
+                            disk_fallback_pts = filt
         except Exception:
             pass
     if not callable(ohlc_fn):
         return disk_fallback_pts
-    if in_pytest:
-        pts = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=require_positive_volume)
-        if not pts or (pts[-1][0] - pts[0][0]) < 18 * 3600 * 1000:
-            first_s5_ts = (pts[0][0] / 1000.0 - 300.0) if pts else float("inf")
-            pts = _extract_ohlc_series_points(
-                ohlc_fn(sym, 15), min_ts=cutoff_24h, max_ts=first_s5_ts, require_positive_volume=require_positive_volume
-            ) + pts
-        return pts
     pts_all = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=False)
     pts_eff = [p for p in pts_all if len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0] if require_positive_volume else pts_all
     if not pts_eff or (pts_eff[-1][0] - pts_eff[0][0]) < 18 * 3600 * 1000:
@@ -1080,6 +1080,7 @@ def _load_stitched_24h_ohlc_points(
             save_json_state(cpath, {"ts": _time.time(), "symbol": sym_u, "points": pts_all})
             st_new = os.stat(cpath)
             _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
+            _LAST_OHLC_WRITER_ID_BY_PATH[cpath] = id(ohlc_fn)
         except Exception:
             pass
     res_pts = (

@@ -355,4 +355,47 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert custom_tel == {"Custom Polymorphic Pillar": "BTCUSDC:Crypto24x7SessionPolicy"}
 
 
+def test_runtime_services_dependency_injection_and_zero_pytest_branches():
+    import subprocess
+    import botcore
+
+    slept = []
+    botcore.configure_runtime_services(
+        clock_fn=lambda: 1_750_000_000.0,
+        sleep_fn=lambda s: slept.append(s),
+        stale_cache_retry_delay_sec=0.125,
+        enforce_rth_gate=True,
+        allow_live_network_backfill=True,
+        allow_unmocked_llm_queries=True,
+        allow_shared_disk_cache=True,
+    )
+    assert botcore.resolve_now_ts() == 1_750_000_000.0
+    assert botcore.resolve_now_ms() == 1_750_000_000_000
+    assert botcore.get_stale_cache_retry_delay_sec() == 0.125
+    assert botcore.is_rth_gate_enabled() is True
+    assert botcore.is_live_network_backfill_enabled() is True
+    assert botcore.is_unmocked_llm_query_allowed() is True
+    assert botcore.is_shared_disk_cache_enabled() is True
+    botcore.runtime_sleep(0.5)
+    assert slept == [0.5]
+
+    res = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-nE",
+            r"PYTEST_CURRENT_TEST|\"pytest\" in sys\.modules|\"unittest\" in sys\.modules|\"unittest\" not in sys\.modules",
+            "--",
+            "*.py",
+            ":!tests",
+            ":!offline",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.stdout.strip() == "", f"Unexpected test-detection branches in app modules:\n{res.stdout}"
+
+
+
 

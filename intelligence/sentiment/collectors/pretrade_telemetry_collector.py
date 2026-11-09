@@ -7,7 +7,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from botcore import extract_current_price_item, load_local_module
+from botcore import (
+    extract_current_price_item,
+    is_live_network_backfill_enabled,
+    load_local_module,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -116,6 +120,9 @@ def _scope_symbol_variants(
     return sym_variants, quote_variants
 
 
+_ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE = ensure_fresh_symbol_microstructure
+
+
 def _ensure_fresh_pretrade_microstructure(
     cachedb_dir: str,
     symbol: str,
@@ -126,7 +133,10 @@ def _ensure_fresh_pretrade_microstructure(
 ) -> None:
     if not (
         (is_usd_sym or is_eq_sym)
-        and "PYTEST_CURRENT_TEST" not in os.environ
+        and (
+            is_live_network_backfill_enabled()
+            or ensure_fresh_symbol_microstructure is not _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
+        )
         and _rj is _default_read_json_cached
     ):
         return
@@ -396,7 +406,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         not m24_d
         or m24_d.get("vp_source") != "TPO"
         or sym_u_pt.endswith(("_EQ", "_US_EQ"))
-        or ("PYTEST_CURRENT_TEST" in os.environ and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1")
+        or (not is_live_network_backfill_enabled() and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1")
     ):
         return
     now_s_pt = _time.time()
@@ -437,7 +447,7 @@ def _load_and_normalize_pretrade_24h_series(
     eq_px_diverged_05pct = False
     eq_chart_refreshed = False
     sym_u_eq = str(symbol).strip().upper()
-    memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
+    memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq) if (is_eq_sym and is_live_network_backfill_enabled()) else None
     raw_alt_last_ts_ms = last_alt_pt[0] if last_alt_pt is not None else 0.0
     now_s_eq_chk = _time.time()
     eq_rth_open_chk = bool(is_symbol_market_open(symbol, now_s_eq_chk)) if is_eq_sym else False
@@ -445,7 +455,7 @@ def _load_and_normalize_pretrade_24h_series(
     memo_chart_fresh_eq = bool(memo_chart_eq is not None and 0.0 <= (now_s_eq_chk - memo_chart_eq[0]) < memo_ttl_eq)
     if (
         is_eq_sym
-        and "PYTEST_CURRENT_TEST" not in os.environ
+        and is_live_network_backfill_enabled()
         and (
             not m24
             or "chg_24h_pct" not in m24
@@ -817,7 +827,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
                 break
     if (
         not is_eq
-        and "PYTEST_CURRENT_TEST" not in os.environ
+        and is_live_network_backfill_enabled()
         and (not m7d or partial_w_7d_span or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
     ):
         try:

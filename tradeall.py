@@ -870,7 +870,11 @@ class TrendCoordinator:
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
                 ssot_vol = None
-                if hasattr(self.instant_mgr, "_read_file") and "PYTEST_CURRENT_TEST" not in os.environ:
+                if (
+                    hasattr(self.instant_mgr, "_read_file")
+                    and isinstance(getattr(self.instant_mgr, "filename", None), str)
+                    and os.path.exists(self.instant_mgr.filename)
+                ):
                     try:
                         disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
                         if isinstance(disk_st, dict):

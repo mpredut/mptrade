@@ -31,7 +31,15 @@ with contextlib.redirect_stdout(io.StringIO()):
         format_ntfy_url,
         pass_common_gate,
     )
-    from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
+    from botcore import (  # noqa: E402
+        _parse_bool_flag,
+        is_live_network_backfill_enabled,
+        load_env_stack,
+        load_local_module,
+        parse_dotenv,
+        required_float_env,
+        safe_float,
+    )
     from kraken.kraken_client import KrakenClient  # noqa: E402
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
     from state_io import read_json_dict, save_json_state  # noqa: E402
@@ -139,7 +147,7 @@ def _ntfy(title: str, body: str) -> None:
         return
     clean_title = str(title or "Alert").strip() or "Alert"
     body_str = "" if isinstance(body, bool) else str(body or "")
-    if "PYTEST_CURRENT_TEST" not in os.environ:
+    if is_live_network_backfill_enabled():
         allowed, _, _, out_payload = pass_common_gate(
             "ntfy", clean_title, body_str, "high", _canonical_topic_key(url),
         )

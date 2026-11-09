@@ -1437,15 +1437,18 @@ def safe_nonneg_ts(val: object, default: float = 0.0) -> float:
 
 
 def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:
-    """Return ``now_ts`` normalized to epoch seconds (converting ms >= 1e11), or ``time.time()``."""
+    """Return ``now_ts`` normalized to epoch seconds (converting ms >= 1e11), or the active runtime clock."""
     f = normalize_epoch_sec(now_ts, default=None, allow_zero=allow_zero)
-    return f if f is not None else _time.time()
+    if f is not None:
+        return f
+    clk = getattr(_RUNTIME_SERVICES, "clock_fn", None)
+    return float(clk()) if callable(clk) else _time.time()
 
 
 def resolve_now_ms(now_ms: object = None) -> int:
-    """Return ``now_ms`` as a positive integer millisecond timestamp, or ``int(time.time() * 1000)``."""
+    """Return ``now_ms`` as a positive integer millisecond timestamp, or ``int(resolve_now_ts() * 1000)``."""
     parsed = safe_pos_int(now_ms, default=None)
-    return parsed if parsed is not None else int(_time.time() * 1000)
+    return parsed if parsed is not None else int(resolve_now_ts() * 1000)
 
 
 def is_cache_fresh(
@@ -1717,6 +1720,113 @@ def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
         if absolute not in sys.path:
             sys.path.append(absolute)
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+
+
+class RuntimeServices:
+    """Explicit dependency-injection container for clock, sleep, retry, snapshot, and external transport policies."""
+
+    def __init__(
+        self,
+        *,
+        clock_fn: object = None,
+        sleep_fn: object = None,
+        stale_cache_retry_delay_sec: float = 1.5,
+        enforce_rth_gate: bool = True,
+        allow_live_network_backfill: bool = True,
+        allow_unmocked_llm_queries: bool = True,
+        allow_shared_disk_cache: bool = True,
+    ) -> None:
+        self.clock_fn = clock_fn if callable(clock_fn) else None
+        self.sleep_fn = sleep_fn if callable(sleep_fn) else None
+        self.stale_cache_retry_delay_sec = float(stale_cache_retry_delay_sec)
+        self.enforce_rth_gate = bool(enforce_rth_gate)
+        self.allow_live_network_backfill = bool(allow_live_network_backfill)
+        self.allow_unmocked_llm_queries = bool(allow_unmocked_llm_queries)
+        self.allow_shared_disk_cache = bool(allow_shared_disk_cache)
+
+
+_RUNTIME_SERVICES: RuntimeServices = (
+    globals()["_RUNTIME_SERVICES"]
+    if isinstance(globals().get("_RUNTIME_SERVICES"), RuntimeServices)
+    else RuntimeServices()
+)
+
+
+def get_runtime_services() -> RuntimeServices:
+    """Return the active ``RuntimeServices`` container."""
+    return _RUNTIME_SERVICES
+
+
+def configure_runtime_services(**kwargs: object) -> RuntimeServices:
+    """Update fields on the active ``RuntimeServices`` container and return it."""
+    for k, v in kwargs.items():
+        if not hasattr(_RUNTIME_SERVICES, k):
+            raise AttributeError(f"Unknown RuntimeServices attribute: {k!r}")
+        if k in ("clock_fn", "sleep_fn"):
+            setattr(_RUNTIME_SERVICES, k, v if callable(v) else None)
+        elif k == "stale_cache_retry_delay_sec":
+            setattr(_RUNTIME_SERVICES, k, float(safe_nonneg_float(v, default=1.5) or 0.0))
+        else:
+            setattr(_RUNTIME_SERVICES, k, bool(v))
+    return _RUNTIME_SERVICES
+
+
+def reset_runtime_services() -> RuntimeServices:
+    """Reset ``RuntimeServices`` to default production settings."""
+    global _RUNTIME_SERVICES
+    _RUNTIME_SERVICES = RuntimeServices()
+    return _RUNTIME_SERVICES
+
+
+def is_rth_gate_enabled(override: bool | None = None, *, rth_fn: object = None) -> bool:
+    """Return whether US equities RTH session gating is active under the current runtime policy."""
+    if override is not None:
+        return bool(override)
+    if rth_fn is not None and rth_fn is not is_us_rth_open:
+        return True
+    if _parse_bool_flag(os.environ.get("MPTRADE_FORCE_RTH_GATE"), False):
+        return True
+    return bool(_RUNTIME_SERVICES.enforce_rth_gate)
+
+
+def is_live_network_backfill_enabled(override: bool | None = None) -> bool:
+    """Return whether opportunistic on-demand live network backfills are enabled."""
+    if override is not None:
+        return bool(override)
+    env_flag = os.environ.get("MPTRADE_ALLOW_LIVE_BACKFILL")
+    if env_flag is not None and str(env_flag).strip() != "":
+        return bool(_parse_bool_flag(env_flag, default=True))
+    return bool(_RUNTIME_SERVICES.allow_live_network_backfill)
+
+
+def is_unmocked_llm_query_allowed(override: bool | None = None) -> bool:
+    """Return whether unmocked external LLM CLI/REST queries are permitted."""
+    if override is not None:
+        return bool(override)
+    return bool(_RUNTIME_SERVICES.allow_unmocked_llm_queries)
+
+
+def is_shared_disk_cache_enabled(override: bool | None = None) -> bool:
+    """Return whether default cross-process disk caches are enabled when no explicit path is injected."""
+    if override is not None:
+        return bool(override)
+    return bool(_RUNTIME_SERVICES.allow_shared_disk_cache)
+
+
+def get_stale_cache_retry_delay_sec(override: float | None = None) -> float:
+    """Return the retry delay in seconds for stale account cache order retries."""
+    if override is not None:
+        val = safe_nonneg_float(override, default=None)
+        if val is not None:
+            return val
+    return float(_RUNTIME_SERVICES.stale_cache_retry_delay_sec)
+
+
+def runtime_sleep(seconds: float, *, sleep_fn: object = None) -> None:
+    """Sleep for ``seconds`` using explicit ``sleep_fn``, injected ``RuntimeServices.sleep_fn``, or ``time.sleep``."""
+    dur = safe_nonneg_float(seconds, default=0.0) or 0.0
+    eff_fn = sleep_fn if callable(sleep_fn) else (_RUNTIME_SERVICES.sleep_fn if callable(_RUNTIME_SERVICES.sleep_fn) else _time.sleep)
+    eff_fn(dur)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

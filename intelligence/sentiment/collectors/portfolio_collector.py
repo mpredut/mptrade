@@ -8,7 +8,7 @@ import re
 import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from botcore import load_key_value_conf
+from botcore import is_live_network_backfill_enabled, load_key_value_conf
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -731,7 +731,7 @@ def harvest_tradable_positions_and_orders(
             prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
             prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
             px_from_cached_pos = False
-            if px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and "PYTEST_CURRENT_TEST" not in os.environ):
+            if px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and is_live_network_backfill_enabled()):
                 try:
                     get_px_fn = getattr(inst._provider, "get_current_price", None)
                     if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
@@ -933,7 +933,7 @@ def harvest_tradable_positions_and_orders(
         gateway_max_usd=gateway_max_usd,
     )
 
-    if bcache_path and updated_bals and ("PYTEST_CURRENT_TEST" not in os.environ or os.path.exists(bcache_path)):
+    if bcache_path and updated_bals and (is_live_network_backfill_enabled() or os.path.exists(bcache_path)):
         try:
             merged_bals = {**cached_bals, **updated_bals}
             if merged_bals != cached_bals:

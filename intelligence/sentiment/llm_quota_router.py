@@ -12,6 +12,7 @@ from botcore import (
     _parse_bool_flag,
     fetch_json_post,
     is_cache_fresh,
+    is_unmocked_llm_query_allowed,
     optional_env,
     resolve_patched_attr,
     safe_float,
@@ -440,7 +441,7 @@ class GeminiQuotaRouterMixin:
             or getattr(watchdog_common.send_ntfy, "__module__", "") != "orchestratorOS.lib.watchdog_common"
         )
         if (
-            "PYTEST_CURRENT_TEST" in os.environ
+            not is_unmocked_llm_query_allowed()
             and not ntfy_mocked
             and not _parse_bool_flag(os.environ.get("LLM_FORCE_QUOTA_ALERT_TEST"))
         ):

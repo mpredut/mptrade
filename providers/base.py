@@ -17,6 +17,7 @@ from botcore import (
     exact_nonneg_int,
     exact_pos_int,
     extract_current_price_item,
+    is_shared_disk_cache_enabled,
     normalize_epoch_sec,
     obj_attr,
     register_module_aliases,
@@ -585,7 +586,8 @@ class MarketDataProvider(ABC):
         if getattr(self, "_ssot_cache_enabled", None) is False:
             return False
         has_explicit_ssot = bool(
-            getattr(self, "_force_ssot_cache", False)
+            getattr(self, "_ssot_cache_enabled", None) is True
+            or getattr(self, "_force_ssot_cache", False)
             or getattr(self, "_ssot_price_cache_path", None)
             or getattr(self, "_ssot_trend_cache_path", None)
             or getattr(self, "_ssot_24price_cache_dir", None)
@@ -600,9 +602,7 @@ class MarketDataProvider(ABC):
             return False
         if has_explicit_ssot:
             return True
-        if "pytest" in sys.modules:
-            return False
-        return True
+        return is_shared_disk_cache_enabled()
 
     @staticmethod
     def _parse_ssot_price_point(entry: Any, fallback_ts: Optional[float] = None) -> Optional[tuple[int, float]]:
@@ -651,7 +651,13 @@ class MarketDataProvider(ABC):
         if use_memory_manager:
             cm = sys.modules.get("cacheManager")
             cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
-            if cpm is not None and hasattr(cpm, "get_cached_price_observation"):
+            cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
+            cpm_matches_path = (
+                not isinstance(cpm_file, str)
+                or not cpm_file
+                or os.path.abspath(str(resolve_cachedb_filepath(cpm_file))) == os.path.abspath(str(resolve_cachedb_filepath(price_path)))
+            )
+            if cpm is not None and cpm_matches_path and hasattr(cpm, "get_cached_price_observation"):
                 for cand in candidates:
                     try:
                         obs = cpm.get_cached_price_observation(cand, max_age)
@@ -1116,7 +1122,7 @@ def resolve_ssot_price_from_cache(
         price_path,
         max_age,
         now_s=now_s,
-        use_memory_manager=(is_default_dir and "pytest" not in sys.modules),
+        use_memory_manager=is_default_dir,
     )
     if px is not None:
         return px

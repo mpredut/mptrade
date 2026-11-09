@@ -125,6 +125,16 @@ def configure(
             _min_free_percent = mf
 
 
+_suppress_default_folder_writes: bool = False
+
+
+def set_suppress_default_folder_writes(suppress: bool) -> None:
+    """Configure whether default-folder file logging is suppressed when no explicit log folder is set."""
+    global _suppress_default_folder_writes
+    with _config_lock:
+        _suppress_default_folder_writes = bool(suppress)
+
+
 # ── Background cleanup thread ─────────────────────────────────────────────────
 
 _cleanup_event = threading.Event()
@@ -315,9 +325,9 @@ class _DailyFileHandler(logging.Handler):
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
                 with _config_lock:
                     folder = _log_folder
+                    suppress_default = _suppress_default_folder_writes
                 if folder == os.path.normpath(os.path.abspath(_DEFAULT_LOG_FOLDER)) and (
-                    self._app_name.lower() in {"pytest", "__main__", "py.test", "c"}
-                    or "PYTEST_CURRENT_TEST" in os.environ
+                    suppress_default or self._app_name.lower() in {"__main__", "c"}
                 ):
                     return
                 if (

@@ -14,7 +14,7 @@ from collections import defaultdict
 from operator import itemgetter
 from urllib.parse import quote
 
-from botcore import is_us_rth_open, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import is_rth_gate_enabled, is_us_rth_open, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
@@ -220,7 +220,7 @@ class PriceChecker:
                 recent_history.append((timestamp, price, entry.get("timestamp_readable")))
         if (
             recent_history
-            and "PYTEST_CURRENT_TEST" not in os.environ
+            and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open)
             and is_rth_equity_symbol(symbol, getattr(self.cachePriceAll, "price_factory", None))
         ):
             rth_history = [item for item in recent_history if is_us_rth_open(item[0] / 1000.0)]
@@ -346,7 +346,7 @@ class PriceChecker:
         up_threshold = thresholds["up_percent"]
         down_threshold = thresholds["down_percent"]
         rth_closed_eq = (
-            "PYTEST_CURRENT_TEST" not in os.environ
+            is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open)
             and is_rth_equity_symbol(symbol, getattr(self.cachePriceAll, "price_factory", None))
             and not is_us_rth_open()
         )

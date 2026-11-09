@@ -27,6 +27,7 @@ from botcore import (
     conf_or_override,
     exact_pos_int,
     float_env,
+    get_stale_cache_retry_delay_sec,
     lru_dict_put,
     normalize_side,
     parse_notify_enabled_flag,
@@ -1740,6 +1741,8 @@ def record_shadow_intent_observation(
     is_limit: bool = False,
     dispatch_notify_fn: Optional[Callable[..., Any]] = None,
     log: Optional[Any] = None,
+    retry_delay_sec: Optional[float] = None,
+    sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> dict[str, Any]:
     """Record a shadow-mode intent observation and dispatch notification."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
@@ -1794,6 +1797,8 @@ def execute_enforce_intent_order(
     is_limit: bool = False,
     dispatch_notify_fn: Optional[Callable[..., Any]] = None,
     log: Optional[Any] = None,
+    retry_delay_sec: Optional[float] = None,
+    sleep_fn: Optional[Callable[[float], Any]] = None,
 ) -> dict[str, Any]:
     """Execute an enforce-mode trade intent via Instrument.place with 1 retry on stale account cache."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
@@ -1885,7 +1890,9 @@ def execute_enforce_intent_order(
             ):
                 stale_cache_retries += 1
                 _cleanup_refused_retry_records()
-                time.sleep(0.25 if ("PYTEST_CURRENT_TEST" in os.environ or "unittest" in sys.modules) else 1.5)
+                (sleep_fn if callable(sleep_fn) else time.sleep)(
+                    get_stale_cache_retry_delay_sec(retry_delay_sec)
+                )
                 continue
             if (
                 not retried_insufficient_free

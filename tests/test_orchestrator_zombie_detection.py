@@ -410,16 +410,14 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             fake_cache,
             config={"default": {"up_percent": 3.0, "down_percent": 3.0}, "lookback_hours": 24},
         )
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PYTEST_CURRENT_TEST", None)
-            with patch(
-                "market_monitor.pricechecker.is_us_rth_open",
-                side_effect=lambda ts=None: False if ts is None else (ts >= now_s - 2000),
-            ):
-                hist = checker._get_price_history_last_hours("SPCX", 24)
-                self.assertEqual([h[1] for h in hist], [124.0, 123.62])
-                alerts = checker.check_symbol("SPCX")
-                self.assertEqual(alerts, [])
+        with patch(
+            "market_monitor.pricechecker.is_us_rth_open",
+            side_effect=lambda ts=None: False if ts is None else (ts >= now_s - 2000),
+        ):
+            hist = checker._get_price_history_last_hours("SPCX", 24)
+            self.assertEqual([h[1] for h in hist], [124.0, 123.62])
+            alerts = checker.check_symbol("SPCX")
+            self.assertEqual(alerts, [])
 
 
 

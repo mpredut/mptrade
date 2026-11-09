@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     fetch_json_post,
+    is_rth_gate_enabled,
     normalize_epoch_sec,
     resolve_patched_attr,
     safe_float,
@@ -392,10 +393,7 @@ class _DiskBackedSymbolCollector:
                 return sym_clean, now_f, cached_ex, disk_ex, False
             if (
                 is_equity_symbol(sym_clean)
-                and (
-                    os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
-                    or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
-                )
+                and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None))
             ):
                 try:
                     from instrument_registry import is_symbol_market_open

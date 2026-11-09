@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 from binance_api.market_data import fetch_ohlc_candles
 from botcore import (
     _parse_bool_flag,
+    is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_epoch_sec,
     resolve_patched_attr,
@@ -106,7 +107,7 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
         if tf is not None and pf is not None:
             ts_list.append(tf)
             px_list.append(pf)
-    if len(ts_list) < 50 and "PYTEST_CURRENT_TEST" not in os.environ:
+    if len(ts_list) < 50 and is_live_network_backfill_enabled():
         try:
             from providers.kraken_provider import KrakenProvider
 
@@ -476,7 +477,7 @@ def get_trend_survival_metrics(
         sym_key = str(symbol or "").strip().upper()
         now_s = time.time()
         last_miss = _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)
-        if not sym_key or (now_s - last_miss) >= _ON_DEMAND_T_MISS_TTL_SEC or "PYTEST_CURRENT_TEST" in os.environ:
+        if not sym_key or (now_s - last_miss) >= _ON_DEMAND_T_MISS_TTL_SEC or not is_live_network_backfill_enabled():
             try:
                 _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
                 est = _est_fn(symbol)
@@ -520,7 +521,7 @@ def estimate_remaining_trend_hours(
     p90_f = safe_pos_float(p90_d, default=None)
     if (med_f is None or p90_f is None or p_cont is None) and isinstance(symbol, str) and symbol.strip():
         cached_ent = get_cached_t_entry(symbol)
-        if cached_ent is None and "PYTEST_CURRENT_TEST" not in os.environ:
+        if cached_ent is None and is_live_network_backfill_enabled():
             sym_key = symbol.strip().upper()
             now_s = time.time()
             if (now_s - _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)) >= _ON_DEMAND_T_MISS_TTL_SEC:

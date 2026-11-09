@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 
 import instrument_registry as sym
 from binance_api import bapi as api
-from botcore import exact_pos_int, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
+from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
 from cachepaths import cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
@@ -694,7 +694,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
     def get_remote_items(self, symbol, startTime):
         if (
             is_rth_equity_symbol(symbol, getattr(self, "price_factory", None))
-            and "PYTEST_CURRENT_TEST" not in os.environ
+            and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open)
             and not is_us_rth_open()
         ):
             with self.lock:

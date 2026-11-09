@@ -18,7 +18,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import safe_float
+from botcore import is_live_network_backfill_enabled, safe_float
 from cachepaths import cache_path
 from providers.base import (
     extract_order_id,
@@ -53,7 +53,7 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
             return json.loads(res.stdout)
         except Exception:
             return res.stdout
-    if "PYTEST_CURRENT_TEST" not in os.environ and os.path.isfile(prod_path):
+    if is_live_network_backfill_enabled() and os.path.isfile(prod_path):
         return read_json_file(prod_path, default=None)
     return None
 

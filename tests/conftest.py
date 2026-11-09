@@ -12,8 +12,21 @@ import pytest
 # made at import time, and subprocesses started by tests cannot send
 # real notifications towards ntfy, email or the desktop.
 os.environ["DISABLE_EXTERNAL_NOTIFICATIONS"] = "1"
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 for _bt_env_var in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM"):
     os.environ.pop(_bt_env_var, None)
+
+import botcore as _botcore_init  # noqa: E402
+import log as _log_init  # noqa: E402
+
+_botcore_init.configure_runtime_services(
+    stale_cache_retry_delay_sec=0.25,
+    enforce_rth_gate=False,
+    allow_live_network_backfill=False,
+    allow_unmocked_llm_queries=False,
+    allow_shared_disk_cache=False,
+)
+_log_init.set_suppress_default_folder_writes(True)
 
 # Track all tempfile.mkdtemp() directories created during the test session so
 # tests that omit explicit shutil.rmtree() never leak directories into /tmp.
@@ -58,8 +71,18 @@ os.environ["MPTRADE_CACHEDB_DIR"] = _cachedb_tmp.name
 
 @pytest.fixture(autouse=True)
 def _isolate_cachedb_dir(tmp_path, monkeypatch):
-    """Keep every test isolated from live/rsynced cachedb state files."""
+    """Keep every test isolated from live/rsynced cachedb state files and reset injected runtime services."""
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
+    _botcore_init.configure_runtime_services(
+        clock_fn=None,
+        sleep_fn=None,
+        stale_cache_retry_delay_sec=0.25,
+        enforce_rth_gate=False,
+        allow_live_network_backfill=False,
+        allow_unmocked_llm_queries=False,
+        allow_shared_disk_cache=False,
+    )
+    _log_init.set_suppress_default_folder_writes(True)
 
 
 @pytest.fixture(autouse=True)

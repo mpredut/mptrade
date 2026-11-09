@@ -7,6 +7,7 @@ import time as _time
 from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
+from botcore import is_live_network_backfill_enabled
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -746,7 +747,7 @@ def update_microstructure_cycle_deltas(
     is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
     raw_mh = (
         read_json_file(mhist_path, default={})
-        if os.path.exists(mhist_path) and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb)
+        if os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)
         else None
     )
     mhist: Dict[str, Any] = dict(raw_mh) if isinstance(raw_mh, dict) else {}
@@ -919,7 +920,7 @@ def update_microstructure_cycle_deltas(
                 ):
                     if shared_dk in prim_cd:
                         sib_cd[shared_dk] = prim_cd[shared_dk]
-    if mhist_dirty and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb):
+    if mhist_dirty and (is_live_network_backfill_enabled() or not is_repo_cachedb):
         try:
             os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
             save_json_state(mhist_path, mhist, indent=2)
@@ -1090,7 +1091,7 @@ def enrich_cross_venue_trends(
         elif (
             entry.get("weibull_median_d") is None
             and not sym.endswith(("_EQ", "_US_EQ"))
-            and "PYTEST_CURRENT_TEST" not in os.environ
+            and is_live_network_backfill_enabled()
         ):
             try:
                 from intelligence.internal.state.survival import estimate_T

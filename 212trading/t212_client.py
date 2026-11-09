@@ -32,7 +32,7 @@ except ImportError:
     ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-from botcore import clean_order_id, normalize_side
+from botcore import clean_order_id, is_shared_disk_cache_enabled, normalize_side
 from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.base import MarketDataProvider
@@ -49,7 +49,10 @@ class T212Client:
     def __init__(self, api_key: str, api_secret: str | None = None, env: str | None = None,
                  *, min_gap_sec: float | None = None,
                  portfolio_ttl_sec: float | None = None,
-                 order_min_gap_sec: float | None = None):
+                 order_min_gap_sec: float | None = None,
+                 shared_cache_path: str | None = None,
+                 enable_shared_disk_cache: bool | None = None,
+                 trade_cache_path: str | None = None):
         if not api_key or isinstance(api_key, bool) or not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("Invalid T212 api_key")
         if api_secret is not None and isinstance(api_secret, bool):
@@ -93,17 +96,23 @@ class T212Client:
         self._fetch_lock = threading.Lock()
         self._lock_tls = threading.local()
         key_hash = hashlib.sha256(self.api_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
-        self._shared_cache_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            f".t212_shared_cache_{self.env}_{key_hash}.json",
+        self._shared_cache_path = (
+            str(shared_cache_path)
+            if shared_cache_path is not None
+            else os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                f".t212_shared_cache_{self.env}_{key_hash}.json",
+            )
         )
-        self._trade_cache_path: str | None = None
-        self._enable_shared_disk_cache: bool | None = None
+        self._trade_cache_path: str | None = str(trade_cache_path) if trade_cache_path is not None else None
+        self._enable_shared_disk_cache: bool | None = (
+            bool(enable_shared_disk_cache) if enable_shared_disk_cache is not None else None
+        )
 
     def _shared_cache_enabled(self) -> bool:
         if self._enable_shared_disk_cache is not None:
             return bool(self._enable_shared_disk_cache)
-        return "PYTEST_CURRENT_TEST" not in os.environ and bool(getattr(self, "_shared_cache_path", ""))
+        return is_shared_disk_cache_enabled() and bool(getattr(self, "_shared_cache_path", ""))
 
     @contextlib.contextmanager
     def _shared_cache_file_lock(self):
@@ -569,7 +578,7 @@ class T212Client:
 
     def _sync_trade_cache(self, items: list) -> None:
         explicit_path = getattr(self, "_trade_cache_path", None)
-        if not explicit_path and "PYTEST_CURRENT_TEST" in os.environ:
+        if not explicit_path and not is_shared_disk_cache_enabled(getattr(self, "_enable_shared_disk_cache", None)):
             return
         by_symbol = self.normalize_history_items(items)
         if not by_symbol:

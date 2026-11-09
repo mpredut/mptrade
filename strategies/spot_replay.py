@@ -90,7 +90,7 @@ def build_replay_summary(
 
 
 class _ReplayClient:
-    """Lightweight replay venue client without unittest.mock call-recording overhead."""
+    """Lightweight replay venue client without mock call-recording overhead."""
 
     __slots__ = ("_default_balance", "_free_balance_fn")
 
