@@ -291,7 +291,7 @@ def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> 
                     return normalize_venue_name(inst_prov) or str(inst_prov).strip().lower()
     except Exception:
         pass
-    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD", "XBTUSD", "XXBTZUSD", "XDGUSD", "XXDGZUSD"):
         return "kraken"
     if canon_sym == "HYPEUSDC":
         return "hyperliquid"

@@ -1220,6 +1220,8 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     eq_hist = order_guard._read_cached_price_history("NVDA_US_EQ", window_seconds=3600.0, now=1_750_000_010.0)
     assert eq_hist is not None and len(eq_hist) == 2
     assert eq_hist[-1][1] == pytest.approx(138.5)
+    assert CacheTradeManager.venue_for_symbol("XXBTZUSD") == "kraken"
+    assert CacheTradeManager.venue_for_symbol("XDGUSD") == "kraken"
 
 
 
