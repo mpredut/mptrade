@@ -20,7 +20,8 @@ from botcore import load_local_module  # noqa: E402
 from kraken_common import parse_dotenv  # noqa: E402
 import kraken_xstock_watch as xw  # noqa: E402
 import kraken.trailing_stop as ts_mod
-from kraken.trailing_stop import KrakenTrailing, should_sell
+from kraken.trailing_stop import KrakenTrailing
+from trailing_core import should_sell
 from strategies import spot_engine as _xstock_strategy
 
 

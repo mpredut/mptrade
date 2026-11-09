@@ -109,9 +109,6 @@ def _match_configured_pair(symbol: str | None) -> str | None:
     return _kraken_pair_key(raw) or raw
 
 
-_clean_cache_id = _clean_single_order_id
-
-
 def _build_kraken_cache_fill(
     *,
     symbol,
@@ -146,7 +143,7 @@ def _build_kraken_cache_fill(
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    clean_txid = _clean_cache_id(txid)
+    clean_txid = _clean_single_order_id(txid)
     if not isinstance(tr, dict) or clean_txid is None:
         return {}
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
@@ -190,7 +187,7 @@ def _load_initial_cache(path):
             for row in v:
                 if not isinstance(row, dict):
                     continue
-                clean_id = _clean_cache_id(row.get("id"))
+                clean_id = _clean_single_order_id(row.get("id"))
                 if clean_id is None:
                     continue
                 t_f = safe_pos_float(row.get("time"), None)
@@ -231,7 +228,7 @@ def _ledger_to_fills(ledger):
     for x in ledger.values():
         if not isinstance(x, dict):
             continue
-        clean_refid = _clean_cache_id(x.get("refid"))
+        clean_refid = _clean_single_order_id(x.get("refid"))
         if clean_refid is not None:
             by_ref.setdefault(clean_refid, []).append(x)
     fills = []

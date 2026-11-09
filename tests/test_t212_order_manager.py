@@ -67,8 +67,6 @@ class FakeClient:
 def marker_env(tmp_path, monkeypatch):
     marker = tmp_path / "intent.json"
     test_marker = tmp_path / "intent.test.json"
-    legacy = tmp_path / "legacy.json"
-    monkeypatch.setattr(order_manager, "ORDER_MARKER", str(legacy))
     monkeypatch.setattr(
         order_manager,
         "_marker_path",

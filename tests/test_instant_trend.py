@@ -2007,14 +2007,14 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
 
 
-from binance_api.bapi_ws import BinanceWebSocketManager
+from binance_api.bapi_ws import BinancePriceStream
 
 _WS_BRIDGE_SYMBOLS = ["BTCUSDC"]
 
 
 class TestBapiWsSubscriber(unittest.TestCase):
     def setUp(self):
-        self.ws = BinanceWebSocketManager()
+        self.ws = BinancePriceStream()
 
     def test_subscribe_adds_subscriber(self):
         sub = MagicMock()
@@ -2083,7 +2083,7 @@ class TestWsBridgeIntegration(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         mock_api.get_current_price.return_value = 50000.0
-        self.ws = BinanceWebSocketManager(symbols=["BTCUSDC"])
+        self.ws = BinancePriceStream(symbols=["BTCUSDC"])
         self.cur = _make_current_price_manager(self.tmp)
         self.h24 = _make_ws_cache24_manager(self.tmp, self.cur)
         self.ws.subscribe(self.cur)

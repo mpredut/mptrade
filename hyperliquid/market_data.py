@@ -31,7 +31,6 @@ safe_float = _common.safe_float
 safe_pos_float = _common.safe_pos_float
 safe_nonneg_float = _common.safe_nonneg_float
 safe_int = _common.safe_int
-exact_pos_int = _common.exact_pos_int
 HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"

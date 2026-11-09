@@ -41,7 +41,6 @@ from instrument_registry import casefold_get, is_equity_symbol, tracked_price_in
 import cacheintegrity as _cache_integrity
 from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
-_bapi_ws_health = _bapi_ws_bridge
 from lock import FileLock
 import binance_cache_health as account_cache_health
 
@@ -114,16 +113,16 @@ for _name, _value in (
     if _value <= 0:
         raise ValueError(f"{_name} must be positive")
 
-# WS-only mode and health state live in ``binance_api.bapi_ws_health``.
-WS_ONLY_MODE = _bapi_ws_health.WS_ONLY_MODE
-WS_LOSS_TIMEOUT_SEC = _bapi_ws_health.WS_LOSS_TIMEOUT_SEC
-WS_EVENT_LOG_ENABLED = _bapi_ws_health.WS_EVENT_LOG_ENABLED
+# WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
+WS_ONLY_MODE = _bapi_ws_bridge.WS_ONLY_MODE
+WS_LOSS_TIMEOUT_SEC = _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC
+WS_EVENT_LOG_ENABLED = _bapi_ws_bridge.WS_EVENT_LOG_ENABLED
 
-_ws_health_lock = _bapi_ws_health._ws_health_lock
-_ws_available = _bapi_ws_health._ws_available
-_ws_last_event_ts = _bapi_ws_health._ws_last_event_ts
-_ws_is_healthy = _bapi_ws_health._ws_is_healthy
-_ws_needs_rest_resync = _bapi_ws_health._ws_needs_rest_resync
+_ws_health_lock = _bapi_ws_bridge._ws_health_lock
+_ws_available = _bapi_ws_bridge._ws_available
+_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
+_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+_ws_needs_rest_resync = _bapi_ws_bridge._ws_needs_rest_resync
 
 _CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
 _TRADE_CACHE_CLASSES = {"CacheTrade", "CacheTradeManager"}
@@ -133,23 +132,23 @@ _ACCOUNT_CACHE_CLASSES = _ORDER_CACHE_CLASSES | _TRADE_CACHE_CLASSES
 
 def _mark_ws_available(value):
     global _ws_available
-    _ws_available = _bapi_ws_health.mark_ws_available(value)
+    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
 
 
 def _mark_ws_event_received():
     global _ws_last_event_ts, _ws_is_healthy
-    _ws_last_event_ts = _bapi_ws_health.mark_ws_event_received()
-    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
+    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 
 def _mark_ws_unhealthy():
     global _ws_is_healthy
-    _bapi_ws_health.mark_ws_unhealthy()
-    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
+    _bapi_ws_bridge.mark_ws_unhealthy()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 
 def _should_poll_for_manager(cls_name):
-    return _bapi_ws_health.should_poll_for_manager(
+    return _bapi_ws_bridge.should_poll_for_manager(
         cls_name,
         ws_only_mode=WS_ONLY_MODE,
         ws_available=_ws_available,
@@ -1952,7 +1951,7 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self._last_complete_sync_at_ms = (
                     account_cycle_high_water or 0)
-        _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
+        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
 
     def on_items_update(self, symbol, items):
@@ -3312,7 +3311,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
                 if is_rth_sym:
                     self._rth_empty_backoff_ts.pop(symbol, None)
                 self._persist_items(symbol, new_items)
-        _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
+        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
 
     def get_remote_items(self, symbol, startTime):

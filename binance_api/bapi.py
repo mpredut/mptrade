@@ -178,9 +178,6 @@ def get_account_assets_balances(raise_errors=False):
 
 
 
-_normalize_bapi_oid = normalize_scalar_order_id
-
-
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
     strict = _parse_bool_flag(strict, False)
     order_type = _normalize_side(order_type)
@@ -228,7 +225,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
             raw_time = safe_nonneg_float(order.get('time'), default=None)
             if raw_time is not None:
                 ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
-            raw_oid = _normalize_bapi_oid(order.get('orderId')) or _normalize_bapi_oid(extract_order_id(order))
+            raw_oid = normalize_scalar_order_id(order.get('orderId')) or normalize_scalar_order_id(extract_order_id(order))
             if raw_oid is None:
                 continue
             filtered_orders[raw_oid] = {
@@ -269,7 +266,7 @@ def cancel_order(symbol, order_id):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip().upper()
-        oid_arg = _normalize_bapi_oid(order_id)
+        oid_arg = normalize_scalar_order_id(order_id)
         if oid_arg is None:
             return False
         client.cancel_order(symbol=symbol, orderId=oid_arg)
@@ -335,22 +332,6 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
             else:
                 print(f"Failed to cancel {order_type} order with ID: {order_id}. Needs cancel because recent order.")
     print(f"Cancelled {count} recent orders.")
-
-
-def check_order_filled(order_id, symbol):
-    """Legacy adapter; new code uses market_api.order_status()."""
-    try:
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            return False
-        symbol = symbol.strip().upper()
-        cleaned_oid = clean_order_id(order_id)
-        if cleaned_oid is None:
-            return False
-        from providers.market_api import api as market_api
-        return market_api.order_status(symbol, cleaned_oid).fully_filled
-    except Exception as e:
-        print(f"Error checking order status: {e}")
-        return False
 
 
 # ---------------- Portfolio value query API ----------------

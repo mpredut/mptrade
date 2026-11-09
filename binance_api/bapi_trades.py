@@ -197,9 +197,6 @@ def aggregate_trades(trades):
     return aggregated_list
 
 
-_clean_non_neg_int = safe_nonneg_int
-
-
 def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, limit=1000):
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)

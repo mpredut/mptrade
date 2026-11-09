@@ -41,7 +41,6 @@ from botcore import (
 )
 from offline.backtests.metrics import (
     buy_hold_pct,
-    format_performance_summary,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
 )
@@ -50,17 +49,12 @@ from offline.backtests.metrics import (
 _common_mod = load_local_module(_HERE, "common")
 _load_hl_local = _common_mod.load_hl_local
 log = _common_mod.log
-_load_dotenv = _common_mod.load_dotenv
 _md_local = _load_hl_local("market_data")
 fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
 
 _hl_mod = _load_hl_local("replay")
 run_replay = _hl_mod.run_replay
-funding_at = _hl_mod.funding_at
-
-
-fetch_funding = fetch_funding_history
 
 
 def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
@@ -143,7 +137,7 @@ def main() -> int:
         log("! prea putine lumanari"); return 1
     if budget <= 0:
         log("! budget must be > 0"); return 1
-    fund = fetch_funding(coin, ts[0])
+    fund = fetch_funding_history(coin, ts[0])
     sig = precompute_signal(closes, [t/1000 for t in ts], args.signal, args.fast, args.slow, args.band/100, args.win, args.step)
     bh = buy_hold_pct(closes)
 

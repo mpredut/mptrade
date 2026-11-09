@@ -41,16 +41,14 @@ from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, n
 from botcore import format_price_log  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
 
-from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+from trailing_core import (  # noqa: E402
     COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     extract_trailing_intent_action_asset,
     load_trailing_common_env,
     parse_trailing_cli_args,
-    should_sell,
     vwap_or_fallback,
 )
-should_sell = should_sell  # Re-exported for kraken tests/compatibility
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from providers.base import extract_order_side  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402

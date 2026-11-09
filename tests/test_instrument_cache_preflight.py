@@ -20,6 +20,7 @@ import order_lifecycle as order_outcomes_log
 import order_retry
 import order_retry_worker
 import order_lifecycle as accepted_order_persistence
+import priceAnalysis as pa
 from lock import trade_cooldown
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
@@ -317,7 +318,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                     patch.object(order_guard, "profit_guard", return_value=True),
                     patch.object(order_guard, "get_margin_cfg", return_value=0.01),
                     patch.object(
-                        placeorder.pa,
+                        pa,
                         "get_weight_for_cash_permission_at_quant_time",
                         side_effect=weight_effect,
                         return_value=weight_return),
@@ -349,7 +350,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(order_guard, "profit_guard", return_value=True),
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
-                placeorder.pa,
+                pa,
                 "get_weight_for_cash_permission_at_quant_time",
                 return_value=None),
             patch(
@@ -383,14 +384,14 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         available = 5.0
         for label, reason, weight_patch, stats_patch in (
                 ("weight-policy-down", "weight_policy_unavailable",
-                 patch.object(placeorder.pa,
+                 patch.object(pa,
                               "get_weight_for_cash_permission_at_quant_time",
                               side_effect=RuntimeError("pa down")),
                  patch("binance_api.bapi_allorders.get_total_traded_stats",
                        return_value={"SELL": {"total_value": 0.0},
                                      "BUY": {"total_value": 0.0}})),
                 ("trade-stats-down", "trade_stats_unavailable",
-                 patch.object(placeorder.pa,
+                 patch.object(pa,
                               "get_weight_for_cash_permission_at_quant_time",
                               return_value=0.03),
                  patch("binance_api.bapi_allorders.get_total_traded_stats",
@@ -415,7 +416,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(order_guard, "profit_guard", return_value=True),
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
-                placeorder.pa,
+                pa,
                 "get_weight_for_cash_permission_at_quant_time",
                 return_value=0.03),
             patch(

@@ -168,10 +168,6 @@ def _new_state() -> dict:
     }
 
 
-_clean_oid = _clean_single_order_id
-_normalize_stored_oid = normalize_scalar_order_id
-
-
 def _is_live_order_oid(oid: object) -> bool:
     return oid is not None and not str(oid).startswith("PAPER")
 
@@ -199,7 +195,7 @@ def _sanitize_state(raw: dict) -> dict:
         for o in raw_orders:
             if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
                 continue
-            stored_oid = _normalize_stored_oid(o.get("oid"))
+            stored_oid = normalize_scalar_order_id(o.get("oid"))
             px_f = safe_pos_float(o.get("px"), 0.0)
             sz_f = safe_pos_float(o.get("sz"), 0.0)
             if stored_oid is None or px_f <= 0.0 or sz_f <= 0.0:
@@ -311,7 +307,7 @@ class Strategy(BaseSpotMixin):
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
-        stored_oid = _normalize_stored_oid(oid)
+        stored_oid = normalize_scalar_order_id(oid)
         if ok and stored_oid is not None:
             log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={stored_oid} {sz} @ {px:.4f} ({msg})")
             self.s["orders"].append({"oid": stored_oid, "role": role, "side": side, "sz": sz, "px": px,
@@ -382,7 +378,7 @@ class Strategy(BaseSpotMixin):
             active = {
                 clean_id
                 for o in (orders_fn(self.coin) or [])
-                if isinstance(o, dict) and (clean_id := _clean_oid(o.get("oid"))) is not None
+                if isinstance(o, dict) and (clean_id := _clean_single_order_id(o.get("oid"))) is not None
             }
         except Exception as e:
             orders_ok = False
@@ -390,7 +386,7 @@ class Strategy(BaseSpotMixin):
             active = {
                 clean_id
                 for o in self.s["orders"]
-                if isinstance(o, dict) and (clean_id := _clean_oid(o.get("oid"))) is not None
+                if isinstance(o, dict) and (clean_id := _clean_single_order_id(o.get("oid"))) is not None
             }
 
         prev = self.s["qty"]
@@ -399,7 +395,7 @@ class Strategy(BaseSpotMixin):
         if qty_now > prev + 1e-9:        # position opened or increased
             fq = qty_now - prev
             filled_open = next(
-                (o for o in self.s["orders"] if o.get("role") == "open" and _clean_oid(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "open" and _clean_single_order_id(o.get("oid")) not in active),
                 None,
             ) or next(
                 (o for o in self.s["orders"] if o.get("role") == "open"),
@@ -427,7 +423,7 @@ class Strategy(BaseSpotMixin):
             )
         elif qty_now < prev - 1e-9:      # position reduced by take profit
             filled_close = next(
-                (o for o in self.s["orders"] if o.get("role") == "close" and _clean_oid(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "close" and _clean_single_order_id(o.get("oid")) not in active),
                 None,
             )
             filled_close_px = (
@@ -450,7 +446,7 @@ class Strategy(BaseSpotMixin):
 
         for o in list(self.s["orders"]):
             if not _is_live_order_oid(o.get("oid")): continue
-            if _clean_oid(o.get("oid")) not in active:
+            if _clean_single_order_id(o.get("oid")) not in active:
                 self._remove(o)
             elif orders_ok and self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")

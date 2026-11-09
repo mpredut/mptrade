@@ -65,19 +65,6 @@ def discover_assets(cfg_dir: str) -> list[tuple[str, str]]:
     return out
 
 
-def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
-    """Return False only for a proven ISIN mismatch identifying the wrong instrument.
-    Otherwise return True best-effort and continue with the explicit ticker if metadata is absent."""
-    return verify_instrument_isin(
-        client,
-        ticker,
-        expected_isin,
-        notify_fn=notify,
-        notify_source="T212",
-        verbose=False,
-    )
-
-
 def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_wait: bool) -> None:
     """Run an asset lifecycle in its isolated thread, catching and retrying errors
     without terminating the process or other bots."""
@@ -101,14 +88,18 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     log(f"  ▶ [{label}] {ticker} | price through {yahoo} | {exec_mode_str} | poll {interval}s")
     while not STOP.is_set():
         try:
-            if not verify_isin(client, ticker, isin):
+            if not verify_instrument_isin(
+                client, ticker, isin, notify_fn=notify, notify_source="T212", verbose=False
+            ):
                 return  # invalid configuration: do not retry blindly
             if not skip_wait:
                 t_wait = time.monotonic()
                 ok = wait_for_launch(yahoo, label, interval, stop=STOP)
                 if not ok:
                     return  # stop requested
-                if (time.monotonic() - t_wait) >= interval * 0.5 and not verify_isin(client, ticker, isin):
+                if (time.monotonic() - t_wait) >= interval * 0.5 and not verify_instrument_isin(
+                    client, ticker, isin, notify_fn=notify, notify_source="T212", verbose=False
+                ):
                     return
             # Block in the strategy's self-healing loop. It returns only after an
             # unexpected stop, at which point verification and startup are retried.

@@ -827,7 +827,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             mt._SL_EPISODE_STATE.pop(sym, None)
 
     def test_zero_imbalance_and_zero_taker_ratio_not_coerced_to_neutral_defaults(self):
-        from binance_api.bapi_trades import _clean_non_neg_int
+        from botcore import safe_nonneg_int
         from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
         from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 
@@ -849,8 +849,8 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertFalse(w_dec.allowed)
         self.assertIn("severe_taker_selling_dominated", w_dec.reason)
 
-        self.assertEqual(_clean_non_neg_int(0, default=3), 0)
-        self.assertEqual(_clean_non_neg_int(-1, default=3), 3)
+        self.assertEqual(safe_nonneg_int(0, default=3), 0)
+        self.assertEqual(safe_nonneg_int(-1, default=3), 3)
 
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
         import json

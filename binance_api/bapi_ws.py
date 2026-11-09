@@ -73,14 +73,6 @@ class _Cmd:
     UNSUBSCRIBE = "UNSUBSCRIBE"
 
 
-def _as_bool(value, default: bool = False) -> bool:
-    return _parse_bool_flag(value, default=bool(default))
-
-
-def _sanitize_timeout(timeout, default: float = WS_STOP_TIMEOUT) -> float:
-    return safe_nonneg_float(timeout, default=float(default))
-
-
 # ==============================================================================
 # Shared base: thread, asyncio, reconnect backoff, and clean shutdown.
 # ==============================================================================
@@ -101,7 +93,7 @@ class BinanceWSBase:
     # Thread lifecycle.
     def start(self, name: str = "BinanceWS", daemon: bool = True) -> "BinanceWSBase":
         eff_name = str(name).strip() if isinstance(name, str) and name.strip() else "BinanceWS"
-        eff_daemon = _as_bool(daemon, default=True)
+        eff_daemon = _parse_bool_flag(daemon, default=True)
         with self._start_lock:          # [F2] concurrent start() calls are safe
             if self.is_running:
                 logger.info("%s already running", eff_name)
@@ -121,7 +113,7 @@ class BinanceWSBase:
                 loop.call_soon_threadsafe(task.cancel)
             except RuntimeError:
                 pass
-        eff_timeout = _sanitize_timeout(timeout, default=WS_STOP_TIMEOUT)
+        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
         if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=eff_timeout)
             if self._thread.is_alive():
@@ -333,7 +325,7 @@ class BinancePriceStream(PublicPriceStreamBase):
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
         # Preserve the original non-daemon market-manager thread behavior.
-        super().start(name=name, daemon=_as_bool(daemon, default=False))
+        super().start(name=name, daemon=_parse_bool_flag(daemon, default=False))
         return self
 
     # --- Helpers -------------------------------------------------------------
@@ -549,7 +541,7 @@ class BinanceAccountStream(BinanceWSBase):
 
     # Local health state and callback propagation.
     def _mark_available(self, value: bool) -> None:
-        flag = _as_bool(value, default=False)
+        flag = _parse_bool_flag(value, default=False)
         with self._health_lock:
             self._available = flag
         self.on_available(flag)
@@ -566,7 +558,7 @@ class BinanceAccountStream(BinanceWSBase):
         self.on_unhealthy()
 
     def start(self, name: str = "WSUserData", daemon: bool = True) -> "BinanceAccountStream":
-        super().start(name=name, daemon=_as_bool(daemon, default=True))
+        super().start(name=name, daemon=_parse_bool_flag(daemon, default=True))
         with self._start_lock:
             if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
                 self._watchdog_thread = threading.Thread(
@@ -575,7 +567,7 @@ class BinanceAccountStream(BinanceWSBase):
         return self
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
-        eff_timeout = _sanitize_timeout(timeout, default=WS_STOP_TIMEOUT)
+        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
         ok = super().stop(timeout=eff_timeout)          # Set stop event and join run thread.
         if (
             self._watchdog_thread
@@ -700,12 +692,6 @@ class BinanceAccountStream(BinanceWSBase):
                 logger.warning("[WS][WARN] No WS events for %ss -> falling back to polling.", age_s)
                 self._mark_unhealthy()
             self._stop_event.wait(5)
-
-
-# Compatibility aliases retained for earlier code and tests.
-BinanceWebSocketManager = BinancePriceStream   # original generic name
-BinanceMarketStream     = BinancePriceStream   # intermediate name
-BinanceUserDataStream   = BinanceAccountStream  # official Binance user-data term
 
 
 # --- Market data entry point (shared singleton, LAZY start) ------------------

@@ -28,11 +28,11 @@ from providers.base import extract_order_id, extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
-    from .ipo_common import load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from .ipo_common import _clean_single_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     from .t212_client import T212Client
 except ImportError:
-    from ipo_common import load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from ipo_common import _clean_single_order_id, load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     try:
         from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     except ImportError:
@@ -41,9 +41,6 @@ except ImportError:
         get_price_usd = _md_mod.get_price_usd
         t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
-
-# Legacy marker retained only for conservative migration of pre-v2 SPCX intents.
-ORDER_MARKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".spcx_order_placed")
 
 T212_ORDER_TERMINAL = {"FILLED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED"}
 T212_ORDER_OPEN = {
@@ -81,18 +78,6 @@ def resolve_quantity(order_price: float,
 # ---------------------------------------------------------------------------
 # Duplicate-prevention marker
 # ---------------------------------------------------------------------------
-def order_already_placed() -> bool:
-    """Conservatively report whether the legacy marker blocks a new submit."""
-    try:
-        record = _read_marker(ORDER_MARKER)
-    except RuntimeError as exc:
-        log(f"  ! [ORDER] unreadable marker — fail closed: {exc}")
-        return True
-    return bool(record and str(record.get("lifecycle") or "").strip().lower() not in {
-        "canceled", "cancelled", "expired",
-    })
-
-
 def _read_marker(path: str) -> dict | None:
     target = os.fspath(path)
     backup = previous_generation_path(target)
@@ -122,26 +107,11 @@ def _marker_path(ticker: str, *, test: bool = False) -> str:
     )
 
 
-def _read_or_migrate_marker(marker_path: str) -> dict | None:
-    return _read_marker(marker_path)
-
-
 def _persist_marker(record: dict, path: str) -> None:
     try:
         atomic_write_json(path, record, indent=2, sort_keys=True)
     except (OSError, TypeError, ValueError) as exc:
         raise RuntimeError(f"cannot persist the T212 intent in {path}: {exc}") from exc
-
-
-def _write_marker(ticker: str, result: dict) -> None:
-    """Backward-compatible accepted-order marker writer."""
-    res_dict = result if isinstance(result, dict) else {}
-    _persist_marker({
-        "version": 2, "at": now_str(), "ticker": ticker,
-        "lifecycle": "accepted", "order_id": extract_order_id(res_dict),
-        "venue_status": res_dict.get("status"), "order": res_dict,
-    }, _marker_path(ticker))
-    log(f"  [ORDER] marker written: {_marker_path(ticker)}")
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +249,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
     """Return complete, terminal_failed, waiting, or retryable."""
-    order_id = T212Client._clean_order_id(record.get("order_id"))
+    order_id = _clean_single_order_id(record.get("order_id"))
     if order_id is not None:
         info = poll_order_until_terminal(client, order_id, record["ticker"], desktop)
         if info is None:
@@ -427,7 +397,7 @@ def place_order_with_retry(
     marker_path = _marker_path(ticker, test=not write_marker)
     now = time.time()
     try:
-        record = _read_or_migrate_marker(marker_path)
+        record = _read_marker(marker_path)
     except RuntimeError as exc:
         log(f"  ! [ORDER] {exc} — NOT sending without verifiable durable state")
         return False
@@ -473,7 +443,7 @@ def place_order_with_retry(
         if outcome == "waiting":
             # Do not report success merely because an unproven intent was durably
             # queued. A known venue order may safely remain open/status-unknown.
-            return T212Client._clean_order_id(record.get("order_id")) is not None
+            return _clean_single_order_id(record.get("order_id")) is not None
     else:
         before_qty = _portfolio_qty(client, ticker)
         if before_qty is None:

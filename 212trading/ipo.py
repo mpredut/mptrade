@@ -49,8 +49,8 @@ try:
         load_t212_environment, log, notify, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
-    from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
-    from .market_data import check_market, t212_to_yahoo
+    from .listing_watcher import verify_instrument_isin, wait_for_launch
+    from .market_data import t212_to_yahoo
     from .t212_client import T212Client
     from .order_manager import resolve_quantity, place_order_with_retry
     from .strategy import Strategy, StratParams
@@ -59,35 +59,17 @@ except ImportError:
         load_t212_environment, load_t212_market_data, log, notify, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
-    from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
+    from listing_watcher import verify_instrument_isin, wait_for_launch
     try:
-        from market_data import check_market, t212_to_yahoo
+        from market_data import t212_to_yahoo
     except ImportError:
         _md_mod = load_t212_market_data()
-        check_market = _md_mod.check_market
         t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
     from order_manager import resolve_quantity, place_order_with_retry
     from strategy import Strategy, StratParams
 
-in_market_window = in_market_window  # Re-exported for callers/tests
 from credentials import t212_credentials
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bool:
-    """Best-effort verification that a configured EXPECTED_ISIN matches the ticker.
-    Return False only for a proven mismatch identifying the wrong instrument."""
-    return verify_instrument_isin(
-        client,
-        ticker,
-        expected_isin,
-        notify_fn=notify,
-        notify_source="verify",
-        verbose=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +205,10 @@ def main() -> int:
     #     immediately, not after waiting days for launch. Stop now on a wrong ISIN.
     #     If an unlaunched IPO ticker is not in metadata yet, warn and continue.
     log("    pre-flight: verifying instrument on T212...")
-    if not verify_instrument(client, t212_ticker, expected_isin):
+    if not verify_instrument_isin(
+        client, t212_ticker, expected_isin,
+        notify_fn=notify, notify_source="verify", verbose=True,
+    ):
         return 1
 
     # --- IDENTICAL mechanism for EVERY symbol: wait until the instrument has LAUNCHED
@@ -234,7 +219,10 @@ def main() -> int:
             return 130  # interrupted
 
     # --- FINAL post-launch verification catches ticker reuse before trading ---
-    if not verify_instrument(client, t212_ticker, expected_isin):
+    if not verify_instrument_isin(
+        client, t212_ticker, expected_isin,
+        notify_fn=notify, notify_source="verify", verbose=True,
+    ):
         return 1
 
     try:

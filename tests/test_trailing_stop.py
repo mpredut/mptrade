@@ -8,7 +8,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from binance_api.trailing_stop import TrailingStop, should_sell  # noqa: E402
+from binance_api.trailing_stop import TrailingStop  # noqa: E402
+from trailing_core import should_sell  # noqa: E402
 import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 

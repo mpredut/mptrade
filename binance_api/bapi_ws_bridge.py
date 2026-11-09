@@ -35,15 +35,12 @@ _ws_last_event_ts = 0.0
 _ws_is_healthy = False
 _ws_needs_rest_resync: set[str] = set()
 
-_as_bool = _parse_bool_flag
-_normalize_manager_name = normalize_class_name
-
 
 def mark_ws_available(value: bool) -> bool:
     """Record whether the Binance user-data WebSocket stream is connected."""
     global _ws_available
     with _ws_health_lock:
-        _ws_available = _as_bool(value)
+        _ws_available = _parse_bool_flag(value)
         cm = sys.modules.get("cacheManager")
         if cm is not None:
             cm._ws_available = _ws_available
@@ -78,7 +75,7 @@ def mark_ws_unhealthy() -> None:
 
 def clear_ws_rest_resync_for_manager(cls_name: str) -> None:
     """Clear the pending post-disconnect REST resync obligation for ``cls_name``."""
-    norm_name = _normalize_manager_name(cls_name)
+    norm_name = normalize_class_name(cls_name)
     if not norm_name:
         return
     with _ws_health_lock:
@@ -100,8 +97,8 @@ def should_poll_for_manager(
     ws_is_healthy: bool | None = None,
 ) -> bool:
     """Return True when ``cls_name`` must run a REST reconciliation poll."""
-    norm_name = _normalize_manager_name(cls_name)
-    effective_ws_only = _as_bool(WS_ONLY_MODE) if ws_only_mode is None else _as_bool(ws_only_mode)
+    norm_name = normalize_class_name(cls_name)
+    effective_ws_only = _parse_bool_flag(WS_ONLY_MODE) if ws_only_mode is None else _parse_bool_flag(ws_only_mode)
     if not effective_ws_only:
         return True
     if norm_name not in WS_MANAGED_CACHE_CLASSES:
@@ -109,8 +106,8 @@ def should_poll_for_manager(
     with _ws_health_lock:
         if norm_name in _ws_needs_rest_resync:
             return True
-        effective_available = _as_bool(_ws_available) if ws_available is None else _as_bool(ws_available)
-        effective_healthy = _as_bool(_ws_is_healthy) if ws_is_healthy is None else _as_bool(ws_is_healthy)
+        effective_available = _parse_bool_flag(_ws_available) if ws_available is None else _parse_bool_flag(ws_available)
+        effective_healthy = _parse_bool_flag(_ws_is_healthy) if ws_is_healthy is None else _parse_bool_flag(ws_is_healthy)
         return (not effective_available) or (not effective_healthy)
 
 
@@ -126,7 +123,6 @@ def get_ws_health_snapshot() -> dict:
         }
 
 
-ws_health = sys.modules[__name__]
 register_module_aliases(__name__, "binance_api.bapi_ws_health")
 
 _ws_bridge = None
@@ -261,9 +257,9 @@ def handle_binance_ws_event(
 
     _ws_event_stats[event_type] += 1
     should_log = (
-        ws_health.WS_EVENT_LOG_ENABLED
+        WS_EVENT_LOG_ENABLED
         if log_enabled is None
-        else ws_health._as_bool(log_enabled, default=ws_health.WS_EVENT_LOG_ENABLED)
+        else _parse_bool_flag(log_enabled, default=WS_EVENT_LOG_ENABLED)
     )
     if should_log:
         print("cacheManager handler call from binance ....")
@@ -323,11 +319,11 @@ def enable_real_ws_event_sync(
 
         bridge = bapi_ws.BinanceAccountStream(
             on_event=on_event or handle_binance_ws_event,
-            on_available=on_available or ws_health.mark_ws_available,
-            on_healthy=on_healthy or ws_health.mark_ws_event_received,
-            on_unhealthy=on_unhealthy or ws_health.mark_ws_unhealthy,
+            on_available=on_available or mark_ws_available,
+            on_healthy=on_healthy or mark_ws_event_received,
+            on_unhealthy=on_unhealthy or mark_ws_unhealthy,
             loss_timeout_sec=(
-                ws_health.WS_LOSS_TIMEOUT_SEC
+                WS_LOSS_TIMEOUT_SEC
                 if loss_timeout_sec is None
                 else loss_timeout_sec
             ),

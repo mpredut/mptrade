@@ -2007,7 +2007,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert tc.list_instruments() is None
     monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'["bad", {"ticker": "NVDA_US_EQ", "isin": ""}]'))
     assert tc.list_instruments() == [{"ticker": "NVDA_US_EQ", "isin": ""}]
-    assert t212_bot_mod.verify_isin(tc, " nvda_us_eq ", "US67066G1040") is True
+    assert t212_bot_mod.verify_instrument_isin(tc, " nvda_us_eq ", "US67066G1040") is True
     monkeypatch.setattr(t212_cli_mod, "http_post_json", lambda url, payload=None, headers=None: (200, b'["unexpected_list"]'))
     st_code, payload_dict = tc._place_order("limit", {"ticker": "NVDA_US_EQ"})
     assert st_code == 200 and isinstance(payload_dict, dict)
@@ -2680,7 +2680,6 @@ def test_venue_market_data_and_client_hardening():
     assert bapi._convert_to_usdc(" usdc ", 25.5) == 25.5
     assert bapi._convert_to_usdc(None, 25.5) == 0.0
     assert bapi.cancel_order("BTCUSDC", "   ") is False
-    assert bapi.check_order_filled("   ", "BTCUSDC") is False
 
     # 3. Kraken market_data: fractional float interval must raise ValueError
     with pytest.raises(ValueError, match="invalid interval"):
@@ -2733,9 +2732,9 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
     assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "INVALID_VAL", dry_run=False) is False  # type: ignore[arg-type]
     assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "gtc", dry_run=True) is True  # type: ignore[arg-type]
 
-    # 4. ipo.verify_instrument and _cmd_find_ticker reject empty/bool ticker or query
-    assert t212_ipo.verify_instrument(None, "   ", "") is False  # type: ignore[arg-type]
-    assert t212_ipo.verify_instrument(None, True, "") is False  # type: ignore[arg-type]
+    # 4. ipo.verify_instrument_isin and _cmd_find_ticker reject empty/bool ticker or query
+    assert t212_ipo.verify_instrument_isin(None, "   ", "") is False  # type: ignore[arg-type]
+    assert t212_ipo.verify_instrument_isin(None, True, "") is False  # type: ignore[arg-type]
     assert t212_ipo._cmd_find_ticker(None, "   ") == 1  # type: ignore[arg-type]
 
     # 5. kraken_bot._cmd_find_pair and hyperliquid/strategy.py state_path_for & reconcile hardening
@@ -3914,12 +3913,12 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     from providers.quantity import balance_cap_quantity
     from providers.replay_provider import ReplayMarketDataProvider
 
-    # 1. bapi_ws._as_bool, _sanitize_timeout, and _interruptible_sleep handle bool/NaN/negative/0 inputs safely
-    assert bapi_ws._as_bool("false", default=True) is False
-    assert bapi_ws._as_bool(float("nan"), default=False) is False
-    assert bapi_ws._sanitize_timeout(True, default=8.0) == 8.0
-    assert bapi_ws._sanitize_timeout(-5.0, default=8.0) == 8.0
-    assert bapi_ws._sanitize_timeout("2.5", default=8.0) == 2.5
+    # 1. bapi_ws._parse_bool_flag, safe_nonneg_float, and _interruptible_sleep handle bool/NaN/negative/0 inputs safely
+    assert bapi_ws._parse_bool_flag("false", default=True) is False
+    assert bapi_ws._parse_bool_flag(float("nan"), default=False) is False
+    assert bapi_ws.safe_nonneg_float(True, default=8.0) == 8.0
+    assert bapi_ws.safe_nonneg_float(-5.0, default=8.0) == 8.0
+    assert bapi_ws.safe_nonneg_float("2.5", default=8.0) == 2.5
 
     ws_base = bapi_ws.BinanceWSBase()
     asyncio.run(ws_base._interruptible_sleep(float("nan"), step=0.0))
@@ -5721,12 +5720,12 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     assert st_hl["orders"][0]["amount"] == 0.0
     assert st_hl["orders"][0]["ts"] == pytest.approx(1000.5)
 
-    # 4. T212Client._clean_order_id rejects negative strings and normalizes '+789.0' -> '789'
+    # 4. t212_client_mod._clean_single_order_id rejects negative strings and normalizes '+789.0' -> '789'
     t212_client_mod = importlib.import_module("212trading.t212_client")
-    assert t212_client_mod.T212Client._clean_order_id(" +789.0 ") == "789"
-    assert t212_client_mod.T212Client._clean_order_id("-5") is None
-    assert t212_client_mod.T212Client._clean_order_id("+0") is None
-    assert t212_client_mod.T212Client._clean_order_id("-12.0") is None
+    assert t212_client_mod._clean_single_order_id(" +789.0 ") == "789"
+    assert t212_client_mod._clean_single_order_id("-5") is None
+    assert t212_client_mod._clean_single_order_id("+0") is None
+    assert t212_client_mod._clean_single_order_id("-12.0") is None
 
     # 5. 212trading/strategy.py _sanitize_t212_state normalizes order amount/ts and replay handles string OHLC
     t212_strat_mod = importlib.import_module("212trading.strategy")
@@ -5772,13 +5771,11 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
     import cacheintegrity as ci
     import priceAnalysis as pa
 
-    # 1. bapi: cancel_order, check_order_filled
+    # 1. bapi: cancel_order
     assert bapi.cancel_order("   ", 123) is False
     assert bapi.cancel_order(True, 123) is False  # type: ignore[arg-type]
     assert bapi.cancel_order("BTCUSDC", "-5") is False
     assert bapi.cancel_order("BTCUSDC", "+0.0") is False
-    assert bapi.check_order_filled(123, "   ") is False
-    assert bapi.check_order_filled("-5", "BTCUSDC") is False
 
     # 2. bapi_allorders: paginate_my_trades and get_filled_orders with '+123.0' and '-5'
     pages = [
@@ -6202,10 +6199,10 @@ def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
     assert bapi._parse_bool_flag("0.0", default=True) is False
     assert bapi_placeorder._parse_bool_flag("1.0") is True
     assert bapi_placeorder._parse_bool_flag("0.0", default=True) is False
-    assert bapi_ws._as_bool("1.0") is True
-    assert bapi_ws._as_bool("0.0", default=True) is False
-    assert bapi_ws_health._as_bool("1.0") is True
-    assert bapi_ws_health._as_bool("0.0", default=True) is False
+    assert bapi_ws._parse_bool_flag("1.0") is True
+    assert bapi_ws._parse_bool_flag("0.0", default=True) is False
+    assert bapi_ws_health._parse_bool_flag("1.0") is True
+    assert bapi_ws_health._parse_bool_flag("0.0", default=True) is False
     assert b_mdata._parse_bool_flag("1.0", default=False) is True
     assert b_mdata._parse_bool_flag("0.0", default=True) is False
     assert kraken_xstock_watch._parse_bool_flag("1.0") is True

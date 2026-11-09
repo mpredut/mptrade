@@ -21,10 +21,10 @@ if _ROOT not in sys.path:
 from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
 
 try:
-    from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
+    from kraken.kraken_common import exact_nonneg_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
-    from kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
+    from kraken_common import exact_nonneg_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
     from kraken_client import KrakenClient, KrakenError
 
 
@@ -136,15 +136,6 @@ def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bo
         log(f"  [market] {pair} listed but status={status} (still not tradable)")
         return None, True
     return info, False
-
-
-def pair_available(client: KrakenClient, pair: str) -> dict | None:
-    """Return pair metadata when LISTED and tradable on Kraken, otherwise None.
-
-    Used as a launch detector; the bot waits while the pair is absent.
-    """
-    info, _ = check_pair_listing(client, pair)
-    return info
 
 
 def pair_precision(info: dict) -> tuple[int, int, float]:

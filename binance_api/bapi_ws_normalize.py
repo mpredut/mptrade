@@ -17,9 +17,6 @@ def _is_positive_finite(val: Any) -> bool:
     return safe_pos_float(val, default=None) is not None
 
 
-_clean_now_ms = resolve_now_ms
-
-
 def _strip_int_str(val: Any) -> str | None:
     if not isinstance(val, str):
         return None
@@ -120,7 +117,7 @@ def parse_order_execution_report(
         last_price = extract_order_price(event, default=0.0)
         if last_price <= 0 and last_quantity > 0:
             last_price = _derive_ws_quote_fill_price(event, last_quantity)
-        fallback_ms = _clean_now_ms(now_ms)
+        fallback_ms = resolve_now_ms(now_ms)
         ts_ms = extract_timestamp_ms(event, default=None)
         if ts_ms is None or ts_ms <= 0:
             ts_ms = fallback_ms
@@ -200,7 +197,7 @@ def parse_trade_execution_report(
         return None
     ts_ms = extract_timestamp_ms(event)
     if ts_ms is None or ts_ms <= 0:
-        ts_ms = _clean_now_ms(now_ms)
+        ts_ms = resolve_now_ms(now_ms)
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
         else f"{raw_order_id}-{int(ts_ms)}"

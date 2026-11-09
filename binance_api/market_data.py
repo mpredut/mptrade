@@ -14,7 +14,6 @@ import urllib.parse
 
 from botcore import _parse_bool_flag, fetch_public_json, safe_pos_float
 from providers.order_ohlc_utils import (
-    OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES,
     OHLC_INTERVALS_MIN_TO_STR,
     OHLC_INTERVALS_STR_TO_MIN,
     parse_ohlc_interval,
@@ -27,7 +26,6 @@ API_URL = "https://api.binance.com/api/v3/klines"
 
 INTERVALS_MIN_TO_STR: dict[int, str] = dict(OHLC_INTERVALS_MIN_TO_STR)
 INTERVALS_STR_TO_MIN: dict[str, int] = dict(OHLC_INTERVALS_STR_TO_MIN)
-_CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = dict(OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES)
 
 
 def parse_interval_minutes(interval: int | str) -> int:

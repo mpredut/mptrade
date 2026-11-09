@@ -11,8 +11,6 @@ import order_guard
 import order_lifecycle as _outcomes_log
 import instrument_registry as sym
 import botcore as cfg
-import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
-_ = pa
 from botcore import (
     _parse_bool_flag,
     clean_order_id,

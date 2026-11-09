@@ -14,6 +14,7 @@ import instrument_registry as sym
 from botcore import (
     clean_order_id,
     exact_pos_int,
+    normalize_scalar_order_id,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -30,14 +31,9 @@ from providers.order_ohlc_utils import (
 
 
 from .bapi import (
-    _normalize_bapi_oid,
     _normalize_side,
     _parse_bool_flag,
 )
-
-
-def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
-    return exact_pos_int(clean_order_id(raw_tid), default=None)
 
 
 def _round_fill_val(val: float) -> float:
@@ -109,7 +105,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         if len(batch) < limit:          # Final page.
             break
         tail = batch[-1]
-        tid_int = _parse_tail_trade_id(tail.get("id") if isinstance(tail, dict) else None)
+        tid_int = exact_pos_int(clean_order_id(tail.get("id") if isinstance(tail, dict) else None), default=None)
         if tid_int is None:
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")
@@ -167,7 +163,7 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         grouped = defaultdict(lambda: {'price_qty': 0, 'quantity': 0, 'timestamp': 0, 'side': ''})
 
         for idx, t in enumerate(filtered):
-            key = _normalize_bapi_oid(t['orderId']) or f"_unkeyed_{idx}"
+            key = normalize_scalar_order_id(t['orderId']) or f"_unkeyed_{idx}"
             grouped[key]['price_qty'] += t['price'] * t['quantity']
             grouped[key]['quantity'] += t['quantity']
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])

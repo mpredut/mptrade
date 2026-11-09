@@ -48,14 +48,12 @@ from order_retry import (
     propagate_submission_refusal,
 )
 
-from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+from trailing_core import (  # noqa: E402
     COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     load_trailing_common_env,
     parse_trailing_cli_args,
-    should_sell,
 )
-should_sell = should_sell  # Re-exported for test compatibility
 from botcore import (load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import cache_path  # noqa: E402

@@ -25,7 +25,6 @@ import dataclasses
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import (
     buy_hold_pct,
-    format_performance_summary,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
 )

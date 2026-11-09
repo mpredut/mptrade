@@ -23,7 +23,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import ensure_local_module_priority  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
-from ipo_common import _parse_bool_flag, fmt_price, load_t212_environment, log, safe_pos_float  # noqa: E402
+from ipo_common import _parse_bool_flag, format_price_log, load_t212_environment, log, safe_pos_float  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
@@ -95,7 +95,7 @@ def main() -> int:
 
     if hit and armed:
         cond = f"<= {args.below}" if hit_below else f">= {args.above}"
-        px_s = fmt_price(price)
+        px_s = format_price_log(price)
         zone_note = "Manual buying zone." if hit_below else "Price target reached."
         title = f"{args.symbol} at {px_s} ({cond})"
         body = f"{args.symbol} = {px_s} USD — threshold {cond} reached. {zone_note}"
@@ -103,7 +103,7 @@ def main() -> int:
         if push(topic, title, body):
             armed = False
     else:
-        log(f"  [{args.symbol}] price {fmt_price(price)} (below={args.below} above={args.above} armed={armed})")
+        log(f"  [{args.symbol}] price {format_price_log(price)} (below={args.below} above={args.above} armed={armed})")
 
     try:
         atomic_write_json(state_path, {"armed": armed, "last": price})

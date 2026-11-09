@@ -6938,13 +6938,12 @@ def test_iteration41_t212_provider_bapi_and_bapi_allorders_nan_bool_safety(monke
     with pytest.raises(ProviderError):
         tp.cancel_order("AAPL_US_EQ", True)
 
-    # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order/check_order_filled reject bool order_id
+    # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id
     monkeypatch.setitem(bapi.cprice, "BTCUSDC", float("nan"))
     monkeypatch.setitem(bapi.cprice_time, "BTCUSDC", time.time())
     monkeypatch.setattr(bapi, "update_price", lambda sym: 61234.5)
     assert bapi.get_current_price("BTCUSDC") == pytest.approx(61234.5)
     assert bapi.cancel_order("BTCUSDC", True) is False
-    assert bapi.check_order_filled(True, "BTCUSDC") is False
     assert bapi._convert_to_usdc("USDC", True) == 0.0
 
     # 3. bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate
@@ -9190,9 +9189,9 @@ def test_iteration70_t212_replay_bot_kraken_watch_and_trailing_core_safety(tmp_p
     with pytest.raises(ValueError):
         t212_rep._fx_rates(1.0, -1)
 
-    # 2. 212trading.t212_bot.verify_isin tolerates non-dict items in instruments list
+    # 2. 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list
     dummy_t212 = SimpleNamespace(list_instruments=lambda: ["bad-item", {"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
-    assert t212_bot.verify_isin(dummy_t212, "NVDA_US_EQ", "US67066G1040") is True
+    assert t212_bot.verify_instrument_isin(dummy_t212, "NVDA_US_EQ", "US67066G1040") is True
 
     # 3. kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict
     k_watch.notify = lambda **kw: None
@@ -10447,12 +10446,12 @@ def test_iteration94_t212_client_bot_kraken_client_and_price_analysis_safety(mon
     assert cli.cancel_order("  ") is False
     assert cli.cancel_order(False) is False
 
-    # 2. 212trading.t212_bot relative import isolation & verify_isin validation
+    # 2. 212trading.t212_bot relative import isolation & verify_instrument_isin validation
     monkeypatch.setitem(sys.modules, "strategy", object())
     t212_bot_mod = importlib.import_module("212trading.t212_bot")
-    assert t212_bot_mod.verify_isin(cli, "", "US123") is False
-    assert t212_bot_mod.verify_isin(cli, True, "US123") is False
-    assert t212_bot_mod.verify_isin(cli, "SPCX_US_EQ", "") is True
+    assert t212_bot_mod.verify_instrument_isin(cli, "", "US123") is False
+    assert t212_bot_mod.verify_instrument_isin(cli, True, "US123") is False
+    assert t212_bot_mod.verify_instrument_isin(cli, "SPCX_US_EQ", "") is True
 
     # 3. KrakenClient validation on pair, txid, and price_decimals non-integer rejection
     from kraken.kraken_client import KrakenClient
@@ -11183,7 +11182,7 @@ def test_iteration103_external_collectors_and_t212_ipo_import_safety():
 
     # 5. 212trading.ipo import works even when 212trading is not at sys.path[0]
     mod_ipo = importlib.import_module("212trading.ipo")
-    assert hasattr(mod_ipo, "in_market_window")
+    assert hasattr(mod_ipo, "wait_for_launch")
 
     # 6. FearGreedCollector.parse_payload tolerates malformed timestamp and bool value_classification
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
@@ -12240,11 +12239,11 @@ def test_iteration117_venue_trailing_ws_and_replay_safety(monkeypatch, tmp_path)
     assert "range=5d%26foo%3D1" in called_urls[0]
     assert "interval=5m%23bar" in called_urls[0]
 
-    # 6. 212trading.order_manager._write_marker and integer sanitization
+    # 6. 212trading.order_manager._persist_marker and integer sanitization
     t212_om = importlib.import_module("212trading.order_manager")
     marker_path = tmp_path / "marker.json"
     monkeypatch.setattr(t212_om, "_marker_path", lambda _t, test=False: str(marker_path))
-    t212_om._write_marker("SPCX_US_EQ", "non-dict-result")
+    t212_om._persist_marker({"version": 2, "ticker": "SPCX_US_EQ"}, str(marker_path))
     assert marker_path.exists()
 
     # 7. 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope
@@ -13574,12 +13573,10 @@ def test_iteration133_bapi_open_orders_cancel_and_cache_health_hygiene(monkeypat
     open_ords = bapi.get_open_orders("BUY", "BTCUSDC")
     assert list(open_ords.keys()) == [444]
 
-    # 3. bapi.cancel_order and check_order_filled reject sentinel strings ("nan", "null") and containers
+    # 3. bapi.cancel_order rejects sentinel strings ("nan", "null") and containers
     assert bapi.cancel_order("BTCUSDC", "nan") is False
     assert bapi.cancel_order("BTCUSDC", "null") is False
     assert bapi.cancel_order("BTCUSDC", {"a": 1}) is False
-    assert bapi.check_order_filled("nan", "BTCUSDC") is False
-    assert bapi.check_order_filled([123], "BTCUSDC") is False
 
     # 4. bapi_client.stop_periodic_resync tolerates boolean/NaN/negative timeout
     assert bapi_client.stop_periodic_resync(timeout=True) is True
@@ -13839,11 +13836,11 @@ def test_iteration138_t212_client_provider_and_order_manager_id_hygiene(monkeypa
     t212_client_mod = importlib.import_module("212trading.t212_client")
     T212Client = t212_client_mod.T212Client
 
-    # 1. T212Client._clean_order_id normalizes integer floats and rejects sentinel strings / containers
-    assert T212Client._clean_order_id(12345.0) == "12345"
-    assert T212Client._clean_order_id(" 999 ") == "999"
+    # 1. t212_client_mod._clean_single_order_id normalizes integer floats and rejects sentinel strings / containers
+    assert t212_client_mod._clean_single_order_id(12345.0) == "12345"
+    assert t212_client_mod._clean_single_order_id(" 999 ") == "999"
     for bad in ("nan", "null", "none", "inf", 12.5, ["123"], {"id": 1}, True, None):
-        assert T212Client._clean_order_id(bad) is None
+        assert t212_client_mod._clean_single_order_id(bad) is None
 
     cli = T212Client("test-key", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
     assert cli.get_order_status("nan") is None
@@ -14407,9 +14404,9 @@ def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_a
         sys.modules.pop("hl_strat_t146", None)
 
     for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
-        assert hl_mod._clean_oid(bad_oid) is None
-    assert hl_mod._clean_oid(555.0) == "555"
-    assert hl_mod._clean_oid("555.0") == "555"
+        assert hl_mod._clean_single_order_id(bad_oid) is None
+    assert hl_mod._clean_single_order_id(555.0) == "555"
+    assert hl_mod._clean_single_order_id("555.0") == "555"
 
     sanitized_hl = hl_mod._sanitize_state(
         {
@@ -14479,13 +14476,13 @@ def test_iteration147_kraken_cachemanager_shadow_live_and_hl_signals_hygiene(tmp
     from kraken import kraken_cachemanager as kcm
     from kraken import shadow_live as ksl
 
-    # 1. kraken_cachemanager._clean_cache_id, _normalize, and _load_initial_cache
+    # 1. kraken_cachemanager._clean_single_order_id, _normalize, and _load_initial_cache
     for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
-        assert kcm._clean_cache_id(bad_id) is None
+        assert kcm._clean_single_order_id(bad_id) is None
         assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
 
-    assert kcm._clean_cache_id(777.0) == "777"
-    assert kcm._clean_cache_id("777.0") == "777"
+    assert kcm._clean_single_order_id(777.0) == "777"
+    assert kcm._clean_single_order_id("777.0") == "777"
     norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
     assert norm_ok["id"] == "777"
 
@@ -15576,7 +15573,6 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
     assert bapi.cancel_order("BTCUSDC", 0) is False
     assert bapi.cancel_order("BTCUSDC", "0.0") is False
     assert bapi.cancel_order("BTCUSDC", -5) is False
-    assert bapi.check_order_filled("0", "BTCUSDC") is False
 
     open_map = bapi.get_open_orders("BUY", "BTCUSDC", strict="false")
     assert list(open_map.keys()) == ["777"]
@@ -16018,9 +16014,9 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     slope, pos = wa.check_price_change("1.0")
     assert slope != 0 and pos == 0
 
-    # 4. bapi_ws_health._as_bool(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
-    assert ws_health._as_bool("unknown", default=True) is True
-    assert ws_health._as_bool("false", default=True) is False
+    # 4. bapi_ws_health._parse_bool_flag(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
+    assert ws_health._parse_bool_flag("unknown", default=True) is True
+    assert ws_health._parse_bool_flag("false", default=True) is False
     persisted = []
     ws_bridge.handle_binance_ws_event(
         {"e": "executionReport", "s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": 123},

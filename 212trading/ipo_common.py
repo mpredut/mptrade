@@ -21,11 +21,10 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common im
     resolve_cli_arg, ensure_local_module_priority, load_local_module,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int, normalize_epoch_sec, resolve_now_ts,
-    format_price_log, is_us_rth_open,
+    _clean_single_order_id, format_price_log, is_us_rth_open,
 )
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
-fmt_price = format_price_log
 notify = bind_notify(("SYMBOL_LABEL", "YAHOO_SYMBOL"), "STOCK")
 
 

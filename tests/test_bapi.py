@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi, bapi_allorders as ao, bapi_placeorder as po, bapi_trades, bapi_ws
-from binance_api.bapi_ws import BinanceWebSocketManager
+from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
 from market_regime import MarketRegimeContext, MarketRegimeDecision
 
 SYMBOL = "BTCUSDC"
@@ -23,7 +23,7 @@ TAO_SYMBOL = "TAOUSDC"
 
 class BapiWsShutdownHandlingTests(unittest.TestCase):
     def test_shutdown_errors_are_detected(self):
-        manager = BinanceWebSocketManager()
+        manager = BinancePriceStream()
         self.assertTrue(
             manager._is_shutdown_error(
                 RuntimeError("cannot schedule new futures after shutdown")
@@ -33,7 +33,7 @@ class BapiWsShutdownHandlingTests(unittest.TestCase):
 
     def test_process_message_clamps_stale_last_trade_outside_bid_ask_to_mid(self):
         import json
-        manager = BinanceWebSocketManager()
+        manager = BinancePriceStream()
         received = []
         manager.subscribe(types.SimpleNamespace(on_items_update=lambda sym, items: received.append((sym, items))))
         # Stale last trade c=233.20 while live orderbook moved to 234.40 / 234.60 -> mid 234.50
@@ -54,7 +54,7 @@ class BapiWsShutdownHandlingTests(unittest.TestCase):
 class TestUserDataClassify(unittest.TestCase):
     """_classify decides between ping / command reply / real event."""
 
-    C = staticmethod(bapi_ws.BinanceUserDataStream._classify)
+    C = staticmethod(BinanceAccountStream._classify)
 
     def test_control_messages(self):
         for message, expected_kind in (
@@ -80,14 +80,14 @@ class TestWSBaseAndUserData(unittest.TestCase):
         self.assertFalse(bapi_ws.bapi_ws_manager.is_running)
 
     def test_userdata_callbacks_default_noop(self):
-        s = bapi_ws.BinanceUserDataStream(on_event=lambda payload: None)
+        s = BinanceAccountStream(on_event=lambda payload: None)
         s.on_available(True)
         s.on_healthy()
         s.on_unhealthy()
 
     def test_userdata_health_marks_call_callbacks(self):
         seen = {}
-        s = bapi_ws.BinanceUserDataStream(
+        s = BinanceAccountStream(
             on_event=lambda p: None,
             on_available=lambda v: seen.__setitem__("avail", v),
             on_healthy=lambda: seen.__setitem__("healthy", True),

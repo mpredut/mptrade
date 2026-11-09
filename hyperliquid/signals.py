@@ -40,7 +40,6 @@ from state_io import read_json_dict  # noqa: E402
 _common_mod = load_local_module(_HERE, "common")
 log = _common_mod.log
 load_env_stack = _common_mod.load_env_stack
-load_hl_local = _common_mod.load_hl_local
 required_env = _common_mod.required_env
 required_float_env = _common_mod.required_float_env
 required_int_env = _common_mod.required_int_env

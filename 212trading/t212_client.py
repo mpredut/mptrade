@@ -439,8 +439,6 @@ class T212Client:
             "extendedHours": ext_flag,
         })
 
-    _clean_order_id = staticmethod(_clean_single_order_id)
-
     @staticmethod
     def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, dict | None]]:
         matches: list[tuple[dict, dict | None]] = []
@@ -587,7 +585,7 @@ class T212Client:
         when history is unavailable or not yet updated so strict reconciliation retries
         without assuming a fill.
         """
-        target_oid = self._clean_order_id(order_id)
+        target_oid = _clean_single_order_id(order_id)
         if target_oid is None:
             return None
         matches: list[tuple[dict, dict | None]] = []
@@ -725,7 +723,7 @@ class T212Client:
         return candidates[-1] if candidates else None
 
     def get_order_status(self, order_id) -> dict | bool | None:
-        target_oid = self._clean_order_id(order_id)
+        target_oid = _clean_single_order_id(order_id)
         if target_oid is None:
             return None
         status, body = http_get(
@@ -751,7 +749,7 @@ class T212Client:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""
-        target_oid = self._clean_order_id(order_id)
+        target_oid = _clean_single_order_id(order_id)
         if target_oid is None:
             return False
         self._pace_order()
