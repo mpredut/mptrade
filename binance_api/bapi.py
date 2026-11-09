@@ -28,7 +28,6 @@ from providers.order_ohlc_utils import (
     extract_remaining_qty,
     extract_timestamp_ms,
 )
-from providers.quantity import resolve_assets
 
 load_dotenv()
 BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
@@ -99,14 +98,6 @@ def get_current_price(symbol):
     # A failed refresh returns None. It deliberately does not extend the timestamp
     # of an older quote, so repeated outages cannot keep stale data apparently fresh.
     return update_price(symbol)
-
-
-def split_symbol(symbol: str):
-    # Split the symbol into base and quote; operational Binance pairs use USDC.
-    base, quote = resolve_assets(symbol)
-    if not quote:
-        raise ValueError(f"Unknown symbol: {symbol}")
-    return base, quote
 
 
 def get_free_balance(asset: str):

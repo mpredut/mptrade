@@ -56,29 +56,6 @@ def resolve_cached_gaussian_horizon(
     return None, None, None
 
 
-def check_qlimit1_weight_guard(
-    symbol: str,
-    side: str,
-    price: float,
-    required_qty: float,
-    available_qty: float,
-    traded_24h_value: float = 0.0,
-    provider_name: str = "binance",
-) -> float:
-    """Evaluate G_QLIMIT1 (24h Gaussian weight-capped quantity)."""
-    import order_guard
-    weight = order_guard.resolve_trade_weight(
-        symbol, side, provider_name=provider_name, raise_on_error=True
-    )
-    return order_guard.compute_weight_capped_qty(
-        weight=weight,
-        price=price,
-        required_qty=required_qty,
-        available_qty=available_qty,
-        traded_24h_value=traded_24h_value,
-    )
-
-
 def check_qlimit2_order_guards(
     symbol: str,
     side: str,

@@ -1748,11 +1748,6 @@ _RUNTIME_SERVICES: RuntimeServices = (
 )
 
 
-def get_runtime_services() -> RuntimeServices:
-    """Return the active ``RuntimeServices`` container."""
-    return _RUNTIME_SERVICES
-
-
 def configure_runtime_services(**kwargs: object) -> RuntimeServices:
     """Update fields on the active ``RuntimeServices`` container and return it."""
     for k, v in kwargs.items():
@@ -1764,13 +1759,6 @@ def configure_runtime_services(**kwargs: object) -> RuntimeServices:
             setattr(_RUNTIME_SERVICES, k, float(safe_nonneg_float(v, default=1.5) or 0.0))
         else:
             setattr(_RUNTIME_SERVICES, k, bool(v))
-    return _RUNTIME_SERVICES
-
-
-def reset_runtime_services() -> RuntimeServices:
-    """Reset ``RuntimeServices`` to default production settings."""
-    global _RUNTIME_SERVICES
-    _RUNTIME_SERVICES = RuntimeServices()
     return _RUNTIME_SERVICES
 
 

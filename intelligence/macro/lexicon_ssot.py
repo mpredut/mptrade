@@ -1399,15 +1399,6 @@ def match_high_severity_keywords(
     )
 
 
-def has_high_severity_keywords(
-    text: str,
-    cache_dir: Optional[str] = None,
-    now_ts: Optional[float] = None,
-) -> bool:
-    """Return True if a headline matches any active high-severity keyword."""
-    return bool(match_high_severity_keywords(text, cache_dir=cache_dir, now_ts=now_ts))
-
-
 def has_acute_shock_keywords(
     texts: Sequence[Any],
     cache_dir: Optional[str] = None,

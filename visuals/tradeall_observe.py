@@ -811,11 +811,6 @@ def render_symbol_charts_live(symbol, chart_specs, *, window_end=None):
         )
 
 
-def render_symbol_chart_live(symbol, window_label, window_seconds, out_path):
-    """Provide compatibility for callers requesting a single window."""
-    render_symbol_charts_live(symbol, [(window_label, window_seconds, out_path)])
-
-
 def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None):
     """Render either all replayed data or a sliding backtest window.
 

@@ -172,11 +172,3 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
 
 def get_price(client: HLClient, coin: str) -> float | None:
     return client.mid(coin)
-
-
-def coin_available(client: HLClient, coin: str) -> bool:
-    try:
-        return client.coin_listed(coin) and client.mid(coin) is not None
-    except Exception as e:  # noqa: BLE001
-        log(f"  ! coin_available({coin}) failed: {e}")
-        return False

@@ -99,12 +99,6 @@ def _base36(value):
 PROCESS_NAME = _sanitize_name(_derive_process_name(_script_stem()), default="PY")
 
 
-def set_process_name(name):
-    global PROCESS_NAME
-    PROCESS_NAME = _sanitize_name(name, default="PY")
-    return PROCESS_NAME
-
-
 def get_process_name():
     return PROCESS_NAME
 

@@ -110,18 +110,6 @@ def should_poll_for_manager(
         return (not effective_available) or (not effective_healthy)
 
 
-def get_ws_health_snapshot() -> dict:
-    """Return an atomic snapshot of the current WS health state."""
-    with _ws_health_lock:
-        return {
-            "ws_only_mode": WS_ONLY_MODE,
-            "ws_available": _ws_available,
-            "ws_last_event_ts": _ws_last_event_ts,
-            "ws_is_healthy": _ws_is_healthy,
-            "ws_needs_rest_resync": set(_ws_needs_rest_resync),
-        }
-
-
 register_module_aliases(__name__, "binance_api.bapi_ws_health")
 
 _ws_bridge = None
@@ -195,18 +183,6 @@ def append_trade_from_execution_report(
         label="Trade",
         cache_getter=cache_getter,
     )
-
-
-def refresh_asset_value_from_ws_event(
-    *,
-    cache_getter: Callable[..., Any] | None = None,
-) -> None:
-    """Refresh the AssetValue ``TOTAL`` entry after a balance event."""
-    getter = cache_getter or _default_cache_getter
-    asset_cache = getter("AssetValue", symbols=["TOTAL"])
-    items = asset_cache.get_remote_items("TOTAL", None)
-    if items:
-        asset_cache._persist_items("TOTAL", items)
 
 
 def persist_ws_updated_caches(

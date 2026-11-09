@@ -2452,20 +2452,11 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
 
 _CRYPTO_24X7_POLICY = Crypto24x7SessionPolicy()
 _EQUITY_RTH_POLICY = EquityRthSessionPolicy()
-_CUSTOM_SESSION_POLICIES: List[Tuple[Callable[[str], bool], AssetSessionPolicy]] = []
-
-
-def register_asset_session_policy(predicate: Callable[[str], bool], policy: AssetSessionPolicy) -> None:
-    """Register a custom AssetSessionPolicy for new instrument classes without modifying existing evaluators (OCP)."""
-    _CUSTOM_SESSION_POLICIES.append((predicate, policy))
 
 
 def resolve_asset_session_policy(symbol: str) -> AssetSessionPolicy:
     """Resolve the polymorphic AssetSessionPolicy for ``symbol``."""
     sym_u = str(symbol or "").strip().upper()
-    for pred, pol in _CUSTOM_SESSION_POLICIES:
-        if pred(sym_u):
-            return pol
     if sym_u.endswith(("_EQ", "_US_EQ")):
         return _EQUITY_RTH_POLICY
     return _CRYPTO_24X7_POLICY

@@ -232,11 +232,6 @@ SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
 PRICE_24_SYNC_INTERVAL_SEC = 30
 PRICE_365_SYNC_INTERVAL_SEC = CM_LONG_ARCHIVE_FLUSH_SEC
 CURRENT_PRICE_SYNC_INTERVAL_SEC = 30
-SHORT_TREND_EVAL_INTERVAL_SEC = (
-    CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
-    if CacheShortTrendManager is not None
-    else 3.0
-)
 LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
 
@@ -592,34 +587,6 @@ CacheFactory.register(
 
 def get_cache_manager(name, symbols=None, *, start_sync=True):
     return CacheFactory.get(name, symbols, start_sync=start_sync)
-
-
-def get_trade_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("Trade", symbols, start_sync=start_sync)
-
-
-def get_order_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("Order", symbols, start_sync=start_sync)
-
-
-def get_sparse_price_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("SparsePrice", symbols, start_sync=start_sync)
-
-
-def get_24_price_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("24Price", symbols, start_sync=start_sync)
-
-
-def get_365_price_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("365Price", symbols, start_sync=start_sync)
-
-
-def get_long_trend_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("LongTrend", symbols, start_sync=start_sync)
-
-
-def get_asset_value_manager(symbols=None, *, start_sync=True):
-    return CacheFactory.get("AssetValue", symbols, start_sync=start_sync)
 
 
 def ensure_account_cache_readers(status):

@@ -394,20 +394,5 @@ class LiquidationSignal(BybitLiquidationCollector):
         return self
 
 
-_singleton: Optional[LiquidationSignal] = None
-_singleton_lock = threading.Lock()
-
-
-def get_liquidation_signal(symbols: Optional[List[str]] = None) -> LiquidationSignal:
-    """Return the shared liquidation signal, starting its stream on first use."""
-    global _singleton
-    with _singleton_lock:
-        if _singleton is None:
-            _singleton = LiquidationSignal(symbols=symbols)
-        if not _singleton.is_running:
-            _singleton.start()
-    return _singleton
-
-
 register_module_aliases(__name__, "liquidation_signal")
 

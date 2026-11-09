@@ -9,7 +9,6 @@ from typing import Iterable, List, Set, Tuple
 
 Field = Tuple[int, int, object]   # (field number, wire type, int | bytes)
 
-SUMMARY_TITLE_FIELD = 1           # TrajectorySummary.title (fallback display text)
 SUMMARY_ANNOTATIONS_FIELD = 15    # TrajectorySummary.annotations (sub-field 1 = user-visible title)
 SUMMARY_SOURCE_FIELD = 20         # TrajectorySummary.source (17 = CORTEX_TRAJECTORY_SOURCE_CLI, hidden in Web UI)
 SUMMARY_STATUS_FIELD = 28         # TrajectorySummary.status (2 = RUNNING, 4 = IDLE)

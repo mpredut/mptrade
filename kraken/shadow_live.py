@@ -61,7 +61,6 @@ from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
-CONFIG_ENV = os.path.join(HERE, "config.env")
 DEFAULT_ENV = os.path.join(HERE, ".env")
 LOG_DIR = os.path.join(ROOT, "logs", "shadow_live")
 
