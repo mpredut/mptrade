@@ -32,7 +32,7 @@ from cachepaths import (
     resolve_cache_dir_path,
     telemetry_cache_file_path,
 )
-from instrument_registry import is_equity_symbol, is_symbol_market_open
+from instrument_registry import is_equity_symbol, is_symbol_market_open, venue_for_symbol
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     get_cboe_delayed_options_url,
@@ -82,27 +82,7 @@ def _cached_registry_specs() -> Tuple[Any, ...]:
 
 def _resolve_configured_venue(symbol: str) -> str:
     """Return the SSOT configured provider ('t212', 'hyperliquid', 'kraken', or 'binance') for symbol."""
-    raw_sym = str(symbol or "").strip().upper()
-    if is_equity_symbol(raw_sym):
-        return "t212"
-    canon_sym = canonical_symbol_key(symbol)
-    if not canon_sym:
-        return "binance"
-    try:
-        specs = _cached_registry_specs()
-        for enabled_only in (True, False):
-            for inst in specs:
-                if enabled_only and not getattr(inst, "enabled", True):
-                    continue
-                if str(getattr(inst, "symbol", "")).upper() in (canon_sym, raw_sym) and getattr(inst, "provider", None):
-                    return str(inst.provider).strip().lower()
-    except Exception:
-        pass
-    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
-        return "kraken"
-    if canon_sym == "HYPEUSDC":
-        return "hyperliquid"
-    return "binance"
+    return venue_for_symbol(symbol, default="binance")
 
 
 def _is_multi_venue_base(symbol: str) -> bool:

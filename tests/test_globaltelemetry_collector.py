@@ -700,6 +700,17 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
+    from instrument_registry import get_venue_for_symbol, symbols_by_venue, venue_for_symbol
+
+    assert venue_for_symbol("BTCUSDC") == "binance"
+    assert get_venue_for_symbol("TAOUSD") == "kraken"
+    assert venue_for_symbol("HYPEUSDC") == "hyperliquid"
+    assert venue_for_symbol("NVDA_US_EQ") == "t212"
+    assert CacheTradeManager.venue_for_symbol("TAOUSD") == "kraken"
+    assert CacheTradeManager.get_venue_for_symbol("HYPEUSDC") == "hyperliquid"
+    grouped_syms = symbols_by_venue()
+    assert "binance" in grouped_syms and "kraken" in grouped_syms
+
     for expected_venue, expected_fname, expected_fmt in (
         ("binance", "cache_trade.jsonl", "jsonl"),
         ("kraken", "cache_trade_kraken.json", "json"),
@@ -707,7 +718,6 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         ("t212", "cache_trade_t212.json", "json"),
     ):
         assert issubclass(CacheTradeManager, CacheAccountManagerBase)
-        assert CacheTradeManager.for_venue(expected_venue) is CacheTradeManager
         assert CacheTradeManager.disk_filename(expected_venue) == expected_fname
         trd_inst = CacheTradeManager.create_for_venue(
             expected_venue,

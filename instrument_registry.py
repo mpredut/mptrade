@@ -250,6 +250,57 @@ def symbols_for(provider, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
 
 
+def symbols_by_venue(role=None, *, path=None, only_enabled=True) -> dict[str, list[str]]:
+    """Group configured symbols by normalized venue (`provider`) from ``instruments.conf``."""
+    grouped: dict[str, list[str]] = {}
+    for spec in select_instruments(role=role, path=path, only_enabled=only_enabled).values():
+        prov = normalize_venue_name(spec.provider) or spec.provider.strip().lower()
+        sym_s = spec.symbol.strip()
+        if not prov or not sym_s:
+            continue
+        bucket = grouped.setdefault(prov, [])
+        if sym_s not in bucket:
+            bucket.append(sym_s)
+    return grouped
+
+
+def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> str:
+    """Resolve the SSOT configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol``."""
+    if not isinstance(symbol, str) or isinstance(symbol, bool):
+        return default
+    raw_sym = symbol.strip().upper()
+    if not raw_sym:
+        return default
+    if is_equity_symbol(raw_sym, path=path):
+        return "t212"
+    canon_sym = clean_symbol_key(raw_sym)
+    if not canon_sym:
+        return default
+    try:
+        reg = load_registry(path) if path is not None else load_registry()
+        specs = tuple(reg.values()) if isinstance(reg, dict) else (
+            tuple(reg.all(enabled_only=False)) if hasattr(reg, "all") and callable(reg.all) else ()
+        )
+        for enabled_only in (True, False):
+            for inst in specs:
+                if enabled_only and not getattr(inst, "enabled", True):
+                    continue
+                inst_sym = str(getattr(inst, "symbol", "") or "").strip().upper()
+                inst_prov = getattr(inst, "provider", None)
+                if inst_prov and (inst_sym in (canon_sym, raw_sym) or clean_symbol_key(inst_sym) == canon_sym):
+                    return normalize_venue_name(inst_prov) or str(inst_prov).strip().lower()
+    except Exception:
+        pass
+    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+        return "kraken"
+    if canon_sym == "HYPEUSDC":
+        return "hyperliquid"
+    return default
+
+
+get_venue_for_symbol = venue_for_symbol
+
+
 def single_symbol_for(provider, role, *, path=None):
     """Select a single-owner bot's instrument without silently discarding candidates."""
     symbols = symbols_for(provider, role, path=path)

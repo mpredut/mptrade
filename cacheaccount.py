@@ -323,7 +323,12 @@ class CacheTradeManager(CacheAccountManagerBase):
     }
 
     @classmethod
-    def _normalize_trade_venue(cls, venue: Optional[str] = None, filename: Optional[str] = None) -> str:
+    def _normalize_trade_venue(
+        cls,
+        venue: Optional[str] = None,
+        filename: Optional[str] = None,
+        symbols=None,
+    ) -> str:
         raw_v = str(venue or "").strip().lower()
         if raw_v in ("hl", "hyperliquid"):
             return "hyperliquid"
@@ -339,7 +344,27 @@ class CacheTradeManager(CacheAccountManagerBase):
         ):
             if base_f == cand_f.lower() or f"_{cand_v}." in base_f:
                 return cand_v
+        if not base_f and symbols:
+            first_sym = (
+                symbols
+                if isinstance(symbols, str)
+                else (next(iter(symbols), None) if isinstance(symbols, (list, tuple, set)) else None)
+            )
+            if isinstance(first_sym, str) and first_sym.strip():
+                return cls.venue_for_symbol(first_sym)
         return "binance"
+
+    @staticmethod
+    def venue_for_symbol(symbol: object, *, default: str = "binance") -> str:
+        """Resolve the configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol`` via ``instrument_registry``."""
+        try:
+            from instrument_registry import venue_for_symbol as _reg_venue_for_symbol
+
+            return _reg_venue_for_symbol(symbol, default=default)
+        except Exception:
+            return default
+
+    get_venue_for_symbol = venue_for_symbol
 
     @classmethod
     def disk_filename(cls, venue: str = "binance") -> str:
@@ -356,11 +381,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         return str(cache_path(fname))
 
     @classmethod
-    def for_venue(cls, venue: object = "binance") -> type[CacheTradeManager]:
-        """Return ``CacheTradeManager`` (unified across all venues)."""
-        return cls
-
-    @classmethod
     def create_for_venue(
         cls,
         venue: str = "binance",
@@ -375,7 +395,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         start_sync: Optional[bool] = None,
     ) -> CacheTradeManager:
         """Instantiate a ``CacheTradeManager`` configured for ``venue`` and stream persistence format."""
-        v_norm = cls._normalize_trade_venue(venue, filename)
+        v_norm = cls._normalize_trade_venue(venue, filename, symbols)
         eff_ro = (v_norm != "binance") if read_only is None else bool(read_only)
         return cls(
             sync_ts=sync_ts,
@@ -491,9 +511,17 @@ class CacheTradeManager(CacheAccountManagerBase):
         stream_format: Optional[str] = None,
         start_sync: Optional[bool] = None,
     ):
-        self.venue = self._normalize_trade_venue(venue, filename)
+        self.venue = self._normalize_trade_venue(venue, filename, symbols)
         eff_filename = str(filename) if filename else self.resolve_cache_filepath(venue=self.venue)
-        eff_symbols = list(symbols) if isinstance(symbols, (list, tuple, set)) else (symbols if symbols is not None else [])
+        if symbols is None and self.venue != "binance":
+            try:
+                from instrument_registry import symbols_for as _reg_symbols_for
+
+                eff_symbols = list(_reg_symbols_for(self.venue))
+            except Exception:
+                eff_symbols = []
+        else:
+            eff_symbols = list(symbols) if isinstance(symbols, (list, tuple, set)) else (symbols if symbols is not None else [])
         if append_persist is not None:
             eff_append_persist = bool(append_persist)
         elif stream_format is not None:
