@@ -1280,6 +1280,7 @@ def _harvest_recent_orders_and_enrich_positions_impl(
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
+    allow_network: bool = True,
 ) -> Dict[str, Any]:
     _rj = _resolve_read_json_cached(read_json_fn)
     if (known_ai_order_ids is None or ai_intents is None) and cache_dir:
@@ -1358,19 +1359,20 @@ def _harvest_recent_orders_and_enrich_positions_impl(
 
     seen_hl_syms: set[str] = set()
     hl_ai_intents = _venue_intents("hyperliquid")
-    for inst in inst_by_sym.values():
-        sym = str(getattr(inst, "symbol", "")).upper()
-        v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
-        if not sym or v_inst != "hyperliquid" or sym in seen_hl_syms or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym, include_base=True)) is not None:
-            continue
-        seen_hl_syms.add(sym)
-        try:
-            prov = getattr(inst, "_provider", None)
-            if prov is not None and hasattr(prov, "get_orders"):
-                if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=hl_ai_intents, symbol=sym):
-                    _record_venue_fills("hyperliquid", sym, fills)
-        except Exception:
-            pass
+    if allow_network:
+        for inst in inst_by_sym.values():
+            sym = str(getattr(inst, "symbol", "")).upper()
+            v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
+            if not sym or v_inst != "hyperliquid" or sym in seen_hl_syms or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym, include_base=True)) is not None:
+                continue
+            seen_hl_syms.add(sym)
+            try:
+                prov = getattr(inst, "_provider", None)
+                if prov is not None and hasattr(prov, "get_orders"):
+                    if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=hl_ai_intents, symbol=sym):
+                        _record_venue_fills("hyperliquid", sym, fills)
+            except Exception:
+                pass
     for fallback_venue in ("binance", "kraken", "hyperliquid", "t212"):
         fb_ai_intents = _venue_intents(fallback_venue)
         audit_by_sym = (
@@ -1778,6 +1780,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         known_ai_order_ids: Optional[set[str]] = None,
         gateway_max_usd: float = 2000.0,
         ai_intents: Optional[List[Dict[str, Any]]] = None,
+        allow_network: bool = True,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return _harvest_recent_orders_and_enrich_positions_impl(
@@ -1792,6 +1795,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             known_ai_order_ids=known_ai_order_ids,
             gateway_max_usd=gateway_max_usd,
             ai_intents=ai_intents,
+            allow_network=allow_network,
         )
 
 
@@ -1936,6 +1940,7 @@ def harvest_recent_orders_and_enrich_positions(
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
+    allow_network: bool = True,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
     return TelemetryCollectorFactory.create("portfolio_recent_orders").collect(
@@ -1951,6 +1956,7 @@ def harvest_recent_orders_and_enrich_positions(
         known_ai_order_ids=known_ai_order_ids,
         gateway_max_usd=gateway_max_usd,
         ai_intents=ai_intents,
+        allow_network=allow_network,
     )
 
 

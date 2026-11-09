@@ -83,6 +83,8 @@ class NewsFeedCollector:
         history_file: str = DEFAULT_HISTORY_FILE,
         rolling_window_sec: float = DEFAULT_NEWS_ROLLING_WINDOW_SEC,
         rss_urls: Optional[Tuple[str, ...]] = None,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
         self._explicit_rss_url = rss_url if (isinstance(rss_url, str) and rss_url.strip()) else None
         self.rss_url = self._explicit_rss_url or build_dynamic_rss_url()
@@ -90,11 +92,19 @@ class NewsFeedCollector:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
         self.history_file = history_file
         self.rolling_window_sec = safe_pos_float(rolling_window_sec, DEFAULT_NEWS_ROLLING_WINDOW_SEC)
+        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
+        self.start_sync: bool = bool(start_sync) if start_sync is not None else False
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         self._seen_first_ts: Dict[str, float] = {}
         self._load_history()
+
+    def is_read_only_consumer(self, *, allow_network: Optional[bool] = None) -> bool:
+        """Return True when this collector instance operates in read-only consumer mode (0 network/disk writes)."""
+        if allow_network is not None:
+            return not bool(allow_network)
+        return not bool(self.start_sync)
 
     def _cache_dir(self) -> str:
         cdir = os.path.dirname(os.path.abspath(self._effective_history_file()))
@@ -684,9 +694,22 @@ class NewsFeedCollector:
 
         return NewsFeedCollector._make_snapshot(parsed_headlines, now, cache_dir, max_headlines=25, pass_now_ts=True)
 
-    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
+    def fetch(
+        self,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        *,
+        allow_network: Optional[bool] = None,
+    ) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines across specialized feeds and dynamic crisis queries."""
         now = resolve_now_ts(now_ts)
+        eff_allow_net = (
+            bool(allow_network)
+            if allow_network is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+        if not eff_allow_net:
+            return self._cached_snapshot or self.get_pool_snapshot(now_ts=now)
         if self._cached_snapshot and is_cache_fresh(
             self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
         ):
@@ -726,3 +749,11 @@ class NewsFeedCollector:
 
         logger.warning("Failed to fetch any RSS news feeds. Using cached fallback if available.")
         return self._cached_snapshot
+
+    def read_snapshot(self, *, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
+        """Read-only consumer entrypoint: return disk-loaded history pool snapshot with 0 network calls and 0 disk writes."""
+        return self.fetch(force_refresh=False, now_ts=now_ts, allow_network=False)
+
+    def refresh_snapshot(self, *, force_refresh: bool = True, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
+        """Producer entrypoint: fetch RSS feeds over network and persist aggregated history to disk."""
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=True)

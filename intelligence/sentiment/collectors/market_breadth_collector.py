@@ -70,8 +70,10 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
         cache_ttl_sec: float = 60.0,
         min_volume_usd: float = 5_000_000.0,
         endpoint_url: Optional[str] = None,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
-        super().__init__(cache_ttl_sec, 60.0, endpoint_url, get_market_breadth_endpoint_url)
+        super().__init__(cache_ttl_sec, 60.0, endpoint_url, get_market_breadth_endpoint_url, start_sync=start_sync)
         self.min_volume_usd = safe_nonneg_float(min_volume_usd, 5_000_000.0)
 
     @staticmethod

@@ -1009,12 +1009,21 @@ def _populate_market_and_portfolio_snapshot_impl(
         snapshot.microstructure, watcher_price_items, inst_by_sym, _rj, now_ts=now_ts,
     )
 
-    recent_orders = harvest_recent_orders_and_enrich_positions(
-        cache_dir, inst_by_sym, snapshot.portfolio_summary.get("tradable_positions", []), snapshot.prices_and_trends,
-        kraken_cycles, hyperliquid_cycles, t212_cycles, _rj,
-        known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
-        ai_intents=intents_data if isinstance(intents_data, list) else None,
-    )
+    try:
+        recent_orders = harvest_recent_orders_and_enrich_positions(
+            cache_dir, inst_by_sym, snapshot.portfolio_summary.get("tradable_positions", []), snapshot.prices_and_trends,
+            kraken_cycles, hyperliquid_cycles, t212_cycles, _rj,
+            known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
+            ai_intents=intents_data if isinstance(intents_data, list) else None,
+            allow_network=allow_network,
+        )
+    except TypeError:
+        recent_orders = harvest_recent_orders_and_enrich_positions(
+            cache_dir, inst_by_sym, snapshot.portfolio_summary.get("tradable_positions", []), snapshot.prices_and_trends,
+            kraken_cycles, hyperliquid_cycles, t212_cycles, _rj,
+            known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
+            ai_intents=intents_data if isinstance(intents_data, list) else None,
+        )
     if t212_cycles:
         if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), snapshot.prices_and_trends, t212_cycles, _rj):
             snapshot.portfolio_summary["kraken_xstocks"] = xst_summary

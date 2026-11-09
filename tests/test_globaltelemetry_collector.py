@@ -116,7 +116,9 @@ def test_collector_run_cycle_mocked(temp_cache_dir):
          patch.object(collector.whale_collector, "fetch", return_value=mock_whale), \
          patch.object(collector.news_collector, "fetch", return_value=MagicMock()), \
          patch.object(collector.fear_greed_collector, "fetch", return_value=mock_fg), \
-         patch.object(collector.breadth_collector, "fetch", return_value=mock_breadth):
+         patch.object(collector.breadth_collector, "fetch", return_value=mock_breadth), \
+         patch.object(collector, "update_macro_benchmarks", return_value=True), \
+         patch.object(collector, "update_pretrade_caches", return_value=True):
 
         res = collector.run_cycle(force=True)
 
@@ -126,6 +128,8 @@ def test_collector_run_cycle_mocked(temp_cache_dir):
         assert res["news_updated"] is True
         assert res["fear_greed_updated"] is True
         assert res["breadth_updated"] is True
+        assert res["macro_benchmarks_updated"] is True
+        assert res["pretrade_caches_updated"] is True
 
         # Heartbeat verification
         hb_path = os.path.join(temp_cache_dir, "globaltelemetry_collector.heartbeat")
@@ -945,12 +949,26 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
         def usd_cash_breakdown(self):
             raise AssertionError("live usd_cash_breakdown() must not be called in read_snapshot mode")
 
+        def get_orders(self, *args, **kwargs):
+            raise AssertionError("live get_orders() must not be called in read_snapshot mode")
+
     class _DummyInst:
         symbol = "BTCUSDC"
         provider_name = "binance"
         base = "BTC"
         quote = "USDC"
         params = {"trailing.pct": 2.5}
+        _provider = _FailingProvider()
+
+        def open_orders(self):
+            raise AssertionError("live open_orders() must not be called in read_snapshot mode")
+
+    class _DummyHLInst:
+        symbol = "SOLUSDC"
+        provider_name = "hyperliquid"
+        base = "SOL"
+        quote = "USDC"
+        params = {}
         _provider = _FailingProvider()
 
         def open_orders(self):
@@ -963,7 +981,7 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
             return []
 
         def load_tradable_instruments(self, **_kwargs):
-            return {"binance:BTCUSDC": _DummyInst()}
+            return {"binance:BTCUSDC": _DummyInst(), "hyperliquid:SOLUSDC": _DummyHLInst()}
 
     # Ensure instruments.conf exists in workspace so load_tradable_instruments is exercised
     with open(os.path.join(temp_cache_dir, "instruments.conf"), "w", encoding="utf-8") as fh:
@@ -995,10 +1013,10 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
 
     # Verify positions and open orders were reconstructed from cached venue_balances_state.json without live calls
     positions = snap.portfolio_summary.get("tradable_positions") or []
-    assert len(positions) == 1
-    assert positions[0]["symbol"] == "BTCUSDC"
-    assert positions[0]["free_base"] == pytest.approx(0.25)
-    assert positions[0]["free_quote"] == pytest.approx(1500.0)
+    btc_pos = next((p for p in positions if p.get("symbol") == "BTCUSDC"), None)
+    assert btc_pos is not None
+    assert btc_pos["free_base"] == pytest.approx(0.25)
+    assert btc_pos["free_quote"] == pytest.approx(1500.0)
     open_orders = snap.portfolio_summary.get("open_orders") or []
     assert len(open_orders) == 1
     assert open_orders[0]["order_id"] == "ord-1"
@@ -1006,6 +1024,22 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     # Verify 0 disk mutations occurred during read-only snapshot population
     assert not os.path.exists(mhist_path)
     assert os.path.getmtime(bals_path) == pytest.approx(bals_mtime_before)
+
+    # Verify FearGreedCollector, MarketBreadthCollector, and NewsFeedCollector start_sync=False / read_snapshot()
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+
+    fg_ro = FearGreedCollector(start_sync=False)
+    mb_ro = MarketBreadthCollector(start_sync=False)
+    nf_ro = NewsFeedCollector(history_file=os.path.join(temp_cache_dir, "news_feed_collect.json"), start_sync=False)
+    assert fg_ro.is_read_only_consumer() is True
+    assert mb_ro.is_read_only_consumer() is True
+    assert nf_ro.is_read_only_consumer() is True
+    assert fg_ro.read_snapshot(now_ts=now_ts) is None
+    assert mb_ro.read_snapshot(now_ts=now_ts) is None
+    nf_snap = nf_ro.read_snapshot(now_ts=now_ts)
+    assert nf_snap is not None and nf_snap.total_fetched == 0
 
 
 

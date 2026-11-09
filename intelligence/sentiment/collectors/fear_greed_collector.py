@@ -49,8 +49,10 @@ class FearGreedCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterfa
         self,
         cache_ttl_sec: float = 900.0,
         endpoint_url: Optional[str] = None,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
-        super().__init__(cache_ttl_sec, 900.0, endpoint_url, get_fear_greed_endpoint_url)
+        super().__init__(cache_ttl_sec, 900.0, endpoint_url, get_fear_greed_endpoint_url, start_sync=start_sync)
 
     @staticmethod
     def parse_payload(payload: Dict[str, Any], *, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:

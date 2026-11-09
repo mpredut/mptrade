@@ -566,18 +566,41 @@ class CachedHttpJsonCollector:
         default_ttl_sec: float,
         endpoint_url: Optional[str],
         default_endpoint_fn: Callable[[], str],
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, default_ttl_sec)
         self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or default_endpoint_fn()
         self._cached_snapshot: Any = None
         self._last_fetch_ts: float = 0.0
+        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
+        self.start_sync: bool = bool(start_sync) if start_sync is not None else False
+
+    def is_read_only_consumer(self, *, allow_network: Optional[bool] = None) -> bool:
+        """Return True when this instance is operating in read-only consumer mode (0 network I/O)."""
+        if allow_network is not None:
+            return not bool(allow_network)
+        return not bool(self.start_sync)
 
     def _parse_fetched_payload(self, data: Any, now: float) -> Any:
         raise NotImplementedError
 
-    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Any:
+    def fetch(
+        self,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        *,
+        allow_network: Optional[bool] = None,
+    ) -> Any:
         """Fetch the latest snapshot from ``self.endpoint_url``, respecting cache TTL with stale fallback."""
         now = resolve_now_ts(now_ts)
+        eff_allow_net = (
+            bool(allow_network)
+            if allow_network is not None
+            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        )
+        if not eff_allow_net:
+            return self._cached_snapshot
         if self._cached_snapshot and is_cache_fresh(
             self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
         ):
@@ -603,6 +626,14 @@ class CachedHttpJsonCollector:
             )
         return self._cached_snapshot
 
+    def read_snapshot(self, *, now_ts: Optional[float] = None) -> Any:
+        """Read-only consumer entrypoint: return cached in-memory snapshot with 0 network I/O."""
+        return self.fetch(force_refresh=False, now_ts=now_ts, allow_network=False)
+
+    def refresh_snapshot(self, *, force_refresh: bool = True, now_ts: Optional[float] = None) -> Any:
+        """Producer entrypoint: fetch latest HTTP JSON snapshot and update in-memory cache."""
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=True)
+
     def collect(
         self,
         cachedb_dir: str = "",
@@ -610,10 +641,11 @@ class CachedHttpJsonCollector:
         *,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
+        allow_network: Optional[bool] = None,
         **kwargs: Any,
     ) -> Any:
         """Polymorphic ``TelemetryCacheCollectorInterface`` adapter delegating to ``fetch()``."""
-        return self.fetch(force_refresh=force_refresh, now_ts=now_ts)
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
 
 
 class CachedTopicAssessmentAgent:
@@ -647,6 +679,10 @@ class CachedTopicAssessmentAgent:
 
     def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
         pass
+
+    def read_assessment(self) -> Optional[Any]:
+        """Read-only consumer entrypoint: return the disk-backed cached assessment with 0 LLM/network calls."""
+        return getattr(self, "_cached_assessment", None)
 
     def _serialize_for_disk(self, assessment: Any) -> Dict[str, Any]:
         return asdict(assessment)

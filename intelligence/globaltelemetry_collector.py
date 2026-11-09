@@ -93,9 +93,16 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
             history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
+            start_sync=True,
         )
-        self.fear_greed_collector = FearGreedCollector(cache_ttl_sec=max(300.0, self.fear_greed_interval_sec * 0.8))
-        self.breadth_collector = MarketBreadthCollector(cache_ttl_sec=max(60.0, self.breadth_interval_sec * 0.5))
+        self.fear_greed_collector = FearGreedCollector(
+            cache_ttl_sec=max(300.0, self.fear_greed_interval_sec * 0.8),
+            start_sync=True,
+        )
+        self.breadth_collector = MarketBreadthCollector(
+            cache_ttl_sec=max(60.0, self.breadth_interval_sec * 0.5),
+            start_sync=True,
+        )
 
         self._last_orderbook_ts: Dict[str, float] = {}
         self._last_derivatives_ts: Dict[str, float] = {}
