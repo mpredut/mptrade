@@ -511,6 +511,121 @@ def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -
     return True
 
 
+_KNOWN_NOTIFY_VENUES = frozenset({"binance", "kraken", "hyperliquid", "t212", "bybit", "coinbase", "okx"})
+_BULK_TITLE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with",
+})
+
+
+def _topic_category_label(topic: str) -> str:
+    tl = str(topic or "").lower()
+    for key, label in (
+        ("deadman", "DEADMAN"),
+        ("error", "ERROR"),
+        ("guard", "GUARD"),
+        ("trade", "TRADES"),
+        ("macro", "MACRO"),
+        ("price", "PRICE"),
+        ("server", "SERVER"),
+    ):
+        if key in tl:
+            return label
+    return ""
+
+
+def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
+    """Extract only the common/grouping elements (action, symbol, topic category, [venue:module]) across bulk items."""
+    item_venues: list[str] = []
+    item_tags: list[list[str]] = []
+    item_tokens: list[list[str]] = []
+    categories: list[str] = []
+
+    for it in items:
+        raw_t = str(it.get("title") or "Alert").strip()
+        cat = _topic_category_label(str(it.get("topic") or ""))
+        if cat and cat not in categories:
+            categories.append(cat)
+
+        venue = ""
+        tags: list[str] = []
+        for match in re.finditer(r"\[([^\[\]]+)\]", raw_t):
+            inner = match.group(1).strip()
+            if not inner:
+                continue
+            if ":" in inner:
+                v_part, m_part = inner.split(":", 1)
+                if v_part.strip().lower() in _KNOWN_NOTIFY_VENUES:
+                    venue = v_part.strip().lower()
+                    if m_part.strip():
+                        tags.append(m_part.strip())
+                    continue
+            if inner.lower() in _KNOWN_NOTIFY_VENUES:
+                venue = inner.lower()
+            else:
+                tags.append(inner)
+        item_venues.append(venue)
+        item_tags.append(tags)
+
+        stripped = re.sub(r"\[[^\[\]]+\]", " ", raw_t)
+        stripped = re.sub(r"@\s*\$?[0-9][0-9.,]*", " ", stripped)
+        tokens = [
+            tok for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]*", stripped)
+            if tok.lower() not in _BULK_TITLE_STOPWORDS and len(tok) > 1
+        ]
+        item_tokens.append(tokens)
+
+    common_venue = item_venues[0] if item_venues and all(v and v == item_venues[0] for v in item_venues) else ""
+
+    common_tag = ""
+    if item_tags and all(item_tags):
+        first_tags = item_tags[0]
+        shared = [
+            tg for tg in first_tags
+            if all(any(tg.lower() == other.lower() for other in tg_list) for tg_list in item_tags[1:])
+        ]
+        if shared:
+            common_tag = shared[0]
+        else:
+            auto_prefixes = []
+            for tg_list in item_tags:
+                auto_match = next((tg for tg in tg_list if tg.lower().startswith("auto_")), "")
+                parts = auto_match.lower().split("_")
+                auto_prefixes.append("_".join(parts[:2]) if len(parts) >= 2 else "")
+            if auto_prefixes and all(p and p == auto_prefixes[0] for p in auto_prefixes):
+                common_tag = auto_prefixes[0]
+
+    if common_venue and common_tag:
+        bracket_str = f"[{common_venue}:{common_tag}]"
+    elif common_venue:
+        bracket_str = f"[{common_venue}]"
+    elif common_tag:
+        bracket_str = f"[{common_tag}]"
+    else:
+        bracket_str = ""
+
+    common_words: list[str] = []
+    if item_tokens and all(item_tokens):
+        seen_lower: set[str] = set()
+        for tok in item_tokens[0]:
+            tl = tok.lower()
+            if tl in seen_lower:
+                continue
+            if all(any(tl == other.lower() for other in tok_list) for tok_list in item_tokens[1:]):
+                common_words.append(tok)
+                seen_lower.add(tl)
+
+    if common_words:
+        core_label = " ".join(common_words[:4])
+    elif categories:
+        core_label = " / ".join(categories)
+    else:
+        core_label = _topic_category_label(best_topic) or "Alerts"
+
+    if bracket_str and core_label:
+        return f"{core_label} {bracket_str}"
+    return bracket_str or core_label
+
+
 def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
     """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
     if not items:
@@ -547,23 +662,19 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         out_body = str(it.get("body") or "")
         return (out_title, out_body, best_priority, best_topic)
 
-    short_titles = []
     body_lines = []
     for idx, it in enumerate(items, 1):
         cnt = _safe_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
         repeat_tag = f" (×{cnt})" if cnt > 1 else ""
-        short_titles.append(f"{t}{repeat_tag}")
         compact_body = _strip_log_tails_and_compact(str(it.get("body") or ""))
         if compact_body and compact_body.lower() != t.lower():
             body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
         else:
             body_lines.append(f"{idx}. {t}{repeat_tag}")
 
-    joined_titles = " | ".join(short_titles)
-    if len(joined_titles) > 90:
-        joined_titles = joined_titles[:87] + "..."
-    bulk_title = f"📦 Bulk ({len(items)}): {joined_titles}"
+    summary_subject = _synthesize_bulk_subject_summary(items, best_topic)
+    bulk_title = f"📦 Bulk ({len(items)}): {summary_subject}"
     bulk_body = "\n\n".join(body_lines)
     return (bulk_title, bulk_body, best_priority, best_topic)
 

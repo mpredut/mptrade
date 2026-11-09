@@ -717,10 +717,12 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertTrue(self.server.flush_pending_bulk(now=t0 + 305))
             self.assertEqual(len(self.dispatched), 2)
             bulk_msg = self.dispatched[1]
-            self.assertTrue(bulk_msg["title"].startswith("📦 Bulk (2):"), bulk_msg["title"])
+            self.assertEqual(bulk_msg["title"], "📦 Bulk (2): SELL ARBUSDC [binance:assetguardian]")
             self.assertIn("Order 563411304 (assetguardian) executed! Filled: 152.9000 ARBUSDC", bulk_msg["message"])
             self.assertIn("Order 563412614 (assetguardian) executed! Filled: 122.3000 ARBUSDC", bulk_msg["message"])
             self.assertNotIn("(×2)", bulk_msg["title"])
+            self.assertNotIn("0.169", bulk_msg["title"])
+            self.assertNotIn("0.1686", bulk_msg["title"])
 
     def test_queue_retry_count_persistence_and_edge_cases(self):
         import asyncio
@@ -1537,8 +1539,27 @@ class EmailMirrorTest(unittest.TestCase):
             format_trade_notification,
             format_trade_venue_tag,
             strip_owner_tags,
+            synthesize_bulk_notifications,
         )
         from notify_engine.server import NotificationServer
+
+        b_same_mod, _, _, _ = synthesize_bulk_notifications([
+            {"title": "SELL ARBUSDC@0.1692 [binance:assetguardian]", "body": "FILLED ~25.84 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+            {"title": "SELL ARBUSDC@0.1686 [binance:assetguardian]", "body": "FILLED ~20.62 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+        ])
+        self.assertEqual(b_same_mod, "📦 Bulk (2): SELL ARBUSDC [binance:assetguardian]")
+
+        b_same_venue, _, _, _ = synthesize_bulk_notifications([
+            {"title": "BUY TAOUSDC@212.50 [binance:assetguardian]", "body": "FILLED ~370.52 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+            {"title": "SELL BTCUSDC@75180.00 [binance:tradeall]", "body": "FILLED ~500.00 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+        ])
+        self.assertEqual(b_same_venue, "📦 Bulk (2): TRADES [binance]")
+
+        b_macro, _, _, _ = synthesize_bulk_notifications([
+            {"title": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)", "body": "Risk: HIGH", "priority": "high", "topic": "ntfy-macro-1978", "count": 1},
+            {"title": "🌍 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)", "body": "Risk: 0.55", "priority": "high", "topic": "ntfy-macro-1978", "count": 1},
+        ])
+        self.assertEqual(b_macro, "📦 Bulk (2): MACRO [auto_macro]")
 
         self.assertEqual(format_owner_tags("tradeall"), (" [tradeall]", " (tradeall)"))
         self.assertEqual(format_owner_tags("unspecified"), ("", ""))

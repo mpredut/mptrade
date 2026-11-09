@@ -122,14 +122,35 @@ send_os_ntfy() {
             fi
             if [ -s "$bulk_file" ]; then
                 local bulk_count=$(( $(wc -l < "$bulk_file" 2>/dev/null || echo 0) + 1 ))
-                local prev_titles joined_titles
-                prev_titles="$(awk -F': ' '{print $1}' "$bulk_file" 2>/dev/null | paste -sd '|' - | sed 's/|/ | /g')"
-                joined_titles="${prev_titles:+$prev_titles | }$title"
-                if [ "${#joined_titles}" -gt 90 ]; then
-                    joined_titles="${joined_titles:0:87}..."
-                fi
+                local common_summary
+                common_summary="$(
+                    { awk -F': ' '{print $1}' "$bulk_file" 2>/dev/null; printf '%s\n' "$title"; } | awk -v fallback="${topic_type^^}" '
+                    {
+                        lines[++n] = $0
+                        delete seen_line
+                        for (i = 1; i <= NF; i++) {
+                            tok = $i
+                            gsub(/^:+|:+$/, "", tok)
+                            if (length(tok) > 1 && !(tok in seen_line)) {
+                                seen_line[tok] = 1
+                                counts[tok]++
+                                if (n == 1) order[++m] = tok
+                            }
+                        }
+                    }
+                    END {
+                        out = ""
+                        for (j = 1; j <= m; j++) {
+                            t = order[j]
+                            if (counts[t] == n) {
+                                out = (out == "" ? t : out " " t)
+                            }
+                        }
+                        print (out != "" ? out : (fallback != "" ? fallback : "Alerts"))
+                    }'
+                )"
                 body="$(awk '{printf "%d. %s\n\n", NR, $0}' "$bulk_file" 2>/dev/null)$(printf '%d. %s: %s\n' "$bulk_count" "$title" "$body")"
-                title="📦 Bulk ($bulk_count): $joined_titles"
+                title="📦 Bulk ($bulk_count): $common_summary"
                 used_bulk=1
             fi
         fi
