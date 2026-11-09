@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-common.py — utilities for the Hyperliquid bot.
-The shared log/.env/float_env core comes from root botcore.py. Only HL-specific
-global socket timeout and now_str remain here. Re-exports preserve compatibility
-with `from common import log, load_dotenv, ...`.
+common.py — Hyperliquid-specific runtime utilities (socket timeout, notify, local module loader).
+Shared logging, .env, config, and numeric coercion primitives live in root botcore.py.
 """
 from __future__ import annotations
 
@@ -19,14 +17,7 @@ socket.setdefaulttimeout(30)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
-from botcore import (  # noqa: E402,F401  (re-export compatibility)
-    BUCHAREST, log, load_dotenv, load_env_stack, load_local_module, float_env, int_env, fetch_public_json, single_instance, are_close,
-    required_env, defined_env, optional_env, bool_env, required_float_env, required_int_env, required_bool_env,
-    resolve_cli_arg,
-    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
-    exact_int, exact_pos_int, exact_nonneg_int,
-    now_str,
-)
+from botcore import load_local_module  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")

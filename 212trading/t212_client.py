@@ -14,25 +14,30 @@ import contextlib
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 
-try:
-    # Package import for the generic provider or installed wheel.
-    from .ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
-except ImportError:
-    # Compatibility with direct launch from the 212trading directory.
-    import os as _os
-    import sys as _sys
-    _HERE = _os.path.dirname(_os.path.abspath(__file__))
-    _ROOT = _os.path.dirname(_HERE)
-    if _ROOT not in _sys.path:
-        _sys.path.insert(0, _ROOT)
-    from botcore import ensure_local_module_priority
-    ensure_local_module_priority(_HERE, "ipo_common")
-    from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-from botcore import clean_order_id, is_shared_disk_cache_enabled, normalize_side
+from botcore import (
+    _parse_bool_flag,
+    clean_order_id,
+    http_get,
+    http_post_json,
+    http_request,
+    is_shared_disk_cache_enabled,
+    log,
+    normalize_side,
+    required_env,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.base import MarketDataProvider

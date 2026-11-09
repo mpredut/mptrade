@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-ipo_common.py — utilities for the T212 watcher.
-The shared log/.env/parse_dotenv/float_env/HTTP core comes from root botcore.py.
-Only the ET timezone and T212 timestamp format remain here. Re-exports preserve
-compatibility with `from ipo_common import log, http_get, float_env, ...`.
+ipo_common.py — T212-specific runtime utilities (notify, environment layering, dual ET/Bucharest timestamp).
+Shared logging, .env, config, HTTP, and numeric coercion primitives live in root botcore.py.
 """
 from __future__ import annotations
 
@@ -14,15 +12,7 @@ from datetime import datetime, timezone
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
-from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common import ...`)
-    BUCHAREST, ET, log, load_dotenv, parse_dotenv, float_env,
-    http_get, http_post_json, http_request, single_instance, are_close, diff_percent,
-    optional_env, bool_env, required_env, required_float_env, required_int_env, required_bool_env,
-    resolve_cli_arg, load_local_module,
-    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
-    exact_int, exact_pos_int, normalize_epoch_sec,
-    clean_order_id, format_price_log,
-)
+from botcore import BUCHAREST, ET, load_dotenv, load_local_module  # noqa: E402
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 
 notify = bind_notify(("SYMBOL_LABEL", "YAHOO_SYMBOL"), "STOCK")

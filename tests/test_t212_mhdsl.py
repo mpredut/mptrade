@@ -18,7 +18,7 @@ for _p in (str(T212_DIR), str(ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from botcore import load_local_module  # noqa: E402
+from botcore import float_env, load_local_module, parse_dotenv  # noqa: E402
 
 ipo_common = importlib.import_module("ipo_common")
 
@@ -778,7 +778,7 @@ class TestParseDotenv(unittest.TestCase):
             f.write("FOO_UNIQ_123=bar\n")
             path = f.name
         try:
-            cfg = ipo_common.parse_dotenv(path)
+            cfg = parse_dotenv(path)
             self.assertEqual(cfg["FOO_UNIQ_123"], "bar")
             self.assertNotIn("FOO_UNIQ_123", os.environ, "parse_dotenv must NOT touch os.environ")
         finally:
@@ -789,7 +789,7 @@ class TestParseDotenv(unittest.TestCase):
             f.write("X=0.4  # check minutes\nY=\"quoted\"\n")
             path = f.name
         try:
-            cfg = ipo_common.parse_dotenv(path)
+            cfg = parse_dotenv(path)
             self.assertEqual(cfg["X"], "0.4")
             self.assertEqual(cfg["Y"], "quoted")
         finally:
@@ -798,21 +798,21 @@ class TestParseDotenv(unittest.TestCase):
 
 class TestFloatEnvDict(unittest.TestCase):
     def test_from_a_dict(self):
-        self.assertEqual(ipo_common.float_env("A", {"A": "12.5"}), 12.5)
-        self.assertIsNone(ipo_common.float_env("MISSING", {"A": "1"}))
+        self.assertEqual(float_env("A", {"A": "12.5"}), 12.5)
+        self.assertIsNone(float_env("MISSING", {"A": "1"}))
 
     def test_environ_by_default(self):
         os.environ["TST_FLT_9"] = "3.3"
         try:
-            self.assertEqual(ipo_common.float_env("TST_FLT_9"), 3.3)
+            self.assertEqual(float_env("TST_FLT_9"), 3.3)
         finally:
             del os.environ["TST_FLT_9"]
 
 
 class TestIzolareParams(unittest.TestCase):
     def test_two_assets_with_different_parameters(self):
-        nv = ipo_common.parse_dotenv(_tmp_env_file(_NVDA_ENV))
-        sp = ipo_common.parse_dotenv(_tmp_env_file(_SPCX_ENV))
+        nv = parse_dotenv(_tmp_env_file(_NVDA_ENV))
+        sp = parse_dotenv(_tmp_env_file(_SPCX_ENV))
         pn = strategy.StratParams.from_env(nv)
         ps = strategy.StratParams.from_env(sp)
         self.assertEqual(pn.entry_amount, 100.0)
@@ -825,7 +825,7 @@ class TestIzolareParams(unittest.TestCase):
         self.assertEqual(ps.reentry_drop_pct, 2.0)
 
     def test_inline_comment_in_check_minutes(self):
-        pn = strategy.StratParams.from_env(ipo_common.parse_dotenv(_tmp_env_file(_NVDA_ENV)))
+        pn = strategy.StratParams.from_env(parse_dotenv(_tmp_env_file(_NVDA_ENV)))
         self.assertEqual(pn.check_minutes, 0.4)
 
     def test_missing_environment_fails_instead_of_using_defaults(self):

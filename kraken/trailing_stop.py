@@ -36,9 +36,20 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 
-from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, notify, required_bool_env,  # noqa: E402
-                           required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float)
-from botcore import format_price_log  # noqa: E402
+from botcore import (  # noqa: E402
+    _parse_bool_flag,
+    format_price_log,
+    load_dotenv,
+    load_env_stack,
+    log,
+    required_bool_env,
+    required_env,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
+from kraken_common import notify  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
 
 from trailing_core import (  # noqa: E402

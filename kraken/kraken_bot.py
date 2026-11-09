@@ -27,16 +27,23 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from botcore import (
+    load_env_stack,
+    log,
+    optional_env,
+    required_bool_env,
+    required_env,
+    required_int_env,
+    resolve_cli_arg,
+    safe_pos_float,
+    single_instance,
+)
 try:
-    from kraken.kraken_common import (log, notify, optional_env, required_bool_env, required_env,
-                                      required_int_env, resolve_cli_arg, load_env_stack,
-                                      single_instance, safe_pos_float)
+    from kraken.kraken_common import notify
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import check_pair_listing, get_price
 except ImportError:
-    from kraken_common import (log, notify, optional_env, required_bool_env, required_env,
-                               required_int_env, resolve_cli_arg, load_env_stack,
-                               single_instance, safe_pos_float)
+    from kraken_common import notify
     from kraken_client import KrakenClient, KrakenError
     from market_data import check_pair_listing, get_price
 from strategies.spot_engine import Strategy, StratParams

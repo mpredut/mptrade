@@ -8,22 +8,22 @@ pre-listing placeholder for trading. Reused by t212_bot.py for every awaited ass
 """
 from __future__ import annotations
 
+import os
+import sys
 import time
 from datetime import datetime
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import ET, ensure_local_module_priority, log, safe_float
+
 try:
-    from .ipo_common import ET, log, safe_float
     from .market_data import check_market
 except ImportError:
-    import os as _os
-    import sys as _sys
-    _HERE = _os.path.dirname(_os.path.abspath(__file__))
-    _ROOT = _os.path.dirname(_HERE)
-    if _ROOT not in _sys.path:
-        _sys.path.insert(0, _ROOT)
-    from botcore import ensure_local_module_priority
     ensure_local_module_priority(_HERE, "ipo_common", "market_data")
-    from ipo_common import ET, log, safe_float
     from market_data import check_market
 
 from providers.t212_provider import _t212_tickers_match

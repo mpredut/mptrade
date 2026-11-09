@@ -18,25 +18,28 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
+import sys
 import threading
 import time
 import urllib.parse
 
-try:
-    from kraken.kraken_common import (
-        _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
-    )
-except ImportError:
-    from kraken_common import (
-        _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
-    )
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 from botcore import (
+    _parse_bool_flag,
     clean_order_id,
     exact_nonneg_int,
     exact_pos_int,
+    http_get,
+    http_post_form,
+    log,
     normalize_side,
     safe_nonneg_float,
+    safe_pos_float,
 )
 
 API_URL = "https://api.kraken.com"

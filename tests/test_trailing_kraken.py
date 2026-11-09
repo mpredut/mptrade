@@ -16,8 +16,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
-from botcore import load_local_module  # noqa: E402
-from kraken_common import parse_dotenv  # noqa: E402
+from botcore import load_local_module, parse_dotenv  # noqa: E402
 import kraken_xstock_watch as xw  # noqa: E402
 import kraken.trailing_stop as ts_mod
 from kraken.trailing_stop import KrakenTrailing

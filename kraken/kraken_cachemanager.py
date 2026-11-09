@@ -35,11 +35,18 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
-from botcore import touch_module_heartbeat
-from kraken_common import (
-    _parse_bool_flag, load_env_stack, log, required_env,
-    required_float_env, safe_float, safe_nonneg_float, safe_pos_float,
-    safe_pos_int, single_instance,
+from botcore import (
+    _parse_bool_flag,
+    load_env_stack,
+    log,
+    required_env,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+    single_instance,
+    touch_module_heartbeat,
 )
 from kraken_client import KrakenClient
 from state_io import read_json_dict, save_json_state

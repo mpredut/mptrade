@@ -33,7 +33,9 @@ if _ROOT not in sys.path:
 
 from botcore import (
     float_env,
+    load_env_stack,
     load_local_module,
+    log,
     required_env,
     required_float_env,
     required_int_env,
@@ -48,7 +50,6 @@ from offline.backtests.metrics import (
 
 _common_mod = load_local_module(_HERE, "common")
 _load_hl_local = _common_mod.load_hl_local
-log = _common_mod.log
 _md_local = _load_hl_local("market_data")
 fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
@@ -113,7 +114,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        _common_mod.load_env_stack(os.path.join(_HERE, ".env"))
+        load_env_stack(os.path.join(_HERE, ".env"))
     except Exception:
         pass
 

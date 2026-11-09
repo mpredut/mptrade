@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-botcore.py — SHARED core for bot utilities: logging, .env, HTTP, and time.
+botcore.py — SHARED SSOT core for bot utilities: logging, .env, HTTP, numeric coercion, and time.
 No external dependencies; standard library only.
-
-The SINGLE source for functions previously duplicated and beginning to diverge in
-kraken/common.py, hyperliquid/common.py, and 212trading/ipo_common.py. Each module
-re-exports these functions, preserving compatibility with `from common import log`.
 """
 from __future__ import annotations
 

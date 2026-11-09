@@ -6,20 +6,20 @@ market_data.py — Yahoo Finance market data: prices, FX rates, and real-trading
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-try:
-    from ipo_common import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
-except ImportError:
-    try:
-        from .ipo_common import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
-    except ImportError:
-        from botcore import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset

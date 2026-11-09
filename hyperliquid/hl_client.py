@@ -24,13 +24,16 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import exact_int, load_local_module  # noqa: E402
+from botcore import (  # noqa: E402
+    exact_int,
+    load_local_module,
+    log,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 _common_mod = load_local_module(_HERE, "common")
-log = _common_mod.log
-safe_float = _common_mod.safe_float
-safe_pos_float = _common_mod.safe_pos_float
-safe_nonneg_float = _common_mod.safe_nonneg_float
 from instrument_registry import casefold_get
 from providers.base import mount_connect_retry
 
