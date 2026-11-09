@@ -6,12 +6,11 @@ from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, Optional
 
+from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
-    CachedTopicAssessmentAgent,
     clean_scale,
     extract_high_severity_headlines_and_digest,
-    filter_valid_severity_keywords,
     get_cache_filenames,
     has_new_acute_shock_headline,
     normalize_recommended_brake,
@@ -24,6 +23,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.macro.lexicon_ssot import (
     demote_dynamic_acute_terms,
+    filter_valid_severity_keywords,
     get_active_acute_shock_phrases,
     has_acute_shock_keywords,
     record_dynamic_crisis_terms_from_assessment,

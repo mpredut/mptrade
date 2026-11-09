@@ -719,7 +719,7 @@ def test_shared_intelligence_and_agent_primitives_promoted_to_core():
 
 def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
     import json
-    from intelligence.macro_sentiment_ssot import CachedHttpJsonCollector, run_scheduled_step
+    from intelligence.macro.daemon_ssot import CachedHttpJsonCollector, run_scheduled_step
 
     hb_path = tmp_path / "rtrade_BTCUSDC.heartbeat"
     ts = botcore.touch_heartbeat_file(

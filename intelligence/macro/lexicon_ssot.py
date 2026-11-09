@@ -1377,11 +1377,6 @@ def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     return overlap >= 0.40 and len(shared - _GENERIC_HEADLINE_OVERLAP_STEMS) >= 3
 
 
-HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = ()
-ACUTE_SHOCK_PHRASES: Tuple[str, ...] = ()
-DEFAULT_RSS_URL: str = ""
-
-
 def match_high_severity_keywords(
     text: str,
     cache_dir: Optional[str] = None,
@@ -1440,9 +1435,3 @@ def has_acute_shock_keywords(
 
 import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
 
-HIGH_SEVERITY_KEYWORDS = get_active_severity_keywords()
-ACUTE_SHOCK_PHRASES = get_active_acute_shock_phrases()
-DEFAULT_RSS_URL = build_dynamic_rss_url()
-_ssot.HIGH_SEVERITY_KEYWORDS = HIGH_SEVERITY_KEYWORDS
-_ssot.ACUTE_SHOCK_PHRASES = ACUTE_SHOCK_PHRASES
-_ssot.DEFAULT_RSS_URL = DEFAULT_RSS_URL

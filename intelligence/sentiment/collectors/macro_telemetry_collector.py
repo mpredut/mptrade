@@ -14,9 +14,17 @@ from cachepaths import (
     canonical_base_asset,
     normalize_venue_name,
 )
-from intelligence.macro_sentiment_ssot import (
+from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
     filter_valid_severity_keywords,
+    has_financial_or_geopolitical_context,
+    has_tracked_equity_entity,
+    headlines_are_semantic_duplicates,
+    is_excluded_reference_news_item,
+    is_off_topic_general_news_title,
+)
+from intelligence.macro_sentiment_ssot import (
     get_binance_btc_ticker_url,
     get_breadth_excluded_bases,
     get_coinbase_btc_ticker_url,
@@ -25,14 +33,8 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_book_url,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
-    has_financial_or_geopolitical_context,
-    has_tracked_equity_entity,
-    headlines_are_semantic_duplicates,
-    is_excluded_reference_news_item,
-    is_off_topic_general_news_title,
     normalize_epoch_sec,
     read_first_cached_dict,
-    resolve_macro_economic_calendar,
     resolve_now_ts,
     resolve_patched_attr,
     resolve_read_json_cached,
@@ -58,7 +60,6 @@ from intelligence.sentiment.collectors.portfolio_collector import (
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     MACRO_BENCHMARK_SPECS,
-    _MACRO_EXTRA_TELEMETRY_KEYS,
     apply_asset_scope_filter,
     build_cycle_fallback_prices,
     compute_cross_asset_regime,
@@ -66,9 +67,6 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     compute_equity_macro_regime,
     compute_futures_premarket_lead,
     enrich_sentiment_advisor_live_flow_divergence,
-    evaluate_institutional_posture_divergence,
-    format_bottom_structure_6h_parts,
-    format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
     reconcile_live_venue_equity_summary,
 )
@@ -76,7 +74,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_cross_venue_trends,
     sync_sibling_symbol_telemetry,
 )
-from intelligence.sentiment.evaluators.portfolio_evaluator import (
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,
     compute_enterprise_portfolio_risk_metrics,
     enrich_open_limit_orders_tca,
@@ -1532,9 +1530,6 @@ def read_market_and_portfolio_snapshot(
     )
 
 
-from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
-
-
 __all__ = [
     "InitialPricesAndTrendsCollector",
     "MACRO_BENCHMARK_SPECS",
@@ -1543,19 +1538,14 @@ __all__ = [
     "MacroTelemetryCollectorBase",
     "MarketAndPortfolioSnapshotOrchestrator",
     "PortfolioAndVenueCyclesCollector",
-    "_MACRO_EXTRA_TELEMETRY_KEYS",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
     "collect_macro_benchmarks_snapshot",
-    "collect_pretrade_telemetry",
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
     "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
-    "evaluate_institutional_posture_divergence",
-    "format_bottom_structure_6h_parts",
-    "format_equity_macro_regime_line",
     "format_macro_benchmarks_summary_line",
     "harvest_initial_prices_and_trends",
     "harvest_macro_and_news_sensors",

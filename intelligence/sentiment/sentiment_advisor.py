@@ -6,9 +6,10 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from intelligence.macro.calendar_ssot import resolve_global_trading_session
+from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
-    CachedTopicAssessmentAgent,
     clean_scale,
     get_cache_filenames,
     is_cache_fresh,
@@ -17,7 +18,6 @@ from intelligence.macro_sentiment_ssot import (
     normalize_risk_level,
     obj_attr,
     obj_float,
-    resolve_global_trading_session,
     resolve_now_ts,
     safe_nonneg_ts,
 )

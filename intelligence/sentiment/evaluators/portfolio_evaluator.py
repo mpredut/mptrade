@@ -26,10 +26,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     round_opt_px,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
-    _VENUE_DEFAULT_FEE_SPECS,
-    build_cross_market_context,
-    compute_enterprise_portfolio_risk_metrics,
-    enrich_open_limit_orders_tca,
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
@@ -1670,18 +1666,11 @@ __all__ = [
     "SymbolRecentFillsEvaluator",
     "VenueCycleReconciliationEvaluator",
     "VenueCycleStateEvaluator",
-    "_VENUE_DEFAULT_FEE_SPECS",
     "_populate_cycle_fallback_recent_order",
     "_sync_cycle_wallet_qty_and_avg",
-    "build_cross_market_context",
-    "compute_enterprise_portfolio_risk_metrics",
-    "enrich_open_limit_orders_tca",
     "enrich_positions_with_orders_and_cycles",
-    "enrich_recent_orders_markout",
     "extract_symbol_recent_fills",
     "parse_venue_cycle_state",
     "reconcile_venue_cycles_with_recent_orders",
-    "resolve_symbol_price",
-    "resolve_venue_fee_and_limits",
     "set_pos_anchor",
 ]

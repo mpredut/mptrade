@@ -25,7 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
     scan_latest_long_trend_value,
 )
-from intelligence.sentiment.evaluators.portfolio_evaluator import _VENUE_DEFAULT_FEE_SPECS
+from intelligence.sentiment.evaluators.tca_risk_evaluator import _VENUE_DEFAULT_FEE_SPECS
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,

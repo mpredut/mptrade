@@ -232,7 +232,7 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
         import json
         import botcore
         import log as mp_log
-        from intelligence.macro_sentiment_ssot import discover_dynamic_terms_from_headlines
+        from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines
         from notify_engine.server import NotificationServer
 
         with tempfile.TemporaryDirectory() as tmp:

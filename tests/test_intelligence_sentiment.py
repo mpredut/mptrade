@@ -1306,7 +1306,7 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
 def test_unified_ai_agent_base_classes_and_query_topic_json():
     """Verify PreTradeLLMGuardBase, CachedTopicAssessmentAgent, and query_topic_json normalization."""
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-    from intelligence.macro_sentiment_ssot import CachedTopicAssessmentAgent
+    from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
     from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
     from intelligence.sentiment.guards import HighStakeGuard, PostStopReentryGuard, PreTradeLLMGuardBase
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
@@ -1595,7 +1595,7 @@ def test_equity_symbol_normalization_and_pretrade_telemetry_cache_isolation(tmp_
         normalize_cache_base_asset,
         split_symbol_assets,
     )
-    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     assert normalize_cache_base_asset("SPCXUSEQ") == "SPCX"
     assert split_symbol_assets("SPCXUSEQ") == ("SPCX", "USD")
@@ -1678,10 +1678,12 @@ def test_flat_cycle_clears_tactical_avg_and_semantic_stem_and_macro_analyzer_wha
     from types import SimpleNamespace
     from botcore import obj_attr
     from intelligence.macro_analyzer import MacroAnalyzer
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.calendar_ssot import (
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.macro.lexicon_ssot import (
         _normalize_semantic_stem,
         headlines_are_semantic_duplicates,
-        resolve_macro_economic_calendar,
     )
     from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
 
@@ -1879,12 +1881,16 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
 def test_telemetry_deep_bug_hunt_fixes_a_through_g():
     """Verify fixes for Bugs A-G discovered in live supervisor prompt telemetry audit."""
     from datetime import datetime, timezone
-    from intelligence.macro_sentiment_ssot import (
-        detect_active_binance_symbols,
-        match_high_severity_keywords,
+    from intelligence.macro.calendar_ssot import (
         resolve_macro_economic_calendar,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import (
+    from intelligence.macro.daemon_ssot import (
+        detect_active_binance_symbols,
+    )
+    from intelligence.macro.lexicon_ssot import (
+        match_high_severity_keywords,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
         compute_enterprise_portfolio_risk_metrics,
         enrich_open_limit_orders_tca,
     )
@@ -1975,15 +1981,19 @@ def test_telemetry_deep_bug_hunt_fixes_a_through_g():
 def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_path):
     import os
     from datetime import datetime, timezone
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.calendar_ssot import (
         parse_live_macro_release_surprises,
         resolve_macro_economic_calendar,
     )
     from intelligence.sentiment.collectors.macro_telemetry_collector import compute_deribit_options_surface
     from intelligence.sentiment.collectors.portfolio_collector import (
-        compute_enterprise_portfolio_risk_metrics,
         harvest_recent_orders_and_enrich_positions,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
     )
     from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
 
@@ -2097,7 +2107,7 @@ def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_
 
 def test_enrich_cross_venue_trends_preserves_7d_range_over_short_watcher_history():
     """Verify newly initialized <5d watcher_price_items do not overwrite 7d OHLC range metrics."""
-    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
 
     now_ms = 1_780_000_000_000
     prices_and_trends = {
@@ -2137,8 +2147,10 @@ def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(m
         extract_symbol_recent_fills,
     )
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_open_limit_orders_tca,
         harvest_recent_orders_and_enrich_positions,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        enrich_open_limit_orders_tca,
     )
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
     from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line
@@ -2284,9 +2296,11 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
         compute_volume_profile_metrics,
         load_symbol_microstructure,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_open_limit_orders_tca,
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        enrich_open_limit_orders_tca,
     )
 
     # 1. enrich_open_limit_orders_tca overwrites stale cached dist_from_spot_pct and uses venue tick (0.01 on Kraken >=10)
@@ -2366,7 +2380,7 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
 
     # 8. Fee tuple unpacking, 7d>=24h range invariant, VA regime vs va_pos, and local L2 spot_cvd isolation
-    from intelligence.sentiment.collectors.portfolio_collector import sync_sibling_symbol_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
     from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
     from intelligence.sentiment.evaluators.price_series_evaluator import _build_vp_position_dict
 
@@ -2463,8 +2477,10 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
     # 10. Near-spot wall TCA (2..10 bps), 5-digit tape_15m decimals, and AI intent fill synthesis
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
-        enrich_open_limit_orders_tca,
         extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        enrich_open_limit_orders_tca,
     )
     from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
 
@@ -3509,8 +3525,10 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     # - compute_dynamic_geopolitical_interval ignores syndicated rewrites of already-digested headlines
     # - GeopoliticalThreatAnalyzer._headline_age_suffix formats age=...m for recent headlines
     from intelligence.macro_sentiment_ssot import (
-        compute_dynamic_geopolitical_interval,
         extract_high_severity_headlines_and_digest,
+    )
+    from intelligence.macro.calendar_ssot import (
+        compute_dynamic_geopolitical_interval,
     )
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 
@@ -6453,7 +6471,7 @@ def test_geopolitical_zero_high_sev_digest_reset_and_false_positive_shield_clean
 
 def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp_path):
     import time as _time
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.lexicon_ssot import (
         _is_noise_dynamic_keyword,
         headlines_are_semantic_duplicates,
         is_off_topic_general_news_title,

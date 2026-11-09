@@ -938,64 +938,15 @@ def scan_latest_long_trend_value(
     return None
 
 
-# ============================================================================
-# 2–4. Specialized Multi-Source Feeds, Dynamic Crisis Lexicon, Global Trading
-#      Session, Macro Economic Calendar, Dynamic Interval Calculators & Daemon
-#      Runtime Primitives (Modularized into intelligence.macro.*_ssot)
-# ============================================================================
-
-from intelligence.macro.daemon_ssot import (
-    CachedHttpJsonCollector,
-    CachedTopicAssessmentAgent,
-    ExternalTelemetryMixin,
-    compute_step_retry_ts,
-    configure_daemon_cli_logging,
-    detect_active_binance_symbols,
-    inspect_daemon_heartbeat,
-    prune_automated_cli_threads,
-    run_daemon_loop,
-    run_scheduled_step,
-    write_daemon_heartbeat,
-    write_daemon_heartbeat_files,
-)
-from intelligence.macro.lexicon_ssot import (
-    ACUTE_SHOCK_PHRASES,
-    DEFAULT_RSS_URL,
-    HIGH_SEVERITY_KEYWORDS,
+from intelligence.macro.lexicon_ssot import (  # noqa: E402
     _get_crisis_stems_set,
     _get_seed_terms_set,
     _get_stopwords_set,
     _is_excluded_non_crisis_attack_keyword,
     _is_noise_dynamic_keyword,
-    _normalize_semantic_stem,
-    _strip_headline_publisher_suffix,
-    build_dynamic_rss_url,
-    build_equity_tickers_rss_url,
-    demote_dynamic_acute_terms,
-    discover_dynamic_terms_from_headlines,
     filter_valid_severity_keywords,
-    get_active_acute_shock_phrases,
-    get_active_severity_keywords,
-    get_specialized_rss_urls,
-    has_financial_or_geopolitical_context,
-    has_tracked_equity_entity,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
-    is_off_topic_general_news_title,
-    load_dynamic_lexicon,
-    match_high_severity_keywords,
-    record_dynamic_crisis_terms_from_assessment,
-    update_dynamic_lexicon,
 )
-from intelligence.macro.calendar_ssot import (
-    SESSION_TRANSITION_CHECKPOINTS_EET,
-    compute_dynamic_geopolitical_interval,
-    compute_dynamic_sentiment_interval,
-    did_cross_session_checkpoint,
-    parse_cited_cvd_usd,
-    parse_cited_taker_ratio,
-    parse_live_macro_release_surprises,
-    resolve_global_trading_session,
-    resolve_macro_economic_calendar,
-)
+
 

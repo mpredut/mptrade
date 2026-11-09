@@ -11,13 +11,15 @@ from cachepaths import (
     normalize_venue_name,
 )
 from instrument_registry import casefold_get
+from intelligence.macro.calendar_ssot import (
+    parse_cited_cvd_usd,
+    parse_cited_taker_ratio,
+)
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
     normalize_epoch_sec,
-    parse_cited_cvd_usd,
-    parse_cited_taker_ratio,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,

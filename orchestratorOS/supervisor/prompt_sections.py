@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float
 from cachepaths import cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, normalize_venue_name
-from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
-from intelligence.sentiment.collectors.macro_telemetry_collector import (
+from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
@@ -33,7 +33,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     reconcile_sibling_flow_and_liq_regimes,
 )
-from intelligence.sentiment.collectors.portfolio_collector import (
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )

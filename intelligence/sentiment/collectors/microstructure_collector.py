@@ -119,8 +119,10 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
-    _VENUE_DEFAULT_FEE_SPECS,
     extract_symbol_recent_fills,
+)
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+    _VENUE_DEFAULT_FEE_SPECS,
     resolve_symbol_price,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (

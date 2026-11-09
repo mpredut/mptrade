@@ -867,7 +867,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             compute_liquidation_clusters,
             enrich_microstructure_cvd,
         )
-        from intelligence.sentiment.collectors.portfolio_collector import compute_enterprise_portfolio_risk_metrics
+        from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
         import cacheprice as cp
 
         now = 1_700_000_000.0

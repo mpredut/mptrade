@@ -7,8 +7,8 @@ import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import canonical_base_asset
+from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from intelligence.macro_sentiment_ssot import (
-    CachedHttpJsonCollector,
     fetch_public_json,
     get_breadth_excluded_bases,
     get_breadth_min_volume_usd,

@@ -14,11 +14,11 @@ from typing import Any, Dict, Optional
 
 from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
 from cachepaths import cache_symbol_variants
+from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
     get_cache_filenames,
-    inspect_daemon_heartbeat,
     load_cached_geopolitical_eval,
     load_cached_sentiment_advisor_eval,
     normalize_epoch_sec,

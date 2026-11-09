@@ -2849,7 +2849,7 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
         compute_liquidation_clusters,
         compute_volume_profile_metrics,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import resolve_venue_fee_and_limits
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
@@ -3018,7 +3018,8 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
         compute_volume_profile_metrics,
         extract_symbol_recent_fills,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions, resolve_venue_fee_and_limits
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
 
     # 1. round_spread_bps precision & inverted book protection
     assert round_spread_bps(best_bid=100_000.0, best_ask=100_000.5) == 0.05
@@ -3618,7 +3619,8 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     """Verify collect_pretrade_telemetry populates microstructure/liquidation clusters without 24h series and gateway_max_usd forwards."""
     from intelligence.sentiment.collectors.macro_telemetry_collector import build_cycle_fallback_prices
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders, resolve_venue_fee_and_limits
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
 
     # 1. build_cycle_fallback_prices falls back to (best_bid + best_ask) / 2.0 when ob_mid_price is absent
     fb_px = build_cycle_fallback_prices(
@@ -3747,7 +3749,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
 
     from types import SimpleNamespace
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
-    from intelligence.sentiment.collectors.portfolio_collector import resolve_venue_fee_and_limits
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
 
     hl_inst = SimpleNamespace(
         params={},
@@ -4214,7 +4216,7 @@ def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(t
 
 
 def test_iteration19_sibling_diverged_micro_px_and_lazy_prompt_vp_liq_formatting():
-    from intelligence.sentiment.collectors.portfolio_collector import sync_sibling_symbol_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
     from orchestratorOS.supervisor.prompt_formatters import (
         _format_market_prices_section,
         _format_microstructure_section,
@@ -4324,10 +4326,14 @@ def test_iteration21_execution_audit_kraken_xbt_variant_resolution():
 
 
 def test_iteration22_diverged_fiat_series_overlay_and_micro_strip(tmp_path):
-    from intelligence.sentiment.collectors.portfolio_collector import (
-        build_cross_market_context,
+    from intelligence.sentiment.collectors.microstructure_collector import (
         enrich_24h_and_microstructure,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
     )
 
     cache_dir = tmp_path / "cachedb"
@@ -4562,10 +4568,16 @@ def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_p
     import json
     from cachepaths import compatible_quote_suffixes
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_24h_and_microstructure,
         parse_venue_cycle_state,
-        resolve_symbol_price,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        resolve_symbol_price,
     )
 
     # 1. compatible_quote_suffixes and resolve_symbol_price isolate USD vs EUR valuation families
@@ -5091,7 +5103,7 @@ def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3
 
 
 def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_aliases():
-    from intelligence.sentiment.collectors.portfolio_collector import build_cross_market_context
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
     from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
 
@@ -5154,7 +5166,10 @@ def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconc
     import json
     from types import SimpleNamespace
     from intelligence.sentiment.collectors.macro_telemetry_collector import apply_asset_scope_filter
-    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends, sync_sibling_symbol_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+        sync_sibling_symbol_telemetry,
+    )
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
     from providers.execution_audit import (
         _resolve_intent_execution_details,
@@ -5414,7 +5429,7 @@ def test_iteration38_whale_oi_fallback_kraken_cache_alias_and_orderbook_from_dic
     from types import SimpleNamespace
     from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
-    from intelligence.sentiment.collectors.portfolio_collector import resolve_venue_fee_and_limits
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
 
     # 1. load_symbol_microstructure populates oi_usd and funding_rate from whale snapshot when deriv is absent
     m_info = load_symbol_microstructure(
@@ -5472,9 +5487,13 @@ def test_iteration38_whale_oi_fallback_kraken_cache_alias_and_orderbook_from_dic
 def test_iteration39_cross_quote_trend_price_isolation_resolve_assets_and_bare_base_price(tmp_path):
     from types import SimpleNamespace
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_cross_venue_trends,
         harvest_recent_orders_and_enrich_positions,
         harvest_tradable_positions_and_orders,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
         resolve_symbol_price,
     )
 
@@ -5962,7 +5981,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     6. News severity keyword filter strips generic stopwords, publisher names, and substring stem false positives.
     """
     from intelligence.macro.news_feed_collector import NewsFeedCollector
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.lexicon_ssot import (
         discover_dynamic_terms_from_headlines,
         filter_valid_severity_keywords,
     )
@@ -6183,7 +6202,8 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert corp_discovered == ()
 
     # 7. enrich_cross_venue_trends keeps adapt_reentry_pct/adapt_dca_pct aligned with fresh vol_1h_pct
-    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends, harvest_tradable_positions_and_orders
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
     pt_hype = {"HYPEUSDC": {"price": 91.50, "vol_1h_pct": 1.62}}
     enrich_cross_venue_trends(
         pt_hype,
@@ -6504,7 +6524,7 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
 
     # 8. _fmt_slope_val zeroes sub-5e-8 IEEE-754 polyfit noise while keeping low-price slopes >= 5e-8
     from orchestratorOS.supervisor.prompt_sections import _fmt_slope_val
-    from intelligence.sentiment.collectors.portfolio_collector import _compute_kalman_from_series
+    from intelligence.sentiment.evaluators.price_series_evaluator import _compute_kalman_from_series
 
     assert _fmt_slope_val(-1.22e-8) == "+0.00000"
     assert _fmt_slope_val(2.72e-7) == "+2.72e-07"
@@ -6966,9 +6986,13 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_24h_and_microstructure,
         harvest_recent_orders_and_enrich_positions,
         harvest_tradable_positions_and_orders,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,
     )
     from orchestratorOS.supervisor.prompt_formatters import (
@@ -7111,7 +7135,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
 
     # 4. Macro Economic Calendar sensor in Section 1 (next_high_impact_event countdown + live macro headlines)
     from datetime import datetime, timezone
-    from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
     from orchestratorOS.supervisor.prompt_formatters import _format_macro_and_news_section
 
     # Monday 2026-11-02 15:20 EET is 13:20 UTC -> 10 minutes before 15:30 EET US Macro release window
@@ -7135,8 +7159,10 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
     """Verify open_orders/positions cache fallback, verified_open_venues guard against false CANCELED_OR_EXPIRED,
     same-symbol BUY+SELL resting order preservation, and Hyperliquid HYPEUSDC seeding when inst_map fails."""
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_24h_and_microstructure,
         harvest_tradable_positions_and_orders,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
     )
     from providers.execution_audit import (
         build_last_cycle_execution_status,
@@ -7556,8 +7582,10 @@ def test_cross_market_telemetry_sparse_7d_t212_audit_submit_ts_and_no_qty_format
     """Verify sparse 7d preference, cached T212 price seeding in crypto scope, T212 submit_accepted ts ordering across >500 audit lines, and clean Last SELL formatting when qty is None."""
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
     from intelligence.sentiment.collectors.portfolio_collector import (
-        enrich_24h_and_microstructure,
         harvest_recent_orders_and_enrich_positions,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
     )
     from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
 
@@ -7677,7 +7705,7 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
 
 
 def test_harvest_bot_runtime_states_awaiting_cancel_and_pretrade_ai_intent_fills(tmp_path):
-    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
     from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
 
     cache_dir = tmp_path / "cachedb"
@@ -7771,7 +7799,7 @@ def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_can
        and used as fallback in collect_pretrade_telemetry for T212 / Hyperliquid.
     4. KrakenProvider.cancel_order_by_id uses _query_with_bot_fallback when primary client fails with permission/nonce error.
     """
-    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
     from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
     from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
     from providers.kraken_provider import KrakenProvider
@@ -7944,7 +7972,7 @@ def test_iteration51_long_trend_freshness_neutral_override_and_parse_rss_valid_k
        non-stem neighbor bigrams (like 'intel stock') are not attached to matched_keywords.
     """
     from intelligence.macro.news_feed_collector import NewsFeedCollector
-    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
 
     # 1a. Explicit None in fresher priceanalysis.json overrides stale cache_long_trend.json entry
     prices_and_trends = {
@@ -8058,13 +8086,15 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
     from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
     from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
-    from intelligence.macro_sentiment_ssot import compute_dynamic_sentiment_interval
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.collectors.microstructure_collector import compute_volume_profile_metrics
     from intelligence.sentiment.collectors.portfolio_collector import (
         _normalize_open_orders_list,
-        enrich_cross_venue_trends,
         harvest_recent_orders_and_enrich_positions,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
         sync_sibling_symbol_telemetry,
     )
     from market_regime import ClosedPriceSeries
@@ -8419,8 +8449,10 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
         extract_symbol_recent_fills,
     )
     from intelligence.sentiment.collectors.portfolio_collector import (
-        _compute_short_slopes_from_series,
         harvest_kraken_xstocks,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _compute_short_slopes_from_series,
     )
     from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
 
@@ -8469,10 +8501,12 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
 def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_cost(tmp_path):
     from datetime import datetime, timezone
     from intelligence.macro.news_feed_collector import NewsFeedCollector
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.calendar_ssot import (
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.macro.lexicon_ssot import (
         headlines_are_semantic_duplicates,
         is_excluded_reference_news_item,
-        resolve_macro_economic_calendar,
     )
     from intelligence.sentiment.collectors.microstructure_collector import (
         compute_liquidation_clusters,
@@ -8600,7 +8634,7 @@ def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_c
 def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(tmp_path):
     """Verify Institutional Quant Desk Layers (II.1 - II.5) & Discrepancies 1-8 end-to-end."""
     from datetime import datetime, timezone
-    from intelligence.macro_sentiment_ssot import (
+    from intelligence.macro.calendar_ssot import (
         parse_live_macro_release_surprises,
         resolve_macro_economic_calendar,
     )
@@ -8608,10 +8642,12 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
         enrich_microstructure_cvd,
         extract_symbol_recent_fills,
     )
-    from intelligence.sentiment.collectors.portfolio_collector import (
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
         compute_enterprise_portfolio_risk_metrics,
         enrich_open_limit_orders_tca,
-        sync_sibling_symbol_telemetry,
     )
     from orchestratorOS.supervisor.prompt_formatters import (
         _format_microstructure_section,

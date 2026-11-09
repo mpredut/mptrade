@@ -810,7 +810,6 @@ def test_external_collectors_and_ssot_prompt_modularization():
     from intelligence.external.collectors import whale_positioning as wp
     from intelligence.macro import calendar_ssot as cal_ssot
     from intelligence.macro import lexicon_ssot as lex_ssot
-    import intelligence.macro_sentiment_ssot as ssot
     from orchestratorOS.supervisor import prompt_formatters as pf
     from orchestratorOS.supervisor import prompt_sections as ps
 
@@ -819,8 +818,8 @@ def test_external_collectors_and_ssot_prompt_modularization():
         assert hasattr(cls, "_fetch_hyperliquid_asset_ctx")
 
     assert ob._DiskBackedSymbolCollector is bc._DiskBackedSymbolCollector
-    assert ssot.match_high_severity_keywords is lex_ssot.match_high_severity_keywords
-    assert ssot.resolve_macro_economic_calendar is cal_ssot.resolve_macro_economic_calendar
+    assert callable(lex_ssot.match_high_severity_keywords)
+    assert callable(cal_ssot.resolve_macro_economic_calendar)
     assert pf._format_macro_and_news_section is ps._format_macro_and_news_section
     assert pf._format_microstructure_section is ps._format_microstructure_section
     assert pf._format_portfolio_section is ps._format_portfolio_section
@@ -842,9 +841,7 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
         whale_positioning_collector,
     )
     from intelligence.macro import daemon_ssot
-    import intelligence.macro_sentiment_ssot as ssot
     from intelligence.sentiment.collectors import (
-        macro_telemetry_collector,
         microstructure_collector,
         portfolio_collector,
         pretrade_telemetry_collector,
@@ -858,13 +855,13 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     assert whale_positioning is whale_positioning_collector
     assert ext_cols.OrderbookDepthCollector is orderbook_depth_collector.OrderbookDepthCollector
 
-    # 2. Microstructure, pretrade, and portfolio collectors have clean boundaries and re-exports
-    assert microstructure_collector.enrich_24h_and_microstructure is portfolio_collector.enrich_24h_and_microstructure
-    assert macro_telemetry_collector.collect_pretrade_telemetry is pretrade_telemetry_collector.collect_pretrade_telemetry
+    # 2. Microstructure, pretrade, and portfolio collectors have clean boundaries
+    assert callable(microstructure_collector.enrich_24h_and_microstructure)
+    assert callable(pretrade_telemetry_collector.collect_pretrade_telemetry)
     assert callable(portfolio_collector.load_symbol_best_recent_fills)
     assert callable(portfolio_collector._attach_trailing_peak_to_position)
     assert callable(portfolio_collector._apply_open_orders_locked_balances)
-    assert ssot.configure_daemon_cli_logging is daemon_ssot.configure_daemon_cli_logging
+    assert callable(daemon_ssot.configure_daemon_cli_logging)
 
     orders_cache = {
         "items": {
@@ -881,17 +878,18 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     )
     assert isinstance(fills, dict) and (fills.get("last_buy") or {}).get("price") == 75000.0
 
-    # 3. TCA & risk evaluator owns TCA/risk/cross-market evaluators and is re-exported cleanly
-    assert portfolio_evaluator.compute_enterprise_portfolio_risk_metrics is tca_risk_evaluator.compute_enterprise_portfolio_risk_metrics
-    assert portfolio_evaluator.enrich_open_limit_orders_tca is tca_risk_evaluator.enrich_open_limit_orders_tca
-    assert portfolio_evaluator.build_cross_market_context is tca_risk_evaluator.build_cross_market_context
+    # 3. TCA & risk evaluator owns TCA/risk/cross-market evaluators
+    assert callable(tca_risk_evaluator.compute_enterprise_portfolio_risk_metrics)
+    assert callable(tca_risk_evaluator.enrich_open_limit_orders_tca)
+    assert callable(tca_risk_evaluator.build_cross_market_context)
+    assert portfolio_evaluator.resolve_symbol_price is tca_risk_evaluator.resolve_symbol_price
 
-    # 4. Daemon SSOT owns daemon runtime primitives & base collector/agent classes and is re-exported in macro_sentiment_ssot
-    assert ssot.CachedHttpJsonCollector is daemon_ssot.CachedHttpJsonCollector
-    assert ssot.CachedTopicAssessmentAgent is daemon_ssot.CachedTopicAssessmentAgent
-    assert ssot.ExternalTelemetryMixin is daemon_ssot.ExternalTelemetryMixin
-    assert ssot.run_daemon_loop is daemon_ssot.run_daemon_loop
-    assert ssot.write_daemon_heartbeat is daemon_ssot.write_daemon_heartbeat
+    # 4. Daemon SSOT owns daemon runtime primitives & base collector/agent classes
+    assert callable(daemon_ssot.CachedHttpJsonCollector)
+    assert callable(daemon_ssot.CachedTopicAssessmentAgent)
+    assert callable(daemon_ssot.ExternalTelemetryMixin)
+    assert callable(daemon_ssot.run_daemon_loop)
+    assert callable(daemon_ssot.write_daemon_heartbeat)
 
 
 def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_bucket_dedup(tmp_path, monkeypatch):
@@ -2507,7 +2505,7 @@ def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp
         compute_dynamic_sentiment_interval,
     )
     from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
-    from intelligence.macro_sentiment_ssot import update_dynamic_lexicon
+    from intelligence.macro.lexicon_ssot import update_dynamic_lexicon
 
     # 1. ParabolicSurgeGuard normalizes millisecond timestamps in price_history and now
     psg = ParabolicSurgeGuard(surge_threshold_pct=5.0, window_seconds=3600.0)

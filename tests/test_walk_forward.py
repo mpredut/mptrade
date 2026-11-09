@@ -242,9 +242,9 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertIn("Pareto", md)
 
     def test_kraken_shim_compatibility(self):
-        self.assertIs(kraken_compare.default_candidates, default_candidates)
-        self.assertTrue(hasattr(kraken_compare, "main"))
-        self.assertTrue(hasattr(kraken_compare, "_candidate_windows"))
+        from offline.runners import walk_forward_compare
+
+        self.assertIs(kraken_compare.main, walk_forward_compare.main)
 
     def test_load_report_supports_both_schemas(self):
         from offline.runners.walk_forward_compare import _load_report

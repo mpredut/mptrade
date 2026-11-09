@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional, Tuple
 
+from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from intelligence.macro_sentiment_ssot import (
-    CachedHttpJsonCollector,
     fetch_public_json,
     get_fear_greed_endpoint_url,
     resolve_now_ts,

@@ -117,9 +117,6 @@ def get_session_transition_checkpoints_eet() -> Tuple[Tuple[int, int, str], ...]
     return tuple(parsed)
 
 
-SESSION_TRANSITION_CHECKPOINTS_EET: Tuple[Tuple[int, int, str], ...] = ()
-
-
 def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
     now_ts = normalize_epoch_sec(now_ts, default=now_ts, allow_zero=True) or now_ts
     if ZoneInfo is not None:
@@ -675,11 +672,7 @@ def compute_dynamic_sentiment_interval(
 
     session_ctx = resolve_global_trading_session(ts)
     if not session_ctx.is_weekend:
-        dt_eet = _to_tz(
-            ts,
-            _ssot._cfg_str("sessions", "primary_timezone", "Europe/Bucharest"),
-            _ssot._cfg_int("sessions", "primary_fallback_offset_hours", 2),
-        )
+        dt_eet = _primary_eet_dt(ts)
         minutes_eet = dt_eet.hour * 60 + dt_eet.minute
         if (15 * 60 + 30) <= minutes_eet <= (18 * 60 + 30):
             return peak_overlap_interval, f"critical_us_eu_overlap_window_{session_ctx.session_key}"
@@ -882,7 +875,7 @@ def compute_dynamic_geopolitical_interval(
                 if (
                     (t_h := str(obj_attr(h, "title", None) or "").strip())
                     and t_h.lower() not in prev_lower
-                    and not any(_ssot.headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
+                    and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
                 )
             )
         if threat_level in ("NORMAL", "ELEVATED"):
@@ -951,7 +944,6 @@ import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
 from intelligence.macro.lexicon_ssot import (  # noqa: E402
     _PARTISAN_ELECTION_CONTEXT_WORDS,
     get_active_acute_shock_phrases,
+    headlines_are_semantic_duplicates,
 )
 
-SESSION_TRANSITION_CHECKPOINTS_EET = get_session_transition_checkpoints_eet()
-_ssot.SESSION_TRANSITION_CHECKPOINTS_EET = SESSION_TRANSITION_CHECKPOINTS_EET

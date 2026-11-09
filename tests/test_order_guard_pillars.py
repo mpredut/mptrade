@@ -1463,7 +1463,7 @@ def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, 
 def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeypatch):
     import market_monitor.pricefetcher as pf_mod
     from intelligence.macro.news_feed_collector import NewsFeedCollector
-    import intelligence.macro_sentiment_ssot as ssot
+    import intelligence.macro.lexicon_ssot as ssot
 
     # 1. Explicit api_key=None or api_key="" does not fall back to os.environ["CMC_API_KEY"]
     monkeypatch.setenv("CMC_API_KEY", "env-cmc-secret-key")
