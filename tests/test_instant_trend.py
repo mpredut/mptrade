@@ -830,9 +830,10 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             "assert cp.HyperliquidPriceStream is cm.HyperliquidPriceStream; "
             "assert cp.KrakenPriceStream is cm.KrakenPriceStream; "
             "assert cm.CacheFactory._CONFIG['LongTrend']['class'] is ct.CacheLongTrendManager; "
-            "assert callable(cm.get_24_price_manager); "
-            "assert callable(cm.get_365_price_manager); "
-            "assert callable(cm.get_sparse_price_manager); "
+            "assert cm.CacheFactory._CONFIG['24Price']['class'] is cp.Cache24PriceManager; "
+            "assert cm.CacheFactory._CONFIG['365Price']['class'] is cp.Cache365PriceManager; "
+            "assert cm.CacheFactory._CONFIG['SparsePrice']['class'] is cp.CacheSparsePriceManager; "
+            "assert callable(cm.get_cache_manager); "
             "assert not hasattr(cm, 'get_24_price_managers'); "
             "assert not hasattr(ct, 'HyperliquidPriceStream')"
         )
