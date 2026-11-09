@@ -5241,10 +5241,11 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     assert ws_h.__name__ == "binance_api.bapi_ws_bridge"
     assert sys.modules.get("binance_api.bapi_ws_health") is ws_h
 
-    # Monkeypatching instrument_registry.Instrument is respected by _import_instrument_cls / _bind
+    # Monkeypatching instrument.Instrument is respected by _resolve_instrument_cls / bind_instruments
+    import instrument as inst_mod
     sentinel_cls = lambda **kw: SimpleNamespace(**kw)
-    monkeypatch.setattr(ir_reloaded, "Instrument", sentinel_cls, raising=False)
-    assert ir_reloaded._import_instrument_cls() is sentinel_cls
+    monkeypatch.setattr(inst_mod, "Instrument", sentinel_cls, raising=False)
+    assert inst_mod._resolve_instrument_cls() is sentinel_cls
 
     # 2. inspect_prod_fleet translates local workspace cachedb paths to /home/predut/mptrade on SSH fallback
     #    and tolerates non-dict / None fields without AttributeError
