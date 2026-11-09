@@ -29,11 +29,12 @@ Cache365PriceManager: Any = None
 CacheCurrentPriceManager: Any = None
 CachePriceManagerBase: Any = None
 CacheSparsePriceManager: Any = None
+CacheShortTrendManager: Any = None
 
 
 def _ensure_cacheprice_classes_bound() -> None:
-    global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
-    if Cache24PriceManager is not None:
+    global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager, CacheShortTrendManager
+    if Cache24PriceManager is not None and CacheShortTrendManager is not None:
         return
     from cacheprice import (
         Cache24PriceManager as _C24,
@@ -42,12 +43,14 @@ def _ensure_cacheprice_classes_bound() -> None:
         CachePriceManagerBase as _CPBase,
         CacheSparsePriceManager as _CSparse,
     )
+    from cachetrend import CacheShortTrendManager as _CST
 
     Cache24PriceManager = _C24
     Cache365PriceManager = _C365
     CacheCurrentPriceManager = _CCP
     CachePriceManagerBase = _CPBase
     CacheSparsePriceManager = _CSparse
+    CacheShortTrendManager = _CST
     if "CompositeSymbolPriceSeriesLoader" in globals():
         CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
         CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
@@ -364,8 +367,10 @@ def _load_raw_24h_series_from_disk(
     cands: list[str],
     is_eq_sym_load: bool,
     _rj: Any,
+    session_policy: Optional[AssetSessionPolicy] = None,
 ) -> Tuple[list, float]:
     _ensure_cacheprice_classes_bound()
+    policy = session_policy or resolve_asset_session_policy(symbol)
     series_24h: list = []
     span_24h_ms = 0.0
     for cand in cands:
@@ -383,9 +388,9 @@ def _load_raw_24h_series_from_disk(
                         if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
                         else _extract_cached_items_series(ohlc24_obj, cands)
                     )
-                    raw_ser = merge_equity_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
+                    raw_ser = policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
                     break
-            ser = strip_off_rth_flat_poller_tail(raw_ser, symbol)
+            ser = policy.clean_raw_24h_series(raw_ser, symbol)
             if len(ser) >= 2:
                 series_24h = list(ser) if not series_24h else prepend_older_non_diverged_points(series_24h, ser)
                 p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
@@ -407,6 +412,7 @@ def _read_archive_series_file(
 ) -> list:
     if not os.path.exists(arch_path):
         return []
+    _ensure_cacheprice_classes_bound()
     try:
         if arch_path.endswith(".json"):
             aser = sort_ts_rows(_extract_cached_items_series(_rj(arch_path), cands))
@@ -420,17 +426,11 @@ def _read_archive_series_file(
                     return [list(r) for r in hit_arch]
             except OSError:
                 arch_key = None
-        parsed_rows = []
-        for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
-            if isinstance(rec, dict):
-                rec_s = rec.get("s")
-                if isinstance(rec_s, str) and rec_s.strip() and cands_upper and rec_s.strip().upper() not in cands_upper:
-                    continue
-                item = rec.get("i")
-            else:
-                item = rec if isinstance(rec, list) else None
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                parsed_rows.append([item[0], item[1]])
+        parsed_rows = [
+            pt
+            for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b)
+            if (pt := CachePriceManagerBase.extract_jsonl_series_point(rec, cands_upper)) is not None
+        ]
         parsed_rows = sort_ts_rows(parsed_rows)
         res_arch = parsed_rows if len(parsed_rows) >= 2 else []
         if arch_key is not None and res_arch:
@@ -588,12 +588,16 @@ def load_symbol_price_series(
     )
 
 
-_BTC_24H_CACHE_FILENAMES: Tuple[str, ...] = (
-    "price_24h_BTCUSDC.json",
-    "price_24h_BTCUSDT.json",
-    "cache_24_price_BTCUSDC.json",
-    "cache_24_price_BTCUSDT.json",
-)
+def _btc_24h_cache_filenames() -> Tuple[str, ...]:
+    _ensure_cacheprice_classes_bound()
+    return tuple(
+        dict.fromkeys(
+            fn
+            for s in ("BTCUSDC", "BTCUSDT")
+            for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s),)
+            for fn in (*legacy_filenames_for(base_fn), base_fn)
+        )
+    )
 
 
 def resolve_cached_btc_24h_change_pct(
@@ -604,7 +608,7 @@ def resolve_cached_btc_24h_change_pct(
     """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series if available."""
     if not cache_dir or not any(
         os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
-        for fn in _BTC_24H_CACHE_FILENAMES
+        for fn in _btc_24h_cache_filenames()
     ):
         return None
     btc_pts, _ = load_symbol_price_series(
@@ -1115,10 +1119,13 @@ def _persist_refreshed_equity_chart_cache(
     if not (cache_dir and os.path.isdir(cache_dir) and is_live_network_backfill_enabled()):
         return
     try:
-        from state_io import atomic_write_jsonl, read_json_dict, save_json_state, write_meta_json
+        from state_io import read_json_dict, save_json_state
 
+        _ensure_cacheprice_classes_bound()
         eff_p24_pts = pts_24h_to_save or pts_24h_bars
-        p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+        p24_target = p24_eq_path or str(
+            resolve_cachedb_filepath(os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(sym)))
+        )
         disk_p24_obj = read_json_dict(p24_target) if (p24_target and os.path.exists(p24_target)) else {}
         disk_p24_rows = _extract_cached_items_series(disk_p24_obj, (sym,)) if isinstance(disk_p24_obj, dict) else []
         check_rows = disk_p24_rows or raw_matched_series_24h
@@ -1136,66 +1143,20 @@ def _persist_refreshed_equity_chart_cache(
             )
             or (not rth_bar_fresh and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows))
         ):
-            last_pt_ts = (
-                safe_pos_int(eff_p24_pts[-1][0], default=int(now_ts * 1000)) or int(now_ts * 1000)
-                if isinstance(eff_p24_pts[-1], (list, tuple)) and eff_p24_pts[-1]
-                else int(now_ts * 1000)
-            )
-            prev_meta = read_json_dict(f"{p24_target}.meta") if os.path.exists(f"{p24_target}.meta") else {}
-            prev_ft = (
-                prev_meta.get("fetchtime")
-                if isinstance(prev_meta.get("fetchtime"), dict)
-                else (
-                    disk_p24_obj.get("fetchtime")
-                    if isinstance(disk_p24_obj, dict) and isinstance(disk_p24_obj.get("fetchtime"), dict)
-                    else {}
-                )
-            )
-            prev_rc = (
-                prev_meta.get("rest_sync_cursor")
-                if isinstance(prev_meta.get("rest_sync_cursor"), dict)
-                else (
-                    disk_p24_obj.get("rest_sync_cursor")
-                    if isinstance(disk_p24_obj, dict) and isinstance(disk_p24_obj.get("rest_sync_cursor"), dict)
-                    else {}
-                )
-            )
-            prev_cnts = prev_meta.get("counts") if isinstance(prev_meta.get("counts"), dict) else {}
-            eff_ft_ts = max(
-                (safe_pos_int(prev_ft.get(sym), default=0) or 0) + 1,
-                (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
-                int(now_ts * 1000),
-                last_pt_ts,
-            )
-            ft_map = {**prev_ft, sym: eff_ft_ts}
-            rc_map = {**prev_rc, sym: safe_pos_int(prev_rc.get(sym), default=eff_ft_ts) or eff_ft_ts}
-            save_json_state(
+            Cache24PriceManager.persist_external_ohlc_series(
                 p24_target,
-                {"items": {sym: eff_p24_pts}, "fetchtime": ft_map, "rest_sync_cursor": rc_map},
-            )
-            write_meta_json(
-                p24_target,
-                {
-                    "fetchtime": ft_map,
-                    "rest_sync_cursor": rc_map,
-                    "counts": {**prev_cnts, sym: len(eff_p24_pts)},
-                    "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
-                    "saved_at": int(_time.time() * 1000),
-                },
+                sym,
+                eff_p24_pts,
+                now_ts,
+                existing_obj=disk_p24_obj if isinstance(disk_p24_obj, dict) else None,
             )
         if pts_24h_to_save or pts_24h_bars:
             ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
             save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
-        p365_jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.jsonl")))
-        if not os.path.exists(p365_jsonl_path) and pts_5d:
-            atomic_write_jsonl(
-                p365_jsonl_path,
-                [
-                    {"s": sym, "i": [int(_pt[0]), _pt[1]]}
-                    for _pt in pts_5d
-                    if isinstance(_pt, (list, tuple)) and len(_pt) >= 2
-                ],
-            )
+        p365_jsonl_path = str(
+            resolve_cachedb_filepath(os.path.join(cache_dir, Cache365PriceManager.disk_filename_for_symbol(sym)))
+        )
+        Cache365PriceManager.seed_initial_archive_if_missing(p365_jsonl_path, sym, pts_5d)
     except Exception:
         pass
 
@@ -1312,8 +1273,9 @@ def _enrich_symbol_with_yahoo_5d_chart(
     now_ts: float,
 ) -> Tuple[list, Dict[str, Any], List[float], float, Optional[float], bool]:
     is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
+    _ensure_cacheprice_classes_bound()
     p24_eq_path = (
-        str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+        str(resolve_cachedb_filepath(os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(sym))))
         if cache_dir and is_eq_sym
         else ""
     )
@@ -1350,14 +1312,16 @@ def _enrich_symbol_with_yahoo_5d_chart(
 
     try:
         pts_5d, pts_24h_bars, pts_24h, rth_bar_fresh, chart_tick_fresh, chart_px, raw_last_5d_ts = (
-            fetch_and_normalize_equity_yahoo_chart(
+            TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
+                cache_dir,
                 sym,
-                workspace_dir,
-                raw_matched_series_24h,
-                now_ts,
+                workspace_dir=workspace_dir,
+                raw_series_24h=raw_matched_series_24h,
+                now_ts=now_ts,
                 eq_rth_open=eq_rth_open,
                 memo_chart=memo_chart,
                 memo_chart_fresh=memo_chart_fresh,
+                persist=False,
             )
         )
         if not pts_5d:
@@ -1598,12 +1562,12 @@ def _enrich_single_symbol_24h_and_microstructure(
     s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
     span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
     m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
-    matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced = evaluate_post_rth_24h_override(
+    session_policy = resolve_asset_session_policy(sym)
+    matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced = session_policy.evaluate_post_rth_override(
         matched_series_24h,
         m24,
         sym_px_cur,
         now_ts,
-        is_eq_sym=is_eq_sym,
         entry=prices_and_trends[sym],
     )
     arch_span_7d_ms = _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
@@ -1692,12 +1656,11 @@ def _enrich_single_symbol_24h_and_microstructure(
             for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                 m24.pop(k_stale_15m, None)
         _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
-        prune_stale_equity_short_metrics(
+        session_policy.prune_stale_short_metrics(
             prices_and_trends[sym],
             m24,
             matched_series_24h,
             now_ts,
-            is_eq_sym=is_eq_sym,
             post_rth_series_replaced=post_rth_series_replaced,
         )
         if post_rth_px_override is not None:
@@ -1758,7 +1721,8 @@ def _enrich_discovered_reference_microstructure_symbols(
             if msym.upper().endswith("USD") and not msym.upper().endswith(("FDUSD", "TUSD", "BUSD")) and ob_mid_sib is not None:
                 sib_live_px = extract_current_price_item(casefold_get(cur_p_items, msym))
                 if (not sib_live_px or sib_live_px <= 0.0) and cache_dir:
-                    if isinstance(l24_s := _rj(os.path.join(cache_dir, "24trend", f"live_{msym.upper()}.json")), dict):
+                    _ensure_cacheprice_classes_bound()
+                    if isinstance(l24_s := _rj(os.path.join(cache_dir, CacheShortTrendManager.live_window_relpath_for_symbol(msym.upper()))), dict):
                         w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
                         sib_live_px = safe_pos_float(
                             ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
@@ -1902,39 +1866,43 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
         cachedb_dir: str,
         symbol: str,
         *,
+        workspace_dir: str = "",
         raw_series_24h: Optional[list] = None,
         now_ts: Optional[float] = None,
         eq_rth_open: bool = False,
+        memo_chart: Optional[Tuple[float, Any]] = None,
+        memo_chart_fresh: bool = False,
         persist: bool = False,
-        raw_vals_7d: Optional[list] = None,
-        sym_px_cur: float = 0.0,
-        entry: Optional[Dict[str, Any]] = None,
-        cur_p_items: Optional[Dict[str, Any]] = None,
-        read_json_fn: Any = None,
+        p24_eq_path: str = "",
         **kwargs: Any,
-    ) -> Tuple[List[Any], List[Any], List[Any], bool, bool, Optional[float], float]:
+    ) -> Tuple[List[List[Any]], List[List[Any]], List[List[Any]], bool, bool, float, int]:
         eff_now = resolve_now_ts(now_ts)
+        ws_dir = workspace_dir
+        if not ws_dir and cachedb_dir:
+            ws_dir = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
+            if not os.path.exists(os.path.join(ws_dir, "212trading", "market_data.py")):
+                ws_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        raw_s24 = list(raw_series_24h or [])
         res = fetch_and_normalize_equity_yahoo_chart(
-            symbol, list(raw_series_24h or []), eff_now, eq_rth_open=eq_rth_open
+            symbol,
+            ws_dir,
+            raw_s24,
+            eff_now,
+            eq_rth_open=eq_rth_open,
+            memo_chart=memo_chart,
+            memo_chart_fresh=memo_chart_fresh,
         )
         if persist and (res[0] or res[2]):
-            _rj = read_json_fn or _resolve_read_json_cached()
             _persist_refreshed_equity_chart_cache(
                 cachedb_dir,
                 symbol,
-                res[0],
-                res[1],
-                res[2],
-                list(raw_series_24h or []),
-                list(raw_vals_7d or []),
+                p24_eq_path,
+                list(res[2]),
+                list(res[1]),
+                list(res[0]),
+                raw_s24,
                 res[3],
-                res[4],
-                res[5],
-                sym_px_cur,
-                entry if isinstance(entry, dict) else {},
-                cur_p_items if isinstance(cur_p_items, dict) else {},
                 eff_now,
-                _rj,
             )
         return res
 
@@ -1954,6 +1922,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     current_price_cls: Any = None
 
     def __init__(self) -> None:
+        super().__init__()
         _ensure_cacheprice_classes_bound()
 
     def collect(
@@ -1989,7 +1958,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 memo_key = None
 
         series_24h, span_24h_ms = _load_raw_24h_series_from_disk(
-            cachedb_dir, symbol, cands, is_eq_sym_load, _rj
+            cachedb_dir, symbol, cands, is_eq_sym_load, _rj, session_policy=session_policy
         )
         need_24h_supplement = span_24h_ms < 3600000.0 * 18
         archive_pts, sparse_7d_pts, watcher_7d_pts, watcher_cutoff_24h = _load_raw_archive_and_watcher_series(

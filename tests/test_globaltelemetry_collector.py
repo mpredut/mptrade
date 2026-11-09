@@ -342,6 +342,21 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"
     assert CacheCurrentPriceManager.disk_filename_for_symbol() == "cache_current_price.json"
+    from cacheaccount import CacheAssetValueManager, CacheOrderManager, CacheTradeManager
+    from cacheprice import CachePriceManagerBase
+    from cachetrend import CacheLongTrendManager, CacheShortTrendManager
+
+    assert CacheShortTrendManager.disk_filename_for_symbol() == "cache_short_trend.json"
+    assert CacheShortTrendManager.live_window_relpath_for_symbol("BTCUSDC").replace("\\", "/") == "24trend/live_BTCUSDC.json"
+    assert CacheLongTrendManager.disk_filename_for_symbol() == "cache_long_trend.json"
+    assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade.jsonl"
+    assert CacheOrderManager.disk_filename_for_symbol() == "cache_order.json"
+    assert CacheAssetValueManager.disk_filename_for_symbol() == "cache_asset_value.jsonl"
+    assert CachePriceManagerBase.extract_jsonl_series_point({"s": "BTCUSDC", "i": [1700000000000, 95000.5]}, {"BTCUSDC"}) == [
+        1700000000000,
+        95000.5,
+    ]
+    assert CachePriceManagerBase.extract_jsonl_series_point({"s": "ETHUSDC", "i": [1700000000000, 3000.0]}, {"BTCUSDC"}) is None
     assert isinstance(TelemetryCollectorFactory.get_microstructure_collector(), SymbolMicrostructureSnapshotCollector)
     assert isinstance(TelemetryCollectorFactory.get_fleet_enricher(), Fleet24hAndMicrostructureEnricher)
     assert isinstance(TelemetryCollectorFactory.get_yahoo_chart_collector(), EquityYahoo5dChartCollector)

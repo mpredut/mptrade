@@ -32,10 +32,11 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    TelemetryCacheCollectorInterface,
+     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
     _EQ_YAHOO_CHART_MEMO,
     _LAST_7D_SPAN_MS_BY_SYM,
+    _ensure_cacheprice_classes_bound,
     _load_stitched_7d_ohlc_closes,
     _refresh_stale_t212_cached_positions,
     _resolve_fallback_ohlc_fn,
@@ -45,6 +46,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     resolve_cached_btc_24h_change_pct,
     upgrade_tpo_vp_from_ohlc,
 )
+import intelligence.sentiment.collectors.microstructure_collector as _mc_mod
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
@@ -468,19 +470,15 @@ def _load_and_normalize_pretrade_24h_series(
         )
     ):
         try:
-            if memo_chart_fresh_eq and memo_chart_eq is not None:
-                chart_res = memo_chart_eq[1]
-            else:
-                ws_root = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
-                if not os.path.exists(os.path.join(ws_root, "212trading", "market_data.py")):
-                    ws_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                _chart_fn = load_local_module(os.path.join(ws_root, "212trading"), "market_data")._chart
-                chart_res = _chart_fn(sym_u_eq.split("_", 1)[0], rng="5d", interval="5m")
-                _EQ_YAHOO_CHART_MEMO[sym_u_eq] = (now_s_eq_chk, chart_res)
-            now_s_c = _time.time()
-            eq_rth_open_c = bool(is_symbol_market_open(symbol, now_s_c))
-            pts_5d_eq, _, pts_24_eq, _, _, _, _ = normalize_yahoo_5d_chart_bars(
-                chart_res, list(alt_series_24h), now_s_c, eq_rth_open=eq_rth_open_c
+            pts_5d_eq, _, pts_24_eq, _, _, _, _ = TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
+                cachedb_dir,
+                sym_u_eq,
+                raw_series_24h=list(alt_series_24h),
+                now_ts=now_s_eq_chk,
+                eq_rth_open=eq_rth_open_chk,
+                memo_chart=memo_chart_eq,
+                memo_chart_fresh=memo_chart_fresh_eq,
+                persist=False,
             )
             if pts_5d_eq:
                 alt_series_24h = list(pts_24_eq)
@@ -968,7 +966,8 @@ def _load_and_evaluate_pretrade_short_slopes(
     st_items_map: Dict[str, Any] = {}
     k_items_map: Dict[str, Any] = {}
     try:
-        if isinstance(st_data := _rj(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
+        _ensure_cacheprice_classes_bound()
+        if isinstance(st_data := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.DEFAULT_FILENAME)), dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
             if isinstance(st_items, dict):
                 st_items_map = st_items
@@ -982,7 +981,7 @@ def _load_and_evaluate_pretrade_short_slopes(
                         )
                         break
         for cand in sym_variants:
-            if isinstance(l24 := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand}.json")), dict) and (
+            if isinstance(l24 := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand))), dict) and (
                 l24.get("windows") or any(wk in l24 for wk in ("90", "222", "900", "9000"))
             ):
                 had_t_px = t_entry.get("price") is not None
@@ -993,7 +992,7 @@ def _load_and_evaluate_pretrade_short_slopes(
                     for cand_sib in sym_variants:
                         if cand_sib == cand:
                             continue
-                        if isinstance(l24_sib := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_sib}.json")), dict) and (
+                        if isinstance(l24_sib := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_sib))), dict) and (
                             l24_sib.get("windows") or any(wk in l24_sib for wk in ("90", "222", "900", "9000"))
                         ):
                             sib_t: Dict[str, Any] = {}
@@ -1272,7 +1271,8 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
                 sib_last_pt = _parse_ts_px_row(sib_s24[-1]) if sib_s24 else None
                 sib_live_px = extract_current_price_item(casefold_get(cur_p_items, cand_u))
                 if not sib_live_px or sib_live_px <= 0.0:
-                    if isinstance(l24_s := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_u}.json")), dict):
+                    _ensure_cacheprice_classes_bound()
+                    if isinstance(l24_s := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict):
                         w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
                         sib_live_px = safe_pos_float(
                             ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
@@ -1305,7 +1305,8 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
                 sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
                 if isinstance(sib_tinfo := casefold_get(st_items_map, cand_u), dict):
                     apply_short_trend_item(sib_p_est, sib_tinfo)
-                if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_u}.json")), dict) and (
+                _ensure_cacheprice_classes_bound()
+                if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, _mc_mod.CacheShortTrendManager.live_window_relpath_for_symbol(cand_u))), dict) and (
                     l24_sib_d.get("windows") or any(wk in l24_sib_d for wk in ("90", "222", "900", "9000"))
                 ):
                     apply_live_24trend_windows(sib_p_est, l24_sib_d)
@@ -1622,7 +1623,8 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
     cls_name = "PretradePriceSeries24hStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        cur_p_data = ctx.rj(os.path.join(ctx.cachedb_dir, "cache_current_price.json"))
+        _ensure_cacheprice_classes_bound()
+        cur_p_data = ctx.rj(os.path.join(ctx.cachedb_dir, _mc_mod.CacheCurrentPriceManager.DEFAULT_FILENAME))
         ctx.cur_p_items = (
             cur_p_data.get("items", {})
             if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict)

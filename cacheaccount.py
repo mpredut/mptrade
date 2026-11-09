@@ -296,6 +296,7 @@ class CacheTradeManager(CacheAccountManagerBase):
     """Account trade fill cache (Level 3) backed by versioned append-only JSONL and schema-v2 manifests."""
 
     _is_trade_account_cache = True
+    DEFAULT_FILENAME = "cache_trade.jsonl"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -994,6 +995,7 @@ class CacheOrderManager(CacheAccountManagerBase):
     """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
 
     _is_order_account_cache = True
+    DEFAULT_FILENAME = "cache_order.json"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -1408,6 +1410,8 @@ class CacheOrderManager(CacheAccountManagerBase):
 
 class CacheAssetValueManager(CacheAccountManagerBase):
     """Account/portfolio total asset value history cache (Level 3) backed by append-only JSONL."""
+
+    DEFAULT_FILENAME = "cache_asset_value.jsonl"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:

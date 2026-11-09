@@ -80,10 +80,12 @@ from providers.base import (
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer as atomic_write,
+    atomic_write_jsonl,
     discard_generation_file,
     read_json_dict,
     read_tail_lines,
     save_json_state,
+    write_meta_json,
 )
 import utils as u
 
@@ -94,23 +96,33 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
-    FILE_PREFIX: Optional[str] = None
-    FILE_EXT: Optional[str] = None
-    DEFAULT_FILENAME: Optional[str] = None
 
     def __init__(self, *args, **kwargs):
         if type(self) is CachePriceManagerBase:
             raise TypeError("Cannot instantiate abstract class CachePriceManagerBase")
         super().__init__(*args, **kwargs)
 
-    @classmethod
-    def disk_filename_for_symbol(cls, symbol: str = "") -> str:
-        """Return the canonical cache filename for ``symbol`` owned by this concrete price cache class."""
-        if cls.DEFAULT_FILENAME:
-            return cls.DEFAULT_FILENAME
-        if cls.FILE_PREFIX and cls.FILE_EXT:
-            return f"{cls.FILE_PREFIX}{symbol}.{cls.FILE_EXT}"
-        return ""
+    @staticmethod
+    def extract_jsonl_series_point(
+        rec: object,
+        allowed_symbols_upper: Optional[set[str]] = None,
+    ) -> Optional[list]:
+        """Parse one ``{"s": symbol, "i": [ts_ms, price, ...]}`` or ``[ts_ms, price]`` JSONL price archive record."""
+        if isinstance(rec, dict):
+            rec_s = rec.get("s")
+            if (
+                isinstance(rec_s, str)
+                and rec_s.strip()
+                and allowed_symbols_upper
+                and rec_s.strip().upper() not in allowed_symbols_upper
+            ):
+                return None
+            item = rec.get("i")
+        else:
+            item = rec if isinstance(rec, list) else None
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            return [item[0], item[1]]
+        return None
 
     def rebuild_fetchtimes(self):
         if not self.cache:
@@ -340,6 +352,69 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _should_poll(self):
         return False
 
+    @classmethod
+    def persist_external_ohlc_series(
+        cls,
+        target_path: str,
+        symbol: str,
+        points: list,
+        now_ts: float,
+        *,
+        existing_obj: Optional[dict] = None,
+    ) -> None:
+        """Persist externally refreshed 24h OHLCV series into ``cache_24_price_<SYM>.json`` and advance ``.meta`` ``max_ts``."""
+        if not target_path or not points:
+            return
+        disk_obj = existing_obj if isinstance(existing_obj, dict) else (read_json_dict(target_path) if os.path.exists(target_path) else {})
+        last_pt_ts = (
+            safe_pos_int(points[-1][0], default=int(now_ts * 1000)) or int(now_ts * 1000)
+            if isinstance(points[-1], (list, tuple)) and points[-1]
+            else int(now_ts * 1000)
+        )
+        meta_path = f"{target_path}.meta"
+        prev_meta = read_json_dict(meta_path) if os.path.exists(meta_path) else {}
+        prev_ft = (
+            prev_meta.get("fetchtime")
+            if isinstance(prev_meta.get("fetchtime"), dict)
+            else (
+                disk_obj.get("fetchtime")
+                if isinstance(disk_obj, dict) and isinstance(disk_obj.get("fetchtime"), dict)
+                else {}
+            )
+        )
+        prev_rc = (
+            prev_meta.get("rest_sync_cursor")
+            if isinstance(prev_meta.get("rest_sync_cursor"), dict)
+            else (
+                disk_obj.get("rest_sync_cursor")
+                if isinstance(disk_obj, dict) and isinstance(disk_obj.get("rest_sync_cursor"), dict)
+                else {}
+            )
+        )
+        prev_cnts = prev_meta.get("counts") if isinstance(prev_meta.get("counts"), dict) else {}
+        eff_ft_ts = max(
+            (safe_pos_int(prev_ft.get(symbol), default=0) or 0) + 1,
+            (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
+            int(now_ts * 1000),
+            last_pt_ts,
+        )
+        ft_map = {**prev_ft, symbol: eff_ft_ts}
+        rc_map = {**prev_rc, symbol: safe_pos_int(prev_rc.get(symbol), default=eff_ft_ts) or eff_ft_ts}
+        save_json_state(
+            target_path,
+            {"items": {symbol: points}, "fetchtime": ft_map, "rest_sync_cursor": rc_map},
+        )
+        write_meta_json(
+            target_path,
+            {
+                "fetchtime": ft_map,
+                "rest_sync_cursor": rc_map,
+                "counts": {**prev_cnts, symbol: len(points)},
+                "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
+                "saved_at": int(_now_time() * 1000),
+            },
+        )
+
 
 class Cache365PriceManager(Cache24PriceManager):
     """Multi-month/multi-year dense archive variant (Level 3) using incremental JSONL persistence."""
@@ -349,6 +424,21 @@ class Cache365PriceManager(Cache24PriceManager):
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
     FILE_PREFIX = "cache_365_price_"
     FILE_EXT = "jsonl"
+
+    @classmethod
+    def seed_initial_archive_if_missing(cls, target_path: str, symbol: str, points: list) -> bool:
+        """Bootstrap ``cache_365_price_<SYM>.jsonl`` once when missing on disk without overwriting an existing archive."""
+        if not target_path or os.path.exists(target_path) or not points:
+            return False
+        rows = [
+            {"s": symbol, "i": [int(pt[0]), pt[1]]}
+            for pt in points
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2
+        ]
+        if not rows:
+            return False
+        atomic_write_jsonl(target_path, rows)
+        return True
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
