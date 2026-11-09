@@ -21,6 +21,7 @@ from cachepaths import (
     telemetry_cache_file_path,
 )
 from intelligence.external.collectors.base_collector import (
+    TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
@@ -92,6 +93,8 @@ class WhalePositioningSnapshot:
 class WhalePositioningCollector(_DiskBackedSymbolCollector):
     """Collects and caches Binance Futures top trader and open interest metrics."""
 
+    cls_name = "WhalePositioningCollector"
+    COLLECTOR_ID = "external_whale_positioning"
     _DISK_FILE_PREFIX = "whale_snapshot"
     _SNAPSHOT_CLS = WhalePositioningSnapshot
 
@@ -563,3 +566,6 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""
         self._record_item(snapshot, save_to_disk=save_to_disk)
+
+
+TelemetryCollectorFactory.register(WhalePositioningCollector.COLLECTOR_ID, WhalePositioningCollector)

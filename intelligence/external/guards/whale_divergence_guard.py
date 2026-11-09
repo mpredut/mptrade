@@ -11,6 +11,8 @@ from typing import Optional
 from botcore import _parse_bool_flag, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
     fetch_guard_snapshot,
 )
 from intelligence.external.collectors.whale_positioning_collector import (
@@ -21,8 +23,11 @@ from intelligence.macro_sentiment_ssot import clean_scale
 from providers.base import normalize_side
 
 
-class WhaleDivergenceGuard:
+class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
     """Blocks or defers orders when whale positioning or OI flow contradicts the move."""
+
+    cls_name = "WhaleDivergenceGuard"
+    GUARD_ID = "external_whale_divergence"
 
     def __init__(
         self,
@@ -35,6 +40,7 @@ class WhaleDivergenceGuard:
         taker_downscale_threshold: float = 0.90,
         taker_downscaled_scale: float = 0.50,
     ) -> None:
+        super().__init__()
         self.collector = collector
         self.block_short_covering_fakeout = _parse_bool_flag(block_short_covering_fakeout, True)
         self.block_aggressive_shorting = _parse_bool_flag(block_aggressive_shorting, True)
@@ -196,3 +202,6 @@ class WhaleDivergenceGuard:
             divergence_regime=regime,
             top_long_pct=top_long_pct,
         )
+
+
+OrderGuardEvaluatorFactory.register(WhaleDivergenceGuard.GUARD_ID, WhaleDivergenceGuard)

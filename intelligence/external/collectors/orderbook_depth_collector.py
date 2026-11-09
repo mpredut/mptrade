@@ -29,6 +29,7 @@ from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 from intelligence.external.collectors.base_collector import (
+    TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
@@ -100,6 +101,8 @@ class OrderbookSnapshot:
 class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     """Collects and analyzes Binance/Kraken Spot order book depth."""
 
+    cls_name = "OrderbookDepthCollector"
+    COLLECTOR_ID = "external_orderbook_depth"
     _DISK_FILE_PREFIX = "orderbook_depth"
     _SNAPSHOT_CLS = OrderbookSnapshot
     _QUOTE_ISOLATED = True
@@ -438,3 +441,6 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     def record_snapshot(self, snapshot: OrderbookSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for tests and synthetic feeds)."""
         self._record_item(snapshot, save_to_disk=save_to_disk)
+
+
+TelemetryCollectorFactory.register(OrderbookDepthCollector.COLLECTOR_ID, OrderbookDepthCollector)

@@ -11,6 +11,8 @@ from typing import Optional
 from botcore import obj_attr, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
     fetch_guard_snapshot,
 )
 from intelligence.external.collectors.orderbook_depth_collector import (
@@ -21,8 +23,11 @@ from intelligence.macro_sentiment_ssot import clean_scale
 from providers.base import normalize_side
 
 
-class OrderbookWallGuard:
+class OrderbookWallGuard(OrderGuardEvaluatorBase):
     """Defers or downscales orders when order book depth or whale walls oppose the trade."""
+
+    cls_name = "OrderbookWallGuard"
+    GUARD_ID = "external_orderbook_wall"
 
     def __init__(
         self,
@@ -31,6 +36,7 @@ class OrderbookWallGuard:
         max_sell_imbalance: float = 0.75,    # Above 0.75 (bids 3:1 over asks) is unfavorable for SELL
         whale_wall_usd_limit: float = 1_000_000.0,
     ) -> None:
+        super().__init__()
         self.collector = collector
         self.min_buy_imbalance = clean_scale(
             min_buy_imbalance,
@@ -131,3 +137,6 @@ class OrderbookWallGuard:
             reason=f"orderbook_liquidity_clear (imbalance={imb:.2f})",
             imbalance=imb,
         )
+
+
+OrderGuardEvaluatorFactory.register(OrderbookWallGuard.GUARD_ID, OrderbookWallGuard)

@@ -12,6 +12,8 @@ from typing import Optional
 from botcore import obj_attr, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
     fetch_guard_snapshot,
 )
 from intelligence.external.collectors.derivatives_telemetry_collector import (
@@ -22,8 +24,11 @@ from intelligence.macro_sentiment_ssot import clean_scale
 from providers.base import normalize_side
 
 
-class FundingCrowdingGuard:
+class FundingCrowdingGuard(OrderGuardEvaluatorBase):
     """Downscales or defers orders when perpetual market positioning is excessively crowded."""
+
+    cls_name = "FundingCrowdingGuard"
+    GUARD_ID = "external_funding_crowding"
 
     def __init__(
         self,
@@ -33,6 +38,7 @@ class FundingCrowdingGuard:
         crowding_policy: str = "downscale",         # "downscale" or "defer"
         crowded_scale: float = 0.50,
     ) -> None:
+        super().__init__()
         self.collector = collector
         self.max_long_funding_rate = safe_pos_float(max_long_funding_rate, default=0.0005) or 0.0005
         min_short = safe_float(min_short_funding_rate, default=-0.0005) or -0.0005
@@ -112,3 +118,6 @@ class FundingCrowdingGuard:
             reason=f"funding_normal ({fr*100:+.3f}%)",
             funding_rate=fr,
         )
+
+
+OrderGuardEvaluatorFactory.register(FundingCrowdingGuard.GUARD_ID, FundingCrowdingGuard)

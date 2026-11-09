@@ -741,6 +741,111 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
 
 
+TRAILING_STATE_FILENAME = "trailing_state.json"
+TRAILING_PEAKS_FILENAME = "trailing_peaks.json"
+
+VENUE_RUNTIME_DIR_MAP: dict[str, str] = {
+    "binance": "cachedb",
+    "kraken": "kraken",
+    "hyperliquid": "hyperliquid",
+    "t212": "212trading",
+}
+
+
+def resolve_venue_runtime_dir(
+    venue: object = "binance",
+    *,
+    workspace_dir: object = None,
+    cache_dir: object = None,
+) -> str:
+    """Resolve the runtime state directory for a canonical venue ('binance', 'kraken', 'hyperliquid', 't212')."""
+    v_norm = normalize_venue_name(venue, default="binance") or "binance"
+    c_dir = _clean_path_str(cache_dir)
+    ws_dir = _clean_path_str(workspace_dir)
+    if v_norm == "binance":
+        if c_dir:
+            return resolve_cache_dir_path(c_dir, fallback_default=True) or get_cachedb_dir()
+        if ws_dir:
+            return os.path.join(ws_dir, "cachedb")
+        return get_cachedb_dir()
+    base_ws = ws_dir or _ROOT
+    rel_dir = VENUE_RUNTIME_DIR_MAP.get(v_norm, v_norm)
+    return os.path.join(base_ws, rel_dir)
+
+
+def resolve_venue_trailing_state_path(
+    venue: object = "binance",
+    *,
+    workspace_dir: object = None,
+    cache_dir: object = None,
+    filename: str = TRAILING_STATE_FILENAME,
+    resolve_subdir: bool = False,
+) -> str:
+    """Resolve the trailing state / peaks JSON path for ``venue``."""
+    v_norm = normalize_venue_name(venue, default="binance") or "binance"
+    fname = _clean_path_str(filename) or TRAILING_STATE_FILENAME
+    rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
+    raw_path = os.path.join(rt_dir, fname)
+    if v_norm == "binance" and resolve_subdir:
+        return str(resolve_cachedb_filepath(raw_path))
+    return raw_path
+
+
+def resolve_venue_cycle_state_path(
+    symbol: object,
+    venue: object = None,
+    *,
+    workspace_dir: object = None,
+    cache_dir: object = None,
+) -> str:
+    """Resolve the per-symbol cycle state file path ``<venue_dir>/.state_<SYM>.json``."""
+    raw_sym = str(symbol or "").strip().upper() if symbol is not None and not isinstance(symbol, bool) else ""
+    if not raw_sym:
+        return ""
+    if venue is None or (isinstance(venue, str) and not venue.strip()):
+        from instrument_registry import venue_for_symbol
+
+        v_norm = venue_for_symbol(raw_sym, default="binance")
+    else:
+        v_norm = normalize_venue_name(venue, default="binance") or "binance"
+    rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
+    safe_tok = raw_sym.replace("/", "").replace("-", "")
+    if v_norm == "t212":
+        base_tok = normalize_cache_base_asset(raw_sym) or safe_tok
+        eq_tok = safe_tok if _is_eq_suffix(safe_tok) else f"{base_tok}_US_EQ"
+        for cand_tok in (safe_tok, base_tok, eq_tok):
+            cand_p = os.path.join(rt_dir, f".state_{cand_tok}.json")
+            if os.path.isfile(cand_p):
+                return cand_p
+        return os.path.join(rt_dir, f".state_{safe_tok}.json")
+    return os.path.join(rt_dir, f".state_{safe_tok}.json")
+
+
+def iter_venue_cycle_state_files(
+    venue: object,
+    *,
+    workspace_dir: object = None,
+    cache_dir: object = None,
+) -> list[str]:
+    """Return sorted ``.state_*.json`` cycle state paths for ``venue``."""
+    import glob as _glob
+
+    v_norm = normalize_venue_name(venue, default="binance") or "binance"
+    rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
+    if not os.path.isdir(rt_dir):
+        return []
+    paths = _glob.glob(os.path.join(rt_dir, ".state_*.json"))
+    if v_norm == "hyperliquid":
+        return sorted(
+            paths,
+            key=lambda p: (
+                0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
+                os.path.basename(p),
+            ),
+        )
+    return sorted(paths)
+
+
 def compatible_quote_suffixes(
     symbol: object,
     quote: object = None,

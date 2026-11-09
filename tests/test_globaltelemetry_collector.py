@@ -1224,6 +1224,164 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     assert CacheTradeManager.venue_for_symbol("XDGUSD") == "kraken"
 
 
+def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_paths(
+    temp_cache_dir: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verify Areas 1, 2, and 3:
+    1. External (_DiskBackedSymbolCollector subclasses) & Macro (NewsFeedCollector) collectors inherit from
+       TelemetryCacheCollectorInterface and register in TelemetryCollectorFactory.
+    2. All 4 pillars of guards inherit from OrderGuardEvaluatorBase and register in OrderGuardEvaluatorFactory.
+    3. Parameterized runtime state path resolution in cachepaths.py for trailing_state.json and .state_<SYM>.json.
+    """
+    from cachepaths import (
+        TRAILING_PEAKS_FILENAME,
+        TRAILING_STATE_FILENAME,
+        iter_venue_cycle_state_files,
+        resolve_venue_cycle_state_path,
+        resolve_venue_runtime_dir,
+        resolve_venue_trailing_state_path,
+    )
+    from external_order_guard import ExternalOrderGuardsEvaluator
+    from intelligence.external.collectors.base_collector import (
+        TelemetryCacheCollectorInterface,
+        TelemetryCollectorFactory,
+        _DiskBackedSymbolCollector,
+    )
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.guard_decision import (
+        OrderGuardEvaluatorBase,
+        OrderGuardEvaluatorFactory,
+        OrderGuardEvaluatorInterface,
+    )
+    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, PreTradeLLMGuardBase
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from llm_order_guard import LLMOrderGuardsEvaluator
+    from qlimit_order_guard import QLimit2OrderGuardEvaluator
+
+    # Area 1: External & Macro Collectors under TelemetryCacheCollectorInterface & TelemetryCollectorFactory
+    assert issubclass(_DiskBackedSymbolCollector, TelemetryCacheCollectorInterface)
+    with pytest.raises(TypeError):
+        _DiskBackedSymbolCollector(5.0, 5.0, temp_cache_dir, 60.0, 60.0)
+
+    for col_id, col_cls in (
+        ("external_orderbook_depth", OrderbookDepthCollector),
+        ("external_derivatives_telemetry", DerivativesTelemetryCollector),
+        ("external_whale_positioning", WhalePositioningCollector),
+        ("macro_news_feed", NewsFeedCollector),
+    ):
+        assert issubclass(col_cls, TelemetryCacheCollectorInterface)
+        consumer = TelemetryCollectorFactory.create(col_id, start_sync=False)
+        producer = TelemetryCollectorFactory.create(col_id, start_sync=True)
+        assert isinstance(consumer, col_cls)
+        assert isinstance(producer, col_cls)
+        assert consumer is not producer
+        assert consumer.is_read_only_consumer() is True
+        assert producer.is_read_only_consumer() is False
+
+    ob_col = OrderbookDepthCollector(cache_dir=temp_cache_dir, start_sync=False)
+    assert ob_col.read_snapshot("UNLISTEDUSDC", now=1_750_000_000.0) is None
+    assert ob_col.read_snapshot(temp_cache_dir, "UNLISTEDUSDC", now=1_750_000_000.0) is None
+    assert ob_col.collect(temp_cache_dir, "UNLISTEDUSDC", allow_network=False, now=1_750_000_000.0) is None
+
+    nf_col = NewsFeedCollector(history_file=os.path.join(temp_cache_dir, "news_feed_collect.json"), start_sync=False)
+    nf_snap = nf_col.collect(temp_cache_dir, "*", allow_network=False, now_ts=1_750_000_000.0)
+    assert nf_snap is not None and nf_snap.total_fetched == 0
+
+    # Area 2: 4 Pillars of Guards under OrderGuardEvaluatorBase & OrderGuardEvaluatorFactory
+    assert issubclass(PreTradeLLMGuardBase, OrderGuardEvaluatorBase)
+    with pytest.raises(TypeError):
+        PreTradeLLMGuardBase()
+
+    expected_guards = (
+        ("internal_noise_floor", NoiseFloorGuard),
+        ("internal_weibull_exhaustion", WeibullExhaustionGuard),
+        ("internal_parabolic_surge", ParabolicSurgeGuard),
+        ("internal_trend_significance", TrendSignificanceGuard),
+        ("qlimit2_order_guards", QLimit2OrderGuardEvaluator),
+        ("external_liquidation_cascade", LiquidationCascadeGuard),
+        ("external_funding_crowding", FundingCrowdingGuard),
+        ("external_orderbook_wall", OrderbookWallGuard),
+        ("external_whale_divergence", WhaleDivergenceGuard),
+        ("external_smart_stop_loss", SmartStopLossGuard),
+        ("external_order_guards", ExternalOrderGuardsEvaluator),
+        ("sentiment_extreme_greed", ExtremeGreedGuard),
+        ("sentiment_panic_washout", PanicWashoutGuard),
+        ("sentiment_high_stake_llm", HighStakeGuard),
+        ("sentiment_post_stop_reentry_llm", PostStopReentryGuard),
+        ("llm_order_guards", LLMOrderGuardsEvaluator),
+        ("macro_geopolitical_shock", GeopoliticalShockGuard),
+    )
+    for guard_id, guard_cls in expected_guards:
+        assert issubclass(guard_cls, OrderGuardEvaluatorBase)
+        assert issubclass(guard_cls, OrderGuardEvaluatorInterface)
+        g_inst = OrderGuardEvaluatorFactory.create(guard_id)
+        assert isinstance(g_inst, guard_cls)
+        assert OrderGuardEvaluatorFactory.get_evaluator(guard_cls) is g_inst
+
+    # Verify polymorphic evaluate() <-> check() delegation
+    nf_guard = OrderGuardEvaluatorFactory.create("internal_noise_floor", min_strength_ratio=2.0)
+    dec_eval = nf_guard.evaluate("BTCUSDC", "BUY", 0.001, 0.002)
+    dec_check = nf_guard.check("BTCUSDC", "BUY", 0.001, 0.002)
+    assert dec_eval.allowed is False and dec_check.allowed is False
+
+    ts_guard = OrderGuardEvaluatorFactory.create("internal_trend_significance")
+    assert ts_guard.check(None, [100.0, 101.0]).allowed is True
+
+    # Area 3: Parameterized Runtime State Path Resolution in cachepaths.py
+    ws_dir = os.path.join(temp_cache_dir, "ws")
+    for v_name, sub_dir in (("kraken", "kraken"), ("hyperliquid", "hyperliquid"), ("t212", "212trading")):
+        os.makedirs(os.path.join(ws_dir, sub_dir), exist_ok=True)
+    assert resolve_venue_runtime_dir("binance", cache_dir=temp_cache_dir) == temp_cache_dir
+    assert resolve_venue_runtime_dir("kraken", workspace_dir=ws_dir) == os.path.join(ws_dir, "kraken")
+    assert resolve_venue_runtime_dir("hyperliquid", workspace_dir=ws_dir) == os.path.join(ws_dir, "hyperliquid")
+    assert resolve_venue_runtime_dir("t212", workspace_dir=ws_dir) == os.path.join(ws_dir, "212trading")
+
+    assert resolve_venue_trailing_state_path("binance", cache_dir=temp_cache_dir) == os.path.join(
+        temp_cache_dir, TRAILING_STATE_FILENAME
+    )
+    assert resolve_venue_trailing_state_path("kraken", workspace_dir=ws_dir) == os.path.join(
+        ws_dir, "kraken", TRAILING_STATE_FILENAME
+    )
+    assert resolve_venue_trailing_state_path(
+        "t212", workspace_dir=ws_dir, filename=TRAILING_PEAKS_FILENAME
+    ) == os.path.join(ws_dir, "212trading", TRAILING_PEAKS_FILENAME)
+
+    krk_st = resolve_venue_cycle_state_path("TAOUSD", workspace_dir=ws_dir)
+    hl_st = resolve_venue_cycle_state_path("HYPE_LONG", venue="hyperliquid", workspace_dir=ws_dir)
+    t212_st = resolve_venue_cycle_state_path("NVDA_US_EQ", workspace_dir=ws_dir)
+    assert krk_st == os.path.join(ws_dir, "kraken", ".state_TAOUSD.json")
+    assert hl_st == os.path.join(ws_dir, "hyperliquid", ".state_HYPE_LONG.json")
+    assert t212_st == os.path.join(ws_dir, "212trading", ".state_NVDA_US_EQ.json")
+
+    for st_p in (
+        krk_st,
+        hl_st,
+        os.path.join(ws_dir, "hyperliquid", ".state_HYPE.json"),
+    ):
+        with open(st_p, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+    assert iter_venue_cycle_state_files("kraken", workspace_dir=ws_dir) == [krk_st]
+    hl_files = iter_venue_cycle_state_files("hyperliquid", workspace_dir=ws_dir)
+    assert hl_files[0] == hl_st
+
+
+
 
 
 

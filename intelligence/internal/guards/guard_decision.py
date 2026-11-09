@@ -1,6 +1,7 @@
 """Guard decision schema defining veto and braking policies."""
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
@@ -145,3 +146,116 @@ class GuardDecision:
             suggested_scale=clamped_scale,
             metadata=meta,
         )
+
+
+class OrderGuardEvaluatorInterface(ABC):
+    """Pure abstract contract (Level 1) for order-guard evaluators across all 4 pillars."""
+
+    cls_name: str = "OrderGuardEvaluatorInterface"
+    GUARD_ID: str = ""
+
+    def __init__(self) -> None:
+        if type(self) is OrderGuardEvaluatorInterface:
+            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorInterface")
+
+    @abstractmethod
+    def evaluate(self, *args: Any, **kwargs: Any) -> Any:
+        """Evaluate an order guard stage or rule."""
+
+
+class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
+    """Abstract domain base class (Level 2) for order-guard evaluators across all 4 pillars."""
+
+    cls_name: str = "OrderGuardEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is OrderGuardEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorBase")
+        if (
+            type(self).evaluate is OrderGuardEvaluatorBase.evaluate
+            and type(self).check is OrderGuardEvaluatorBase.check
+        ):
+            raise TypeError(
+                f"Cannot instantiate abstract class {type(self).__name__} without implementing 'evaluate' or 'check'"
+            )
+        super().__init__()
+
+    def evaluate(self, *args: Any, **kwargs: Any) -> Any:
+        """Polymorphic evaluation entrypoint delegating to ``check(*args, **kwargs)`` when defined on subclass."""
+        if type(self).check is not OrderGuardEvaluatorBase.check:
+            return self.check(*args, **kwargs)
+        raise NotImplementedError(f"{type(self).__name__} must implement evaluate() or check()")
+
+    def check(self, *args: Any, **kwargs: Any) -> Any:
+        """Polymorphic guard check entrypoint delegating to ``evaluate(*args, **kwargs)`` when defined on subclass."""
+        if type(self).evaluate is not OrderGuardEvaluatorBase.evaluate:
+            return self.evaluate(*args, **kwargs)
+        raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
+
+
+class OrderGuardEvaluatorFactory:
+    """Singleton registry and factory for ``OrderGuardEvaluatorInterface`` implementations across all 4 pillars."""
+
+    _instances: Dict[str, OrderGuardEvaluatorInterface] = {}
+    _registry: Dict[str, type[OrderGuardEvaluatorInterface]] = {}
+    _defaults_loaded: bool = False
+
+    @classmethod
+    def register(
+        cls,
+        guard_id: str,
+        evaluator_cls: type[OrderGuardEvaluatorInterface],
+    ) -> None:
+        cls._registry[str(guard_id)] = evaluator_cls
+
+    @classmethod
+    def _ensure_default_evaluators_registered(cls) -> None:
+        if cls._defaults_loaded:
+            return
+        cls._defaults_loaded = True
+        for mod_name in (
+            "intelligence.internal.guards.noise_guard",
+            "intelligence.internal.guards.exhaustion_guard",
+            "intelligence.internal.guards.parabolic_guard",
+            "intelligence.internal.guards.trend_significance_guard",
+            "intelligence.external.guards.cascade_guard",
+            "intelligence.external.guards.funding_crowding_guard",
+            "intelligence.external.guards.orderbook_wall_guard",
+            "intelligence.external.guards.whale_divergence_guard",
+            "intelligence.external.guards.smart_stop_loss_guard",
+            "intelligence.sentiment.guards.extreme_greed_guard",
+            "intelligence.sentiment.guards.panic_washout_guard",
+            "intelligence.sentiment.guards.high_stake_guard",
+            "intelligence.sentiment.guards.post_stop_reentry_guard",
+            "intelligence.macro.geopolitical_guard",
+            "qlimit_order_guard",
+            "external_order_guard",
+            "llm_order_guard",
+            "order_guard",
+        ):
+            try:
+                __import__(mod_name)
+            except Exception:
+                pass
+
+    @classmethod
+    def create(cls, guard_id: str, **kwargs: Any) -> Any:
+        key = str(guard_id)
+        evaluator_cls = cls._registry.get(key)
+        if evaluator_cls is None:
+            cls._ensure_default_evaluators_registered()
+            evaluator_cls = cls._registry.get(key)
+        if evaluator_cls is None:
+            raise KeyError(f"Unknown order guard evaluator id: {key}")
+        if kwargs:
+            return evaluator_cls(**kwargs)
+        return cls.get_evaluator(evaluator_cls)
+
+    @classmethod
+    def get_evaluator(cls, evaluator_cls: type[OrderGuardEvaluatorInterface]) -> Any:
+        key = evaluator_cls.__name__
+        inst = cls._instances.get(key)
+        if inst is None:
+            inst = evaluator_cls()
+            cls._instances[key] = inst
+        return inst

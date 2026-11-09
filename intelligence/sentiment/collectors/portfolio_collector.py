@@ -20,7 +20,9 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    iter_venue_cycle_state_files,
     normalize_venue_name,
+    resolve_venue_trailing_state_path,
     split_symbol_assets,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -362,28 +364,22 @@ def _harvest_venue_cycles_impl(
             target[sym] = parsed
 
     kraken_cycles: Dict[str, Any] = {}
-    if os.path.isdir(kraken_dir := os.path.join(workspace_dir, "kraken")):
-        for st_path in sorted(_glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
-            pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
-                _record_cyc(kraken_cycles, st_path, pair_name, 6)
+    for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=workspace_dir):
+        pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+        if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+            _record_cyc(kraken_cycles, st_path, pair_name, 6)
 
     hyperliquid_cycles: Dict[str, Any] = {}
-    if os.path.isdir(hl_dir := os.path.join(workspace_dir, "hyperliquid")):
-        hl_state_paths = sorted(
-            _glob.glob(os.path.join(hl_dir, ".state_*.json")),
-            key=lambda p: (0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1, os.path.basename(p)),
-        )
-        for st_path in hl_state_paths:
-            raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if raw_tok.startswith("DN_") or raw_tok == "DN":
-                continue
-            for sfx in ("_LONG", "_SHORT"):
-                if raw_tok.endswith(sfx):
-                    raw_tok = raw_tok[: -len(sfx)]
-                    break
-            if raw_tok.isalnum():
-                _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
+    for st_path in iter_venue_cycle_state_files("hyperliquid", workspace_dir=workspace_dir):
+        raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+        if raw_tok.startswith("DN_") or raw_tok == "DN":
+            continue
+        for sfx in ("_LONG", "_SHORT"):
+            if raw_tok.endswith(sfx):
+                raw_tok = raw_tok[: -len(sfx)]
+                break
+        if raw_tok.isalnum():
+            _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
 
     all_t212_cycles: Dict[str, Any] = {}
     for st_path, ticker in _iter_t212_state_files(workspace_dir):
@@ -460,8 +456,8 @@ def _load_venue_trailing_maps_impl(
     trailing_map: Dict[str, Dict[str, Any]] = {}
     trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
     for trail_venue, raw_trail, default_quote in (
-        ("binance", _rj(os.path.join(cache_dir, "trailing_state.json")), ""),
-        ("kraken", _rj(os.path.join(workspace_dir, "kraken", "trailing_state.json")), "USD"),
+        ("binance", _rj(resolve_venue_trailing_state_path("binance", cache_dir=cache_dir)), ""),
+        ("kraken", _rj(resolve_venue_trailing_state_path("kraken", workspace_dir=workspace_dir)), "USD"),
     ):
         if not isinstance(raw_trail, dict):
             continue

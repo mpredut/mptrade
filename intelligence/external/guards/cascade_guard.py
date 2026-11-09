@@ -9,7 +9,11 @@ from __future__ import annotations
 from typing import Optional
 
 from botcore import obj_attr, safe_float, safe_pos_float
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,
@@ -17,8 +21,11 @@ from intelligence.external.collectors.bybit_liquidations_collector import (
 from providers.base import normalize_side
 
 
-class LiquidationCascadeGuard:
+class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
     """Blocks or defers orders during active real-time liquidation storms."""
+
+    cls_name = "LiquidationCascadeGuard"
+    GUARD_ID = "external_liquidation_cascade"
 
     def __init__(
         self,
@@ -31,6 +38,7 @@ class LiquidationCascadeGuard:
             max_active_cascade_usd: Dollar threshold in active_window_sec to qualify as an active cascade.
             active_window_sec: Window for instantaneous cascade velocity (default 60s).
         """
+        super().__init__()
         self.collector = collector
         self.max_active_cascade_usd = safe_pos_float(max_active_cascade_usd, default=500_000.0) or 500_000.0
         self.active_window_sec = safe_pos_float(active_window_sec, default=60.0) or 60.0
@@ -93,3 +101,6 @@ class LiquidationCascadeGuard:
             long_liq_usd=long_liq,
             short_liq_usd=short_liq,
         )
+
+
+OrderGuardEvaluatorFactory.register(LiquidationCascadeGuard.GUARD_ID, LiquidationCascadeGuard)

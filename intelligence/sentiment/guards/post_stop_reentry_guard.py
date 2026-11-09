@@ -20,6 +20,7 @@ from botcore import _parse_bool_flag, format_price_log
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
+    OrderGuardEvaluatorFactory,
     resolve_hierarchical_guard_mode,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -59,6 +60,8 @@ def clear_post_stop_reentry_cache() -> None:
 class PostStopReentryGuard(PreTradeLLMGuardBase):
     """Evaluates re-entry buy orders following a STOP-LOSS exit using Gemini LLM reasoning."""
 
+    cls_name = "PostStopReentryGuard"
+    GUARD_ID = "sentiment_post_stop_reentry_llm"
     GUARD_NAME = "PostStopReentryGuard"
     TOPIC_KEY = "guard_post_stop"
     DEFAULT_TIMEOUT_SEC = DEFAULT_TIMEOUT_SEC
@@ -257,3 +260,6 @@ def get_post_stop_reentry_guard(
         for k, v in cfg.items():
             setattr(_POST_STOP_GUARD_INSTANCE, k, v)
     return _POST_STOP_GUARD_INSTANCE
+
+
+OrderGuardEvaluatorFactory.register(PostStopReentryGuard.GUARD_ID, PostStopReentryGuard)

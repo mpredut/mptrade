@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -14,10 +18,14 @@ from intelligence.macro_sentiment_ssot import (
 from providers.base import normalize_side
 
 
-class GeopoliticalShockGuard:
+class GeopoliticalShockGuard(OrderGuardEvaluatorBase):
     """Black Swan & Shock Shield braking BUY orders during major geopolitical or energy crises."""
 
+    cls_name = "GeopoliticalShockGuard"
+    GUARD_ID = "macro_geopolitical_shock"
+
     def __init__(self, downscale_factor: float = 0.50) -> None:
+        super().__init__()
         self.downscale_factor = clean_scale(downscale_factor, default=0.50, allow_percent=True, min_positive=True)
 
     def check(
@@ -63,3 +71,6 @@ class GeopoliticalShockGuard:
                 risk_score=risk_score,
             )
         return GuardDecision.allow("GeopoliticalShockGuard", "geopolitical_climate_normal")
+
+
+OrderGuardEvaluatorFactory.register(GeopoliticalShockGuard.GUARD_ID, GeopoliticalShockGuard)

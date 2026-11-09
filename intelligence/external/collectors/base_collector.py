@@ -9,6 +9,7 @@ Unifies:
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import logging
 import os
 import time
@@ -199,9 +200,163 @@ def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..
     )
 
 
-class _DiskBackedSymbolCollector:
-    """Shared in-memory and disk snapshot caching base for external symbol telemetry collectors."""
+class TelemetryCacheCollectorInterface(ABC):
+    """Pure abstract base contract (Level 1) for cache-backed telemetry collectors.
 
+    Modeled on ``CacheManagerInterface(ABC)``: encapsulates ``cachedb_dir`` resolution,
+    JSON reader dispatch (respecting module-level monkeypatches), symbol candidate
+    scoping, and the polymorphic ``collect()`` template lifecycle.
+    """
+
+    cls_name = "TelemetryCacheCollectorInterface"
+    COLLECTOR_ID: str = ""
+    start_sync: bool = False
+
+    def __init__(self, *, start_sync: bool = False) -> None:
+        if type(self) is TelemetryCacheCollectorInterface:
+            raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
+        self.start_sync = bool(start_sync)
+
+    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
+        """True when this collector instance operates in read-only consumer mode (``start_sync=False``)."""
+        if allow_network is not None:
+            return not _parse_bool_flag(allow_network, default=False)
+        return not bool(self.start_sync)
+
+    @staticmethod
+    def resolve_reader(read_json_fn: Any = None) -> Any:
+        from intelligence.sentiment.collectors.microstructure_collector import _resolve_read_json_cached
+
+        return _resolve_read_json_cached(read_json_fn)
+
+    @staticmethod
+    def resolve_session_policy(symbol: str) -> Any:
+        from intelligence.sentiment.evaluators.price_series_evaluator import resolve_asset_session_policy
+
+        return resolve_asset_session_policy(symbol)
+
+    @staticmethod
+    def candidate_cache_paths(cachedb_dir: str, rel_name: str, subdirs: Tuple[str, ...] = ("price",)) -> List[str]:
+        from intelligence.sentiment.collectors.microstructure_collector import _cand_cache_paths
+
+        return _cand_cache_paths(cachedb_dir, rel_name, subdirs=subdirs)
+
+    @abstractmethod
+    def collect(self, cachedb_dir: str, symbol: str = "", **kwargs: Any) -> Any:
+        """Collect and normalize cache state for ``symbol`` from ``cachedb_dir``."""
+
+    def read_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
+        """Read-only consumer entrypoint: read cached state without live network backfill or disk persistence."""
+        call_kwargs = dict(kwargs)
+        call_kwargs.setdefault("allow_network", False)
+        call_kwargs.setdefault("persist", False)
+        call_kwargs.setdefault("ensure_fresh", False)
+        return self.collect(cachedb_dir, symbol, **call_kwargs)
+
+    def refresh_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
+        """Producer entrypoint: collect live state and persist updated artifacts to cachedb."""
+        call_kwargs = dict(kwargs)
+        call_kwargs.setdefault("allow_network", True)
+        call_kwargs.setdefault("persist", True)
+        call_kwargs.setdefault("ensure_fresh", True)
+        return self.collect(cachedb_dir, symbol, **call_kwargs)
+
+
+class TelemetryCollectorFactory:
+    """Singleton registry and factory for price-series, microstructure, external, portfolio, and macro collectors (modeled on ``CacheFactory``)."""
+
+    _instances: Dict[str, TelemetryCacheCollectorInterface] = {}
+    _registry: Dict[str, type[TelemetryCacheCollectorInterface]] = {}
+    _defaults_loaded: bool = False
+
+    @classmethod
+    def register(
+        cls,
+        collector_id: str,
+        collector_cls: type[TelemetryCacheCollectorInterface],
+    ) -> None:
+        cls._registry[str(collector_id)] = collector_cls
+
+    @classmethod
+    def _ensure_default_collectors_registered(cls) -> None:
+        if cls._defaults_loaded:
+            return
+        cls._defaults_loaded = True
+        for mod_name in (
+            "intelligence.external.collectors.orderbook_depth_collector",
+            "intelligence.external.collectors.derivatives_telemetry_collector",
+            "intelligence.external.collectors.whale_positioning_collector",
+            "intelligence.macro.news_feed_collector",
+            "intelligence.sentiment.collectors.microstructure_collector",
+            "intelligence.sentiment.collectors.fear_greed_collector",
+            "intelligence.sentiment.collectors.market_breadth_collector",
+            "intelligence.sentiment.collectors.portfolio_collector",
+            "intelligence.sentiment.collectors.macro_telemetry_collector",
+        ):
+            try:
+                __import__(mod_name)
+            except Exception:
+                pass
+
+    @classmethod
+    def create(cls, collector_id: str, *, start_sync: bool = False) -> Any:
+        key = str(collector_id)
+        collector_cls = cls._registry.get(key)
+        if collector_cls is None:
+            cls._ensure_default_collectors_registered()
+            collector_cls = cls._registry.get(key)
+        if collector_cls is None:
+            raise KeyError(f"Unknown telemetry collector id: {key}")
+        return cls.get_collector(collector_cls, start_sync=start_sync)
+
+    @classmethod
+    def get_collector(
+        cls,
+        collector_cls: type[TelemetryCacheCollectorInterface],
+        *,
+        start_sync: bool = False,
+    ) -> Any:
+        sync_flag = bool(start_sync)
+        key = f"{collector_cls.__name__}:producer" if sync_flag else collector_cls.__name__
+        inst = cls._instances.get(key)
+        if inst is None:
+            try:
+                inst = collector_cls(start_sync=sync_flag)
+            except TypeError:
+                inst = collector_cls()
+                inst.start_sync = sync_flag
+            cls._instances[key] = inst
+        return inst
+
+    @classmethod
+    def get_price_series_loader(cls, *, start_sync: bool = False) -> Any:
+        from intelligence.sentiment.collectors.microstructure_collector import CompositeSymbolPriceSeriesLoader
+
+        return cls.get_collector(CompositeSymbolPriceSeriesLoader, start_sync=start_sync)
+
+    @classmethod
+    def get_microstructure_collector(cls, *, start_sync: bool = False) -> Any:
+        from intelligence.sentiment.collectors.microstructure_collector import SymbolMicrostructureSnapshotCollector
+
+        return cls.get_collector(SymbolMicrostructureSnapshotCollector, start_sync=start_sync)
+
+    @classmethod
+    def get_fleet_enricher(cls, *, start_sync: bool = False) -> Any:
+        from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+
+        return cls.get_collector(Fleet24hAndMicrostructureEnricher, start_sync=start_sync)
+
+    @classmethod
+    def get_yahoo_chart_collector(cls, *, start_sync: bool = False) -> Any:
+        from intelligence.sentiment.collectors.microstructure_collector import EquityYahoo5dChartCollector
+
+        return cls.get_collector(EquityYahoo5dChartCollector, start_sync=start_sync)
+
+
+class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
+    """Shared in-memory and disk snapshot caching base (Level 2) for external symbol telemetry collectors."""
+
+    cls_name = "_DiskBackedSymbolCollector"
     _DISK_FILE_PREFIX: str = ""
     _SNAPSHOT_CLS: Any = None
     _QUOTE_ISOLATED: bool = False
@@ -217,34 +372,55 @@ class _DiskBackedSymbolCollector:
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
-        self.cache_dir = cache_dir
-        self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
+        if type(self) is _DiskBackedSymbolCollector:
+            raise TypeError("Cannot instantiate abstract class _DiskBackedSymbolCollector")
         self._explicit_start_sync: Optional[bool] = (
             _parse_bool_flag(start_sync, default=False) if start_sync is not None else None
         )
-        self.start_sync = bool(self._explicit_start_sync) if self._explicit_start_sync is not None else False
+        eff_sync = bool(self._explicit_start_sync) if self._explicit_start_sync is not None else False
+        super().__init__(start_sync=eff_sync)
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
+        self.cache_dir = cache_dir
+        self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
         self._cache: Dict[str, tuple[float, Any]] = {}
 
-    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
-        """Return True when this collector operates in read-only consumer mode (``start_sync=False``)."""
-        if allow_network is not None:
-            return not _parse_bool_flag(allow_network, default=False)
-        return not bool(self.start_sync)
+    @staticmethod
+    def _resolve_symbol_arg(symbol_or_cache_dir: str, symbol: Optional[str] = None) -> str:
+        if symbol is not None and str(symbol).strip():
+            return str(symbol)
+        return str(symbol_or_cache_dir)
 
-    def read_snapshot(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
+    def read_snapshot(
+        self,
+        symbol_or_cache_dir: str = "cachedb",
+        symbol: Optional[str] = None,
+        *,
+        now: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[Any]:
         """Read-only consumer accessor: return fresh snapshot from memory/disk cache in 0 ms without network or disk writes."""
         fetch_fn = getattr(self, "fetch", None)
         if not callable(fetch_fn):
             return None
-        return fetch_fn(symbol, allow_network=False, now=now)
+        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
+        eff_now = now if now is not None else kwargs.get("now_ts")
+        return fetch_fn(eff_sym, allow_network=False, now=eff_now)
 
-    def refresh_snapshot(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
+    def refresh_snapshot(
+        self,
+        symbol_or_cache_dir: str = "cachedb",
+        symbol: Optional[str] = None,
+        *,
+        now: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[Any]:
         """Producer accessor: fetch live snapshot from external venue and persist to disk cache."""
         fetch_fn = getattr(self, "fetch", None)
         if not callable(fetch_fn):
             return None
-        return fetch_fn(symbol, allow_network=True, now=now)
+        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
+        eff_now = now if now is not None else kwargs.get("now_ts")
+        return fetch_fn(eff_sym, allow_network=True, now=eff_now)
 
     @classmethod
     def disk_prefix(cls) -> str:
@@ -254,16 +430,20 @@ class _DiskBackedSymbolCollector:
 
     def collect(
         self,
-        symbol: str,
+        symbol_or_cache_dir: str,
+        symbol: Optional[str] = None,
         *,
         allow_network: Optional[bool] = None,
         now: Optional[float] = None,
+        **kwargs: Any,
     ) -> Optional[Any]:
         """Polymorphic collector entrypoint delegating to ``fetch(symbol, allow_network=..., now=...)``."""
         fetch_fn = getattr(self, "fetch", None)
         if not callable(fetch_fn):
             return None
-        return fetch_fn(symbol, allow_network=allow_network, now=now)
+        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
+        eff_now = now if now is not None else kwargs.get("now_ts")
+        return fetch_fn(eff_sym, allow_network=allow_network, now=eff_now)
 
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)

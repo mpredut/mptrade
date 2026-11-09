@@ -1,12 +1,18 @@
 """LLM high-stake guard validating large BUY and SELL orders (e.g. >= 700 EUR/USD)."""
 from __future__ import annotations
 
+from abc import ABC
 import logging
 import os
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import _parse_bool_flag, resolve_patched_attr
-from intelligence.internal.guards.guard_decision import GuardDecision, normalize_guard_mode
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    normalize_guard_mode,
+)
 from intelligence.macro_sentiment_ssot import (
     clean_scale, clean_symbol_key, is_cache_fresh, normalize_side,
     resolve_now_ts, resolve_order_notional, safe_float, safe_nonneg_float, safe_nonneg_ts, safe_pos_float,
@@ -159,9 +165,10 @@ def resolve_llm_guard_cache_ttl(
     return default_ttl_sec if (not explicit_client and getattr(gemini_client, "_custom_runner", None) is None) else 0.0
 
 
-class PreTradeLLMGuardBase:
-    """Unified base class for real-time pre-trade LLM guards (HighStakeGuard & PostStopReentryGuard)."""
+class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
+    """Unified base class (Level 2) for real-time pre-trade LLM guards (HighStakeGuard & PostStopReentryGuard)."""
 
+    cls_name = "PreTradeLLMGuardBase"
     GUARD_NAME: str = "PreTradeLLMGuard"
     TOPIC_KEY: str = "guard_high_stake"
     DEFAULT_TIMEOUT_SEC: float = 120.0
@@ -178,6 +185,9 @@ class PreTradeLLMGuardBase:
         cache_ttl_sec: Optional[float] = None,
         max_telemetry_age_sec: Optional[float] = None,
     ) -> None:
+        if type(self) is PreTradeLLMGuardBase:
+            raise TypeError("Cannot instantiate abstract class PreTradeLLMGuardBase")
+        super().__init__()
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
         self.timeout_sec = safe_pos_float(timeout_sec, self.DEFAULT_TIMEOUT_SEC)
@@ -488,6 +498,8 @@ class PreTradeLLMGuardBase:
 class HighStakeGuard(PreTradeLLMGuardBase):
     """Invokes LLM reasoning before executing large BUY/SELL orders (>= 700 EUR/USD)."""
 
+    cls_name = "HighStakeGuard"
+    GUARD_ID = "sentiment_high_stake_llm"
     GUARD_NAME = "HighStakeGuard"
     TOPIC_KEY = "guard_high_stake"
     DEFAULT_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
@@ -610,3 +622,6 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             max_notional_jump_ratio=HIGH_STAKE_NOTIONAL_JUMP_RATIO,
             logger_inst=logger,
         )
+
+
+OrderGuardEvaluatorFactory.register(HighStakeGuard.GUARD_ID, HighStakeGuard)

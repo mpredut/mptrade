@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     normalize_side,
@@ -15,7 +19,7 @@ from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnap
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
 
-class PanicWashoutGuard:
+class PanicWashoutGuard(OrderGuardEvaluatorBase):
     """Guards against uncontained macro panics and falling knives.
 
     During market-wide liquidation storms or accelerating panic drops:
@@ -23,12 +27,16 @@ class PanicWashoutGuard:
     - Permits SELL / stop-loss execution without interference.
     """
 
+    cls_name = "PanicWashoutGuard"
+    GUARD_ID = "sentiment_panic_washout"
+
     def __init__(
         self,
         severe_panic_fng_threshold: int = 12,
         panic_advance_threshold: float = 0.10,
         downscale_factor: float = 0.50,
     ) -> None:
+        super().__init__()
         self.severe_panic_fng_threshold = safe_thresh(severe_panic_fng_threshold, 12)
         self.panic_advance_threshold = clean_scale(panic_advance_threshold, 0.10, allow_percent=True)
         self.downscale_factor = clean_scale(downscale_factor, 0.50, allow_percent=True, min_positive=True)
@@ -88,3 +96,6 @@ class PanicWashoutGuard:
                 )
 
         return GuardDecision.allow("PanicWashoutGuard", "macro_conditions_stable")
+
+
+OrderGuardEvaluatorFactory.register(PanicWashoutGuard.GUARD_ID, PanicWashoutGuard)

@@ -6,18 +6,23 @@ from typing import Dict, List, Optional, Tuple
 from botcore import normalize_epoch_sec, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
     clean_guard_symbol_key,
 )
 from providers.base import normalize_side
 
 
-class ParabolicSurgeGuard:
+class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
     """Anti-FOMO protection guard preventing BUY execution during parabolic spikes.
 
     Tracks rolling price history to detect sudden acceleration. If a rapid surge
     is detected, BUY orders are deferred until a healthy pullback occurs or the
     spike consolidates.
     """
+
+    cls_name = "ParabolicSurgeGuard"
+    GUARD_ID = "internal_parabolic_surge"
 
     def __init__(
         self,
@@ -26,6 +31,7 @@ class ParabolicSurgeGuard:
         window_seconds: float = 7200.0,  # 2 hours
         vol_multiplier: float = 3.0,
     ):
+        super().__init__()
         self.surge_threshold_pct = safe_pos_float(surge_threshold_pct, default=4.0) or 4.0
         self.pullback_required_pct = safe_nonneg_float(pullback_required_pct, default=1.5)
         self.window_seconds = safe_pos_float(window_seconds, default=7200.0) or 7200.0
@@ -230,3 +236,6 @@ class ParabolicSurgeGuard:
             st["ts"] = ts_now
 
         return GuardDecision.allow("ParabolicSurgeGuard", "normal_market_structure")
+
+
+OrderGuardEvaluatorFactory.register(ParabolicSurgeGuard.GUARD_ID, ParabolicSurgeGuard)

@@ -87,7 +87,11 @@ def _ensure_cacheprice_classes_bound() -> None:
         CompositeSymbolPriceSeriesLoader.price_365_cls = _C365
         CompositeSymbolPriceSeriesLoader.price_sparse_cls = _CSparse
         CompositeSymbolPriceSeriesLoader.current_price_cls = _CCP
-from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
+from intelligence.external.collectors.base_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+    round_spread_bps,
+)
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     lookup_symbol_cache_items,
@@ -1861,61 +1865,6 @@ def _enrich_discovered_reference_microstructure_symbols(
         microstructure[msym] = m_info_ref
 
 
-class TelemetryCacheCollectorInterface(ABC):
-    """Pure abstract base contract (Level 1) for cache-backed telemetry collectors.
-
-    Modeled on ``CacheManagerInterface(ABC)``: encapsulates ``cachedb_dir`` resolution,
-    JSON reader dispatch (respecting module-level monkeypatches), symbol candidate
-    scoping, and the polymorphic ``collect()`` template lifecycle.
-    """
-
-    cls_name = "TelemetryCacheCollectorInterface"
-    start_sync: bool = False
-
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is TelemetryCacheCollectorInterface:
-            raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
-        self.start_sync = bool(start_sync)
-
-    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
-        """True when this collector instance operates in read-only consumer mode (``start_sync=False``)."""
-        if allow_network is not None:
-            return not bool(allow_network)
-        return not bool(self.start_sync)
-
-    @staticmethod
-    def resolve_reader(read_json_fn: Any = None) -> Any:
-        return _resolve_read_json_cached(read_json_fn)
-
-    @staticmethod
-    def resolve_session_policy(symbol: str) -> AssetSessionPolicy:
-        return resolve_asset_session_policy(symbol)
-
-    @staticmethod
-    def candidate_cache_paths(cachedb_dir: str, rel_name: str, subdirs: Tuple[str, ...] = ("price",)) -> List[str]:
-        return _cand_cache_paths(cachedb_dir, rel_name, subdirs=subdirs)
-
-    @abstractmethod
-    def collect(self, cachedb_dir: str, symbol: str, **kwargs: Any) -> Any:
-        """Collect and normalize cache state for ``symbol`` from ``cachedb_dir``."""
-
-    def read_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
-        """Read-only consumer entrypoint: read cached state without live network backfill or disk persistence."""
-        call_kwargs = dict(kwargs)
-        call_kwargs.setdefault("allow_network", False)
-        call_kwargs.setdefault("persist", False)
-        call_kwargs.setdefault("ensure_fresh", False)
-        return self.collect(cachedb_dir, symbol, **call_kwargs)
-
-    def refresh_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
-        """Producer entrypoint: collect live state and persist updated artifacts to cachedb."""
-        call_kwargs = dict(kwargs)
-        call_kwargs.setdefault("allow_network", True)
-        call_kwargs.setdefault("persist", True)
-        call_kwargs.setdefault("ensure_fresh", True)
-        return self.collect(cachedb_dir, symbol, **call_kwargs)
-
-
 class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for price-series cache collectors (24h, 365d, sparse, watcher, live, Yahoo 5d)."""
 
@@ -2187,66 +2136,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         return pt_map, m_map
 
 
-class TelemetryCollectorFactory:
-    """Singleton registry and factory for price-series, microstructure, portfolio, and macro collectors (modeled on ``CacheFactory``)."""
-
-    _instances: Dict[str, TelemetryCacheCollectorInterface] = {}
-    _registry: Dict[str, type[TelemetryCacheCollectorInterface]] = {}
-
-    @classmethod
-    def register(
-        cls,
-        collector_id: str,
-        collector_cls: type[TelemetryCacheCollectorInterface],
-    ) -> None:
-        cls._registry[str(collector_id)] = collector_cls
-
-    @classmethod
-    def create(cls, collector_id: str, *, start_sync: bool = False) -> Any:
-        key = str(collector_id)
-        collector_cls = cls._registry.get(key)
-        if collector_cls is None:
-            raise KeyError(f"Unknown telemetry collector id: {key}")
-        return cls.get_collector(collector_cls, start_sync=start_sync)
-
-    @classmethod
-    def get_collector(
-        cls,
-        collector_cls: type[TelemetryCacheCollectorInterface],
-        *,
-        start_sync: bool = False,
-    ) -> Any:
-        sync_flag = bool(start_sync)
-        key = f"{collector_cls.__name__}:producer" if sync_flag else collector_cls.__name__
-        inst = cls._instances.get(key)
-        if inst is None:
-            try:
-                inst = collector_cls(start_sync=sync_flag)
-            except TypeError:
-                inst = collector_cls()
-                inst.start_sync = sync_flag
-            cls._instances[key] = inst
-        return inst
-
-    @classmethod
-    def get_price_series_loader(cls, *, start_sync: bool = False) -> CompositeSymbolPriceSeriesLoader:
-        return cls.get_collector(CompositeSymbolPriceSeriesLoader, start_sync=start_sync)
-
-    @classmethod
-    def get_microstructure_collector(cls, *, start_sync: bool = False) -> SymbolMicrostructureSnapshotCollector:
-        return cls.get_collector(SymbolMicrostructureSnapshotCollector, start_sync=start_sync)
-
-    @classmethod
-    def get_fleet_enricher(cls, *, start_sync: bool = False) -> Fleet24hAndMicrostructureEnricher:
-        return cls.get_collector(Fleet24hAndMicrostructureEnricher, start_sync=start_sync)
-
-    @classmethod
-    def get_yahoo_chart_collector(cls, *, start_sync: bool = False) -> EquityYahoo5dChartCollector:
-        return cls.get_collector(EquityYahoo5dChartCollector, start_sync=start_sync)
-
-
 for _micro_collector_cls in (
-     ("price_series_loader", CompositeSymbolPriceSeriesLoader),
+    ("price_series_loader", CompositeSymbolPriceSeriesLoader),
     ("equity_yahoo_5d_chart", EquityYahoo5dChartCollector),
     (SymbolMicrostructureSnapshotCollector.COLLECTOR_ID, SymbolMicrostructureSnapshotCollector),
     (Fleet24hAndMicrostructureEnricher.COLLECTOR_ID, Fleet24hAndMicrostructureEnricher),

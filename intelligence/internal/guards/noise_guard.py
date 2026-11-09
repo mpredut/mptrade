@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 from botcore import safe_float, safe_nonneg_float
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 
 
-class NoiseFloorGuard:
+class NoiseFloorGuard(OrderGuardEvaluatorBase):
     """Noise floor guard preventing orders when market movement is indistinguishable from noise."""
 
+    cls_name = "NoiseFloorGuard"
+    GUARD_ID = "internal_noise_floor"
+
     def __init__(self, min_strength_ratio: float = 1.0):
+        super().__init__()
         self.min_strength_ratio = safe_nonneg_float(min_strength_ratio, default=1.0)
 
     def check(
@@ -46,3 +54,6 @@ class NoiseFloorGuard:
             f"signal_above_noise (strength={strength:.2f} >= {self.min_strength_ratio:.2f})",
             strength=strength,
         )
+
+
+OrderGuardEvaluatorFactory.register(NoiseFloorGuard.GUARD_ID, NoiseFloorGuard)

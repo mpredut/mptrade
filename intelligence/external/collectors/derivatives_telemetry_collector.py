@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from botcore import safe_nonneg_float, safe_pos_float
 from cachepaths import resolve_binance_lookup_symbol
 from intelligence.external.collectors.base_collector import (
+    TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
@@ -73,6 +74,8 @@ class DerivativesTelemetry:
 class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     """Fetches and caches public derivatives market metrics."""
 
+    cls_name = "DerivativesTelemetryCollector"
+    COLLECTOR_ID = "external_derivatives_telemetry"
     _DISK_FILE_PREFIX = "derivatives_telemetry"
     _SNAPSHOT_CLS = DerivativesTelemetry
 
@@ -224,3 +227,6 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
         """Inject telemetry directly (useful for tests and synthetic feeds)."""
         self._record_item(telemetry, save_to_disk=save_to_disk)
+
+
+TelemetryCollectorFactory.register(DerivativesTelemetryCollector.COLLECTOR_ID, DerivativesTelemetryCollector)

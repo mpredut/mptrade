@@ -200,3 +200,44 @@ def check_qlimit2_order_guards(
                 active_reason = e_dec.reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
+
+
+from intelligence.internal.guards.guard_decision import (
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
+
+
+class QLimit2OrderGuardEvaluator(OrderGuardEvaluatorBase):
+    """Concrete evaluator (Level 3) for G_QLIMIT2 (ParabolicSurgeGuard + WeibullExhaustionGuard)."""
+
+    cls_name = "QLimit2OrderGuardEvaluator"
+    GUARD_ID = "qlimit2_order_guards"
+
+    def evaluate(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        *,
+        price_history: Optional[List[Tuple[float, float]]] = None,
+        trend_duration_seconds: float = 0.0,
+        regime_context: Any = None,
+        margins: Optional[Dict[str, Any]] = None,
+        now: Optional[float] = None,
+        bypass_guards: Optional[set[str]] = None,
+    ) -> Tuple[bool, str, float]:
+        return check_qlimit2_order_guards(
+            symbol,
+            side,
+            price,
+            price_history=price_history,
+            trend_duration_seconds=trend_duration_seconds,
+            regime_context=regime_context,
+            margins=margins,
+            now=now,
+            bypass_guards=bypass_guards,
+        )
+
+
+OrderGuardEvaluatorFactory.register(QLimit2OrderGuardEvaluator.GUARD_ID, QLimit2OrderGuardEvaluator)

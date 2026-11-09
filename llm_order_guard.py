@@ -446,3 +446,46 @@ def check_llm_order_guards(
             active_reason = geo_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
+
+
+from intelligence.internal.guards.guard_decision import (
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
+
+
+class LLMOrderGuardsEvaluator(OrderGuardEvaluatorBase):
+    """Concrete evaluator (Level 3) for LLM & Macro pre-trade guards (GLLM1 High-Stake, GLLM3 Geopolitical Shock)."""
+
+    cls_name = "LLMOrderGuardsEvaluator"
+    GUARD_ID = "llm_order_guards"
+
+    def evaluate(
+        self,
+        provider: Optional[str],
+        symbol: str,
+        order_type: str,
+        price: float,
+        *,
+        qty: Optional[float] = None,
+        notional_eur: Optional[float] = None,
+        regime_context: Any = None,
+        margins: Optional[Dict[str, Any]] = None,
+        now: Optional[float] = None,
+        bypass_guards: Optional[set[str]] = None,
+    ) -> Tuple[bool, str, float]:
+        return check_llm_order_guards(
+            provider,
+            symbol,
+            order_type,
+            price,
+            qty=qty,
+            notional_eur=notional_eur,
+            regime_context=regime_context,
+            margins=margins,
+            now=now,
+            bypass_guards=bypass_guards,
+        )
+
+
+OrderGuardEvaluatorFactory.register(LLMOrderGuardsEvaluator.GUARD_ID, LLMOrderGuardsEvaluator)

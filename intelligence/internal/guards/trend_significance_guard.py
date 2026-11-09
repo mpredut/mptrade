@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from typing import Sequence
 from botcore import obj_attr, safe_float, safe_nonneg_float
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.internal.state.persistence import (
     _extract_finite_prices,
@@ -19,8 +23,11 @@ from intelligence.internal.state.persistence import (
 from providers.base import normalize_side
 
 
-class TrendSignificanceGuard:
+class TrendSignificanceGuard(OrderGuardEvaluatorBase):
     """Blocks or defers trend-following entries on noisy or non-persistent price data."""
+
+    cls_name = "TrendSignificanceGuard"
+    GUARD_ID = "internal_trend_significance"
 
     def __init__(
         self,
@@ -33,6 +40,7 @@ class TrendSignificanceGuard:
                          Higher values indicate trend slope is indistinguishable from random noise.
             min_hurst: If specified (e.g. 0.50), requires Hurst exponent >= min_hurst for trend entries.
         """
+        super().__init__()
         self.max_p_value = safe_nonneg_float(max_p_value, default=0.05) or 0.05
         self.min_hurst = safe_float(min_hurst, default=None)
 
@@ -108,3 +116,6 @@ class TrendSignificanceGuard:
             guard_name="TrendSignificanceGuard",
             reason=f"trend_statistically_significant (p={p:.4f}, Z={z:.2f})",
         )
+
+
+OrderGuardEvaluatorFactory.register(TrendSignificanceGuard.GUARD_ID, TrendSignificanceGuard)

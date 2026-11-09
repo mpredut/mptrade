@@ -326,3 +326,38 @@ def resolve_whale_spread_adjustment(
         pass
     return base_adjustment
 
+
+from intelligence.internal.guards.guard_decision import (
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
+
+
+class ExternalOrderGuardsEvaluator(OrderGuardEvaluatorBase):
+    """Concrete evaluator (Level 3) for external microstructure guards (GI_WHALE, GI_OBOOK, GI_FUNDING)."""
+
+    cls_name = "ExternalOrderGuardsEvaluator"
+    GUARD_ID = "external_order_guards"
+
+    def evaluate(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        *,
+        margins: Optional[Dict[str, Any]] = None,
+        now: Optional[float] = None,
+        bypass_guards: Optional[set[str]] = None,
+    ) -> Tuple[bool, str, float]:
+        return check_external_order_guards(
+            symbol,
+            side,
+            price,
+            margins=margins,
+            now=now,
+            bypass_guards=bypass_guards,
+        )
+
+
+OrderGuardEvaluatorFactory.register(ExternalOrderGuardsEvaluator.GUARD_ID, ExternalOrderGuardsEvaluator)
+

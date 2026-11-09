@@ -1801,30 +1801,11 @@ def profit_guard(
     return True
 
 
-class OrderGuardEvaluatorInterface(ABC):
-    """Pure abstract contract (Level 1) for order-guard evaluators."""
-
-    cls_name: str = "OrderGuardEvaluatorInterface"
-    GUARD_ID: str = ""
-
-    def __init__(self) -> None:
-        if type(self) is OrderGuardEvaluatorInterface:
-            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorInterface")
-
-    @abstractmethod
-    def evaluate(self, *args: Any, **kwargs: Any) -> Any:
-        """Evaluate an order guard stage."""
-
-
-class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
-    """Abstract domain base class (Level 2) for order-guard evaluators."""
-
-    cls_name = "OrderGuardEvaluatorBase"
-
-    def __init__(self) -> None:
-        if type(self) is OrderGuardEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorBase")
-        super().__init__()
+from intelligence.internal.guards.guard_decision import (
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+    OrderGuardEvaluatorInterface,
+)
 
 
 class MathProfitReferenceGuardEvaluator(OrderGuardEvaluatorBase):
@@ -1927,38 +1908,6 @@ class CompositeProfitGuardEvaluator(OrderGuardEvaluatorBase):
             reference_mode=reference_mode,
             module=module,
         )
-
-
-class OrderGuardEvaluatorFactory:
-    """Singleton registry and factory for ``OrderGuardEvaluatorInterface`` implementations."""
-
-    _instances: Dict[str, OrderGuardEvaluatorInterface] = {}
-    _registry: Dict[str, type[OrderGuardEvaluatorInterface]] = {}
-
-    @classmethod
-    def register(
-        cls,
-        guard_id: str,
-        evaluator_cls: type[OrderGuardEvaluatorInterface],
-    ) -> None:
-        cls._registry[str(guard_id)] = evaluator_cls
-
-    @classmethod
-    def create(cls, guard_id: str) -> Any:
-        key = str(guard_id)
-        evaluator_cls = cls._registry.get(key)
-        if evaluator_cls is None:
-            raise KeyError(f"Unknown order guard evaluator id: {key}")
-        return cls.get_evaluator(evaluator_cls)
-
-    @classmethod
-    def get_evaluator(cls, evaluator_cls: type[OrderGuardEvaluatorInterface]) -> Any:
-        key = evaluator_cls.__name__
-        inst = cls._instances.get(key)
-        if inst is None:
-            inst = evaluator_cls()
-            cls._instances[key] = inst
-        return inst
 
 
 for _og_cls in (

@@ -5,7 +5,11 @@ import math
 from typing import Optional, Tuple
 
 from botcore import clean_scale, safe_pos_float
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from providers.base import normalize_side
 
 
@@ -42,7 +46,7 @@ def weibull_survival_and_hazard(duration_days: float, median_days: float, p90_da
     return survival, hazard, k, lam
 
 
-class WeibullExhaustionGuard:
+class WeibullExhaustionGuard(OrderGuardEvaluatorBase):
     """Exhaustion guard that calculates whether a persistent trend has reached statistical maturity.
 
     Uses the asymmetric Weibull survival distribution S(t) = exp(-(t / lambda)^k), which differs
@@ -54,12 +58,16 @@ class WeibullExhaustionGuard:
       individual orders when survival probability S(t) drops below 10% (t > limit_p90).
     """
 
+    cls_name = "WeibullExhaustionGuard"
+    GUARD_ID = "internal_weibull_exhaustion"
+
     def __init__(
         self,
         default_p90_days: float = 7.0,
         policy: str = "downscale",  # "downscale" | "veto" | "off"
         exhausted_scale: float = 0.25,
     ):
+        super().__init__()
         self.default_p90_days = safe_pos_float(default_p90_days, default=7.0) or 7.0
         self.policy = str(policy or "downscale").strip().lower() if not isinstance(policy, bool) else "downscale"
         self.exhausted_scale = clean_scale(exhausted_scale, default=0.25, allow_percent=True, min_positive=True, clamp=True)
@@ -142,3 +150,6 @@ class WeibullExhaustionGuard:
             f"trend_healthy (duration={duration_days:.1f}d <= P90={limit_p90:.1f}d, S_weibull={survival_prob:.2f})",
             **metrics,
         )
+
+
+OrderGuardEvaluatorFactory.register(WeibullExhaustionGuard.GUARD_ID, WeibullExhaustionGuard)

@@ -24,6 +24,10 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_ts,
     safe_pos_float,
 )
+from intelligence.external.collectors.base_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+)
 from intelligence.macro.lexicon_ssot import (
     _strip_headline_publisher_suffix,
     build_dynamic_rss_url,
@@ -73,8 +77,11 @@ _NEWS_FILENAMES = get_cache_filenames("news_feed_files")
 DEFAULT_HISTORY_FILE = cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
 
 
-class NewsFeedCollector:
+class NewsFeedCollector(TelemetryCacheCollectorInterface):
     """Collects and aggregates macro news headlines from specialized multi-source RSS feeds and dynamic lexicons."""
+
+    cls_name = "NewsFeedCollector"
+    COLLECTOR_ID = "macro_news_feed"
 
     def __init__(
         self,
@@ -86,14 +93,14 @@ class NewsFeedCollector:
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
+        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
+        super().__init__(start_sync=bool(start_sync) if start_sync is not None else False)
         self._explicit_rss_url = rss_url if (isinstance(rss_url, str) and rss_url.strip()) else None
         self.rss_url = self._explicit_rss_url or build_dynamic_rss_url()
         self.rss_urls = tuple(rss_urls) if rss_urls else ()
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
         self.history_file = history_file
         self.rolling_window_sec = safe_pos_float(rolling_window_sec, DEFAULT_NEWS_ROLLING_WINDOW_SEC)
-        self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
-        self.start_sync: bool = bool(start_sync) if start_sync is not None else False
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
@@ -750,10 +757,41 @@ class NewsFeedCollector:
         logger.warning("Failed to fetch any RSS news feeds. Using cached fallback if available.")
         return self._cached_snapshot
 
-    def read_snapshot(self, *, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
+    def collect(
+        self,
+        cachedb_dir: str = "",
+        symbol: str = "*",
+        *,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        allow_network: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Optional[NewsFeedSnapshot]:
+        """Polymorphic ``TelemetryCacheCollectorInterface`` entrypoint delegating to ``fetch()``."""
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=allow_network)
+
+    def read_snapshot(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[NewsFeedSnapshot]:
         """Read-only consumer entrypoint: return disk-loaded history pool snapshot with 0 network calls and 0 disk writes."""
         return self.fetch(force_refresh=False, now_ts=now_ts, allow_network=False)
 
-    def refresh_snapshot(self, *, force_refresh: bool = True, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
+    def refresh_snapshot(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "*",
+        *,
+        force_refresh: bool = True,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[NewsFeedSnapshot]:
         """Producer entrypoint: fetch RSS feeds over network and persist aggregated history to disk."""
         return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=True)
+
+
+TelemetryCollectorFactory.register(NewsFeedCollector.COLLECTOR_ID, NewsFeedCollector)

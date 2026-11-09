@@ -38,6 +38,8 @@ from botcore import (
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from intelligence.internal.guards.guard_decision import (
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
     clean_guard_symbol_key,
     fetch_guard_snapshot,
     normalize_guard_mode,
@@ -226,8 +228,11 @@ def flush_smart_stop_loss_alerts() -> int:
     return len(events)
 
 
-class SmartStopLossGuard:
+class SmartStopLossGuard(OrderGuardEvaluatorBase):
     """Evaluates whether a triggered stop-loss is an artificial wick hunt absorbed by whales."""
+
+    cls_name = "SmartStopLossGuard"
+    GUARD_ID = "external_smart_stop_loss"
 
     def __init__(
         self,
@@ -238,6 +243,7 @@ class SmartStopLossGuard:
         min_whale_long_pct: float = 0.60,
         min_taker_ratio: float = 0.85,
     ) -> None:
+        super().__init__()
         self.mode = normalize_guard_mode(mode, default="enforce")
         self.max_threshold_pct = safe_pos_float(max_threshold_pct, 6.0)
         self.grace_seconds = safe_nonneg_float(grace_seconds, 120.0)
@@ -582,3 +588,6 @@ def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> Non
     sym_key = clean_guard_symbol_key(symbol)
     if sym_key:
         _clear_grace_entry(sym_key, is_sim=_is_simulated_provider(provider))
+
+
+OrderGuardEvaluatorFactory.register(SmartStopLossGuard.GUARD_ID, SmartStopLossGuard)

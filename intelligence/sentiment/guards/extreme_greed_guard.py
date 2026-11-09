@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    OrderGuardEvaluatorBase,
+    OrderGuardEvaluatorFactory,
+)
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     normalize_side,
@@ -14,7 +18,7 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 
-class ExtremeGreedGuard:
+class ExtremeGreedGuard(OrderGuardEvaluatorBase):
     """Brakes or downscales BUY orders when market-wide sentiment reaches extreme euphoria.
 
     - Hard Veto: When Fear & Greed >= hard_veto_threshold (default 90).
@@ -22,12 +26,16 @@ class ExtremeGreedGuard:
     - SELL orders are always unconstrained (encouraged profit-taking).
     """
 
+    cls_name = "ExtremeGreedGuard"
+    GUARD_ID = "sentiment_extreme_greed"
+
     def __init__(
         self,
         downscale_threshold: int = 80,
         hard_veto_threshold: int = 90,
         downscale_factor: float = 0.35,
     ) -> None:
+        super().__init__()
         self.downscale_threshold = safe_thresh(downscale_threshold, 80)
         self.hard_veto_threshold = safe_thresh(hard_veto_threshold, 90)
         if self.downscale_threshold > self.hard_veto_threshold:
@@ -72,3 +80,6 @@ class ExtremeGreedGuard:
             )
 
         return GuardDecision.allow("ExtremeGreedGuard", f"greed_within_tolerance (F&G={val})")
+
+
+OrderGuardEvaluatorFactory.register(ExtremeGreedGuard.GUARD_ID, ExtremeGreedGuard)
