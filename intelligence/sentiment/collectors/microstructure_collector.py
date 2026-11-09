@@ -62,10 +62,14 @@ def _ensure_cacheprice_classes_bound() -> None:
         CachePriceManagerBase as _CPBase,
         CacheSparsePriceManager as _CSparse,
     )
-    from cachetrend import (
-        CacheLongTrendManager as _CLT,
-        CacheShortTrendManager as _CST,
-    )
+    try:
+        from cachetrend import (
+            CacheLongTrendManager as _CLT,
+            CacheShortTrendManager as _CST,
+        )
+    except ImportError:
+        _CLT = None
+        _CST = None
 
     Cache24PriceManager = _C24
     Cache365PriceManager = _C365

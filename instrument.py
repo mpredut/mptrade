@@ -233,6 +233,735 @@ class Instrument:
         print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={scale_f:.2f})")
         return scaled_qty, scale_f, None
 
+    def _resolve_place_guard_config(
+        self,
+        side_u: str,
+        kwargs: dict,
+        bypass_guards_raw: Any,
+        profit_reference_mode: Any,
+        caller_module: Any,
+        allow_math_reference_sell: bool,
+    ) -> tuple[Any, Any, Any, Any, str, set, bool, bool, bool, bool]:
+        medium_trend_action_cfg = kwargs.get("medium_trend_action")
+        medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
+        inst_bypass_raw = None
+        if hasattr(self, "params") and isinstance(self.params, dict):
+            inst_bypass_raw = self.params.get("bypass_guards")
+            if profit_reference_mode is None:
+                profit_reference_mode = self.params.get(
+                    f"{side_u.lower()}_reference_mode", self.params.get("reference_mode")
+                )
+            caller_module = caller_module if caller_module is not None else self.params.get("module")
+            if medium_trend_action_cfg is None:
+                medium_trend_action_cfg = self.params.get("medium_trend_action")
+            if medium_trend_scale_cfg is None:
+                medium_trend_scale_cfg = self.params.get("medium_trend_scale")
+        caller_module = (
+            order_guard.resolve_caller_module(
+                None, prefix=kwargs.get("prefix"), client_order_id=kwargs.get("client_order_id")
+            )
+            if caller_module is None
+            else order_guard.resolve_caller_module(caller_module)
+        )
+        v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
+        bypassed_guards = order_guard.resolve_effective_bypass_guards(
+            v_norm, bypass_guards=bypass_guards_raw, inst_bypass=inst_bypass_raw,
+        )
+        bypass_all = "all" in bypassed_guards
+        bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
+        bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
+        bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
+
+        if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
+            print(f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; is allowed only for BUY")
+            revoke_guard_bypass(bypassed_guards, "G_PROF")
+            bypass_math_ref = False
+        if (
+            bypass_quantity_policy
+            and not bypass_profit_guard
+            and side_u != "SELL"
+            and caller_module != "assetguardian"
+        ):
+            print(f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; is allowed only for SELL")
+            revoke_guard_bypass(bypassed_guards, "G_QLIMIT1")
+            bypass_quantity_policy = False
+        return (
+            profit_reference_mode,
+            caller_module,
+            medium_trend_action_cfg,
+            medium_trend_scale_cfg,
+            v_norm,
+            bypassed_guards,
+            bypass_all,
+            bypass_profit_guard,
+            bypass_math_ref,
+            bypass_quantity_policy,
+        )
+
+    @staticmethod
+    def _build_place_retry_and_market_config(
+        side_u: str,
+        kwargs: dict,
+        bypassed_guards: set,
+        bypass_profit_guard: bool,
+        wait_for_trend: bool,
+        smart: bool,
+        caller_applied_scale: float,
+        profit_margin: Optional[float],
+        profit_reference_mode: Any,
+        caller_module: Any,
+        medium_trend_action_cfg: Any,
+        medium_trend_scale_cfg: Any,
+        allow_math_reference_sell: bool,
+    ) -> tuple[dict, bool, bool]:
+        retry_kwargs = {
+            **kwargs,
+            "bypass_guards": sorted(list(bypassed_guards)),
+            "wait_for_trend": wait_for_trend,
+            "smart": smart,
+        }
+        if caller_applied_scale < 1.0:
+            retry_kwargs["applied_scale"] = caller_applied_scale
+        for rk, rv in (
+            ("profit_margin", profit_margin),
+            ("reference_mode", profit_reference_mode),
+            ("module", caller_module),
+            ("medium_trend_action", medium_trend_action_cfg),
+            ("medium_trend_scale", medium_trend_scale_cfg),
+        ):
+            if rv is not None:
+                retry_kwargs[rk] = rv
+        if allow_math_reference_sell:
+            retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
+
+        is_market = resolve_market_flag(**kwargs)
+        caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
+        if caller_enforce_biz_min is not None:
+            enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
+            retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
+        else:
+            enforce_business_minimum = not (
+                (bypass_profit_guard and side_u == "SELL" and is_market)
+                or (caller_module == "assetguardian" and side_u == "SELL")
+            )
+        return retry_kwargs, is_market, enforce_business_minimum
+
+    def _prepare_preflight_and_smart_price(
+        self,
+        side_u: str,
+        price: Any,
+        qty: Any,
+        is_market: bool,
+        smart: bool,
+        order_kind: Any,
+        v_norm: str,
+        requires_permit: bool,
+        defers_smart_cancel: bool,
+        caller_supplied_cache_permit: bool,
+        cache_permit: Any,
+        retry_constraint_supplied: bool,
+        retry_requested_price_raw: Any,
+        retry_price_tolerance_raw: Any,
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        retry_requested_price = retry_price_tolerance = guarded_order_state = None
+        if retry_constraint_supplied:
+            retry_requested_price = safe_pos_float(retry_requested_price_raw, default=None)
+            retry_price_tolerance = safe_nonneg_float(retry_price_tolerance_raw, default=None)
+            if (
+                retry_requested_price is None
+                or retry_price_tolerance is None
+                or retry_price_tolerance >= 1.0
+            ):
+                raise SubmissionRefused("invalid_retry_price_constraint")
+        preflight_order = getattr(self._provider, "preflight_order", None)
+        if requires_permit and smart and caller_supplied_cache_permit:
+            raise SubmissionRefused("external_cache_permit_not_allowed_for_smart_cancel")
+        if requires_permit and cache_permit is None:
+            prepare_order_state = getattr(self._provider, "prepare_order_state", None)
+            if not callable(prepare_order_state):
+                raise SubmissionRefused("account_cache_not_fresh")
+            guarded_order_state = prepare_order_state()
+            if guarded_order_state is None:
+                raise SubmissionRefused("account_cache_not_fresh")
+        if not requires_permit and callable(preflight_order):
+            preflight_qty = None if v_norm in {"kraken", "hyperliquid"} else qty
+            preflight_order(
+                self.symbol, side_u, preflight_qty, price, market=is_market, kind=order_kind
+            )
+
+        # 0. Compute smart venue pricing before the guards.
+        if smart and not isinstance(price, bool):
+            price = self._provider.adjust_order_price(
+                self.symbol, side_u, price, cancel_opposite=not defers_smart_cancel
+            )
+        if not is_market and price is not None and not isinstance(price, bool):
+            round_px = getattr(self._provider, "round_price", None)
+            if callable(round_px):
+                px_f = safe_pos_float(round_px(self.symbol, price), default=None)
+                if px_f is not None and not (caller_supplied_cache_permit and side_u == "BUY" and px_f > price):
+                    price = px_f
+        return (
+            price,
+            guarded_order_state,
+            preflight_order,
+            retry_requested_price,
+            retry_price_tolerance,
+        )
+
+    def _resolve_authoritative_balance_and_market_price(
+        self,
+        side_u: str,
+        price: Any,
+        is_market: bool,
+    ) -> tuple[Any, Any, Optional[str], Optional[str], Optional[float], Optional[str]]:
+        if isinstance(price, bool) or (price is not None and (side_u == "BUY" or not is_market)):
+            price_f = safe_pos_float(price, default=None)
+            if price_f is None:
+                print(f"[{self.symbol}] {side_u} preflight refused: price invalid {price!r}")
+                return price, price, None, None, None, "invalid_price"
+            price = price_f
+
+        base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
+        target_asset = quote_asset if side_u == "BUY" else base_asset
+
+        known_balance = None
+        if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
+            try:
+                kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                if kb_f is not None:
+                    if kb_f <= 0:
+                        print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
+                        return price, price, base_asset, quote_asset, None, "balance_unavailable"
+                    known_balance = kb_f
+            except Exception:
+                known_balance = None
+
+        quantity_price = price
+        if is_market:
+            quantity_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
+            if quantity_price is None:
+                print(f"[{self.symbol}] {side_u} MARKET BLOCKED: current price unavailable")
+                return price, None, base_asset, quote_asset, known_balance, "market_price_unavailable"
+        return price, quantity_price, base_asset, quote_asset, known_balance, None
+
+    def _evaluate_quantity_sizing(
+        self,
+        side_u: str,
+        qty: Any,
+        quantity_price: Any,
+        base_asset: Optional[str],
+        quote_asset: Optional[str],
+        is_market: bool,
+        enforce_business_minimum: bool,
+        bypass_quantity_policy: bool,
+        bypass_profit_guard: bool,
+        is_monitor_replace: bool,
+        caller_applied_scale: float,
+        regime_context: Any,
+        known_balance: Optional[float],
+        kwargs: dict,
+    ) -> tuple[float, float, Optional[str]]:
+        hours_f = safe_pos_float(kwargs.get("hours", 5), default=5.0)
+        decision = self._provider.quantity_decision(
+            self.symbol, side_u, quantity_price, qty,
+            base=base_asset, quote=quote_asset,
+            cancelorders=_parse_bool_flag(kwargs.get("cancelorders", False), False),
+            hours=hours_f,
+            apply_policy=not bypass_quantity_policy,
+            market=is_market,
+            enforce_business_minimum=enforce_business_minimum,
+            regime_context=(None if (caller_applied_scale < 1.0 or bypass_profit_guard or is_monitor_replace) else regime_context),
+            known_balance=known_balance,
+        )
+        qty = decision.final_qty
+        raw_dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
+        dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
+        applied_scale = min(float(caller_applied_scale), dec_scale)
+        if qty <= 0:
+            print(f"[{self.symbol}] {side_u} qty refused: "
+                  f"{decision.refuse_reason} asset={decision.balance_asset}")
+            return qty, applied_scale, (decision.refuse_reason or "qty_zero_after_weight")
+
+        if (
+            not bypass_profit_guard
+            and not is_monitor_replace
+            and regime_context is not None
+            and side_u == "BUY"
+            and qty > 0
+            and not getattr(decision, "scale_applied", False)
+        ):
+            qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                qty, quantity_price, is_market, enforce_business_minimum,
+                regime_context, applied_scale, side_u=side_u)
+            if refusal:
+                return qty, applied_scale, refusal
+        return qty, applied_scale, None
+
+    def _evaluate_pre_sizing_profit_guard(
+        self,
+        side_u: str,
+        price: Any,
+        quantity_price: Any,
+        is_market: bool,
+        bypass_profit_guard: bool,
+        bypass_math_ref: bool,
+        bypass_all: bool,
+        safeback_override: Any,
+        profit_reference_mode: Any,
+        caller_module: Any,
+        regime_context: Any,
+        profit_margin: Any,
+    ) -> tuple[Any, Any, Any, Optional[str]]:
+        profit_window_ref = None
+        if bypass_profit_guard:
+            return regime_context, profit_margin, profit_window_ref, None
+        try:
+            eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
+                self._provider.name, side_u, module=caller_module, reference_mode=profit_reference_mode,
+            )
+        except Exception:
+            eff_ref_mode = None
+        if regime_context is None:
+            regime_context = self._resolve_regime_context()
+        if profit_margin is None:
+            profit_margin = order_guard.get_margin_cfg(self._provider.name)
+        if not bypass_math_ref and eff_ref_mode != "off":
+            profit_window_ref = self._call_profit_guard_window_ref(
+                self.symbol, side_u, safeback_override,
+                regime_context=regime_context, reference_mode=profit_reference_mode, module=caller_module,
+            )
+
+        # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
+        if bypass_math_ref:
+            print(
+                f"[GUARD] {side_u} {self.symbol}: the historical price reference "
+                "was explicitly bypassed; the quantity/weight guard remains active")
+        elif (
+            not bypass_all
+            and not hasattr(order_guard.profit_guard, "_mock_name")
+            and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
+        ):
+            guard_px_stage1 = quantity_price if is_market else price
+            cm_kwargs = self._build_profit_guard_kwargs(
+                profit_window_ref, regime_context, None, None, profit_reference_mode, caller_module,
+            )
+            cm_kwargs.pop("qty", None)
+            if not order_guard.check_math_profit_reference(
+                self._provider, self.symbol, side_u, guard_px_stage1, profit_margin, **cm_kwargs
+            ):
+                return regime_context, profit_margin, profit_window_ref, "profit_guard"
+        return regime_context, profit_margin, profit_window_ref, None
+
+    def _evaluate_post_sizing_profit_guard(
+        self,
+        side_u: str,
+        qty: float,
+        price: Any,
+        quantity_price: Any,
+        is_market: bool,
+        enforce_business_minimum: bool,
+        is_monitor_replace: bool,
+        bypass_profit_guard: bool,
+        bypassed_guards: set,
+        profit_window_ref: Any,
+        regime_context: Any,
+        profit_margin: Any,
+        profit_reference_mode: Any,
+        caller_module: Any,
+        applied_scale: float,
+    ) -> tuple[float, float, Optional[str]]:
+        if bypass_profit_guard or qty <= 0:
+            return qty, applied_scale, None
+        guard_price = quantity_price if is_market else price
+        pg_kwargs = self._build_profit_guard_kwargs(
+            profit_window_ref, regime_context, qty, bypassed_guards,
+            profit_reference_mode, caller_module,
+        )
+        if not order_guard.profit_guard(
+            self._provider, self.symbol, side_u, guard_price, profit_margin, **pg_kwargs
+        ):
+            return qty, applied_scale, "profit_guard"
+        if not is_monitor_replace:
+            qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                qty, guard_price, is_market, enforce_business_minimum,
+                regime_context, applied_scale, side_u=side_u)
+            if refusal:
+                return qty, applied_scale, refusal
+        return qty, applied_scale, None
+
+    def _check_short_trend_gate(
+        self, side_u: str, wait_for_trend: bool, caller_owns_retry: bool
+    ) -> Optional[str]:
+        if not wait_for_trend:
+            return None
+        try:
+            import cacheManager as cm
+            import pricewindow as pw
+            if pw.should_wait_short_trend(
+                cm.get_short_trend_manager(), side_u, self.symbol,
+                short_trend_cls=cm.CacheShortTrendManager
+            ):
+                retry_note = "caller owns retry" if caller_owns_retry else "the intent stays queued for retry"
+                print(f"[{self.symbol}] {side_u} deferred by trend; placement does not wait, {retry_note}")
+                return "trend_deferred"
+        except Exception as e:  # noqa: BLE001 — Opportunistic gate.
+            print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
+        return None
+
+    def _apply_medium_trend_gate(
+        self,
+        side_u: str,
+        qty: float,
+        price: float,
+        quantity_price: float,
+        is_market: bool,
+        enforce_business_minimum: bool,
+        is_monitor_replace: bool,
+        bypassed_guards: set,
+        medium_trend_action_cfg: Any,
+        medium_trend_scale_cfg: Any,
+        regime_context: Any,
+        applied_scale: float,
+    ) -> tuple[float, float, Any, Optional[str]]:
+        check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(bypassed_guards)
+        medium_trend_action = (
+            medium_trend_action_cfg.strip().lower()
+            if isinstance(medium_trend_action_cfg, str)
+            else None
+        )
+        gt2_context = regime_context
+        if check_medium_trend and gt2_context is None and medium_trend_action in {"defer", "scale"}:
+            gt2_context = self._resolve_regime_context()
+            if gt2_context is not None and regime_context is None:
+                regime_context = gt2_context
+        if check_medium_trend and gt2_context is not None:
+            raw_reg = (
+                (gt2_context.get("regime") or gt2_context.get("resolved_trend"))
+                if isinstance(gt2_context, dict)
+                else (getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None))
+            )
+            resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
+            adverse_medium_trend = (
+                (side_u == "BUY" and resolved_regime == "bear")
+                or (side_u == "SELL" and resolved_regime == "bull")
+            )
+            if medium_trend_action == "defer" and adverse_medium_trend:
+                regime_label = "BEAR regime" if side_u == "BUY" else "BULL regime, riding trend"
+                print(f"[{self.symbol}] {side_u} deferred by medium-term trend (4h-24h {regime_label})")
+                return qty, applied_scale, regime_context, "medium_trend_deferred"
+            if medium_trend_action == "scale" and adverse_medium_trend and not is_monitor_replace:
+                scale_factor = parse_scale_factor(medium_trend_scale_cfg, default=0.5)
+                if scale_factor <= 0.0:
+                    return qty, applied_scale, regime_context, "medium_trend_qty_zero"
+                if scale_factor < float(applied_scale):
+                    qty = self._round_provider_qty(max(0.0, qty * (scale_factor / float(applied_scale))))
+                    print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
+                    if qty <= 0:
+                        return qty, applied_scale, regime_context, "medium_trend_qty_zero"
+                    gt2_refusal = check_order_filter_refusal(
+                        self._provider, self.symbol, side_u,
+                        quantity_price if is_market else price, qty,
+                        market=is_market, enforce_business_minimum=enforce_business_minimum,
+                    )
+                    if gt2_refusal:
+                        print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
+                        return qty, applied_scale, regime_context, gt2_refusal
+                    applied_scale = min(float(applied_scale), scale_factor)
+        return qty, applied_scale, regime_context, None
+
+    def _reserve_outbox_claim(
+        self,
+        side_u: str,
+        qty: float,
+        orig_price: Any,
+        price: Any,
+        is_market: bool,
+        order_kind: Any,
+        caller_owns_retry: bool,
+        smart: bool,
+        applied_scale: float,
+        retry_kwargs: dict,
+        kwargs: dict,
+    ) -> tuple[Any, Any, Any, Any, Optional[str]]:
+        prequeued_claim = prequeued_record_id = prequeued_client_order_id = prequeued_intent_id = None
+        if not caller_owns_retry:
+            try:
+                if order_retry.RETRY_ENABLED:
+                    prequeue_kwargs = {**retry_kwargs, "smart": smart}
+                    if 0.0 < float(applied_scale) < 1.0:
+                        prequeue_kwargs["applied_scale"] = float(applied_scale)
+                    self._apply_outbox_lineage_prefix(prequeue_kwargs, kwargs)
+                    prequeued_claim = order_retry.enqueue_claimed(
+                        self.symbol, side_u, qty, prequeue_kwargs,
+                        requested_price=orig_price, ref_price=price,
+                        failure_reason="submit_pending",
+                        provider_name=self.provider_name,
+                        intent_id=kwargs.get("intent_id"),
+                        kind=order_kind, ttl_sec=kwargs.get("ttl_sec"))
+                    if prequeued_claim is None:
+                        raise RuntimeError("the intent cannot be read back after persisting")
+                    prequeued_client_order_id = dict(
+                        prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
+                    if not prequeued_client_order_id:
+                        raise RuntimeError("the persisted intent has no client_order_id")
+                    kwargs["client_order_id"] = prequeued_client_order_id
+            except Exception as exc:
+                print(
+                    f"[{self.symbol}] {side_u} BLOCKED: the intent cannot be "
+                    f"persisted before the submit ({exc})")
+                return None, None, None, None, "pre_submit_persist_failed"
+        else:
+            prequeued_claim = kwargs.get("_retry_claim")
+
+        if prequeued_claim is not None:
+            prequeued_record_id = prequeued_claim.get("id")
+            prequeued_client_order_id = dict(
+                prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
+            prequeued_intent_id = prequeued_claim.get("intent_id")
+
+        if prequeued_intent_id and not caller_owns_retry:
+            _EXECUTION_AUDIT.record(
+                "submit_requested", intent_id=prequeued_intent_id,
+                venue=self.provider_name, symbol=self.symbol,
+                side=side_u.lower(), qty=qty, price=price,
+                market=is_market, kind=order_kind,
+                client_order_id=prequeued_client_order_id,
+            )
+        return (
+            prequeued_claim,
+            prequeued_record_id,
+            prequeued_client_order_id,
+            prequeued_intent_id,
+            None,
+        )
+
+    def _revalidate_market_dispatch(
+        self,
+        side_u: str,
+        qty: float,
+        price: Any,
+        is_market: bool,
+        enforce_business_minimum: bool,
+        order_kind: Any,
+        bypass_profit_guard: bool,
+        bypassed_guards: set,
+        profit_window_ref: Any,
+        regime_context: Any,
+        profit_margin: Any,
+        profit_reference_mode: Any,
+        caller_module: Any,
+        retry_constraint_supplied: bool,
+        retry_requested_price: Any,
+        retry_price_tolerance: Any,
+        requires_permit: bool,
+        caller_supplied_cache_permit: bool,
+        preflight_order: Any,
+        cache_permit: Any,
+        prequeued_claim: Any,
+        prequeued_intent_id: Any,
+        applied_scale: float,
+    ) -> tuple[float, float, Any, Any, Optional[str]]:
+        final_profit_check = not bypass_profit_guard and is_market
+        if not (is_market and (final_profit_check or retry_constraint_supplied)):
+            return qty, applied_scale, cache_permit, prequeued_claim, None
+        final_market_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
+        if final_market_price is None:
+            print(f"[{self.symbol}] {side_u} MARKET BLOCKED at dispatch: current price unavailable")
+            return qty, applied_scale, cache_permit, prequeued_claim, "market_price_unavailable"
+        if retry_constraint_supplied and not order_retry.is_retry_price_favorable(
+            side_u, final_market_price, retry_requested_price, retry_price_tolerance
+        ):
+            return qty, applied_scale, cache_permit, prequeued_claim, "retry_price_unfavorable"
+        if final_profit_check:
+            pg_kwargs = self._build_profit_guard_kwargs(
+                profit_window_ref, regime_context, qty, bypassed_guards,
+                profit_reference_mode, caller_module,
+            )
+            if not order_guard.profit_guard(
+                self._provider, self.symbol, side_u, final_market_price, profit_margin, **pg_kwargs
+            ):
+                return qty, applied_scale, cache_permit, prequeued_claim, "profit_guard"
+            pre_final_qty = qty
+            qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                qty, final_market_price, is_market, enforce_business_minimum,
+                regime_context, applied_scale, side_u=side_u)
+            if refusal:
+                return qty, applied_scale, cache_permit, prequeued_claim, refusal
+            if (
+                qty != pre_final_qty
+                and requires_permit
+                and not caller_supplied_cache_permit
+                and callable(preflight_order)
+            ):
+                cache_permit = preflight_order(
+                    self.symbol, side_u, qty, price, market=is_market, kind=order_kind)
+                if cache_permit is None:
+                    raise SubmissionRefused("account_cache_not_fresh")
+            if prequeued_claim is not None:
+                prequeued_claim = self._sync_claimed_qty(prequeued_claim, qty, applied_scale)
+                if prequeued_intent_id and applied_scale < 1.0:
+                    _EXECUTION_AUDIT.record(
+                        "submit_scaled", intent_id=prequeued_intent_id,
+                        venue=self.provider_name, symbol=self.symbol,
+                        side=side_u.lower(), qty=qty, scale=applied_scale,
+                    )
+        return qty, applied_scale, cache_permit, prequeued_claim, None
+
+    @staticmethod
+    def _build_provider_submit_kwargs(
+        kwargs: dict,
+        is_market: bool,
+        known_balance: Optional[float],
+        supports_biz_min: bool,
+        enforce_business_minimum: bool,
+        cache_permit: Any,
+        permit_requested_price: Any,
+        smart: bool,
+        defers_smart_cancel: bool,
+        orig_price: Any,
+    ) -> dict:
+        provider_kwargs = {
+            **kwargs, "market": is_market, "force": is_market, "_balance_verified": True
+        }
+        if known_balance is not None:
+            provider_kwargs["known_balance"] = known_balance
+        if supports_biz_min:
+            provider_kwargs["enforce_business_minimum"] = enforce_business_minimum
+        if cache_permit is not None:
+            provider_kwargs["permit_requested_price"] = permit_requested_price
+            provider_kwargs["cache_permit"] = cache_permit
+        if smart and defers_smart_cancel:
+            provider_kwargs["_cancel_opposite_requested_price"] = orig_price
+        return provider_kwargs
+
+    def _finalize_place_outcome(
+        self,
+        *,
+        side_u: str,
+        price: Any,
+        qty: Any,
+        orig_qty: Any,
+        orig_price: Any,
+        is_market: bool,
+        order_kind: Any,
+        order: Any,
+        reason: Optional[str],
+        submit_attempted: bool,
+        caller_owns_retry: bool,
+        applied_scale: float,
+        regime_context: Any,
+        outcome_context: Optional[dict],
+        prequeued_claim: Any,
+        prequeued_record_id: Any,
+        prequeued_client_order_id: Any,
+        prequeued_intent_id: Any,
+        retry_kwargs: dict,
+        kwargs: dict,
+        caller: Optional[str],
+    ) -> None:
+        submission_state = (
+            "accepted" if order is not None else
+            "unknown" if submit_attempted else "refused"
+        )
+        if outcome_context is not None:
+            outcome_context.update(
+                accepted=order is not None,
+                reason=None if order is not None else reason,
+                state=submission_state,
+            )
+            if order is not None or submit_attempted:
+                outcome_context["submitted_qty"] = qty
+                outcome_context["submitted_price"] = price
+            cid = prequeued_client_order_id or kwargs.get("client_order_id")
+            if cid:
+                outcome_context["client_order_id"] = cid
+            iid = prequeued_intent_id or kwargs.get("intent_id")
+            if iid:
+                outcome_context["intent_id"] = iid
+        terminal_filter_refusal = bool(
+            reason and not submit_attempted and order_retry.is_terminal_filter_refusal(reason)
+        )
+        order_lifecycle.log_order_outcome(
+            self.symbol, side_u, price, qty, submission_state,
+            None if order else reason, order_kind, caller=caller,
+            regime_context=regime_context)
+        if order is not None and not caller_owns_retry:
+            try:
+                if prequeued_claim is not None:
+                    tracked = order_lifecycle.complete_accepted_claim(
+                        order_retry, prequeued_claim, order=order,
+                        provider_name=self.provider_name,
+                        symbol=self.symbol, side=side_u)
+                    if not tracked:
+                        print(
+                            f"[{self.symbol}] {side_u} accepted, but the tracking "
+                            "could not be updated; the intent stays pending")
+                    elif prequeued_intent_id:
+                        _EXECUTION_AUDIT.record(
+                            "submit_accepted", intent_id=prequeued_intent_id,
+                            venue=self.provider_name, symbol=self.symbol,
+                            side=side_u.lower(), qty=qty, price=price,
+                            market=is_market, kind=order_kind,
+                            client_order_id=prequeued_client_order_id,
+                            order_id=extract_order_id(order),
+                        )
+            except Exception as _e:  # noqa: BLE001
+                print(f"[{self.symbol}] {side_u} tracking accepted failed: {_e}")
+        elif (order is None and not caller_owns_retry
+              and (prequeued_record_id is not None
+                   or (reason not in {
+                       "account_cache_not_fresh", "execution_disabled",
+                       "trading_disabled", "aborted_by_caller", "invalid_price"}
+                       and not terminal_filter_refusal))):
+            try:
+                if prequeued_intent_id:
+                    _EXECUTION_AUDIT.record(
+                        "submit_unknown" if submit_attempted else "submit_refused",
+                        intent_id=prequeued_intent_id,
+                        venue=self.provider_name, symbol=self.symbol,
+                        side=side_u.lower(), qty=qty, price=price,
+                        market=is_market, kind=order_kind,
+                        client_order_id=prequeued_client_order_id,
+                        failure_reason=reason,
+                    )
+                if order_retry.RETRY_ENABLED:
+                    if prequeued_claim is not None:
+                        claim_outcome = (
+                            "success" if (
+                                terminal_filter_refusal or reason in {
+                                    "execution_disabled", "trading_disabled",
+                                    "aborted_by_caller", "invalid_price"}) else
+                            "deferred" if order_retry.is_non_failure_deferral(reason)
+                            else "failure")
+                        order_retry.complete_claim(
+                            prequeued_claim, claim_outcome,
+                            failure_reason=reason,
+                            submission_state="unknown" if submit_attempted else "refused")
+                    else:
+                        q_orig = safe_pos_float(orig_qty, default=None)
+                        if q_orig is None:
+                            queue_qty = qty
+                            app_sc = safe_pos_float(applied_scale, default=1.0) or 1.0
+                            if 0.0 < app_sc < 1.0:
+                                retry_kwargs["applied_scale"] = app_sc
+                        else:
+                            queue_qty = q_orig
+                        if safe_pos_float(queue_qty, default=None) is not None:
+                            try:
+                                ref_price = self._provider.get_current_price(self.symbol)
+                            except Exception:  # noqa: BLE001
+                                ref_price = None
+                            self._apply_outbox_lineage_prefix(retry_kwargs, kwargs)
+                            order_retry.enqueue(
+                                self.symbol, side_u, queue_qty, retry_kwargs,
+                                requested_price=orig_price, ref_price=ref_price,
+                                failure_reason=reason,
+                                provider_name=self.provider_name,
+                                intent_id=kwargs.get("intent_id"),
+                                kind=order_kind, ttl_sec=kwargs.get("ttl_sec"))
+            except Exception as _e:  # noqa: BLE001
+                print(f"[{self.symbol}] {side_u} enqueue retry failed (ignored): {_e}")
+
     # -- Provider identity and access. -----------------------------------------
     @property
     def provider(self):
@@ -298,51 +1027,27 @@ class Instrument:
             print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
             return _refuse_early("invalid_side")
 
-        medium_trend_action_cfg = kwargs.get("medium_trend_action")
-        medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
-        inst_bypass_raw = None
-        if hasattr(self, "params") and isinstance(self.params, dict):
-            inst_bypass_raw = self.params.get("bypass_guards")
-            if profit_reference_mode is None:
-                profit_reference_mode = self.params.get(
-                    f"{side_u.lower()}_reference_mode", self.params.get("reference_mode")
-                )
-            caller_module = caller_module if caller_module is not None else self.params.get("module")
-            if medium_trend_action_cfg is None:
-                medium_trend_action_cfg = self.params.get("medium_trend_action")
-            if medium_trend_scale_cfg is None:
-                medium_trend_scale_cfg = self.params.get("medium_trend_scale")
-        caller_module = (
-            order_guard.resolve_caller_module(
-                None, prefix=kwargs.get("prefix"), client_order_id=kwargs.get("client_order_id")
-            )
-            if caller_module is None
-            else order_guard.resolve_caller_module(caller_module)
+        (
+            profit_reference_mode,
+            caller_module,
+            medium_trend_action_cfg,
+            medium_trend_scale_cfg,
+            v_norm,
+            bypassed_guards,
+            bypass_all,
+            bypass_profit_guard,
+            bypass_math_ref,
+            bypass_quantity_policy,
+        ) = self._resolve_place_guard_config(
+            side_u,
+            kwargs,
+            bypass_guards_raw,
+            profit_reference_mode,
+            caller_module,
+            allow_math_reference_sell,
         )
-        v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
-        bypassed_guards = order_guard.resolve_effective_bypass_guards(
-            v_norm, bypass_guards=bypass_guards_raw, inst_bypass=inst_bypass_raw,
-        )
-        bypass_all = "all" in bypassed_guards
-        bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
-        bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
-        bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
         wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         abort_if = kwargs.pop("abort_if", None)
-
-        if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
-            print(f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; is allowed only for BUY")
-            revoke_guard_bypass(bypassed_guards, "G_PROF")
-            bypass_math_ref = False
-        if (
-            bypass_quantity_policy
-            and not bypass_profit_guard
-            and side_u != "SELL"
-            and caller_module != "assetguardian"
-        ):
-            print(f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; is allowed only for SELL")
-            revoke_guard_bypass(bypassed_guards, "G_QLIMIT1")
-            bypass_quantity_policy = False
         requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
         defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())
         supports_biz_min = bool(getattr(self._provider, "supports_business_minimum", lambda: False)())
@@ -387,74 +1092,35 @@ class Instrument:
         is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
         profit_margin = safe_float(caller_profit_margin, default=None)
 
-        retry_kwargs = {
-            **kwargs,
-            "bypass_guards": sorted(list(bypassed_guards)),
-            "wait_for_trend": wait_for_trend,
-            "smart": smart,
-        }
-        if caller_applied_scale < 1.0:
-            retry_kwargs["applied_scale"] = caller_applied_scale
-        for rk, rv in (
-            ("profit_margin", profit_margin),
-            ("reference_mode", profit_reference_mode),
-            ("module", caller_module),
-            ("medium_trend_action", medium_trend_action_cfg),
-            ("medium_trend_scale", medium_trend_scale_cfg),
-        ):
-            if rv is not None:
-                retry_kwargs[rk] = rv
-        if allow_math_reference_sell:
-            retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
-
-        is_market = resolve_market_flag(**kwargs)
-        caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
-        if caller_enforce_biz_min is not None:
-            enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
-            retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
-        else:
-            enforce_business_minimum = not (
-                (bypass_profit_guard and side_u == "SELL" and is_market)
-                or (caller_module == "assetguardian" and side_u == "SELL")
-            )
+        retry_kwargs, is_market, enforce_business_minimum = self._build_place_retry_and_market_config(
+            side_u,
+            kwargs,
+            bypassed_guards,
+            bypass_profit_guard,
+            wait_for_trend,
+            smart,
+            caller_applied_scale,
+            profit_margin,
+            profit_reference_mode,
+            caller_module,
+            medium_trend_action_cfg,
+            medium_trend_scale_cfg,
+            allow_math_reference_sell,
+        )
         profit_window_ref = retry_requested_price = retry_price_tolerance = None
         try:
-            if retry_constraint_supplied:
-                retry_requested_price = safe_pos_float(retry_requested_price_raw, default=None)
-                retry_price_tolerance = safe_nonneg_float(retry_price_tolerance_raw, default=None)
-                if (
-                    retry_requested_price is None
-                    or retry_price_tolerance is None
-                    or retry_price_tolerance >= 1.0
-                ):
-                    raise SubmissionRefused("invalid_retry_price_constraint")
-            preflight_order = getattr(self._provider, "preflight_order", None)
-            if requires_permit and smart and caller_supplied_cache_permit:
-                raise SubmissionRefused("external_cache_permit_not_allowed_for_smart_cancel")
-            if requires_permit and cache_permit is None:
-                prepare_order_state = getattr(self._provider, "prepare_order_state", None)
-                if not callable(prepare_order_state):
-                    raise SubmissionRefused("account_cache_not_fresh")
-                guarded_order_state = prepare_order_state()
-                if guarded_order_state is None:
-                    raise SubmissionRefused("account_cache_not_fresh")
-            if not requires_permit and callable(preflight_order):
-                preflight_qty = None if v_norm in {"kraken", "hyperliquid"} else qty
-                preflight_order(
-                    self.symbol, side_u, preflight_qty, price, market=is_market, kind=order_kind
-                )
-
-            # 0. Compute smart venue pricing before the guards.
-            if smart and not isinstance(price, bool):
-                price = self._provider.adjust_order_price(
-                    self.symbol, side_u, price, cancel_opposite=not defers_smart_cancel
-                )
-            if not is_market and price is not None and not isinstance(price, bool):
-                round_px = getattr(self._provider, "round_price", None)
-                if callable(round_px):
-                    px_f = safe_pos_float(round_px(self.symbol, price), default=None)
-                    if px_f is not None and not (caller_supplied_cache_permit and side_u == "BUY" and px_f > price):
-                        price = px_f
+            (
+                price,
+                guarded_order_state,
+                preflight_order,
+                retry_requested_price,
+                retry_price_tolerance,
+            ) = self._prepare_preflight_and_smart_price(
+                side_u, price, qty, is_market, smart, order_kind, v_norm,
+                requires_permit, defers_smart_cancel, caller_supplied_cache_permit,
+                cache_permit, retry_constraint_supplied,
+                retry_requested_price_raw, retry_price_tolerance_raw,
+            )
 
             # 1. Provider-agnostic daily trade cap (30 orders / 24h per symbol and side).
             if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
@@ -463,76 +1129,33 @@ class Instrument:
                     return None
 
             # Stage 0: Vendor Pre-flight & Unified Account Balance Check
-            if isinstance(price, bool) or (price is not None and (side_u == "BUY" or not is_market)):
-                price_f = safe_pos_float(price, default=None)
-                if price_f is None:
-                    print(f"[{self.symbol}] {side_u} preflight refused: price invalid {price!r}")
-                    reason = "invalid_price"
-                    return None
-                price = price_f
+            (
+                price,
+                quantity_price,
+                base_asset,
+                quote_asset,
+                known_balance,
+                refusal,
+            ) = self._resolve_authoritative_balance_and_market_price(side_u, price, is_market)
+            if refusal:
+                reason = refusal
+                return None
 
-            base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
-            target_asset = quote_asset if side_u == "BUY" else base_asset
-
-            known_balance = None
-            if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
-                try:
-                    kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
-                    if kb_f is not None:
-                        if kb_f <= 0:
-                            print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
-                            reason = "balance_unavailable"
-                            return None
-                        known_balance = kb_f
-                except Exception:
-                    known_balance = None
-
-            quantity_price = price
-            if is_market:
-                quantity_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
-                if quantity_price is None:
-                    print(f"[{self.symbol}] {side_u} MARKET BLOCKED: current price unavailable")
-                    reason = "market_price_unavailable"
-                    return None
-
-            profit_window_ref = None
-            if not bypass_profit_guard:
-                try:
-                    eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
-                        self._provider.name, side_u, module=caller_module, reference_mode=profit_reference_mode,
-                    )
-                except Exception:
-                    eff_ref_mode = None
-                if regime_context is None:
-                    regime_context = self._resolve_regime_context()
-                if profit_margin is None:
-                    profit_margin = order_guard.get_margin_cfg(self._provider.name)
-                if not bypass_math_ref and eff_ref_mode != "off":
-                    profit_window_ref = self._call_profit_guard_window_ref(
-                        self.symbol, side_u, safeback_override,
-                        regime_context=regime_context, reference_mode=profit_reference_mode, module=caller_module,
-                    )
-
-                # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
-                if bypass_math_ref:
-                    print(
-                        f"[GUARD] {side_u} {self.symbol}: the historical price reference "
-                        "was explicitly bypassed; the quantity/weight guard remains active")
-                elif (
-                    not bypass_all
-                    and not hasattr(order_guard.profit_guard, "_mock_name")
-                    and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
-                ):
-                    guard_px_stage1 = quantity_price if is_market else price
-                    cm_kwargs = self._build_profit_guard_kwargs(
-                        profit_window_ref, regime_context, None, None, profit_reference_mode, caller_module,
-                    )
-                    cm_kwargs.pop("qty", None)
-                    if not order_guard.check_math_profit_reference(
-                        self._provider, self.symbol, side_u, guard_px_stage1, profit_margin, **cm_kwargs
-                    ):
-                        reason = "profit_guard"
-                        return None
+            # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
+            (
+                regime_context,
+                profit_margin,
+                profit_window_ref,
+                refusal,
+            ) = self._evaluate_pre_sizing_profit_guard(
+                side_u, price, quantity_price, is_market,
+                bypass_profit_guard, bypass_math_ref, bypass_all,
+                safeback_override, profit_reference_mode, caller_module,
+                regime_context, profit_margin,
+            )
+            if refusal:
+                reason = refusal
+                return None
 
             early_abort_if = getattr(abort_if, "is_aborted", None)
             if _is_aborted(early_abort_if):
@@ -540,136 +1163,51 @@ class Instrument:
                 return None
 
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
-            hours_f = safe_pos_float(kwargs.get("hours", 5), default=5.0)
-            decision = self._provider.quantity_decision(
-                self.symbol, side_u, quantity_price, qty,
-                base=base_asset, quote=quote_asset,
-                cancelorders=_parse_bool_flag(kwargs.get("cancelorders", False), False),
-                hours=hours_f,
-                apply_policy=not bypass_quantity_policy,
-                market=is_market,
-                enforce_business_minimum=enforce_business_minimum,
-                regime_context=(None if (caller_applied_scale < 1.0 or bypass_profit_guard or is_monitor_replace) else regime_context),
-                known_balance=known_balance,
+            qty, applied_scale, refusal = self._evaluate_quantity_sizing(
+                side_u, qty, quantity_price, base_asset, quote_asset,
+                is_market, enforce_business_minimum, bypass_quantity_policy,
+                bypass_profit_guard, is_monitor_replace, caller_applied_scale,
+                regime_context, known_balance, kwargs,
             )
-            qty = decision.final_qty
-            raw_dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
-            dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
-            applied_scale = min(float(caller_applied_scale), dec_scale)
-            if qty <= 0:
-                print(f"[{self.symbol}] {side_u} qty refused: "
-                      f"{decision.refuse_reason} asset={decision.balance_asset}")
-                reason = decision.refuse_reason or "qty_zero_after_weight"
+            if refusal:
+                reason = refusal
                 return None
-
-            if (
-                not bypass_profit_guard
-                and not is_monitor_replace
-                and regime_context is not None
-                and side_u == "BUY"
-                and qty > 0
-                and not getattr(decision, "scale_applied", False)
-            ):
-                qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                    qty, quantity_price, is_market, enforce_business_minimum,
-                    regime_context, applied_scale, side_u=side_u)
-                if refusal:
-                    reason = refusal
-                    return None
 
             if _is_aborted(early_abort_if):
                 reason = "aborted_by_caller"
                 return None
 
             # 2. Optional provider-agnostic short trend gate (GT_S).
-            if wait_for_trend:
-                try:
-                    import cacheManager as cm
-                    import pricewindow as pw
-                    if pw.should_wait_short_trend(
-                        cm.get_short_trend_manager(), side_u, self.symbol,
-                        short_trend_cls=cm.CacheShortTrendManager
-                    ):
-                        retry_note = "caller owns retry" if caller_owns_retry else "the intent stays queued for retry"
-                        print(f"[{self.symbol}] {side_u} deferred by trend; placement does not wait, {retry_note}")
-                        reason = "trend_deferred"
-                        return None
-                except Exception as e:  # noqa: BLE001 — Opportunistic gate.
-                    print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
+            refusal = self._check_short_trend_gate(side_u, wait_for_trend, caller_owns_retry)
+            if refusal:
+                reason = refusal
+                return None
 
             # 2b. Medium-Term Trend Gate (GT_M / medium_trend, 4h - 24h).
-            check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(bypassed_guards)
-            medium_trend_action = (
-                medium_trend_action_cfg.strip().lower()
-                if isinstance(medium_trend_action_cfg, str)
-                else None
+            qty, applied_scale, regime_context, refusal = self._apply_medium_trend_gate(
+                side_u, qty, price, quantity_price, is_market, enforce_business_minimum,
+                is_monitor_replace, bypassed_guards, medium_trend_action_cfg,
+                medium_trend_scale_cfg, regime_context, applied_scale,
             )
-            gt2_context = regime_context
-            if check_medium_trend and gt2_context is None and medium_trend_action in {"defer", "scale"}:
-                gt2_context = self._resolve_regime_context()
-                if gt2_context is not None and regime_context is None:
-                    regime_context = gt2_context
-            if check_medium_trend and gt2_context is not None:
-                raw_reg = (
-                    (gt2_context.get("regime") or gt2_context.get("resolved_trend"))
-                    if isinstance(gt2_context, dict)
-                    else (getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None))
-                )
-                resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
-                adverse_medium_trend = (
-                    (side_u == "BUY" and resolved_regime == "bear")
-                    or (side_u == "SELL" and resolved_regime == "bull")
-                )
-                if medium_trend_action == "defer" and adverse_medium_trend:
-                    regime_label = "BEAR regime" if side_u == "BUY" else "BULL regime, riding trend"
-                    print(f"[{self.symbol}] {side_u} deferred by medium-term trend (4h-24h {regime_label})")
-                    reason = "medium_trend_deferred"
-                    return None
-                elif medium_trend_action == "scale" and adverse_medium_trend and not is_monitor_replace:
-                    scale_factor = parse_scale_factor(medium_trend_scale_cfg, default=0.5)
-                    if scale_factor <= 0.0:
-                        reason = "medium_trend_qty_zero"
-                        return None
-                    if scale_factor < float(applied_scale):
-                        qty = self._round_provider_qty(max(0.0, qty * (scale_factor / float(applied_scale))))
-                        print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
-                        if qty <= 0:
-                            reason = "medium_trend_qty_zero"
-                            return None
-                        gt2_refusal = check_order_filter_refusal(
-                            self._provider, self.symbol, side_u,
-                            quantity_price if is_market else price, qty,
-                            market=is_market, enforce_business_minimum=enforce_business_minimum,
-                        )
-                        if gt2_refusal:
-                            print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
-                            reason = gt2_refusal
-                            return None
-                        applied_scale = min(float(applied_scale), scale_factor)
+            if refusal:
+                reason = refusal
+                return None
 
             if _is_aborted(early_abort_if):
                 reason = "aborted_by_caller"
                 return None
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
-            if not bypass_profit_guard and qty > 0:
-                guard_price = quantity_price if is_market else price
-                pg_kwargs = self._build_profit_guard_kwargs(
-                    profit_window_ref, regime_context, qty, bypassed_guards,
-                    profit_reference_mode, caller_module,
-                )
-                if not order_guard.profit_guard(
-                    self._provider, self.symbol, side_u, guard_price, profit_margin, **pg_kwargs
-                ):
-                    reason = "profit_guard"
-                    return None
-                if not is_monitor_replace:
-                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                        qty, guard_price, is_market, enforce_business_minimum,
-                        regime_context, applied_scale, side_u=side_u)
-                    if refusal:
-                        reason = refusal
-                        return None
+            qty, applied_scale, refusal = self._evaluate_post_sizing_profit_guard(
+                side_u, qty, price, quantity_price, is_market,
+                enforce_business_minimum, is_monitor_replace,
+                bypass_profit_guard, bypassed_guards, profit_window_ref,
+                regime_context, profit_margin, profit_reference_mode,
+                caller_module, applied_scale,
+            )
+            if refusal:
+                reason = refusal
+                return None
 
             if _is_aborted(abort_if):
                 reason = "aborted_by_caller"
@@ -677,50 +1215,19 @@ class Instrument:
             if callable(execution_enabled) and not bool(execution_enabled()):
                 raise SubmissionRefused("execution_disabled")
 
-            if not caller_owns_retry:
-                try:
-                    if order_retry.RETRY_ENABLED:
-                        prequeue_kwargs = {**retry_kwargs, "smart": smart}
-                        if 0.0 < float(applied_scale) < 1.0:
-                            prequeue_kwargs["applied_scale"] = float(applied_scale)
-                        self._apply_outbox_lineage_prefix(prequeue_kwargs, kwargs)
-                        prequeued_claim = order_retry.enqueue_claimed(
-                            self.symbol, side_u, qty, prequeue_kwargs,
-                            requested_price=orig_price, ref_price=price,
-                            failure_reason="submit_pending",
-                            provider_name=self.provider_name,
-                            intent_id=kwargs.get("intent_id"),
-                            kind=order_kind, ttl_sec=kwargs.get("ttl_sec"))
-                        if prequeued_claim is None:
-                            raise RuntimeError("the intent cannot be read back after persisting")
-                        prequeued_client_order_id = dict(
-                            prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
-                        if not prequeued_client_order_id:
-                            raise RuntimeError("the persisted intent has no client_order_id")
-                        kwargs["client_order_id"] = prequeued_client_order_id
-                except Exception as exc:
-                    print(
-                        f"[{self.symbol}] {side_u} BLOCKED: the intent cannot be "
-                        f"persisted before the submit ({exc})")
-                    reason = "pre_submit_persist_failed"
-                    return None
-            else:
-                prequeued_claim = kwargs.get("_retry_claim")
-
-            if prequeued_claim is not None:
-                prequeued_record_id = prequeued_claim.get("id")
-                prequeued_client_order_id = dict(
-                    prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
-                prequeued_intent_id = prequeued_claim.get("intent_id")
-
-            if prequeued_intent_id and not caller_owns_retry:
-                _EXECUTION_AUDIT.record(
-                    "submit_requested", intent_id=prequeued_intent_id,
-                    venue=self.provider_name, symbol=self.symbol,
-                    side=side_u.lower(), qty=qty, price=price,
-                    market=is_market, kind=order_kind,
-                    client_order_id=prequeued_client_order_id,
-                )
+            (
+                prequeued_claim,
+                prequeued_record_id,
+                prequeued_client_order_id,
+                prequeued_intent_id,
+                refusal,
+            ) = self._reserve_outbox_claim(
+                side_u, qty, orig_price, price, is_market, order_kind,
+                caller_owns_retry, smart, applied_scale, retry_kwargs, kwargs,
+            )
+            if refusal:
+                reason = refusal
+                return None
 
             permit_requested_price = None if is_market else orig_price
             if requires_permit and cache_permit is None:
@@ -736,53 +1243,17 @@ class Instrument:
                     raise SubmissionRefused("account_cache_not_fresh")
                 validate_order_state(guarded_order_state)
 
-            final_profit_check = not bypass_profit_guard and is_market
-            if is_market and (final_profit_check or retry_constraint_supplied):
-                final_market_price = safe_pos_float(self._provider.get_current_price(self.symbol), default=None)
-                if final_market_price is None:
-                    reason = "market_price_unavailable"
-                    print(f"[{self.symbol}] {side_u} MARKET BLOCKED at dispatch: current price unavailable")
-                    return None
-                if retry_constraint_supplied and not order_retry.is_retry_price_favorable(
-                    side_u, final_market_price, retry_requested_price, retry_price_tolerance
-                ):
-                    reason = "retry_price_unfavorable"
-                    return None
-                if final_profit_check:
-                    pg_kwargs = self._build_profit_guard_kwargs(
-                        profit_window_ref, regime_context, qty, bypassed_guards,
-                        profit_reference_mode, caller_module,
-                    )
-                    if not order_guard.profit_guard(
-                        self._provider, self.symbol, side_u, final_market_price, profit_margin, **pg_kwargs
-                    ):
-                        reason = "profit_guard"
-                        return None
-                    pre_final_qty = qty
-                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                        qty, final_market_price, is_market, enforce_business_minimum,
-                        regime_context, applied_scale, side_u=side_u)
-                    if refusal:
-                        reason = refusal
-                        return None
-                    if (
-                        qty != pre_final_qty
-                        and requires_permit
-                        and not caller_supplied_cache_permit
-                        and callable(preflight_order)
-                    ):
-                        cache_permit = preflight_order(
-                            self.symbol, side_u, qty, price, market=is_market, kind=order_kind)
-                        if cache_permit is None:
-                            raise SubmissionRefused("account_cache_not_fresh")
-                    if prequeued_claim is not None:
-                        prequeued_claim = self._sync_claimed_qty(prequeued_claim, qty, applied_scale)
-                        if prequeued_intent_id and applied_scale < 1.0:
-                            _EXECUTION_AUDIT.record(
-                                "submit_scaled", intent_id=prequeued_intent_id,
-                                venue=self.provider_name, symbol=self.symbol,
-                                side=side_u.lower(), qty=qty, scale=applied_scale,
-                            )
+            qty, applied_scale, cache_permit, prequeued_claim, refusal = self._revalidate_market_dispatch(
+                side_u, qty, price, is_market, enforce_business_minimum, order_kind,
+                bypass_profit_guard, bypassed_guards, profit_window_ref, regime_context,
+                profit_margin, profit_reference_mode, caller_module,
+                retry_constraint_supplied, retry_requested_price, retry_price_tolerance,
+                requires_permit, caller_supplied_cache_permit, preflight_order,
+                cache_permit, prequeued_claim, prequeued_intent_id, applied_scale,
+            )
+            if refusal:
+                reason = refusal
+                return None
             if _is_aborted(abort_if):
                 reason = "aborted_by_caller"
                 return None
@@ -799,18 +1270,11 @@ class Instrument:
                     prequeued_claim = self._sync_claimed_qty(prequeued_claim, qty, applied_scale)
             reason = "submit_ambiguous"
             submit_attempted = True
-            provider_kwargs = {
-                **kwargs, "market": is_market, "force": is_market, "_balance_verified": True
-            }
-            if known_balance is not None:
-                provider_kwargs["known_balance"] = known_balance
-            if supports_biz_min:
-                provider_kwargs["enforce_business_minimum"] = enforce_business_minimum
-            if cache_permit is not None:
-                provider_kwargs["permit_requested_price"] = permit_requested_price
-                provider_kwargs["cache_permit"] = cache_permit
-            if smart and defers_smart_cancel:
-                provider_kwargs["_cancel_opposite_requested_price"] = orig_price
+            provider_kwargs = self._build_provider_submit_kwargs(
+                kwargs, is_market, known_balance, supports_biz_min,
+                enforce_business_minimum, cache_permit, permit_requested_price,
+                smart, defers_smart_cancel, orig_price,
+            )
             response = self._provider.place_order(
                 self.symbol, side_u, price, qty, **provider_kwargs)
             if _accepted_order_payload(response):
@@ -828,112 +1292,21 @@ class Instrument:
             reason = reason or "guard_check_failed"
             return None
         finally:
-            submission_state = (
-                "accepted" if order is not None else
-                "unknown" if submit_attempted else "refused"
-            )
-            if outcome_context is not None:
-                outcome_context.update(
-                    accepted=order is not None,
-                    reason=None if order is not None else reason,
-                    state=submission_state,
-                )
-                if order is not None or submit_attempted:
-                    outcome_context["submitted_qty"] = qty
-                    outcome_context["submitted_price"] = price
-                cid = prequeued_client_order_id or kwargs.get("client_order_id")
-                if cid:
-                    outcome_context["client_order_id"] = cid
-                iid = prequeued_intent_id or kwargs.get("intent_id")
-                if iid:
-                    outcome_context["intent_id"] = iid
             try:
                 caller = os.path.basename(sys._getframe(1).f_code.co_filename)
             except Exception:
                 caller = None
-            terminal_filter_refusal = bool(
-                reason and not submit_attempted and order_retry.is_terminal_filter_refusal(reason)
+            self._finalize_place_outcome(
+                side_u=side_u, price=price, qty=qty, orig_qty=orig_qty, orig_price=orig_price,
+                is_market=is_market, order_kind=order_kind, order=order, reason=reason,
+                submit_attempted=submit_attempted, caller_owns_retry=caller_owns_retry,
+                applied_scale=applied_scale, regime_context=regime_context,
+                outcome_context=outcome_context, prequeued_claim=prequeued_claim,
+                prequeued_record_id=prequeued_record_id,
+                prequeued_client_order_id=prequeued_client_order_id,
+                prequeued_intent_id=prequeued_intent_id,
+                retry_kwargs=retry_kwargs, kwargs=kwargs, caller=caller,
             )
-            order_lifecycle.log_order_outcome(
-                self.symbol, side_u, price, qty, submission_state,
-                None if order else reason, order_kind, caller=caller,
-                regime_context=regime_context)
-            if order is not None and not caller_owns_retry:
-                try:
-                    if prequeued_claim is not None:
-                        tracked = order_lifecycle.complete_accepted_claim(
-                            order_retry, prequeued_claim, order=order,
-                            provider_name=self.provider_name,
-                            symbol=self.symbol, side=side_u)
-                        if not tracked:
-                            print(
-                                f"[{self.symbol}] {side_u} accepted, but the tracking "
-                                "could not be updated; the intent stays pending")
-                        elif prequeued_intent_id:
-                            _EXECUTION_AUDIT.record(
-                                "submit_accepted", intent_id=prequeued_intent_id,
-                                venue=self.provider_name, symbol=self.symbol,
-                                side=side_u.lower(), qty=qty, price=price,
-                                market=is_market, kind=order_kind,
-                                client_order_id=prequeued_client_order_id,
-                                order_id=extract_order_id(order),
-                            )
-                except Exception as _e:  # noqa: BLE001
-                    print(f"[{self.symbol}] {side_u} tracking accepted failed: {_e}")
-            elif (order is None and not caller_owns_retry
-                  and (prequeued_record_id is not None
-                       or (reason not in {
-                           "account_cache_not_fresh", "execution_disabled",
-                           "trading_disabled", "aborted_by_caller", "invalid_price"}
-                           and not terminal_filter_refusal))):
-                try:
-                    if prequeued_intent_id:
-                        _EXECUTION_AUDIT.record(
-                            "submit_unknown" if submit_attempted else "submit_refused",
-                            intent_id=prequeued_intent_id,
-                            venue=self.provider_name, symbol=self.symbol,
-                            side=side_u.lower(), qty=qty, price=price,
-                            market=is_market, kind=order_kind,
-                            client_order_id=prequeued_client_order_id,
-                            failure_reason=reason,
-                        )
-                    if order_retry.RETRY_ENABLED:
-                        if prequeued_claim is not None:
-                            claim_outcome = (
-                                "success" if (
-                                    terminal_filter_refusal or reason in {
-                                        "execution_disabled", "trading_disabled",
-                                        "aborted_by_caller", "invalid_price"}) else
-                                "deferred" if order_retry.is_non_failure_deferral(reason)
-                                else "failure")
-                            order_retry.complete_claim(
-                                prequeued_claim, claim_outcome,
-                                failure_reason=reason,
-                                submission_state="unknown" if submit_attempted else "refused")
-                        else:
-                            q_orig = safe_pos_float(orig_qty, default=None)
-                            if q_orig is None:
-                                queue_qty = qty
-                                app_sc = safe_pos_float(applied_scale, default=1.0) or 1.0
-                                if 0.0 < app_sc < 1.0:
-                                    retry_kwargs["applied_scale"] = app_sc
-                            else:
-                                queue_qty = q_orig
-                            if safe_pos_float(queue_qty, default=None) is not None:
-                                try:
-                                    ref_price = self._provider.get_current_price(self.symbol)
-                                except Exception:  # noqa: BLE001
-                                    ref_price = None
-                                self._apply_outbox_lineage_prefix(retry_kwargs, kwargs)
-                                order_retry.enqueue(
-                                    self.symbol, side_u, queue_qty, retry_kwargs,
-                                    requested_price=orig_price, ref_price=ref_price,
-                                    failure_reason=reason,
-                                    provider_name=self.provider_name,
-                                    intent_id=kwargs.get("intent_id"),
-                                    kind=order_kind, ttl_sec=kwargs.get("ttl_sec"))
-                except Exception as _e:  # noqa: BLE001
-                    print(f"[{self.symbol}] {side_u} enqueue retry failed (ignored): {_e}")
 
     def min_qty(self) -> float:
         """Return the venue minimum order quantity; ``0`` means no known minimum."""

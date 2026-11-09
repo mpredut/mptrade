@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from botcore import is_live_network_backfill_enabled, load_key_value_conf
 from cachepaths import (
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_KRAKEN_TRADE_FILENAME,
+    CACHE_ORDER_FILENAME,
+    CACHE_T212_TRADE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -132,7 +136,12 @@ def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
     )
 
 
-_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = _resolve_order_cache_files()
+_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
+    (CACHE_ORDER_FILENAME, "binance"),
+    (CACHE_KRAKEN_TRADE_FILENAME, "kraken"),
+    (CACHE_HYPERLIQUID_TRADE_FILENAME, "hyperliquid"),
+    (CACHE_T212_TRADE_FILENAME, "t212"),
+)
 
 
 def _iter_audit_dir_file_batches(

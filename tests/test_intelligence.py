@@ -1651,7 +1651,9 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
     assert "rtrade.heartbeat" in hbs and hbs["rtrade.heartbeat"]["status"] == "alive"
 
     saved_calls = []
-    monkeypatch.setattr(ar_mod, "save_json_state", lambda p, d, **kw: saved_calls.append((p, d)))
+    monkeypatch.setattr(
+        ar_mod, "save_json_state", lambda p, d, **kw: saved_calls.append((p, d)), raising=False
+    )
     tr_ssot.persist_supervisor_audit_artifact(
         {"ts": 1700000000.0, "mode": "shadow", "summary": "ok"},
         str(tmp_path),

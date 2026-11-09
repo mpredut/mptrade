@@ -129,11 +129,14 @@ class ReplayDeterminismTest(unittest.TestCase):
 
         # Inject extreme fake volatility in shadow cache resolver
         with patch(
-            "strategies.spot_engine.resolve_cached_volatility_1h",
+            "intelligence.internal.state.volatility.resolve_cached_volatility_1h",
             return_value=0.50,  # 50% hourly volatility!
         ), patch(
-            "strategies.spot_engine.resolve_cached_volatility_1h_pct",
+            "intelligence.internal.state.volatility.resolve_cached_volatility_1h_pct",
             return_value=50.0,
+        ), patch(
+            "strategies.position_exit_manager.resolve_cached_volatility_1h",
+            return_value=0.50,
         ):
             res_polluted = run_replay(
                 bars,

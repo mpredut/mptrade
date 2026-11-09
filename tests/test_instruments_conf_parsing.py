@@ -467,7 +467,7 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     from providers.execution_audit import AuditedStrategyExecutor
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
-    from intelligence.external.collectors.orderbook_depth import (
+    from intelligence.external.collectors.base_collector import (
         _has_hyperliquid_instrument,
         _resolve_configured_venue,
     )
@@ -607,7 +607,7 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
 
     # _resolve_configured_venue & _is_multi_venue_base inspect dict-based load_registry() without AttributeError
     from types import SimpleNamespace
-    import intelligence.external.collectors.orderbook_depth as obd_mod
+    import intelligence.external.collectors.base_collector as obd_mod
     import instrument_registry as ir_mod
     orig_load = ir_mod.load_registry
     try:
