@@ -1437,7 +1437,7 @@ def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:
     f = normalize_epoch_sec(now_ts, default=None, allow_zero=allow_zero)
     if f is not None:
         return f
-    clk = getattr(_RUNTIME_SERVICES, "clock_fn", None)
+    clk = getattr(globals().get("_RUNTIME_SERVICES"), "clock_fn", None)
     return float(clk()) if callable(clk) else _time.time()
 
 

@@ -557,8 +557,11 @@ def _overlay_live_current_price_ticks(
                     is_eq_sym_load
                     and len(series_24h) >= 2
                     and last_24_pt is not None
-                    and (cand_last[0] - last_24_pt[0]) > 20 * 60 * 1000
                     and abs(cand_last[1] - last_24_pt[1]) <= 1e-6
+                    and (
+                        cand_last[0] <= last_24_pt[0]
+                        or (cand_last[0] - last_24_pt[0]) > 20 * 60 * 1000
+                    )
                 ):
                     break
                 return list(series_24h) + cand_pts

@@ -699,6 +699,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
         r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
         r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
+        r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
         r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
         r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:)",
         re.IGNORECASE,
@@ -845,6 +846,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "ConnectTimeoutError" in cleaned
                                     or "cycle failed (" in cleaned
                                     or "EGeneral:Internal error" in cleaned
+                                    or "[shadow_live] error:" in cleaned
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned

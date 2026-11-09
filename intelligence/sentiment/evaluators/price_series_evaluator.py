@@ -1577,10 +1577,10 @@ def merge_equity_ohlc24_into_raw_series(raw_ser: list, ohlc24_pts: list) -> list
     ohlc_bars = [
         r
         for r in sort_ts_rows(ohlc24_pts or [])
-        if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+        if isinstance(r, (list, tuple)) and len(r) >= 3 and safe_nonneg_float(r[2], default=None) is not None
     ]
     if (
-        len(ohlc_bars) >= 4
+        sum(1 for r in ohlc_bars if (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0) >= 4
         and (ohlc_0 := _parse_ts_px_row(ohlc_bars[0])) is not None
         and (ohlc_last := _parse_ts_px_row(ohlc_bars[-1])) is not None
         and (ser_last := _parse_ts_px_row(raw_ser[-1])) is not None
@@ -1590,7 +1590,7 @@ def merge_equity_ohlc24_into_raw_series(raw_ser: list, ohlc24_pts: list) -> list
         for r_s in raw_ser:
             if (pt_s := _parse_ts_px_row(r_s)) is not None:
                 if (
-                    (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and (safe_pos_float(r_s[2], default=0.0) or 0.0) > 0.0)
+                    (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and safe_nonneg_float(r_s[2], default=None) is not None)
                     or pt_s[0] < ohlc_0[0]
                     or pt_s[0] > ohlc_last[0]
                     or (pt_s[0] >= ohlc_last[0] - 15 * 60 * 1000 and not _prices_diverged(pt_s[1], ohlc_last[1]))

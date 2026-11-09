@@ -1265,7 +1265,17 @@ def _load_and_evaluate_pretrade_short_slopes(
             and (float(last_alt_pt[0]) / 1000.0 - st_ts_t) > 600.0
         )
         s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
-        if (eq_px_diverged_05pct or eq_chart_refreshed or stale_short_ts) and alt_series_24h:
+        eq_ohlc_flat_short = bool(
+            is_eq_sym
+            and t_entry.get("slope_3_7m") is None
+            and alt_series_24h
+            and len(alt_series_24h) >= 5
+            and (
+                sum(1 for r in alt_series_24h if isinstance(r, (list, tuple)) and len(r) >= 3) >= 4
+                or os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_ohlc_24h_{symbol}.json"))))
+            )
+        )
+        if (eq_px_diverged_05pct or eq_chart_refreshed or stale_short_ts or eq_ohlc_flat_short) and alt_series_24h:
             for k_ov in (
                 "slope_90s", "growth_90s", "trend_90s",
                 "slope_3_7m", "growth_3_7m", "trend_3_7m",
@@ -1276,7 +1286,7 @@ def _load_and_evaluate_pretrade_short_slopes(
             ):
                 t_entry.pop(k_ov, None)
             t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
-            if (eq_px_diverged_05pct or eq_chart_refreshed) and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
+            if (eq_px_diverged_05pct or eq_chart_refreshed or eq_ohlc_flat_short) and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
                 t_entry.update(k_recomp)
         elif alt_series_24h and (
             t_entry.get("slope_3_7m") is None
@@ -1682,7 +1692,7 @@ def _collect_and_format_pretrade_recent_fills(
                 sub_parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
             if abs(lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), 0.0)) >= 0.01:
                 sub_parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
-            if is_lb_harvested:
+            if is_lb_harvested or len(open_lots_f) > 1:
                 o_lots = [
                     f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
                     for lt in open_lots_f[-4:]

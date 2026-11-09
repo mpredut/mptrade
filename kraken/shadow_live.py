@@ -141,7 +141,12 @@ def _fetch_with_ts(pair: str, interval: int):
         from kraken.market_data import fetch_ohlc_candles
     except ImportError:
         from market_data import fetch_ohlc_candles
-    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+    try:
+        records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+    except Exception as exc:
+        if "timed out" not in str(exc).lower():
+            raise
+        records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
     return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 

@@ -1112,6 +1112,26 @@ def _enrich_positions_with_orders_and_cycles_impl(
                     or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
                 )
             ]
+            if held_cur > 1e-8 and fresh_lots and len(fresh_lots) < len(open_lots[-4:]):
+                fresh_q_chk = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+                if fresh_q_chk < held_cur * 0.90:
+                    ext_rev: List[Dict[str, Any]] = []
+                    acc_q = 0.0
+                    for lot in reversed(open_lots[-4:]):
+                        if not isinstance(lot, dict):
+                            continue
+                        lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
+                        lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
+                        lot_ts = int(safe_pos_float(lot.get("ts_ms"), default=0) or 0)
+                        if lot_px <= 0.0 or lq <= 0.0:
+                            continue
+                        if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
+                            continue
+                        if acc_q + lq <= held_cur * 1.05 or (newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000):
+                            ext_rev.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+                            acc_q += lq
+                    if len(ext_rev) > len(fresh_lots):
+                        fresh_lots = list(reversed(ext_rev))
             if not is_flat_after_exit and "open_lots" in pos:
                 if fresh_lots:
                     pos["open_lots"] = fresh_lots

@@ -9213,3 +9213,117 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
     assert anoms.error_count == 0
 
 
+def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and_daemon_recovery(tmp_path):
+    import json
+    import botcore
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import _collect_and_format_pretrade_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. botcore.resolve_now_ts safely handles missing _RUNTIME_SERVICES during circular-import startup
+    saved_rt = botcore.__dict__.pop("_RUNTIME_SERVICES", None)
+    try:
+        assert botcore.resolve_now_ts() > 1_700_000_000.0
+    finally:
+        if saved_rt is not None:
+            botcore._RUNTIME_SERVICES = saved_rt
+
+    # 2. Active held open lots within 45d needed to cover wallet balance (e.g. TAOUSDC 11.83 TAO) are retained
+    now_ms = 1_794_258_000_000
+    ro_tao = {
+        "TAOUSDC": {
+            "last_action_side": "BUY",
+            "active_avg_buy_px": 238.795958,
+            "active_cycle_rem_qty": 11.8323,
+            "last_buy": {"price": 212.5, "qty": 3.5017, "ts_ms": now_ms - 14 * 3600 * 1000, "actor": "BOT", "actor_tag": "BOT"},
+            "last_sell": {"price": 219.5, "qty": 1.8256, "ts_ms": now_ms - 52 * 3600 * 1000, "actor": "BOT", "actor_tag": "BOT"},
+            "open_lots": [
+                {"lot_id": "L1", "qty": 4.6774, "entry_px": 258.5, "ts_ms": now_ms - int(14.8 * 86400 * 1000)},
+                {"lot_id": "L2", "qty": 1.2515, "entry_px": 240.494974, "ts_ms": now_ms - int(8.0 * 86400 * 1000)},
+                {"lot_id": "L3", "qty": 1.4268, "entry_px": 237.1, "ts_ms": now_ms - int(5.0 * 86400 * 1000)},
+                {"lot_id": "L4", "qty": 3.5017, "entry_px": 212.5, "ts_ms": now_ms - 14 * 3600 * 1000},
+            ],
+            "recent_buys": [
+                {"qty": 1.4268, "price": 237.1},
+                {"qty": 1.7715, "price": 213.2},
+                {"qty": 3.5017, "price": 212.5},
+            ],
+        }
+    }
+    tao_pos = [{"venue": "binance", "symbol": "TAOUSDC", "free_base": 3.506554, "locked_base_qty": 8.3229, "price": 215.2}]
+    enrich_positions_with_orders_and_cycles(tao_pos, {}, {}, {"binance": ro_tao}, ro_tao, {}, {}, {}, {})
+    assert len(tao_pos[0]["open_lots"]) == 4
+    assert [lt["entry_px"] for lt in tao_pos[0]["open_lots"]] == [258.5, 240.494974, 237.1, 212.5]
+
+    # 3. collect_pretrade_telemetry emits Open LIFO Lots=[...] whenever len(open_lots) > 1 even if newest buy is unharvested
+    cdir_pt = tmp_path / "cdir_pt"
+    cdir_pt.mkdir(parents=True, exist_ok=True)
+    telemetry_out: dict = {}
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc_mod
+    orig_loader = ptc_mod.load_symbol_best_recent_fills
+    ptc_mod.load_symbol_best_recent_fills = lambda *a, **kw: ro_tao["TAOUSDC"]
+    try:
+        _collect_and_format_pretrade_recent_fills(str(cdir_pt), "TAOUSDC", ["TAOUSDC"], telemetry_out, lambda p: {})
+    finally:
+        ptc_mod.load_symbol_best_recent_fills = orig_loader
+    assert "Open LIFO Lots=[4.6774@258.5, 1.2515@240.494974, 1.4268@237.1, 3.5017@212.5]" in telemetry_out["Recent Venue Fills"]
+
+    # 4. Equity 24h series merge preserves zero-volume Yahoo 5m open bars and skips sub-second duplicate poller tick
+    cdir_eq = tmp_path / "cdir_eq"
+    (cdir_eq / "prices").mkdir(parents=True, exist_ok=True)
+    eq_bars = [
+        [now_ms - 86400_000, 1.19, 483.0],
+        [now_ms - 34200_000, 1.15, 0.0],
+        [now_ms - 33600_000, 1.15, 0.0],
+        [now_ms - 7200_000, 1.315, 377.0],
+        [now_ms - 3600_000, 1.30, 412.0],
+        [now_ms - 1800_000, 1.285, 640.0],
+        [now_ms - 900_000, 1.28, 369.0],
+        [now_ms - 300_000, 1.26, 1100.0],
+        [now_ms, 1.27, 414.0],
+    ]
+    (cdir_eq / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": eq_bars}}), encoding="utf-8"
+    )
+    (cdir_eq / "prices" / "cache_ohlc_24h_RGNT_US_EQ.json").write_text(
+        json.dumps({"ts": now_ms / 1000.0, "symbol": "RGNT_US_EQ", "points": eq_bars}), encoding="utf-8"
+    )
+    cur_p_items = {"RGNT_US_EQ": [[now_ms - 492, 1.27]]}
+    s24_eq, _ = load_symbol_price_series(str(cdir_eq), "RGNT_US_EQ", current_price_items=cur_p_items)
+    m24_eq = compute_24h_price_metrics(s24_eq)
+    assert m24_eq["low_24h"] == pytest.approx(1.15)
+    assert m24_eq["chg_1h_pct"] == pytest.approx(-2.31, abs=0.02)
+
+    # 5. harvest_log_anomalies_from_dirs suppresses recovered MacroAnalyzer startup NameError and shadow_live timeout
+    log_dir2 = tmp_path / "logs2"
+    log_dir2.mkdir(parents=True, exist_ok=True)
+    (log_dir2 / "macro_analyzer.log").write_text(
+        "\n".join(
+            [
+                "Traceback (most recent call last):",
+                "  File \"/home/predut/mptrade/botcore.py\", line 1440, in resolve_now_ts",
+                "NameError: name '_RUNTIME_SERVICES' is not defined",
+                "2026-11-09 16:43:39 [INFO] Starting MacroAnalyzer (interval=900s, llm_cadence=1800s)",
+                "2026-11-09 16:43:45 [INFO] Macro analyzer cycle active: action=WAIT",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (log_dir2 / "shadow_live.log").write_text(
+        "\n".join(
+            [
+                "[shadow_live] error: The read operation timed out",
+                "[FORWARD (from the anchor)] 12 bars",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    anoms2 = harvest_log_anomalies_from_dirs([str(log_dir2)], 24.0)
+    assert anoms2.error_count == 0
+
+
+

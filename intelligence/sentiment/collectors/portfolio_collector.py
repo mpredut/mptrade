@@ -1222,6 +1222,25 @@ def _load_symbol_best_recent_fills_impl(
                         if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
                             held_cur_f = raw_b_v
             fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+            if held_cur_f > 1e-8 and len(fresh_lots) < len(open_lots_raw[-4:]) and fresh_q < held_cur_f * 0.90:
+                ext_rev_f: List[Dict[str, Any]] = []
+                acc_q_f = 0.0
+                for lot in reversed(open_lots_raw[-4:]):
+                    if not isinstance(lot, dict):
+                        continue
+                    lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
+                    lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
+                    lot_ts = int(safe_pos_float(lot.get("ts_ms"), default=0) or 0)
+                    if lot_px <= 0.0 or lq <= 0.0:
+                        continue
+                    if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
+                        continue
+                    if acc_q_f + lq <= held_cur_f * 1.05 or (newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000):
+                        ext_rev_f.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+                        acc_q_f += lq
+                if len(ext_rev_f) > len(fresh_lots):
+                    fresh_lots = list(reversed(ext_rev_f))
+                    fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
             if held_cur_f > 1e-8 and len(fresh_lots) < len(open_lots_raw):
                 unfiltered_q = safe_pos_float(fills.get("active_cycle_rem_qty"), 0.0) or sum(
                     safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in open_lots_raw if isinstance(lt, dict)
