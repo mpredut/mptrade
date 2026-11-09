@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 import instrument_registry as sym
 from binance_api import bapi as api
 from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
-from cachepaths import cache_path, canonical_base_asset, normalize_venue_name
+from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME, cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 
 # Import the base classes and factory
@@ -580,7 +580,9 @@ class PricePlatformFactory:
 # ============================================
 
 class CacheAllPriceFetcherManager(CachePriceManagerBase):
-    def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None,
+    DEFAULT_FILENAME = CACHE_WATCHER_ALL_PRICE_FILENAME
+
+    def __init__(self, sync_ts, symbols, filename=CACHE_WATCHER_ALL_PRICE_FILENAME, api_client=api, cmc_api_key: Optional[str] = None,
                  read_only=False, max_symbols: Optional[int] = None):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
         self.max_monitored_symbols = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
@@ -970,7 +972,7 @@ def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbo
     CacheFactory.register(
         "PriceMulti",
         CacheAllPriceFetcherManager,
-        filename="cache_watcher_all_price.json",
+        filename=CacheAllPriceFetcherManager.DEFAULT_FILENAME,
         sync_ts=lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
         **extra_kwargs,
     )

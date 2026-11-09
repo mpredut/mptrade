@@ -266,6 +266,25 @@ class _DiskBackedSymbolCollector:
             return None
         return fetch_fn(symbol, allow_network=True, now=now)
 
+    @classmethod
+    def disk_prefix(cls) -> str:
+        """Return the canonical filename prefix (e.g. ``'orderbook_depth_'``) for this collector."""
+        pfx = str(getattr(cls, "_DISK_FILE_PREFIX", "") or "").strip()
+        return f"{pfx}_" if pfx and not pfx.endswith("_") else pfx
+
+    def collect(
+        self,
+        symbol: str,
+        *,
+        allow_network: Optional[bool] = None,
+        now: Optional[float] = None,
+    ) -> Optional[Any]:
+        """Polymorphic collector entrypoint delegating to ``fetch(symbol, allow_network=..., now=...)``."""
+        fetch_fn = getattr(self, "fetch", None)
+        if not callable(fetch_fn):
+            return None
+        return fetch_fn(symbol, allow_network=allow_network, now=now)
+
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)
 

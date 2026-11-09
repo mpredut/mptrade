@@ -686,6 +686,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         CacheHyperliquidTradeManager,
         CacheKrakenTradeManager,
         CacheT212TradeManager,
+        CacheTradeManager,
         CacheVenueTradeSnapshotManagerBase,
     )
     from intelligence.sentiment.collectors import (
@@ -703,15 +704,41 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
+    assert CacheTradeManager.for_venue("binance") is CacheTradeManager
     for venue_trd_cls, expected_venue, expected_fname in (
         (CacheKrakenTradeManager, "kraken", "cache_trade_kraken.json"),
         (CacheHyperliquidTradeManager, "hyperliquid", "cache_trade_hyperliquid.json"),
         (CacheT212TradeManager, "t212", "cache_trade_t212.json"),
     ):
         assert issubclass(venue_trd_cls, CacheVenueTradeSnapshotManagerBase)
+        assert issubclass(venue_trd_cls, CacheTradeManager)
         assert issubclass(venue_trd_cls, CacheAccountManagerBase)
         assert venue_trd_cls.VENUE_KEY == expected_venue
         assert venue_trd_cls.DEFAULT_FILENAME == expected_fname
+        assert CacheTradeManager.for_venue(expected_venue) is venue_trd_cls
+
+    kraken_trd_path = os.path.join(temp_cache_dir, CacheKrakenTradeManager.DEFAULT_FILENAME)
+    from state_io import save_json_state
+
+    save_json_state(
+        kraken_trd_path,
+        {
+            "items": {
+                "TAOUSD": [
+                    {"id": "tx-1", "orderId": "k-1", "symbol": "TAOUSD", "isBuyer": False, "price": 412.5, "qty": 1.2, "time": 1700000100000},
+                    {"id": "tx-2", "orderId": "k-2", "symbol": "TAOUSD", "isBuyer": True, "price": 405.0, "qty": 1.2, "time": 1700000200000},
+                ]
+            },
+            "fetchtime": {"TAOUSD": 1700000200},
+        },
+        indent=2,
+    )
+    sanitized = CacheKrakenTradeManager.load_sanitized_trade_snapshot(kraken_trd_path)
+    assert len(sanitized["items"].get("TAOUSD", [])) == 2
+    assert sanitized["fetchtime"].get("TAOUSD") == 1700000200
+    k_mgr = CacheKrakenTradeManager(filename=kraken_trd_path, start_sync=False)
+    assert k_mgr.get_last_opposite_fill_price("TAOUSD", "BUY") == pytest.approx(412.5)
+    assert k_mgr.get_last_opposite_fill_price("TAOUSD", "SELL") == pytest.approx(405.0)
 
     for col_id, col_cls in (
         ("sentiment_fear_greed", FearGreedCollector),
@@ -732,9 +759,11 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert OrderGuardEvaluatorFactory.get_evaluator(og_cls) is og_inst
     assert CacheCurrentPriceManager.DEFAULT_FILENAME == "cache_current_price.json"
     assert CacheShortTrendManager.DEFAULT_FILENAME == "cache_short_trend.json"
+    assert CacheShortTrendManager.KALMAN_TREND_FILENAME == "cache_kalman_trend.json"
     assert CacheShortTrendManager.LIVE_WINDOW_SUBDIR == "24trend"
     assert CacheLongTrendManager.DEFAULT_FILENAME == "cache_long_trend.json"
     assert CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME == "priceanalysis.json"
+    assert CacheLongTrendManager.T_TREND_FILENAME == "cache_T_trend.json"
     assert Cache24PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_24_price_BTCUSDC.json"
     assert Cache365PriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_365_price_BTCUSDC.jsonl"
     assert CacheSparsePriceManager.disk_filename_for_symbol("BTCUSDC") == "cache_sparse_price_BTCUSDC.jsonl"

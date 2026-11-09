@@ -42,8 +42,11 @@ from botcore import (
 )
 from cacheInterface import CacheManagerInterface
 from cachepaths import (
+    CACHE_KALMAN_TREND_FILENAME,
     CACHE_LONG_TREND_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
+    CACHE_T_TREND_FILENAME,
+    PRICE_ANALYSIS_FILENAME,
     cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
@@ -157,7 +160,8 @@ class CacheLongTrendManager(CacheTrendManagerBase):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
     DEFAULT_FILENAME = CACHE_LONG_TREND_FILENAME
-    SOURCE_ANALYSIS_FILENAME = "priceanalysis.json"
+    SOURCE_ANALYSIS_FILENAME = PRICE_ANALYSIS_FILENAME
+    T_TREND_FILENAME = CACHE_T_TREND_FILENAME
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -178,13 +182,13 @@ class CacheLongTrendManager(CacheTrendManagerBase):
         config_root = _cm_attr("_CONFIG_ROOT", os.path.dirname(os.path.abspath(__file__)))
         default_root = os.path.dirname(os.path.abspath(__file__))
         if os.path.abspath(config_root) == os.path.abspath(default_root):
-            trend_filename = cache_path("priceanalysis.json")
+            trend_filename = cache_path(self.SOURCE_ANALYSIS_FILENAME)
             if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
-                legacy_root_pa = os.path.join(config_root, "priceanalysis.json")
+                legacy_root_pa = os.path.join(config_root, self.SOURCE_ANALYSIS_FILENAME)
                 if os.path.exists(legacy_root_pa) or os.path.exists(previous_generation_path(legacy_root_pa)):
                     trend_filename = legacy_root_pa
         else:
-            trend_filename = os.path.join(config_root, "priceanalysis.json")
+            trend_filename = os.path.join(config_root, self.SOURCE_ANALYSIS_FILENAME)
         if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
             print(f"[{self.cls_name}] File {trend_filename} does not exist.")
             return []
@@ -221,6 +225,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     """
 
     DEFAULT_FILENAME = CACHE_SHORT_TREND_FILENAME
+    KALMAN_TREND_FILENAME = CACHE_KALMAN_TREND_FILENAME
     LIVE_TREND_SUBDIR = "24trend"
     LIVE_FILE_PREFIX = "live_"
     LIVE_FILE_EXT = "json"
@@ -625,7 +630,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
                 k_tracker = getattr(self, "_kalman_tracker", None)
                 if k_tracker is None:
-                    k_path = os.path.join(os.path.dirname(self.filename), "cache_kalman_trend.json")
+                    k_path = os.path.join(os.path.dirname(self.filename), self.KALMAN_TREND_FILENAME)
                     k_tracker = shadow_signals.KalmanStateTracker(state_path=k_path, compute_vol=False)
                     self._kalman_tracker = k_tracker
                 with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():

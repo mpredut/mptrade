@@ -173,6 +173,12 @@ def _normalize(txid, tr):
 
 def _load_initial_cache(path):
     """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
+    try:
+        from cacheaccount import CacheKrakenTradeManager
+
+        return CacheKrakenTradeManager.load_sanitized_trade_snapshot(path)
+    except Exception:
+        pass
     loaded = read_json_dict(path, default=None, recover_previous=True)
     if (
         isinstance(loaded, dict)

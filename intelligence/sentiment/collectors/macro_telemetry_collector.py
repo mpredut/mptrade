@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from botcore import extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
 from cachepaths import (
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
     canonical_base_asset,
     normalize_venue_name,
 )
@@ -875,9 +876,9 @@ def _populate_market_and_portfolio_snapshot_impl(
     trends_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.DEFAULT_FILENAME))
     long_trends_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.DEFAULT_FILENAME))
     priceanalysis_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME))
-    t_trend_data = _rj(os.path.join(cache_dir, "cache_T_trend.json"))
-    kalman_data = _rj(os.path.join(cache_dir, "cache_kalman_trend.json"))
-    watcher_all_price_data = _rj(os.path.join(cache_dir, "cache_watcher_all_price.json"))
+    t_trend_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.T_TREND_FILENAME))
+    kalman_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.KALMAN_TREND_FILENAME))
+    watcher_all_price_data = _rj(os.path.join(cache_dir, CACHE_WATCHER_ALL_PRICE_FILENAME))
     trailing_map, trailing_by_venue = load_venue_trailing_maps(cache_dir, workspace_dir, _rj)
     long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
     t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}

@@ -14,6 +14,11 @@ from botcore import (
     load_local_module,
 )
 from cachepaths import (
+    CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+    CACHE_KALMAN_TREND_FILENAME,
+    CACHE_ORDERBOOK_DEPTH_PREFIX,
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
+    CACHE_WHALE_SNAPSHOT_PREFIX,
     cache_symbol_variants,
     canonical_base_asset,
     clean_symbol_key,
@@ -350,7 +355,7 @@ def _ensure_fresh_pretrade_microstructure(
             continue
         has_existing_m = any(
             os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_mu}.json"))))
-            for pfx_m in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_")
+            for pfx_m in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX)
         )
         if has_existing_m:
             ensure_fresh_symbol_microstructure(
@@ -391,8 +396,8 @@ def _fetch_pillar2_snapshot(
     except Exception:
         snap = None
 
-    variants = quote_variants if prefix == "orderbook_depth_" else sym_variants
-    prefer_freshest = prefix in ("whale_snapshot_", "derivatives_telemetry_")
+    variants = quote_variants if prefix == CACHE_ORDERBOOK_DEPTH_PREFIX else sym_variants
+    prefer_freshest = prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX)
     disk_d: Optional[Dict[str, Any]] = None
     best_ts = -1.0
     for cand in variants:
@@ -407,7 +412,7 @@ def _fetch_pillar2_snapshot(
                 disk_d, best_ts = cand_d, ts_v
 
     if snap is not None and disk_d is not None:
-        if prefix == "orderbook_depth_":
+        if prefix == CACHE_ORDERBOOK_DEPTH_PREFIX:
             sym_u_p2 = clean_symbol_key(symbol)
             snap_sym_p2 = clean_symbol_key(obj_attr(snap, "symbol"))
             disk_sym_p2 = clean_symbol_key(disk_d.get("symbol"))
@@ -420,7 +425,7 @@ def _fetch_pillar2_snapshot(
                 and _snap_ts(disk_d) > _snap_ts(snap) + 1.0
             ):
                 return disk_d
-        elif prefix in ("whale_snapshot_", "derivatives_telemetry_"):
+        elif prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX):
             if _snap_ts(snap) > 0.0 and _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
                 return disk_d
     return snap if snap is not None else disk_d
@@ -446,7 +451,7 @@ def _collect_pillar2_and_regime_telemetry(
         from external_order_guard import get_orderbook_collector
 
         ob_snap = _fetch_pillar2_snapshot(
-            cachedb_dir, symbol, get_orderbook_collector, "orderbook_depth_", sym_variants, quote_variants, _rj
+            cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj
         )
         if ob_snap is not None:
             raw_imb = obj_attr(ob_snap, "imbalance_ratio", obj_attr(ob_snap, "ob_imbalance", None))
@@ -495,7 +500,7 @@ def _collect_pillar2_and_regime_telemetry(
         from external_order_guard import get_derivatives_collector
 
         f_snap = _fetch_pillar2_snapshot(
-            cachedb_dir, symbol, get_derivatives_collector, "derivatives_telemetry_", sym_variants, quote_variants, _rj
+            cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj
         )
         if f_snap is not None:
             fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
@@ -511,7 +516,7 @@ def _collect_pillar2_and_regime_telemetry(
         from external_order_guard import get_whale_collector
 
         w_snap = _fetch_pillar2_snapshot(
-            cachedb_dir, symbol, get_whale_collector, "whale_snapshot_", sym_variants, quote_variants, _rj
+            cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj
         )
         if w_snap is not None:
             raw_lp = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", None))
@@ -1018,7 +1023,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
         else {}
     )
     partial_w_7d_span = False
-    w_data = _rj(os.path.join(cachedb_dir, "cache_watcher_all_price.json"))
+    w_data = _rj(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME))
     if isinstance(w_data, dict) and isinstance(w_items := w_data.get("items"), dict):
         sym_quotes_7d = compatible_quote_suffixes(symbol)
         for ck in sym_variants:
@@ -1233,7 +1238,7 @@ def _load_and_evaluate_pretrade_short_slopes(
                                 if abs(safe_float(t_entry.get("slope_90s"), 0.0)) >= 5e-8:
                                     break
                 break
-        k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_trend.json"))
+        k_data = _rj(os.path.join(cachedb_dir, CACHE_KALMAN_TREND_FILENAME))
         if not isinstance(k_data, dict) or not k_data:
             k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_price.json"))
         if isinstance(k_data, dict):
@@ -1484,9 +1489,9 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
         cand_u = str(cand or "").strip().upper()
         if not cand_u or clean_symbol_key(cand_u) == clean_symbol_key(symbol):
             continue
-        sib_ob_d = _rj(os.path.join(cachedb_dir, f"orderbook_depth_{cand_u}.json"))
+        sib_ob_d = _rj(os.path.join(cachedb_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
         if not isinstance(sib_ob_d, dict):
-            sib_ob_d = _rj(os.path.join(cachedb_dir, "telemetry", f"orderbook_depth_{cand_u}.json"))
+            sib_ob_d = _rj(os.path.join(cachedb_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{cand_u}.json"))
         if not isinstance(sib_ob_d, dict):
             continue
         sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0

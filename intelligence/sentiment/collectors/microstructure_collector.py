@@ -16,6 +16,10 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import (
+    CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+    CACHE_ORDERBOOK_DEPTH_PREFIX,
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
+    CACHE_WHALE_SNAPSHOT_PREFIX,
     cache_symbol_variants,
     canonical_base_asset,
     clean_symbol_key,
@@ -379,7 +383,7 @@ def _compute_price_series_memo_signature(
             except OSError:
                 pass
     if not stat_list:
-        for w_sp in _cand_cache_paths(cachedb_dir, "cache_watcher_all_price.json"):
+        for w_sp in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
             try:
                 st = os.stat(w_sp)
                 stat_list.append((w_sp, st.st_mtime_ns, st.st_size))
@@ -537,7 +541,7 @@ def _load_raw_archive_and_watcher_series(
     watcher_cutoff_24h: Optional[float] = None
     watcher_7d_pts: list = []
     if not archive_pts and need_24h_supplement and not has_series_24h:
-        for w_path in _cand_cache_paths(cachedb_dir, "cache_watcher_all_price.json"):
+        for w_path in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
             if not os.path.exists(w_path):
                 continue
             w_raw = lookup_symbol_cache_items(
@@ -693,14 +697,14 @@ def load_symbol_microstructure(
         return best_d, best_cand
 
     if ob is None:
-        ob, ob_cand = _first_telemetry_dict("orderbook_depth_")
+        ob, ob_cand = _first_telemetry_dict(CACHE_ORDERBOOK_DEPTH_PREFIX)
     else:
         raw_ob_sym = obj_attr(ob, "symbol")
         ob_cand = raw_ob_sym.strip() if isinstance(raw_ob_sym, str) and raw_ob_sym.strip() else None
     if deriv is None:
-        deriv, _ = _first_telemetry_dict("derivatives_telemetry_", prefer_freshest=True)
+        deriv, _ = _first_telemetry_dict(CACHE_DERIVATIVES_TELEMETRY_PREFIX, prefer_freshest=True)
     if whale is None:
-        whale, _ = _first_telemetry_dict("whale_snapshot_", prefer_freshest=True)
+        whale, _ = _first_telemetry_dict(CACHE_WHALE_SNAPSHOT_PREFIX, prefer_freshest=True)
     if not (ob or deriv or whale):
         return None
     m_info: Dict[str, Any] = {"_source_cand": ob_cand} if ob_cand else {}
@@ -866,28 +870,28 @@ def ensure_fresh_symbol_microstructure(
         if not os.path.exists(fpath):
             return True
         if is_eq and not rth_open:
-            if prefix == "orderbook_depth_":
+            if prefix == CACHE_ORDERBOOK_DEPTH_PREFIX:
                 ob_disk = read_json_cached(fpath)
                 if isinstance(ob_disk, dict) and (safe_pos_float(ob_disk.get("spread_bps"), default=0.0) or 0.0) > 200.0:
                     return True
             return False
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
 
-    if _needs_fetch("orderbook_depth_", max_age_ob_sec):
+    if _needs_fetch(CACHE_ORDERBOOK_DEPTH_PREFIX, max_age_ob_sec):
         try:
             from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
             OrderbookDepthCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
         except Exception:
             pass
-    if include_derivatives and _needs_fetch("derivatives_telemetry_", max_age_whale_sec):
+    if include_derivatives and _needs_fetch(CACHE_DERIVATIVES_TELEMETRY_PREFIX, max_age_whale_sec):
         try:
             from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 
             DerivativesTelemetryCollector(cache_dir=eff_cache_dir, start_sync=True).fetch(sym_u, allow_network=True, now=eff_now)
         except Exception:
             pass
-    if _needs_fetch("whale_snapshot_", max_age_whale_sec):
+    if _needs_fetch(CACHE_WHALE_SNAPSHOT_PREFIX, max_age_whale_sec):
         try:
             from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
@@ -911,7 +915,7 @@ def discover_reference_microstructure_symbols(
         if not str(k).strip().upper().endswith(("_EQ", "_US_EQ"))
     }
     ref_micro_syms: List[str] = []
-    for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
+    for pfx in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX):
         for search_dir in (cache_dir, os.path.join(cache_dir, "telemetry")):
             for mpath in sorted(_glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
                 msym = os.path.basename(mpath)[len(pfx) : -len(".json")].upper()
@@ -926,7 +930,7 @@ def discover_reference_microstructure_symbols(
                     if mbase not in covered_micro_bases:
                         ref_micro_syms.append(msym)
                         covered_micro_bases.add(mbase)
-                    elif pfx == "orderbook_depth_" and isinstance(ob_d := _rj(mpath), dict):
+                    elif pfx == CACHE_ORDERBOOK_DEPTH_PREFIX and isinstance(ob_d := _rj(mpath), dict):
                         cand_bd = safe_nonneg_float(ob_d.get("bid_depth_usd"), default=None)
                         existing_bds = [
                             safe_nonneg_float(mv.get("bid_depth_usd"), default=None)
@@ -1809,9 +1813,9 @@ def _enrich_discovered_reference_microstructure_symbols(
                         )
                     if not sib_live_px or sib_live_px <= 0.0:
                         if ob_ref_ts <= 0.0:
-                            ob_ref_d = _rj(os.path.join(cache_dir, f"orderbook_depth_{msym.upper()}.json"))
+                            ob_ref_d = _rj(os.path.join(cache_dir, f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
                             if not isinstance(ob_ref_d, dict):
-                                ob_ref_d = _rj(os.path.join(cache_dir, "telemetry", f"orderbook_depth_{msym.upper()}.json"))
+                                ob_ref_d = _rj(os.path.join(cache_dir, "telemetry", f"{CACHE_ORDERBOOK_DEPTH_PREFIX}{msym.upper()}.json"))
                             ob_ref_ts = normalize_epoch_sec(
                                 safe_pos_float((ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"), default=0.0) or 0.0,
                                 default=0.0,

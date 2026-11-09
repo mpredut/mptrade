@@ -13,6 +13,7 @@ except Exception:
 
 from botcore import pos_float_env, safe_nonneg_float, safe_pos_float
 from cachepaths import (
+    CACHE_KALMAN_TREND_FILENAME,
     CACHE_SHORT_TREND_FILENAME,
     cache_path,
     cache_symbol_variants,
@@ -281,7 +282,7 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
 
 def get_kalman_state_path() -> str:
     """Return the canonical path to cache_kalman_trend.json honoring MPTRADE_CACHEDB_DIR."""
-    return cache_path("cache_kalman_trend.json")
+    return cache_path(CACHE_KALMAN_TREND_FILENAME)
 
 
 def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:

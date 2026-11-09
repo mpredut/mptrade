@@ -309,7 +309,21 @@ class CacheTradeManager(CacheAccountManagerBase):
     """Account trade fill cache (Level 3) backed by versioned append-only JSONL and schema-v2 manifests."""
 
     _is_trade_account_cache = True
-    DEFAULT_FILENAME = "cache_trade.jsonl"
+    VENUE_KEY = "binance"
+    DEFAULT_FILENAME = CACHE_TRADE_FILENAME
+
+    @classmethod
+    def disk_filename(cls) -> str:
+        """Return the canonical on-disk filename for this trade cache."""
+        return str(cls.DEFAULT_FILENAME or "")
+
+    @classmethod
+    def resolve_cache_filepath(cls, cache_dir: Optional[str] = None) -> str:
+        """Resolve the canonical on-disk path for this trade cache file."""
+        fname = cls.disk_filename()
+        if cache_dir:
+            return str(resolve_cachedb_filepath(os.path.join(str(cache_dir), fname)))
+        return str(cache_path(fname))
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -974,7 +988,13 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def get_last_opposite_fill_price(self, symbol, order_type):
         """Return the latest opposite fill price without a time limit."""
-        self.sync_account_reader_if_needed()
+        if self.append_persist:
+            self.sync_account_reader_if_needed()
+        elif not self.cache:
+            try:
+                self.resync_mem_file()
+            except Exception:
+                pass
         if not isinstance(order_type, str):
             return None
         side_u = normalize_side(order_type)
@@ -991,16 +1011,33 @@ class CacheTradeManager(CacheAccountManagerBase):
                 or []
             )
             for trade in bucket:
-                if (
-                    not self._is_valid_item(trade)
-                    or clean_symbol_key(trade["symbol"]) != sym_clean
-                    or trade["isBuyer"] != want_buyer
-                ):
+                if not self._is_valid_item(trade):
                     continue
-                key = (int(trade["time"]), int(trade["id"]))
+                if self.append_persist:
+                    if (
+                        clean_symbol_key(trade["symbol"]) != sym_clean
+                        or trade["isBuyer"] != want_buyer
+                    ):
+                        continue
+                    key = (int(trade["time"]), int(trade["id"]))
+                    px_val = float(trade["price"])
+                else:
+                    tr_sym = clean_symbol_key(trade.get("symbol") or symbol)
+                    if tr_sym and sym_clean and tr_sym != sym_clean:
+                        continue
+                    raw_ib = trade.get("isBuyer")
+                    is_buyer = raw_ib if isinstance(raw_ib, bool) else (normalize_side(trade.get("side")) == "BUY")
+                    if is_buyer != want_buyer:
+                        continue
+                    ts_ms = extract_timestamp_ms(trade, default=0) or 0
+                    raw_id = str(trade.get("id") or trade.get("orderId") or "")
+                    px_val = extract_order_price(trade, default=None) or safe_pos_float(trade.get("price"), default=None)
+                    if px_val is None:
+                        continue
+                    key = (int(ts_ms), raw_id)
                 if latest_key is None or key > latest_key:
                     latest_key = key
-                    latest_price = float(trade["price"])
+                    latest_price = px_val
         return latest_price
 
 
@@ -1008,7 +1045,7 @@ class CacheOrderManager(CacheAccountManagerBase):
     """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
 
     _is_order_account_cache = True
-    DEFAULT_FILENAME = "cache_order.json"
+    DEFAULT_FILENAME = CACHE_ORDER_FILENAME
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
@@ -1424,7 +1461,7 @@ class CacheOrderManager(CacheAccountManagerBase):
 class CacheAssetValueManager(CacheAccountManagerBase):
     """Account/portfolio total asset value history cache (Level 3) backed by append-only JSONL."""
 
-    DEFAULT_FILENAME = "cache_asset_value.jsonl"
+    DEFAULT_FILENAME = CACHE_ASSET_VALUE_FILENAME
 
     @classmethod
     def extract_asset_value_summary(cls, rec: object, *, now_ts: Optional[float] = None) -> dict:
@@ -1596,38 +1633,36 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         return [snapshot]
 
 
-class CacheVenueTradeSnapshotManagerBase(CacheAccountManagerBase, ABC):
-    """Specialized account-trade cache base for non-Binance venue JSON trade snapshots."""
+class CacheVenueTradeSnapshotManagerBase(CacheTradeManager, ABC):
+    """Specialized account-trade cache base (subclassing ``CacheTradeManager``) for non-Binance venue JSON trade snapshots."""
 
     _is_trade_account_cache = True
     VENUE_KEY: str = ""
     DEFAULT_FILENAME: str = ""
 
-    def __init__(self, sync_ts=60, symbols=None, filename=None, api_client=None, read_only=True):
+    def __init__(
+        self,
+        sync_ts=60,
+        symbols=None,
+        filename=None,
+        api_client=None,
+        read_only=True,
+        *,
+        start_sync: Optional[bool] = None,
+    ):
         eff_filename = str(filename) if filename else self.resolve_cache_filepath()
         eff_symbols = list(symbols) if isinstance(symbols, (list, tuple, set)) else []
-        super().__init__(
+        eff_read_only = (not bool(start_sync)) if start_sync is not None else bool(read_only)
+        CacheAccountManagerBase.__init__(
+            self,
             sync_ts,
             eff_symbols,
             eff_filename,
             append_mode=False,
             api_client=api_client,
             append_persist=False,
-            read_only=read_only,
+            read_only=eff_read_only,
         )
-
-    @classmethod
-    def disk_filename(cls) -> str:
-        """Return the canonical on-disk filename for this venue trade cache."""
-        return str(cls.DEFAULT_FILENAME or "")
-
-    @classmethod
-    def resolve_cache_filepath(cls, cache_dir: Optional[str] = None) -> str:
-        """Resolve the canonical on-disk path for this venue's trade snapshot file."""
-        fname = cls.disk_filename()
-        if cache_dir:
-            return str(resolve_cachedb_filepath(os.path.join(str(cache_dir), fname)))
-        return str(cache_path(fname))
 
     @classmethod
     def read_venue_trade_snapshot(
@@ -1647,6 +1682,53 @@ class CacheVenueTradeSnapshotManagerBase(CacheAccountManagerBase, ABC):
         except TypeError:
             raw = reader(target, default=None)
         return raw if isinstance(raw, dict) else None
+
+    @classmethod
+    def load_sanitized_trade_snapshot(cls, path: Optional[str] = None) -> dict:
+        """Load and sanitize a venue trade snapshot ``{'items': ..., 'fetchtime': ...}`` with ``.previous`` recovery."""
+        target = str(path) if path else cls.resolve_cache_filepath()
+        loaded = read_json_dict(target, default=None, recover_previous=True)
+        if (
+            isinstance(loaded, dict)
+            and isinstance(loaded.get("items"), dict)
+            and isinstance(loaded.get("fetchtime"), dict)
+        ):
+            clean_items: dict[str, list[dict]] = {}
+            for k, v in loaded["items"].items():
+                if not isinstance(v, list):
+                    continue
+                valid_rows: list[dict] = []
+                for row in v:
+                    if not isinstance(row, dict):
+                        continue
+                    raw_id = row.get("id")
+                    clean_id = str(raw_id).strip() if raw_id is not None and not isinstance(raw_id, bool) and str(raw_id).strip() else None
+                    if clean_id is None:
+                        continue
+                    t_f = safe_pos_float(row.get("time"), default=None)
+                    if t_f is None:
+                        continue
+                    row_copy = dict(row)
+                    row_copy["id"] = clean_id
+                    row_copy["time"] = int(t_f)
+                    if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
+                        ib_s = row_copy["isBuyer"].strip().lower()
+                        if ib_s in ("true", "1", "yes"):
+                            row_copy["isBuyer"] = True
+                        elif ib_s in ("false", "0", "no", "nan"):
+                            row_copy["isBuyer"] = False
+                    valid_rows.append(row_copy)
+                valid_rows.sort(key=lambda t: t["time"])
+                clean_items[str(k)] = valid_rows
+            clean_fetchtime = {}
+            for k, v in loaded["fetchtime"].items():
+                if not isinstance(v, bool) and isinstance(v, (int, float)) and v >= 0:
+                    clean_fetchtime[str(k)] = float(v)
+            return {
+                "items": clean_items,
+                "fetchtime": clean_fetchtime,
+            }
+        return {"items": {}, "fetchtime": {}}
 
     @classmethod
     def extract_venue_symbol_trades(
@@ -1682,6 +1764,34 @@ class CacheVenueTradeSnapshotManagerBase(CacheAccountManagerBase, ABC):
 
     def get_remote_items(self, symbol, startTime):
         return []
+
+    def _persist_items(self, symbol, new_items):
+        """Merge and deduplicate venue trade snapshot items by ``id``/``orderId``."""
+        if not new_items:
+            return
+        new_items = self._coerce_item_list(new_items)
+        with self.lock:
+            bucket = self.cache.setdefault(symbol, [])
+            by_key: dict[str, dict] = {}
+            for item in bucket:
+                if isinstance(item, dict):
+                    k = str(item.get("id") or item.get("orderId") or len(by_key))
+                    by_key[k] = item
+            changed = False
+            for item in new_items:
+                if not self._is_valid_item(item):
+                    continue
+                k = str(item.get("id") or item.get("orderId") or len(by_key))
+                if by_key.get(k) != item:
+                    by_key[k] = dict(item)
+                    changed = True
+            if changed:
+                merged = sorted(
+                    by_key.values(),
+                    key=lambda r: (extract_timestamp_ms(r, default=0) or 0, str(r.get("id") or r.get("orderId") or "")),
+                )
+                self.cache[symbol] = merged
+                self._advance_symbol_fetchtime_locked(symbol)
 
 
 class CacheKrakenTradeManager(CacheVenueTradeSnapshotManagerBase):
@@ -1720,6 +1830,22 @@ def _venue_order_and_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
     )
 
 
+_TRADE_MANAGER_BY_VENUE: dict[str, type[CacheTradeManager]] = {
+    "binance": CacheTradeManager,
+    "kraken": CacheKrakenTradeManager,
+    "hyperliquid": CacheHyperliquidTradeManager,
+    "hl": CacheHyperliquidTradeManager,
+    "t212": CacheT212TradeManager,
+    "trading212": CacheT212TradeManager,
+}
+
+
+def _trade_manager_cls_for_venue(venue: object) -> type[CacheTradeManager]:
+    key = str(venue or "").strip().lower()
+    return _TRADE_MANAGER_BY_VENUE.get(key, CacheTradeManager)
+
+
+CacheTradeManager.for_venue = staticmethod(_trade_manager_cls_for_venue)
 CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
 CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
     _venue_order_and_trade_cache_contracts

@@ -36,12 +36,12 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import cache_path, canonical_symbol_key, normalize_cache_base_asset
+from cachepaths import CACHE_T_TREND_FILENAME, cache_path, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from state_io import read_json_dict_cached, save_json_state
 
-_DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
+_DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", CACHE_T_TREND_FILENAME)
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
 _ON_DEMAND_T_MISS_TS: dict[str, float] = {}
 _ON_DEMAND_T_MISS_TTL_SEC = 600.0
@@ -61,7 +61,7 @@ def _effective_t_cache_file() -> str:
     if isinstance(cand, str) and cand.strip() and cand != _DEFAULT_T_CACHE_FILE:
         return cand
     try:
-        return cache_path("cache_T_trend.json")
+        return cache_path(CACHE_T_TREND_FILENAME)
     except Exception:
         return T_CACHE_FILE
 
