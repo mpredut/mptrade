@@ -101,7 +101,7 @@ _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS: frozenset[str] = frozenset({
 _BROAD_MARKET_INDEX_CONTEXT_WORDS: frozenset[str] = frozenset({
     "bitcoin", "crypto", "dax", "dow", "equities", "ftse", "futures", "global",
     "index", "indices", "market", "markets", "nasdaq", "nikkei", "sp500", "stocks",
-    "treasury", "wall",
+    "treasury",
 })
 
 _TRACKING_QUERY_PARAMS: frozenset[str] = frozenset({
@@ -565,6 +565,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "top stocks to",
     "value trap",
     "is it a bargain",
+    "may be a bargain",
     "is it a buy?",
     "running out of gas",
     "biggest stock losers",

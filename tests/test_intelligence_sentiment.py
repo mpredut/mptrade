@@ -9465,5 +9465,58 @@ def test_headlines_are_semantic_duplicates_syndicated_ai_stocks_rewrites():
     )
 
 
+def test_b1_through_b4_and_cached_ai_intents_collector_fallback(tmp_path, monkeypatch):
+    """Verify Hyperliquid 1h annualized funding, lexicon clickbait/wall filters, lot_harvested ts guard, and cached AI intents collector fallback."""
+    import json
+    import pytest
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.macro.lexicon_ssot import (
+        _BROAD_MARKET_INDEX_CONTEXT_WORDS,
+        _is_editorial_clickbait_or_advice_title,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import _load_cached_ai_intents_list
+    from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
+
+    # B1: Hyperliquid preserves raw 1h funding_rate while annualizing over 24h/day (24 * 365 * 100)
+    col = DerivativesTelemetryCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0, disk_ttl_sec=0.0)
+    monkeypatch.setattr(
+        col,
+        "_fetch_hyperliquid_asset_ctx",
+        lambda sym, timeout=4.0: {"funding": "0.0000125", "openInterest": "1000", "markPx": "80.0", "oraclePx": "80.0"},
+    )
+    hl_tel = col._fetch_hyperliquid_derivatives("HYPEUSDC", now=1000.0)
+    assert hl_tel is not None
+    assert hl_tel.funding_rate == pytest.approx(0.0000125)
+    assert hl_tel.funding_annualized_pct == pytest.approx(10.95)
+
+    # B2: Standalone 'wall' is excluded from _BROAD_MARKET_INDEX_CONTEXT_WORDS and 'may be a bargain' is caught as clickbait
+    assert "wall" not in _BROAD_MARKET_INDEX_CONTEXT_WORDS
+    assert _is_editorial_clickbait_or_advice_title("nvidia (nvda) stock may be a bargain after pullback")
+
+    # B4: When last_buy ts_ms is strictly newer than last_sell ts_ms, do not mark lot_harvested
+    ro_line = _format_recent_order_line(
+        "TAOUSDC",
+        {
+            "last_action_side": "BUY",
+            "last_action_actor": "AI",
+            "last_buy": {"price": 220.0, "qty": 1.5, "actor": "AI", "ts_ms": 2_000_000},
+            "last_sell": {"price": 235.0, "qty": 1.5, "actor": "AI", "ts_ms": 1_000_000},
+            "open_lots": [{"lot_id": "L1", "qty": 1.5, "entry_px": 240.0}],
+        },
+        now_ms=2_500_000,
+    )
+    assert "lot_harvested" not in ro_line
+
+    # B14: _load_cached_ai_intents_list resolves both state/ and root autonomous_trade_intents_state.json
+    (tmp_path / "autonomous_trade_intents_state.json").write_text(
+        json.dumps({"intents": [{"intent_id": "id_1", "venue": "binance", "symbol": "BTCUSDC", "status": "EXECUTED"}]}),
+        encoding="utf-8",
+    )
+    loaded = _load_cached_ai_intents_list(str(tmp_path))
+    assert len(loaded) == 1
+    assert loaded[0]["intent_id"] == "id_1"
+
+
+
 
 

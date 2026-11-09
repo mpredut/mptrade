@@ -184,6 +184,32 @@ def _normalize_open_orders_list(
     ]
 
 
+def _load_cached_ai_intents_list(cache_dir: Optional[str], read_json_fn: Any = None) -> List[Dict[str, Any]]:
+    """Load persisted AI trade intents from `autonomous_trade_intents_state.json` across `state/` and root cache paths."""
+    if not cache_dir:
+        return []
+    _rj = _resolve_read_json_cached(read_json_fn)
+    raw_path = os.path.join(cache_dir, "autonomous_trade_intents_state.json")
+    resolved_path = str(resolve_cachedb_filepath(raw_path))
+    raw_int: Any = None
+    if _rj not in (_default_read_json_cached, read_json_recovering):
+        for cand_p in dict.fromkeys((resolved_path, raw_path)):
+            try:
+                raw_int = _rj(cand_p)
+            except Exception:
+                raw_int = None
+            if raw_int is not None:
+                break
+    if raw_int is None:
+        for cand_p in dict.fromkeys((resolved_path, raw_path)):
+            if os.path.exists(cand_p):
+                raw_int = read_json_file(cand_p, default=[], recover_previous=True)
+                if raw_int:
+                    break
+    int_list = raw_int.get("intents") if isinstance(raw_int, dict) else (raw_int if isinstance(raw_int, list) else [])
+    return [it for it in (int_list or ()) if isinstance(it, dict)]
+
+
 def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str, Any]) -> Dict[str, float]:
     """Build order_id / client_order_id -> created_ts (epoch seconds) lookup for resting open orders."""
     out: Dict[str, float] = {}
@@ -200,31 +226,26 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
                                 out.setdefault(kv, c_ts)
     if not cache_dir:
         return out
-    intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
-    if os.path.exists(intents_path):
-        raw_int = read_json_file(intents_path, default=[], recover_previous=True)
-        int_list = raw_int.get("intents") if isinstance(raw_int, dict) else (raw_int if isinstance(raw_int, list) else ())
-        for it in int_list or ():
-            if isinstance(it, dict):
-                it_ts = next(
-                    (
-                        ts_v
-                        for ts_k in ("executed_ts", "executed_at", "timestamp", "created_at", "ts")
-                        if (ts_v := normalize_epoch_sec(it.get(ts_k), default=None, allow_iso=True)) is not None
-                    ),
-                    None,
-                )
-                if it_ts is not None:
-                    exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-                    for src_d in (it, exec_pay):
-                        for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
-                            if kv := str(src_d.get(id_k) or "").strip():
-                                out.setdefault(kv, it_ts)
-                    if oid_pay := extract_order_id(exec_pay, default=""):
-                        out.setdefault(str(oid_pay), it_ts)
-                    for cid_v in intent_venue_client_order_ids(it):
-                        if cid_v:
-                            out.setdefault(cid_v, it_ts)
+    for it in _load_cached_ai_intents_list(cache_dir):
+        it_ts = next(
+            (
+                ts_v
+                for ts_k in ("executed_ts", "executed_at", "timestamp", "created_at", "ts")
+                if (ts_v := normalize_epoch_sec(it.get(ts_k), default=None, allow_iso=True)) is not None
+            ),
+            None,
+        )
+        if it_ts is not None:
+            exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
+            for src_d in (it, exec_pay):
+                for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
+                    if kv := str(src_d.get(id_k) or "").strip():
+                        out.setdefault(kv, it_ts)
+            if oid_pay := extract_order_id(exec_pay, default=""):
+                out.setdefault(str(oid_pay), it_ts)
+            for cid_v in intent_venue_client_order_ids(it):
+                if cid_v:
+                    out.setdefault(cid_v, it_ts)
     for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=False):
         found_in_batch = False
         for fpath in files:
@@ -659,6 +680,8 @@ def harvest_tradable_positions_and_orders(
     now_ts_oo = _time.time()
     order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
     audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
+    if known_ai_order_ids is None and cache_dir:
+        known_ai_order_ids = collect_known_ai_order_ids(_load_cached_ai_intents_list(cache_dir, _rj_bals))
 
     def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
         if not asset:
@@ -963,16 +986,9 @@ def load_symbol_best_recent_fills(
     from instrument_registry import casefold_get
 
     _rj = _resolve_read_json_cached(read_json_fn)
-    intents_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json")))
-    intents_raw = _rj(intents_path) if _rj is not _default_read_json_cached else None
-    if intents_raw is None and _rj is not _default_read_json_cached and intents_path != os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"):
-        intents_raw = _rj(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
-    if intents_raw is None:
-        intents_raw = read_json_recovering(intents_path)
-    known_ai_oids = collect_known_ai_order_ids(intents_raw)
-    if isinstance(intents_raw, dict):
-        intents_raw = intents_raw.get("intents")
-    ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
+    loaded_intents = _load_cached_ai_intents_list(cachedb_dir, _rj)
+    known_ai_oids = collect_known_ai_order_ids(loaded_intents)
+    ai_intents_list = loaded_intents or None
     audit_origin_map = _load_recent_audit_origins(cachedb_dir)
     fills: Optional[Dict[str, Any]] = None
     best_venue: Optional[str] = None
@@ -1214,6 +1230,12 @@ def harvest_recent_orders_and_enrich_positions(
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
     _rj = _resolve_read_json_cached(read_json_fn)
+    if (known_ai_order_ids is None or ai_intents is None) and cache_dir:
+        cached_intents = _load_cached_ai_intents_list(cache_dir, _rj)
+        if ai_intents is None and cached_intents:
+            ai_intents = cached_intents
+        if known_ai_order_ids is None:
+            known_ai_order_ids = collect_known_ai_order_ids(ai_intents or cached_intents)
     audit_origin_map = _load_recent_audit_origins(cache_dir)
     recent_orders: Dict[str, Any] = {}
     venue_recent_orders: Dict[str, Dict[str, Any]] = {"binance": {}, "kraken": {}, "hyperliquid": {}, "t212": {}}
@@ -1418,34 +1440,21 @@ def harvest_bot_runtime_states(
         except Exception:
             _oq = None
         terminal_ai_intent_ids: set[str] = set()
-        intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
-        intents_raw: Any = None
-        if _rj not in (_default_read_json_cached, read_json_recovering):
-            try:
-                intents_raw = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
-            except Exception:
-                intents_raw = None
-        if not intents_raw and os.path.exists(intents_path):
-            intents_raw = read_json_file(intents_path, default=[], recover_previous=True)
-        intents_iter = intents_raw.get("intents") if isinstance(intents_raw, dict) else (intents_raw if isinstance(intents_raw, list) else ())
-        if isinstance(intents_iter, list):
-            for it in intents_iter:
-                if not isinstance(it, dict):
-                    continue
-                st_u = str(it.get("status") or "").strip().upper()
-                if st_u in {
-                    "EXECUTED",
-                    "FAILED",
-                    "CANCELED",
-                    "CANCELLED",
-                    "EXPIRED",
-                    "REJECTED",
-                    "BLOCKED_BY_GUARD",
-                    "SKIPPED_DUPLICATE_OPEN_ORDER",
-                    "OBSERVED_SHADOW",
-                } or st_u.startswith("REJECTED_"):
-                    if iid := str(it.get("intent_id") or "").strip():
-                        terminal_ai_intent_ids.add(iid)
+        for it in _load_cached_ai_intents_list(cache_dir, _rj):
+            st_u = str(it.get("status") or "").strip().upper()
+            if st_u in {
+                "EXECUTED",
+                "FAILED",
+                "CANCELED",
+                "CANCELLED",
+                "EXPIRED",
+                "REJECTED",
+                "BLOCKED_BY_GUARD",
+                "SKIPPED_DUPLICATE_OPEN_ORDER",
+                "OBSERVED_SHADOW",
+            } or st_u.startswith("REJECTED_"):
+                if iid := str(it.get("intent_id") or "").strip():
+                    terminal_ai_intent_ids.add(iid)
         active_retries: List[Dict[str, Any]] = []
         for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
             rec_iid = str(rec.get("intent_id") or "").strip()

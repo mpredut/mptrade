@@ -1270,9 +1270,12 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         qty_v = entry.get("qty")
         qty_pfx = f"{qty_v} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
+        other_entry = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
+        other_ts = normalize_timestamp_ms(other_entry.get("ts_ms"), default=0) or 0
         if (
             key == "last_buy"
             and len(open_lots_ro) > 0
+            and not (ts > 0 and other_ts > 0 and ts > other_ts)
             and not any(isinstance(lt, dict) and _same_anchor_px(px, lt.get("entry_px")) for lt in open_lots_ro)
         ):
             meta_parts.append("lot_harvested")

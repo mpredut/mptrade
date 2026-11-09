@@ -113,7 +113,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             mark_price=mark_px,
             index_price=oracle_px,
             perp_spot_basis_bps=basis_bps,
-            funding_annualized_pct=round(funding_rate * 3.0 * 365.0 * 100.0, 2),
+            funding_annualized_pct=round(funding_rate * 24.0 * 365.0 * 100.0, 2),
         )
         return self._commit_snapshot(symbol, now, telemetry)
 

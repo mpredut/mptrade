@@ -410,6 +410,7 @@ def collect_pretrade_telemetry(
                         key=lambda pt: pt[0],
                     )
                 if pts_5d_eq:
+                    now_ms_c = int(_pt_time.time() * 1000)
                     if len(pts_5d_eq) >= 10:
                         for split_idx in range(len(pts_5d_eq) - 1, max(4, len(pts_5d_eq) - 4), -1):
                             if (
@@ -427,12 +428,21 @@ def collect_pretrade_telemetry(
                             default=-1,
                         )
                         if 4 <= last_pos_v_idx_eq < len(pts_5d_eq) - 1:
-                            for zv_idx in range(last_pos_v_idx_eq + 1, len(pts_5d_eq)):
-                                if (pts_5d_eq[zv_idx][0] - pts_5d_eq[zv_idx - 1][0]) > 20 * 60 * 1000:
-                                    pts_5d_eq = pts_5d_eq[:zv_idx]
+                            while len(pts_5d_eq) - 1 > last_pos_v_idx_eq:
+                                gap_idx = -1
+                                for zv_idx in range(last_pos_v_idx_eq + 1, len(pts_5d_eq)):
+                                    if (pts_5d_eq[zv_idx][0] - pts_5d_eq[zv_idx - 1][0]) > 20 * 60 * 1000:
+                                        gap_idx = zv_idx
+                                        break
+                                if gap_idx < 0:
+                                    break
+                                tail_span_ms = pts_5d_eq[-1][0] - pts_5d_eq[gap_idx][0]
+                                tail_is_live = abs(now_ms_c - pts_5d_eq[-1][0]) <= 30 * 60 * 1000
+                                if tail_span_ms < 15 * 60 * 1000 and not tail_is_live:
+                                    pts_5d_eq = pts_5d_eq[:gap_idx]
+                                else:
                                     break
                     raw_alt_series_24h = list(alt_series_24h)
-                    now_ms_c = int(_pt_time.time() * 1000)
                     eq_rth_open_c = bool(is_symbol_market_open(symbol, now_ms_c / 1000.0))
                     anchor_eq_ms = min(now_ms_c, int(pts_5d_eq[-1][0]))
                     cutoff_eq_ms = anchor_eq_ms - 86400 * 1000
@@ -1313,9 +1323,12 @@ def collect_pretrade_telemetry(
             lb_px = safe_pos_float(lb.get("price"), default=None)
             _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
             open_lots_f = fills.get("open_lots") if isinstance(fills.get("open_lots"), list) else []
+            lb_ts_f = safe_pos_float(lb.get("ts_ms"), default=0.0) or 0.0
+            ls_ts_f = safe_pos_float(ls.get("ts_ms"), default=0.0) or 0.0
             is_lb_harvested = (
                 lb_px is not None
                 and len(open_lots_f) > 0
+                and not (lb_ts_f > 0.0 and ls_ts_f > 0.0 and lb_ts_f > ls_ts_f)
                 and not any(
                     isinstance(lt, dict) and _same_px(lb_px, safe_pos_float(lt.get("entry_px"), default=None))
                     for lt in open_lots_f
