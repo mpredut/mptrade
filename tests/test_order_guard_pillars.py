@@ -25,8 +25,8 @@ from intelligence.macro.geopolitical_analyzer import (
     GeopoliticalThreatAssessment,
     GeopoliticalThreatAnalyzer,
 )
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
 _BASE_MARGINS = dict(order_guard._load_margins())
 
@@ -442,7 +442,7 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
     """Verify that RE-BUY (bypass_guards={'math_reference'}) skips mathematical comparison
     against historical 14-day sales, but actively blocks on microstructure ask walls / cascades."""
     import order_guard
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     class _MockProvider:
         name = "binance"
@@ -516,7 +516,7 @@ def test_whale_divergence_liquidation_cascade_blocks():
     """Verify that severe liquidation cascade (OI 1h change <= -5% with taker sell dominance)
     actively vetoes BUY entries to prevent catching falling knives."""
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 
     guard = WhaleDivergenceGuard(
         block_liquidation_cascade=True,

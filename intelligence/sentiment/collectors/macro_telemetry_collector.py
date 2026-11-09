@@ -42,10 +42,12 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
     split_headlines_digest,
 )
-import intelligence.sentiment.collectors.microstructure_collector as _mc
-from intelligence.sentiment.collectors.microstructure_collector import (
+from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+)
+import intelligence.sentiment.collectors.microstructure_collector as _mc
+from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
     resolve_cached_btc_24h_change_pct,
 )

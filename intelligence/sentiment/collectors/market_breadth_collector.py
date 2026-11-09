@@ -20,7 +20,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
 )
 
-from intelligence.sentiment.collectors.microstructure_collector import (
+from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
 )

@@ -1263,7 +1263,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """external_order_guard must pass funding_min_short_rate to FundingCrowdingGuard and notify on DEFER_WAIT."""
         import external_order_guard
         import notify_engine.alertnotifiers as alertnotifiers
-        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
         telem = DerivativesTelemetry(
             symbol="BTCUSDC",
@@ -1343,8 +1343,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_collectors_cache_fallback_ttl_and_usdcusdt(self, tmp_path):
         """Verify OrderbookDepthCollector non-tuple cache fallback, WhalePositioningCollector funding disk TTL,
         and USDCUSDT preservation."""
-        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
         ob_collector = OrderbookDepthCollector(cache_ttl_sec=0.0, cache_dir=str(tmp_path))
         snap = OrderbookSnapshot(
@@ -1530,7 +1530,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch7_whale_divergence_symmetric_sell_checks(self):
         """WhaleDivergenceGuard must symmetrically protect SELL orders against capitulation, squeeze, and taker buying."""
         from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 
         guard = WhaleDivergenceGuard(
             min_taker_ratio=0.65,
@@ -1803,15 +1803,15 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
         and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
         from cachepaths import resolve_binance_lookup_symbol
-        from intelligence.external.collectors.orderbook_depth import (
+        from intelligence.external.collectors.orderbook_depth_collector import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
         )
-        from intelligence.external.collectors.derivatives_telemetry import (
+        from intelligence.external.collectors.derivatives_telemetry_collector import (
             DerivativesTelemetry,
             DerivativesTelemetryCollector,
         )
-        from intelligence.external.collectors.whale_positioning import (
+        from intelligence.external.collectors.whale_positioning_collector import (
             WhalePositioningCollector,
             WhalePositioningSnapshot,
         )
@@ -1994,7 +1994,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import qlimit_order_guard
         from intelligence.internal.state import survival
         from cachepaths import cache_symbol_variants
-        from intelligence.external.collectors.orderbook_depth import (
+        from intelligence.external.collectors.orderbook_depth_collector import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
         )
@@ -2348,7 +2348,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import order_retry as oq
         import order_retry_worker as worker
         import cacheManager as cm
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
         from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
 
         # 1. order_retry_worker preserves wait_for_trend=False for kind="STOP", enforces True otherwise
@@ -2587,7 +2587,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         4. bapi_placeorder.place_safe_order propagates exact refusal reason into _reason_out.
         """
         from cachepaths import cache_symbol_variants, normalize_cache_base_asset
-        from intelligence.external.collectors.orderbook_depth import (
+        from intelligence.external.collectors.orderbook_depth_collector import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
         )
@@ -2887,8 +2887,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import external_order_guard
         import instrument as inst_mod
         import order_guard
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
-        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
         # 1. bapi_placeorder.if_place_safe_order revokes G_PROF on SELL unless allow_math_reference_sell=True
         monkeypatch.setattr(bapi_placeorder.sym, "validate_params", lambda *_a, **_k: None)
@@ -3351,7 +3351,7 @@ def test_iteration14_monitortrades_reentry_qlimit1_bypass_rtrade_gi_whale_bypass
     import external_order_guard
     from providers.quantity import QuantityDecision
     from cachetrend import _short_trend_symbol_variants
-    from intelligence.external.collectors.whale_positioning import (
+    from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningSnapshot,
         WhalePositioningCollector,
     )
@@ -3460,7 +3460,7 @@ def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external
     import external_order_guard
     import monitortrades as mt
     import order_guard
-    from intelligence.external.collectors.whale_positioning import (
+    from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningCollector,
         WhalePositioningSnapshot,
     )
@@ -3615,11 +3615,11 @@ def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired
         PositionSnapshot,
     )
     from cachepaths import normalize_cache_base_asset
-    from intelligence.external.collectors.orderbook_depth import (
+    from intelligence.external.collectors.orderbook_depth_collector import (
         OrderbookDepthCollector,
     )
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
     from intelligence.sentiment.guards import high_stake_guard as hsg_mod
     import llm_order_guard
 
@@ -3700,9 +3700,9 @@ def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired
     assert d3.metadata.get("sub_reason") == "timeout"
 
     # 3. External collectors: USDCUSDT preserved in _extract_base_asset, clock skew rejected, .previous written
-    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
     assert normalize_cache_base_asset("USDCUSDT") == "USDCUSDT"
 
@@ -3844,7 +3844,7 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
     """
     import math
     import qlimit_order_guard
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.internal.state.persistence import (
@@ -4029,15 +4029,15 @@ def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propa
     from intelligence.macro_analyzer import MacroAnalyzer
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
     from intelligence.daemon import IntelligenceTelemetryDaemon
-    from intelligence.external.collectors.whale_positioning import (
+    from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningCollector,
         WhalePositioningSnapshot,
     )
-    from intelligence.external.collectors.orderbook_depth import (
+    from intelligence.external.collectors.orderbook_depth_collector import (
         OrderbookDepthCollector,
         OrderbookSnapshot,
     )
-    from intelligence.external.collectors.derivatives_telemetry import (
+    from intelligence.external.collectors.derivatives_telemetry_collector import (
         DerivativesTelemetry,
         DerivativesTelemetryCollector,
     )
@@ -4252,8 +4252,8 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
     from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
-    from intelligence.external.collectors.whale_positioning import (
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningCollector,
         WhalePositioningSnapshot,
     )
@@ -4898,9 +4898,9 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
     from external_order_guard import check_external_order_guards
     from llm_order_guard import check_llm_order_guards
     from qlimit_order_guard import resolve_cached_gaussian_horizon
-    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
     from cachetrend import CacheShortTrendManager
     import order_retry
 
@@ -5847,9 +5847,9 @@ def test_iteration29_candle_interval_bool_t212_get_orders_whale_funding_ts_and_c
     import pytest
     from providers.strategy_executor import candle_interval, ProviderError
     from providers.t212_provider import T212Provider
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector, DerivativesTelemetry
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector, DerivativesTelemetry
 
     # 1. candle_interval rejects bool
     with pytest.raises(ProviderError):
@@ -5944,7 +5944,7 @@ def test_iteration30_bybit_liquidations_breadth_macro_triggers_and_composite_gua
     """
     from types import SimpleNamespace
     import math
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
@@ -6092,9 +6092,11 @@ def test_iteration31_parabolic_high_stake_post_stop_and_smart_sl_nan_safety(monk
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-    from intelligence.sentiment.collectors.microstructure_collector import (
-        compute_24h_price_metrics,
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
         extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
     )
     from intelligence.sentiment.guards.high_stake_guard import (
         HighStakeGuard,
@@ -7867,10 +7869,10 @@ def test_iteration53_t212_order_manager_hl_shadow_and_intelligence_collectors_na
     import os
     import sys
     from types import SimpleNamespace
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.macro_analyzer import MacroAnalyzer
 
     # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
@@ -10963,7 +10965,7 @@ def test_iteration101_intelligence_guards_side_and_fill_extraction_safety():
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
-    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
@@ -11138,19 +11140,19 @@ def test_iteration103_external_collectors_and_t212_ipo_import_safety():
         normalize_cache_base_asset,
         resolve_binance_lookup_symbol,
     )
-    from intelligence.external.collectors.orderbook_depth import (
+    from intelligence.external.collectors.orderbook_depth_collector import (
         OrderbookDepthCollector,
         OrderbookSnapshot,
     )
-    from intelligence.external.collectors.derivatives_telemetry import (
+    from intelligence.external.collectors.derivatives_telemetry_collector import (
         DerivativesTelemetry,
         DerivativesTelemetryCollector,
     )
-    from intelligence.external.collectors.whale_positioning import (
+    from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningCollector,
         WhalePositioningSnapshot,
     )
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 
     # 1. orderbook_depth helpers & collector
     assert normalize_cache_base_asset(True) == ""
@@ -11638,8 +11640,8 @@ def test_iteration98_intelligence_collectors_survival_and_guards_safety(tmp_path
     import json
     import threading
     from types import SimpleNamespace
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.internal.state.survival import verdict
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
@@ -12811,7 +12813,7 @@ def test_iteration123_bybit_liq_news_fear_greed_advisor_and_gemini_cid_safety(tm
     """Verify Iteration 123 BybitLiquidationCollector string symbols, NewsFeedCollector string is_high_severity, FearGreed ms timestamp, SentimentAdvisor key_risks/summary sanitization, and GeminiClient cid traversal guard."""
     import json
     import time
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
@@ -16687,7 +16689,7 @@ def test_iteration177_composite_qlimit1_bypass_separation_trigger_event_and_tren
     from intelligence.internal.guards.guard_decision import GuardDecision
     from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
 
     # 1. Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed
     monkeypatch.setattr(
@@ -16734,9 +16736,9 @@ def test_iteration177_composite_qlimit1_bypass_separation_trigger_event_and_tren
 
 
 def test_iteration178_external_collectors_dict_record_and_cache_ts_hygiene():
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
     # 1. OrderbookDepthCollector.record_snapshot accepts dict and fetch() tolerates non-finite/None cache ts
     ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
@@ -16957,7 +16959,7 @@ def test_iteration183_collector_json_fetch_hierarchical_mode_and_directional_tri
     from intelligence.internal.guards.guard_decision import resolve_hierarchical_guard_mode
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
-    from intelligence.external.collectors.orderbook_depth import _DiskBackedSymbolCollector
+    from intelligence.external.collectors.orderbook_depth_collector import _DiskBackedSymbolCollector
 
     # 1. resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key
     assert resolve_hierarchical_guard_mode({}, "smart_sl_mode", "external_guard_mode") == "enforce"

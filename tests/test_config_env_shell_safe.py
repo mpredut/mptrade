@@ -940,7 +940,7 @@ def test_persistence_survival_and_triggers_hardening():
 
 def test_collectors_and_gemini_client_hardening():
     import math
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.gemini_client import GeminiClient
 

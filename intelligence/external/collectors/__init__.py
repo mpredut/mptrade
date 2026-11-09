@@ -1,8 +1,6 @@
 """External market and derivatives telemetry collectors (`*_collector.py`)."""
 from __future__ import annotations
 
-import sys as _sys
-
 from intelligence.external.collectors import (
     base_collector,
     bybit_liquidations_collector,
@@ -31,15 +29,6 @@ from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
-
-for _legacy_name, _mod in (
-    ("bybit_liquidations", bybit_liquidations_collector),
-    ("derivatives_telemetry", derivatives_telemetry_collector),
-    ("orderbook_depth", orderbook_depth_collector),
-    ("whale_positioning", whale_positioning_collector),
-):
-    setattr(_sys.modules[__name__], _legacy_name, _mod)
-    _sys.modules[f"{__name__}.{_legacy_name}"] = _mod
 
 __all__ = [
     "BybitLiquidationCollector",

@@ -177,10 +177,12 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             struct_lines: List[str] = []
             import intelligence.sentiment.collectors.microstructure_collector as _mc
             from intelligence.sentiment.collectors.microstructure_collector import (
-                compute_24h_price_metrics,
                 load_symbol_price_series,
             )
-            from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
+            from intelligence.sentiment.evaluators.price_series_evaluator import (
+                _extract_sorted_ts_px,
+                compute_24h_price_metrics,
+            )
 
             _mc._ensure_cacheprice_classes_bound()
             for ccy in get_deribit_options_currencies():

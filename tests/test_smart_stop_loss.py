@@ -21,8 +21,8 @@ from intelligence.external.guards.smart_stop_loss_guard import (
     SmartStopLossGuard,
     _GRACE_TRACKER,
 )
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
 
 
 @pytest.fixture(autouse=True)

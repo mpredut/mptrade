@@ -14,9 +14,9 @@ import pytest
 from intelligence.cli import get_daemon_status, inspect_symbol_intelligence
 from intelligence.composite import CompositeMarketIntelligence
 from intelligence.daemon import IntelligenceTelemetryDaemon
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
@@ -671,7 +671,7 @@ def test_high_stake_guard_sell_uses_sell_label():
 
 
 def test_composite_evaluate_guards_does_not_skip_veto_after_downscale_and_unpacks_liquidation():
-    from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
+    from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
 
     intel = CompositeMarketIntelligence(exhaustion_policy="downscale", exhaustion_scale=0.25)
     shock = GeopoliticalThreatAssessment(
@@ -727,7 +727,7 @@ def test_survival_estimate_t_writes_cache_without_name_error(temp_cache_dir):
 
 
 def test_whale_collector_short_building_and_ignore_ttl_prev_regime(temp_cache_dir):
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
     reg = WhalePositioningCollector.classify_regime(
         price_1h_change_pct=-0.5,
@@ -805,9 +805,9 @@ def test_position_exit_manager_evaluate_hard_tp_cooldown_does_not_double_initiat
 
 def test_external_collectors_and_ssot_prompt_modularization():
     from intelligence.external.collectors import base_collector as bc
-    from intelligence.external.collectors import derivatives_telemetry as dt
-    from intelligence.external.collectors import orderbook_depth as ob
-    from intelligence.external.collectors import whale_positioning as wp
+    from intelligence.external.collectors import derivatives_telemetry_collector as dt
+    from intelligence.external.collectors import orderbook_depth_collector as ob
+    from intelligence.external.collectors import whale_positioning_collector as wp
     from intelligence.macro import calendar_ssot as cal_ssot
     from intelligence.macro import lexicon_ssot as lex_ssot
     from orchestratorOS.supervisor import prompt_formatters as pf
@@ -831,13 +831,9 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     import time as _time
     import intelligence.external.collectors as ext_cols
     from intelligence.external.collectors import (
-        bybit_liquidations,
         bybit_liquidations_collector,
-        derivatives_telemetry,
         derivatives_telemetry_collector,
-        orderbook_depth,
         orderbook_depth_collector,
-        whale_positioning,
         whale_positioning_collector,
     )
     from intelligence.macro import daemon_ssot
@@ -848,12 +844,11 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     )
     from intelligence.sentiment.evaluators import portfolio_evaluator, tca_risk_evaluator
 
-    # 1. External collectors follow *_collector.py naming with identical module aliases for backwards compatibility
-    assert bybit_liquidations is bybit_liquidations_collector
-    assert derivatives_telemetry is derivatives_telemetry_collector
-    assert orderbook_depth is orderbook_depth_collector
-    assert whale_positioning is whale_positioning_collector
+    # 1. External collectors follow canonical *_collector.py naming
+    assert ext_cols.BybitLiquidationCollector is bybit_liquidations_collector.BybitLiquidationCollector
+    assert ext_cols.DerivativesTelemetryCollector is derivatives_telemetry_collector.DerivativesTelemetryCollector
     assert ext_cols.OrderbookDepthCollector is orderbook_depth_collector.OrderbookDepthCollector
+    assert ext_cols.WhalePositioningCollector is whale_positioning_collector.WhalePositioningCollector
 
     # 2. Microstructure, pretrade, and portfolio collectors have clean boundaries
     assert callable(microstructure_collector.enrich_24h_and_microstructure)

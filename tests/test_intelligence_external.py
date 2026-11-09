@@ -3,8 +3,8 @@
 import unittest
 import time
 
-from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
 from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
 from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
@@ -153,7 +153,7 @@ class TestExternalGuards(unittest.TestCase):
         self.assertIn("long_crowding_extreme", dec.reason)
 
     def test_whale_divergence_guard_defers_short_covering(self):
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
         from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 
         guard = WhaleDivergenceGuard()
@@ -177,7 +177,7 @@ class TestExternalGuards(unittest.TestCase):
         self.assertIn("short_covering_fakeout", dec.reason)
 
     def test_orderbook_wall_guard_defers_when_blocked(self):
-        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+        from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
         from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
         guard = OrderbookWallGuard(whale_wall_usd_limit=1_000_000.0)
@@ -200,7 +200,7 @@ class TestExternalGuards(unittest.TestCase):
         self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
 
     def test_whale_accumulation_trigger_fires(self):
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
         from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
 
         trigger = WhaleAccumulationTrigger()
@@ -226,9 +226,9 @@ class TestExternalGuards(unittest.TestCase):
 
     def test_disk_serialization_round_trip(self):
         import tempfile
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
-        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
-        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
+        from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot, OrderbookDepthCollector
+        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Whale collector disk round-trip
@@ -301,7 +301,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_whale_guard_shadow_allows_while_enforce_blocks(self):
         import order_guard
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
 
         fakeout_snap = WhalePositioningSnapshot(
             symbol="BTCUSDT",
@@ -365,7 +365,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
     def test_orderbook_wall_guard_shadow_and_enforce(self):
         import external_order_guard
         import order_guard
-        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
+        from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot, OrderbookDepthCollector
 
         wall_snap = OrderbookSnapshot(
             symbol="BTCUSDT",
@@ -421,7 +421,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
     def test_funding_crowding_guard_downscales_in_enforce(self):
         import external_order_guard
         import order_guard
-        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
 
         crowded_snap = DerivativesTelemetry(
             symbol="BTCUSDT",
@@ -474,7 +474,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
     def test_whale_guard_severe_and_moderate_taker_selling(self):
         import external_order_guard
         import order_guard
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
 
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         orig_collector = external_order_guard._whale_collector
@@ -556,7 +556,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_rtrade_whale_flow_checks(self):
         from rtrade import _whale_flow_blocks_side, _effective_adjustment_fraction
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
         import external_order_guard
 
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
@@ -627,7 +627,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_whale_positioning_regime_classification_short_squeeze_and_unwinding(self):
         """Verify regime classification handles short squeeze and distinguishes liquidations from unwinding."""
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
         # 1. Price rising + OI falling with aggressive taker buys = short_squeeze
         reg_squeeze = WhalePositioningCollector.classify_regime(
@@ -681,7 +681,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_whale_divergence_guard_short_squeeze_and_unwinding(self):
         """Verify WhaleDivergenceGuard allows short squeeze buys, defers premature sells, and permits long unwinding."""
-        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
         from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
 
@@ -861,9 +861,9 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         import os
         import tempfile
         from unittest.mock import MagicMock, patch
-        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector, WhalePositioningSnapshot
-        from intelligence.sentiment.collectors.microstructure_collector import (
+        from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+        from intelligence.sentiment.evaluators.microstructure_evaluator import (
             compute_liquidation_clusters,
             enrich_microstructure_cvd,
         )

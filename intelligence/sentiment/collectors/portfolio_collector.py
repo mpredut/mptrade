@@ -34,10 +34,12 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
-import intelligence.sentiment.collectors.microstructure_collector as _mc
-from intelligence.sentiment.collectors.microstructure_collector import (
+from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+)
+import intelligence.sentiment.collectors.microstructure_collector as _mc
+from intelligence.sentiment.collectors.microstructure_collector import (
     _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
 )

@@ -10,9 +10,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
@@ -170,7 +170,7 @@ def test_collector_bounded_step_timeout_still_writes_heartbeat(temp_cache_dir):
 
 def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
     import threading
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     collector = GlobalTelemetryCollector(
         symbols=["HYPEUSD"],
@@ -259,6 +259,8 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
         MicrostructureCacheCollectorBase,
         PriceSeriesCacheCollectorBase,
         SymbolMicrostructureSnapshotCollector,
+    )
+    from intelligence.external.collectors.base_collector import (
         TelemetryCacheCollectorInterface,
         TelemetryCollectorFactory,
     )
@@ -607,7 +609,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         MarketAndPortfolioSnapshotOrchestrator,
         PortfolioAndVenueCyclesCollector,
     )
-    from intelligence.sentiment.collectors.microstructure_collector import (
+    from intelligence.external.collectors.base_collector import (
         TelemetryCacheCollectorInterface,
         TelemetryCollectorFactory,
     )
@@ -1085,7 +1087,7 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
 def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_cache_dir):
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro_analyzer import MacroAnalyzer
-    from intelligence.sentiment.collectors.microstructure_collector import TelemetryCollectorFactory
+    from intelligence.external.collectors.base_collector import TelemetryCollectorFactory
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from state_io import save_json_state
 

@@ -561,7 +561,7 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
 
     # SSOT orderbook payload normalization and collector reference price coupling
     from providers.base import MarketDataProvider, resolve_ssot_price_from_cache
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     assert resolve_ssot_price_from_cache("HYPEUSDC", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(41.25)
     assert resolve_ssot_price_from_cache("ADAUSD", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(0.725)

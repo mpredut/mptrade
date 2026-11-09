@@ -936,7 +936,7 @@ def test_order_actor_resolution_and_recent_fills_tagging():
         format_actor_tag,
         resolve_order_actor,
     )
-    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
 
     # 1. extract_client_order_id tests across venue shapes and edge cases
     assert extract_client_order_id({"clientOrderId": "AI_12345"}) == "AI_12345"
@@ -1481,7 +1481,7 @@ def test_macro_analyzer_and_daemon_apply_retry_backoff_on_llm_failure(monkeypatc
 
 def test_orderbook_depth_collector_uses_eur_endpoints_for_eur_pairs(monkeypatch, tmp_path):
     """Verify OrderbookDepthCollector.fetch queries EUR orderbook endpoints for EUR-quoted symbols."""
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     collector = OrderbookDepthCollector(cache_dir=str(tmp_path))
     requested_urls = []
@@ -2141,9 +2141,11 @@ def test_enrich_cross_venue_trends_preserves_7d_range_over_short_watcher_history
 
 def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(monkeypatch):
     """Verify 72h LIFO PnL reset, DEEP_PASSIVE_BID/FAR_ABOVE_ASK_WALL TCA, Hyperliquid deep L2 book, and EET clock."""
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
-    from intelligence.sentiment.collectors.microstructure_collector import (
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
         compute_liquidation_clusters,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
         extract_symbol_recent_fills,
     )
     from intelligence.sentiment.collectors.portfolio_collector import (
@@ -2293,8 +2295,10 @@ def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(m
 def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     """Verify live dist_from_spot_pct recomputation, venue tick-aligned front-run price, bimodal VAH > POC, and 24h/7d/6h-bottom ob_mid sync."""
     from intelligence.sentiment.collectors.microstructure_collector import (
-        compute_volume_profile_metrics,
         load_symbol_microstructure,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_volume_profile_metrics,
     )
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         sync_sibling_symbol_telemetry,

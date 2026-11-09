@@ -37,9 +37,11 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_pos_float,
 )
-from intelligence.sentiment.collectors.microstructure_collector import (
-     TelemetryCacheCollectorInterface,
+from intelligence.external.collectors.base_collector import (
+    TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+)
+from intelligence.sentiment.collectors.microstructure_collector import (
     _EQ_YAHOO_CHART_MEMO,
     _LAST_7D_SPAN_MS_BY_SYM,
     _ensure_cacheprice_classes_bound,

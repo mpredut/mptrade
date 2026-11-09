@@ -2147,10 +2147,10 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert yp.get_price("NVDA_US_EQ") is None
 
     # 16. External/Sentiment/Macro collectors, triggers, and guards whitespace/bool/bounds hardening
-    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector, WhalePositioningSnapshot
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
@@ -2158,7 +2158,8 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-    from intelligence.sentiment.collectors.microstructure_collector import compute_24h_price_metrics, extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 
     blc = BybitLiquidationCollector(symbols=["  btcusdt ", "", None])
@@ -2427,7 +2428,7 @@ def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, mo
     from types import SimpleNamespace
     import monitortrades as mt
     from orchestratorOS.agy import paths as agy_paths
-    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
     from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
 
     # 1. WhalePositioningSnapshot.from_dict handles non-dict payload gracefully
@@ -3709,9 +3710,9 @@ def test_batch18_geopolitical_news_and_sentiment_collectors_guards_hardening(tmp
 
 def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_path):
     from types import SimpleNamespace
-    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
-    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
-    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
@@ -5339,7 +5340,7 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
     from intelligence.internal.state import survival
     import qlimit_order_guard as qog
     import external_order_guard as eog
-    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
     import monitortrades as mt
 
     # 1. survival._effective_t_cache_file respects MPTRADE_CACHEDB_DIR and estimate_T strips slashes before fetch_klines
@@ -6035,7 +6036,7 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
         evaluate_smart_stop_loss,
     )
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
-    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
         PostStopReentryGuard,

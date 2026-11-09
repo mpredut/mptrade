@@ -776,7 +776,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             self.assertIsNone(bapi_mod.get_free_balance("USDC"))
 
         # 14. compute_24h_price_metrics normalizes Unix-second timestamps
-        from intelligence.sentiment.collectors.microstructure_collector import compute_24h_price_metrics
+        from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
         sec_base = 1_700_000_000.0
         sec_series = [
             [sec_base - 180 * 60, 100.0],
@@ -791,7 +791,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
 
         # 15. liquidation_signal and BybitLiquidationCollector normalize symbol case and reject NaN/non-positive notionals
         import liquidation_signal as liq_mod
-        from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+        from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
         liq_col = liq_mod.LiquidationSignal(symbols=["BTCUSDT"])
         liq_col._ingest(json.dumps({
             "topic": "allLiquidation.BTCUSDT",
