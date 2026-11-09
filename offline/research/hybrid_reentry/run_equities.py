@@ -12,7 +12,6 @@ if ROOT not in sys.path:
 from botcore import parse_dotenv
 from offline.backtests.evaluation import load_venue_module
 from offline.research.hybrid_reentry.harness import (
-    build_ablation_variants,
     evaluate_asset,
     load_ohlc_csv,
 )

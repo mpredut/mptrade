@@ -3,12 +3,11 @@
 Separates prompt presentation (Sections 1, 2, 3A, 3B, 3C) and symbol price
 resolution from telemetry harvesting and order execution in
 `autonomous_ai_reconciler.py`.
-Section-level and line-level formatters live in `orchestratorOS.supervisor.prompt_sections`
-and are re-exported here for 100% backwards-compatibility.
+Section-level and line-level formatters live in `orchestratorOS.supervisor.prompt_sections`.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
 from botcore import safe_pos_float
@@ -20,22 +19,15 @@ from orchestratorOS.lib.technical_repair_ssot import (
     DIAGNOSED_SEVERITIES,
 )
 from orchestratorOS.supervisor.prompt_sections import (
-    _age_sfx,
-    _extract_macro_benchmarks_line,
-    _fmt_liq_usd,
-    _fmt_px,
     _fmt_slope_val,
-    _format_horizon_range,
     _format_macro_and_news_section,
     _format_market_prices_section,
     _format_microstructure_section,
     _format_portfolio_section,
-    _format_quote_breakdown,
     _format_recent_order_line,
     _format_sre_and_fleet_section,
     _format_tradable_position_line,
     _format_venue_cycle_line,
-    _same_anchor_px,
 )
 
 

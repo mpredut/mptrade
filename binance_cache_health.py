@@ -13,7 +13,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from botcore import (
     exact_pos_int,

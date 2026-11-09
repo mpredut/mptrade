@@ -6609,17 +6609,18 @@ def test_iteration36_daily_limit_and_order_retry_nan_bool_safety():
     ok_nan, r_nan = og.daily_limit_guard(prov_dl, "BTCUSDC", "SELL", max_daily_trades=float("nan"))
     assert ok_nan is True and r_nan is None
 
-    # 2. order_retry._lifecycle_finite and TrackedOrderLifecycle reject boolean values
-    assert oq._lifecycle_finite(True, positive=True) is None
-    assert oq._lifecycle_finite(False, positive=False) is None
-    assert oq._lifecycle_finite(1.5, positive=True) == 1.5
+    # 2. order_lifecycle._lifecycle_finite and TrackedOrderLifecycle reject boolean values
+    import order_lifecycle as ol
+    assert ol._lifecycle_finite(True, positive=True) is None
+    assert ol._lifecycle_finite(False, positive=False) is None
+    assert ol._lifecycle_finite(1.5, positive=True) == 1.5
 
     with pytest.raises(ValueError):
-        oq.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=True)
+        ol.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=True)
     with pytest.raises(ValueError):
-        oq.TrackedOrderLifecycle(object(), provider_name="binance", max_age_seconds=True)
+        ol.TrackedOrderLifecycle(object(), provider_name="binance", max_age_seconds=True)
 
-    tl = oq.TrackedOrderLifecycle(object(), provider_name="binance", clock=lambda: 1000.0)
+    tl = ol.TrackedOrderLifecycle(object(), provider_name="binance", clock=lambda: 1000.0)
     with pytest.raises(ValueError):
         tl.new_intent(
             intent_id="i1", client_order_id="c1", symbol="BTCUSDC",
@@ -10684,12 +10685,13 @@ def test_iteration97_instrument_registry_order_retry_and_worker_safety(tmp_path)
     assert oq.discard(None) == []
     assert oq.discard("rec1") == []
 
+    import order_lifecycle as ol
     with pytest.raises(ValueError, match="provider_name is required"):
-        oq.TrackedOrderLifecycle(object(), provider_name=True)
+        ol.TrackedOrderLifecycle(object(), provider_name=True)
     with pytest.raises(ValueError, match="missing_confirmations must be positive"):
-        oq.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=1.5)
+        ol.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=1.5)
 
-    lc = oq.TrackedOrderLifecycle(object(), provider_name=" binance ", clock=lambda: 1000.0)
+    lc = ol.TrackedOrderLifecycle(object(), provider_name=" binance ", clock=lambda: 1000.0)
     assert lc.provider_name == "binance"
     with pytest.raises(ValueError, match="must not be boolean"):
         lc.new_intent(intent_id=True, client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0)
@@ -11884,7 +11886,8 @@ def test_iteration113_order_retry_execution_audit_and_state_io_safety(tmp_path, 
         order_status=lambda _s, oid: oid,
         cancel_order=lambda _s, oid: oid,
     )
-    api_adapter = oret.StrategyExecutorLifecycleApi(exec_stub)
+    import order_lifecycle as ol
+    api_adapter = ol.StrategyExecutorLifecycleApi(exec_stub)
     with pytest.raises(ProviderError):
         api_adapter.order_by_client_id("BTCUSDC", True)
     with pytest.raises(ProviderError):
@@ -12922,7 +12925,8 @@ def test_iteration123_submission_outcome_audit_and_retry_id_hygiene(tmp_path):
             wrapped.order_by_client_id("XBTUSD", bad_cid)
 
     # 3. StrategyExecutorLifecycleApi rejects NaN/"nan"/"null" and normalizes integer float IDs
-    life_api = oq.StrategyExecutorLifecycleApi(wrapped)
+    import order_lifecycle as ol
+    life_api = ol.StrategyExecutorLifecycleApi(wrapped)
     for bad_id in (float("nan"), "nan", "null", 12.5):
         with pytest.raises(ProviderError):
             life_api.order_status("XBTUSD", bad_id)
@@ -15293,15 +15297,16 @@ def test_iteration156_instrument_bool_cast_and_order_retry_hygiene(tmp_path, mon
 def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypatch, tmp_path):
     """Verify TrackedOrderLifecycle, StrategyExecutorLifecycleApi, TrackedOrderResult,
     and assetguardian.py handle sentinel IDs, .0 IDs, boolean flags, and attempt counters."""
+    import order_lifecycle as ol
     import order_retry as oq
     import assetguardian as ag
     from providers.base import ProviderError
     from providers.strategy_executor import OrderStatus, SubmissionOutcome
 
     # 1. TrackedOrderResult.order_known rejects "0", "nan", "None"
-    assert oq.TrackedOrderResult("active", {"order_id": "0"}).order_known is False
-    assert oq.TrackedOrderResult("active", {"order_id": "nan"}).order_known is False
-    assert oq.TrackedOrderResult("active", {"order_id": "555.0"}).order_known is True
+    assert ol.TrackedOrderResult("active", {"order_id": "0"}).order_known is False
+    assert ol.TrackedOrderResult("active", {"order_id": "nan"}).order_known is False
+    assert ol.TrackedOrderResult("active", {"order_id": "555.0"}).order_known is True
 
     # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
     from providers.strategy_executor import OrderReconciliationCapabilities
@@ -15325,7 +15330,7 @@ def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypa
         def cancel_order(self, symbol, oid):
             return {"symbol": symbol, "oid": oid}
 
-    adapter = oq.StrategyExecutorLifecycleApi(_DummyExec())
+    adapter = ol.StrategyExecutorLifecycleApi(_DummyExec())
     with pytest.raises(ProviderError):
         adapter.order_by_client_id("BTCUSDC", "0")
     with pytest.raises(ProviderError):
@@ -15336,14 +15341,14 @@ def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypa
     assert adapter.order_status("BTCUSDC", "999.0")["oid"] == "999"
 
     # 3. TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization
-    lc_false = oq.TrackedOrderLifecycle(
+    lc_false = ol.TrackedOrderLifecycle(
         object(),
         provider_name="binance",
         retry_on_lookup_error="false",
         clock=lambda: 1000.0,
     )
     assert lc_false.retry_on_lookup_error is False
-    lc_nan = oq.TrackedOrderLifecycle(
+    lc_nan = ol.TrackedOrderLifecycle(
         object(),
         provider_name="binance",
         retry_on_lookup_error=float("nan"),
@@ -15378,11 +15383,11 @@ def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypa
     assert intent["client_order_id"] == "202"
     assert intent["side"] == "BUY"
 
-    assert oq.TrackedOrderLifecycle._order_fields({"orderId": "0"}) == {}
-    assert oq.TrackedOrderLifecycle._order_fields({"orderId": "333.0"}) == {"order_id": "333"}
+    assert ol.TrackedOrderLifecycle._order_fields({"orderId": "0"}) == {}
+    assert ol.TrackedOrderLifecycle._order_fields({"orderId": "333.0"}) == {"order_id": "333"}
     with pytest.raises(ValueError):
         SubmissionOutcome("accepted", order_id="0")
-    assert oq.TrackedOrderLifecycle._order_fields(
+    assert ol.TrackedOrderLifecycle._order_fields(
         SubmissionOutcome("unknown", native={"orderId": "0"})
     ) == {"submission_outcome": "unknown"}
 

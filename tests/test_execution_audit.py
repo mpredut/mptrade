@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import providers.execution_audit as execution_audit_module
-from order_retry import StrategyExecutorLifecycleApi
+from order_lifecycle import StrategyExecutorLifecycleApi
 
 from providers.execution_audit import (
     AuditedStrategyExecutor,

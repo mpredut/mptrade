@@ -17,7 +17,8 @@ from providers.base import (
 )
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 from providers.execution_audit import ExecutionAudit
-from order_retry import propagate_submission_refusal, resolve_accepted_order
+from order_lifecycle import propagate_submission_refusal
+from order_retry import resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY
@@ -36,7 +37,6 @@ from botcore import (
     clamp_float,
     exact_nonneg_int,
     load_root_config,
-    required_env,
     required_float_env,
     required_int_env,
     safe_float,

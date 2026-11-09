@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as _futures
-import configparser
 import json
 import math
 import os
@@ -58,7 +57,7 @@ os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import log
-from botcore import _parse_bool_flag, float_env, load_dotenv, load_ini_config, safe_float
+from botcore import _parse_bool_flag, float_env, load_ini_config, safe_float
 from cachepaths import cache_path
 from instrument_registry import select_instruments
 from offline.research.backtest_ranges import scan_backtest_ranges

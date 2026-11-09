@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import statistics
-from typing import Iterable
 
 from botcore import (
     _parse_bool_flag,

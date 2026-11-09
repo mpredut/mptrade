@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -30,9 +29,7 @@ from cachepaths import (
     canonical_symbol_key,
     compatible_quote_suffixes,
     normalize_cache_base_asset,
-    resolve_binance_lookup_symbol,
     resolve_cache_dir_path,
-    resolve_kraken_lookup_symbol,
     telemetry_cache_file_path,
 )
 from instrument_registry import is_equity_symbol, is_symbol_market_open

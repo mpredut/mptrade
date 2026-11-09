@@ -43,7 +43,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)   # also support direct execution (python binance_api/trailing_stop.py)
 
 from instrument_registry import select_instruments
-from order_retry import (
+from order_lifecycle import (
     TrackedOrderLifecycle,
     propagate_submission_refusal,
 )

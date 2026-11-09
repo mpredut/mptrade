@@ -5,9 +5,6 @@
 enqueues attempts rejected by an earlier guard; ``order_retry_worker.py`` is the
 single consumer. Records are stored as JSONL under ``cachedb`` and queue mutations
 are serialized with a cross-process file lock.
-
-Strategy-owned lifecycle state machine (``TrackedOrderLifecycle``) is implemented in
-``order_lifecycle.py`` and re-exported here for backward compatibility.
 """
 import hashlib
 import json
@@ -29,24 +26,11 @@ from botcore import (
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from lock import FileLock
-from order_lifecycle import (
-    PersistPending,
-    StrategyExecutorLifecycleApi,
-    SubmitIntent,
-    TrackedOrderLifecycle,
-    TrackedOrderResult,
-    _is_definitive_submit_refusal,
-    _lifecycle_finite,
-    _status_from_terminal_payload,
-    _terminal_payload,
-    propagate_submission_refusal,
-)
 from providers.order_ohlc_utils import extract_order_id, extract_orig_qty
 from providers.strategy_executor import OrderStatus, SubmissionRefused
 from state_io import atomic_write_jsonl, read_text_file, read_text_lines

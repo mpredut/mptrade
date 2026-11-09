@@ -31,7 +31,7 @@ from providers.base import (
 )
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
-from order_retry import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
+from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
 
 from intelligence.internal.state.volatility import (
     resolve_cached_volatility_1h,

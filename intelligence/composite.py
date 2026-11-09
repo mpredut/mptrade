@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from guard_hierarchy import (
-    BaseGuard,
     GUARD_REGISTRY,
     _ALL_GUARD_ALIASES,
     normalize_bypassed_guards,

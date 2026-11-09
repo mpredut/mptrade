@@ -3,9 +3,8 @@ import copy
 import unittest
 from unittest import mock
 
-from providers.strategy_executor import OrderStatus, SubmissionOutcome
-from order_retry import (
-    SubmissionRefused,
+from providers.strategy_executor import OrderStatus, SubmissionOutcome, SubmissionRefused
+from order_lifecycle import (
     TrackedOrderLifecycle,
     propagate_submission_refusal,
 )

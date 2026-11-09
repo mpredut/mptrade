@@ -57,7 +57,7 @@ from providers.kraken_provider import (  # noqa: E402
     _kraken_pair_matches,
     _split_kraken_pair,
 )
-from order_retry import (  # noqa: E402
+from order_lifecycle import (  # noqa: E402
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
     TrackedOrderResult,

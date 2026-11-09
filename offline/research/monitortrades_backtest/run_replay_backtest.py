@@ -27,7 +27,6 @@ the network (ReplayMarketDataProvider reads only from cachedb/cache_price_*.json
 Rulare: python3 offline/research/monitortrades_backtest/run_replay_backtest.py
 """
 import argparse
-import configparser
 import math
 from multiprocessing import Pool
 import os

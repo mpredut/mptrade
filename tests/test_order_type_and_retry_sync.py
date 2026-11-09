@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import order_lifecycle
 import order_retry as oq
 import order_retry_worker as worker
 from providers.kraken_provider import KrakenProvider
@@ -323,7 +324,7 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
 
     def test_tracked_order_lifecycle_order_fields_partially_filled_and_kraken_txid(self):
         """Verify TrackedOrderLifecycle._order_fields unwraps Kraken txid lists and prefers origQty."""
-        fields = oq.TrackedOrderLifecycle._order_fields({
+        fields = order_lifecycle.TrackedOrderLifecycle._order_fields({
             "txid": ["O-KRAK-777"],
             "status": "PARTIALLY_FILLED",
             "executedQty": "1.0",
