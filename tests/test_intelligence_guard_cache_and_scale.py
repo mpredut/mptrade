@@ -8926,7 +8926,8 @@ def test_iteration66_notify_engine_and_market_monitor_safety(tmp_path, monkeypat
         {"title": "TestA", "body": "BodyA", "count": "2.0", "priority": "high", "topic": "t1"},
         {"title": "TestB", "body": "BodyB", "count": "bad", "priority": "default", "topic": "t1"},
     ])
-    assert "(×2)" in title
+    assert title.startswith("📦 Bulk (2):")
+    assert "(×2)" in body
     assert "TestB:" in body
 
     # 2. pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields
