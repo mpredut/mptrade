@@ -76,7 +76,7 @@ def log(msg: str) -> None:
 
 
 def state_path_for(ticker: str) -> str:
-    return _shared_state_path_for(ticker, _HERE)
+    return _shared_state_path_for(ticker, _HERE, venue="t212")
 
 
 @dataclass

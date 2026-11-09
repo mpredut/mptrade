@@ -42,6 +42,7 @@ from .base_spot_mixin import (
     load_common_mhdpa_env,
     sanitize_common_spot_state,
 )
+from cachepaths import resolve_venue_runtime_dir
 from .state_store import (
     state_path_for as _shared_state_path_for,
 )
@@ -50,7 +51,7 @@ from .position_exit_manager import (
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LEGACY_STATE_DIR = os.path.join(_ROOT, "kraken")
+_LEGACY_STATE_DIR = resolve_venue_runtime_dir("kraken", workspace_dir=_ROOT)
 _DEFAULT_FEE_NOTE = "fee Kraken ~0.26% taker / ~0.16% maker per leg"
 _PLACEMENT_BACKOFF_CAP_SEC = 3600.0
 _REGIME_BAR_SETTLE_MAX_SEC = 900.0

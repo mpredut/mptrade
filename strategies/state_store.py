@@ -11,6 +11,7 @@ import os
 from collections.abc import Callable
 from dataclasses import fields
 from botcore import _parse_bool_flag, safe_pos_float
+from cachepaths import resolve_venue_runtime_dir
 from intelligence.internal.state.volatility import vol_pct_to_ratio
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager
@@ -166,15 +167,17 @@ def state_path_for(
     state_dir: str | os.PathLike | None = None,
     *,
     default_dir: str = "",
+    venue: str | None = None,
 ) -> str:
-    """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` when ``state_dir`` is blank."""
+    """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` or ``resolve_venue_runtime_dir(venue)`` when ``state_dir`` is blank."""
     safe = safe_state_token(symbol, "unknown")
+    eff_default = default_dir or (resolve_venue_runtime_dir(venue) if venue else "")
     if isinstance(state_dir, os.PathLike):
-        directory = os.fspath(state_dir) or default_dir
+        directory = os.fspath(state_dir) or eff_default
     elif isinstance(state_dir, str) and state_dir.strip():
         directory = state_dir.strip()
     else:
-        directory = default_dir
+        directory = eff_default
     return os.path.join(directory, f".state_{safe}.json")
 
 

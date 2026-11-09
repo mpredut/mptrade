@@ -56,9 +56,9 @@ from trailing_core import (  # noqa: E402
 )
 from botcore import (load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
-from cachepaths import cache_path  # noqa: E402
+from cachepaths import resolve_venue_trailing_state_path  # noqa: E402
 
-DEFAULT_STATE = cache_path("trailing_state.json")
+DEFAULT_STATE = resolve_venue_trailing_state_path("binance", resolve_subdir=True)
 
 
 # Load KEY=VALUE configuration from trailing.conf into the environment; external values override it.

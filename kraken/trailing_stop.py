@@ -74,12 +74,16 @@ from order_lifecycle import (  # noqa: E402
     TrackedOrderResult,
 )
 from credentials import kraken_credentials  # noqa: E402
-from cachepaths import CACHE_SHORT_TREND_FILENAME, cache_path  # noqa: E402
+from cachepaths import (  # noqa: E402
+    CACHE_SHORT_TREND_FILENAME,
+    cache_path,
+    resolve_venue_trailing_state_path,
+)
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
 from instrument_registry import casefold_get, select_instruments  # noqa: E402
 import order_guard  # noqa: E402
 
-STATE_FILE = os.path.join(_HERE, "trailing_state.json")
+STATE_FILE = resolve_venue_trailing_state_path("kraken")
 CACHE_TREND = cache_path(CACHE_SHORT_TREND_FILENAME)
 
 
