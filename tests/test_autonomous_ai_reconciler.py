@@ -9244,6 +9244,29 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             + "\n",
             encoding="utf-8",
         )
+        rtrade_log = Path(tmp_net) / "rtrade_2026-11-07.log"
+        rtrade_log.write_text(
+            "\n".join(
+                [
+                    "00:00:54 [ws_async.py:216] [STDERR] 2026-11-07 00:00:54,992 [ERROR] WS error: sent 1011 (internal error) keepalive ping timeout; no close frame received",
+                    "00:01:00 get_free_balance: Error for USDC: HTTPSConnectionPool(host='api.binance.com', port=443): Max retries exceeded (Caused by NameResolutionError(\"Failed to resolve 'api.binance.com' ([Errno -3] Temporary failure in name resolution)\"))",
+                    "00:01:33 [TAOUSDC] Current price: 224.90",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        xstock_log = Path(tmp_net) / "xStock-watch.log"
+        xstock_log.write_text(
+            "\n".join(
+                [
+                    ".[00:00:55]   ! network error POST: <urlopen error timed out>",
+                    "[00:01:05]   price 134.27000427246094 vs allocation 141.75 (-5.3%)",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=24.0)
         assert net_res.error_count == 0
         assert not net_res.persistent_errors

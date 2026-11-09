@@ -690,10 +690,15 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"(Order \d+ .* is protected from monitororder repricing|"
         r"get_trade_orders:\s+Total found \d+ orders|"
         r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
+        r"\[[A-Z0-9_]+\]\s+price=\d+(?:\.\d+)?,\s+window_min/max=|"
+        r"\[[A-Z0-9_]+\]\s+Current price:\s+\d+(?:\.\d+)?|"
+        r"apply_weight_limit|"
         r"Started\.\s+check_interval=|"
-        r"\[CacheOrderManager\]\[info\]\s+(?:New order fills:|Save cache to file)|"
+        r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
         r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up)|"
-        r"\[STRAT\]\s+price=\d+(?:\.\d+)?)",
+        r"\[STRAT\]\s+price=\d+(?:\.\d+)?|"
+        r"===\s*xStock watcher started\s*===|"
+        r"price \d+(?:\.\d+)? vs allocation \d+(?:\.\d+)?)",
         re.IGNORECASE,
     )
     daemon_recovered_pattern = re.compile(
@@ -835,6 +840,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "ui_sync_idle_sec" in cleaned
                                     or "[manage_agy] ERROR:" in cleaned
                                     or "[ws] error: ping/pong timed out" in cleaned
+                                    or "WS error: " in cleaned
+                                    or "Temporary failure in name resolution" in cleaned
+                                    or "NameResolutionError" in cleaned
+                                    or "Network is unreachable" in cleaned
+                                    or "Connection timed out" in cleaned
+                                    or "Read timed out" in cleaned
+                                    or "ConnectTimeoutError" in cleaned
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned
