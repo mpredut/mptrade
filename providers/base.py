@@ -734,7 +734,7 @@ class MarketDataProvider(ABC):
         for cand in candidates:
             c24_fname = cache_24_price_filename(cand)
             c24_path = (
-                os.path.join(str(custom_dir), c24_fname)
+                str(resolve_cachedb_filepath(os.path.join(str(custom_dir), c24_fname)))
                 if custom_dir
                 else cache_path(c24_fname)
             )

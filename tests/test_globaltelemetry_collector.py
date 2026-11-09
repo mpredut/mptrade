@@ -1174,6 +1174,43 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     assert auto_snap.ts == 1_750_000_050.0
     assert auto_snap.age_sec == 50.0
 
+    # 4. Cross-venue CacheTradeManager.get_last_opposite_fill_price & equity order_guard._read_cached_price_history
+    from cacheaccount import CacheTradeManager
+    import order_guard
+
+    krk_tm = CacheTradeManager.create_for_venue(
+        "kraken",
+        filename=os.path.join(temp_cache_dir, "cache_trade_kraken.json"),
+        start_sync=False,
+    )
+    krk_tm._persist_items(
+        "XBTUSD",
+        [{"id": "KRK-XBT-1", "symbol": "XBTUSD", "isBuyer": True, "price": 67890.0, "time": 1_750_000_000_000}],
+    )
+    assert krk_tm.get_last_opposite_fill_price("BTCUSD", "SELL") == pytest.approx(67890.0)
+
+    t212_tm = CacheTradeManager.create_for_venue(
+        "t212",
+        filename=os.path.join(temp_cache_dir, "cache_trade_t212.json"),
+        start_sync=False,
+    )
+    t212_tm._persist_items(
+        "NVDA_US_EQ",
+        [{"id": "T212-NVDA-1", "symbol": "NVDA_US_EQ", "side": "BUY", "price": 138.5, "time": 1_750_000_000_000}],
+    )
+    assert t212_tm.get_last_opposite_fill_price("NVDA", "SELL") == pytest.approx(138.5)
+    assert t212_tm.get_last_opposite_fill_price("NVDA_US_EQ", "SELL") == pytest.approx(138.5)
+
+    p24_eq_dir = os.path.join(temp_cache_dir, "prices")
+    os.makedirs(p24_eq_dir, exist_ok=True)
+    save_json_state(
+        os.path.join(p24_eq_dir, "cache_24_price_NVDA_US_EQ.json"),
+        {"items": {"NVDA_US_EQ": [[1_749_999_000_000, 137.0], [1_750_000_000_000, 138.5]]}},
+    )
+    eq_hist = order_guard._read_cached_price_history("NVDA_US_EQ", window_seconds=3600.0, now=1_750_000_010.0)
+    assert eq_hist is not None and len(eq_hist) == 2
+    assert eq_hist[-1][1] == pytest.approx(138.5)
+
 
 
 

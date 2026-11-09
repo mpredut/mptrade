@@ -55,6 +55,7 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from providers.base import (
+    clean_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -309,6 +310,7 @@ class CacheTradeManager(CacheAccountManagerBase):
     """Unified multi-venue trade fill cache (Level 3) supporting both versioned append-only JSONL (`append_persist=True`) and JSON snapshot dicts (`append_persist=False`)."""
 
     _is_trade_account_cache = True
+    append_persist: bool = True
     VENUE_KEY = "binance"
     DEFAULT_FILENAME = CACHE_TRADE_FILENAME
     VENUE_FILENAMES: dict[str, str] = {
@@ -425,12 +427,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 for row in v:
                     if not isinstance(row, dict):
                         continue
-                    raw_id = row.get("id")
-                    clean_id = (
-                        str(raw_id).strip()
-                        if raw_id is not None and not isinstance(raw_id, bool) and str(raw_id).strip()
-                        else None
-                    )
+                    clean_id = clean_order_id(row.get("id"))
                     if clean_id is None:
                         continue
                     t_f = safe_pos_float(row.get("time"), default=None)
@@ -1227,12 +1224,18 @@ class CacheTradeManager(CacheAccountManagerBase):
             return None
         want_buyer = side_u == "SELL"
         sym_clean = clean_symbol_key(symbol)
+        cand_clean_set = (
+            {clean_symbol_key(c) for c in cache_symbol_variants(symbol, include_base=True) if c}
+            if not self.append_persist
+            else set()
+        )
         latest_key = None
         latest_price = None
         with self.lock:
             bucket = (
                 casefold_get(self.cache, symbol)
                 or casefold_get(self.cache, sym_clean)
+                or (self.extract_venue_symbol_trades(self.cache, symbol) if not self.append_persist else None)
                 or []
             )
             for trade in bucket:
@@ -1250,7 +1253,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     if not self._is_valid_snapshot_item(trade):
                         continue
                     tr_sym = clean_symbol_key(trade.get("symbol") or symbol)
-                    if tr_sym and sym_clean and tr_sym != sym_clean:
+                    if tr_sym and sym_clean and tr_sym != sym_clean and tr_sym not in cand_clean_set:
                         continue
                     raw_ib = trade.get("isBuyer")
                     is_buyer = raw_ib if isinstance(raw_ib, bool) else (normalize_side(trade.get("side")) == "BUY")

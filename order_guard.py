@@ -37,6 +37,7 @@ import utils as u
 from cachepaths import (
     CACHE_LONG_TREND_FILENAME,
     CACHE_WATCHER_ALL_PRICE_FILENAME,
+    _is_eq_suffix,
     cache_24_price_filename,
     cache_symbol_variants,
     canonical_base_asset,
@@ -1216,7 +1217,7 @@ def _read_cached_price_history(
     p24_paths = list(dict.fromkeys(
         str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
         for cand in cand_symbols
-        if "/" not in cand and "_" not in cand
+        if "/" not in cand and ("_" not in cand or _is_eq_suffix(cand))
     ))
     watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
     for p_path in (*p24_paths, watcher_path):
