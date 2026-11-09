@@ -9518,6 +9518,96 @@ def test_b1_through_b4_and_cached_ai_intents_collector_fallback(tmp_path, monkey
     assert loaded[0]["intent_id"] == "id_1"
 
 
+def test_harvest_positions_dedup_bare_equity_pretrade_and_assetguardian_recovery(tmp_path):
+    """Verify duplicate (venue, symbol) inst_map dedup, bare equity pretrade funding suppression, and recovered AssetValue log error suppression."""
+    import json
+    from types import SimpleNamespace
+    import pytest
+    from intelligence.macro.lexicon_ssot import _is_editorial_clickbait_or_advice_title
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Duplicate (venue, symbol) alias keys in inst_map do not duplicate positions, open orders, or locked_base_qty
+    prov = SimpleNamespace(
+        free_balance=lambda asset: 19.194454 if asset == "HYPE" else 581.83,
+        usd_cash_breakdown=None,
+    )
+    open_list = [{"orderId": "O6SSYE-QJKQD-GTMQKU", "side": "SELL", "type": "LIMIT", "price": 81.45, "origQty": 14.0, "executedQty": 0.0, "status": "NEW"}]
+    inst_conf = SimpleNamespace(
+        symbol="HYPEUSD",
+        provider_name="kraken",
+        base="HYPE",
+        quote="USD",
+        params={"trailing.pct": 28.0, "mt.gain": 9.0, "mt.lost": 4.25},
+        _provider=prov,
+        open_orders=lambda: list(open_list),
+    )
+    inst_alias = SimpleNamespace(
+        symbol="HYPEUSD",
+        provider_name="kraken",
+        base="HYPE",
+        quote="USD",
+        params={},
+        _provider=prov,
+        open_orders=lambda: list(open_list),
+    )
+    prices_trends = {"HYPEUSD": {"price": 75.0, "trend": 1, "growth_coefficient": 0.5}}
+    positions, open_orders, _, _ = harvest_tradable_positions_and_orders(
+        {"KRAKEN_HYPE": inst_alias, "KRAKEN_HYPEUSD": inst_conf},
+        prices_trends,
+        {},
+        {},
+        cache_dir=str(tmp_path),
+    )
+    assert len(positions) == 1
+    assert len(open_orders) == 1
+    assert positions[0]["locked_base_qty"] == pytest.approx(14.0)
+    assert positions[0]["trailing_pct_cfg"] == 28.0
+
+    # 2. Bare equity ticker "NVDA" suppresses 0.0 Perpetual Funding Rate in collect_pretrade_telemetry
+    cdir = tmp_path / "eq_cache"
+    cdir.mkdir()
+    (cdir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": {"price": 175.5, "timestamp": 1794240000000}}}),
+        encoding="utf-8",
+    )
+    (cdir / "derivatives_telemetry_state.json").write_text(
+        json.dumps({
+            "items": {
+                "NVDA_US_EQ": {
+                    "symbol": "NVDA_US_EQ",
+                    "funding_rate": 0.0,
+                    "funding_annualized_pct": 0.0,
+                    "perp_spot_basis_bps": 0.0,
+                    "open_interest_usd": 280_000_000_000.0,
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    tel_nvda = collect_pretrade_telemetry("NVDA", cachedb_dir=str(cdir))
+    assert "Perpetual Funding Rate" not in tel_nvda
+
+    # 3. Recovered AssetValue cache error in assetguardian.log is suppressed once normal cycles resume
+    ldir = tmp_path / "logs"
+    ldir.mkdir()
+    (ldir / "assetguardian.log").write_text(
+        "17:59:38 [assetguardian.py:435] ERROR reading AssetValue cache via cacheManager: stat: path should be string, bytes, os.PathLike or integer, not NoneType\n"
+        "18:00:32 [BTCUSDC] price=74849.18000000, window_min/max=73501.11000000/75905.55000000, minutes_back=1440.0\n",
+        encoding="utf-8",
+    )
+    summary = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=1.0)
+    assert summary.error_count == 0
+    assert not summary.persistent_errors
+
+    # 4. Editorial clickbait filter catches 'could steal the show'
+    assert _is_editorial_clickbait_or_advice_title(
+        "nvidia gets the spotlight, but this ai stock could steal the show in 2027"
+    )
+
+
+
 
 
 

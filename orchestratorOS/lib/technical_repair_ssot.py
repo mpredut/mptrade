@@ -818,6 +818,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 or "account_cache_initializing" in cleaned
                                 or "account cache is not fresh" in cleaned
                                 or "account_cache_writer_not_running" in cleaned
+                                or "ERROR reading AssetValue cache via cacheManager" in cleaned
                             ) and any(
                                 "apply_weight_limit" in lines[j]
                                 or bot_cycle_recovered_pattern.search(lines[j])

@@ -2158,7 +2158,18 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
         session_policy = self.resolve_session_policy(symbol)
         sym_quotes = compatible_quote_suffixes(symbol)
         is_usd_sym = "USD" in sym_quotes
-        is_eq_sym = session_policy.is_equity or is_equity_symbol(symbol)
+        sym_u_clean = str(symbol or "").strip().upper()
+        is_eq_sym = (
+            session_policy.is_equity
+            or is_equity_symbol(symbol)
+            or (
+                bool(sym_u_clean)
+                and not sym_u_clean.endswith(("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
+                and is_equity_symbol(f"{sym_u_clean}_US_EQ")
+            )
+        )
+        if is_eq_sym and not session_policy.is_equity:
+            session_policy = self.resolve_session_policy(f"{sym_u_clean}_US_EQ")
         sym_variants, quote_variants = _scope_symbol_variants(symbol, is_eq_sym, is_usd_sym, sym_quotes)
 
         return PretradeEvaluationContext(
