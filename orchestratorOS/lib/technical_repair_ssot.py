@@ -686,6 +686,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"Started\.\s+check_interval=|"
         r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
         r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up)|"
+        r"\[TRAIL-K\]\s+heartbeat|"
+        r"\[FORWARD \(from the anchor\)\]|"
         r"\[STRAT\]\s+price=\d+(?:\.\d+)?|"
         r"===\s*xStock watcher started\s*===|"
         r"price \d+(?:\.\d+)? vs allocation \d+(?:\.\d+)?)",
@@ -839,7 +841,10 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "Network is unreachable" in cleaned
                                     or "Connection timed out" in cleaned
                                     or "Read timed out" in cleaned
+                                    or "The read operation timed out" in cleaned
                                     or "ConnectTimeoutError" in cleaned
+                                    or "cycle failed (" in cleaned
+                                    or "EGeneral:Internal error" in cleaned
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned

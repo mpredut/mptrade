@@ -59,7 +59,14 @@ def fetch_ohlc_candles(
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
-    data = fetch_public_json(url, timeout=to_f, user_agent="mptrade/kraken-ohlc-fetcher")
+    data = None
+    for attempt in range(2):
+        try:
+            data = fetch_public_json(url, timeout=to_f, user_agent="mptrade/kraken-ohlc-fetcher")
+            break
+        except (TimeoutError, OSError):
+            if attempt == 1:
+                raise
     if not isinstance(data, dict):
         raise RuntimeError(f"invalid Kraken OHLC payload: {data!r}")
     if data.get("error"):
