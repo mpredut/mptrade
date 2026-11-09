@@ -1002,9 +1002,9 @@ if __name__ == "__main__":
     print(f" --------- {len(trades)}")
     print(f" my trades of today : {trades}")
 
-    # Price chain: WebSocket market data -> CacheCurrentPrice -> Cache24 -> PriceWindow.
-    # Create CacheCurrentPrice before Cache24 with the correct sync_ts; otherwise
-    # Cache24.get_remote_items creates it internally with sync_ts=30.
+    # Price chain: WebSocket market data -> CacheCurrentPriceManager -> Cache24PriceManager -> PriceWindow.
+    # Create CacheCurrentPriceManager before Cache24PriceManager with the correct sync_ts; otherwise
+    # Cache24PriceManager.get_remote_items creates it internally with sync_ts=30.
     from binance_api import bapi_ws
     # The user-data WebSocket bridge is opt-in; tradeall needs execution reports.
     cm.enable_real_ws_event_sync()

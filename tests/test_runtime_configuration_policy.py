@@ -373,9 +373,9 @@ class RuntimeImportSafetyTest(unittest.TestCase):
             from binance_api import bapi_trades
 
             forbidden = {
-                "BinanceTimeResync", "CacheTrade", "CacheTradeManager",
-                "CacheOrder", "CacheOrderManager",
-                "CacheCurrentPrice", "CacheCurrentPriceManager", "NonBinanceTrendPoller",
+                "BinanceTimeResync", "CacheTradeManager",
+                "CacheOrderManager",
+                "CacheCurrentPriceManager", "NonBinanceTrendPoller",
                 "InstantTrendFullEval", "InstantTrendFlush",
             }
             active = {thread.name for thread in threading.enumerate()}

@@ -127,9 +127,9 @@ def _shutdown_runtime_threads_after_suite():
     bapi_ws.bapi_ws_manager.stop()
 
     forbidden = {
-        "BinanceTimeResync", "CacheTrade", "CacheTradeManager",
-        "CacheOrder", "CacheOrderManager",
-        "CacheCurrentPrice", "CacheCurrentPriceManager", "NonBinanceTrendPoller",
+        "BinanceTimeResync", "CacheTradeManager",
+        "CacheOrderManager",
+        "CacheCurrentPriceManager", "NonBinanceTrendPoller",
         "InstantTrendFullEval", "InstantTrendFlush",
         "ShortTrendFullEval", "ShortTrendFlush",
     }
