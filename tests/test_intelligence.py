@@ -5243,6 +5243,20 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
 
     # Monkeypatching instrument.Instrument is respected by _resolve_instrument_cls / bind_instruments
     import instrument as inst_mod
+    spec = ir_reloaded.InstrumentSpec(
+        name="BINANCE_BTC",
+        provider="binance",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={},
+    )
+    fake_api = SimpleNamespace(provider_by_name=lambda _n: SimpleNamespace(name="binance", validate_symbol=lambda _s: None))
+    bound = inst_mod.Instrument.from_spec(spec, api=fake_api)
+    assert bound.spec is spec and bound.symbol == "BTCUSDC"
     sentinel_cls = lambda **kw: SimpleNamespace(**kw)
     monkeypatch.setattr(inst_mod, "Instrument", sentinel_cls, raising=False)
     assert inst_mod._resolve_instrument_cls() is sentinel_cls
