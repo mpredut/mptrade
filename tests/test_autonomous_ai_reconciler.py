@@ -3116,7 +3116,7 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     assert "dd_from_peak_pct" not in positions[0]
 
     # 8. extract_executed_qty & build_last_cycle_execution_status report OPEN_RESTING (not PARTIALLY_FILLED) on unfilled resting limit orders
-    from providers.base import extract_executed_qty
+    from providers.order_ohlc_utils import extract_executed_qty
     from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
 
     assert extract_executed_qty({"status": "NEW", "origQty": "0.005", "executedQty": "0.0"}) == 0.0
@@ -3840,7 +3840,8 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert macro_map["market_breadth"]["advance_ratio"] == pytest.approx(0.35)
     assert macro_map["sentiment_advisor"]["market_bias"] == "NEUTRAL"
 
-    from providers.base import extract_executed_qty, extract_order_side, normalize_open_order
+    from providers.base import extract_order_side, normalize_open_order
+    from providers.order_ohlc_utils import extract_executed_qty
 
     assert extract_order_side({"type": "limit", "descr": {"type": "buy"}}) == "BUY"
     assert extract_order_side({"dir": "Spot", "isBuyer": True}) == "BUY"
@@ -4072,7 +4073,8 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert "trailing_peak" not in live_pos_with_closed_cyc[0]
 
     # 7. Iteration 17: Hyperliquid msg='resting' / 'filled <qty> @ <px>' parsing & extract_remaining_qty without status
-    from providers.base import extract_order_price, extract_remaining_qty
+    from providers.base import extract_order_price
+    from providers.order_ohlc_utils import extract_remaining_qty
 
     assert extract_remaining_qty({"origQty": "10.0"}) == pytest.approx(10.0)
     assert extract_order_price({"orderId": 124, "ok": True, "msg": "filled 32.5 @ 61.42"}) == pytest.approx(61.42)
@@ -4133,7 +4135,7 @@ def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(t
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
     from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
-    from providers.base import normalize_order
+    from providers.order_ohlc_utils import normalize_order
 
     # 1. normalize_order and extract_symbol_recent_fills use executed qty on partial fills and skip resting HL orders
     norm_partial = normalize_order(

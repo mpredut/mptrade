@@ -28,7 +28,6 @@ from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_ve
 from instrument_registry import casefold_get
 from .base import (
     MarketDataProvider,
-    build_open_order_entry,
     clean_order_id,
     compute_fills_cost_basis,
     extract_order_fee,
@@ -37,11 +36,14 @@ from .base import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
-    normalize_order,
     normalize_side,
+    resolve_market_flag,
+)
+from .order_ohlc_utils import (
+    build_open_order_entry,
+    normalize_order,
     require_clean_order_id,
     require_int_order_id,
-    resolve_market_flag,
 )
 from .quantity import (
     BinanceFilterError,

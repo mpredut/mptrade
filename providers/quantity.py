@@ -10,6 +10,8 @@ from typing import Any, Callable, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    clean_order_id_str,
+    normalize_side,
     obj_attr,
     register_module_aliases,
     safe_float,
@@ -19,13 +21,11 @@ from botcore import (
 )
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 from .order_ohlc_utils import (
-    clean_order_id_str,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
-    normalize_side,
 )
 
 logger = logging.getLogger(__name__)

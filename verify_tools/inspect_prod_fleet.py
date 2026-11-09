@@ -24,8 +24,8 @@ from providers.base import (
     extract_order_id,
     extract_order_price,
     extract_order_side,
-    extract_orig_qty,
 )
+from providers.order_ohlc_utils import extract_orig_qty
 from state_io import read_json_file
 
 

@@ -37,7 +37,7 @@ from botcore import (  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
 from strategies.spot_engine import Strategy, StratParams
-from providers.base import format_strategy_execution_mode
+from providers.order_ohlc_utils import format_strategy_execution_mode
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.hyperliquid_provider import HyperliquidProvider, hl_strategy_dry_run
 

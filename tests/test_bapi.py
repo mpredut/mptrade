@@ -556,8 +556,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             extract_order_qty,
             extract_order_side,
             extract_timestamp_ms,
-            normalize_order,
         )
+        from providers.order_ohlc_utils import normalize_order
         import binance_api.bapi as bapi_mod
         import binance_api.bapi_allorders as bapi_all
         import binance_api.bapi_trades as bapi_tr
@@ -654,7 +654,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             mock_cancel.assert_called_once_with(SYMBOL, 2)
 
         # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
-        from providers.base import extract_remaining_qty, extract_timestamp_s
+        from providers.base import extract_timestamp_s
+        from providers.order_ohlc_utils import extract_remaining_qty
         from order_rollback import extract_order_restore_params
         import monitortrades as mt_mod
 

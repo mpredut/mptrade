@@ -57,7 +57,7 @@ from botcore import (  # noqa: E402
     safe_int,
     safe_pos_float,
 )
-from providers.base import validate_ohlc_candle_bar  # noqa: E402
+from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 

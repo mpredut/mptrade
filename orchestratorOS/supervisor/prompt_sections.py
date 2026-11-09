@@ -37,7 +37,8 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from providers.base import format_actor_tag, normalize_timestamp_ms
+from providers.base import normalize_timestamp_ms
+from providers.order_ohlc_utils import format_actor_tag
 
 
 def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:

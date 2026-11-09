@@ -1007,7 +1007,8 @@ def test_iter45_hl_spot_fallbacks_portfolio_per_symbol_fills_and_interval_plus_s
     """Verify HLClient spot_meta empty-dict fallback & suffix stripping, per-symbol audit/intent fills in harvest_recent_orders_and_enrich_positions, chronological open-order audit timestamps, and '+60' OHLC interval parsing."""
     from types import SimpleNamespace
     from providers.hyperliquid_provider import _hl_client_module
-    from providers.base import normalize_open_order, parse_ohlc_interval_minutes
+    from providers.base import normalize_open_order
+    from providers.order_ohlc_utils import parse_ohlc_interval_minutes
     from intelligence.sentiment.collectors.portfolio_collector import (
         _load_open_order_timestamps,
         harvest_recent_orders_and_enrich_positions,

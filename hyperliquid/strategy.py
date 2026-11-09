@@ -34,6 +34,7 @@ from botcore import (  # noqa: E402
     format_price_log,
     load_env_stack,
     log,
+    normalize_scalar_order_id,
     required_bool_env,
     required_env,
     required_float_env,
@@ -46,7 +47,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import notify
-from providers.base import clean_order_id, normalize_scalar_order_id
+from providers.base import clean_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token

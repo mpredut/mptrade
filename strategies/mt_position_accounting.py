@@ -23,8 +23,10 @@ from providers.base import (
     extract_order_price,
     extract_order_qty,
     extract_order_side,
-    extract_remaining_qty,
     extract_timestamp_ms,
+)
+from providers.order_ohlc_utils import (
+    extract_remaining_qty,
     resolve_order_actor,
 )
 from providers.market_api import api as mkt

@@ -11,15 +11,17 @@ import utils as u
 import instrument_registry as sym
 from binance_api import bapi as api
 from binance_api import order_id_context as rc
+from botcore import clean_order_id_str
 from providers.base import (
-    clean_order_id_str,
-    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
-    extract_remaining_qty,
     extract_timestamp_s,
     normalize_side,
+)
+from providers.order_ohlc_utils import (
+    extract_client_order_id,
+    extract_remaining_qty,
 )
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).

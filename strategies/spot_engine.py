@@ -26,9 +26,9 @@ from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import (
     clean_order_id,
     extract_order_side,
-    extract_remaining_qty,
     normalize_side,
 )
+from providers.order_ohlc_utils import extract_remaining_qty
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError
 from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle

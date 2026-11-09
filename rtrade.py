@@ -45,7 +45,8 @@ from order_retry import (
     is_terminal_filter_refusal,
     resolve_accepted_order,
 )
-from providers.base import extract_client_order_id, extract_order_id, extract_order_price
+from providers.base import extract_order_id, extract_order_price
+from providers.order_ohlc_utils import extract_client_order_id
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.market_api import api as mkt
 from providers.quantity import balance_cap_quantity, decide_quantity

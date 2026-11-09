@@ -51,7 +51,7 @@ from strategies.spot_engine import Strategy, StratParams
 # Provider-agnostic path B requires the StrategyExecutor contract. Wrap the _BOT client
 # in KrakenProvider so Strategy shares its connection/nonce. Balance/find/price CLI
 # commands continue using KrakenClient directly.
-from providers.base import format_strategy_execution_mode  # noqa: E402
+from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     kraken_strategy_dry_run,

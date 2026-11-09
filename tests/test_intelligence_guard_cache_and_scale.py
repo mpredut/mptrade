@@ -12778,7 +12778,7 @@ def test_iteration122_provider_order_id_precision_and_status_safety():
     assert extract_order_id({"orderId": 12345.0}) == "12345"
 
     # 2. require_int_order_id preserves 64-bit integer precision (> 2**53)
-    from providers.base import require_int_order_id
+    from providers.order_ohlc_utils import require_int_order_id
 
     big_oid = 9007199254740993  # 2**53 + 1
     assert require_int_order_id(big_oid, "order_status") == big_oid

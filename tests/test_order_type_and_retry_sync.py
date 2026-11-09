@@ -292,7 +292,8 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
 
     def test_kraken_and_hyperliquid_order_by_client_id_quantity_sync(self):
         """Verify that extract_orig_qty and extract_order_id work across all venue shapes."""
-        from providers.base import extract_order_id, extract_orig_qty
+        from providers.base import extract_order_id
+        from providers.order_ohlc_utils import extract_orig_qty
 
         # Kraken shape (txid list + vol)
         kraken_order = {"txid": ["O-KRAK-1"], "status": "open", "vol": 2.5}

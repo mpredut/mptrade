@@ -626,7 +626,7 @@ class TestRebuyGuardsKraken(Base):
         self.assertAlmostEqual(ts.executor.round_quantity("HYPEUSD", 1.23459), 1.2345)
         self.assertAlmostEqual(ts.executor.round_price("HYPEUSD", 48.129), 48.13)
         from cachepaths import cache_path
-        from providers.base import (
+        from providers.order_ohlc_utils import (
             parse_ohlc_interval,
             parse_ohlc_interval_minutes,
             resolve_ohlc_time_window_ms,
@@ -637,7 +637,7 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(hl_cache_file, cache_path("cache_trade_hyperliquid.json"))
 
         # 5. Shared OHLC interval/window helpers, clamp_orderbook_limit & resolve_venue_instrument_spec
-        from providers.base import (
+        from providers.order_ohlc_utils import (
             build_open_order_entry,
             format_strategy_execution_mode,
         )

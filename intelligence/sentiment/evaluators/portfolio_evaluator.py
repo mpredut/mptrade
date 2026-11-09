@@ -37,13 +37,10 @@ from instrument_registry import casefold_get
 from providers.base import (
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
-    extract_executed_qty,
     extract_order_id,
     extract_order_price,
     extract_order_side,
-    extract_orig_qty,
     extract_timestamp_ms,
-    format_actor_tag,
     normalize_timestamp_ms,
     resolve_order_origin,
 )
@@ -51,6 +48,9 @@ from providers.order_ohlc_utils import (
     _EXEC_QTY_KEYS,
     _UNFILLED_ORDER_STATUSES,
     _parse_epoch_or_iso_s,
+    extract_executed_qty,
+    extract_orig_qty,
+    format_actor_tag,
 )
 from providers.execution_audit import extract_intent_order_type, extract_intent_side
 

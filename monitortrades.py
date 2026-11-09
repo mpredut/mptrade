@@ -31,13 +31,13 @@ import order_guard
 import order_retry
 import pricewindow as pw
 from providers.base import (
-    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
     extract_timestamp_s,
 )
+from providers.order_ohlc_utils import extract_client_order_id
 from providers.market_api import api as mkt
 from providers.quantity import check_order_filter_refusal
 from state_io import discard_generation_file, read_json_dict, save_json_state

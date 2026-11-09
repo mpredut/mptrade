@@ -341,7 +341,7 @@ class TestFetchDeadline(unittest.TestCase):
             self.assertFalse(hl_ws._fills_ws_seeded)
 
     def test_validate_ohlc_close_ts_sentinel_and_duplicate_ai_order_and_trailing_lookup(self):
-        from providers.base import validate_ohlc_candle_bar
+        from providers.order_ohlc_utils import validate_ohlc_candle_bar
         from providers.execution_audit import find_duplicate_ai_open_limit_order
         from trailing_core import TrailingAdapterBase
 

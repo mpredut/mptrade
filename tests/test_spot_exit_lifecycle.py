@@ -1011,7 +1011,7 @@ def test_spot_engine_pending_stop_exit_does_not_reinitiate_mhdsl_bounce_watch():
 
 def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_latest_buy_fill():
     from types import SimpleNamespace
-    from providers.base import extract_remaining_qty
+    from providers.order_ohlc_utils import extract_remaining_qty
 
     assert extract_remaining_qty({"origQty": 1.0, "executedQty": 0.4}) == pytest.approx(0.6)
     assert extract_remaining_qty({"remaining_qty": 0.35, "origQty": 1.0}) == pytest.approx(0.35)

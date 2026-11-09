@@ -55,7 +55,7 @@ except ImportError:
     from strategy import Strategy, StratParams  # noqa: E402
     from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from providers.base import format_strategy_execution_mode  # noqa: E402
+from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
 
 STOP = threading.Event()
 

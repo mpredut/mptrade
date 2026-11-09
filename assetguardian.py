@@ -9,12 +9,12 @@ import time
 from binance_api import bapi as api
 from binance_api.order_id_context import resolve_order_owner
 from providers.base import (
-    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_side,
     extract_timestamp_s,
 )
+from providers.order_ohlc_utils import extract_client_order_id
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 from providers.execution_audit import ExecutionAudit
 from order_lifecycle import propagate_submission_refusal

@@ -8,10 +8,8 @@ from typing import Any, List, Optional
 from botcore import (
     _parse_bool_flag,
     clean_order_id,
-    clean_order_id_str,
     exact_pos_int,
     normalize_epoch_sec,
-    normalize_scalar_order_id,
     normalize_side,
     obj_attr,
     resolve_now_ts,

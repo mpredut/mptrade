@@ -41,8 +41,9 @@ from ipo_common import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
 from providers.base import (
-    extract_order_id, extract_order_price, extract_order_side, extract_orig_qty,
+    extract_order_id, extract_order_price, extract_order_side,
 )
+from providers.order_ohlc_utils import extract_orig_qty
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match

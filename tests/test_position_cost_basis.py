@@ -281,7 +281,7 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
 
 
 def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
-    from providers.base import extract_remaining_qty
+    from providers.order_ohlc_utils import extract_remaining_qty
     import instrument
     import order_retry
     import monitortrades as mt
@@ -349,9 +349,9 @@ def test_cross_venue_and_ws_extract_normalization_edges():
         extract_order_price,
         extract_order_qty,
         extract_order_side,
-        extract_remaining_qty,
         extract_timestamp_ms,
     )
+    from providers.order_ohlc_utils import extract_remaining_qty
     from binance_api.order_id_context import resolve_order_owner
 
     # 1. Binance WS executionReport: remainingQty from q - z, price from L/Z, timestamp from T/E, side from S

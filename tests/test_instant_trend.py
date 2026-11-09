@@ -1167,8 +1167,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             extract_order_price,
             extract_order_qty,
             extract_order_side,
-            extract_remaining_qty,
         )
+        from providers.order_ohlc_utils import extract_remaining_qty
 
         self.assertEqual(extract_order_price({"price": True}), 0.0)
         self.assertEqual(extract_order_price({"cost": True, "vol": 1.0}), 0.0)

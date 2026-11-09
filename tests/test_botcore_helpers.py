@@ -888,8 +888,9 @@ def test_canonical_package1_unified_primitives():
 
     # 5. Wave 2 primitives: require_*, clean_json_value, normalize_trend_direction, sanitizers, lru, order_id, cache root
     from collections import OrderedDict
+    from botcore import clean_order_id_str, normalize_scalar_order_id
     from cachepaths import cachedb_root_for_file
-    from providers.base import clean_order_id_str, normalize_scalar_order_id, parse_ohlc_interval_minutes
+    from providers.order_ohlc_utils import parse_ohlc_interval_minutes
 
     assert botcore.require_finite_float("3.5", "x") == 3.5
     assert botcore.require_pos_float("2.0", "x", min_value=1.5) == 2.0
