@@ -66,7 +66,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                         monitororder.api, "get_current_price",
                         return_value=100.0),
                     mock.patch.object(
-                        monitororder.u, "are_close", return_value=True),
+                        monitororder, "are_close", return_value=True),
                     mock.patch.object(
                         monitororder.mkt, "preflight_order") as preflight,
                     mock.patch.object(
@@ -100,7 +100,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 monitororder.api, "get_open_orders", return_value=orders),
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder.u, "are_close", return_value=True),
+            mock.patch.object(monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt,
                 "preflight_order",
@@ -141,7 +141,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                         monitororder.api, "get_current_price",
                         return_value=100.0),
                     mock.patch.object(
-                        monitororder.u, "are_close", return_value=True),
+                        monitororder, "are_close", return_value=True),
                     mock.patch.object(
                         monitororder.mkt, "preflight_order",
                         **preflight_kwargs),
@@ -179,7 +179,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 monitororder.api, "get_open_orders", return_value=orders),
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder.u, "are_close", return_value=True),
+            mock.patch.object(monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt, "preflight_order", side_effect=preflight),
             mock.patch.object(
@@ -223,7 +223,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 monitororder.api, "get_open_orders", return_value=orders),
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder.u, "are_close", return_value=True),
+            mock.patch.object(monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt, "preflight_order", return_value=permit),
             mock.patch.object(
@@ -258,7 +258,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 monitororder.api, "get_open_orders", return_value=orders),
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder.u, "are_close", return_value=True),
+            mock.patch.object(monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt, "preflight_order",
                 return_value=permit) as preflight,
@@ -302,7 +302,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                         monitororder.api, "get_current_price",
                         return_value=100.0),
                     mock.patch.object(
-                        monitororder.u, "are_close", return_value=True),
+                        monitororder, "are_close", return_value=True),
                     mock.patch.object(
                         monitororder.mkt, "preflight_order",
                         return_value=permit),
@@ -345,7 +345,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 monitororder.api, "get_open_orders", return_value=orders),
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
-            mock.patch.object(monitororder.u, "are_close", return_value=True),
+            mock.patch.object(monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt, "preflight_order", return_value=object()),
             mock.patch.object(
@@ -396,7 +396,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                         monitororder.api, "get_current_price",
                         return_value=100.0),
                     mock.patch.object(
-                        monitororder.u, "are_close", return_value=True),
+                        monitororder, "are_close", return_value=True),
                     mock.patch.object(
                         monitororder.mkt, "preflight_order",
                         return_value=object()),
@@ -443,7 +443,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
             mock.patch.object(
                 monitororder.api, "get_current_price", return_value=100.0),
             mock.patch.object(
-                monitororder.u, "are_close", return_value=True),
+                monitororder, "are_close", return_value=True),
             mock.patch.object(
                 monitororder.mkt, "preflight_order", return_value=permit),
             mock.patch.object(

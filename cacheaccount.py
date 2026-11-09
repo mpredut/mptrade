@@ -312,7 +312,6 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     _is_trade_account_cache = True
     append_persist: bool = True
-    VENUE_KEY = "binance"
     DEFAULT_FILENAME = CACHE_TRADE_FILENAME
     VENUE_FILENAMES: dict[str, str] = {
         "binance": CACHE_TRADE_FILENAME,
@@ -364,8 +363,6 @@ class CacheTradeManager(CacheAccountManagerBase):
             return _reg_venue_for_symbol(symbol, default=default)
         except Exception:
             return default
-
-    get_venue_for_symbol = venue_for_symbol
 
     @classmethod
     def disk_filename(cls, venue: str = "binance") -> str:

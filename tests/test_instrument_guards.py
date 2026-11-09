@@ -1063,9 +1063,9 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_fine_grained_bypass_guards_granularity(self):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
-        from guard_hierarchy import GUARD_CATALOG, normalize_bypassed_guards
+        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 
-        # 0. GUARD_CATALOG completeness (new canonical codes exist, legacy G1..G10 removed)
+        # 0. GUARD_REGISTRY completeness (new canonical codes exist, legacy G1..G10 removed)
         canonical_codes = {
             "GO1", "GT_S", "GT_M", "GT_L",
             "G_PROF", "G_QLIMIT1", "G_QLIMIT2",
@@ -1073,8 +1073,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             "GLLM1", "GLLM2", "GLLM3",
         }
         legacy_codes = {"G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10"}
-        self.assertTrue(canonical_codes.issubset(set(GUARD_CATALOG.keys())))
-        self.assertTrue(legacy_codes.isdisjoint(set(GUARD_CATALOG.keys())))
+        self.assertTrue(canonical_codes.issubset(set(GUARD_REGISTRY.keys())))
+        self.assertTrue(legacy_codes.isdisjoint(set(GUARD_REGISTRY.keys())))
 
         # 1. Default (None) bypasses nothing
         none_bypassed = normalize_bypassed_guards(None)
@@ -1174,7 +1174,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             TrendGuard,
             ProfitGuard,
             QuantLimitGuard,
-            FinancialGuard,
             IntelligenceGuard,
             LLMGuard,
             GUARD_REGISTRY,
@@ -1188,7 +1187,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertIsInstance(GUARD_REGISTRY["GT_M"], TrendGuard)
         self.assertIsInstance(GUARD_REGISTRY["GT_L"], TrendGuard)
         self.assertIsInstance(GUARD_REGISTRY["G_PROF"], ProfitGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G_PROF"], FinancialGuard)
         self.assertIsInstance(GUARD_REGISTRY["G_QLIMIT1"], QuantLimitGuard)
         self.assertIsInstance(GUARD_REGISTRY["G_QLIMIT2"], QuantLimitGuard)
         self.assertIsInstance(GUARD_REGISTRY["GI_OBOOK"], IntelligenceGuard)

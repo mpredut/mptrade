@@ -1549,7 +1549,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     import json
     from types import SimpleNamespace
     from intelligence.macro_sentiment_ssot import (
-        CROSS_ASSET_REGIMES,
+        get_cross_asset_regimes,
         get_macro_benchmark_specs,
         get_yahoo_chart_url,
     )
@@ -1570,7 +1570,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert specs == MACRO_BENCHMARK_SPECS
     assert ("VIX", "^VIX", "index") in specs
     assert "%5EVIX" in get_yahoo_chart_url("^VIX")
-    assert set(CROSS_ASSET_REGIMES) == {
+    assert set(get_cross_asset_regimes()) == {
         "COUPLED_RISK_ON",
         "COUPLED_RISK_OFF",
         "CRYPTO_BULLISH_DECOUPLING",

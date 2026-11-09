@@ -339,10 +339,6 @@ def get_recommended_actions() -> Tuple[str, ...]:
     return _tax_tuple("recommended_actions")
 
 
-def get_breadth_regimes() -> Tuple[str, ...]:
-    return _tax_tuple("breadth_regimes")
-
-
 def get_threat_levels() -> Tuple[str, ...]:
     return _tax_tuple("threat_levels")
 
@@ -355,27 +351,13 @@ def get_cross_asset_regimes() -> Tuple[str, ...]:
     return _tax_tuple("cross_asset_regimes")
 
 
-MARKET_BIASES: Tuple[str, ...] = get_market_biases()
-RISK_LEVELS: Tuple[str, ...] = get_risk_levels()
-RECOMMENDED_ACTIONS: Tuple[str, ...] = get_recommended_actions()
-BREADTH_REGIMES: Tuple[str, ...] = get_breadth_regimes()
-THREAT_LEVELS: Tuple[str, ...] = get_threat_levels()
-RECOMMENDED_BRAKES: Tuple[str, ...] = get_recommended_brakes()
-CROSS_ASSET_REGIMES: Tuple[str, ...] = get_cross_asset_regimes()
-
 _INIT_DERIVED_INTERVALS: Dict[str, float] = resolve_derived_telemetry_intervals()
 DEFAULT_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["default_sentiment_interval_sec"]
-MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["min_dynamic_sentiment_interval_sec"]
-PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["peak_overlap_sentiment_interval_sec"]
-MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["max_dynamic_sentiment_interval_sec"]
 SENTIMENT_CHECKPOINT_COOLDOWN_SEC: float = _INIT_DERIVED_INTERVALS["sentiment_checkpoint_cooldown_sec"]
 
 DEFAULT_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["default_geopolitical_interval_sec"]
-MIN_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["min_dynamic_geopolitical_interval_sec"]
-MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["max_dynamic_geopolitical_interval_sec"]
 DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = _INIT_DERIVED_INTERVALS["default_news_rolling_window_sec"]
 DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _INIT_DERIVED_INTERVALS["default_fallback_retry_ttl_sec"]
-DYNAMIC_LEXICON_TTL_SEC: float = _INIT_DERIVED_INTERVALS["dynamic_lexicon_ttl_sec"]
 
 
 def get_fear_greed_endpoint_url() -> str:

@@ -100,7 +100,6 @@ class MarketDataProvider(ABC):
         ...
 
     _DEFAULT_FILLS_CACHE_FILENAME: Optional[str] = None
-    _TRADE_CACHE_MANAGER_NAME: Optional[str] = None
     _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0

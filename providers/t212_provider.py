@@ -90,7 +90,6 @@ def _order_ticker(raw: dict) -> str:
 
 class T212Provider(MarketDataProvider):
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
-    _TRADE_CACHE_MANAGER_NAME = "T212Trade"
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)
 

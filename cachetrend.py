@@ -229,9 +229,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     LIVE_TREND_SUBDIR = "24trend"
     LIVE_FILE_PREFIX = "live_"
     LIVE_FILE_EXT = "json"
-    LIVE_WINDOW_SUBDIR = LIVE_TREND_SUBDIR
-    LIVE_WINDOW_PREFIX = LIVE_FILE_PREFIX
-    LIVE_WINDOW_EXT = LIVE_FILE_EXT
 
     @classmethod
     def live_window_relpath_for_symbol(cls, symbol: str) -> str:

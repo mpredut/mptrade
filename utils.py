@@ -49,11 +49,6 @@ def get_interval_time(valoare_prestabilita=97 * 79, marja_aleatoare=10):
     return abs(base_val + random.uniform(-margin_val, margin_val))
 
 
-calculate_difference_percent = botcore.diff_percent
-are_close = botcore.are_close
-format_price_log = botcore.format_price_log
-
-
 def value_diff_to_percent(value1, value2):
     v1 = botcore.safe_float(value1, default=None)
     v2 = botcore.safe_float(value2, default=None)

@@ -14,10 +14,6 @@ from botcore import (
     safe_nonneg_float,
 )
 from cachepaths import (
-    CACHE_HYPERLIQUID_TRADE_FILENAME,
-    CACHE_KRAKEN_TRADE_FILENAME,
-    CACHE_ORDER_FILENAME,
-    CACHE_T212_TRADE_FILENAME,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -107,14 +103,6 @@ def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
         (trd_cls.disk_filename("hyperliquid"), "hyperliquid"),
         (trd_cls.disk_filename("t212"), "t212"),
     )
-
-
-_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
-    (CACHE_ORDER_FILENAME, "binance"),
-    (CACHE_KRAKEN_TRADE_FILENAME, "kraken"),
-    (CACHE_HYPERLIQUID_TRADE_FILENAME, "hyperliquid"),
-    (CACHE_T212_TRADE_FILENAME, "t212"),
-)
 
 
 def _iter_audit_dir_file_batches(

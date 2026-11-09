@@ -1483,10 +1483,6 @@ class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
             raise TypeError("Cannot instantiate abstract class MicrostructureEvaluatorBase")
         super().__init__()
 
-    rescale_orderbook_walls_to_price = staticmethod(rescale_orderbook_walls_to_price)
-    is_ob_mid_fresher_than_series = staticmethod(is_ob_mid_fresher_than_series)
-    align_equity_orderbook_to_spot = staticmethod(align_equity_orderbook_to_spot)
-
 
 class OrderbookCvdFlowEvaluator(MicrostructureEvaluatorBase):
     """Concrete evaluator (Level 3) for multi-horizon taker flow, synthetic spot CVD, and spot-vs-perp flow regime."""

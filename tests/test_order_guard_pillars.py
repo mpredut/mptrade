@@ -1983,9 +1983,7 @@ def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(
 
 def test_format_price_log_ssot():
     import botcore
-    import utils as u
 
-    assert u.format_price_log is botcore.format_price_log
     assert botcore.format_price_log(123.456) == "123.46"
     assert botcore.format_price_log(1.0) == "1.00"
     assert botcore.format_price_log(0.1842) == "0.1842"

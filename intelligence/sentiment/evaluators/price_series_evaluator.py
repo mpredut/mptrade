@@ -2076,14 +2076,6 @@ class PriceSeriesEvaluatorBase(TelemetryEvaluatorInterface, ABC):
             raise TypeError("Cannot instantiate abstract class PriceSeriesEvaluatorBase")
         super().__init__()
 
-    parse_ts_px_row = staticmethod(_parse_ts_px_row)
-    extract_sorted_ts_px = staticmethod(_extract_sorted_ts_px)
-    round_opt_px = staticmethod(round_opt_px)
-    auto_px_decimals = staticmethod(_auto_px_decimals)
-    pct_delta = staticmethod(pct_delta)
-    range_position_pct = staticmethod(range_position_pct)
-    prices_diverged = staticmethod(_prices_diverged)
-
 
 class VolumeProfileEvaluator(PriceSeriesEvaluatorBase):
     """Concrete evaluator (Level 3) for 24h TPO / Volume Profile (VWAP, POC, VAH, VAL) and horizon range position."""

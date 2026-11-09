@@ -12,10 +12,10 @@ from decimal import Decimal, ROUND_DOWN
 
 import cacheManager as cm
 import external_order_guard as eog
-import utils as u
 from binance_api import bapi as api
 from botcore import (
     _parse_bool_flag,
+    are_close,
     exact_int,
     format_price_log,
     load_dotenv,
@@ -1214,7 +1214,7 @@ class TradingBot:
                     current_price = latest_price
                 bad_day = (
                     (current_price > filled_opp_price if is_buy else current_price < filled_opp_price)
-                    and not u.are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
+                    and not are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
                 )
                 if bad_day:
                     print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {format_price_log(current_price)}")

@@ -857,52 +857,6 @@ def stop_config_watcher():
 load_config()
 
 
-# ── 2.5. C++-Style Config Namespace (botcore.Config / botcore.cfg) ───────────
-
-
-class Config:
-    """Explicit C++-style namespace grouping all configuration loading, parsing, key-value lookup, and watcher APIs."""
-
-    load_dotenv = staticmethod(load_dotenv)
-    load_env_stack = staticmethod(load_env_stack)
-    load_root_config = staticmethod(load_root_config)
-    load_shadow_environment = staticmethod(load_shadow_environment)
-    require_shadow_interval = staticmethod(require_shadow_interval)
-    load_env_file_defaults = staticmethod(load_env_file_defaults)
-    load_key_value_conf = staticmethod(load_key_value_conf)
-    load_ini_config = staticmethod(load_ini_config)
-
-    parse_dotenv_line = staticmethod(parse_dotenv_line)
-    parse_dotenv = staticmethod(parse_dotenv)
-    parse_env_file = staticmethod(parse_env_file)
-    parse_bool = staticmethod(_parse_bool_flag)
-    parse_notify_enabled_flag = staticmethod(parse_notify_enabled_flag)
-    conf_or_override = staticmethod(conf_or_override)
-
-    float_env = staticmethod(float_env)
-    pos_float_env = staticmethod(pos_float_env)
-    int_env = staticmethod(int_env)
-    bool_env = staticmethod(bool_env)
-    optional_env = staticmethod(optional_env)
-    required_env = staticmethod(required_env)
-    defined_env = staticmethod(defined_env)
-    required_float_env = staticmethod(required_float_env)
-    required_int_env = staticmethod(required_int_env)
-    required_bool_env = staticmethod(required_bool_env)
-    env_value = staticmethod(env_value)
-    env_values_map = staticmethod(env_values_map)
-    resolve_cli_arg = staticmethod(resolve_cli_arg)
-
-    load_config = staticmethod(load_config)
-    is_trade_enabled = staticmethod(is_trade_enabled)
-    config_watcher = staticmethod(config_watcher)
-    start_config_watcher = staticmethod(start_config_watcher)
-    stop_config_watcher = staticmethod(stop_config_watcher)
-
-
-cfg = Config
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. HTTP TRANSPORT, APPROXIMATE MATH & MARKET HOURS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1988,9 +1942,4 @@ if not any(
 
 
 register_module_aliases(__name__, "config")
-
-if (_loaded_utils := sys.modules.get("utils")) is not None:
-    _loaded_utils.calculate_difference_percent = diff_percent
-    _loaded_utils.are_close = are_close
-    _loaded_utils.format_price_log = format_price_log
 

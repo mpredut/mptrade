@@ -21,6 +21,7 @@ from bisect import bisect_left
 import numpy as np
 
 from botcore import (
+    are_close,
     diff_percent,
     float_env,
     safe_float,
@@ -874,7 +875,7 @@ class PriceWindow:
             if extreme > 0.0 and price > 0.0:
                 close = price == extreme or abs(price - extreme) <= (price + extreme) * 0.00005
             elif extreme <= 0.0:
-                close = u.are_close(price, extreme, 0.01)
+                close = are_close(price, extreme, 0.01)
             else:
                 close = False
             if close:
@@ -904,10 +905,10 @@ class PriceWindow:
             hi = target_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
             indices = [
                 i for i, price in enumerate(self.prices)
-                if lo <= price <= hi and u.are_close(price, target_price, 0.01)
+                if lo <= price <= hi and are_close(price, target_price, 0.01)
             ]
         else:
-            indices = [i for i, price in enumerate(self.prices) if u.are_close(price, target_price, 0.01)]
+            indices = [i for i, price in enumerate(self.prices) if are_close(price, target_price, 0.01)]
         return sum(indices) / len(indices) if indices else None
 
     def get_min_and_index(self):
@@ -1109,13 +1110,13 @@ class WindowAnalyzer:
 
         if (
             abs(price_diff_newest) >= threshold
-            or ((threshold <= 0 or price_diff_newest >= threshold * 0.98) and u.are_close(price_diff_newest, threshold))
+            or ((threshold <= 0 or price_diff_newest >= threshold * 0.98) and are_close(price_diff_newest, threshold))
         ):
             if getattr(builtins.print, "__name__", "") != "_dummy_print":
                 _, min_index = w.get_min_and_index()
                 _, max_index = w.get_max_and_index()
                 print(f'price_diff_minmax_versus_newest(slope)={price_diff_newest}(threshold={threshold}) '
-                      f'are_close={u.are_close(price_diff_newest, threshold)}')
+                      f'are_close={are_close(price_diff_newest, threshold)}')
                 print(f'min price ={min_price}, max_price = {max_price}, newest_price={newest_price}, '
                       f'min_index={min_index}, max_index={max_index}')
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0

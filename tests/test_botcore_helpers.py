@@ -938,10 +938,6 @@ def test_canonical_package1_unified_primitives():
         assert pre_reload_resolve("NONEXISTENT_ATTR", 42, modules=("botcore",)) == 42
     finally:
         botcore.__dict__.update(saved_botcore_dict)
-        if (_u := sys.modules.get("utils")) is not None:
-            _u.calculate_difference_percent = botcore.diff_percent
-            _u.are_close = botcore.are_close
-            _u.format_price_log = botcore.format_price_log
 
 
 class HttpResilienceTest(unittest.TestCase):

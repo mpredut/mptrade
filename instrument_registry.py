@@ -298,9 +298,6 @@ def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> 
     return default
 
 
-get_venue_for_symbol = venue_for_symbol
-
-
 def single_symbol_for(provider, role, *, path=None):
     """Select a single-owner bot's instrument without silently discarding candidates."""
     symbols = symbols_for(provider, role, path=path)

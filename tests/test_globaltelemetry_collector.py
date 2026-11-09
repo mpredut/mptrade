@@ -702,14 +702,14 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
-    from instrument_registry import get_venue_for_symbol, symbols_by_venue, venue_for_symbol
+    from instrument_registry import symbols_by_venue, venue_for_symbol
 
     assert venue_for_symbol("BTCUSDC") == "binance"
-    assert get_venue_for_symbol("TAOUSD") == "kraken"
+    assert venue_for_symbol("TAOUSD") == "kraken"
     assert venue_for_symbol("HYPEUSDC") == "hyperliquid"
     assert venue_for_symbol("NVDA_US_EQ") == "t212"
     assert CacheTradeManager.venue_for_symbol("TAOUSD") == "kraken"
-    assert CacheTradeManager.get_venue_for_symbol("HYPEUSDC") == "hyperliquid"
+    assert CacheTradeManager.venue_for_symbol("HYPEUSDC") == "hyperliquid"
     grouped_syms = symbols_by_venue()
     assert "binance" in grouped_syms and "kraken" in grouped_syms
 
@@ -773,7 +773,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     assert CacheCurrentPriceManager.DEFAULT_FILENAME == "cache_current_price.json"
     assert CacheShortTrendManager.DEFAULT_FILENAME == "cache_short_trend.json"
     assert CacheShortTrendManager.KALMAN_TREND_FILENAME == "cache_kalman_trend.json"
-    assert CacheShortTrendManager.LIVE_WINDOW_SUBDIR == "24trend"
+    assert CacheShortTrendManager.LIVE_TREND_SUBDIR == "24trend"
     assert CacheLongTrendManager.DEFAULT_FILENAME == "cache_long_trend.json"
     assert CacheLongTrendManager.SOURCE_ANALYSIS_FILENAME == "priceanalysis.json"
     assert CacheLongTrendManager.T_TREND_FILENAME == "cache_T_trend.json"
@@ -1237,7 +1237,6 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     3. Parameterized runtime state path resolution in cachepaths.py for trailing_state.json and .state_<SYM>.json.
     """
     from cachepaths import (
-        TRAILING_PEAKS_FILENAME,
         TRAILING_STATE_FILENAME,
         iter_venue_cycle_state_files,
         resolve_venue_cycle_state_path,
@@ -1377,8 +1376,8 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         ws_dir, "kraken", TRAILING_STATE_FILENAME
     )
     assert resolve_venue_trailing_state_path(
-        "t212", workspace_dir=ws_dir, filename=TRAILING_PEAKS_FILENAME
-    ) == os.path.join(ws_dir, "212trading", TRAILING_PEAKS_FILENAME)
+        "t212", workspace_dir=ws_dir, filename="trailing_peaks.json"
+    ) == os.path.join(ws_dir, "212trading", "trailing_peaks.json")
 
     from cacheaccount import CacheTradeManager
 

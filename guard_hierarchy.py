@@ -200,10 +200,6 @@ class InternalQuantLimitGuard(QuantLimitGuard):
     description = "Internal quantitative per-order limits: 2h Parabolic Surge and late-tail Weibull exhaustion"
 
 
-# Keep FinancialGuard as a base alias for type checks where needed
-FinancialGuard = (ProfitGuard, QuantLimitGuard)
-
-
 # ============================================================================
 # Category 5: External Market Microstructure Intelligence Guards (GI_*)
 # ============================================================================
@@ -310,17 +306,6 @@ GUARD_CATEGORIES: dict[str, list[BaseGuard]] = {
     "financial": [g for g in GUARD_INSTANCES if isinstance(g, (ProfitGuard, QuantLimitGuard))],
     "intelligence": [g for g in GUARD_INSTANCES if isinstance(g, IntelligenceGuard)],
     "llm": [g for g in GUARD_INSTANCES if isinstance(g, LLMGuard)],
-}
-
-GUARD_CATALOG: dict[str, dict[str, Any]] = {
-    g.code: {
-        "code": g.code,
-        "canonical": g.canonical,
-        "aliases": g.aliases,
-        "description": g.description,
-        "category": g.category,
-    }
-    for g in GUARD_INSTANCES
 }
 
 _ALL_GUARD_ALIASES: set[str] = set().union(*(g.aliases for g in GUARD_INSTANCES)) | {

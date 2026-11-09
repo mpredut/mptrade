@@ -39,9 +39,7 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
-    BOT_AND_ORDER_ERROR_CATEGORIES,
     LogEventSummary,
-    SYSTEM_OS_ERROR_CATEGORIES,
     _resolve_repair_json_reader,
     apply_code_patch_safely,
     apply_reconciliation_plan,
@@ -299,9 +297,6 @@ class AutonomousAIReconciler:
             self.workspace_dir,
             log=logger,
         )
-
-    _BOT_AND_ORDER_ERROR_CATEGORIES = BOT_AND_ORDER_ERROR_CATEGORIES
-    _SYSTEM_OS_ERROR_CATEGORIES = SYSTEM_OS_ERROR_CATEGORIES
 
     @classmethod
     def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:

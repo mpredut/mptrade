@@ -7,7 +7,6 @@ from binance.exceptions import BinanceAPIException
 
 # Project imports.
 from notify_engine import alertnotifiers as alert
-import utils as u
 import instrument_registry as sym
 from binance_api import bapi as api
 from binance_api import order_id_context as rc
@@ -29,6 +28,7 @@ from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle
 from botcore import (
+    are_close,
     float_env,
     format_price_log,
     load_dotenv,
@@ -346,11 +346,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         difference_percent = abs(current_price - price) / price * 100
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
         
-        if u.are_close(current_price, price, MAX_PROC):
+        if are_close(current_price, price, MAX_PROC):
             print(f"Current price {current_price} and {order_type} price {price} are close!")
             
             difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
-            if not u.are_close(current_price, initial_prices[order_id], MAX_PROC):
+            if not are_close(current_price, initial_prices[order_id], MAX_PROC):
                 print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
                 continue
             print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")

@@ -742,7 +742,6 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
 
 
 TRAILING_STATE_FILENAME = "trailing_state.json"
-TRAILING_PEAKS_FILENAME = "trailing_peaks.json"
 
 VENUE_RUNTIME_DIR_MAP: dict[str, str] = {
     "binance": "cachedb",

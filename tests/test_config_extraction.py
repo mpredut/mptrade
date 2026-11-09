@@ -20,6 +20,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import botcore
 import utils as u
 import tradeall as ta
 import monitortrades as mt
@@ -27,9 +28,9 @@ import rtrade as rt
 import assetguardian as ag
 
 # Computed values (identical to what the original files did).
-_PC_SMALL = u.calculate_difference_percent(60000, 60000 - 310)
-_PC_BIG = u.calculate_difference_percent(97000, 95000 - 377)
-_RT_ADJ = round(u.calculate_difference_percent(60000, 60000 - 380) / 100, 4)
+_PC_SMALL = botcore.diff_percent(60000, 60000 - 310)
+_PC_BIG = botcore.diff_percent(97000, 95000 - 377)
+_RT_ADJ = round(botcore.diff_percent(60000, 60000 - 380) / 100, 4)
 
 # (module, attribute, expected_default_value = the old hardcoded value)
 DEFAULTS = [

@@ -160,7 +160,6 @@ class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
-    _TRADE_CACHE_MANAGER_NAME = "HyperliquidTrade"
     _FILLS_CACHE_MAX_STALE_S = 60.0
 
     #: Served spot token, defaulting to HYPE.

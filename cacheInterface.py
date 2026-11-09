@@ -409,8 +409,6 @@ class CacheManagerInterface(ABC):
                 self.query_remote_and_update_cache()
                 self.save_state_to_file_if_enabled()
 
-    _normalize_timestamp_map = staticmethod(_cache_integrity.normalize_timestamp_map)
-
     def _preserve_rest_sync_cursor_before_update_locked(self, symbol):
         """Anchor the REST cursor before a non-REST update advances fetchtime."""
         if symbol in self._rest_sync_cursor_per_symbol:
