@@ -25,7 +25,7 @@
     - *Guards & Config:* `<Category>Guard` (`GO1`, `GT_S/M/L`, `G_PROF`, `G_QLIMIT1/2`, `GI_*`, `GLLM1..3`) and symmetric `<SIDE>_*` / `<HORIZON>_*` keys.
 
 # Mandatory SSOT Libraries
-- **Persistence & Cache Hierarchy (`state_io.py`, `cacheManager.py`, `cachetrend.py`, `cacheintegrity.py`):** Never use raw `open()`/`json.load()`/`json.dump()` for state or cache files. Use `state_io.py` (`load_json_state`, `save_json_state`, `read_json_dict`, `atomic_write_json`, `read_jsonl_dicts`) and `CacheManagerInterface` / `CacheFactory` (`get_*_manager()` in `cacheManager.py` and `cachetrend.py`).
+- **Persistence & Cache Hierarchy (`state_io.py`, `cachebase.py`, `cacheManager.py`, `cachetrend.py`, `cacheintegrity.py`):** Never use raw `open()`/`json.load()`/`json.dump()` for state or cache files. Use `state_io.py` (`load_json_state`, `save_json_state`, `read_json_dict`, `atomic_write_json`, `read_jsonl_dicts`) and `CacheManagerInterface` / `CacheAccountManagerBase` / `CacheFactory` (`cachebase.py`, `get_*_manager()` in `cacheManager.py` and `cachetrend.py`).
 - **Core Primitives, Config, Timestamps & HTTP (`botcore.py`, `utils.py`, `credentials.py`, `orchestratorOS/lib/env_common.sh`):**
   - *Coercion & Math:* Use `botcore.py` (`safe_*_float`, `safe_*_int`, `exact_*_int`, `require_*`, `clean_scale`, `parse_ratio_or_pct`, `diff_percent`, `are_close`) and `utils.py` (`asymptotic_decrease`, `exponential_decrease`, `gaussian_weights_from_idx`) — never raw `float()`/`int()`.
   - *Config & Credentials:* Load all `.env`, `config.env`, and `.conf` files via `botcore.Config` / `cfg` (`load_dotenv`, `load_env_stack`, `load_ini_config`, `load_key_value_conf`, `required_*_env`, `conf_or_override`), `env_common.sh` (`env_get`, `load_root_env_sh`), and `credentials.py`.

@@ -796,11 +796,24 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         code = (
             "import sys; from unittest.mock import MagicMock; "
             "sys.modules['bapi'] = MagicMock(); "
-            "import cachetrend as ct, cacheManager as cm; "
+            "import cachebase as cb; "
+            "assert 'cacheManager' not in sys.modules and 'cachetrend' not in sys.modules; "
+            "import cachetrend as ct; "
+            "assert 'cacheManager' not in sys.modules; "
+            "assert '_cm' not in ct.__dict__; "
+            "assert issubclass(ct.CacheLongTrendManager, cb.CacheManagerInterface); "
+            "assert issubclass(ct.CacheShortTrendManager, cb.CacheManagerInterface); "
+            "import cacheManager as cm; "
             "assert ct.CacheShortTrendManager is cm.CacheShortTrendManager; "
             "assert ct.CacheLongTrendManager is cm.CacheLongTrendManager; "
             "assert ct.get_short_trend_manager is cm.get_short_trend_manager; "
-            "assert cm.CacheFactory._CONFIG['LongTrend']['class'] is ct.CacheLongTrendManager"
+            "assert cm.CacheFactory._CONFIG['LongTrend']['class'] is ct.CacheLongTrendManager; "
+            "assert issubclass(cm.CacheTradeManager, cb.CacheAccountManagerBase); "
+            "assert issubclass(cm.CacheOrderManager, cb.CacheAccountManagerBase); "
+            "assert issubclass(cm.Cache24PriceManager, cb.CachePriceSeriesMixin); "
+            "assert cm.get_24_price_manager is cm.get_24_price_managers; "
+            "assert cm.get_365_price_manager is cm.get_365_price_managers; "
+            "assert cm.get_sparse_price_manager is cm.get_sparse_price_managers"
         )
         proc = subprocess.run(
             [sys.executable, "-c", code],

@@ -84,16 +84,7 @@ CM_PUBLISHED_TREND_WINDOWS_SEC = [
     float(part) for part in split_csv(required_env("CM_PUBLISHED_TREND_WINDOWS_SEC"))
 ]
 
-_cm = sys.modules.get("cacheManager")
-if _cm is None or not hasattr(_cm, "CacheManagerInterface"):
-    _main_mod = sys.modules.get("__main__")
-    if _main_mod is not None and hasattr(_main_mod, "CacheManagerInterface"):
-        _cm = _main_mod
-        sys.modules.setdefault("cacheManager", _main_mod)
-    else:
-        import cacheManager as _cm
-
-CacheManagerInterface = _cm.CacheManagerInterface
+from cachebase import CacheManagerInterface
 
 # A poll deadline prevents the loop from waiting on one slow provider call. The
 # provider's own network timeout still owns the worker lifecycle.
@@ -109,12 +100,19 @@ _ORIG_CACHETREND_ATTRS = {
 
 
 def _cm_attr(name: str, default=None):
-    """Resolve an attribute from ``cachetrend`` (when monkeypatched) or ``cacheManager`` if loaded."""
+    """Resolve an attribute from ``cachetrend`` (when monkeypatched) or ``cacheManager``."""
     if name in _ORIG_CACHETREND_ATTRS:
         local_val = globals().get(name)
         if local_val is not _ORIG_CACHETREND_ATTRS[name]:
             return local_val
-    return resolve_patched_attr(name, default, modules=("cacheManager", getattr(_cm, "__name__", "")))
+    cm_mod = sys.modules.get("cacheManager")
+    if cm_mod is None:
+        main_mod = sys.modules.get("__main__")
+        if main_mod is not None and os.path.basename(getattr(main_mod, "__file__", "") or "") == "cacheManager.py":
+            cm_mod = main_mod
+        else:
+            import cacheManager as cm_mod
+    return resolve_patched_attr(name, default, modules=("cacheManager", getattr(cm_mod, "__name__", "")))
 
 
 _dynamic_window_key = pw.dynamic_window_key
@@ -2343,19 +2341,9 @@ def _start_nonbinance_trend_poller(
     return _NonBinanceTrendPoller(t, pool, stop_event, ws_streams=ws_streams)
 
 
-get_short_trend_manager = _cm_attr("get_short_trend_manager")
-
-if _cm is not None:
-    _cm.CacheLongTrendManager = CacheLongTrendManager
-    _cm.CacheLongTrend = CacheLongTrend
-    _cm.CacheShortTrendManager = CacheShortTrendManager
-    _cm.CacheShortTrend = CacheShortTrend
-    _cm.SHORT_TREND_EVAL_INTERVAL_SEC = CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
-    _cm._NB_FETCH_DEADLINE_SEC = _NB_FETCH_DEADLINE_SEC
-    _cm.HyperliquidPriceStream = HyperliquidPriceStream
-    _cm.KrakenPriceStream = KrakenPriceStream
-    _cm._fetch_price_with_deadline = _fetch_price_with_deadline
-    _cm._NonBinanceTrendPoller = _NonBinanceTrendPoller
-    _cm._start_nonbinance_trend_poller = _start_nonbinance_trend_poller
-    if hasattr(_cm, "CacheFactory") and "LongTrend" in _cm.CacheFactory._CONFIG:
-        _cm.CacheFactory._CONFIG["LongTrend"]["class"] = CacheLongTrendManager
+def __getattr__(name: str):
+    if name == "get_short_trend_manager":
+        fn = _cm_attr("get_short_trend_manager")
+        if fn is not None:
+            return fn
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

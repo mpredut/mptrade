@@ -969,17 +969,16 @@ def _safe_max_symbols(val, default: int = MAX_MONITORED_SYMBOLS) -> int:
 
 
 def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):
-    if not hasattr(CacheFactory, '_CONFIG'):
-        CacheFactory._CONFIG = {}
-    cfg = {
-        "class": CacheAllPriceFetcherManager,
-        "filename": "cache_watcher_all_price.json",
-        "sync_ts": lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
-        "cmc_api_key": cmc_api_key,
-    }
+    extra_kwargs = {"cmc_api_key": cmc_api_key}
     if max_symbols is not None and not isinstance(max_symbols, bool):
-        cfg["max_symbols"] = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
-    CacheFactory._CONFIG["PriceMulti"] = cfg
+        extra_kwargs["max_symbols"] = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
+    CacheFactory.register(
+        "PriceMulti",
+        CacheAllPriceFetcherManager,
+        filename="cache_watcher_all_price.json",
+        sync_ts=lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
+        **extra_kwargs,
+    )
     print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
 
 
