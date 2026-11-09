@@ -18,7 +18,6 @@ if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
 from offline.runners.walk_forward_compare import (
-    Candidate,
     default_candidates,
     evaluate_spot_segment,
     hype_240_candidates,
@@ -32,7 +31,6 @@ from offline.runners.walk_forward_compare import (
 )
 
 __all__ = [
-    "Candidate",
     "default_candidates",
     "evaluate_spot_segment",
     "hype_240_candidates",

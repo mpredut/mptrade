@@ -2158,7 +2158,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-    from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
+    from intelligence.sentiment.collectors.microstructure_collector import compute_24h_price_metrics, extract_symbol_recent_fills
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 
     blc = BybitLiquidationCollector(symbols=["  btcusdt ", "", None])
@@ -6035,7 +6035,8 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
         evaluate_smart_stop_loss,
     )
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, extract_symbol_recent_fills
+    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
         PostStopReentryGuard,
         get_post_stop_reentry_guard,

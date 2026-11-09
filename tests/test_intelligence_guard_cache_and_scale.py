@@ -6092,11 +6092,13 @@ def test_iteration31_parabolic_high_stake_post_stop_and_smart_sl_nan_safety(monk
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        compute_24h_price_metrics,
+        extract_symbol_recent_fills,
+    )
     from intelligence.sentiment.guards.high_stake_guard import (
         HighStakeGuard,
         _HIGH_STAKE_DECISION_CACHE,
-        compute_24h_price_metrics,
-        extract_symbol_recent_fills,
     )
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
         PostStopReentryGuard,
@@ -10961,7 +10963,8 @@ def test_iteration101_intelligence_guards_side_and_fill_extraction_safety():
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, extract_symbol_recent_fills
+    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard

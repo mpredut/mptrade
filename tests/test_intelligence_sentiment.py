@@ -934,7 +934,7 @@ def test_order_actor_resolution_and_recent_fills_tagging():
         resolve_order_actor,
         resolve_order_origin,
     )
-    from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
+    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
 
     # 1. extract_client_order_id tests across venue shapes and edge cases
     assert extract_client_order_id({"clientOrderId": "AI_12345"}) == "AI_12345"

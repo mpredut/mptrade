@@ -42,7 +42,6 @@ from orchestratorOS.agy.topics import (
     topic_spec,
 )
 from intelligence.sentiment.llm_quota_router import (
-    AGY_QUOTA_USER_AGENT,
     LOAD_ASSIST_API_URL,
     QUOTA_API_URL,
     GeminiQuotaRouterMixin,

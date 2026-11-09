@@ -3,50 +3,24 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from botcore import _parse_bool_flag, fetch_public_json, resolve_patched_attr
+from botcore import _parse_bool_flag, resolve_patched_attr
 from intelligence.internal.guards.guard_decision import GuardDecision, normalize_guard_mode
 from intelligence.macro_sentiment_ssot import (
     clean_scale, clean_symbol_key, is_cache_fresh, normalize_side,
     resolve_now_ts, resolve_order_notional, safe_float, safe_nonneg_float, safe_nonneg_ts, safe_pos_float,
 )
-from intelligence.sentiment.collectors.macro_telemetry_collector import (
-    MACRO_BENCHMARK_SPECS, _read_first_cached_dict, apply_asset_scope_filter, build_cycle_fallback_prices,
-    collect_macro_benchmarks_snapshot, format_bottom_structure_6h_parts,
-    format_macro_benchmarks_summary_line, harvest_initial_prices_and_trends, harvest_macro_and_news_sensors,
-    harvest_portfolio_and_venue_cycles, populate_market_and_portfolio_snapshot,
-)
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
-    DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC,
     PretradeTelemetrySnapshot,
     collect_pretrade_telemetry as _default_collect_pretrade_telemetry,
     read_pretrade_telemetry_snapshot as _default_read_pretrade_telemetry_snapshot,
-)
-from intelligence.sentiment.collectors.microstructure_collector import (
-    _MICRO_PRICE_ANCHOR_KEYS, _blend_structural_liq_anchor, _build_vp_position_dict,
-    _compute_horizon_range_dict, _extract_cached_items_series, _first_variant_dict,
-    _parse_ts_px_row, _prices_diverged, apply_live_24trend_windows, apply_short_trend_item,
-    compute_24h_price_metrics, compute_7d_range_metrics, compute_cross_btc_metrics,
-    compute_liquidation_clusters, compute_swing_wave_metrics, compute_volume_profile_metrics,
-    enrich_microstructure_cvd, extract_symbol_recent_fills, load_symbol_microstructure,
-    load_symbol_price_series, round_opt_px,
-)
-from intelligence.sentiment.collectors.portfolio_collector import (
-    _VENUE_DEFAULT_FEE_SPECS, _compute_kalman_from_series, _load_recent_audit_origins,
-    build_cross_market_context, enrich_24h_and_microstructure, enrich_cross_venue_trends,
-    harvest_bot_runtime_states, harvest_kraken_xstocks, harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders, harvest_venue_cycles, load_venue_trailing_maps,
-    parse_venue_cycle_state, resolve_symbol_price, resolve_venue_fee_and_limits,
-    set_pos_anchor, sync_sibling_symbol_telemetry,
 )
 from intelligence.sentiment.gemini_client import (
     GeminiClient,
     query_topic_json as _default_query_topic_json,
 )
-from orchestratorOS.agy.topics import topic_spec
 from state_io import read_json_dict_recovering as read_json_cached
 
 collect_pretrade_telemetry = _default_collect_pretrade_telemetry

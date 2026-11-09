@@ -775,7 +775,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             self.assertIsNone(bapi_mod.get_free_balance("USDC"))
 
         # 14. compute_24h_price_metrics normalizes Unix-second timestamps
-        from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+        from intelligence.sentiment.collectors.microstructure_collector import compute_24h_price_metrics
         sec_base = 1_700_000_000.0
         sec_series = [
             [sec_base - 180 * 60, 100.0],

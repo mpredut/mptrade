@@ -14,13 +14,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402,F401  (re-export: compat `from common import ...`)
-    BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, load_env_stack, parse_dotenv, float_env, int_env, http_get,
+    log, load_dotenv, load_env_stack, parse_dotenv, float_env, http_get,
     http_post_form, http_request, fetch_public_json, single_instance, are_close, diff_percent,
-    defined_env, optional_env, bool_env, required_bool_env, required_env, required_float_env, required_int_env,
+    optional_env, bool_env, required_bool_env, required_env, required_float_env, required_int_env,
     resolve_cli_arg,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_pos_int, safe_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
-    now_str,
 )
 from notify_engine.alertnotifiers import bind_notify  # noqa: E402
 

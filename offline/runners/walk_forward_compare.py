@@ -48,7 +48,6 @@ from offline.backtests.evaluation import (
 )
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.hype_candidates import (
-    Candidate,
     default_candidates,
     hype_240_candidates,
 )

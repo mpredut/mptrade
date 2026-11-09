@@ -20,14 +20,12 @@ from botcore import _parse_bool_flag, format_price_log
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
-    normalize_guard_mode,
     resolve_hierarchical_guard_mode,
 )
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
     clean_scale,
     clean_symbol_key,
-    is_cache_fresh,
     resolve_now_ts,
     resolve_order_notional,
     safe_float,
@@ -40,11 +38,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     PreTradeLLMGuardBase,
     PretradeTelemetrySnapshot,
     collect_pretrade_telemetry,
-    evaluate_llm_guard_response,
-    evaluate_unavailable_telemetry_decision,
     is_llm_guard_exempt,
-    read_pretrade_telemetry_snapshot,
-    resolve_llm_guard_cache_ttl,
 )
 from orchestratorOS.agy.topics import topic_spec
 
