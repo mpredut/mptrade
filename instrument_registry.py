@@ -334,11 +334,7 @@ def _str_attr(item, name: str) -> str:
 
 
 def _candidate_venue(item) -> str:
-    raw = (
-        _str_attr(item, "provider_name")
-        or _str_attr(item, "provider")
-        or _str_attr(getattr(item, "_provider", None), "name")
-    )
+    raw = _str_attr(item, "provider_name") or _str_attr(item, "provider")
     return normalize_venue_name(raw) or ""
 
 

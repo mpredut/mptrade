@@ -643,6 +643,7 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
     assert imported_roots.isdisjoint({"instrument", "providers", "state_io", "intelligence", "cacheprice", "binance_api"})
     assert "reload(" not in reg_src
     assert "load_env_file_defaults" not in reg_src
+    assert "._provider" not in reg_src and '"_provider"' not in reg_src
     assert "_live_enabled" not in reg_src
     assert "_order_validity" not in reg_src
 
