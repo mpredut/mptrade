@@ -39,11 +39,6 @@ def test_config_module_parses_falsy_trade_enabled_fail_closed(tmp_path, monkeypa
     config.config_cache["trade_enabled"] = "0"
     assert config.is_trade_enabled() is False
 
-    config.start_config_watcher()
-    assert config.watcher_thread is not None and config.watcher_thread.is_alive()
-    config.stop_config_watcher()
-    assert config.watcher_thread is None
-
 
 def test_shell_launchers_source_env_common_correctly():
     with open(os.path.join(ROOT, "kraken", "spcx_launch.sh"), encoding="utf-8") as fh:
@@ -505,7 +500,6 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
 
 
 def test_order_id_context_and_pricefetcher_hardening(tmp_path):
-    from binance_api import bapi_trades
     from binance_api import order_id_context as oic
     from market_monitor import pricefetcher as pf
 
@@ -518,11 +512,6 @@ def test_order_id_context_and_pricefetcher_hardening(tmp_path):
     assert cmc._extract_usd_price("BTC", {"data": None}) is None
     assert cmc._extract_usd_price("BTC", {"data": {"BTC": {"quote": None}}}) is None
     assert cmc._extract_usd_price("BTC", {"data": {"BTC": {"quote": {"USD": None}}}}) is None
-
-    bad_file = tmp_path / "trades.json"
-    bad_file.write_text('{"not": "a_list"}', encoding="utf-8")
-    bapi_trades.load_trades_from_file(str(bad_file))
-    assert bapi_trades.trade_cache == []
 
 
 def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):

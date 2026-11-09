@@ -395,8 +395,6 @@ def test_runtime_services_dependency_injection_and_zero_pytest_branches():
     assert botcore.is_live_network_backfill_enabled() is True
     assert botcore.is_unmocked_llm_query_allowed() is True
     assert botcore.is_shared_disk_cache_enabled() is True
-    botcore.runtime_sleep(0.5)
-    assert slept == [0.5]
 
     res = subprocess.run(
         [
@@ -700,7 +698,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
     assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
-    from instrument_registry import symbols_by_venue, venue_for_symbol
+    from instrument_registry import venue_for_symbol
 
     assert venue_for_symbol("BTCUSDC") == "binance"
     assert venue_for_symbol("TAOUSD") == "kraken"
@@ -708,8 +706,6 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     assert venue_for_symbol("NVDA_US_EQ") == "t212"
     assert CacheTradeManager.venue_for_symbol("TAOUSD") == "kraken"
     assert CacheTradeManager.venue_for_symbol("HYPEUSDC") == "hyperliquid"
-    grouped_syms = symbols_by_venue()
-    assert "binance" in grouped_syms and "kraken" in grouped_syms
 
     for expected_venue, expected_fname, expected_fmt in (
         ("binance", "cache_trade.jsonl", "jsonl"),
@@ -929,9 +925,9 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     temp_cache_dir: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Verify Step 3: read_market_and_portfolio_snapshot performs 0 live venue/network calls and 0 disk writes while stamping snapshot identity and age."""
+    """Verify Step 3: MarketAndPortfolioSnapshotOrchestrator.read_snapshot performs 0 live venue/network calls and 0 disk writes while stamping snapshot identity and age."""
     from intelligence.sentiment.collectors.macro_telemetry_collector import (
-        read_market_and_portfolio_snapshot,
+        MarketAndPortfolioSnapshotOrchestrator,
     )
     from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
     from state_io import save_json_state
@@ -1035,9 +1031,10 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     bals_mtime_before = os.path.getmtime(bals_path)
 
     snap = TelemetrySensorSnapshot()
-    out = read_market_and_portfolio_snapshot(
-        snap,
-        cache_dir=temp_cache_dir,
+    out = MarketAndPortfolioSnapshotOrchestrator(start_sync=False).read_snapshot(
+        temp_cache_dir,
+        "*",
+        snapshot=snap,
         workspace_dir=temp_cache_dir,
         logs_dirs=[],
         intent_gateway=_DummyGateway(),
@@ -1239,7 +1236,6 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     from cachepaths import (
         TRAILING_STATE_FILENAME,
         iter_venue_cycle_state_files,
-        resolve_venue_cycle_state_path,
         resolve_venue_runtime_dir,
         resolve_venue_trailing_state_path,
     )
@@ -1390,12 +1386,8 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     )
     assert tm_str_flag.read_only is False
 
-    krk_st = resolve_venue_cycle_state_path("TAOUSD", workspace_dir=ws_dir)
-    hl_st = resolve_venue_cycle_state_path("HYPE_LONG", venue="hyperliquid", workspace_dir=ws_dir)
-    t212_st = resolve_venue_cycle_state_path("NVDA_US_EQ", workspace_dir=ws_dir)
-    assert krk_st == os.path.join(ws_dir, "kraken", ".state_TAOUSD.json")
-    assert hl_st == os.path.join(ws_dir, "hyperliquid", ".state_HYPE_LONG.json")
-    assert t212_st == os.path.join(ws_dir, "212trading", ".state_NVDA_US_EQ.json")
+    krk_st = os.path.join(ws_dir, "kraken", ".state_TAOUSD.json")
+    hl_st = os.path.join(ws_dir, "hyperliquid", ".state_HYPE_LONG.json")
 
     for st_p in (
         krk_st,

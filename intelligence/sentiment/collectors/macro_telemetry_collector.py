@@ -1473,33 +1473,6 @@ def populate_market_and_portfolio_snapshot(
     )
 
 
-def read_market_and_portfolio_snapshot(
-    snapshot: Any,
-    *,
-    cache_dir: str,
-    workspace_dir: str,
-    logs_dirs: List[str],
-    intent_gateway: Any,
-    scope: str,
-    now_ts: float,
-    read_json_fn: Any = None,
-    log: Optional[Any] = None,
-) -> Any:
-    """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network calls and 0 disk writes."""
-    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=False).read_snapshot(
-        cache_dir,
-        "*",
-        snapshot=snapshot,
-        workspace_dir=workspace_dir,
-        logs_dirs=logs_dirs,
-        intent_gateway=intent_gateway,
-        scope=scope,
-        now_ts=now_ts,
-        read_json_fn=read_json_fn,
-        log=log,
-    )
-
-
 __all__ = [
     "InitialPricesAndTrendsCollector",
     "MACRO_BENCHMARK_SPECS",
@@ -1521,6 +1494,5 @@ __all__ = [
     "harvest_macro_and_news_sensors",
     "harvest_portfolio_and_venue_cycles",
     "populate_market_and_portfolio_snapshot",
-    "read_market_and_portfolio_snapshot",
     "reconcile_live_venue_equity_summary",
 ]

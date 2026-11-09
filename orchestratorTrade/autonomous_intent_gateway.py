@@ -20,7 +20,6 @@ Operational Architecture:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import logging
 import os
 import sys
@@ -76,27 +75,6 @@ AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
     "intelligence",
     "llm",
 })
-
-
-@dataclass
-class TradeIntentRecord:
-    """Canonical structure for an autonomous trade intent."""
-    intent_id: str
-    timestamp: float
-    decision: str                          # "BUY" | "SELL"
-    symbol: str                            # e.g. "BTCUSDC", "TAOUSDC", "HYPEUSD"
-    venue: str                             # "binance" | "kraken" | "hyperliquid" | "t212"
-    confidence: float
-    suggested_notional_usd: float
-    order_type: str = "MARKET"             # "MARKET" | "LIMIT"
-    limit_price: Optional[float] = None
-    replace_open_orders: bool = False
-    urgency: str = "NORMAL"
-    thesis: str = ""
-    status: str = "PENDING"                # "PENDING" | "OBSERVED_SHADOW" | "EXECUTED" | "BLOCKED_BY_GUARD" | "REJECTED_LOW_CONFIDENCE" | "REJECTED_UNKNOWN_INSTRUMENT" | "FAILED"
-    execution_payload: Optional[Dict[str, Any]] = None
-    created_by: str = "autonomous_ai_reconciler"
-    history: List[Dict[str, Any]] = field(default_factory=list)
 
 
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}

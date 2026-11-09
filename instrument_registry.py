@@ -250,20 +250,6 @@ def symbols_for(provider, role=None, *, path=None):
     return [spec.symbol for spec in select_instruments(provider, role, path=path).values()]
 
 
-def symbols_by_venue(role=None, *, path=None, only_enabled=True) -> dict[str, list[str]]:
-    """Group configured symbols by normalized venue (`provider`) from ``instruments.conf``."""
-    grouped: dict[str, list[str]] = {}
-    for spec in select_instruments(role=role, path=path, only_enabled=only_enabled).values():
-        prov = normalize_venue_name(spec.provider) or spec.provider.strip().lower()
-        sym_s = spec.symbol.strip()
-        if not prov or not sym_s:
-            continue
-        bucket = grouped.setdefault(prov, [])
-        if sym_s not in bucket:
-            bucket.append(sym_s)
-    return grouped
-
-
 def venue_for_symbol(symbol: object, *, path=None, default: str = "binance") -> str:
     """Resolve the SSOT configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol``."""
     if not isinstance(symbol, str) or isinstance(symbol, bool):
@@ -399,10 +385,6 @@ def binance_symbols(path=None):
 
 def trail_pct_map(path=None):
     return {spec.symbol: spec.number("trailing.pct") for spec in select_instruments("binance", "trailing", path=path).values()}
-
-
-def tradeall_trade_symbols(path=None):
-    return set(symbols_for("binance", "tradeall_fire", path=path))
 
 
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:

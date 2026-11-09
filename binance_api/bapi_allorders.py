@@ -187,32 +187,6 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
 
 
-def get_recent_filled_orders(order_type, symbol, max_age_seconds):
-    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
-    if max_age_val is None:
-        return []
-    # Convert duration to an absolute millisecond start time. Passing duration directly
-    # would query from approximately 1970 and return incorrect data.
-    start_time_ms = int(time.time() * 1000) - int(max_age_val * 1000)
-    all_filled_orders = get_filled_orders(order_type, symbol, start_time_ms)
-    recent_filled_orders = []
-    current_time = time.time()
-    if(len(all_filled_orders) < 1) :
-        return []
-
-    for order in all_filled_orders:
-        ts_ms = extract_timestamp_ms(order, default=0) or 0
-        age_sec = current_time - ts_ms / 1000.0
-        if ts_ms > 0 and -5.0 <= age_sec <= max_age_val:
-            recent_filled_orders.append(order)
-
-    # Sort the recent_filled_orders by price in ascending order
-    recent_filled_orders.sort(key=lambda x: x['price'])
-
-    return recent_filled_orders
-
-
-
 def snapshot_cache_symbol_rows(manager, symbol: str) -> list[dict]:
     sync_reader = getattr(manager, "sync_account_reader_if_needed", None)
     if callable(sync_reader):

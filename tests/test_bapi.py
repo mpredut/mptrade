@@ -725,7 +725,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         # 11. binance_api.market_data.fetch_ohlc_candles paginates across 1000-candle pages even when limit_per_batch > 1000
         import json
         from binance_api import market_data as b_md
-        import utils as u_mod
 
         page1 = [[1_700_000_000_000 + i * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999 + i * 60_000] for i in range(1000)]
         page2 = [[1_700_000_000_000 + (1000 + i) * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999 + (1000 + i) * 60_000] for i in range(200)]
@@ -759,11 +758,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             )
         self.assertEqual(len(calls), 2)
         self.assertEqual(len(candles), 1200)
-
-        # 12. utils.exponential_decrease and asymptotic_decrease handle zero expired_duration safely
-        self.assertEqual(u_mod.exponential_decrease(1.5, 0, 5), 1.5)
-        self.assertEqual(u_mod.asymptotic_decrease(1.5, 0, 5), 1.5)
-        self.assertEqual(u_mod.exponential_decrease(1.5, 60, 5, half_life_duration=0), 0.0)
 
         # 13. bapi.update_price and get_free_balance reject boolean/NaN/negative payloads
         fake_client = MagicMock()

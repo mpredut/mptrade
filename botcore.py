@@ -810,18 +810,6 @@ def load_config():
     config_cache = new_config
 
 
-_watcher_stop_event = globals().get("_watcher_stop_event") or threading.Event()
-
-
-def config_watcher(interval=5 * 60):
-    """Periodically monitor configuration and reload the cache."""
-    wait_sec = safe_pos_float(interval, default=5.0 * 60.0)
-    while not _watcher_stop_event.is_set():
-        load_config()
-        if _watcher_stop_event.wait(wait_sec):
-            break
-
-
 def is_trade_enabled() -> bool:
     """Return whether cached ``trade_enabled`` is true (with on-demand mtime hot-reload every 5s)."""
     now_ts = _time.time()
@@ -830,28 +818,6 @@ def is_trade_enabled() -> bool:
         if cur_mtime != _CONFIG_MTIME:
             load_config()
     return _parse_bool_flag(config_cache.get("trade_enabled", True), default=True)
-
-
-watcher_thread = globals().get("watcher_thread")
-
-
-def start_config_watcher():
-    global watcher_thread
-    if watcher_thread and watcher_thread.is_alive():
-        return
-    _watcher_stop_event.clear()
-    watcher_thread = threading.Thread(target=config_watcher, name="start_config_watcher", daemon=True)
-    watcher_thread.start()
-    print("Config watcher started.")
-
-
-def stop_config_watcher():
-    global watcher_thread
-    _watcher_stop_event.set()
-    if watcher_thread:
-        watcher_thread.join(timeout=2.0)
-        watcher_thread = None
-        print("Config watcher stopped.")
 
 
 load_config()
@@ -959,18 +925,6 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
         return False
     diff_f = safe_nonneg_float(diff_percent(value1, value2), default=None)
     return diff_f is not None and diff_f <= tol
-
-
-def diff_equals_percent(
-    value1: float, value2: float, target_percent: float, tolerance_percent: float = 1.0
-) -> bool:
-    """Return whether the percentage DIFFERENCE is near target_percent using a deterministic two-sided band."""
-    target = safe_nonneg_float(target_percent, default=None)
-    tol = safe_nonneg_float(tolerance_percent, default=None)
-    if target is None or tol is None:
-        return False
-    diff_f = safe_nonneg_float(diff_percent(value1, value2), default=None)
-    return diff_f is not None and abs(diff_f - target) <= tol
 
 
 ET = ZoneInfo("America/New_York")
@@ -1758,13 +1712,6 @@ def get_stale_cache_retry_delay_sec(override: float | None = None) -> float:
         if val is not None:
             return val
     return float(_RUNTIME_SERVICES.stale_cache_retry_delay_sec)
-
-
-def runtime_sleep(seconds: float, *, sleep_fn: object = None) -> None:
-    """Sleep for ``seconds`` using explicit ``sleep_fn``, injected ``RuntimeServices.sleep_fn``, or ``time.sleep``."""
-    dur = safe_nonneg_float(seconds, default=0.0) or 0.0
-    eff_fn = sleep_fn if callable(sleep_fn) else (_RUNTIME_SERVICES.sleep_fn if callable(_RUNTIME_SERVICES.sleep_fn) else _time.sleep)
-    eff_fn(dur)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

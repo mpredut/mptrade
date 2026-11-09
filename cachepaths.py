@@ -790,36 +790,6 @@ def resolve_venue_trailing_state_path(
     return raw_path
 
 
-def resolve_venue_cycle_state_path(
-    symbol: object,
-    venue: object = None,
-    *,
-    workspace_dir: object = None,
-    cache_dir: object = None,
-) -> str:
-    """Resolve the per-symbol cycle state file path ``<venue_dir>/.state_<SYM>.json``."""
-    raw_sym = str(symbol or "").strip().upper() if symbol is not None and not isinstance(symbol, bool) else ""
-    if not raw_sym:
-        return ""
-    if venue is None or (isinstance(venue, str) and not venue.strip()):
-        from instrument_registry import venue_for_symbol
-
-        v_norm = venue_for_symbol(raw_sym, default="binance")
-    else:
-        v_norm = normalize_venue_name(venue, default="binance") or "binance"
-    rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
-    safe_tok = raw_sym.replace("/", "").replace("-", "")
-    if v_norm == "t212":
-        base_tok = normalize_cache_base_asset(raw_sym) or safe_tok
-        eq_tok = safe_tok if _is_eq_suffix(safe_tok) else f"{base_tok}_US_EQ"
-        for cand_tok in (safe_tok, base_tok, eq_tok):
-            cand_p = os.path.join(rt_dir, f".state_{cand_tok}.json")
-            if os.path.isfile(cand_p):
-                return cand_p
-        return os.path.join(rt_dir, f".state_{safe_tok}.json")
-    return os.path.join(rt_dir, f".state_{safe_tok}.json")
-
-
 def iter_venue_cycle_state_files(
     venue: object,
     *,

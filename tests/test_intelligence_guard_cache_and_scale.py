@@ -5722,9 +5722,6 @@ def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_m
     ])
     assert len(agg) == 1 and agg[0]["orderId"] == 11
 
-    assert bapi_allorders.get_recent_filled_orders("BUY", "BTCUSDC", float("nan")) == []
-    assert bapi_allorders.get_recent_filled_orders("BUY", "BTCUSDC", True) == []
-
     # 3. bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time
     canceled_ids = []
     monkeypatch.setattr(bapi.sym, "validate_params", lambda ot, s: None)
@@ -7355,15 +7352,13 @@ def test_iteration47_botcore_and_market_regime_nan_bool_safety():
     import botcore
     import market_regime as mr
 
-    # 1. botcore: diff_percent, are_close, diff_equals_percent reject bool and NaN
+    # 1. botcore: diff_percent, are_close reject bool and NaN
     assert math.isnan(botcore.diff_percent(1.0, True))
     assert math.isnan(botcore.diff_percent(float("nan"), 100.0))
     assert botcore.are_close(1.0, True, 0.05) is False
     assert botcore.are_close(100.0, 100.0, float("nan")) is False
     assert botcore.are_close(100.0, 100.0, True) is False
     assert botcore.are_close(100.0, 100.04, 0.05) is True
-    assert botcore.diff_equals_percent(100.0, 90.0, True, 1.0) is False
-    assert botcore.diff_equals_percent(100.0, 90.0, 10.0, float("nan")) is False
 
     # 2. market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService
     dec_bool = mr.MarketRegimeDecision(
@@ -10851,19 +10846,10 @@ def test_iteration99_state_io_botcore_utils_and_alertnotifiers_safety(tmp_path, 
     assert utils.timestampToTime(True) == "N/A"
     assert utils.timestampToTime(-100) == "N/A"
     assert utils.timestampToTime(float("nan")) == "N/A"
-    assert utils.timeMsToHMS(None) == "N/A"
-    assert utils.timeMsToHMS(True) == "N/A"
-    assert utils.timeMsToHMS(-1) == "N/A"
     assert utils.timeToHMS(None) == "N/A"
     assert utils.timeToHMS(False) == "N/A"
     assert utils.timeToHMS(-5) == "N/A"
     assert utils.timeToHMS(65).endswith(":01:05")
-
-    assert utils.asymptotic_decrease(True, 1.0, 10) == 0.0
-    assert utils.asymptotic_decrease(5.0, False, 10) == 0.0
-    assert utils.asymptotic_decrease(float("nan"), 1.0, 10) == 0.0
-    assert utils.exponential_decrease(True, 1.0, 10) == 0.0
-    assert utils.exponential_decrease(5.0, 1.0, float("inf")) == 0.0
 
     # 4. notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event
     monkeypatch.setenv("MP_TEST_POS_INT", "-5")
@@ -11634,7 +11620,6 @@ def test_iteration110_trailing_core_cachepaths_and_utils_safety(tmp_path):
     assert u.value_diff_to_percent(0.0, 100.0) == 0.0
     assert u.secondsToDays(True) == 0.0
     assert u.secondsToHours(None) == 0.0
-    assert u.secondsToMinutes("bad") == 0.0
     assert u.cache_path(True) is True
 
 
@@ -15818,21 +15803,9 @@ def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp
 
 
 def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_path, monkeypatch):
-    import utils as u
     import priceAnalysis as pa
     from notify_engine import alertnotifiers as an
     import log
-
-    # 1. utils: beep, get_interval_time, are_close_random
-    u.beep(None)
-    u.beep(False)
-    u.beep(0)
-    u.beep("bad")
-    iv = u.get_interval_time("100.0", "5.0")
-    assert 95.0 <= iv <= 105.0
-    iv_nan = u.get_interval_time(float("nan"), True)
-    assert iv_nan > 7000.0
-    assert isinstance(u.are_close_random(100.0, 100.5, target_tolerance_percent="1.0"), bool)
 
     # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
     ts = [float(i * 3600) for i in range(1, 100)]

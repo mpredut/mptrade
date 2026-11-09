@@ -2924,15 +2924,10 @@ def test_root_modules_batch4_hardening():
         "average",
     ) == 110.0
 
-    # utils.slope and decrese_value_by_increment_exp
+    # utils.slope
     assert utils.slope(True, 0, 10, 5) == 0.0
     assert utils.slope(0, 5, 10, 5) == 0.0
     assert utils.slope(0, 0, 10, 5) == 2.0
-    v1, v2 = utils.decrese_value_by_increment_exp(-1, 100.0)
-    assert v1 > 0.0 and v2 > 0.0
-    assert utils.decrese_value_by_increment_exp(True, 100.0) == (0.0, 0.0)
-    v1_big, v2_big = utils.decrese_value_by_increment_exp(-1e6, 100.0)
-    assert v1_big >= 0.0 and v2_big >= 0.0
 
     # priceAnalysis.get_trade_weight
     t_seq, w_seq = priceAnalysis.get_trade_weight(

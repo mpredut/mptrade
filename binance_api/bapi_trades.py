@@ -1,9 +1,6 @@
-
-import os
 import time
 import threading
 from collections import defaultdict
-from state_io import load_json_state
 
 # Repository imports.
 import instrument_registry as sym
@@ -43,8 +40,6 @@ def init_cache_trade_manager():
             # cacheManager process may poll Binance and publish cache versions.
             cache_trade_manager = cm.get_cache_manager("Trade", start_sync=False)
     return cache_trade_manager
-
-trade_cache = []
 
 #######
 #######      get_my_trades     #######
@@ -249,21 +244,6 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
     except Exception as e:
         print(f"An error occurred: {e}")
         return []
-
-
-def load_trades_from_file(filename):
-    global trade_cache
-    try:
-        trade_cache = load_json_state(
-            filename, default_factory=list, fail_closed=False, label="bapi_trades", root_type=list
-        )
-        if trade_cache:
-            print(f"Cache loaded with {len(trade_cache)} trades.")
-        elif not os.path.exists(filename):
-            print(f"File {filename} not found.")
-    except Exception:
-        print("Error reading file.")
-        trade_cache = []
 
 
 # Return recent BUY or SELL fills from the manager cache.
