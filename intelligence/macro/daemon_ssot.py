@@ -604,6 +604,18 @@ class CachedHttpJsonCollector:
             )
         return self._cached_snapshot
 
+    def collect(
+        self,
+        cachedb_dir: str = "",
+        symbol: str = "*",
+        *,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Polymorphic ``TelemetryCacheCollectorInterface`` adapter delegating to ``fetch()``."""
+        return self.fetch(force_refresh=force_refresh, now_ts=now_ts)
+
 
 class CachedTopicAssessmentAgent:
     """Unified base class for stateful topic-backed macro/sentiment AI assessment agents."""

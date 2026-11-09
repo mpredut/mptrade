@@ -17,6 +17,7 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import statistics
 import time
+from abc import ABC, abstractmethod
 from botcore import (
     _parse_bool_flag,
     clean_scale,
@@ -34,10 +35,14 @@ from botcore import (
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from cachepaths import (
+    CACHE_LONG_TREND_FILENAME,
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
+    cache_24_price_filename,
     cache_symbol_variants,
     canonical_base_asset,
     get_cachedb_dir,
     normalize_venue_name,
+    resolve_cachedb_filepath,
 )
 from guard_hierarchy import (
     GUARD_REGISTRY,
@@ -1043,7 +1048,7 @@ def _read_json_recovering(path: str) -> Optional[dict]:
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     try:
-        p = os.path.join(get_cachedb_dir(), "cache_long_trend.json")
+        p = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
         data = _read_json_recovering(p)
         if isinstance(data, dict):
             return lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
@@ -1209,11 +1214,12 @@ def _read_cached_price_history(
             history.sort(key=lambda pair: pair[0])
 
     p24_paths = list(dict.fromkeys(
-        os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
         for cand in cand_symbols
         if "/" not in cand and "_" not in cand
     ))
-    for p_path in (*p24_paths, os.path.join(cachedb_dir, "cache_watcher_all_price.json")):
+    watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
+    for p_path in (*p24_paths, watcher_path):
         data = _read_json_recovering(p_path)
         if not isinstance(data, (dict, list)):
             continue
@@ -1792,3 +1798,172 @@ def profit_guard(
         )
 
     return True
+
+
+class OrderGuardEvaluatorInterface(ABC):
+    """Pure abstract contract (Level 1) for order-guard evaluators."""
+
+    cls_name: str = "OrderGuardEvaluatorInterface"
+    GUARD_ID: str = ""
+
+    def __init__(self) -> None:
+        if type(self) is OrderGuardEvaluatorInterface:
+            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorInterface")
+
+    @abstractmethod
+    def evaluate(self, *args: Any, **kwargs: Any) -> Any:
+        """Evaluate an order guard stage."""
+
+
+class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
+    """Abstract domain base class (Level 2) for order-guard evaluators."""
+
+    cls_name = "OrderGuardEvaluatorBase"
+
+    def __init__(self) -> None:
+        if type(self) is OrderGuardEvaluatorBase:
+            raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorBase")
+        super().__init__()
+
+
+class MathProfitReferenceGuardEvaluator(OrderGuardEvaluatorBase):
+    """Concrete evaluator (Level 3) for Stage-1 deterministic mathematical profit reference (`G_PROF`)."""
+
+    cls_name = "MathProfitReferenceGuardEvaluator"
+    GUARD_ID = "math_profit_reference"
+
+    def evaluate(
+        self,
+        provider: Any,
+        symbol: str,
+        order_type: str,
+        price: float,
+        profit_percentage: float,
+        window_ref: Any = None,
+        *,
+        regime_context: Any = None,
+        reference_mode: Optional[str] = None,
+        module: Optional[str] = None,
+    ) -> bool:
+        return check_math_profit_reference(
+            provider,
+            symbol,
+            order_type,
+            price,
+            profit_percentage,
+            window_ref=window_ref,
+            regime_context=regime_context,
+            reference_mode=reference_mode,
+            module=module,
+        )
+
+
+class IntelligenceMacroSentimentGuardEvaluator(OrderGuardEvaluatorBase):
+    """Concrete evaluator (Level 3) for Stage-2 Intelligence, Macro & Sentiment guards."""
+
+    cls_name = "IntelligenceMacroSentimentGuardEvaluator"
+    GUARD_ID = "intelligence_guards"
+
+    def evaluate(
+        self,
+        provider: Any,
+        symbol: str,
+        order_type: str,
+        price: float,
+        *,
+        regime_context: Any = None,
+        qty: Optional[float] = None,
+        notional_eur: Optional[float] = None,
+        bypass_guards: Optional[set[str]] = None,
+    ) -> Tuple[bool, str, float]:
+        return check_intelligence_guards(
+            provider,
+            symbol,
+            order_type,
+            price,
+            regime_context=regime_context,
+            qty=qty,
+            notional_eur=notional_eur,
+            bypass_guards=bypass_guards,
+        )
+
+
+class CompositeProfitGuardEvaluator(OrderGuardEvaluatorBase):
+    """Concrete composite evaluator (Level 3) orchestrating Stage-1 math reference and Stage-2 intelligence guards."""
+
+    cls_name = "CompositeProfitGuardEvaluator"
+    GUARD_ID = "profit_guard"
+
+    def evaluate(
+        self,
+        provider: Any,
+        symbol: str,
+        order_type: str,
+        price: float,
+        profit_percentage: float,
+        window_ref: Any = None,
+        *,
+        regime_context: Any = None,
+        qty: Optional[float] = None,
+        notional_eur: Optional[float] = None,
+        evaluate_intelligence: bool = True,
+        bypass_guards: Optional[set[str]] = None,
+        reference_mode: Optional[str] = None,
+        module: Optional[str] = None,
+    ) -> bool:
+        return profit_guard(
+            provider,
+            symbol,
+            order_type,
+            price,
+            profit_percentage,
+            window_ref=window_ref,
+            regime_context=regime_context,
+            qty=qty,
+            notional_eur=notional_eur,
+            evaluate_intelligence=evaluate_intelligence,
+            bypass_guards=bypass_guards,
+            reference_mode=reference_mode,
+            module=module,
+        )
+
+
+class OrderGuardEvaluatorFactory:
+    """Singleton registry and factory for ``OrderGuardEvaluatorInterface`` implementations."""
+
+    _instances: Dict[str, OrderGuardEvaluatorInterface] = {}
+    _registry: Dict[str, type[OrderGuardEvaluatorInterface]] = {}
+
+    @classmethod
+    def register(
+        cls,
+        guard_id: str,
+        evaluator_cls: type[OrderGuardEvaluatorInterface],
+    ) -> None:
+        cls._registry[str(guard_id)] = evaluator_cls
+
+    @classmethod
+    def create(cls, guard_id: str) -> Any:
+        key = str(guard_id)
+        evaluator_cls = cls._registry.get(key)
+        if evaluator_cls is None:
+            raise KeyError(f"Unknown order guard evaluator id: {key}")
+        return cls.get_evaluator(evaluator_cls)
+
+    @classmethod
+    def get_evaluator(cls, evaluator_cls: type[OrderGuardEvaluatorInterface]) -> Any:
+        key = evaluator_cls.__name__
+        inst = cls._instances.get(key)
+        if inst is None:
+            inst = evaluator_cls()
+            cls._instances[key] = inst
+        return inst
+
+
+for _og_cls in (
+    MathProfitReferenceGuardEvaluator,
+    IntelligenceMacroSentimentGuardEvaluator,
+    CompositeProfitGuardEvaluator,
+):
+    OrderGuardEvaluatorFactory.register(_og_cls.GUARD_ID, _og_cls)
+

@@ -74,8 +74,12 @@ from cacheInterface import (
 from cacheaccount import (
     CacheAccountManagerBase,
     CacheAssetValueManager,
+    CacheHyperliquidTradeManager,
+    CacheKrakenTradeManager,
     CacheOrderManager,
+    CacheT212TradeManager,
     CacheTradeManager,
+    CacheVenueTradeSnapshotManagerBase,
 )
 import cacheintegrity as _cache_integrity
 from cachepaths import (
@@ -617,6 +621,21 @@ CacheFactory.register(
     "AssetValue",
     CacheAssetValueManager,
     sync_ts=lambda: ASSET_VALUE_SYNC_INTERVAL_SEC,
+)
+CacheFactory.register(
+    "KrakenTrade",
+    CacheKrakenTradeManager,
+    sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
+)
+CacheFactory.register(
+    "HyperliquidTrade",
+    CacheHyperliquidTradeManager,
+    sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
+)
+CacheFactory.register(
+    "T212Trade",
+    CacheT212TradeManager,
+    sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
 )
 
 

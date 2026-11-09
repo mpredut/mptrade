@@ -33,7 +33,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import canonical_base_asset
+from cachepaths import CACHE_HYPERLIQUID_TRADE_FILENAME, canonical_base_asset
 from .base import (
     MarketDataProvider,
     _derive_128bit_client_order_id,
@@ -157,7 +157,7 @@ def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
 class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
-    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_hyperliquid.json"
+    _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
 
     #: Served spot token, defaulting to HYPE.

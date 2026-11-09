@@ -15,6 +15,10 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_nonneg_ts,
 )
+from intelligence.sentiment.collectors.microstructure_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+)
 from providers.base import extract_timestamp_s
 
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
@@ -33,9 +37,11 @@ class FearGreedSnapshot:
     is_extreme_greed: bool               # True if value >= 75
 
 
-class FearGreedCollector(CachedHttpJsonCollector):
+class FearGreedCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterface):
     """Fetches and caches the Alternative.me Crypto Fear & Greed Index."""
 
+    cls_name = "FearGreedCollector"
+    COLLECTOR_ID = "sentiment_fear_greed"
     _COLLECTOR_LABEL = "Fear & Greed Index"
     _LOGGER = logger
 
@@ -80,3 +86,6 @@ class FearGreedCollector(CachedHttpJsonCollector):
 
     def _parse_fetched_payload(self, data: Any, now: float) -> Optional[FearGreedSnapshot]:
         return self.parse_payload(data, now_ts=now)
+
+
+TelemetryCollectorFactory.register(FearGreedCollector.COLLECTOR_ID, FearGreedCollector)

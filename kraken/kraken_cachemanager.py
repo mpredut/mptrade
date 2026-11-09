@@ -44,7 +44,7 @@ from kraken_common import (
 from kraken_client import KrakenClient
 from state_io import read_json_dict, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
-from cachepaths import cache_path
+from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
 from instrument_registry import symbols_for
 from providers.base import (
     clean_order_id,
@@ -85,7 +85,7 @@ POLL_BACKOFF_INIT = required_float_env("KRAKEN_CACHE_BACKOFF_INIT_S")
 POLL_BACKOFF_MAX = required_float_env("KRAKEN_CACHE_BACKOFF_MAX_S")
 MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
-CACHE_FILE = cache_path("cache_trade_kraken.json")
+CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
 # USD-like and EUR quote assets map to symbol suffixes; all others (HYPE, BTC, etc.) are base assets.
 _QUOTE = {

@@ -39,7 +39,20 @@ from cacheInterface import (
     _strict_int_field,
 )
 import cacheintegrity as _cache_integrity
-from cachepaths import clean_symbol_key, compute_venue_nav_breakdown
+from cachepaths import (
+    CACHE_ASSET_VALUE_FILENAME,
+    CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_KRAKEN_TRADE_FILENAME,
+    CACHE_ORDER_FILENAME,
+    CACHE_T212_TRADE_FILENAME,
+    CACHE_TRADE_FILENAME,
+    cache_path,
+    cache_symbol_variants,
+    clean_symbol_key,
+    compute_venue_nav_breakdown,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import casefold_get
 from providers.base import (
     extract_order_price,
@@ -1517,9 +1530,16 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             if not isinstance(vb_data, dict) or not vb_data:
                 return {}
             live_cp_data = None
+            cp_default_filename = "cache_current_price.json"
+            try:
+                from cacheprice import CacheCurrentPriceManager as _CCPM
+
+                cp_default_filename = getattr(_CCPM, "DEFAULT_FILENAME", cp_default_filename) or cp_default_filename
+            except Exception:
+                pass
             for cp_cand in (
-                os.path.join(cache_root, "prices", "cache_current_price.json"),
-                os.path.join(cache_root, "cache_current_price.json"),
+                os.path.join(cache_root, "prices", cp_default_filename),
+                os.path.join(cache_root, cp_default_filename),
             ):
                 if os.path.isfile(cp_cand):
                     live_cp_data = read_json_dict(cp_cand, default=None)
@@ -1574,3 +1594,134 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             snapshot["venues_usd"] = venues_usd
             snapshot["portfolio_total_usd"] = round(sum(venues_usd.values()), 2)
         return [snapshot]
+
+
+class CacheVenueTradeSnapshotManagerBase(CacheAccountManagerBase, ABC):
+    """Specialized account-trade cache base for non-Binance venue JSON trade snapshots."""
+
+    _is_trade_account_cache = True
+    VENUE_KEY: str = ""
+    DEFAULT_FILENAME: str = ""
+
+    def __init__(self, sync_ts=60, symbols=None, filename=None, api_client=None, read_only=True):
+        eff_filename = str(filename) if filename else self.resolve_cache_filepath()
+        eff_symbols = list(symbols) if isinstance(symbols, (list, tuple, set)) else []
+        super().__init__(
+            sync_ts,
+            eff_symbols,
+            eff_filename,
+            append_mode=False,
+            api_client=api_client,
+            append_persist=False,
+            read_only=read_only,
+        )
+
+    @classmethod
+    def disk_filename(cls) -> str:
+        """Return the canonical on-disk filename for this venue trade cache."""
+        return str(cls.DEFAULT_FILENAME or "")
+
+    @classmethod
+    def resolve_cache_filepath(cls, cache_dir: Optional[str] = None) -> str:
+        """Resolve the canonical on-disk path for this venue's trade snapshot file."""
+        fname = cls.disk_filename()
+        if cache_dir:
+            return str(resolve_cachedb_filepath(os.path.join(str(cache_dir), fname)))
+        return str(cache_path(fname))
+
+    @classmethod
+    def read_venue_trade_snapshot(
+        cls,
+        path_or_dir: Optional[str] = None,
+        *,
+        read_json_fn=None,
+    ) -> Optional[dict]:
+        """Read and return the venue trade snapshot dict from ``path_or_dir`` or default cacheb path."""
+        if path_or_dir and str(path_or_dir).endswith(".json"):
+            target = str(resolve_cachedb_filepath(str(path_or_dir)))
+        else:
+            target = cls.resolve_cache_filepath(path_or_dir)
+        reader = read_json_fn if callable(read_json_fn) else read_json_dict
+        try:
+            raw = reader(target)
+        except TypeError:
+            raw = reader(target, default=None)
+        return raw if isinstance(raw, dict) else None
+
+    @classmethod
+    def extract_venue_symbol_trades(
+        cls,
+        payload: object,
+        symbol: str,
+        *,
+        cand_keys=None,
+    ) -> list:
+        """Extract the list of trade rows for ``symbol`` (or ``cand_keys``) from a venue trade snapshot."""
+        if not isinstance(payload, dict):
+            return []
+        items = payload.get("items") if isinstance(payload.get("items"), dict) else payload
+        if not isinstance(items, dict):
+            return []
+        keys = tuple(cand_keys) if cand_keys is not None else cache_symbol_variants(symbol, include_base=True)
+        for cand in keys:
+            if not cand:
+                continue
+            rows = casefold_get(items, cand)
+            if isinstance(rows, list) and rows:
+                return rows
+        return []
+
+    def _is_valid_item(self, item) -> bool:
+        return isinstance(item, dict) and (
+            extract_order_price(item, default=None) is not None
+            or safe_pos_float(item.get("price"), default=None) is not None
+        )
+
+    def _ensure_account_version(self, required_version: str) -> None:
+        self.resync_mem_file()
+
+    def get_remote_items(self, symbol, startTime):
+        return []
+
+
+class CacheKrakenTradeManager(CacheVenueTradeSnapshotManagerBase):
+    """Level-3 Kraken trade fill snapshot cache manager (``cache_trade_kraken.json``)."""
+
+    VENUE_KEY = "kraken"
+    DEFAULT_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
+
+
+class CacheHyperliquidTradeManager(CacheVenueTradeSnapshotManagerBase):
+    """Level-3 Hyperliquid trade fill snapshot cache manager (``cache_trade_hyperliquid.json``)."""
+
+    VENUE_KEY = "hyperliquid"
+    DEFAULT_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
+
+
+class CacheT212TradeManager(CacheVenueTradeSnapshotManagerBase):
+    """Level-3 Trading 212 trade fill snapshot cache manager (``cache_trade_t212.json``)."""
+
+    VENUE_KEY = "t212"
+    DEFAULT_FILENAME = CACHE_T212_TRADE_FILENAME
+
+
+def _venue_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
+    return (
+        (CacheKrakenTradeManager.DEFAULT_FILENAME, CacheKrakenTradeManager.VENUE_KEY),
+        (CacheHyperliquidTradeManager.DEFAULT_FILENAME, CacheHyperliquidTradeManager.VENUE_KEY),
+        (CacheT212TradeManager.DEFAULT_FILENAME, CacheT212TradeManager.VENUE_KEY),
+    )
+
+
+def _venue_order_and_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
+    return (
+        (CacheOrderManager.DEFAULT_FILENAME, "binance"),
+        *_venue_trade_cache_contracts(),
+    )
+
+
+CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
+CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
+    _venue_order_and_trade_cache_contracts
+)
+

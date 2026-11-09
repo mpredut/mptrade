@@ -27,7 +27,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_base_asset
+from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset
 from .base import (
     MarketDataProvider,
     aggregate_fills_by_order_id,
@@ -88,7 +88,7 @@ def _order_ticker(raw: dict) -> str:
 
 
 class T212Provider(MarketDataProvider):
-    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_t212.json"
+    _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)
 

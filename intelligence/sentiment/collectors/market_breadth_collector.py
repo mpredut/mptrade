@@ -22,6 +22,11 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_ts,
 )
 
+from intelligence.sentiment.collectors.microstructure_collector import (
+    TelemetryCacheCollectorInterface,
+    TelemetryCollectorFactory,
+)
+
 logger = logging.getLogger("intelligence.sentiment.market_breadth")
 
 
@@ -52,9 +57,11 @@ class MarketBreadthSnapshot:
     rotation_regime: Optional[str] = None
 
 
-class MarketBreadthCollector(CachedHttpJsonCollector):
+class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterface):
     """Computes real-time market-wide breadth and sentiment dispersion from liquid pairs."""
 
+    cls_name = "MarketBreadthCollector"
+    COLLECTOR_ID = "sentiment_market_breadth"
     _COLLECTOR_LABEL = "market breadth"
     _LOGGER = logger
 
@@ -271,3 +278,6 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         if isinstance(data, list):
             return self.parse_tickers(data, min_volume_usd=self.min_volume_usd, now_ts=now)
         return None
+
+
+TelemetryCollectorFactory.register(MarketBreadthCollector.COLLECTOR_ID, MarketBreadthCollector)

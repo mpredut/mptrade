@@ -46,10 +46,19 @@ from state_io import append_text_line, atomic_file_path, atomic_write_text, read
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
-from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
+from cachepaths import (
+    CACHE_SHORT_TREND_FILENAME,
+    cache_24_price_filename,
+    cache_365_price_filename,
+    cache_path,
+    cache_sparse_price_filename,
+    cache_symbol_variants,
+    get_cachedb_dir,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import casefold_get, symbols_for
 LOGGER_DIR = os.path.join(ROOT, "logger")
-CACHE_TREND_PATH = cache_path("cache_short_trend.json")
+CACHE_TREND_PATH = cache_path(CACHE_SHORT_TREND_FILENAME)
 
 # Dedicated live-mode output directory (PNGs and HTML), deliberately separated
 # from the repository. Unlike ROOT, it contains only generated charts and never
@@ -261,7 +270,7 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
 
 def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     """Read enough sparse long-term history for a seven-day window."""
-    return _load_cachedb_price_entries(f"cache_sparse_price_{symbol}.jsonl", symbol, max_bytes=max_bytes)
+    return _load_cachedb_price_entries(cache_sparse_price_filename(symbol), symbol, max_bytes=max_bytes)
 
 
 def _ingest_cachedb_points(points: dict, entries) -> None:
@@ -285,14 +294,14 @@ def load_price_series_live(symbol, days_back, include_history=True):
     points = {}
     if include_history:
         _ingest_cachedb_points(points, _load_history_jsonl_tail(symbol))
-        _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol))
+        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_365_price_filename(symbol), symbol))
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
         t_val = safe_pos_float(t, default=None)
         p_val = safe_pos_float(p, default=None)
         if t_val is not None and p_val is not None:
             points[int(t_val)] = p_val
-    _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol))
+    _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_24_price_filename(symbol), symbol))
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
 

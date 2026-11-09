@@ -30,6 +30,9 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import (
+    CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_SHORT_TREND_FILENAME,
+    cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
     canonical_base_asset,
@@ -702,7 +705,7 @@ class MarketDataProvider(ABC):
         if not candidates:
             return None
         custom_path = getattr(self, "_ssot_price_cache_path", None)
-        price_path = str(custom_path) if custom_path else cache_path("cache_current_price.json")
+        price_path = str(custom_path) if custom_path else cache_path(CACHE_CURRENT_PRICE_FILENAME)
         return self._read_ssot_current_price_candidates(
             candidates,
             price_path,
@@ -741,10 +744,11 @@ class MarketDataProvider(ABC):
         cutoff_ms = int((now_s - lh_f * 3600.0) * 1000)
         custom_dir = getattr(self, "_ssot_24price_cache_dir", None)
         for cand in candidates:
+            c24_fname = cache_24_price_filename(cand)
             c24_path = (
-                os.path.join(str(custom_dir), f"cache_24_price_{cand}.json")
+                os.path.join(str(custom_dir), c24_fname)
                 if custom_dir
-                else cache_path(f"cache_24_price_{cand}.json")
+                else cache_path(c24_fname)
             )
             try:
                 _, entries = self._read_ssot_24price_entries(c24_path, cand)
@@ -827,7 +831,7 @@ class MarketDataProvider(ABC):
                                 raw_ts = extract_timestamp_s(snap, default=None)
                                 if raw_ts is None or _is_fresh_obs_ts(raw_ts, now_s, max_age):
                                     return dict(snap)
-        trend_path = str(custom_path) if custom_path else cache_path("cache_short_trend.json")
+        trend_path = str(custom_path) if custom_path else cache_path(CACHE_SHORT_TREND_FILENAME)
         return self.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=now_s)
 
     def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
@@ -1116,7 +1120,7 @@ def resolve_ssot_price_from_cache(
     )
     is_default_dir = not cache_dir or str(cache_dir).strip() in ("", "cachedb")
     eff_dir = resolve_cache_dir_path(cache_dir) or get_cachedb_dir()
-    price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, "cache_current_price.json")))
+    price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, CACHE_CURRENT_PRICE_FILENAME)))
     px = MarketDataProvider._read_ssot_current_price_candidates(
         cands,
         price_path,
@@ -1128,7 +1132,7 @@ def resolve_ssot_price_from_cache(
         return px
 
     for cand in cands:
-        c24_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, f"cache_24_price_{cand}.json")))
+        c24_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, cache_24_price_filename(cand))))
         try:
             raw, entries = MarketDataProvider._read_ssot_24price_entries(c24_path, cand)
             if not entries or raw is None:

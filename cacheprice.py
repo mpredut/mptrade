@@ -61,6 +61,11 @@ from cacheInterface import (
     _now_time,
 )
 from cachepaths import (
+    CACHE_24_PRICE_PREFIX,
+    CACHE_365_PRICE_PREFIX,
+    CACHE_CURRENT_PRICE_FILENAME,
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
+    CACHE_SPARSE_PRICE_PREFIX,
     _is_eq_suffix,
     cache_path,
     cache_symbol_variants,
@@ -187,7 +192,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
 class CacheSparsePriceManager(CachePriceManagerBase):
     """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
 
-    FILE_PREFIX = "cache_sparse_price_"
+    FILE_PREFIX = CACHE_SPARSE_PRICE_PREFIX
     FILE_EXT = "jsonl"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
@@ -208,7 +213,7 @@ class Cache24PriceManager(CachePriceManagerBase):
     """Collect maximum-granularity prices (Level 3) over the latest ``KEEP_HOURS``."""
 
     KEEP_HOURS = 24
-    FILE_PREFIX = "cache_24_price_"
+    FILE_PREFIX = CACHE_24_PRICE_PREFIX
     FILE_EXT = "json"
     _filter_fetchtimes_to_symbols = True
 
@@ -430,7 +435,7 @@ class Cache365PriceManager(Cache24PriceManager):
     KEEP_HOURS = CM_LONG_ARCHIVE_MONTHS * 30 * 24
     RETENTION_DAYS = CM_LONG_ARCHIVE_MONTHS * 30
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
-    FILE_PREFIX = "cache_365_price_"
+    FILE_PREFIX = CACHE_365_PRICE_PREFIX
     FILE_EXT = "jsonl"
 
     @classmethod
@@ -832,7 +837,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     WS_TIMEOUT_SEC = 15
     STALE_THRESHOLD_MS = 5_000
     FREQ_WINDOW_SEC = 60
-    DEFAULT_FILENAME = "cache_current_price.json"
+    DEFAULT_FILENAME = CACHE_CURRENT_PRICE_FILENAME
 
     def __init__(
         self,
@@ -1247,7 +1252,7 @@ def resolve_cached_symbol_price(
     allowed_quotes = compatible_quote_suffixes(sym_u, quote, default_usd=_DEFAULT_USD_QUOTES)
     is_usd_quote = "USD" in allowed_quotes
 
-    cache_file = os.path.join(cache_dir, "cache_current_price.json")
+    cache_file = os.path.join(cache_dir, CacheCurrentPriceManager.DEFAULT_FILENAME)
     try:
         cdata = read_json_dict_recovering(cache_file)
         if isinstance(cdata, dict):
@@ -1565,7 +1570,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         return (
             str(self._fills_cache_path)
             if self._fills_cache_path
-            else cache_path("cache_trade_hyperliquid.json")
+            else cache_path(CACHE_HYPERLIQUID_TRADE_FILENAME)
         )
 
     def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:

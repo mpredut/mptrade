@@ -120,21 +120,18 @@ def _resolve_save_json_state() -> Any:
 
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
     _ensure_cacheprice_classes_bound()
-    bn_file = getattr(_mc.CacheOrderManager, "DEFAULT_FILENAME", "cache_order.json")
+    contracts_fn = getattr(_mc.CacheAccountManagerBase, "venue_order_and_trade_cache_contracts", None)
+    if callable(contracts_fn):
+        return tuple(contracts_fn())
     return (
-        (bn_file, "binance"),
-        ("cache_trade_kraken.json", "kraken"),
-        ("cache_trade_hyperliquid.json", "hyperliquid"),
-        ("cache_trade_t212.json", "t212"),
+        (getattr(_mc.CacheOrderManager, "DEFAULT_FILENAME", ""), "binance"),
+        (getattr(_mc.CacheKrakenTradeManager, "DEFAULT_FILENAME", ""), "kraken"),
+        (getattr(_mc.CacheHyperliquidTradeManager, "DEFAULT_FILENAME", ""), "hyperliquid"),
+        (getattr(_mc.CacheT212TradeManager, "DEFAULT_FILENAME", ""), "t212"),
     )
 
 
-_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
-    ("cache_order.json", "binance"),
-    ("cache_trade_kraken.json", "kraken"),
-    ("cache_trade_hyperliquid.json", "hyperliquid"),
-    ("cache_trade_t212.json", "t212"),
-)
+_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = _resolve_order_cache_files()
 
 
 def _iter_audit_dir_file_batches(
@@ -1589,8 +1586,9 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for account/portfolio domain cache collectors.
 
     Modeled on ``CacheAccountManagerBase(CacheManagerInterface, ABC)``: encapsulates
-    shared order/fill cache bindings (`CacheOrderManager`, venue trade caches, and
-    execution_audit fallback) and portfolio state readers.
+    shared order/fill cache bindings (`CacheOrderManager`, `CacheTradeManager`,
+    `CacheKrakenTradeManager`, `CacheHyperliquidTradeManager`, `CacheT212TradeManager`,
+    `CacheAssetValueManager`, and execution_audit fallback) and portfolio state readers.
     """
 
     cls_name = "PortfolioCacheCollectorBase"
@@ -1599,6 +1597,40 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
         if type(self) is PortfolioCacheCollectorBase:
             raise TypeError("Cannot instantiate abstract class PortfolioCacheCollectorBase")
         super().__init__()
+        _ensure_cacheprice_classes_bound()
+
+    @property
+    def order_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheOrderManager
+
+    @property
+    def trade_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheTradeManager
+
+    @property
+    def kraken_trade_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheKrakenTradeManager
+
+    @property
+    def hyperliquid_trade_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheHyperliquidTradeManager
+
+    @property
+    def t212_trade_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheT212TradeManager
+
+    @property
+    def asset_value_cache_cls(self) -> Any:
+        _ensure_cacheprice_classes_bound()
+        return _mc.CacheAssetValueManager
+
+    def order_cache_files(self) -> Tuple[Tuple[str, str], ...]:
+        return _resolve_order_cache_files()
 
 
 class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):

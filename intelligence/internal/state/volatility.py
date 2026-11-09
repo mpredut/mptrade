@@ -12,7 +12,13 @@ except Exception:
     np = None  # type: ignore[assignment]
 
 from botcore import pos_float_env, safe_nonneg_float, safe_pos_float
-from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key
+from cachepaths import (
+    CACHE_SHORT_TREND_FILENAME,
+    cache_path,
+    cache_symbol_variants,
+    canonical_symbol_key,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached
 
@@ -331,7 +337,7 @@ def resolve_cached_volatility_1h(
     if res is not None:
         return res
 
-    trend_path = os.path.join(os.path.dirname(kalman_path), "cache_short_trend.json")
+    trend_path = str(resolve_cachedb_filepath(os.path.join(os.path.dirname(kalman_path), CACHE_SHORT_TREND_FILENAME)))
     return _extract_vol_ratio_from_file(trend_path, symbol)
 
 

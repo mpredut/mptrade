@@ -677,7 +677,55 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert TelemetryCollectorFactory.get_collector(col_cls) is inst
 
     # 3. Cache hierarchy filename & schema contracts are reused
+    from cacheaccount import (
+        CacheAccountManagerBase,
+        CacheHyperliquidTradeManager,
+        CacheKrakenTradeManager,
+        CacheT212TradeManager,
+        CacheVenueTradeSnapshotManagerBase,
+    )
+    from intelligence.sentiment.collectors import (
+        FearGreedCollector,
+        MarketBreadthCollector,
+    )
+    from order_guard import (
+        CompositeProfitGuardEvaluator,
+        IntelligenceMacroSentimentGuardEvaluator,
+        MathProfitReferenceGuardEvaluator,
+        OrderGuardEvaluatorBase,
+        OrderGuardEvaluatorFactory,
+        OrderGuardEvaluatorInterface,
+    )
+
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()
+    assert _resolve_order_cache_files() == CacheAccountManagerBase.venue_order_and_trade_cache_contracts()
+    for venue_trd_cls, expected_venue, expected_fname in (
+        (CacheKrakenTradeManager, "kraken", "cache_trade_kraken.json"),
+        (CacheHyperliquidTradeManager, "hyperliquid", "cache_trade_hyperliquid.json"),
+        (CacheT212TradeManager, "t212", "cache_trade_t212.json"),
+    ):
+        assert issubclass(venue_trd_cls, CacheVenueTradeSnapshotManagerBase)
+        assert issubclass(venue_trd_cls, CacheAccountManagerBase)
+        assert venue_trd_cls.VENUE_KEY == expected_venue
+        assert venue_trd_cls.DEFAULT_FILENAME == expected_fname
+
+    for col_id, col_cls in (
+        ("sentiment_fear_greed", FearGreedCollector),
+        ("sentiment_market_breadth", MarketBreadthCollector),
+    ):
+        assert issubclass(col_cls, TelemetryCacheCollectorInterface)
+        assert isinstance(TelemetryCollectorFactory.create(col_id), col_cls)
+
+    for og_id, og_cls in (
+        ("math_profit_reference", MathProfitReferenceGuardEvaluator),
+        ("intelligence_guards", IntelligenceMacroSentimentGuardEvaluator),
+        ("profit_guard", CompositeProfitGuardEvaluator),
+    ):
+        assert issubclass(og_cls, OrderGuardEvaluatorBase)
+        assert issubclass(og_cls, OrderGuardEvaluatorInterface)
+        og_inst = OrderGuardEvaluatorFactory.create(og_id)
+        assert isinstance(og_inst, og_cls)
+        assert OrderGuardEvaluatorFactory.get_evaluator(og_cls) is og_inst
     assert CacheCurrentPriceManager.DEFAULT_FILENAME == "cache_current_price.json"
     assert CacheShortTrendManager.DEFAULT_FILENAME == "cache_short_trend.json"
     assert CacheShortTrendManager.LIVE_WINDOW_SUBDIR == "24trend"

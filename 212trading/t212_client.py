@@ -33,7 +33,7 @@ except ImportError:
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from botcore import clean_order_id, is_shared_disk_cache_enabled, normalize_side
-from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
+from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import extract_order_id, normalize_timestamp_ms
@@ -583,7 +583,7 @@ class T212Client:
         by_symbol = self.normalize_history_items(items)
         if not by_symbol:
             return
-        target_path = str(explicit_path) if explicit_path else str(cache_path("cache_trade_t212.json"))
+        target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
         MarketDataProvider.merge_ssot_fills_cache(target_path, by_symbol)
 
     def get_historical_order(self, order_id) -> dict | bool | None:

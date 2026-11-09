@@ -48,7 +48,12 @@ from .strategy_executor import (
     ProviderError,
     SubmissionRefused,
 )
-from cachepaths import _LEGACY_KRAKEN_X_BASES, cache_path, canonical_base_asset
+from cachepaths import (
+    CACHE_KRAKEN_TRADE_FILENAME,
+    _LEGACY_KRAKEN_X_BASES,
+    cache_path,
+    canonical_base_asset,
+)
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
@@ -58,7 +63,7 @@ _MISSING = object()
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
-_DEFAULT_KRAKEN_CACHE_FILE = cache_path("cache_trade_kraken.json")
+_DEFAULT_KRAKEN_CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 _KRAKEN_CACHE_FILE = _DEFAULT_KRAKEN_CACHE_FILE
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
@@ -193,7 +198,7 @@ def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 
 
 class KrakenProvider(MarketDataProvider):
-    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_kraken.json"
+    _DEFAULT_FILLS_CACHE_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_MAX_STALE_S = _CACHE_MAX_STALE_S

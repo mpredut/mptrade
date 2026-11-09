@@ -9,17 +9,54 @@ import time
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 
+CACHE_CURRENT_PRICE_FILENAME = "cache_current_price.json"
+CACHE_WATCHER_ALL_PRICE_FILENAME = "cache_watcher_all_price.json"
+CACHE_SHORT_TREND_FILENAME = "cache_short_trend.json"
+CACHE_LONG_TREND_FILENAME = "cache_long_trend.json"
+CACHE_ORDER_FILENAME = "cache_order.json"
+CACHE_TRADE_FILENAME = "cache_trade.jsonl"
+CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
+CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
+CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
+CACHE_T212_TRADE_FILENAME = "cache_trade_t212.json"
+
+CACHE_SPARSE_PRICE_PREFIX = "cache_sparse_price_"
+CACHE_SPARSE_PRICE_EXT = ".jsonl"
+CACHE_24_PRICE_PREFIX = "cache_24_price_"
+CACHE_24_PRICE_EXT = ".json"
+CACHE_365_PRICE_PREFIX = "cache_365_price_"
+CACHE_365_PRICE_EXT = ".jsonl"
+
+
+def cache_sparse_price_filename(symbol: object) -> str:
+    """Return canonical on-disk filename for a sparse long-horizon price archive (`cache_sparse_price_<SYM>.jsonl`)."""
+    sym = str(symbol or "").strip().upper()
+    return f"{CACHE_SPARSE_PRICE_PREFIX}{sym}{CACHE_SPARSE_PRICE_EXT}"
+
+
+def cache_24_price_filename(symbol: object) -> str:
+    """Return canonical on-disk filename for a 24h dense price series (`cache_24_price_<SYM>.json`)."""
+    sym = str(symbol or "").strip().upper()
+    return f"{CACHE_24_PRICE_PREFIX}{sym}{CACHE_24_PRICE_EXT}"
+
+
+def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT) -> str:
+    """Return canonical on-disk filename for a 365d dense price archive (`cache_365_price_<SYM>.jsonl`)."""
+    sym = str(symbol or "").strip().upper()
+    return f"{CACHE_365_PRICE_PREFIX}{sym}{ext}"
+
+
 EXACT_LEGACY_FILENAMES = {
-    "cache_current_price.json": ("cache_currentprice.json",),
-    "cache_short_trend.json": ("cache_instant_trend.json",),
-    "cache_long_trend.json": ("cache_price_long_trend.json",),
+    CACHE_CURRENT_PRICE_FILENAME: ("cache_currentprice.json",),
+    CACHE_SHORT_TREND_FILENAME: ("cache_instant_trend.json",),
+    CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
     "rtrade_pairs_state.json": ("rtrade_pairs.json",),
     "autonomous_trade_intents_state.json": ("autonomous_trade_intents.json",),
 }
 PREFIX_LEGACY_FILENAMES = (
-    ("cache_sparse_price_", ("cache_price_sparse_", "cache_price_")),
-    ("cache_24_price_", ("cache_24price_", "price_24h_")),
-    ("cache_365_price_", ("cache_365price_", "cache_24price_long_")),
+    (CACHE_SPARSE_PRICE_PREFIX, ("cache_price_sparse_", "cache_price_")),
+    (CACHE_24_PRICE_PREFIX, ("cache_24price_", "price_24h_")),
+    (CACHE_365_PRICE_PREFIX, ("cache_365price_", "cache_24price_long_")),
 )
 
 CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {

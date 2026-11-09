@@ -42,6 +42,9 @@ from botcore import (
 )
 from cacheInterface import CacheManagerInterface
 from cachepaths import (
+    CACHE_LONG_TREND_FILENAME,
+    CACHE_SHORT_TREND_FILENAME,
+    cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
@@ -153,7 +156,7 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
 class CacheLongTrendManager(CacheTrendManagerBase):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
-    DEFAULT_FILENAME = "cache_long_trend.json"
+    DEFAULT_FILENAME = CACHE_LONG_TREND_FILENAME
     SOURCE_ANALYSIS_FILENAME = "priceanalysis.json"
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
@@ -217,7 +220,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     JSON format expected by all direct readers.
     """
 
-    DEFAULT_FILENAME = "cache_short_trend.json"
+    DEFAULT_FILENAME = CACHE_SHORT_TREND_FILENAME
     LIVE_TREND_SUBDIR = "24trend"
     LIVE_FILE_PREFIX = "live_"
     LIVE_FILE_EXT = "json"
@@ -246,7 +249,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     def __init__(
         self,
         symbols,
-        filename="cache_short_trend.json",
+        filename=CACHE_SHORT_TREND_FILENAME,
         writer=False,
         window_seconds=None,
         thresholds=None,
@@ -815,7 +818,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for cand in _short_trend_symbol_variants(symbol):
             if not isinstance(cand, str) or not cand:
                 continue
-            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, f"cache_24_price_{cand}.json")))
+            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, cache_24_price_filename(cand))))
             migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
