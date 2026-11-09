@@ -300,117 +300,107 @@ class Instrument:
         return scaled_qty, scale_f, None
 
     def _resolve_place_guard_config(
-        self,
-        side_u: str,
-        kwargs: dict,
-        bypass_guards_raw: Any,
-        profit_reference_mode: Any,
-        caller_module: Any,
-        allow_math_reference_sell: bool,
-    ) -> tuple[Any, Any, Any, Any, str, set, bool, bool, bool, bool]:
-        medium_trend_action_cfg = kwargs.get("medium_trend_action")
-        medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
+        self, ctx: _PlaceContext, bypass_guards_raw: Any
+    ) -> None:
+        ctx.medium_trend_action_cfg = ctx.kwargs.get("medium_trend_action")
+        ctx.medium_trend_scale_cfg = ctx.kwargs.get("medium_trend_scale")
         inst_bypass_raw = None
         if hasattr(self, "params") and isinstance(self.params, dict):
             inst_bypass_raw = self.params.get("bypass_guards")
-            if profit_reference_mode is None:
-                profit_reference_mode = self.params.get(
-                    f"{side_u.lower()}_reference_mode", self.params.get("reference_mode")
+            if ctx.profit_reference_mode is None:
+                ctx.profit_reference_mode = self.params.get(
+                    f"{ctx.side_u.lower()}_reference_mode",
+                    self.params.get("reference_mode"),
                 )
-            caller_module = caller_module if caller_module is not None else self.params.get("module")
-            if medium_trend_action_cfg is None:
-                medium_trend_action_cfg = self.params.get("medium_trend_action")
-            if medium_trend_scale_cfg is None:
-                medium_trend_scale_cfg = self.params.get("medium_trend_scale")
-        caller_module = (
+            if ctx.caller_module is None:
+                ctx.caller_module = self.params.get("module")
+            if ctx.medium_trend_action_cfg is None:
+                ctx.medium_trend_action_cfg = self.params.get("medium_trend_action")
+            if ctx.medium_trend_scale_cfg is None:
+                ctx.medium_trend_scale_cfg = self.params.get("medium_trend_scale")
+        ctx.caller_module = (
             order_guard.resolve_caller_module(
-                None, prefix=kwargs.get("prefix"), client_order_id=kwargs.get("client_order_id")
+                None,
+                prefix=ctx.kwargs.get("prefix"),
+                client_order_id=ctx.kwargs.get("client_order_id"),
             )
-            if caller_module is None
-            else order_guard.resolve_caller_module(caller_module)
+            if ctx.caller_module is None
+            else order_guard.resolve_caller_module(ctx.caller_module)
         )
-        v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
-        bypassed_guards = order_guard.resolve_effective_bypass_guards(
-            v_norm, bypass_guards=bypass_guards_raw, inst_bypass=inst_bypass_raw,
+        ctx.v_norm = normalize_venue_name(
+            getattr(self._provider, "name", "") or self.provider_name
         )
-        bypass_all = "all" in bypassed_guards
-        bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
-        bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
-        bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
+        ctx.bypassed_guards = order_guard.resolve_effective_bypass_guards(
+            ctx.v_norm, bypass_guards=bypass_guards_raw, inst_bypass=inst_bypass_raw
+        )
+        ctx.bypass_all = "all" in ctx.bypassed_guards
+        ctx.bypass_profit_guard = "profit_guard" in ctx.bypassed_guards or ctx.bypass_all
+        ctx.bypass_math_ref = (
+            GUARD_REGISTRY["G_PROF"].is_bypassed(ctx.bypassed_guards)
+            or ctx.bypass_profit_guard
+        )
+        ctx.bypass_quantity_policy = (
+            GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(ctx.bypassed_guards)
+            or ctx.bypass_profit_guard
+        )
 
-        if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
-            print(f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; is allowed only for BUY")
-            revoke_guard_bypass(bypassed_guards, "G_PROF")
-            bypass_math_ref = False
         if (
-            bypass_quantity_policy
-            and not bypass_profit_guard
-            and side_u != "SELL"
-            and caller_module != "assetguardian"
+            ctx.bypass_math_ref
+            and not ctx.bypass_profit_guard
+            and ctx.side_u != "BUY"
+            and not ctx.allow_math_reference_sell
         ):
-            print(f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; is allowed only for SELL")
-            revoke_guard_bypass(bypassed_guards, "G_QLIMIT1")
-            bypass_quantity_policy = False
-        return (
-            profit_reference_mode,
-            caller_module,
-            medium_trend_action_cfg,
-            medium_trend_scale_cfg,
-            v_norm,
-            bypassed_guards,
-            bypass_all,
-            bypass_profit_guard,
-            bypass_math_ref,
-            bypass_quantity_policy,
-        )
+            print(
+                f"[GUARD] {ctx.side_u} {self.symbol}: bypass math_profit/math_reference "
+                "ignored; is allowed only for BUY"
+            )
+            revoke_guard_bypass(ctx.bypassed_guards, "G_PROF")
+            ctx.bypass_math_ref = False
+        if (
+            ctx.bypass_quantity_policy
+            and not ctx.bypass_profit_guard
+            and ctx.side_u != "SELL"
+            and ctx.caller_module != "assetguardian"
+        ):
+            print(
+                f"[GUARD] {ctx.side_u} {self.symbol}: bypass_quantity_policy "
+                "ignored; is allowed only for SELL"
+            )
+            revoke_guard_bypass(ctx.bypassed_guards, "G_QLIMIT1")
+            ctx.bypass_quantity_policy = False
 
     @staticmethod
-    def _build_place_retry_and_market_config(
-        side_u: str,
-        kwargs: dict,
-        bypassed_guards: set,
-        bypass_profit_guard: bool,
-        wait_for_trend: bool,
-        smart: bool,
-        caller_applied_scale: float,
-        profit_margin: Optional[float],
-        profit_reference_mode: Any,
-        caller_module: Any,
-        medium_trend_action_cfg: Any,
-        medium_trend_scale_cfg: Any,
-        allow_math_reference_sell: bool,
-    ) -> tuple[dict, bool, bool]:
-        retry_kwargs = {
-            **kwargs,
-            "bypass_guards": sorted(list(bypassed_guards)),
-            "wait_for_trend": wait_for_trend,
-            "smart": smart,
+    def _build_place_retry_and_market_config(ctx: _PlaceContext) -> None:
+        ctx.retry_kwargs = {
+            **ctx.kwargs,
+            "bypass_guards": sorted(list(ctx.bypassed_guards)),
+            "wait_for_trend": ctx.wait_for_trend,
+            "smart": ctx.smart,
         }
-        if caller_applied_scale < 1.0:
-            retry_kwargs["applied_scale"] = caller_applied_scale
+        if ctx.caller_applied_scale < 1.0:
+            ctx.retry_kwargs["applied_scale"] = ctx.caller_applied_scale
         for rk, rv in (
-            ("profit_margin", profit_margin),
-            ("reference_mode", profit_reference_mode),
-            ("module", caller_module),
-            ("medium_trend_action", medium_trend_action_cfg),
-            ("medium_trend_scale", medium_trend_scale_cfg),
+            ("profit_margin", ctx.profit_margin),
+            ("reference_mode", ctx.profit_reference_mode),
+            ("module", ctx.caller_module),
+            ("medium_trend_action", ctx.medium_trend_action_cfg),
+            ("medium_trend_scale", ctx.medium_trend_scale_cfg),
         ):
             if rv is not None:
-                retry_kwargs[rk] = rv
-        if allow_math_reference_sell:
-            retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
+                ctx.retry_kwargs[rk] = rv
+        if ctx.allow_math_reference_sell:
+            ctx.retry_kwargs["allow_math_reference_sell"] = ctx.allow_math_reference_sell
 
-        is_market = resolve_market_flag(**kwargs)
-        caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
+        ctx.is_market = resolve_market_flag(**ctx.kwargs)
+        caller_enforce_biz_min = ctx.kwargs.pop("enforce_business_minimum", None)
         if caller_enforce_biz_min is not None:
-            enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
-            retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
+            ctx.enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
+            ctx.retry_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
         else:
-            enforce_business_minimum = not (
-                (bypass_profit_guard and side_u == "SELL" and is_market)
-                or (caller_module == "assetguardian" and side_u == "SELL")
+            ctx.enforce_business_minimum = not (
+                (ctx.bypass_profit_guard and ctx.side_u == "SELL" and ctx.is_market)
+                or (ctx.caller_module == "assetguardian" and ctx.side_u == "SELL")
             )
-        return retry_kwargs, is_market, enforce_business_minimum
 
     def _init_and_gate_pre_pipeline(
         self,
@@ -424,12 +414,8 @@ class Instrument:
         if outcome_context is not None and not isinstance(outcome_context, dict):
             raise TypeError("_outcome_context must be a dict")
         cache_permit = kwargs.pop("cache_permit", None)
-        caller_supplied_cache_permit = cache_permit is not None
         retry_requested_price_raw = kwargs.pop("_retry_requested_price", None)
         retry_price_tolerance_raw = kwargs.pop("_retry_price_tolerance", None)
-        retry_constraint_supplied = (
-            retry_requested_price_raw is not None or retry_price_tolerance_raw is not None
-        )
         bypass_guards_raw = kwargs.pop("bypass_guards", None)
         caller_profit_margin = kwargs.pop("profit_margin", None)
         profit_reference_mode = kwargs.pop("reference_mode", None)
@@ -451,44 +437,50 @@ class Instrument:
             print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
             return None, _refuse_early("invalid_side")
 
-        (
-            profit_reference_mode,
-            caller_module,
-            medium_trend_action_cfg,
-            medium_trend_scale_cfg,
-            v_norm,
-            bypassed_guards,
-            bypass_all,
-            bypass_profit_guard,
-            bypass_math_ref,
-            bypass_quantity_policy,
-        ) = self._resolve_place_guard_config(
-            side_u,
-            kwargs,
-            bypass_guards_raw,
-            profit_reference_mode,
-            caller_module,
-            allow_math_reference_sell,
+        ctx = _PlaceContext(
+            side_u=side_u,
+            price=price,
+            qty=qty,
+            orig_price=price,
+            orig_qty=qty,
+            kwargs=kwargs,
+            caller_owns_retry=caller_owns_retry,
+            outcome_context=outcome_context,
+            cache_permit=cache_permit,
+            caller_supplied_cache_permit=cache_permit is not None,
+            retry_requested_price_raw=retry_requested_price_raw,
+            retry_price_tolerance_raw=retry_price_tolerance_raw,
+            retry_constraint_supplied=(
+                retry_requested_price_raw is not None or retry_price_tolerance_raw is not None
+            ),
+            profit_reference_mode=profit_reference_mode,
+            caller_module=caller_module,
+            allow_math_reference_sell=allow_math_reference_sell,
+            order_kind=order_kind,
         )
-        wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
-        abort_if = kwargs.pop("abort_if", None)
-        requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
-        defers_smart_cancel = bool(
+        self._resolve_place_guard_config(ctx, bypass_guards_raw)
+        ctx.wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
+        ctx.abort_if = kwargs.pop("abort_if", None)
+        ctx.early_abort_if = getattr(ctx.abort_if, "is_aborted", None)
+        ctx.requires_permit = bool(
+            getattr(self._provider, "requires_cache_permit", lambda: False)()
+        )
+        ctx.defers_smart_cancel = bool(
             getattr(self._provider, "defers_smart_cancellation", lambda: False)()
         )
-        supports_biz_min = bool(
+        ctx.supports_biz_min = bool(
             getattr(self._provider, "supports_business_minimum", lambda: False)()
         )
-        if cache_permit is not None and not requires_permit:
+        if ctx.cache_permit is not None and not ctx.requires_permit:
             print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider")
             return None, _refuse_early("invalid_cache_permit_provider")
-        execution_enabled = getattr(self._provider, "execution_enabled", None)
+        ctx.execution_enabled = getattr(self._provider, "execution_enabled", None)
         inst_live = self.param("execution", "live_enabled", None, bool)
         try:
             provider_execution_enabled = (
                 bool(inst_live)
                 if inst_live is not None
-                else (True if not callable(execution_enabled) else bool(execution_enabled()))
+                else (True if not callable(ctx.execution_enabled) else bool(ctx.execution_enabled()))
             )
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
             print(
@@ -500,82 +492,24 @@ class Instrument:
             return None, _refuse_early("execution_disabled")
         if inst_live is not None and "live_enabled" not in kwargs:
             kwargs["live_enabled"] = provider_execution_enabled
-        if v_norm == "t212" and "order_validity" not in kwargs:
+        if ctx.v_norm == "t212" and "order_validity" not in kwargs:
             inst_validity = self.param("execution", "order_validity")
             if isinstance(inst_validity, str) and inst_validity.strip():
                 kwargs["order_validity"] = inst_validity.strip().upper()
         if self._provider.guards_internally():
-            if retry_constraint_supplied:
+            if ctx.retry_constraint_supplied:
                 return None, _refuse_early("retry_price_constraint_unsupported")
             return None, self._provider.place_order(self.symbol, side_u, price, qty, **kwargs)
 
-        safeback_override = kwargs.get("safeback_seconds")
-        smart = _parse_bool_flag(kwargs.pop("smart", True), True)
-        regime_context = kwargs.pop("regime_context", None)
+        ctx.safeback_override = kwargs.get("safeback_seconds")
+        ctx.smart = _parse_bool_flag(kwargs.pop("smart", True), True)
+        ctx.regime_context = kwargs.pop("regime_context", None)
         cas_f = safe_pos_float(kwargs.pop("applied_scale", None), default=None)
-        caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
-        is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
-        profit_margin = safe_float(caller_profit_margin, default=None)
-
-        retry_kwargs, is_market, enforce_business_minimum = self._build_place_retry_and_market_config(
-            side_u,
-            kwargs,
-            bypassed_guards,
-            bypass_profit_guard,
-            wait_for_trend,
-            smart,
-            caller_applied_scale,
-            profit_margin,
-            profit_reference_mode,
-            caller_module,
-            medium_trend_action_cfg,
-            medium_trend_scale_cfg,
-            allow_math_reference_sell,
-        )
-        ctx = _PlaceContext(
-            side_u=side_u,
-            price=price,
-            qty=qty,
-            orig_price=price,
-            orig_qty=qty,
-            kwargs=kwargs,
-            caller_owns_retry=caller_owns_retry,
-            outcome_context=outcome_context,
-            cache_permit=cache_permit,
-            caller_supplied_cache_permit=caller_supplied_cache_permit,
-            retry_requested_price_raw=retry_requested_price_raw,
-            retry_price_tolerance_raw=retry_price_tolerance_raw,
-            retry_constraint_supplied=retry_constraint_supplied,
-            profit_reference_mode=profit_reference_mode,
-            caller_module=caller_module,
-            allow_math_reference_sell=allow_math_reference_sell,
-            order_kind=order_kind,
-            wait_for_trend=wait_for_trend,
-            abort_if=abort_if,
-            early_abort_if=getattr(abort_if, "is_aborted", None),
-            v_norm=v_norm,
-            medium_trend_action_cfg=medium_trend_action_cfg,
-            medium_trend_scale_cfg=medium_trend_scale_cfg,
-            bypassed_guards=bypassed_guards,
-            bypass_all=bypass_all,
-            bypass_profit_guard=bypass_profit_guard,
-            bypass_math_ref=bypass_math_ref,
-            bypass_quantity_policy=bypass_quantity_policy,
-            requires_permit=requires_permit,
-            defers_smart_cancel=defers_smart_cancel,
-            supports_biz_min=supports_biz_min,
-            execution_enabled=execution_enabled,
-            safeback_override=safeback_override,
-            smart=smart,
-            regime_context=regime_context,
-            caller_applied_scale=caller_applied_scale,
-            applied_scale=caller_applied_scale,
-            is_monitor_replace=is_monitor_replace,
-            profit_margin=profit_margin,
-            retry_kwargs=retry_kwargs,
-            is_market=is_market,
-            enforce_business_minimum=enforce_business_minimum,
-        )
+        ctx.caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
+        ctx.applied_scale = ctx.caller_applied_scale
+        ctx.is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
+        ctx.profit_margin = safe_float(caller_profit_margin, default=None)
+        self._build_place_retry_and_market_config(ctx)
         return ctx, None
 
     def _prepare_preflight_and_smart_price(self, ctx: _PlaceContext) -> None:
