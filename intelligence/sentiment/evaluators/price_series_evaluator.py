@@ -6,7 +6,7 @@ import os
 import statistics
 import time as _time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     is_live_network_backfill_enabled,
@@ -2261,18 +2261,9 @@ class AssetSessionPolicy(ABC):
     def is_equity(self) -> bool:
         """Whether this asset class follows cash-equity session rules (RTH / extended hours)."""
 
-    @property
-    @abstractmethod
-    def supports_yahoo_5d_chart_backfill(self) -> bool:
-        """Whether 24h/7d series should be backfilled from Yahoo 5d 5m chart bars when local series is sparse/stale."""
-
     @abstractmethod
     def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
         """Whether symbol participates in USD/USDC/USDT cross-venue sibling orderbook arbitrage."""
-
-    @abstractmethod
-    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
-        """Return True if regular trading session is open at ``now_ts``."""
 
     @abstractmethod
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
@@ -2281,10 +2272,6 @@ class AssetSessionPolicy(ABC):
     @abstractmethod
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         """Merge stitched 24h OHLC bars into the raw 24h series."""
-
-    @abstractmethod
-    def collapse_watcher_series(self, w_rows: list) -> list:
-        """Collapse redundant flat poller ticks in watcher series."""
 
     @abstractmethod
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
@@ -2325,25 +2312,15 @@ class Crypto24x7SessionPolicy(AssetSessionPolicy):
     def is_equity(self) -> bool:
         return False
 
-    @property
-    def supports_yahoo_5d_chart_backfill(self) -> bool:
-        return False
-
     def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
         sym_u = str(symbol or "").strip().upper()
         return sym_u.endswith(("USDC", "USDT", "USD")) and not sym_u.endswith(("_EQ", "_US_EQ"))
-
-    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
-        return True
 
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return sort_ts_rows(rows)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         return prepend_older_non_diverged_points(raw_ser, ohlc24_pts)
-
-    def collapse_watcher_series(self, w_rows: list) -> list:
-        return collapse_watcher_equity_series(w_rows, is_eq_w=False)
 
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
@@ -2381,32 +2358,14 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     def is_equity(self) -> bool:
         return True
 
-    @property
-    def supports_yahoo_5d_chart_backfill(self) -> bool:
-        return True
-
     def supports_cross_venue_sibling_arb(self, symbol: str) -> bool:
         return False
-
-    def is_rth_open(self, symbol: str, now_ts: float, is_market_open_fn: Optional[Callable[[str, float], bool]] = None) -> bool:
-        if is_market_open_fn is None:
-            try:
-                from instrument_registry import is_symbol_market_open as is_market_open_fn
-            except Exception:
-                return False
-        try:
-            return bool(is_market_open_fn(symbol, now_ts))
-        except Exception:
-            return False
 
     def clean_raw_24h_series(self, rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return strip_off_rth_flat_poller_tail(rows, symbol, is_market_open_fn=is_market_open_fn)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         return merge_equity_ohlc24_into_raw_series(raw_ser, ohlc24_pts)
-
-    def collapse_watcher_series(self, w_rows: list) -> list:
-        return collapse_watcher_equity_series(w_rows, is_eq_w=True)
 
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)

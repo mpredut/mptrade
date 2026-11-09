@@ -411,26 +411,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         )
 
     @classmethod
-    def read_venue_trade_snapshot(
-        cls,
-        path_or_dir: Optional[str] = None,
-        *,
-        venue: str = "kraken",
-        read_json_fn=None,
-    ) -> Optional[dict]:
-        """Read and return a venue JSON trade snapshot dict from ``path_or_dir`` or default cachedb path."""
-        if path_or_dir and str(path_or_dir).endswith(".json"):
-            target = str(resolve_cachedb_filepath(str(path_or_dir)))
-        else:
-            target = cls.resolve_cache_filepath(path_or_dir, venue=venue)
-        reader = read_json_fn if callable(read_json_fn) else read_json_dict
-        try:
-            raw = reader(target)
-        except TypeError:
-            raw = reader(target, default=None)
-        return raw if isinstance(raw, dict) else None
-
-    @classmethod
     def load_sanitized_trade_snapshot(cls, path: Optional[str] = None, *, venue: str = "kraken") -> dict:
         """Load and sanitize a venue JSON trade snapshot ``{'items': ..., 'fetchtime': ...}`` with ``.previous`` recovery."""
         target = str(path) if path else cls.resolve_cache_filepath(venue=venue)

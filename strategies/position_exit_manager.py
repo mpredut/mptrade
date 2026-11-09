@@ -456,13 +456,6 @@ class PositionExitManager:
             else:
                 d.clear()
 
-    def get_state(self, symbol: str) -> Dict[str, Any]:
-        """Return the current active states for a symbol."""
-        sym_clean = _clean_symbol_str(symbol)
-        out = {key: getattr(self, key).get(sym_clean) for key in PERSISTED_EXIT_STATE_KEYS}
-        out["hard_tp_last"] = self.hard_tp_last.get(sym_clean)
-        return out
-
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
         sym_clean = _clean_symbol_str(symbol)

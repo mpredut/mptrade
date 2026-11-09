@@ -108,23 +108,6 @@ class MarketDataProvider(ABC):
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
 
-    def get_trade_cache_manager(self, *, start_sync: bool = False) -> Any:
-        """Return the ``CacheTradeManager`` subclass instance registered in ``CacheFactory`` for this provider."""
-        mgr_name = getattr(self, "_TRADE_CACHE_MANAGER_NAME", None)
-        if not mgr_name:
-            v_norm = normalize_venue_name(getattr(self, "name", ""))
-            mgr_name = {
-                "binance": "Trade",
-                "kraken": "KrakenTrade",
-                "hyperliquid": "HyperliquidTrade",
-                "t212": "T212Trade",
-            }.get(v_norm)
-        if not mgr_name:
-            return None
-        import cacheManager as cm
-
-        return cm.CacheFactory.get(mgr_name, start_sync=start_sync)
-
     def validate_symbol(self, symbol: str) -> None:
         """Reject a symbol incompatible with this configured provider instance."""
         return None

@@ -870,9 +870,6 @@ class PriceWindow:
             if len(self._trend_buf.prices) - len(self.prices) >= max(512, self.window_size):
                 self._trend_buf.trim_front(len(self._trend_buf.prices) - len(self.prices))
 
-    def get_newest_index(self):
-        return len(self.prices) - 1 if self.prices else None
-
     @staticmethod
     def _average_extreme_cluster(extreme: float, neighbors) -> float:
         total = extreme

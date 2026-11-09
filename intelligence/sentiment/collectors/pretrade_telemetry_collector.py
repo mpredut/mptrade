@@ -2282,17 +2282,6 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
             pass
         return status
 
-    def refresh_snapshot(
-        self,
-        cachedb_dir: str = "cachedb",
-        symbol: str = "",
-        *,
-        now_ts: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Dict[str, bool]:
-        """Producer entrypoint alias delegating to ``refresh_caches()``."""
-        return self.refresh_caches(cachedb_dir=cachedb_dir, symbol=symbol, now_ts=now_ts)
-
     def collect(
         self,
         cachedb_dir: str,

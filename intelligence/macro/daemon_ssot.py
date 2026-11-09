@@ -630,10 +630,6 @@ class CachedHttpJsonCollector:
         """Read-only consumer entrypoint: return cached in-memory snapshot with 0 network I/O."""
         return self.fetch(force_refresh=False, now_ts=now_ts, allow_network=False)
 
-    def refresh_snapshot(self, *, force_refresh: bool = True, now_ts: Optional[float] = None) -> Any:
-        """Producer entrypoint: fetch latest HTTP JSON snapshot and update in-memory cache."""
-        return self.fetch(force_refresh=force_refresh, now_ts=now_ts, allow_network=True)
-
     def collect(
         self,
         cachedb_dir: str = "",

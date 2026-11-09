@@ -117,9 +117,6 @@ class NewCoinsSource(ABC):
     def refresh(self):
         pass
 
-    def requires_api_key(self) -> bool:
-        return False
-
     def is_available(self) -> bool:
         return True
 
@@ -139,9 +136,6 @@ class CoinMarketCapSource(NewCoinsSource):
     
     def get_name(self) -> str:
         return "CoinMarketCap"
-    
-    def requires_api_key(self) -> bool:
-        return True
     
     def is_available(self) -> bool:
         return isinstance(self.api_key, str) and len(self.api_key.strip()) > 0
@@ -214,9 +208,6 @@ class CoinGeckoSource(NewCoinsSource):
     def get_name(self) -> str:
         return "CoinGecko"
     
-    def requires_api_key(self) -> bool:
-        return False
-    
     def is_available(self) -> bool:
         return True
     
@@ -273,9 +264,6 @@ class BinanceNewListingsSource(NewCoinsSource):
     
     def get_name(self) -> str:
         return "Binance"
-    
-    def requires_api_key(self) -> bool:
-        return False
     
     def is_available(self) -> bool:
         return True
@@ -341,9 +329,6 @@ class DexScreenerSource(NewCoinsSource):
     
     def get_name(self) -> str:
         return "DexScreener"
-    
-    def requires_api_key(self) -> bool:
-        return False
     
     def is_available(self) -> bool:
         return True
@@ -444,17 +429,6 @@ class NewCoinsFactory:
                 print(f"[NewCoinsFactory] Error for {name}: {e}")
                 results[name] = []
         return results
-    
-    def get_all_new_symbols(self, days_back: int = NEW_COINS_AGE_DAYS) -> Set[str]:
-        all_symbols = set()
-        for name, source in self.sources.items():
-            try:
-                for coin in source.get_new_coins(days_back):
-                    if isinstance(coin, dict) and isinstance(coin.get('symbol'), str) and coin['symbol'].strip():
-                        all_symbols.add(coin['symbol'].strip().upper())
-            except Exception:
-                pass
-        return all_symbols
     
     def get_available_sources(self) -> List[str]:
         return list(self.sources.keys())

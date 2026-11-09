@@ -526,9 +526,6 @@ class TrendState:
 
     def is_trend_down(self):
         return self._confirm_count_for("DOWN")
-
-    def is_hold(self):
-        return self._confirm_count_for("HOLD")
   
 
 

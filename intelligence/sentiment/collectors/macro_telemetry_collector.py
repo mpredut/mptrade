@@ -1349,38 +1349,6 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             **kwargs,
         )
 
-    def refresh_snapshot(
-        self,
-        cachedb_dir: str = "cachedb",
-        symbol: str = "*",
-        *,
-        snapshot: Any = None,
-        workspace_dir: str = "",
-        logs_dirs: Optional[List[str]] = None,
-        intent_gateway: Any = None,
-        scope: str = "crypto",
-        now_ts: float = 0.0,
-        read_json_fn: Any = None,
-        log: Optional[Any] = None,
-        **kwargs: Any,
-    ) -> Any:
-        """Producer entrypoint: populate `TelemetrySensorSnapshot` with live collection and disk persistence."""
-        return self.collect(
-            cachedb_dir,
-            symbol,
-            snapshot=snapshot,
-            workspace_dir=workspace_dir,
-            logs_dirs=logs_dirs,
-            intent_gateway=intent_gateway,
-            scope=scope,
-            now_ts=now_ts,
-            read_json_fn=read_json_fn,
-            log=log,
-            allow_network=True,
-            persist=True,
-            **kwargs,
-        )
-
 
 for _macro_collector_cls in (
     MacroBenchmarksSnapshotCollector,

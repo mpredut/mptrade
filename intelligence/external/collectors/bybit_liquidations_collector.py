@@ -370,18 +370,6 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         """Read-only consumer accessor returning aggregated liquidation summary from in-memory window."""
         return self.collect(symbol_or_cache_dir, symbol, window_sec=window_sec, now=now, **kwargs)
 
-    def refresh_snapshot(
-        self,
-        symbol_or_cache_dir: str = "cachedb",
-        symbol: Optional[str] = None,
-        *,
-        window_sec: float = 300.0,
-        now: Optional[float] = None,
-        **kwargs: Any,
-    ) -> LiquidationSummary:
-        """Return aggregated liquidation summary from in-memory window."""
-        return self.collect(symbol_or_cache_dir, symbol, window_sec=window_sec, now=now, **kwargs)
-
 
 TelemetryCollectorFactory.register(BybitLiquidationCollector.COLLECTOR_ID, BybitLiquidationCollector)
 

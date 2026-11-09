@@ -863,23 +863,6 @@ class BaseSpotMixin:
         """Callable adapter for PositionExitManager vol_resolver."""
         return self._vol_1h_ratio()
 
-    def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
-        try:
-            k_re = self.p.shadow_k_reentry
-            vol = self._resolve_reentry_vol_1h_pct()
-            if vol is None:
-                self._log_msg(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
-                return
-            adapt_pct, _ = adaptive_thresholds(vol, k_reentry=k_re)
-            prag_adapt = lsp * (1 - (adapt_pct if adapt_pct is not None else k_re * vol) / 100)
-            verdict = "WOULD HAVE ENTERED" if price <= prag_adapt else "would not have entered either"
-            self._log_msg(
-                f"  [SHADOW] fixed threshold {prag_fix:.2f} vs adaptive {prag_adapt:.2f} "
-                f"(vol_1h {vol:.2f}% x k={k_re}) → {verdict}"
-            )
-        except Exception as e:  # noqa: BLE001 — observational
-            self._log_msg(f"  [SHADOW] calculation error ({e}) — ignored")
-
     def _effective_reentry_drop_pct(self) -> tuple[float, str]:
         """Return the effective adaptive or fixed reentry threshold."""
         if not getattr(self.p, "reentry_adaptive", False):

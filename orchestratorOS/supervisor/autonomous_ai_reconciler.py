@@ -45,7 +45,6 @@ from orchestratorOS.lib.technical_repair_ssot import (
     _resolve_repair_json_reader,
     apply_code_patch_safely,
     apply_reconciliation_plan,
-    audit_workspace_configs,
     build_sensor_health_summary,
     default_supervisor_fallback_plan,
     execute_venue_or_fleet_repair_action,
@@ -54,9 +53,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     harvest_heartbeats_and_state_files,
     harvest_log_anomalies_from_dirs,
     is_bot_or_code_error_report,
-    is_error_report,
     is_system_os_error_report,
-    normalize_error_signature,
     parse_supervisor_config,
     persist_supervisor_audit_artifact,
     read_json_recovering,
@@ -214,31 +211,6 @@ class AutonomousAIReconciler:
             persist=persist,
         )
 
-    def read_sensors_telemetry(
-        self,
-        *,
-        include_fleet: bool = False,
-        include_market_portfolio: bool = True,
-        asset_scope: str = "all",
-    ) -> TelemetrySensorSnapshot:
-        """Read-only consumer entrypoint: populate `TelemetrySensorSnapshot` from `cachedb/` with 0 network calls and 0 disk writes."""
-        return self.harvest_sensors_telemetry(
-            include_fleet=include_fleet,
-            include_market_portfolio=include_market_portfolio,
-            asset_scope=asset_scope,
-            allow_network=False,
-            persist=False,
-        )
-
-    def _audit_workspace_configs(self) -> Dict[str, Any]:
-        """Audits workspace configuration files via the technical repair SSOT."""
-        return audit_workspace_configs(self.workspace_dir)
-
-    @staticmethod
-    def _normalize_error_signature(line: str) -> str:
-        """Strip timestamps, PIDs, and hex addresses so recurring log errors group into one signature."""
-        return normalize_error_signature(line)
-
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
         """Parses recent log files for errors, persistent unresolved exceptions, and guard vetoes."""
         hours = safe_pos_float(lookback_hours, default=self.lookback_hours) or self.lookback_hours
@@ -340,11 +312,6 @@ class AutonomousAIReconciler:
     def _is_system_os_error_report(cls, report: SupervisorAuditReport) -> bool:
         """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
         return is_system_os_error_report(report)
-
-    @classmethod
-    def _is_error_report(cls, report: SupervisorAuditReport) -> bool:
-        """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
-        return is_error_report(report)
 
     def dispatch_notification(
         self,

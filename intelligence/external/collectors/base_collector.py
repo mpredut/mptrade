@@ -223,22 +223,10 @@ class TelemetryCacheCollectorInterface(ABC):
         return not bool(self.start_sync)
 
     @staticmethod
-    def resolve_reader(read_json_fn: Any = None) -> Any:
-        from intelligence.sentiment.collectors.microstructure_collector import _resolve_read_json_cached
-
-        return _resolve_read_json_cached(read_json_fn)
-
-    @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
         from intelligence.sentiment.evaluators.price_series_evaluator import resolve_asset_session_policy
 
         return resolve_asset_session_policy(symbol)
-
-    @staticmethod
-    def candidate_cache_paths(cachedb_dir: str, rel_name: str, subdirs: Tuple[str, ...] = ("price",)) -> List[str]:
-        from intelligence.sentiment.collectors.microstructure_collector import _cand_cache_paths
-
-        return _cand_cache_paths(cachedb_dir, rel_name, subdirs=subdirs)
 
     @abstractmethod
     def collect(self, cachedb_dir: str, symbol: str = "", **kwargs: Any) -> Any:
@@ -250,14 +238,6 @@ class TelemetryCacheCollectorInterface(ABC):
         call_kwargs.setdefault("allow_network", False)
         call_kwargs.setdefault("persist", False)
         call_kwargs.setdefault("ensure_fresh", False)
-        return self.collect(cachedb_dir, symbol, **call_kwargs)
-
-    def refresh_snapshot(self, cachedb_dir: str = "cachedb", symbol: str = "", **kwargs: Any) -> Any:
-        """Producer entrypoint: collect live state and persist updated artifacts to cachedb."""
-        call_kwargs = dict(kwargs)
-        call_kwargs.setdefault("allow_network", True)
-        call_kwargs.setdefault("persist", True)
-        call_kwargs.setdefault("ensure_fresh", True)
         return self.collect(cachedb_dir, symbol, **call_kwargs)
 
 
@@ -446,25 +426,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return self._invoke_fetch_with_cache_dir(
             symbol_or_cache_dir, symbol, allow_network=False, now=now, kwargs=kwargs
         )
-
-    def refresh_snapshot(
-        self,
-        symbol_or_cache_dir: str = "cachedb",
-        symbol: Optional[str] = None,
-        *,
-        now: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Optional[Any]:
-        """Producer accessor: fetch live snapshot from external venue and persist to disk cache."""
-        return self._invoke_fetch_with_cache_dir(
-            symbol_or_cache_dir, symbol, allow_network=True, now=now, kwargs=kwargs
-        )
-
-    @classmethod
-    def disk_prefix(cls) -> str:
-        """Return the canonical filename prefix (e.g. ``'orderbook_depth_'``) for this collector."""
-        pfx = str(getattr(cls, "_DISK_FILE_PREFIX", "") or "").strip()
-        return f"{pfx}_" if pfx and not pfx.endswith("_") else pfx
 
     def collect(
         self,

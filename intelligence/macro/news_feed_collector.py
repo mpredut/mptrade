@@ -818,19 +818,5 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
             cachedb_dir, force_refresh=False, now_ts=now_ts, allow_network=False
         )
 
-    def refresh_snapshot(
-        self,
-        cachedb_dir: str = "cachedb",
-        symbol: str = "*",
-        *,
-        force_refresh: bool = True,
-        now_ts: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Optional[NewsFeedSnapshot]:
-        """Producer entrypoint: fetch RSS feeds over network and persist aggregated history to disk."""
-        return self._invoke_fetch_with_cache_dir(
-            cachedb_dir, force_refresh=force_refresh, now_ts=now_ts, allow_network=True
-        )
-
 
 TelemetryCollectorFactory.register(NewsFeedCollector.COLLECTOR_ID, NewsFeedCollector)

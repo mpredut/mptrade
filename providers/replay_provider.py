@@ -219,10 +219,6 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._last_ts[sym] = ts
         return price
 
-    def has_more(self, symbol: str) -> bool:
-        sym = self._resolve_symbol(symbol)
-        return self._cursor.get(sym, 0) < len(self._series.get(sym, []))
-
     def now(self, symbol: Optional[str] = None) -> float:
         """Return the timestamp of the most recently read replay price."""
         if symbol is not None:

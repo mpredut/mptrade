@@ -466,15 +466,6 @@ class HLClient:
                 return tot
         return 0.0
 
-    def spot_balance(self, token: str) -> float:
-        """Return the held quantity of a spot token such as HYPE or USDC.
-        Return 0.0 when absent or after a logged API error."""
-        try:
-            return self.spot_balance_strict(token)
-        except Exception as e:  # noqa: BLE001
-            log(f"  ! spot_balance({token}) failed: {e}")
-        return 0.0
-
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():

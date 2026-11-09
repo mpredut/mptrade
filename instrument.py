@@ -1373,10 +1373,6 @@ class Instrument:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
         return InstrumentSpec.parse_param(self.params, consumer, key, default=default, cast=cast)
 
-    def resolve_live_price(self, cache_dir: str = "cachedb") -> float:
-        """Fetch live market price from the bound provider or ``cachedb`` fallbacks."""
-        return resolve_instrument_live_price(self, cache_dir=cache_dir)
-
     def __repr__(self) -> str:
         return f"<Instrument {self.name} {self.symbol}@{self.provider_name} {'on' if self.enabled else 'off'}>"
 

@@ -1590,24 +1590,6 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
         super().__init__(start_sync=start_sync)
         _ensure_cacheprice_classes_bound()
 
-    @property
-    def order_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheOrderManager
-
-    @property
-    def trade_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheTradeManager
-
-    @property
-    def asset_value_cache_cls(self) -> Any:
-        _ensure_cacheprice_classes_bound()
-        return _mc.CacheAssetValueManager
-
-    def order_cache_files(self) -> Tuple[Tuple[str, str], ...]:
-        return _resolve_order_cache_files()
-
 
 class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
     """Concrete collector (Level 3) for Binance and Kraken trailing peak state maps."""
