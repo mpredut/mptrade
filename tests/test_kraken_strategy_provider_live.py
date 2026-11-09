@@ -13,12 +13,12 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_engine as strat  # noqa: E402
-from order_retry import SubmissionRefused  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
     ProviderError,
+    SubmissionRefused,
 )
 from providers.kraken_provider import KrakenProvider  # noqa: E402
 

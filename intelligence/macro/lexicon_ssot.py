@@ -592,6 +592,8 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "could steal the show",
     "is a great alternative for investors",
     "this software stock is",
+    "top money news",
+    "buries it in backyard",
     "big stock stories:",
     "likely to move the market in the next trading session",
     ": a guide",
