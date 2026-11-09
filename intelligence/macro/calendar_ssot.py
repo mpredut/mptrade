@@ -362,7 +362,16 @@ def resolve_macro_economic_calendar(
     live_macro_prints = parse_live_macro_release_surprises(breaking_news)
     macro_release_confirmed = bool(detected_macro_headlines) or bool(live_macro_prints)
     has_fomc_headline = any(
-        any(k in h.lower() for k in ("fomc", "fed rate", "interest rate decision", "fed minutes", "powell"))
+        any(
+            k in h.lower()
+            for k in (
+                "fomc minutes",
+                "fed minutes",
+                "fomc rate decision",
+                "fed rate decision",
+                "interest rate decision",
+            )
+        )
         for h in detected_macro_headlines
     )
 

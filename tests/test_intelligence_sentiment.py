@@ -1999,11 +1999,15 @@ def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_
     assert surprises[0]["prior"] == "3.2%"
     assert surprises[0]["stance"] == "HAWKISH_HEADWIND"
 
-    # 2. Non-FOMC day with CPI headline does not mislabel 21:00 EET window as FOMC Rate Decision
+    # 2. Non-FOMC day with CPI/Fed-rate-hike headline does not mislabel 21:00 EET window as FOMC Rate Decision
     # 2026-11-04 18:30 UTC = 20:30 EET (30m before 21:00 EET window, not an FOMC date)
     non_fomc_ts = datetime(2026, 11, 4, 18, 30, 0, tzinfo=timezone.utc).timestamp()
-    cal = resolve_macro_economic_calendar(now_ts=non_fomc_ts, breaking_news=["US CPI inflation rises 3.4%"])
-    assert "FOMC Rate Decision" not in (cal.get("next_event") or "")
+    cal = resolve_macro_economic_calendar(
+        now_ts=non_fomc_ts,
+        breaking_news=["Hot U.S. inflation hasn’t cooled off. Rising consumer prices to keep Fed rate hike on track."],
+    )
+    assert "FOMC Rate Decision" not in (cal.get("next_high_impact_event") or "")
+    assert "Afternoon Treasury Auction & Liquidity Window" in (cal.get("next_high_impact_event") or "")
 
     # 3. _infer_symbol_venue_and_fees_bps & sync_sibling_symbol_telemetry skip same-venue TAOUSDT and pair TAOUSDC with Kraken TAOUSD
     assert _infer_symbol_venue_and_fees_bps("TAOUSDT", {})[0] == "binance"
