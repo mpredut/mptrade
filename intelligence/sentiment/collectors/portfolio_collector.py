@@ -750,6 +750,19 @@ def _harvest_tradable_positions_and_orders_impl(
             px_f = safe_pos_float(px, default=0.0) or 0.0
             pos_bkey_cur = f"pos:{v_norm}:{sym}"
             prev_cached_pos = cached_bals.get(pos_bkey_cur) if isinstance(cached_bals.get(pos_bkey_cur), dict) else {}
+            if not allow_network:
+                if base_free is None and prev_cached_pos:
+                    base_free = safe_nonneg_float(
+                        prev_cached_pos.get("free_base")
+                        if prev_cached_pos.get("free_base") is not None
+                        else prev_cached_pos.get("free"),
+                        default=None,
+                    )
+                if quote_free is None:
+                    if prev_cached_pos and prev_cached_pos.get("free_quote") is not None:
+                        quote_free = safe_nonneg_float(prev_cached_pos.get("free_quote"), default=None)
+                    elif isinstance(c_cash := cached_bals.get(f"cash:{v_norm}:{quote.upper()}"), dict):
+                        quote_free = safe_nonneg_float(c_cash.get("free"), default=None)
             prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
             prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
             px_from_cached_pos = False

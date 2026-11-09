@@ -1138,6 +1138,43 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     assert daemon.geopolitical_analyzer.is_read_only_consumer() is False
     assert daemon.sentiment_advisor.is_read_only_consumer() is False
 
+    # 3. Border cases: PretradeTelemetrySnapshot age recomputation on later guard check + corrupted explicit telemetry
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetrySnapshot
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+
+    snap_t0 = PretradeTelemetrySnapshot.from_raw(
+        {"Orderbook Depth Imbalance": "0.58 (58% bids vs 42% asks)"},
+        symbol="BTCUSDC",
+        now_ts=1_750_000_000.0,
+        ts=1_750_000_000.0,
+    )
+    assert snap_t0.age_sec == 0.0
+    snap_t1 = PretradeTelemetrySnapshot.from_raw(snap_t0, symbol="BTCUSDC", now_ts=1_750_000_125.0)
+    assert snap_t1.age_sec == 125.0
+
+    guard = HighStakeGuard(
+        gemini_client=MagicMock(),
+        min_notional_eur=500.0,
+        fallback_action="veto",
+        mode="enforce",
+        cache_ttl_sec=0.0,
+    )
+    dec_corrupt = guard.check("BTCUSDC", "BUY", 65000.0, 0.02, notional_eur=1300.0, telemetry="corrupted", now=1_750_000_125.0)
+    assert dec_corrupt.allowed is False
+    assert dec_corrupt.metadata["telemetry_available"] is False
+
+    # MarketAndPortfolioSnapshotOrchestrator.read_snapshot with snapshot=None and tick-only cache_current_price.json
+    save_json_state(
+        os.path.join(temp_cache_dir, "cache_current_price.json"),
+        {"items": {"BTCUSDC": [[1_750_000_050_000, 65100.0]]}},
+    )
+    orch = TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=False)
+    auto_snap = orch.read_snapshot(temp_cache_dir, now_ts=1_750_000_100.0)
+    assert auto_snap.source == "cachedb_read_only"
+    assert auto_snap.ts == 1_750_000_050.0
+    assert auto_snap.age_sec == 50.0
+
+
 
 
 

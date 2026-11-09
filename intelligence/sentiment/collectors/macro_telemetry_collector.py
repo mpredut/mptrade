@@ -852,6 +852,12 @@ def _populate_market_and_portfolio_snapshot_impl(
     persist: bool = True,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
+    if snapshot is None:
+        from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
+
+        snapshot = TelemetrySensorSnapshot()
+    if not workspace_dir and cache_dir:
+        workspace_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
     now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
@@ -1109,6 +1115,19 @@ def _populate_market_and_portfolio_snapshot_impl(
     scope_label = str(scope or "all").strip().lower() or "all"
     snap_source = "cachedb_read_only" if not allow_network and not persist else "live_harvest"
     snap_ts = extract_timestamp_s(prices_data) if isinstance(prices_data, dict) else None
+    if snap_ts is None and isinstance(cur_p_items, dict):
+        cp_item_ts = [
+            ts_norm
+            for v_item in cur_p_items.values()
+            if isinstance(v_item, list)
+            and v_item
+            and isinstance(v_item[-1], (list, tuple))
+            and len(v_item[-1]) >= 2
+            and (ts_norm := normalize_epoch_sec(v_item[-1][0], default=None)) is not None
+            and ts_norm > 0.0
+        ]
+        if cp_item_ts:
+            snap_ts = max(cp_item_ts)
     if snap_ts is None:
         sensor_ts_candidates = [
             ts_v

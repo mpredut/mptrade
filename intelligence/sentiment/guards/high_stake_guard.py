@@ -240,23 +240,16 @@ class PreTradeLLMGuardBase:
             else self.max_telemetry_age_sec
         )
         enforce_fresh = eff_max_age is not None
-        if isinstance(snapshot, PretradeTelemetrySnapshot):
+        if snapshot is not None:
             return PretradeTelemetrySnapshot.from_raw(
                 snapshot,
                 symbol=symbol,
                 now_ts=now_ts,
+                source="explicit",
                 max_age_sec=eff_max_age,
                 enforce_freshness=enforce_fresh,
             )
-        if isinstance(telemetry, PretradeTelemetrySnapshot):
-            return PretradeTelemetrySnapshot.from_raw(
-                telemetry,
-                symbol=symbol,
-                now_ts=now_ts,
-                max_age_sec=eff_max_age,
-                enforce_freshness=enforce_fresh,
-            )
-        if isinstance(telemetry, Mapping):
+        if telemetry is not None:
             return PretradeTelemetrySnapshot.from_raw(
                 telemetry,
                 symbol=symbol,

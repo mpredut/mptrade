@@ -138,6 +138,8 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         """True when snapshot is not marked unavailable and age is within ``max_age_sec``."""
         if self.unavailable_reason:
             return False
+        if self.enforce_freshness and not self.data:
+            return False
         if self.age_sec is None:
             return not self.enforce_freshness
         return 0.0 <= self.age_sec <= self.max_age_sec
@@ -230,7 +232,12 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         eff_now = resolve_now_ts(now_ts)
         eff_max_age = safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC) or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
         if isinstance(raw, cls):
-            if max_age_sec is None and not enforce_freshness and unavailable_reason is None:
+            if (
+                max_age_sec is None
+                and not enforce_freshness
+                and unavailable_reason is None
+                and (now_ts is None or abs(eff_now - raw.evaluated_at_ts) < 1e-6)
+            ):
                 return raw
             snap_ts = raw.ts
             snap_age = max(0.0, eff_now - snap_ts) if snap_ts > 0.0 else raw.age_sec
@@ -569,8 +576,8 @@ def _resolve_pretrade_live_price_and_vb_ts(
         raw_cp = casefold_get(cur_p_items, cand)
         if (px_v := extract_current_price_item(raw_cp)) is not None and px_v > 0.0:
             live_cur_px = px_v
-            if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None and cp_pt[0] > 1e11:
-                cp_ts_sec = cp_pt[0] / 1000.0
+            if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None:
+                cp_ts_sec = normalize_epoch_sec(cp_pt[0], default=0.0) or 0.0
             break
     vb_pos_ts = 0.0
     vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
@@ -1925,7 +1932,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             ctx.is_eq_sym,
             allow_network=eff_allow_net,
         )
-        last_s24_ts = (ctx.last_alt_pt[0] / 1000.0) if (ctx.last_alt_pt is not None and ctx.last_alt_pt[0] > 1e11) else 0.0
+        last_s24_ts = (normalize_epoch_sec(ctx.last_alt_pt[0], default=0.0) or 0.0) if ctx.last_alt_pt is not None else 0.0
         best_px_ts = max(ctx.cp_ts_sec, ctx.vb_pos_ts, last_s24_ts)
         if ctx.m24 or ctx.live_cur_px:
             ctx.record_pillar_source("price_series_24h", "cachedb", best_px_ts)

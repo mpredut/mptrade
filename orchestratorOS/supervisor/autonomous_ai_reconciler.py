@@ -193,7 +193,7 @@ class AutonomousAIReconciler:
             )
         if not include_market_portfolio:
             snapshot.snapshot_id = f"sensors_only:{scope}:{int(round(now_ts * 1000.0))}"
-            snapshot.source = "cachedb_read_only"
+            snapshot.source = "cachedb_read_only" if not allow_network and not persist else "live_harvest"
             snapshot.asset_scope = scope
             snapshot.ts = now_ts
             snapshot.evaluated_at_ts = now_ts
