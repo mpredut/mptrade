@@ -900,6 +900,14 @@ class TrendCoordinator:
             except Exception as _e:  # noqa: BLE001
                 print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
 
+        ts_small = self.trend_states[symbol]
+        ts_big = self.trend_states_big[symbol]
+        prev_attempts = (
+            getattr(ts_small, "_last_attempt_up_ts", None),
+            getattr(ts_small, "_last_attempt_down_ts", None),
+            getattr(ts_big, "_last_attempt_up_ts", None),
+            getattr(ts_big, "_last_attempt_down_ts", None),
+        )
         prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
         snapshot = handle_symbol(
             symbol, current_price,
@@ -907,12 +915,19 @@ class TrendCoordinator:
             win_big,
             analyzer,
             analyzer_big,
-            self.trend_states[symbol], self.trend_states_big[symbol],
+            ts_small, ts_big,
             regime_ctx=regime_ctx,
         )
         cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
+        cur_attempts = (
+            getattr(ts_small, "_last_attempt_up_ts", None),
+            getattr(ts_small, "_last_attempt_down_ts", None),
+            getattr(ts_big, "_last_attempt_up_ts", None),
+            getattr(ts_big, "_last_attempt_down_ts", None),
+        )
         handle_placed_order = bool(
-            cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot
+            (cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot)
+            or cur_attempts != prev_attempts
         )
         with self._lock:
             self._dirty[symbol] = False

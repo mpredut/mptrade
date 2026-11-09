@@ -123,7 +123,7 @@ class T212Provider(MarketDataProvider):
             lookup_by_client_order_id=False,
             status_by_order_id=True,
             cancel_by_order_id=True,
-            list_open_orders=False,
+            list_open_orders=True,
         )
 
     def supports_symbol(self, symbol: str) -> bool:

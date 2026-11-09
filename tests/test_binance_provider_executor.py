@@ -235,7 +235,7 @@ EXPECTED_RECONCILIATION = {
     "kraken": OrderReconciliationCapabilities(False, True, True, True),
     "hyperliquid": OrderReconciliationCapabilities(True, True, True, True),
     "binance": OrderReconciliationCapabilities(True, True, True, True, 90 * 24 * 60 * 60),
-    "trading212": OrderReconciliationCapabilities(False, True, True, False),
+    "trading212": OrderReconciliationCapabilities(False, True, True, True),
 }
 
 

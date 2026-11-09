@@ -1046,4 +1046,97 @@ def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_late
     assert engine.s["cost"] == pytest.approx(120.0 + 0.9 * 112.0)
 
 
+def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
+    from providers.t212_provider import T212Provider
+    import order_retry as oq
+    import binance_api.bapi as bapi_mod
+
+    # 1) B10: _reconcile_venue_ledger infers "SL" when external close is below avg_cost, "TP" otherwise
+    eng_loss, exec_loss = positioned()
+    eng_loss.s.update(qty=1.0, cost=100.0, spent=100.0, ledger_reconcile_required=True)
+    exec_loss.free_balance = lambda _base: 0.0
+    assert eng_loss._reconcile_venue_ledger(92.0, 1700000300.0, True) is True
+    assert eng_loss.s["last_exit_kind"] == "SL"
+
+    eng_gain, exec_gain = positioned()
+    eng_gain.s.update(qty=1.0, cost=100.0, spent=100.0, ledger_reconcile_required=True)
+    exec_gain.free_balance = lambda _base: 0.0
+    assert eng_gain._reconcile_venue_ledger(108.0, 1700000300.0, True) is True
+    assert eng_gain.s["last_exit_kind"] == "TP"
+
+    # 2) B6: _resolve_intent_execution_details preserves full order notional on PARTIALLY_FILLED
+    intent = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "clamped_notional_usd": 100.0,
+        "limit_price": 80000.0,
+        "execution_payload": {
+            "orderId": "555",
+            "status": "PARTIALLY_FILLED",
+            "price": "80000.0",
+            "origQty": "0.00125",
+            "executedQty": "0.00025",
+            "cummulativeQuoteQty": "20.0",
+        },
+    }
+    details = _resolve_intent_execution_details(intent, 1700000300.0, lambda d, default=None: default)
+    assert details["exec_status"] == "PARTIALLY_FILLED"
+    assert details["filled_notional_usd"] == 20.0
+    assert details["notional_usd"] == 100.0
+
+    # 3) B6(b): cancel_existing_ai_open_orders cleans order_retry even if open_orders() returns None
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(l_file))
+    rid = oq.enqueue("BTCUSDC", "BUY", 0.001, {"owner": "ai_gateway"}, requested_price=80000.0, now=1000.0)
+    assert rid is not None
+    fake_inst = SimpleNamespace(symbol="BTCUSDC", open_orders=lambda: None, cancel_order=lambda _oid: True)
+    cancel_existing_ai_open_orders(fake_inst, "BUY", [])
+    assert oq.load_all() == []
+
+    # 4) B7: T212Provider declares list_open_orders=True
+    assert T212Provider().reconciliation_capabilities().list_open_orders is True
+
+    # 5) B8: order_retry.enqueue RETRY_DEDUP shifts ttl_started_ts when prev_attempts > 0
+    monkeypatch.setattr(oq, "RETRY_DEDUP", True)
+    r_dedup = oq.enqueue(
+        "ETHUSDC", "BUY", 0.1, {}, requested_price=3000.0,
+        now=1000.0, created_ts=1000.0, attempts=1, last_attempt_ts=1010.0,
+        failure_reason="trend_deferred",
+    )
+    recs = oq.load_all()
+    recs[0]["safe_to_discard"] = True
+    oq.rewrite(recs)
+    oq.enqueue(
+        "ETHUSDC", "BUY", 0.1, {}, requested_price=3005.0,
+        now=1050.0, created_ts=1000.0, attempts=1, last_attempt_ts=1050.0,
+        failure_reason="network_timeout",
+    )
+    updated_rec = oq.get(r_dedup)
+    assert updated_rec["ttl_started_ts"] == pytest.approx(1000.0 + (1050.0 - 1010.0))
+
+    # 6) B11: bapi.cancel_expired_orders increments count only when _cancel_and_resolve succeeds
+    monkeypatch.setattr(bapi_mod.sym, "validate_params", lambda _t, _s: None)
+    monkeypatch.setattr(
+        bapi_mod,
+        "get_open_orders",
+        lambda _t, _s, allowed_owners=None: {
+            "101": {"time": 1000},
+            "102": {"time": 1000},
+        },
+    )
+    monkeypatch.setattr(bapi_mod, "_cancel_and_resolve", lambda _s, oid: oid == "101")
+    out_buf = []
+    monkeypatch.setattr("builtins.print", lambda *a, **_k: out_buf.append(" ".join(str(x) for x in a)))
+    bapi_mod.cancel_expired_orders("BUY", "BTCUSDC", 10.0)
+    assert any("Cancelled 1 orders" in line for line in out_buf)
+
+
+
 

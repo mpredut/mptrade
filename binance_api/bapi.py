@@ -312,9 +312,9 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
         if order_time > 0 and current_time - order_time > expire_val:
             if _cancel_and_resolve(symbol, order_id):
                 print(f"Cancelled {order_type} order with ID: {order_id} due to expiration.")
+                count += 1
             else:
                 print("Needs cancel because expiration!")
-            count += 1
     print(f"Cancelled {count} orders")
 
 

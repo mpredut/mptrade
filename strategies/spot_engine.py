@@ -1349,6 +1349,9 @@ class Strategy(BaseSpotMixin):
         if ledger_qty <= tolerance:
             if held > 1e-12:
                 log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
+                prev_cost = _clean_nonneg_float(self.s.get("cost")) or 0.0
+                prev_avg = (prev_cost / held) if (held > 0 and prev_cost > 0) else 0.0
+                inferred_exit_kind = "SL" if (prev_avg > 0 and price < prev_avg) else "TP"
                 defaults = _new_state()
                 for k in (
                     "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
@@ -1358,7 +1361,7 @@ class Strategy(BaseSpotMixin):
                     "sl_episode_state", "tp_ride_state", "reentry_state",
                 ):
                     self.s[k] = defaults[k]
-                self._seed_post_exit_anchors(price, "TP", clean_ts if clean_ts is not None else self._now())
+                self._seed_post_exit_anchors(price, inferred_exit_kind, clean_ts if clean_ts is not None else self._now())
                 self.s["ledger_reconcile_required"] = False
                 self._save()
             else:

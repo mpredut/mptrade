@@ -924,14 +924,17 @@ def _resolve_intent_execution_details(
     exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
     hist = i.get("history") if isinstance(i.get("history"), list) else []
     last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
-    eff_notional = (
+    exec_quote_notional = (
         safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
         or safe_pos_float(exec_pay.get("cost"), default=None)
         or safe_pos_float(exec_pay.get("filledValue"), default=None)
-        or safe_pos_float(i.get("clamped_notional_usd"), default=None)
+    )
+    intent_order_notional = (
+        safe_pos_float(i.get("clamped_notional_usd"), default=None)
         or safe_pos_float(last_hist.get("notional_usd"), default=None)
         or extract_notional_fn(i, default=None)
     )
+    eff_notional = exec_quote_notional or intent_order_notional
     ts_raw: Any = None
     ts_val = 0.0
     for _tk in ("timestamp", "executed_at", "executed_ts", "created_at", "ts"):
@@ -1209,11 +1212,21 @@ def _resolve_intent_execution_details(
         )
         if raw_fail_reason:
             fail_reason = " ".join(str(raw_fail_reason).split())[:200] or None
-    filled_notional_usd = (
-        round(eff_qty * fill_px, 2)
-        if exec_status == "PARTIALLY_FILLED" and eff_qty is not None and eff_qty > 0 and fill_px is not None and fill_px > 0
-        else None
-    )
+    filled_notional_usd: Optional[float] = None
+    if exec_status == "PARTIALLY_FILLED":
+        raw_filled_notional = exec_quote_notional or (
+            (eff_qty * fill_px)
+            if (eff_qty is not None and eff_qty > 0 and fill_px is not None and fill_px > 0)
+            else None
+        )
+        if raw_filled_notional is not None and raw_filled_notional > 0:
+            filled_notional_usd = round(raw_filled_notional, 2)
+        orig_order_px = limit_px or fill_px or ref_px
+        eff_notional = (
+            intent_order_notional
+            or ((orig_qty * orig_order_px) if (orig_qty is not None and orig_order_px is not None) else None)
+            or exec_quote_notional
+        )
     return {
         "venue": venue,
         "symbol": symbol,
@@ -2143,41 +2156,40 @@ def cancel_existing_ai_open_orders(
     ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
     try:
         raw_open = open_fn()
-        if not isinstance(raw_open, list):
-            return canceled_ids
-        for oo in raw_open:
-            if not isinstance(oo, dict):
-                continue
-            oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
-            if not any_side and oo_side != want_side:
-                continue
-            oid = extract_order_id(oo, default="")
-            if oid and str(oid) in excluded:
-                continue
-            is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
-            if not is_ai_order and not include_bot_orders:
-                continue
-            if oid:
-                try:
-                    if cancel_fn(str(oid)) is False:
+        if isinstance(raw_open, list):
+            for oo in raw_open:
+                if not isinstance(oo, dict):
+                    continue
+                oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
+                if not any_side and oo_side != want_side:
+                    continue
+                oid = extract_order_id(oo, default="")
+                if oid and str(oid) in excluded:
+                    continue
+                is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+                if not is_ai_order and not include_bot_orders:
+                    continue
+                if oid:
+                    try:
+                        if cancel_fn(str(oid)) is False:
+                            if log:
+                                log.warning(
+                                    "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
+                                    oid, getattr(inst, "symbol", ""),
+                                )
+                            continue
+                        canceled_ids.append(str(oid))
                         if log:
-                            log.warning(
-                                "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
-                                oid, getattr(inst, "symbol", ""),
+                            log.info(
+                                "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
+                                "AI" if is_ai_order else "BOT",
+                                oo_side or side,
+                                oid,
+                                getattr(inst, "symbol", ""),
                             )
-                        continue
-                    canceled_ids.append(str(oid))
-                    if log:
-                        log.info(
-                            "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
-                            "AI" if is_ai_order else "BOT",
-                            oo_side or side,
-                            oid,
-                            getattr(inst, "symbol", ""),
-                        )
-                except Exception as ce:
-                    if log:
-                        log.debug("Could not cancel open order %s: %s", oid, ce)
+                    except Exception as ce:
+                        if log:
+                            log.debug("Could not cancel open order %s: %s", oid, ce)
     except Exception as e:
         if log:
             log.debug("Open order scan failed before replacement: %s", e)

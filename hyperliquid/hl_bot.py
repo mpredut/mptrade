@@ -68,9 +68,7 @@ def main() -> int:
     observe_only = bool_env("HL_BOT_OBSERVE_ONLY", False)
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()
-        single_instance(f"hl_bot_{args.test_strategy.strip()}")
-    elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
-        single_instance(f"hl_bot_{token}")   # one instance per token
+    single_instance(f"hl_bot_{token}")   # one instance per token
 
     provider = AuditedStrategyExecutor(
         HyperliquidProvider(token=token), venue="Hyperliquid",

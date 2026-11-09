@@ -586,14 +586,17 @@ def enqueue(
                     e["prefix"] = pfx
                     e["place_kwargs"] = refreshed_kwargs
                     e["created_ts"] = min(safe_pos_float(e.get("created_ts"), default=cts) or cts, cts)
-                    e["attempts"] = max(safe_nonneg_int(e.get("attempts"), default=0) or 0, int(attempts))
+                    prev_attempts = max(0, _rev_int(e.get("attempts"), 0))
+                    prev_last_ts = safe_pos_float(e.get("last_attempt_ts"), default=None)
+                    e["attempts"] = max(prev_attempts, int(attempts))
                     e["last_attempt_ts"] = max(
                         safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0, float(last_attempt_ts)
                     )
                     previous_reason = e.get("last_failure_reason")
                     next_reason = str(failure_reason) if failure_reason is not None else None
-                    if is_non_failure_deferral(previous_reason) and not is_non_failure_deferral(next_reason):
-                        e["ttl_started_ts"] = now
+                    _shift_ttl_after_deferral(
+                        e, previous_reason, next_reason, prev_attempts, prev_last_ts, now,
+                    )
                     e["last_failure_reason"] = next_reason
                     e["provider_name"] = None if provider_name is None else str(provider_name)
                     e["intent_id"] = str(intent_id or e.get("intent_id") or f"outbox-{e.get('id', record_id)}")
