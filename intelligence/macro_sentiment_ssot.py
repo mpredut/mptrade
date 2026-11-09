@@ -41,27 +41,17 @@ if TYPE_CHECKING:
 
 from botcore import (
     _parse_bool_flag,
-    check_cooldown_gate,
     clean_scale,
     fetch_public_json,
-    is_cache_fresh,
-    is_interval_due,
     load_ini_config,
     normalize_epoch_sec,
-    normalize_side,
     obj_attr,
-    obj_float,
     parse_symbol_list,
     resolve_now_ts,
-    resolve_order_notional,
     resolve_patched_attr,
     safe_float,
     safe_int,
-    safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
-    safe_nonneg_ts,
     safe_pos_float,
-    safe_thresh,
-    sanitize_heartbeat_status,
     split_csv,
 )
 from cachepaths import (

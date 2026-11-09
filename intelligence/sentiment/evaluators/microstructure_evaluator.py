@@ -6,7 +6,10 @@ import os
 from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import is_live_network_backfill_enabled
+from botcore import (
+    is_live_network_backfill_enabled,
+    safe_nonneg_float,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -21,7 +24,6 @@ from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
-    safe_nonneg_float,
     safe_pos_float,
     scan_latest_long_trend_value,
 )

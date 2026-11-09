@@ -8,10 +8,17 @@ import time as _time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import is_live_network_backfill_enabled
+from botcore import (
+    is_live_network_backfill_enabled,
+    safe_nonneg_float,
+)
 from cachepaths import cache_path, canonical_base_asset
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
-from intelligence.macro_sentiment_ssot import normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
+from intelligence.macro_sentiment_ssot import (
+    normalize_epoch_sec,
+    safe_float,
+    safe_pos_float,
+)
 from state_io import read_json_recovering, save_json_state
 
 KalmanTrend: Any = None

@@ -27,6 +27,7 @@ from botcore import (
     obj_attr,
     parse_dotenv,
     resolve_now_ts,
+    resolve_order_notional,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -52,7 +53,6 @@ from guard_hierarchy import (
 )
 from intelligence.macro_sentiment_ssot import (
     lookup_symbol_cache_items,
-    resolve_order_notional,
     scan_latest_long_trend_value,
 )
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext

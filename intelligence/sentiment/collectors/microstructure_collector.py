@@ -13,6 +13,7 @@ from botcore import (
     is_live_network_backfill_enabled,
     load_dotenv,
     load_local_module,
+    safe_nonneg_float,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,
@@ -99,7 +100,6 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     resolve_read_json_cached,
     safe_float,
-    safe_nonneg_float,
     safe_pos_float,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (

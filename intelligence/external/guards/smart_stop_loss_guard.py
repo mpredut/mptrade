@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    check_cooldown_gate,
     clean_scale,
     load_dotenv,
     normalize_epoch_sec,
@@ -45,7 +46,6 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_mode,
     resolve_hierarchical_guard_mode,
 )
-from intelligence.macro_sentiment_ssot import check_cooldown_gate
 from state_io import read_json_dict_cached, save_json_state
 
 load_dotenv()

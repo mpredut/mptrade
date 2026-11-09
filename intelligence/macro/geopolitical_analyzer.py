@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot
+from botcore import safe_nonneg_ts
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,
@@ -18,7 +19,6 @@ from intelligence.macro_sentiment_ssot import (
     obj_attr,
     resolve_now_ts,
     safe_int,
-    safe_nonneg_ts,
     split_headlines_digest,
 )
 from intelligence.macro.lexicon_ssot import (

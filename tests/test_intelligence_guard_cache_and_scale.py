@@ -16916,10 +16916,12 @@ def test_iteration181_guard_ssot_helpers_and_cached_qlimit2_delegation():
 
 def test_iteration182_ssot_interval_notional_headline_digest_and_smart_sl_helpers():
     from types import SimpleNamespace
-    from intelligence.macro_sentiment_ssot import (
-        extract_high_severity_headlines_and_digest,
+    from botcore import (
         is_interval_due,
         resolve_order_notional,
+    )
+    from intelligence.macro_sentiment_ssot import (
+        extract_high_severity_headlines_and_digest,
     )
     from intelligence.external.guards.smart_stop_loss_guard import (
         _format_price_part,

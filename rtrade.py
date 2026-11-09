@@ -14,7 +14,6 @@ import cacheManager as cm
 import external_order_guard as eog
 import utils as u
 from binance_api import bapi as api
-from binance_api import bapi_placeorder as po
 from botcore import (
     _parse_bool_flag,
     exact_int,

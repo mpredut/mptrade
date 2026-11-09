@@ -9,7 +9,16 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
-from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_nonneg_int, safe_pos_int
+from botcore import (
+    _parse_bool_flag,
+    exact_pos_int,
+    required_bool_env,
+    required_float_env,
+    required_int_env,
+    safe_float,
+    safe_nonneg_int,
+    safe_pos_int,
+)
 from state_io import read_bytes_file, read_text_file
 from technical_repair_ssot import fleet_script_basenames
 
@@ -17,16 +26,16 @@ ROOT = wc.ROOT
 STATE_FILE = ROOT / ".resource_watchdog_state.json"
 wc.load_env()
 
-CPU_THRESHOLD = wc.required_float_env("RESOURCE_CPU_THRESHOLD_PCT")
-MEMORY_THRESHOLD_MB = wc.required_float_env("RESOURCE_MEMORY_THRESHOLD_MB")
-CONSECUTIVE = wc.required_int_env("RESOURCE_CONSECUTIVE_CHECKS")
-RECOVERY_CHECKS = wc.required_int_env("RESOURCE_RECOVERY_CHECKS")
-COOLDOWN_MIN = wc.required_float_env("RESOURCE_ALERT_COOLDOWN_MINUTES")
-CHECK_INTERVAL_MIN = wc.required_float_env("RESOURCE_CHECK_INTERVAL_MINUTES")
-AUTO_RESTART = wc.required_bool_env("RESOURCE_AUTO_RESTART")
-RESTART_COOLDOWN_MIN = wc.required_float_env("RESOURCE_RESTART_COOLDOWN_MINUTES")
-RESTART_MAX = wc.required_int_env("RESOURCE_RESTART_MAX")
-RESTART_WINDOW_H = wc.required_float_env("RESOURCE_RESTART_WINDOW_HOURS")
+CPU_THRESHOLD = required_float_env("RESOURCE_CPU_THRESHOLD_PCT")
+MEMORY_THRESHOLD_MB = required_float_env("RESOURCE_MEMORY_THRESHOLD_MB")
+CONSECUTIVE = required_int_env("RESOURCE_CONSECUTIVE_CHECKS")
+RECOVERY_CHECKS = required_int_env("RESOURCE_RECOVERY_CHECKS")
+COOLDOWN_MIN = required_float_env("RESOURCE_ALERT_COOLDOWN_MINUTES")
+CHECK_INTERVAL_MIN = required_float_env("RESOURCE_CHECK_INTERVAL_MINUTES")
+AUTO_RESTART = required_bool_env("RESOURCE_AUTO_RESTART")
+RESTART_COOLDOWN_MIN = required_float_env("RESOURCE_RESTART_COOLDOWN_MINUTES")
+RESTART_MAX = required_int_env("RESOURCE_RESTART_MAX")
+RESTART_WINDOW_H = required_float_env("RESOURCE_RESTART_WINDOW_HOURS")
 
 if not all(
     v > 0

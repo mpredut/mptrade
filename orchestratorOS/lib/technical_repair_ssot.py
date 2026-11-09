@@ -23,7 +23,6 @@ from botcore import (
     _parse_bool_flag,
     build_heartbeat_payload,
     clean_json_value,
-    evaluate_heartbeat_files_freshness,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,

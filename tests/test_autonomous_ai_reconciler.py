@@ -2141,10 +2141,8 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert "CONFIG_ERROR" in ALL_DIAGNOSED_CATEGORIES
 
     # Heartbeat freshness evaluation and fleet sensor status SSOT
-    from orchestratorOS.lib.technical_repair_ssot import (
-        evaluate_heartbeat_files_freshness,
-        summarize_fleet_sensor_status,
-    )
+    from botcore import evaluate_heartbeat_files_freshness
+    from orchestratorOS.lib.technical_repair_ssot import summarize_fleet_sensor_status
     now_t = 1_700_000_000.0
     hb1 = tmp_path / "hb1.heartbeat"
     hb1.write_text("ok", encoding="utf-8")
@@ -2465,9 +2463,6 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert normalize_side("short") == "SELL"
     assert normalize_side("INVALID") == ""
     assert normalize_side("HOLD") == ""
-    from intelligence.macro_sentiment_ssot import normalize_side as ssot_normalize_side
-    assert ssot_normalize_side("INVALID") == ""
-    assert ssot_normalize_side("HOLD") == ""
     assert clean_guard_symbol_key("hype/usdc") == "HYPEUSDC"
     assert obj_attr({"x": 42}, "x") == 42
     assert safe_float("3.5", 0.0) == 3.5

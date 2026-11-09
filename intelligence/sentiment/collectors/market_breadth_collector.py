@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import canonical_base_asset
 from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
+from botcore import safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     get_breadth_excluded_bases,
@@ -17,7 +18,6 @@ from intelligence.macro_sentiment_ssot import (
     get_market_breadth_endpoint_url,
     resolve_now_ts,
     safe_float,
-    safe_nonneg_float,
 )
 
 from intelligence.external.collectors.base_collector import (
