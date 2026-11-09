@@ -9,6 +9,7 @@ from state_io import load_json_state
 import instrument_registry as sym
 from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
+from .bapi import _normalize_side
 from . import bapi_allorders as apiorders
 from providers.order_ohlc_utils import (
     extract_client_order_id,
@@ -48,8 +49,6 @@ trade_cache = []
 #######
 #######      get_my_trades     #######
 #######
-
-_normalize_side = api._normalize_side
 
 
 def _valid_fill_id(val):

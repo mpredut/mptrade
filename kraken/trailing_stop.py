@@ -42,7 +42,7 @@ from botcore import format_price_log  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
 
 from trailing_core import (  # noqa: E402
-    COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
+    COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     extract_trailing_intent_action_asset,
     load_trailing_common_env,
@@ -245,7 +245,7 @@ class KrakenTrailing(TrailingAdapterBase):
             held = self.total_qty(asset)
             if held is None or held <= 0.0:
                 return None
-            return self.executor.position_cost_basis(pair_norm or pair, held, _COST_BASIS_LOOKBACK_S)
+            return self.executor.position_cost_basis(pair_norm or pair, held, COST_BASIS_LOOKBACK_S)
         except Exception as e:  # noqa: BLE001
             self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
             return None

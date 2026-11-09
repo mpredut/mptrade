@@ -23,8 +23,8 @@ from strategies.spot_replay import align_spot_interval_params
 
 from offline.backtests.datasets import (
     dataset_metadata,
-    load_dataset as load_frozen_dataset,
-    save_dataset as save_frozen_dataset,
+    load_dataset,
+    save_dataset,
     validate_dataset,
 )
 from offline.backtests.evaluation import (
@@ -33,8 +33,8 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     load_layered_env_config,
     load_venue_module,
-    parse_dataset_specs as _parse_dataset_specs,
-    parse_intervals as _parse_intervals,
+    parse_dataset_specs,
+    parse_intervals,
 )
 
 _hl_md = load_venue_module("hyperliquid", "market_data.py", "hl_wf_md")
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         "--engine", choices=["spot", "perp"], default="spot",
         help="replay engine: 'spot' (default, matches live hl_bot.py spot engine) or 'perp' (legacy perpetuals engine)",
     )
-    parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
+    parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             strat_params = dataclasses.replace(strat_params, fee_pct=fee_pct)
 
     execution = build_execution_model_from_args(parser, args)
-    dataset_map = _parse_dataset_specs(args.dataset)
+    dataset_map = parse_dataset_specs(args.dataset)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         frozen_file = dataset_map.get(interval)
         if frozen_file:
             frozen_path = frozen_file
-            records = validate_dataset(load_frozen_dataset(frozen_file), interval_minutes=interval)
+            records = validate_dataset(load_dataset(frozen_file), interval_minutes=interval)
             source_label = f"frozen file: {frozen_file}"
         else:
             raw_candles = fetch_ohlc_candles(coin, interval, drop_incomplete=True)
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             records = validate_dataset(raw_candles, interval_minutes=interval)
             meta = dataset_metadata(records, interval_minutes=interval)
             frozen_path = output_dir / "datasets" / f"{coin}_{interval}m_{meta['sha256'][:12]}.csv"
-            save_frozen_dataset(records, frozen_path)
+            save_dataset(records, frozen_path)
             source_label = f"Hyperliquid API, frozen to {frozen_path}"
 
         if len(records) < 20:

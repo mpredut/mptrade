@@ -39,7 +39,7 @@ from common import (
 from providers.base import clean_order_id, normalize_scalar_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
-from strategies.state_store import safe_state_token as _safe_state_token
+from strategies.state_store import safe_state_token
 from hl_client import HLClient
 from market_data import get_price
 from signals import _normalize_signal_trend, get_signal
@@ -49,8 +49,8 @@ HL_FEE_PCT = required_float_env("HL_FEE_PCT")
 
 
 def state_path_for(coin: str, direction: str) -> str:
-    safe = _safe_state_token(coin, "unknown")
-    dir_safe = _safe_state_token(direction, "long", lower=True)
+    safe = safe_state_token(coin, "unknown")
+    dir_safe = safe_state_token(direction, "long", lower=True)
     return os.path.join(_HERE, f".state_{safe}_{dir_safe}.json")
 
 

@@ -25,6 +25,7 @@ from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_gu
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api
+from .bapi import _normalize_side
 from . import bapi_allorders as apiorders
 from .bapi_client import client
 from providers.order_ohlc_utils import (
@@ -127,9 +128,6 @@ class _AccountCacheSubmitPermit:
     def expires_at(self):
         """Expose monotonic expiry read-only for diagnostics and tests."""
         return self._scope.expires_at
-
-
-_normalize_side = api._normalize_side
 
 
 def _resolve_qty(qty):

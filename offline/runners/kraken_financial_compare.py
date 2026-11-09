@@ -31,7 +31,6 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file  # noq
 DEFAULT_BASELINE = (
     ROOT / "offline" / "research" / "hype_dataset" / "financial_baseline_v1.json"
 )
-_fmt = benchmark._format
 
 
 def _scenario_summary(report: dict) -> dict:
@@ -120,15 +119,15 @@ def markdown_report(report: dict) -> str:
             dd_wtl = risk["drawdown_wins_ties_losses"]
             calmar_delta = safe_float(risk["median_calmar_improvement_ratio"], default=None)
             calmar_pct_val = calmar_delta * 100.0 if calmar_delta is not None else None
-            calmar_fmt = benchmark._format(calmar_pct_val, signed=True)
+            calmar_fmt = benchmark.format_number(calmar_pct_val, signed=True)
             calmar_cell = f"{calmar_fmt}%" if calmar_fmt != "n/a" else "n/a"
             lines.append(
                 f"| `{name}` | `{scenario_name}` | "
-                f"{benchmark._format(aggregate['mean_return_pct'], signed=True)} | "
-                f"{benchmark._format(gate['mean_return_delta_pp'], signed=True)} | "
-                f"{benchmark._format(aggregate['worst_return_pct'], signed=True)} | "
-                f"{benchmark._format(gate['worst_return_delta_pp'], signed=True)} | "
-                f"{benchmark._format(gate['worst_drawdown_delta_pp'], signed=True)} | "
+                f"{benchmark.format_number(aggregate['mean_return_pct'], signed=True)} | "
+                f"{benchmark.format_number(gate['mean_return_delta_pp'], signed=True)} | "
+                f"{benchmark.format_number(aggregate['worst_return_pct'], signed=True)} | "
+                f"{benchmark.format_number(gate['worst_return_delta_pp'], signed=True)} | "
+                f"{benchmark.format_number(gate['worst_drawdown_delta_pp'], signed=True)} | "
                 f"{wtl['wins']}/{wtl['ties']}/{wtl['losses']} | "
                 f"{calmar_cell} | "
                 f"{dd_wtl['wins']}/{dd_wtl['ties']}/{dd_wtl['losses']} | "

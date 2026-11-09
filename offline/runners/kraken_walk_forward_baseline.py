@@ -29,8 +29,8 @@ from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
-    load_dataset as load_frozen_dataset,
-    save_dataset as save_frozen_dataset,
+    load_dataset,
+    save_dataset,
     validate_dataset,
 )
 from offline.backtests.evaluation import (  # noqa: E402
@@ -39,8 +39,8 @@ from offline.backtests.evaluation import (  # noqa: E402
     evaluate_spot_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     load_layered_env_config,
-    parse_dataset_specs as _parse_dataset_specs,
-    parse_intervals as _parse_intervals,
+    parse_dataset_specs,
+    parse_intervals,
     resolve_window_sizes,
 )
 from offline.backtests.execution import ExecutionModel  # noqa: E402
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=str(KRAKEN_DIR / ".env"))
     parser.add_argument("--config-file", default=str(KRAKEN_DIR / "config.env"))
     parser.add_argument("--pair", help="defaults to KRAKEN_PAIR from the live configuration")
-    parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
+    parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=0.26, help="fee per leg, procente")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     if not pair:
         parser.error("missing pair: --pair or KRAKEN_PAIR")
     params = StratParams.from_env(cfg)
-    supplied = _parse_dataset_specs(args.dataset)
+    supplied = parse_dataset_specs(args.dataset)
     output_dir = Path(args.output_dir).expanduser().resolve()
     dataset_dir = output_dir / "datasets"
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
@@ -142,14 +142,14 @@ def main(argv: list[str] | None = None) -> int:
 
     for interval in args.intervals:
         source = supplied.get(interval)
-        records = load_frozen_dataset(source) if source else fetch_closed_candles(pair, interval)
+        records = load_dataset(source) if source else fetch_closed_candles(pair, interval)
         if not records:
             raise RuntimeError(f"an empty dataset for {pair} {interval}m")
         records = validate_dataset(records, interval_minutes=interval)
         meta = dataset_metadata(records, interval_minutes=interval)
         digest = meta["sha256"]
         frozen_path = dataset_dir / f"{pair}_{interval}m_{digest[:12]}.csv"
-        save_frozen_dataset(records, frozen_path)
+        save_dataset(records, frozen_path)
         train_size, validation_size, test_size, step_size = resolve_window_sizes(
             args, len(records)
         )

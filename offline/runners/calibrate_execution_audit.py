@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_text_file  # noqa: E402
-from offline.backtests.comparison import format_number as _fmt  # noqa: E402
+from offline.backtests.comparison import format_number  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
 )
@@ -69,11 +69,11 @@ def markdown_report(report: dict, paths: list[Path]) -> str:
         item = report["summary"][name]
         lines.append(
             f"| {name} | {item['orders']} | {item['filled']} | "
-            f"{item['ever_partial']} | {_fmt(item['fee_bps']['p50'])} | "
-            f"{_fmt(item['fee_bps']['p95'])} | "
-            f"{_fmt(item['first_fill_latency_s']['p50'])} | "
-            f"{_fmt(item['final_fill_ratio']['p50'])} | "
-            f"{_fmt(item['market_execution_shortfall_bps']['p50'])} |"
+            f"{item['ever_partial']} | {format_number(item['fee_bps']['p50'])} | "
+            f"{format_number(item['fee_bps']['p95'])} | "
+            f"{format_number(item['first_fill_latency_s']['p50'])} | "
+            f"{format_number(item['final_fill_ratio']['p50'])} | "
+            f"{format_number(item['market_execution_shortfall_bps']['p50'])} |"
         )
     ready = report["calibration_readiness"]
     client_ids = report["client_order_id_validation"]

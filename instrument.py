@@ -28,7 +28,7 @@ from providers.execution_audit import ExecutionAudit
 from providers.quantity import (
     check_order_filter_refusal,
     extract_regime_buy_scale,
-    parse_scale_factor as _parse_scale_factor,
+    parse_scale_factor,
     resolve_assets,
     round_provider_qty,
 )
@@ -568,7 +568,7 @@ class Instrument:
                     reason = "medium_trend_deferred"
                     return None
                 elif medium_trend_action == "scale" and adverse_medium_trend and not is_monitor_replace:
-                    scale_factor = _parse_scale_factor(medium_trend_scale_cfg, default=0.5)
+                    scale_factor = parse_scale_factor(medium_trend_scale_cfg, default=0.5)
                     if scale_factor <= 0.0:
                         reason = "medium_trend_qty_zero"
                         return None

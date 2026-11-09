@@ -10917,11 +10917,11 @@ def test_iteration100_core_guard_hierarchy_qlimit_external_llm_and_order_guard_s
         "BTCUSDC", " s ", 100.0, margins={"intelligence_guards_mode": "off"}
     ) == (True, "intelligence_guards_off", 1.0)
 
-    # 4. llm_order_guard side normalization, bool rejection, and _clean_scale
-    assert llm_order_guard._clean_scale(True) == 1.0
-    assert llm_order_guard._clean_scale(float("nan")) == 1.0
-    assert llm_order_guard._clean_scale(-0.5) == 1.0
-    assert llm_order_guard._clean_scale(0.5) == pytest.approx(0.5)
+    # 4. llm_order_guard side normalization, bool rejection, and clean_scale
+    assert llm_order_guard.clean_scale(True) == 1.0
+    assert llm_order_guard.clean_scale(float("nan")) == 1.0
+    assert llm_order_guard.clean_scale(-0.5) == 1.0
+    assert llm_order_guard.clean_scale(0.5) == pytest.approx(0.5)
     assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", True) == (True, "not_buy_side", 1.0)
     assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", " s ") == (True, "not_buy_side", 1.0)
     assert llm_order_guard.check_geopolitical_order_guards(
@@ -16381,11 +16381,11 @@ def test_iteration172_order_guard_qlimit_external_and_llm_side_and_bool_hygiene(
     assert allowed_q is True and reason_q == "intelligence_guards_off"
     allowed_e, reason_e, scale_e = eog.check_external_order_guards("BTCUSDC", "ASK", 100.0, margins={"intelligence_guards_mode": "off"})
     assert allowed_e is True and reason_e == "intelligence_guards_off"
-    assert llog._normalize_side("BID") == "BUY"
-    assert llog._normalize_side("LONG") == "BUY"
-    assert llog._normalize_side("ASK") == "SELL"
-    assert llog._normalize_side("A") == "SELL"
-    assert llog._normalize_side("SHORT") == "SELL"
+    assert llog.normalize_side("BID") == "BUY"
+    assert llog.normalize_side("LONG") == "BUY"
+    assert llog.normalize_side("ASK") == "SELL"
+    assert llog.normalize_side("A") == "SELL"
+    assert llog.normalize_side("SHORT") == "SELL"
 
 
 def test_iteration173_position_exit_manager_spot_engine_and_monitortrades_hygiene():

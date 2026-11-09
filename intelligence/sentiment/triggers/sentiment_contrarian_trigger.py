@@ -9,7 +9,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     safe_float,
     safe_pos_float,
-    safe_thresh as _safe_thresh,
+    safe_thresh,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
@@ -26,8 +26,8 @@ class SentimentContrarianTrigger:
         extreme_fear_entry: int = 22,
         extreme_greed_exit: int = 85,
     ) -> None:
-        self.extreme_fear_entry = _safe_thresh(extreme_fear_entry, 22)
-        self.extreme_greed_exit = _safe_thresh(extreme_greed_exit, 85)
+        self.extreme_fear_entry = safe_thresh(extreme_fear_entry, 22)
+        self.extreme_greed_exit = safe_thresh(extreme_greed_exit, 85)
         if self.extreme_fear_entry > self.extreme_greed_exit:
             self.extreme_fear_entry, self.extreme_greed_exit = self.extreme_greed_exit, self.extreme_fear_entry
 

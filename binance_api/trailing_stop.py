@@ -49,7 +49,7 @@ from order_retry import (
 )
 
 from trailing_core import (  # noqa: E402
-    COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
+    COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     load_trailing_common_env,
     parse_trailing_cli_args,
@@ -249,7 +249,7 @@ class TrailingStop(TrailingAdapterBase):
             if free is None or locked is None:
                 return None
             return self.po.position_cost_basis(
-                pair_norm or pair, free + locked, _COST_BASIS_LOOKBACK_S, provider_name="binance")
+                pair_norm or pair, free + locked, COST_BASIS_LOOKBACK_S, provider_name="binance")
         except Exception as e:  # noqa: BLE001
             self.log(f"  [TRAIL] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
             return None

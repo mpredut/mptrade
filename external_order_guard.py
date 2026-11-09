@@ -21,7 +21,7 @@ import intelligence.external.guards.whale_divergence_guard as wdg
 from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
-    clean_scale as _clean_scale,
+    clean_scale,
     clean_symbol_key,
     normalize_side,
     resolve_now_ts,
@@ -134,7 +134,7 @@ def check_external_order_guards(
         use_brake_value_in_title: bool = False,
     ) -> Optional[Tuple[bool, str, float]]:
         nonlocal effective_scale, active_reason
-        d_scale = _clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+        d_scale = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
         if not dec.allowed or dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
             prefix = f"[{log_tag}_GUARD_SHADOW]" if mode == "shadow" else f"[{log_tag}_GUARD_ENFORCE]"
             scale_sfx = f", suggested_scale={d_scale}" if log_scale else ""

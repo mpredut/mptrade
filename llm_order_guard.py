@@ -23,13 +23,13 @@ from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypa
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
-    clean_scale as _clean_scale,
+    clean_scale,
     clean_symbol_key,
-    normalize_side as _normalize_side,
+    normalize_side,
     obj_attr,
-    resolve_now_ts as _resolve_now_ts,
+    resolve_now_ts,
     resolve_order_notional,
-    safe_pos_float as _pos_float,
+    safe_pos_float,
 )
 
 logger = logging.getLogger("llm_order_guard")
@@ -82,7 +82,7 @@ def evaluate_high_stake_order_guard(
     )
     from order_guard import is_intelligence_master_off, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
-    side = _normalize_side(side)
+    side = normalize_side(side)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -94,7 +94,7 @@ def evaluate_high_stake_order_guard(
         return True, "ok", 1.0
 
     min_notional = resolve_high_stake_min_notional_usd(margins, side=side, require_key=True)
-    comp_notional = _pos_float(computed_notional, 0.0)
+    comp_notional = safe_pos_float(computed_notional, 0.0)
     if comp_notional <= 0.0 or comp_notional < min_notional:
         return True, "ok", 1.0
     computed_notional = comp_notional
@@ -109,7 +109,7 @@ def evaluate_high_stake_order_guard(
     if prev_notional is None and fallback_notional is not None and not (isinstance(decisions_map, dict) and cache_key in decisions_map):
         prev_notional = fallback_notional
 
-    prev_notional_f = _pos_float(prev_notional, -1.0)
+    prev_notional_f = safe_pos_float(prev_notional, -1.0)
     prev_notional = prev_notional_f if prev_notional_f > 0.0 else None
 
     notional_jump = (
@@ -120,7 +120,7 @@ def evaluate_high_stake_order_guard(
         ctx_usable = valid_context or isinstance(regime_context, dict)
         if dur_sec is None and ctx_usable:
             dur_sec = obj_attr(regime_context, "trend_duration_seconds") or obj_attr(regime_context, "resolved_duration_sec")
-        timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 120.0)
+        timeout_sec = safe_pos_float(margins.get("llm_timeout_sec"), 120.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
         try:
@@ -136,10 +136,10 @@ def evaluate_high_stake_order_guard(
                 symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
-        g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+        g_scale = clean_scale(getattr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
         g_meta = getattr(g_dec, "metadata", None)
         g_meta = g_meta if isinstance(g_meta, dict) else {}
-        eval_notional = _pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
+        eval_notional = safe_pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
         is_cache_hit = bool(g_meta.get("cache_hit"))
         if valid_context:
             try:
@@ -166,7 +166,7 @@ def evaluate_high_stake_order_guard(
                 f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
-        if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), _resolve_now_ts(now)):
+        if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
                 from notify_engine.alertnotifiers import format_notify_price, notify
                 from orchestratorOS.agy.topics import topic_spec
@@ -187,8 +187,8 @@ def evaluate_high_stake_order_guard(
                     g_dec.reason,
                 )).strip()
 
-                px_clean = _pos_float(price, 0.0)
-                qty_clean = _pos_float(qty, 0.0)
+                px_clean = safe_pos_float(price, 0.0)
+                qty_clean = safe_pos_float(qty, 0.0)
                 price_str = f"{ccy_sym}{format_notify_price(px_clean)}" if px_clean > 0.0 else ""
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
@@ -210,7 +210,7 @@ def evaluate_high_stake_order_guard(
     )
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
-        g_scale = _clean_scale(raw_g_scale, default=1.0, allow_percent=True)
+        g_scale = clean_scale(raw_g_scale, default=1.0, allow_percent=True)
         if not g_allowed or g_scale <= 0.0:
             return False, g_reason, 0.0
         if g_scale < 1.0:
@@ -235,7 +235,7 @@ def check_geopolitical_order_guards(
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed):
             return True, "stop_loss_exempt" if ("all" in bypassed or "*" in bypassed) else "ok", 1.0
-    order_side = _normalize_side(side)
+    order_side = normalize_side(side)
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
@@ -257,7 +257,7 @@ def check_geopolitical_order_guards(
         analyzer = GeopoliticalThreatAnalyzer()
         cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
-            now_ts = _resolve_now_ts(now)
+            now_ts = resolve_now_ts(now)
             geo_ts = float(obj_attr(cached_geo, "ts", 0.0) or 0.0)
             geo_level = str(obj_attr(cached_geo, "threat_level", "NORMAL") or "NORMAL").upper()
             market_absorbed = False
@@ -302,7 +302,7 @@ def check_geopolitical_order_guards(
             geo_dec = GeopoliticalShockGuard().check(
                 symbol, order_side, cached_geo, market_absorbed=market_absorbed
             )
-            geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+            geo_scale = clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
             if market_absorbed and geo_dec.allowed and geo_dec.brake_action != BrakeAction.DOWNSCALE_QTY:
                 return True, geo_dec.reason, 1.0
             if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -311,7 +311,7 @@ def check_geopolitical_order_guards(
                 if (
                     geo_mode == "shadow"
                     and shadow_notify
-                    and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), _resolve_now_ts(now))
+                    and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), resolve_now_ts(now))
                 ):
                     try:
                         from notify_engine.alertnotifiers import notify
@@ -328,7 +328,7 @@ def check_geopolitical_order_guards(
                         if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
                             clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
                         raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
-                        raw_rs = _clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
+                        raw_rs = clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
                         notify(
                             title=geo_title,
                             body=f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}",
@@ -373,7 +373,7 @@ def check_llm_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    side = _normalize_side(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 

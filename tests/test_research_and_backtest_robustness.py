@@ -616,7 +616,7 @@ def test_simulations_price_window_get_max_and_normalize_indices():
 
 def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
     """align_spot_interval_params aligns regime/volatility intervals so multi-interval walk-forward evaluation succeeds."""
-    from offline.runners.walk_forward_compare import _segment_result
+    from offline.runners.walk_forward_compare import evaluate_spot_segment
     from strategies.spot_engine import StratParams
     from strategies.spot_replay import align_spot_interval_params
 
@@ -654,8 +654,8 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
         {"timestamp": 1_700_000_000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
         for i in range(10)
     ]
-    seg_60 = _segment_result(records, base, fee_pct=0.26, interval=60)
-    seg_1440 = _segment_result(records, base, fee_pct=0.26, interval=1440)
+    seg_60 = evaluate_spot_segment(records, base, fee_pct=0.26, interval=60)
+    seg_1440 = evaluate_spot_segment(records, base, fee_pct=0.26, interval=1440)
     assert seg_60["metrics"]["account_currency"] == "USD"
     assert seg_1440["metrics"]["account_currency"] == "USD"
 
@@ -6679,7 +6679,7 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     from providers.replay_provider import ReplayMarketDataProvider
     from offline.research.hybrid_reentry.harness import evaluate_asset
     from offline.backtests.tradeall import _parse_tick_pair, sanitize_pipe_field
-    from offline.runners.kraken_financial_benchmark import _format
+    from offline.runners.kraken_financial_benchmark import format_number
     from strategies.spot_engine import StratParams
 
     # 1. ReplayMarketDataProvider.advance rejects non-positive/boolean/fractional steps
@@ -6734,23 +6734,23 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     assert _parse_tick_pair([-1000, 100.0]) is None
     assert _parse_tick_pair([2000, 100.0]) == (2.0, 100.0)
 
-    # 4. kraken_financial_benchmark._format
-    assert _format(1.2345, signed=True) == "+1.234"
-    assert _format(float("nan")) == "n/a"
+    # 4. kraken_financial_benchmark.format_number
+    assert format_number(1.2345, signed=True) == "+1.234"
+    assert format_number(float("nan")) == "n/a"
 
 
 def test_t212_backtest_simulate_trail_and_calibrate_audit_fmt():
-    """Verify 212trading/backtest.py simulate() with trail_pct/sl/tp overrides and calibrate_execution_audit._fmt."""
+    """Verify 212trading/backtest.py simulate() with trail_pct/sl/tp overrides and calibrate_execution_audit.format_number."""
     from offline.backtests.evaluation import load_venue_module
-    from offline.runners.calibrate_execution_audit import _fmt
+    from offline.runners.calibrate_execution_audit import format_number
     from offline.research.intelligence_backtest import _req_pos_num
 
     t212_bt = load_venue_module("212trading", "backtest.py", "t212_bt_test")
     bars = [(20.0 + (i % 4) * 0.2, 20.5 + (i % 4) * 0.2, 19.5 + (i % 4) * 0.2, 20.1 + (i % 4) * 0.2) for i in range(30)]
     res = t212_bt.simulate(bars, {"budget": 500.0, "entry": 100.0, "dca": 50.0, "tp": 2.0, "drop": 1.5, "sl": 10.0, "trail_pct": 1.0, "trail_min_profit": 2.0})
     assert isinstance(res, dict) and "total" in res
-    assert _fmt(0.5) == "0.500"
-    assert _fmt(None) == "n/a"
+    assert format_number(0.5) == "0.500"
+    assert format_number(None) == "n/a"
     assert _req_pos_num(10, "step") == 10.0
 
 

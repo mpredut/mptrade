@@ -326,12 +326,11 @@ class WalkForwardCompareTest(unittest.TestCase):
     def test_runners_and_backtest_broker_guards(self):
         from offline.backtests.tradeall import BacktestBroker, run_backtest
         from offline.runners.t212_walk_forward_baseline import periods_per_year
-        from offline.runners.kraken_financial_benchmark import _format as kfb_fmt
-        from offline.runners.kraken_financial_compare import _fmt as kfc_fmt
-        from offline.runners.calibrate_execution_audit import _fmt as cea_fmt
+        from offline.runners.kraken_financial_benchmark import format_number as kfb_fmt
+        from offline.runners.calibrate_execution_audit import format_number as cea_fmt
         import tempfile
 
-        for fn in (kfb_fmt, kfc_fmt, cea_fmt):
+        for fn in (kfb_fmt, cea_fmt):
             self.assertEqual(fn(None), "n/a")
             self.assertEqual(fn(True), "n/a")
             self.assertEqual(fn(float("nan")), "n/a")

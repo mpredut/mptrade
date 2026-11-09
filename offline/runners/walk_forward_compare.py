@@ -32,18 +32,18 @@ from botcore import (
 from cachepaths import normalize_venue_name
 from state_io import atomic_write_json, atomic_write_text, read_json_file
 from offline.backtests.comparison import (
-    dominates as _dominates,
+    dominates,
     format_comparison_markdown,
-    pareto_frontier as _pareto_names,
-    relative_to_baseline as _relative,
+    pareto_frontier,
+    relative_to_baseline,
 )
 from offline.backtests.datasets import (
     dataset_sha256,
-    load_dataset as load_frozen_dataset,
+    load_dataset,
 )
 from offline.backtests.evaluation import (
-    evaluate_segment as _evaluate_segment,
-    evaluate_spot_segment as _segment_result,
+    evaluate_segment,
+    evaluate_spot_segment,
     load_venue_module,
 )
 from offline.backtests.execution import ExecutionModel
@@ -127,7 +127,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
 
     def _load_and_verify_frozen(raw_path: str | Path, expected_hash: object, interval: int) -> list[dict]:
         path = _resolve_frozen_file(raw_path)
-        records = load_frozen_dataset(path)
+        records = load_dataset(path)
         actual_hash = dataset_sha256(records)
         if actual_hash != expected_hash:
             raise ValueError(
@@ -205,7 +205,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         base_params = StratParams.from_dict(raw_params)
         raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         base_fee = safe_nonneg_float(raw_fee, default=0.26 if norm_venue == "kraken" else 0.10)
-        return base_params, base_fee, _segment_result
+        return base_params, base_fee, evaluate_spot_segment
 
     if norm_venue == "hyperliquid":
         hl_replay = _load_hl_replay()
@@ -228,7 +228,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                     fee_pct=fee_pct,
                     engine="spot",
                 )
-                return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+                return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
 
             return base_params, base_fee, segment_fn
         else:
@@ -246,7 +246,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                     fee_pct=fee_pct,
                     engine="perp",
                 )
-                return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+                return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
 
             return base_params, base_fee, segment_fn
 
@@ -269,7 +269,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                 if alt.exists():
                     fx_path = alt
             if fx_path.exists():
-                fx_records = load_frozen_dataset(fx_path)
+                fx_records = load_dataset(fx_path)
         exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
         periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
@@ -285,7 +285,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                 periods_per_year=periods_yr,
                 execution=execution,
             )
-            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+            return evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
 
         return base_params, base_fee, segment_fn
 
@@ -299,7 +299,7 @@ def _candidate_windows(
     execution,
     segment_fn: Any | None = None,
 ) -> list[dict]:
-    eval_fn = segment_fn or _segment_result
+    eval_fn = segment_fn or evaluate_spot_segment
     windows = []
     for interval, (records, sizes, warmup_bars) in sorted(datasets.items()):
         train_sz = safe_nonneg_int(sizes.get("train", sizes.get("train_bars")), default=0)
@@ -399,10 +399,10 @@ def main(argv: list[str] | None = None) -> int:
 
     live_windows = results["live"]["windows"]
     for name, candidate in results.items():
-        candidate["relative_to_live"] = _relative(candidate["windows"], live_windows)
+        candidate["relative_to_live"] = relative_to_baseline(candidate["windows"], live_windows)
         candidate["dominates_live"] = (
             name != "live"
-            and _dominates(candidate["summary"], results["live"]["summary"])
+            and dominates(candidate["summary"], results["live"]["summary"])
         )
 
     fee_stress_str = args.fee_stress or DEFAULT_FEE_STRESS.get(venue, "0.16,0.26,0.35,0.50")
@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
             "execution_model": dataclasses.asdict(execution),
         },
         "candidates": results,
-        "pareto_frontier": _pareto_names(results),
+        "pareto_frontier": pareto_frontier(results),
         "dominates_live": sorted(
             name for name, item in results.items() if item["dominates_live"]
         ),

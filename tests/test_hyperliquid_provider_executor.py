@@ -814,7 +814,7 @@ class HyperliquidLongtermShadowTest(unittest.TestCase):
 class HyperliquidDatasetTest(unittest.TestCase):
     def test_spot_pair_normalization_and_continuity(self):
         from offline.runners.fetch_hyperliquid_candles import (
-            normalize_closed_candles,
+            _hl_md,
             resolve_spot_pair,
             validate_continuity,
         )
@@ -831,7 +831,7 @@ class HyperliquidDatasetTest(unittest.TestCase):
             {"t": 2_000, "T": 2_999, "o": "2", "h": "5", "l": "1", "c": "4"},
             {"t": 3_000, "T": 3_999, "o": "4", "h": "6", "l": "3", "c": "5"},
         ]
-        records = normalize_closed_candles(rows, now_ms=3_500)
+        records = _hl_md.normalize_closed_candles(rows, now_ms=3_500)
         self.assertEqual([row["timestamp"] for row in records], [1, 2])
         self.assertEqual((records[-1]["high"], records[-1]["close"]), (5.0, 4.0))
 

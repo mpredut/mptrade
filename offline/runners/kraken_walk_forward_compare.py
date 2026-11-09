@@ -20,6 +20,7 @@ if str(RUNNER_DIR) not in sys.path:
 from offline.runners.walk_forward_compare import (
     Candidate,
     default_candidates,
+    evaluate_spot_segment,
     hype_240_candidates,
     main,
     summarize_test_windows,
@@ -28,12 +29,12 @@ from offline.runners.walk_forward_compare import (
     _load_datasets,
     _load_report,
     _markdown,
-    _segment_result,
 )
 
 __all__ = [
     "Candidate",
     "default_candidates",
+    "evaluate_spot_segment",
     "hype_240_candidates",
     "main",
     "summarize_test_windows",
@@ -42,7 +43,6 @@ __all__ = [
     "_load_datasets",
     "_load_report",
     "_markdown",
-    "_segment_result",
 ]
 
 if __name__ == "__main__":

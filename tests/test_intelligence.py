@@ -4868,9 +4868,9 @@ def test_iter82_late_intelligence_scale_retry_worker_kind_and_guard_hierarchy(mo
     from guard_hierarchy import is_category_bypassed, normalize_bypassed_guards, revoke_guard_bypass
     import binance_api.bapi_allorders as bapi_allorders
 
-    # 1. _parse_scale_factor and _apply_late_intelligence_scale support percentage strings and _suggested_scale_by_side
-    assert instrument._parse_scale_factor("25%", default=0.5) == pytest.approx(0.25)
-    assert instrument._parse_scale_factor(0.4, default=0.5) == pytest.approx(0.4)
+    # 1. parse_scale_factor and _apply_late_intelligence_scale support percentage strings and _suggested_scale_by_side
+    assert instrument.parse_scale_factor("25%", default=0.5) == pytest.approx(0.25)
+    assert instrument.parse_scale_factor(0.4, default=0.5) == pytest.approx(0.4)
 
     class _DummyProvider:
         name = "binance"

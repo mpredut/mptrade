@@ -21,7 +21,7 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file  # noq
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
-from offline.backtests.comparison import format_number as _format  # noqa: E402
+from offline.backtests.comparison import format_number  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
@@ -232,14 +232,14 @@ def markdown_report(report: dict) -> str:
     for name, scenario in report["scenarios"].items():
         aggregate = scenario["aggregate"]
         lines.append(
-            f"| `{name}` | {_format(aggregate['mean_return_pct'], signed=True)} | "
-            f"{_format(aggregate['mean_net_pnl_usd_per_window'], signed=True)} | "
-            f"{_format(aggregate['sum_reset_net_pnl_usd'], signed=True)} | "
-            f"{_format(aggregate['worst_return_pct'], signed=True)} | "
-            f"{_format(aggregate['worst_max_drawdown_pct'])} | "
-            f"{_format(aggregate['mean_buy_hold_return_pct'], signed=True)} | "
-            f"{_format(aggregate['worst_cvar_95_pct'], signed=True)} | "
-            f"{_format(aggregate['mean_exposure_pct'])} | "
+            f"| `{name}` | {format_number(aggregate['mean_return_pct'], signed=True)} | "
+            f"{format_number(aggregate['mean_net_pnl_usd_per_window'], signed=True)} | "
+            f"{format_number(aggregate['sum_reset_net_pnl_usd'], signed=True)} | "
+            f"{format_number(aggregate['worst_return_pct'], signed=True)} | "
+            f"{format_number(aggregate['worst_max_drawdown_pct'])} | "
+            f"{format_number(aggregate['mean_buy_hold_return_pct'], signed=True)} | "
+            f"{format_number(aggregate['worst_cvar_95_pct'], signed=True)} | "
+            f"{format_number(aggregate['mean_exposure_pct'])} | "
             f"{aggregate['positive_windows']}/{aggregate['window_count']} |"
         )
     lines.extend(["", "## Regimes", ""])
@@ -252,9 +252,9 @@ def markdown_report(report: dict) -> str:
         for regime, values in scenario["aggregate"]["regimes"].items():
             lines.append(
                 f"| {regime} | {values['windows']} | "
-                f"{_format(values['mean_return_pct'], signed=True)} | "
-                f"{_format(values['mean_buy_hold_return_pct'], signed=True)} | "
-                f"{_format(values['worst_return_pct'], signed=True)} |"
+                f"{format_number(values['mean_return_pct'], signed=True)} | "
+                f"{format_number(values['mean_buy_hold_return_pct'], signed=True)} | "
+                f"{format_number(values['worst_return_pct'], signed=True)} |"
             )
         lines.append("")
     if "promotion_gate" in report:
@@ -352,10 +352,10 @@ def main() -> int:
     for name, scenario in report["scenarios"].items():
         aggregate = scenario["aggregate"]
         print(
-            f"{name}: mean={_format(aggregate.get('mean_return_pct'), signed=True)}% "
-            f"meanUSD={_format(aggregate.get('mean_net_pnl_usd_per_window'), signed=True)} "
-            f"worst={_format(aggregate.get('worst_return_pct'), signed=True)}% "
-            f"worstDD={_format(aggregate.get('worst_max_drawdown_pct'))}%"
+            f"{name}: mean={format_number(aggregate.get('mean_return_pct'), signed=True)}% "
+            f"meanUSD={format_number(aggregate.get('mean_net_pnl_usd_per_window'), signed=True)} "
+            f"worst={format_number(aggregate.get('worst_return_pct'), signed=True)}% "
+            f"worstDD={format_number(aggregate.get('worst_max_drawdown_pct'))}%"
         )
 
     if args.verify:

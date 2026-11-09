@@ -19,8 +19,8 @@ from botcore import safe_nonneg_float
 from binance_api.market_data import fetch_ohlc_candles
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_binance_replay_adapter
 from offline.backtests.datasets import (
-    load_dataset as load_frozen_dataset,
-    save_dataset as save_frozen_dataset,
+    load_dataset,
+    save_dataset,
     validate_dataset,
 )
 from offline.backtests.evaluation import (
@@ -30,8 +30,8 @@ from offline.backtests.evaluation import (
     extract_cfg_float,
     extract_cfg_int,
     load_layered_env_config,
-    parse_dataset_specs as _parse_dataset_specs,
-    parse_intervals as _parse_intervals,
+    parse_dataset_specs,
+    parse_intervals,
 )
 
 
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--config-file", default=str(ROOT / "config.env"))
     parser.add_argument("--symbol", help="defaults to SYMBOL or BINANCE_PAIR (e.g. BTCUSDT)")
-    parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
+    parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=0.10, help="fee per leg (pct), defaults to 0.10%%")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         })
 
     execution = build_execution_model_from_args(parser, args)
-    supplied_datasets = _parse_dataset_specs(args.dataset)
+    supplied_datasets = parse_dataset_specs(args.dataset)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_dir = output_dir / "datasets"
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         frozen_path = supplied_datasets.get(interval)
         source_label = "frozen_csv"
         if frozen_path is not None:
-            records = load_frozen_dataset(frozen_path)
+            records = load_dataset(frozen_path)
             if len(records) < 20:
                 print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
                 continue
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             records = validate_dataset(raw_records, interval_minutes=interval)
             frozen_path = dataset_dir / f"{symbol}_{interval}m.csv"
-            save_frozen_dataset(records, frozen_path)
+            save_dataset(records, frozen_path)
         adapter = make_binance_replay_adapter(
             params=align_spot_interval_params(strat_params, interval),
             fee_pct=args.fee,

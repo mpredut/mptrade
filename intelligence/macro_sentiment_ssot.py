@@ -94,6 +94,7 @@ from state_io import (
 )
 
 save_json_state = _default_save_json_state
+read_json_dict_recovering = _default_read_json_dict_recovering
 read_json_cached = _default_read_json_dict_recovering
 
 logger = logging.getLogger(__name__)
