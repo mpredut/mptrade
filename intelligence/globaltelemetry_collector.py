@@ -41,6 +41,7 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+from intelligence.sentiment.collectors.pretrade_telemetry_collector import refresh_pretrade_telemetry_caches
 from state_io import save_json_state
 
 load_dotenv()
@@ -79,6 +80,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, derived["fear_greed_interval_sec"])
         self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, derived["breadth_interval_sec"])
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
+        self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.skip_news = _parse_bool_flag(skip_news, False)
         self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
@@ -102,6 +104,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_fear_greed_ts: float = 0.0
         self._last_breadth_ts: float = 0.0
         self._last_macro_benchmarks_ts: float = 0.0
+        self._last_pretrade_caches_ts: float = 0.0
         self._last_stdout_hb_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
@@ -235,6 +238,23 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating macro benchmarks: %s", e)
         return False
 
+    def update_pretrade_caches(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Producer refresh of pre-trade caches (sibling microstructure, T212 position prices, Yahoo 5d equity chart)."""
+        try:
+            eff_now = resolve_now_ts(self._resolve_step_now(now))
+            any_refreshed = False
+            for sym in list(self.symbols):
+                status = refresh_pretrade_telemetry_caches(sym, cachedb_dir=self.cache_dir, now_ts=eff_now)
+                if any(status.values()):
+                    any_refreshed = True
+            if not self.symbols:
+                status = refresh_pretrade_telemetry_caches("", cachedb_dir=self.cache_dir, now_ts=eff_now)
+                any_refreshed = any(status.values())
+            return True if (self.symbols or any_refreshed) else False
+        except Exception as e:
+            logger.warning("Failed refreshing pre-trade caches: %s", e)
+        return False
+
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         force = _parse_bool_flag(force, False)
@@ -253,6 +273,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             "fear_greed_updated": False,
             "breadth_updated": False,
             "macro_benchmarks_updated": False,
+            "pretrade_caches_updated": False,
         }
 
         self.write_heartbeat(results)
@@ -267,6 +288,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
                 (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
                 (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+                (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 18.0, "pretrade_caches", "pretrade_caches_updated", None),
             )
             for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
                 if enabled:

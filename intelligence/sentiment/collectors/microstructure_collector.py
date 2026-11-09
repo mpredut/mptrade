@@ -1033,20 +1033,29 @@ def upgrade_tpo_vp_from_ohlc(
     ohlc_fn: Any = None,
     inst_by_sym: Optional[Dict[str, Any]] = None,
     cache_dir: Optional[str] = None,
+    allow_network: bool = True,
 ) -> None:
     """Upgrade a TPO volume profile in `m24` to REAL_VOL using 24h OHLC bars when available and non-diverged."""
     if not m24 or m24.get("vp_source") != "TPO" or not s24_is_live_clock:
         return
-    if ohlc_fn is None:
+    if ohlc_fn is None and allow_network:
         ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
+    has_local_ohlc_cache = bool(cache_dir and os.path.isdir(cache_dir))
     if not (
         callable(ohlc_fn)
-        or is_live_network_backfill_enabled()
+        or (allow_network and is_live_network_backfill_enabled())
         or os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
+        or has_local_ohlc_cache
     ):
         return
     try:
-        pts_vp = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0, require_positive_volume=True)
+        pts_vp = _load_stitched_24h_ohlc_points(
+            ohlc_fn if allow_network else None,
+            sym,
+            now_ts - 86400.0,
+            require_positive_volume=True,
+            cache_dir=cache_dir,
+        )
         if (len(pts_vp) < 8 or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000) and cache_dir and os.path.isdir(cache_dir):
             from state_io import read_json_recovering as _rj_vp
 
@@ -1800,10 +1809,18 @@ class TelemetryCacheCollectorInterface(ABC):
     """
 
     cls_name = "TelemetryCacheCollectorInterface"
+    start_sync: bool = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, start_sync: bool = False) -> None:
         if type(self) is TelemetryCacheCollectorInterface:
             raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
+        self.start_sync = bool(start_sync)
+
+    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
+        """True when this collector instance operates in read-only consumer mode (``start_sync=False``)."""
+        if allow_network is not None:
+            return not bool(allow_network)
+        return not bool(self.start_sync)
 
     @staticmethod
     def resolve_reader(read_json_fn: Any = None) -> Any:

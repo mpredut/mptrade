@@ -38,9 +38,12 @@ from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.guards.high_stake_guard import (
     DEFAULT_LLM_GUARD_CACHE_TTL_SEC,
     PreTradeLLMGuardBase,
+    PretradeTelemetrySnapshot,
     collect_pretrade_telemetry,
     evaluate_llm_guard_response,
+    evaluate_unavailable_telemetry_decision,
     is_llm_guard_exempt,
+    read_pretrade_telemetry_snapshot,
     resolve_llm_guard_cache_ttl,
 )
 from orchestratorOS.agy.topics import topic_spec
@@ -76,6 +79,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         mode: str = "enforce",
         notify_enabled: bool = True,
         cache_ttl_sec: Optional[float] = None,
+        max_telemetry_age_sec: Optional[float] = None,
     ) -> None:
         super().__init__(
             gemini_client=gemini_client,
@@ -84,6 +88,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             mode=mode,
             notify_enabled=notify_enabled,
             cache_ttl_sec=cache_ttl_sec,
+            max_telemetry_age_sec=max_telemetry_age_sec,
         )
 
     @staticmethod
@@ -115,6 +120,9 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         now: Optional[float] = None,
+        *,
+        snapshot: Optional[PretradeTelemetrySnapshot] = None,
+        max_telemetry_age_sec: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a post-stop bounce is a genuine accumulation recovery or a trap."""
         if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
@@ -167,8 +175,10 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
             subtitle=f"BUY {symbol} €{notional:,.2f}",
             action_label="post-stop re-entry",
             timeout_log_label="post-stop re-entry",
+            snapshot=snapshot,
             telemetry=telemetry,
             regime_context=regime_context,
+            max_telemetry_age_sec=max_telemetry_age_sec,
             on_decision=lambda dec: self._maybe_notify(
                 symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts
             ),

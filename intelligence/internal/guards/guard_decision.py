@@ -55,9 +55,9 @@ def fetch_guard_snapshot(
     symbol: str,
     now: Optional[float] = None,
     *,
-    allow_network: Optional[bool] = None,
+    allow_network: Optional[bool] = False,
 ) -> Any:
-    """Fetch a snapshot from ``collector`` with optional ``now`` and ``allow_network`` forwarding."""
+    """Fetch a read-only snapshot from ``collector`` by default (``allow_network=False``)."""
     if collector is None:
         return None
     kwargs: Dict[str, Any] = {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import _parse_bool_flag, fetch_public_json, resolve_patched_attr
@@ -19,7 +20,10 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     harvest_portfolio_and_venue_cycles, populate_market_and_portfolio_snapshot,
 )
 from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+    DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC,
+    PretradeTelemetrySnapshot,
     collect_pretrade_telemetry as _default_collect_pretrade_telemetry,
+    read_pretrade_telemetry_snapshot as _default_read_pretrade_telemetry_snapshot,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     _MICRO_PRICE_ANCHOR_KEYS, _blend_structural_liq_anchor, _build_vp_position_dict,
@@ -46,6 +50,7 @@ from orchestratorOS.agy.topics import topic_spec
 from state_io import read_json_dict_recovering as read_json_cached
 
 collect_pretrade_telemetry = _default_collect_pretrade_telemetry
+read_pretrade_telemetry_snapshot = _default_read_pretrade_telemetry_snapshot
 query_topic_json = _default_query_topic_json
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
@@ -72,6 +77,31 @@ def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     )
 
 
+def evaluate_unavailable_telemetry_decision(
+    guard_name: str,
+    reason: str = "telemetry_unavailable",
+    *,
+    fallback_action: str,
+    notional_eur: float,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> GuardDecision:
+    """Convert unavailable or expired pre-trade telemetry into a GuardDecision respecting configured fallback_action."""
+    safe_notional = safe_nonneg_float(notional_eur, 0.0)
+    fb_norm = str(fallback_action or "allow").strip().lower()
+    base_reason = str(reason or "telemetry_unavailable").strip()
+    meta: Dict[str, Any] = {
+        **(extra_metadata if isinstance(extra_metadata, dict) else {}),
+        "notional_eur": safe_notional,
+        "evaluated_notional_eur": safe_notional,
+        "telemetry_unavailable_reason": base_reason,
+    }
+    if fb_norm in ("veto", "block"):
+        return GuardDecision.veto(guard_name, f"{base_reason}_fail_closed", **meta)
+    if fb_norm == "downscale":
+        return GuardDecision.downscale(guard_name, scale=0.5, reason=f"{base_reason}_downscaled", **meta)
+    return GuardDecision.allow(guard_name, f"{base_reason}_fallback_allowed", **meta)
+
+
 def evaluate_llm_guard_response(
     guard_name: str,
     action_label: str,
@@ -79,21 +109,36 @@ def evaluate_llm_guard_response(
     *,
     fallback_action: str,
     notional_eur: float,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
     safe_notional = safe_nonneg_float(notional_eur, 0.0)
     fb_norm = str(fallback_action or "allow").strip().lower()
+    meta_extra = dict(extra_metadata) if isinstance(extra_metadata, dict) else {}
     if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
             return GuardDecision.veto(
-                guard_name, "llm_query_timeout_fail_closed", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+                guard_name,
+                "llm_query_timeout_fail_closed",
+                notional_eur=safe_notional,
+                evaluated_notional_eur=safe_notional,
+                **meta_extra,
             )
         if fb_norm == "downscale":
             return GuardDecision.downscale(
-                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+                guard_name,
+                scale=0.5,
+                reason="llm_query_timeout_downscaled",
+                notional_eur=safe_notional,
+                evaluated_notional_eur=safe_notional,
+                **meta_extra,
             )
         return GuardDecision.allow(
-            guard_name, "llm_query_timeout_fallback_allowed", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+            guard_name,
+            "llm_query_timeout_fallback_allowed",
+            notional_eur=safe_notional,
+            evaluated_notional_eur=safe_notional,
+            **meta_extra,
         )
 
     raw_dec = resp.get("decision")
@@ -109,6 +154,7 @@ def evaluate_llm_guard_response(
             notional_eur=safe_notional,
             evaluated_notional_eur=safe_notional,
             gemini_reason=reason,
+            **meta_extra,
         )
     if decision_str == "DOWNSCALE":
         eff_scale = 0.5 if (scale <= 0.0 or scale >= 1.0) else max(0.1, min(1.0, scale))
@@ -119,6 +165,7 @@ def evaluate_llm_guard_response(
             notional_eur=safe_notional,
             evaluated_notional_eur=safe_notional,
             gemini_reason=reason,
+            **meta_extra,
         )
     return GuardDecision.allow(
         guard_name,
@@ -126,6 +173,7 @@ def evaluate_llm_guard_response(
         notional_eur=safe_notional,
         evaluated_notional_eur=safe_notional,
         gemini_reason=reason,
+        **meta_extra,
     )
 
 
@@ -155,6 +203,7 @@ class PreTradeLLMGuardBase:
         mode: str = "enforce",
         notify_enabled: bool = True,
         cache_ttl_sec: Optional[float] = None,
+        max_telemetry_age_sec: Optional[float] = None,
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
@@ -164,6 +213,11 @@ class PreTradeLLMGuardBase:
         self.notify_enabled = _parse_bool_flag(notify_enabled)
         self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
             cache_ttl_sec, self._explicit_client, self.gemini_client, self.DEFAULT_CACHE_TTL_SEC
+        )
+        self.max_telemetry_age_sec: Optional[float] = (
+            safe_pos_float(max_telemetry_age_sec, default=None)
+            if max_telemetry_age_sec is not None and not isinstance(max_telemetry_age_sec, bool)
+            else None
         )
 
     def _wrap_shadow_decision(
@@ -184,13 +238,133 @@ class PreTradeLLMGuardBase:
             shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
         else:
             shadow_msg = f"shadow_mode ({dec.reason})"
+        dec_meta = getattr(dec, "metadata", None)
         extra_meta: Dict[str, Any] = {
+            **(dec_meta if isinstance(dec_meta, dict) else {}),
             "notional_eur": notional,
             "evaluated_notional_eur": evaluated_notional_eur if evaluated_notional_eur is not None else notional,
         }
         if cache_hit:
             extra_meta["cache_hit"] = True
         return GuardDecision.allow(self.GUARD_NAME, shadow_msg, shadow_decision=dec, **extra_meta)
+
+    def _resolve_pretrade_telemetry_snapshot(
+        self,
+        symbol: str,
+        *,
+        snapshot: Optional[PretradeTelemetrySnapshot] = None,
+        telemetry: Optional[Any] = None,
+        regime_context: Optional[Any] = None,
+        dur_sec: Optional[float] = None,
+        now_ts: float,
+        max_telemetry_age_sec: Optional[float] = None,
+    ) -> PretradeTelemetrySnapshot:
+        """Resolve an explicit read-only ``PretradeTelemetrySnapshot`` without triggering network or cache writes."""
+        eff_max_age = (
+            safe_pos_float(max_telemetry_age_sec, default=None)
+            if max_telemetry_age_sec is not None and not isinstance(max_telemetry_age_sec, bool)
+            else self.max_telemetry_age_sec
+        )
+        enforce_fresh = eff_max_age is not None
+        if isinstance(snapshot, PretradeTelemetrySnapshot):
+            return PretradeTelemetrySnapshot.from_raw(
+                snapshot,
+                symbol=symbol,
+                now_ts=now_ts,
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+        if isinstance(telemetry, PretradeTelemetrySnapshot):
+            return PretradeTelemetrySnapshot.from_raw(
+                telemetry,
+                symbol=symbol,
+                now_ts=now_ts,
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+        if isinstance(telemetry, Mapping):
+            return PretradeTelemetrySnapshot.from_raw(
+                telemetry,
+                symbol=symbol,
+                now_ts=now_ts,
+                source="explicit",
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+
+        target_modules = (
+            self.__class__.__module__,
+            __name__,
+            "intelligence.sentiment.collectors.macro_telemetry_collector",
+            "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+            "intelligence.macro_sentiment_ssot",
+        )
+        _telem_fn = resolve_patched_attr(
+            "collect_pretrade_telemetry",
+            collect_pretrade_telemetry,
+            defaults=(_default_collect_pretrade_telemetry,),
+            modules=target_modules,
+            require_callable=True,
+        )
+        _snap_fn = resolve_patched_attr(
+            "read_pretrade_telemetry_snapshot",
+            read_pretrade_telemetry_snapshot,
+            defaults=(_default_read_pretrade_telemetry_snapshot,),
+            modules=target_modules,
+            require_callable=True,
+        )
+        try:
+            if _telem_fn is not _default_collect_pretrade_telemetry:
+                call_kwargs: Dict[str, Any] = {"regime_context": regime_context}
+                if dur_sec is not None:
+                    call_kwargs["dur_sec"] = dur_sec
+                try:
+                    raw_telem = _telem_fn(symbol, **call_kwargs, allow_network=False, now_ts=now_ts)
+                except TypeError:
+                    raw_telem = _telem_fn(symbol, **call_kwargs)
+                if isinstance(raw_telem, PretradeTelemetrySnapshot):
+                    return PretradeTelemetrySnapshot.from_raw(
+                        raw_telem,
+                        symbol=symbol,
+                        now_ts=now_ts,
+                        max_age_sec=eff_max_age,
+                        enforce_freshness=enforce_fresh,
+                    )
+                return PretradeTelemetrySnapshot.from_raw(
+                    raw_telem,
+                    symbol=symbol,
+                    now_ts=now_ts,
+                    source="collector",
+                    max_age_sec=eff_max_age,
+                    enforce_freshness=enforce_fresh,
+                )
+
+            resolved = _snap_fn(
+                symbol,
+                regime_context=regime_context,
+                dur_sec=dur_sec,
+                now_ts=now_ts,
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+            if isinstance(resolved, PretradeTelemetrySnapshot):
+                return resolved
+            return PretradeTelemetrySnapshot.from_raw(
+                resolved,
+                symbol=symbol,
+                now_ts=now_ts,
+                source="cachedb",
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+        except Exception as exc:
+            logger.warning("Pre-trade telemetry read failed for %s: %s", symbol, exc)
+            return PretradeTelemetrySnapshot.unavailable(
+                symbol,
+                reason="telemetry_unavailable",
+                now_ts=now_ts,
+                max_age_sec=eff_max_age,
+            )
 
     def _execute_pretrade_guard_eval(
         self,
@@ -205,14 +379,16 @@ class PreTradeLLMGuardBase:
         subtitle: str,
         action_label: str,
         timeout_log_label: str,
+        snapshot: Optional[PretradeTelemetrySnapshot] = None,
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
+        max_telemetry_age_sec: Optional[float] = None,
         max_notional_jump_ratio: Optional[float] = None,
         on_decision: Optional[Callable[[GuardDecision], None]] = None,
         logger_inst: Optional[logging.Logger] = None,
     ) -> GuardDecision:
-        """Shared pre-trade LLM guard pipeline: cache lookup -> telemetry -> topic query -> decision -> shadow wrap -> cache write."""
+        """Shared pre-trade LLM guard pipeline: cache lookup -> snapshot read -> topic query -> decision -> shadow wrap -> cache write."""
         if self.cache_ttl_sec > 0:
             cached = decision_cache.get(cache_key)
             if (
@@ -259,32 +435,40 @@ class PreTradeLLMGuardBase:
                         },
                     )
 
-        _telem_fn = resolve_patched_attr(
-            "collect_pretrade_telemetry",
-            collect_pretrade_telemetry,
-            defaults=(_default_collect_pretrade_telemetry,),
-            modules=(
-                self.__class__.__module__,
-                __name__,
-                "intelligence.sentiment.collectors.macro_telemetry_collector",
-                "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-                "intelligence.macro_sentiment_ssot",
-            ),
-            require_callable=True,
+        resolved_snapshot = self._resolve_pretrade_telemetry_snapshot(
+            symbol,
+            snapshot=snapshot,
+            telemetry=telemetry,
+            regime_context=regime_context,
+            dur_sec=dur_sec,
+            now_ts=now_ts,
+            max_telemetry_age_sec=max_telemetry_age_sec,
         )
-
-        effective_telemetry = (
-            telemetry
-            if isinstance(telemetry, dict)
-            else (
-                _telem_fn(symbol, regime_context=regime_context, dur_sec=dur_sec)
-                if dur_sec is not None
-                else _telem_fn(symbol, regime_context=regime_context)
+        snap_meta = resolved_snapshot.to_guard_metadata()
+        if not resolved_snapshot.is_available:
+            unavail_reason = resolved_snapshot.unavailable_reason or "telemetry_unavailable"
+            (logger_inst or logger).warning(
+                "Pre-trade telemetry unavailable for %s €%.2f (%s). Fallback: %s",
+                symbol,
+                notional,
+                unavail_reason,
+                self.fallback_action,
             )
-        )
+            dec = evaluate_unavailable_telemetry_decision(
+                self.GUARD_NAME,
+                unavail_reason,
+                fallback_action=self.fallback_action,
+                notional_eur=notional,
+                extra_metadata=snap_meta,
+            )
+            if on_decision is not None:
+                on_decision(dec)
+            return self._wrap_shadow_decision(dec, notional, None) if self.mode == "shadow" else dec
+
         context_items = list(header_lines)
-        if isinstance(effective_telemetry, dict) and effective_telemetry:
-            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
+        if resolved_snapshot:
+            context_items.append(resolved_snapshot.format_identity_header_line())
+            context_items.extend(f"- {k}: {v}" for k, v in resolved_snapshot.items())
         context_str = "\n".join(context_items)
 
         _query_fn = resolve_patched_attr(
@@ -323,6 +507,7 @@ class PreTradeLLMGuardBase:
             valid_resp,
             fallback_action=self.fallback_action,
             notional_eur=notional,
+            extra_metadata=snap_meta,
         )
         if on_decision is not None:
             on_decision(dec)
@@ -351,6 +536,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         mode: str = "enforce",
         notify_enabled: bool = True,
         cache_ttl_sec: Optional[float] = None,
+        max_telemetry_age_sec: Optional[float] = None,
     ) -> None:
         super().__init__(
             gemini_client=gemini_client,
@@ -359,6 +545,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             mode=mode,
             notify_enabled=notify_enabled,
             cache_ttl_sec=cache_ttl_sec,
+            max_telemetry_age_sec=max_telemetry_age_sec,
         )
         resolved_min = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_notional_eur, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = self.min_notional_eur = resolved_min
@@ -405,9 +592,11 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         qty: float,
         *,
         notional_eur: Optional[float] = None,
+        snapshot: Optional[PretradeTelemetrySnapshot] = None,
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
+        max_telemetry_age_sec: Optional[float] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
@@ -447,9 +636,11 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             subtitle=f"{side_norm} {symbol} €{notional:,.2f}",
             action_label=f"high-stake {side_norm}",
             timeout_log_label="high-stake",
+            snapshot=snapshot,
             telemetry=telemetry,
             regime_context=regime_context,
             dur_sec=dur_sec,
+            max_telemetry_age_sec=max_telemetry_age_sec,
             max_notional_jump_ratio=HIGH_STAKE_NOTIONAL_JUMP_RATIO,
             logger_inst=logger,
         )

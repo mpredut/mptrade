@@ -4,8 +4,9 @@ from __future__ import annotations
 import os
 import time as _time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from botcore import (
     extract_current_price_item,
@@ -26,6 +27,7 @@ from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
+    resolve_now_ts,
     resolve_read_json_cached,
     safe_float,
     safe_nonneg_float,
@@ -94,6 +96,204 @@ from state_io import (
 
 read_json_cached = _default_read_json_cached
 
+DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC: float = 1800.0
+
+
+@dataclass(frozen=True)
+class PretradeTelemetrySnapshot(Mapping[str, Any]):
+    """Immutable read-only telemetry snapshot carrying explicit identity, source, and age."""
+
+    symbol: str
+    canonical_symbol: str
+    asset_scope: str
+    source: str
+    pillar_sources: Dict[str, str] = field(default_factory=dict)
+    ts: float = 0.0
+    evaluated_at_ts: float = 0.0
+    age_sec: Optional[float] = None
+    max_age_sec: float = DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
+    data: Dict[str, Any] = field(default_factory=dict)
+    unavailable_reason: Optional[str] = None
+    enforce_freshness: bool = False
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.data)
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __bool__(self) -> bool:
+        return bool(self.data)
+
+    @property
+    def is_fresh(self) -> bool:
+        """True when snapshot is not marked unavailable and age is within ``max_age_sec``."""
+        if self.unavailable_reason:
+            return False
+        if self.age_sec is None:
+            return not self.enforce_freshness
+        return 0.0 <= self.age_sec <= self.max_age_sec
+
+    @property
+    def is_stale(self) -> bool:
+        """True when snapshot age exceeds ``max_age_sec`` or is explicitly marked unavailable."""
+        return not self.is_fresh
+
+    @property
+    def is_available(self) -> bool:
+        """True when snapshot is usable by pre-trade guards under its configured freshness policy."""
+        if self.unavailable_reason:
+            return False
+        if self.enforce_freshness:
+            return bool(self.data) and self.is_fresh
+        return True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a shallow dict copy of the formatted telemetry lines."""
+        return dict(self.data)
+
+    def to_guard_metadata(self) -> Dict[str, Any]:
+        """Return explicit snapshot identity, source, and age metadata for GuardDecision."""
+        return {
+            "telemetry_symbol": self.canonical_symbol,
+            "telemetry_asset_scope": self.asset_scope,
+            "telemetry_source": self.source,
+            "telemetry_pillar_sources": dict(self.pillar_sources),
+            "telemetry_ts": self.ts,
+            "telemetry_age_sec": round(self.age_sec, 3) if self.age_sec is not None else None,
+            "telemetry_max_age_sec": self.max_age_sec,
+            "telemetry_fresh": self.is_fresh,
+            "telemetry_available": self.is_available,
+        }
+
+    def format_identity_header_line(self) -> str:
+        """Format explicit snapshot provenance line for LLM pre-trade context."""
+        age_str = f"{self.age_sec:.1f}s" if self.age_sec is not None else "n/a"
+        src_str = self.source or "cachedb"
+        return (
+            f"- Telemetry Snapshot: symbol={self.canonical_symbol} "
+            f"(scope={self.asset_scope}, source={src_str}, age={age_str}, fresh={self.is_fresh})"
+        )
+
+    @classmethod
+    def unavailable(
+        cls,
+        symbol: str,
+        reason: str = "telemetry_unavailable",
+        *,
+        now_ts: Optional[float] = None,
+        source: str = "unavailable",
+        max_age_sec: Optional[float] = None,
+    ) -> "PretradeTelemetrySnapshot":
+        eff_now = resolve_now_ts(now_ts)
+        sym_raw = str(symbol or "").strip()
+        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
+        eff_max_age = safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC) or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
+        return cls(
+            symbol=sym_raw,
+            canonical_symbol=canon_sym,
+            asset_scope=scope,
+            source=source,
+            pillar_sources={},
+            ts=0.0,
+            evaluated_at_ts=eff_now,
+            age_sec=None,
+            max_age_sec=eff_max_age,
+            data={},
+            unavailable_reason=str(reason or "telemetry_unavailable"),
+            enforce_freshness=True,
+        )
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: Any,
+        *,
+        symbol: str,
+        now_ts: Optional[float] = None,
+        source: str = "explicit",
+        ts: Optional[float] = None,
+        pillar_sources: Optional[Dict[str, str]] = None,
+        max_age_sec: Optional[float] = None,
+        unavailable_reason: Optional[str] = None,
+        enforce_freshness: bool = False,
+    ) -> "PretradeTelemetrySnapshot":
+        eff_now = resolve_now_ts(now_ts)
+        eff_max_age = safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC) or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
+        if isinstance(raw, cls):
+            if max_age_sec is None and not enforce_freshness and unavailable_reason is None:
+                return raw
+            snap_ts = raw.ts
+            snap_age = max(0.0, eff_now - snap_ts) if snap_ts > 0.0 else raw.age_sec
+            eff_unavail = unavailable_reason or raw.unavailable_reason
+            eff_enforce = bool(enforce_freshness or raw.enforce_freshness or max_age_sec is not None)
+            if eff_enforce and eff_unavail is None:
+                if not raw.data:
+                    eff_unavail = "telemetry_empty"
+                elif snap_age is None or snap_age > eff_max_age:
+                    eff_unavail = "telemetry_stale"
+            return cls(
+                symbol=raw.symbol or str(symbol or "").strip(),
+                canonical_symbol=raw.canonical_symbol or clean_symbol_key(symbol) or str(symbol or "").strip().upper(),
+                asset_scope=raw.asset_scope,
+                source=raw.source or source,
+                pillar_sources=dict(raw.pillar_sources),
+                ts=snap_ts,
+                evaluated_at_ts=eff_now,
+                age_sec=snap_age,
+                max_age_sec=eff_max_age,
+                data=dict(raw.data),
+                unavailable_reason=eff_unavail,
+                enforce_freshness=eff_enforce,
+            )
+        sym_raw = str(symbol or "").strip()
+        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
+        if not isinstance(raw, Mapping):
+            return cls.unavailable(
+                sym_raw,
+                unavailable_reason or "telemetry_unavailable",
+                now_ts=eff_now,
+                source=source,
+                max_age_sec=eff_max_age,
+            )
+        raw_dict = dict(raw)
+        meta_ts = normalize_epoch_sec(raw_dict.pop("_telemetry_ts", None), default=None)
+        meta_src = raw_dict.pop("_telemetry_source", None)
+        meta_pillars = raw_dict.pop("_telemetry_pillar_sources", None)
+        meta_unavail = raw_dict.pop("_telemetry_unavailable_reason", None)
+        eff_ts = normalize_epoch_sec(ts if ts is not None else meta_ts, default=0.0) or 0.0
+        if eff_ts <= 0.0 and source == "explicit" and raw_dict:
+            eff_ts = eff_now
+        age_val = max(0.0, eff_now - eff_ts) if eff_ts > 0.0 else None
+        eff_enforce = bool(enforce_freshness or max_age_sec is not None)
+        eff_unavail = unavailable_reason or (str(meta_unavail) if meta_unavail else None)
+        if eff_enforce and eff_unavail is None:
+            if not raw_dict:
+                eff_unavail = "telemetry_empty"
+            elif age_val is not None and age_val > eff_max_age:
+                eff_unavail = "telemetry_stale"
+            elif age_val is None and source != "explicit":
+                eff_unavail = "telemetry_timestamp_missing"
+        return cls(
+            symbol=sym_raw,
+            canonical_symbol=canon_sym,
+            asset_scope=scope,
+            source=str(meta_src or source),
+            pillar_sources=dict(pillar_sources if isinstance(pillar_sources, dict) else (meta_pillars if isinstance(meta_pillars, dict) else {})),
+            ts=eff_ts,
+            evaluated_at_ts=eff_now,
+            age_sec=age_val,
+            max_age_sec=eff_max_age,
+            data=raw_dict,
+            unavailable_reason=eff_unavail,
+            enforce_freshness=eff_enforce,
+        )
+
 
 def _resolve_read_json_cached() -> Callable[[str], Any]:
     return resolve_read_json_cached(local_fn=read_json_cached)
@@ -132,15 +332,14 @@ def _ensure_fresh_pretrade_microstructure(
     is_usd_sym: bool,
     is_eq_sym: bool,
     _rj: Callable[[str], Any],
+    *,
+    allow_network: Optional[bool] = False,
 ) -> None:
-    if not (
-        (is_usd_sym or is_eq_sym)
-        and (
-            is_live_network_backfill_enabled()
-            or ensure_fresh_symbol_microstructure is not _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
-        )
-        and _rj is _default_read_json_cached
-    ):
+    is_monkeypatched = ensure_fresh_symbol_microstructure is not _ORIG_ENSURE_FRESH_SYMBOL_MICROSTRUCTURE
+    can_refresh = (allow_network is True and is_live_network_backfill_enabled()) or (
+        allow_network is None and is_monkeypatched
+    )
+    if not ((is_usd_sym or is_eq_sym) and can_refresh and _rj is _default_read_json_cached):
         return
     refresh_cands = list(quote_variants)
     if not is_eq_sym and canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
@@ -356,6 +555,8 @@ def _resolve_pretrade_live_price_and_vb_ts(
     cur_p_items: Dict[str, Any],
     is_eq_sym: bool,
     _rj: Callable[[str], Any],
+    *,
+    allow_network: bool = False,
 ) -> Tuple[float, float, float]:
     live_cur_px = 0.0
     cp_ts_sec = 0.0
@@ -369,7 +570,7 @@ def _resolve_pretrade_live_price_and_vb_ts(
     vb_pos_ts = 0.0
     vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
     if (live_cur_px <= 0.0 or is_eq_sym) and isinstance(vb_d := _rj(vb_path), dict):
-        if is_eq_sym and _rj is _default_read_json_cached:
+        if allow_network and is_eq_sym and _rj is _default_read_json_cached:
             _refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
         for vb_k, vb_v in vb_d.items():
             if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
@@ -402,13 +603,20 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     px_v: float,
     last_pt_v: Optional[Tuple[float, float]],
     ob_ts_v: float = 0.0,
+    *,
+    allow_network: bool = False,
 ) -> None:
     sym_u_pt = clean_symbol_key(sym_v) or str(sym_v or "").strip().upper()
+    has_local_ohlc = bool(cachedb_dir and os.path.isdir(cachedb_dir))
     if (
         not m24_d
         or m24_d.get("vp_source") != "TPO"
         or sym_u_pt.endswith(("_EQ", "_US_EQ"))
-        or (not is_live_network_backfill_enabled() and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1")
+        or (
+            not (allow_network and is_live_network_backfill_enabled())
+            and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1"
+            and not has_local_ohlc
+        )
     ):
         return
     now_s_pt = _time.time()
@@ -424,6 +632,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         now_s_pt,
         s24_is_live_clock=is_live_clock,
         cache_dir=cachedb_dir,
+        allow_network=allow_network,
     )
 
 
@@ -435,6 +644,8 @@ def _load_and_normalize_pretrade_24h_series(
     cp_ts_sec: float,
     vb_pos_ts: float,
     is_eq_sym: bool,
+    *,
+    allow_network: bool = False,
 ) -> Tuple[list, list, Dict[str, Any], Optional[Tuple[float, float]], float, bool, bool, bool]:
     alt_series_24h, arch_vals_7d = load_symbol_price_series(
         cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
@@ -449,14 +660,19 @@ def _load_and_normalize_pretrade_24h_series(
     eq_px_diverged_05pct = False
     eq_chart_refreshed = False
     sym_u_eq = str(symbol).strip().upper()
-    memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq) if (is_eq_sym and is_live_network_backfill_enabled()) else None
+    memo_chart_eq = (
+        _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
+        if (allow_network and is_eq_sym and is_live_network_backfill_enabled())
+        else None
+    )
     raw_alt_last_ts_ms = last_alt_pt[0] if last_alt_pt is not None else 0.0
     now_s_eq_chk = _time.time()
     eq_rth_open_chk = bool(is_symbol_market_open(symbol, now_s_eq_chk)) if is_eq_sym else False
     memo_ttl_eq = 240.0 if (eq_rth_open_chk or memo_chart_eq is None) else 1800.0
     memo_chart_fresh_eq = bool(memo_chart_eq is not None and 0.0 <= (now_s_eq_chk - memo_chart_eq[0]) < memo_ttl_eq)
     if (
-        is_eq_sym
+        allow_network
+        and is_eq_sym
         and is_live_network_backfill_enabled()
         and (
             not m24
@@ -557,7 +773,9 @@ def _load_and_normalize_pretrade_24h_series(
             for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                 m24.pop(k_stale_15m, None)
 
-    _upgrade_pretrade_tpo_vp_from_ohlc(cachedb_dir, symbol, m24, cur_px_est, last_alt_pt)
+    _upgrade_pretrade_tpo_vp_from_ohlc(
+        cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, allow_network=allow_network
+    )
     return (
         alt_series_24h,
         arch_vals_7d,
@@ -583,6 +801,8 @@ def _load_and_reconcile_pretrade_microstructure(
     f_snap: Any,
     w_snap: Any,
     _rj: Callable[[str], Any],
+    *,
+    allow_network: bool = False,
 ) -> Tuple[Dict[str, Any], float, float]:
     ob_ts_est = 0.0
     cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
@@ -644,7 +864,9 @@ def _load_and_reconcile_pretrade_microstructure(
         if m24:
             recalculate_live_price_geometry(m24, ob_mid_est)
     if m24 and m24.get("vp_source") == "TPO":
-        _upgrade_pretrade_tpo_vp_from_ohlc(cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est)
+        _upgrade_pretrade_tpo_vp_from_ohlc(
+            cachedb_dir, symbol, m24, cur_px_est, last_alt_pt, ob_ts_est, allow_network=allow_network
+        )
         if cur_px_est > 0.0 and m24.get("vp_source") == "REAL_VOL":
             recalculate_live_price_geometry(m24, cur_px_est)
     return cur_m_info, cur_px_est, ob_ts_est
@@ -781,6 +1003,8 @@ def _evaluate_and_format_pretrade_7d_telemetry(
     sym_variants: List[str],
     cur_p_items: Dict[str, Any],
     _rj: Callable[[str], Any],
+    *,
+    allow_network: bool = False,
 ) -> Tuple[Dict[str, Any], bool]:
     is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
     if cur_px_est > 0.0 and arch_vals_7d:
@@ -824,7 +1048,8 @@ def _evaluate_and_format_pretrade_7d_telemetry(
                 partial_w_7d_span = 0.0 <= w_span_7d < 5 * 86400 * 1000
                 break
     if (
-        not is_eq
+        allow_network
+        and not is_eq
         and is_live_network_backfill_enabled()
         and (not m7d or partial_w_7d_span or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
     ):
@@ -1098,6 +1323,8 @@ def _enrich_pretrade_microstructure_and_siblings(
     st_items_map: Dict[str, Any],
     k_items_map: Dict[str, Any],
     _rj: Callable[[str], Any],
+    *,
+    allow_network: bool = False,
 ) -> None:
     if not cur_m_info:
         return
@@ -1199,6 +1426,7 @@ def _enrich_pretrade_microstructure_and_siblings(
             st_items_map,
             k_items_map,
             _rj,
+            allow_network=allow_network,
         )
     if cur_m_info.get("cvd_15m_usd") is not None:
         cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
@@ -1248,6 +1476,8 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
     st_items_map: Dict[str, Any],
     k_items_map: Dict[str, Any],
     _rj: Callable[[str], Any],
+    *,
+    allow_network: bool = False,
 ) -> None:
     cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
     for cand in quote_variants:
@@ -1326,7 +1556,9 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
                     if not k_items_map and not isinstance(casefold_get(st_items_map, cand_u), dict):
                         for k_kal in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
                             sib_p_est.pop(k_kal, None)
-                    _upgrade_pretrade_tpo_vp_from_ohlc(cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts)
+                    _upgrade_pretrade_tpo_vp_from_ohlc(
+                        cachedb_dir, cand_u, sib_m24, sib_px or 0.0, sib_last_pt, sib_ob_ts, allow_network=allow_network
+                    )
                     _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                     if sib_px and sib_px > 0:
                         sib_p_est["price"] = sib_px
@@ -1541,7 +1773,11 @@ class PretradeEvaluationContext:
     sym_variants: List[str]
     quote_variants: List[str]
     rj: Callable[[str], Any]
+    allow_network: Optional[bool] = False
+    now_ts: float = 0.0
     telemetry: Dict[str, Any] = field(default_factory=dict)
+    pillar_sources: Dict[str, str] = field(default_factory=dict)
+    source_timestamps: List[float] = field(default_factory=list)
     ob_snap: Any = None
     f_snap: Any = None
     w_snap: Any = None
@@ -1569,6 +1805,18 @@ class PretradeEvaluationContext:
     st_items_map: Dict[str, Any] = field(default_factory=dict)
     k_items_map: Dict[str, Any] = field(default_factory=dict)
 
+    def record_pillar_source(self, pillar: str, source: str, ts: Optional[float] = None) -> None:
+        """Record pillar provenance and valid epoch timestamp on the evaluation context."""
+        self.pillar_sources[pillar] = str(source or "cachedb")
+        norm_ts = normalize_epoch_sec(ts, default=0.0) or 0.0
+        if norm_ts > 0.0:
+            self.source_timestamps.append(norm_ts)
+
+    def resolve_snapshot_ts(self) -> float:
+        """Resolve the most representative recent telemetry timestamp across populated pillars."""
+        valid_ts = [t for t in self.source_timestamps if t > 0.0]
+        return max(valid_ts) if valid_ts else 0.0
+
 
 class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for pre-trade telemetry pillar collectors (Open-Closed Principle)."""
@@ -1578,7 +1826,7 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
     def __init__(self) -> None:
         if type(self) is PretradePillarCollectorBase:
             raise TypeError("Cannot instantiate abstract class PretradePillarCollectorBase")
-        super().__init__()
+        super().__init__(start_sync=False)
 
     def collect(self, cachedb_dir: str, symbol: str, *, ctx: Optional[PretradeEvaluationContext] = None, **kwargs: Any) -> Dict[str, Any]:
         if ctx is not None:
@@ -1591,6 +1839,9 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
         """Enrich ``ctx.telemetry`` using the normalized snapshot in ``ctx``."""
 
 
+PretradeTelemetryStage = PretradePillarCollectorBase
+
+
 class Pillar2AndRegimeStage(PretradePillarCollectorBase):
     """Concrete pillar collector (Level 3): Pillar 2 Orderbook/Funding/Whale + Pillar 3 Regime snapshots."""
 
@@ -1598,7 +1849,13 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
         _ensure_fresh_pretrade_microstructure(
-            ctx.cachedb_dir, ctx.symbol, ctx.quote_variants, ctx.is_usd_sym, ctx.is_eq_sym, ctx.rj
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.quote_variants,
+            ctx.is_usd_sym,
+            ctx.is_eq_sym,
+            ctx.rj,
+            allow_network=ctx.allow_network,
         )
         ctx.telemetry, ctx.ob_snap, ctx.f_snap, ctx.w_snap = _collect_pillar2_and_regime_telemetry(
             ctx.cachedb_dir,
@@ -1612,6 +1869,13 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             ctx.is_eq_sym,
             ctx.rj,
         )
+        for snap_lbl, snap_obj in (("orderbook", ctx.ob_snap), ("derivatives", ctx.f_snap), ("whale", ctx.w_snap)):
+            if snap_obj is not None:
+                ctx.record_pillar_source(
+                    snap_lbl,
+                    "memory_cache" if not isinstance(snap_obj, dict) else "cachedb",
+                    _snap_ts(snap_obj),
+                )
 
 
 class PretradePriceSeries24hStage(PretradePillarCollectorBase):
@@ -1621,6 +1885,7 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
         _ensure_cacheprice_classes_bound()
+        eff_allow_net = bool(ctx.allow_network)
         cur_p_data = ctx.rj(os.path.join(ctx.cachedb_dir, _mc_mod.CacheCurrentPriceManager.DEFAULT_FILENAME))
         ctx.cur_p_items = (
             cur_p_data.get("items", {})
@@ -1628,7 +1893,13 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             else {}
         )
         ctx.live_cur_px, ctx.cp_ts_sec, ctx.vb_pos_ts = _resolve_pretrade_live_price_and_vb_ts(
-            ctx.cachedb_dir, ctx.symbol, ctx.quote_variants, ctx.cur_p_items, ctx.is_eq_sym, ctx.rj
+            ctx.cachedb_dir,
+            ctx.symbol,
+            ctx.quote_variants,
+            ctx.cur_p_items,
+            ctx.is_eq_sym,
+            ctx.rj,
+            allow_network=eff_allow_net,
         )
         (
             ctx.alt_series_24h,
@@ -1647,7 +1918,12 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             ctx.cp_ts_sec,
             ctx.vb_pos_ts,
             ctx.is_eq_sym,
+            allow_network=eff_allow_net,
         )
+        last_s24_ts = (ctx.last_alt_pt[0] / 1000.0) if (ctx.last_alt_pt is not None and ctx.last_alt_pt[0] > 1e11) else 0.0
+        best_px_ts = max(ctx.cp_ts_sec, ctx.vb_pos_ts, last_s24_ts)
+        if ctx.m24 or ctx.live_cur_px:
+            ctx.record_pillar_source("price_series_24h", "cachedb", best_px_ts)
 
 
 class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
@@ -1669,7 +1945,10 @@ class PretradeMicrostructureReconcileStage(PretradePillarCollectorBase):
             ctx.f_snap,
             ctx.w_snap,
             ctx.rj,
+            allow_network=bool(ctx.allow_network),
         )
+        if ctx.cur_m_info:
+            ctx.record_pillar_source("microstructure", "cachedb", ctx.ob_ts_est)
 
 
 class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
@@ -1704,7 +1983,10 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
             ctx.sym_variants,
             ctx.cur_p_items,
             ctx.rj,
+            allow_network=bool(ctx.allow_network),
         )
+        if ctx.m7d:
+            ctx.record_pillar_source("structural_7d", "cachedb")
 
 
 class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
@@ -1730,6 +2012,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 ctx.rj,
             )
         )
+        if ctx.t_entry:
+            ctx.record_pillar_source("short_slopes", "cachedb")
 
 
 class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
@@ -1759,6 +2043,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
             ctx.st_items_map,
             ctx.k_items_map,
             ctx.rj,
+            allow_network=bool(ctx.allow_network),
         )
 
 
@@ -1800,9 +2085,12 @@ class RecentFillsExecutionStage(PretradePillarCollectorBase):
     cls_name = "RecentFillsExecutionStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
+        before_cnt = len(ctx.telemetry)
         _collect_and_format_pretrade_recent_fills(
             ctx.cachedb_dir, ctx.symbol, ctx.quote_variants, ctx.telemetry, ctx.rj
         )
+        if len(ctx.telemetry) > before_cnt:
+            ctx.record_pillar_source("recent_fills", "cachedb")
 
 
 class MacroPillarsStage(PretradePillarCollectorBase):
@@ -1811,9 +2099,12 @@ class MacroPillarsStage(PretradePillarCollectorBase):
     cls_name = "MacroPillarsStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
+        before_cnt = len(ctx.telemetry)
         _collect_and_format_pretrade_macro_pillars(
             ctx.cachedb_dir, ctx.symbol, ctx.is_eq_sym, ctx.m24, ctx.btc_m24, ctx.cur_p_items, ctx.telemetry
         )
+        if len(ctx.telemetry) > before_cnt:
+            ctx.record_pillar_source("macro_pillars", "cachedb")
 
 
 DEFAULT_PRETRADE_TELEMETRY_STAGES: Tuple[PretradePillarCollectorBase, ...] = (
@@ -1829,20 +2120,25 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
 
     cls_name = "PretradeTelemetryOrchestrator"
 
-    def __init__(self, stages: Optional[Sequence[PretradePillarCollectorBase]] = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
+        *,
+        start_sync: bool = False,
+    ) -> None:
+        super().__init__(start_sync=start_sync)
         self.stages: Tuple[PretradePillarCollectorBase, ...] = tuple(stages or DEFAULT_PRETRADE_TELEMETRY_STAGES)
 
-    def collect(
+    def _build_evaluation_context(
         self,
         cachedb_dir: str,
         symbol: str,
         *,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
-        stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
+        allow_network: Optional[bool] = False,
+        now_ts: Optional[float] = None,
+    ) -> PretradeEvaluationContext:
         _rj = _resolve_read_json_cached()
         if (
             isinstance(regime_context, (str, os.PathLike))
@@ -1865,7 +2161,7 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
         is_eq_sym = session_policy.is_equity or is_equity_symbol(symbol)
         sym_variants, quote_variants = _scope_symbol_variants(symbol, is_eq_sym, is_usd_sym, sym_quotes)
 
-        ctx = PretradeEvaluationContext(
+        return PretradeEvaluationContext(
             symbol=symbol,
             cachedb_dir=cachedb_dir,
             regime_context=regime_context,
@@ -1877,10 +2173,167 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
             sym_variants=sym_variants,
             quote_variants=quote_variants,
             rj=_rj,
+            allow_network=allow_network,
+            now_ts=resolve_now_ts(now_ts),
+        )
+
+    def read_snapshot(
+        self,
+        cachedb_dir: str,
+        symbol: str,
+        *,
+        regime_context: Optional[Any] = None,
+        dur_sec: Optional[float] = None,
+        now_ts: Optional[float] = None,
+        max_age_sec: Optional[float] = None,
+        enforce_freshness: bool = False,
+        stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
+    ) -> PretradeTelemetrySnapshot:
+        """Read-only consumer entrypoint: assemble a ``PretradeTelemetrySnapshot`` from local ``cachedb/`` with zero network/writes."""
+        eff_now = resolve_now_ts(now_ts)
+        ctx = self._build_evaluation_context(
+            cachedb_dir,
+            symbol,
+            regime_context=regime_context,
+            dur_sec=dur_sec,
+            allow_network=False,
+            now_ts=eff_now,
+        )
+        for stage in (stages or self.stages):
+            stage.evaluate(ctx)
+        snap_ts = ctx.resolve_snapshot_ts()
+        return PretradeTelemetrySnapshot.from_raw(
+            ctx.telemetry,
+            symbol=symbol,
+            now_ts=eff_now,
+            source="cachedb",
+            ts=snap_ts,
+            pillar_sources=ctx.pillar_sources,
+            max_age_sec=max_age_sec,
+            enforce_freshness=enforce_freshness,
+        )
+
+    def refresh_caches(
+        self,
+        cachedb_dir: str = "cachedb",
+        symbol: str = "",
+        *,
+        now_ts: Optional[float] = None,
+    ) -> Dict[str, bool]:
+        """Producer-only entrypoint: refresh sibling microstructure, T212 position prices, and Yahoo 5d equity charts."""
+        if cachedb_dir == "cachedb":
+            cachedb_dir = get_cachedb_dir()
+        eff_now = resolve_now_ts(now_ts)
+        status: Dict[str, bool] = {
+            "microstructure_refreshed": False,
+            "t212_positions_refreshed": False,
+            "equity_chart_refreshed": False,
+        }
+        _rj = _resolve_read_json_cached()
+        sym_raw = str(symbol or "").strip()
+        if sym_raw:
+            session_policy = self.resolve_session_policy(sym_raw)
+            sym_quotes = compatible_quote_suffixes(sym_raw)
+            is_usd_sym = "USD" in sym_quotes
+            is_eq_sym = session_policy.is_equity or is_equity_symbol(sym_raw)
+            _, quote_variants = _scope_symbol_variants(sym_raw, is_eq_sym, is_usd_sym, sym_quotes)
+            try:
+                _ensure_fresh_pretrade_microstructure(
+                    cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
+                )
+                status["microstructure_refreshed"] = True
+            except Exception:
+                pass
+            if is_eq_sym and is_live_network_backfill_enabled():
+                try:
+                    sym_u_eq = sym_raw.upper()
+                    alt_series_24h, _ = load_symbol_price_series(cachedb_dir, sym_u_eq, include_7d=False)
+                    eq_rth_open = bool(is_symbol_market_open(sym_u_eq, eff_now))
+                    memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
+                    memo_ttl_eq = 240.0 if (eq_rth_open or memo_chart_eq is None) else 1800.0
+                    memo_fresh = bool(memo_chart_eq is not None and 0.0 <= (eff_now - memo_chart_eq[0]) < memo_ttl_eq)
+                    pts_5d_eq, _, _, _, _, _, _ = TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
+                        cachedb_dir,
+                        sym_u_eq,
+                        raw_series_24h=list(alt_series_24h),
+                        now_ts=eff_now,
+                        eq_rth_open=eq_rth_open,
+                        memo_chart=memo_chart_eq,
+                        memo_chart_fresh=memo_fresh,
+                        persist=True,
+                    )
+                    status["equity_chart_refreshed"] = bool(pts_5d_eq)
+                except Exception:
+                    pass
+        try:
+            vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+            if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
+                status["t212_positions_refreshed"] = bool(
+                    _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
+                )
+        except Exception:
+            pass
+        return status
+
+    def collect(
+        self,
+        cachedb_dir: str,
+        symbol: str,
+        *,
+        regime_context: Optional[Any] = None,
+        dur_sec: Optional[float] = None,
+        stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
+        allow_network: Optional[bool] = None,
+        now_ts: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        ctx = self._build_evaluation_context(
+            cachedb_dir,
+            symbol,
+            regime_context=regime_context,
+            dur_sec=dur_sec,
+            allow_network=allow_network,
+            now_ts=now_ts,
         )
         for stage in (stages or self.stages):
             stage.evaluate(ctx)
         return ctx.telemetry
+
+
+def read_pretrade_telemetry_snapshot(
+    symbol: str,
+    regime_context: Optional[Any] = None,
+    dur_sec: Optional[float] = None,
+    cachedb_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+    max_age_sec: Optional[float] = None,
+    enforce_freshness: bool = False,
+    stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
+) -> PretradeTelemetrySnapshot:
+    """Read-only consumer function returning an explicit ``PretradeTelemetrySnapshot`` from local ``cachedb/``."""
+    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator)
+    return orchestrator.read_snapshot(
+        cachedb_dir,
+        symbol,
+        regime_context=regime_context,
+        dur_sec=dur_sec,
+        now_ts=now_ts,
+        max_age_sec=max_age_sec,
+        enforce_freshness=enforce_freshness,
+        stages=stages,
+    )
+
+
+def refresh_pretrade_telemetry_caches(
+    symbol: str = "",
+    cachedb_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+) -> Dict[str, bool]:
+    """Producer-only function refreshing pre-trade caches (microstructure, T212 position prices, Yahoo 5d equity chart)."""
+    orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator)
+    return orchestrator.refresh_caches(cachedb_dir=cachedb_dir, symbol=symbol, now_ts=now_ts)
 
 
 def collect_pretrade_telemetry(
@@ -1890,6 +2343,8 @@ def collect_pretrade_telemetry(
     cachedb_dir: str = "cachedb",
     *,
     stages: Optional[Sequence[PretradePillarCollectorBase]] = None,
+    allow_network: Optional[bool] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) via ``PretradeTelemetryOrchestrator``."""
     orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator)
@@ -1899,10 +2354,13 @@ def collect_pretrade_telemetry(
         regime_context=regime_context,
         dur_sec=dur_sec,
         stages=stages,
+        allow_network=allow_network,
+        now_ts=now_ts,
     )
 
 
 __all__ = [
+    "DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC",
     "DEFAULT_PRETRADE_TELEMETRY_STAGES",
     "MacroPillarsStage",
     "Pillar2AndRegimeStage",
@@ -1916,7 +2374,11 @@ __all__ = [
     "PretradeShortSlopesKalmanStage",
     "PretradeStructural7dStage",
     "PretradeTelemetryOrchestrator",
+    "PretradeTelemetrySnapshot",
+    "PretradeTelemetryStage",
     "QuantitativeSeriesAndMicrostructureStage",
     "RecentFillsExecutionStage",
     "collect_pretrade_telemetry",
+    "read_pretrade_telemetry_snapshot",
+    "refresh_pretrade_telemetry_caches",
 ]

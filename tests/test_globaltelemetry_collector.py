@@ -412,5 +412,184 @@ def test_runtime_services_dependency_injection_and_zero_pytest_branches():
     assert res.stdout.strip() == "", f"Unexpected test-detection branches in app modules:\n{res.stdout}"
 
 
+def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract(temp_cache_dir, monkeypatch):
+    from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
+    from intelligence.sentiment.collectors import microstructure_collector as mc_mod
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc_mod
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        PretradeTelemetryOrchestrator,
+        PretradeTelemetrySnapshot,
+        read_pretrade_telemetry_snapshot,
+        refresh_pretrade_telemetry_caches,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        _HIGH_STAKE_DECISION_CACHE,
+        HighStakeGuard,
+    )
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        clear_post_stop_reentry_cache,
+    )
+
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    clear_post_stop_reentry_cache()
+
+    now_ts = 1_750_000_000.0
+    ob_payload = {
+        "symbol": "NVDA_US_EQ",
+        "mid_price": 135.50,
+        "best_bid": 135.48,
+        "best_ask": 135.52,
+        "bid_depth_usd": 45000.0,
+        "ask_depth_usd": 40000.0,
+        "imbalance_ratio": 0.56,
+        "largest_bid_wall_usd": 12000.0,
+        "largest_bid_wall_price": 135.00,
+        "largest_ask_wall_usd": 10000.0,
+        "largest_ask_wall_price": 136.00,
+        "spread_bps": 2.95,
+        "ts": now_ts - 25.0,
+    }
+    with open(os.path.join(temp_cache_dir, "orderbook_depth_NVDA_US_EQ.json"), "w", encoding="utf-8") as f:
+        json.dump(ob_payload, f)
+    with open(os.path.join(temp_cache_dir, "venue_balances_state.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "pos:t212:NVDA_US_EQ": {
+                    "symbol": "NVDA_US_EQ",
+                    "free": 5.0,
+                    "price": 135.50,
+                    "value_usd": 677.50,
+                    "ts": now_ts - 600.0,
+                }
+            },
+            f,
+        )
+
+    # Enable live network backfill flag to prove read-only consumer path still never triggers network/writes
+    monkeypatch.setattr(ptc_mod, "is_live_network_backfill_enabled", lambda: True)
+    monkeypatch.setattr(mc_mod, "is_live_network_backfill_enabled", lambda: True)
+    monkeypatch.setattr(ptc_mod, "get_cachedb_dir", lambda: temp_cache_dir)
+
+    network_calls: list[str] = []
+    monkeypatch.setattr(
+        ptc_mod,
+        "ensure_fresh_symbol_microstructure",
+        lambda *a, **kw: network_calls.append("microstructure"),
+    )
+    monkeypatch.setattr(
+        ptc_mod,
+        "_refresh_stale_t212_cached_positions",
+        lambda *a, **kw: network_calls.append("t212_refresh") or True,
+    )
+    monkeypatch.setattr(
+        mc_mod.EquityYahoo5dChartCollector,
+        "collect",
+        lambda self, *a, **kw: network_calls.append("yahoo_chart") or ([], [], [], False, False, 0.0, 0),
+    )
+
+    orchestrator = PretradeTelemetryOrchestrator()
+    assert orchestrator.is_read_only_consumer() is True
+
+    # 1. Read-only snapshot extraction has explicit identity, source, and age and triggers zero network calls
+    snap = read_pretrade_telemetry_snapshot("NVDA_US_EQ", cachedb_dir=temp_cache_dir, now_ts=now_ts)
+    assert isinstance(snap, PretradeTelemetrySnapshot)
+    assert snap.symbol == "NVDA_US_EQ"
+    assert snap.canonical_symbol == "NVDAUSEQ"
+    assert snap.asset_scope == "EQUITY"
+    assert snap.source == "cachedb"
+    assert snap.pillar_sources.get("orderbook") in ("cachedb", "memory_cache")
+    assert snap.ts == pytest.approx(now_ts - 25.0)
+    assert snap.age_sec == pytest.approx(25.0)
+    assert snap.is_fresh is True
+    assert snap.is_available is True
+    assert "Orderbook Depth Imbalance" in snap
+    assert network_calls == []
+
+    # 2. HighStakeGuard and PostStopReentryGuard accept explicit snapshot or read-only snapshot without network I/O
+    prompts_seen: list[str] = []
+    monkeypatch.setattr(
+        "intelligence.sentiment.guards.high_stake_guard.query_topic_json",
+        lambda client, topic, prompt, **kw: prompts_seen.append(prompt)
+        or {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"},
+    )
+    hs_guard = HighStakeGuard(gemini_client=object(), min_notional_eur=500.0, cache_ttl_sec=0.0)
+    dec_hs = hs_guard.check("NVDA_US_EQ", "BUY", price=135.50, qty=10.0, snapshot=snap, now=now_ts)
+    assert dec_hs.allowed is True
+    assert dec_hs.metadata["telemetry_symbol"] == "NVDAUSEQ"
+    assert dec_hs.metadata["telemetry_source"] == "cachedb"
+    assert dec_hs.metadata["telemetry_age_sec"] == pytest.approx(25.0)
+    assert dec_hs.metadata["telemetry_fresh"] is True
+    assert any("Telemetry Snapshot: symbol=NVDAUSEQ" in p for p in prompts_seen)
+    assert network_calls == []
+
+    # 3. Unavailable/stale telemetry preserves fallback_action and shadow/enforce policies without blocking on LLM
+    prompts_seen.clear()
+    unavail_snap = PretradeTelemetrySnapshot.unavailable("BTCUSDC", reason="telemetry_stale", now_ts=now_ts)
+    for fb_action, mode_val, exp_allowed, exp_brake, exp_scale in (
+        ("veto", "enforce", False, BrakeAction.HARD_VETO, 0.0),
+        ("downscale", "enforce", True, BrakeAction.DOWNSCALE_QTY, 0.5),
+        ("allow", "enforce", True, BrakeAction.NONE, 1.0),
+        ("veto", "shadow", True, BrakeAction.NONE, 1.0),
+    ):
+        g_hs = HighStakeGuard(
+            gemini_client=object(),
+            min_notional_eur=500.0,
+            fallback_action=fb_action,
+            mode=mode_val,
+            cache_ttl_sec=0.0,
+        )
+        d_hs = g_hs.check("BTCUSDC", "BUY", price=60000.0, qty=0.02, snapshot=unavail_snap, now=now_ts)
+        assert d_hs.allowed is exp_allowed
+        assert d_hs.brake_action == exp_brake
+        assert d_hs.suggested_scale == pytest.approx(exp_scale)
+        assert d_hs.metadata["telemetry_available"] is False
+        assert d_hs.metadata["telemetry_unavailable_reason"] == "telemetry_stale"
+        if mode_val == "shadow":
+            assert d_hs.shadow_decision is not None
+            assert d_hs.shadow_decision.allowed is False
+            assert d_hs.shadow_decision.brake_action == BrakeAction.HARD_VETO
+
+        g_ps = PostStopReentryGuard(
+            gemini_client=object(),
+            fallback_action=fb_action,
+            mode=mode_val,
+            notify_enabled=False,
+            cache_ttl_sec=0.0,
+        )
+        d_ps = g_ps.check(
+            "BTCUSDC",
+            current_price=60500.0,
+            last_sell_price=60000.0,
+            trough=59000.0,
+            bounce_pct=0.025,
+            snapshot=unavail_snap,
+            now=now_ts,
+        )
+        assert d_ps.allowed is exp_allowed
+        assert d_ps.brake_action == exp_brake
+    assert prompts_seen == []
+
+    # 4. fetch_guard_snapshot defaults to allow_network=False for all Pillar 2 guards
+    seen_fetch_kwargs: list[dict] = []
+
+    class _DummyCollector:
+        def fetch(self, symbol: str, **kwargs):
+            seen_fetch_kwargs.append(kwargs)
+            return {"symbol": symbol}
+
+    fetch_guard_snapshot(_DummyCollector(), "BTCUSDC", now=now_ts)
+    assert seen_fetch_kwargs == [{"allow_network": False, "now": now_ts}]
+
+    # 5. Producer refresh_pretrade_telemetry_caches / GlobalTelemetryCollector.update_pretrade_caches performs refresh
+    status = refresh_pretrade_telemetry_caches("NVDA_US_EQ", cachedb_dir=temp_cache_dir, now_ts=now_ts)
+    assert status["microstructure_refreshed"] is True
+    assert status["t212_positions_refreshed"] is True
+    assert "microstructure" in network_calls
+    assert "t212_refresh" in network_calls
+    assert "yahoo_chart" in network_calls
+
+
+
 
 
