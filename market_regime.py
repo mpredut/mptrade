@@ -28,10 +28,6 @@ from botcore import (
 from cachepaths import canonical_symbol_key as _clean_regime_symbol_key, normalize_venue_name
 
 
-def _resolve_provider_name(provider) -> Optional[str]:
-    return normalize_venue_name(provider, default=None)
-
-
 def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[float]:
     f = (safe_pos_float if pos_only else safe_float)(val, default=default)
     return (f / 1000.0 if f > 100_000_000_000 else f) if f is not None else default
@@ -186,11 +182,11 @@ class MarketRegimeContext:
         if provider is not None:
             if isinstance(provider, bool):
                 return False
-            target_prov = _resolve_provider_name(provider)
+            target_prov = normalize_venue_name(provider, default=None)
             if target_prov is None:
                 return not require_identity
             if self.provider is not None:
-                if _resolve_provider_name(self.provider) != target_prov:
+                if normalize_venue_name(self.provider, default=None) != target_prov:
                     return False
             elif require_identity:
                 return False
@@ -240,7 +236,7 @@ class MarketRegimeContext:
             else safe_float(trend_duration_seconds, default=-1.0)
         )
         sym_norm = symbol.strip().upper() if isinstance(symbol, str) and symbol.strip() else None
-        prov_norm = _resolve_provider_name(provider)
+        prov_norm = normalize_venue_name(provider, default=None)
         bench_norm = benchmark_symbol.strip().upper() if isinstance(benchmark_symbol, str) and benchmark_symbol.strip() else None
         return cls(
             decision=decision, resolved_trend=trend, evaluated_at=eval_ts,
@@ -599,16 +595,12 @@ class MarketRegimeService:
         return replace(decision, horizon=horizon.value, source=str(source),
                        fallback_used=_parse_bool_flag(fallback_used, False))
 
-    @staticmethod
-    def _pos_timestamp_seconds(value) -> Optional[float]:
-        return normalize_epoch_sec(value, default=None)
-
     @classmethod
     def _snapshot_observed_at(cls, snapshot: Optional[Mapping]) -> Optional[float]:
         if not snapshot or not isinstance(snapshot, Mapping):
             return None
         for field in ("observed_at", "ts"):
-            val = cls._pos_timestamp_seconds(snapshot.get(field))
+            val = normalize_epoch_sec(snapshot.get(field), default=None)
             if val is not None:
                 return val
         return None
@@ -731,7 +723,7 @@ class MarketRegimeService:
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         include_alternates = _parse_bool_flag(include_alternates, False)
         role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
-        evaluated_at = time.time() if now is None else self._pos_timestamp_seconds(now)
+        evaluated_at = time.time() if now is None else normalize_epoch_sec(now, default=None)
         if evaluated_at is None:
             raise ValueError("now must be a positive finite Unix timestamp")
 
@@ -1080,7 +1072,7 @@ class MarketRegimeService:
 
     @classmethod
     def _timestamp_seconds(cls, value) -> float:
-        val_f = cls._pos_timestamp_seconds(value)
+        val_f = normalize_epoch_sec(value, default=None)
         if val_f is None:
             raise ValueError("invalid closed-candle timestamp")
         return val_f

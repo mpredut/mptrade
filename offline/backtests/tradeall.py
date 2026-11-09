@@ -30,7 +30,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # monitortrades — see UNIFIED_BACKTEST_PLAN.md §7/§8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5). The
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
 from providers.replay_provider import SimClock as _SimClock, backtest_isolation_context  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
@@ -40,10 +40,6 @@ from offline.research.monitortrades_backtest.replay_trend_source import (  # noq
     DynamicReplayTrendSource,
 )
 import shadow_signals
-
-
-def _sanitize(value):
-    return shadow_signals.KalmanJournal._sanitize(value)
 
 
 FEE_PCT = 0.1   # comision spot Binance ~0.1% per leg (taker)
@@ -85,7 +81,7 @@ class BacktestBroker:
         self._log_f = None
 
     def write_outcome_row(self, cols):
-        line = "|".join(_sanitize(c) for c in cols) + "\n"
+        line = "|".join(sanitize_pipe_field(c) for c in cols) + "\n"
         if self._log_f is not None and not self._log_f.closed:
             self._log_f.write(line)
         else:
@@ -193,7 +189,7 @@ def make_decision_logger(out_dir, clock, file_handle=None):
         try:
             cols = [clock(), symbol, event, fields.get("state", ""), fields.get("old_state", ""),
                     fields.get("price", ""), fields.get("prev_confirm_count", "")]
-            line = "|".join(_sanitize(c) for c in cols) + "\n"
+            line = "|".join(sanitize_pipe_field(c) for c in cols) + "\n"
             if file_handle is not None and not file_handle.closed:
                 file_handle.write(line)
             else:

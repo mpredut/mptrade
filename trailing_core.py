@@ -242,9 +242,6 @@ def vwap_or_fallback(cost: object, qty: object, fallback: object) -> float:
     return safe_pos_float(fallback, default=0.0) or 0.0
 
 
-_vwap_or_fallback = vwap_or_fallback
-
-
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     c = safe_pos_float(current, default=None)
@@ -353,14 +350,14 @@ class TrailingCore:
         pending = raw_intent if isinstance(raw_intent, dict) else {}
         action, asset = extract_trailing_intent_action_asset(pending)
         filled = safe_nonneg_float(getattr(status, "filled_qty", None), 0.0)
-        avg = _vwap_or_fallback(getattr(status, "cost", None), filled, price)
+        avg = vwap_or_fallback(getattr(status, "cost", None), filled, price)
         if action == "SELL" and filled > 0:
             if not asset:
                 asset = self._asset_for_pair(pair)
 
             accum_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0)) + filled
             accum_cost = safe_nonneg_float(st.get("exit_sold_cost", 0.0)) + (avg * filled)
-            overall_avg = _vwap_or_fallback(accum_cost, accum_qty, avg)
+            overall_avg = vwap_or_fallback(accum_cost, accum_qty, avg)
 
             target_qty = safe_nonneg_float(st.get("target_exit_qty", 0.0))
             remaining_balance = self._remaining_qty(asset)
@@ -620,7 +617,7 @@ class TrailingCore:
         if total_pos * price < self.min_notional:
             sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
             if sold_qty > 0:
-                overall_avg = _vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
+                overall_avg = vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):
                     st["rebuy"] = {
@@ -676,8 +673,6 @@ class TrailingAdapterBase:
     _LOG_TAG: str = "[TRAIL]"
     _ENABLED_ENV_VAR: str = "TRAILING_ENABLED"
     _REBUY_MODE_MAP_ATTR: str = "REBUY_MODE_BY_SYMBOL"
-
-    _safe_float = staticmethod(safe_float)
 
     def _init_adapter_core(
         self,
@@ -863,15 +858,15 @@ class TrailingAdapterBase:
         )
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        price_f = self._safe_float(price, 0.0)
+        price_f = safe_float(price, 0.0)
         if self._VENUE_SLUG == "kraken":
-            peak_f = self._safe_float(peak, 0.0)
+            peak_f = safe_float(peak, 0.0)
             self.log(
                 f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
                 f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
             )
         else:
-            peak_f = self._safe_float(peak, price_f)
+            peak_f = safe_float(peak, price_f)
             self.log(
                 f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
                 f"(varf {peak_f:.4f}, scadere >= {trail}%)  "
@@ -880,7 +875,7 @@ class TrailingAdapterBase:
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         price_f = (
-            self._safe_float(price, 0.0)
+            safe_float(price, 0.0)
             if self._VENUE_SLUG == "kraken"
             else safe_nonneg_float(price, 0.0)
         )
@@ -892,17 +887,17 @@ class TrailingAdapterBase:
         )
 
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        price_f = self._safe_float(price, 0.0)
-        stop_f = self._safe_float(stop_at, 0.0)
+        price_f = safe_float(price, 0.0)
+        stop_f = safe_float(stop_at, 0.0)
         if self._VENUE_SLUG == "kraken":
-            peak_f = self._safe_float(peak, 0.0)
-            free_f = self._safe_float(free, 0.0)
+            peak_f = safe_float(peak, 0.0)
+            free_f = safe_float(free, 0.0)
             self.log(
                 f"  {self._LOG_TAG} {asset}: {price_f:.4f}  varf {peak_f:.4f}  "
                 f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
             )
         else:
-            peak_f = self._safe_float(peak, price_f)
+            peak_f = safe_float(peak, price_f)
             self.log(
                 f"  {self._LOG_TAG} {pair}: {price_f:.4f}  varf {peak_f:.4f}  "
                 f"sells below {stop_f:.4f} (-{trail}%)"
@@ -951,8 +946,8 @@ class TrailingAdapterBase:
             )
             self.log(f"  🛑 {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
         else:
-            price_f = self._safe_float(price, 0.0)
-            peak_f = self._safe_float(peak, price_f)
+            price_f = safe_float(price, 0.0)
+            peak_f = safe_float(peak, price_f)
             if result.outcome == "refused":
                 self.log(
                     f"  🛑 {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "

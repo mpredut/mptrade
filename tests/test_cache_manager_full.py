@@ -2214,11 +2214,11 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertIs(st_mgr.get_window("BTC/USDC"), st_mgr.get_window("BTCUSDC"))
         self.assertIs(st_mgr.get_analyzer("BTC/USDC"), st_mgr.get_analyzer("BTCUSDC"))
 
-        # tradeall._sanitize_field and rtrade revision/config validation
+        # tradeall.sanitize_pipe_field and rtrade revision/config validation
         import tradeall
         import rtrade
-        self.assertEqual(tradeall._sanitize_field("a|b\rc\nd"), "a/b c d")
-        self.assertEqual(tradeall._sanitize_field(None), "")
+        self.assertEqual(tradeall.sanitize_pipe_field("a|b\rc\nd"), "a/b c d")
+        self.assertEqual(tradeall.sanitize_pipe_field(None), "")
         with self.assertRaises(ValueError):
             rtrade._LivePairVenue._limit_kind(True)
         with self.assertRaises(ValueError):

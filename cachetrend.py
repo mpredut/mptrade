@@ -115,9 +115,6 @@ def _cm_attr(name: str, default=None):
     return resolve_patched_attr(name, default, modules=("cacheManager", getattr(cm_mod, "__name__", "")))
 
 
-_dynamic_window_key = pw.dynamic_window_key
-
-
 class CacheLongTrendManager(CacheManagerInterface):
     """Long-horizon trend cache backed by ``priceanalysis.json``."""
 
@@ -525,7 +522,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
-        primary_key = _dynamic_window_key(primary)
+        primary_key = pw.dynamic_window_key(primary)
         published_dyn[primary_key] = dict(
             final_trend=gradient,
             growth_coefficient=gc,
@@ -686,7 +683,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         for window in target_windows:
             dyn = self.get_short_trend_for_window(symbol, window, now=now)
             if dyn is not None:
-                published[_dynamic_window_key(dyn["window_seconds"])] = dyn
+                published[pw.dynamic_window_key(dyn["window_seconds"])] = dyn
         return published
 
     def _start_full_eval_loop(self):
@@ -882,7 +879,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 f"outside [{min_sec:.0f}, {max_sec:.0f}] "
                 f"-> clamped to {clamped:.0f}"
             )
-        return clamped, _dynamic_window_key(clamped), now
+        return clamped, pw.dynamic_window_key(clamped), now
 
     def _eval_and_persist_window_slice(
         self,
@@ -1048,15 +1045,11 @@ class CacheShortTrendManager(CacheManagerInterface):
         except Exception as e:
             print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
 
-    @staticmethod
-    def _read_symbol_trend_dict(path: str, label: str) -> dict:
-        return read_json_dict(path, default={}, recover_previous=True)
-
     def _read_live_symbol_file(self, symbol: str) -> dict:
-        return self._read_symbol_trend_dict(self._live_trend_file(symbol), "live")
+        return read_json_dict(self._live_trend_file(symbol), default={}, recover_previous=True)
 
     def _read_hist_symbol_file(self, symbol: str) -> dict:
-        return self._read_symbol_trend_dict(self._hist_trend_file(symbol), "hist")
+        return read_json_dict(self._hist_trend_file(symbol), default={}, recover_previous=True)
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""

@@ -281,11 +281,6 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
     return 0.0 if (val is None or abs(val) <= tol) else val
 
 
-def step_wols_cubic_slope(prices, sample_rate_sec=None) -> float:
-    """Backward-compatible alias for step_wols_slope."""
-    return step_wols_slope(prices, sample_rate_sec=sample_rate_sec)
-
-
 def effective_recent_gradient_seconds(window_seconds=None) -> float:
     """Return the recent-gradient sub-window duration in seconds.
 
@@ -550,10 +545,6 @@ class IncrementalTrendBuffer:
 
         tol = 1e-10 * max(1.0, abs(ref_last))
         return 0.0 if (val is None or abs(val) <= tol) else val
-
-    def step_wols_cubic(self, a: int, b: int, sample_rate_sec=None) -> float:
-        """Backward-compatible alias for step_wols_slope on [a, b]."""
-        return self.step_wols_slope(a, b, sample_rate_sec=sample_rate_sec)
 
     def _rebase(self) -> None:
         if not self.prices:

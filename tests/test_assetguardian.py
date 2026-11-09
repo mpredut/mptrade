@@ -111,6 +111,7 @@ class AssetGuardianTest(unittest.TestCase):
         })
         ag._local_price_samples.clear()
         ag._local_price_samples.update({symbol: [] for symbol in ag.TRACKED_SYMBOLS})
+        ag._rtrade_sell_block_since.clear()
 
     def test_symbol_window_behaviors(self):
         with self.subTest(msg="test_symbol_window_normalizes_ms_and_returns_price_min_max"):

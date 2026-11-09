@@ -233,10 +233,6 @@ def resolve_high_stake_min_notional_usd(
 _load_margins()
 
 
-def _provider_name(provider):
-    return normalize_venue_name(provider, default="")
-
-
 def _venue_cfg(
     provider_name,
     suffix: str = "",
@@ -247,7 +243,7 @@ def _venue_cfg(
 ):
     """Resolve `<venue><suffix>` with fallback to `default<suffix>` from `order_guard.conf`."""
     m = margins if isinstance(margins, dict) else _load_margins()
-    venue = (_provider_name(provider_name) or str(provider_name or "")).strip().lower()
+    venue = (normalize_venue_name(provider_name, default="") or str(provider_name or "")).strip().lower()
     venue_key = f"{venue}{suffix}" if venue else ""
     default_key = f"default{suffix}"
     if venue_key and venue_key in m:
@@ -378,7 +374,7 @@ def get_profit_guard_mode_cfg(
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     side_l = side_u.lower()
 
-    venue = _provider_name(provider_name).strip().lower()
+    venue = normalize_venue_name(provider_name, default="").strip().lower()
     if not venue:
         raise ValueError(f"Missing provider_name for get_profit_guard_mode_cfg({provider_name!r}, {order_type!r})")
 
@@ -657,7 +653,7 @@ def get_window_cfg(
     scaling lookback from 4h-12h in favorable trend to 48h-168h in adverse trend.
     Otherwise returns `<venue>_window_h` (or default_window_h) in seconds.
     """
-    name = _provider_name(provider_name)
+    name = normalize_venue_name(provider_name, default="")
     side = normalize_side(order_type)
 
     if side in ("BUY", "SELL"):
@@ -959,7 +955,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
-    provider_name = _provider_name(provider)
+    provider_name = normalize_venue_name(provider, default="")
     weight = resolve_trade_weight(symbol, side, provider_name)
     recent = provider.get_orders(symbol, side, 86400)
     if recent is None:
@@ -1005,7 +1001,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
-    name = _provider_name(provider)
+    name = normalize_venue_name(provider, default="")
     order_type = normalize_side(order_type)
     if order_type not in ("BUY", "SELL"):
         return False, "invalid_side"
@@ -1034,22 +1030,8 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
 
 
 
-_whale_collector = None
-_orderbook_collector = None
-_derivatives_collector = None
-
-from external_order_guard import (
-    get_derivatives_collector,
-    get_orderbook_collector,
-    get_whale_collector,
-)
-
-
 def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
     return normalize_trend_direction(raw_dir, default=None, preserve_bull_bear=True)
-
-
-_resolve_cachedb_dir = get_cachedb_dir
 
 
 _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
@@ -1061,7 +1043,7 @@ def _read_json_recovering(path: str) -> Optional[dict]:
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     try:
-        p = os.path.join(_resolve_cachedb_dir(), "cache_long_trend.json")
+        p = os.path.join(get_cachedb_dir(), "cache_long_trend.json")
         data = _read_json_recovering(p)
         if isinstance(data, dict):
             return lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
@@ -1174,7 +1156,7 @@ def _read_cached_price_history(
         return None
     win_sec = safe_pos_float(window_seconds, 7200.0)
     now_ts = resolve_now_ts(now)
-    cachedb_dir = _resolve_cachedb_dir()
+    cachedb_dir = get_cachedb_dir()
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
     cand_symbols = cache_symbol_variants(symbol, include_base=True)
@@ -1633,7 +1615,7 @@ def check_math_profit_reference(
     """
     side = normalize_side(order_type)
     opp_side = opposite_side(order_type)
-    provider_name = _provider_name(provider)
+    provider_name = normalize_venue_name(provider, default="")
     mode = get_profit_guard_mode_cfg(
         provider_name, side, module=module, reference_mode=reference_mode
     )

@@ -57,8 +57,6 @@ from strategies.rtrade_pair import (
     PairPolicy,
 )
 
-_finite_pos_float = safe_pos_float
-
 _RTRADE_HEARTBEAT_PATH = cache_path("rtrade.heartbeat")
 _RTRADE_HEARTBEAT_INTERVAL_SEC = 30.0
 _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC = 120.0
@@ -253,19 +251,17 @@ class _LivePairVenue:
         )
         return prefix if rev == 0 else f"{prefix}_{rev}"
 
-    _revision_from_kind = staticmethod(PairCoordinator._intent_revision)
-
     @classmethod
     def _limit_kind(cls, revision):
         return cls._kind_for_revision("limit", revision, label="limit")
 
     @classmethod
     def _limit_revision(cls, kind):
-        return cls._revision_from_kind(kind, "limit")
+        return PairCoordinator._intent_revision(kind, "limit")
 
     @classmethod
     def _hard_stop_revision_from_kind(cls, kind):
-        return cls._revision_from_kind(kind, "hard_stop")
+        return PairCoordinator._intent_revision(kind, "hard_stop")
 
     def _persist_callback(self, pair_id, side, kind, requested_qty):
         if self.pair_store is None:
@@ -285,16 +281,16 @@ class _LivePairVenue:
             return None
         implied_px = 0.0
         if status is not None:
-            fq = _finite_pos_float(getattr(status, "filled_qty", None), default=None)
-            fc = _finite_pos_float(getattr(status, "cost", None), default=None)
+            fq = safe_pos_float(getattr(status, "filled_qty", None), default=None)
+            fc = safe_pos_float(getattr(status, "cost", None), default=None)
             if fq is not None and fc is not None:
-                implied_px = _finite_pos_float(fc / fq, 0.0)
+                implied_px = safe_pos_float(fc / fq, 0.0)
         ticket_price = (
-            _finite_pos_float(
+            safe_pos_float(
                 pending.get("submitted_price") or pending.get("requested_price") or pending.get("price"), 0.0
             )
             or implied_px
-            or _finite_pos_float(self.current_price(), 0.0)
+            or safe_pos_float(self.current_price(), 0.0)
         )
         if ticket_price <= 0:
             raise _IntentRecoveryPending(
@@ -350,10 +346,10 @@ class _LivePairVenue:
         kind = str(pending.get("kind") or "limit")
         requested_qty = pending.get("requested_qty", pending.get("qty", record.get("qty")))
         requested_price = pending.get("requested_price", pending.get("price"))
-        req_qty_f = _finite_pos_float(requested_qty, default=None)
+        req_qty_f = safe_pos_float(requested_qty, default=None)
         if req_qty_f is None:
             raise ValueError(f"invalid requested_qty in rtrade intent {kind}:{side}")
-        req_px_f = None if requested_price is None else _finite_pos_float(requested_price, default=None)
+        req_px_f = None if requested_price is None else safe_pos_float(requested_price, default=None)
         if requested_price is not None and req_px_f is None:
             raise ValueError(f"invalid requested_price in rtrade intent {kind}:{side}")
         raw_created = pending.get("created_at") or record.get("created_ts")
@@ -650,7 +646,7 @@ class _LivePairVenue:
             if existing_state == "pending":
                 self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
                 return None
-        price = _finite_pos_float(self.current_price(), 0.0)
+        price = safe_pos_float(self.current_price(), 0.0)
         if price <= 0:
             print(f"[{self.symbol}] {side} hard-stop BLOCKED: price unavailable")
             return None
@@ -846,7 +842,7 @@ def _cancel_order_confirmed(symbol, order_id):
 
 def _remaining_after_canceled_order(status, submitted_qty):
     """Return the unfilled terminal remainder, or ``None`` for invalid state."""
-    sub_f = _finite_pos_float(submitted_qty, default=None)
+    sub_f = safe_pos_float(submitted_qty, default=None)
     fill_f = safe_nonneg_float(getattr(status, "filled_qty", None), default=None)
     if sub_f is None or fill_f is None or fill_f > sub_f + max(1e-12, sub_f * 1e-9):
         return None
@@ -871,8 +867,8 @@ def _place_failure_backoff(reason):
 
 def _followup_exit_price(symbol, side, fill_ref_price):
     """Anchor follow-up exit price to ensure the limit order targets profit."""
-    current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
-    fill_ref_price = _finite_pos_float(fill_ref_price, 0.0) or current_price
+    current_price = safe_pos_float(api.get_current_price(symbol), 0.0)
+    fill_ref_price = safe_pos_float(fill_ref_price, 0.0) or current_price
     if current_price <= 0:
         current_price = fill_ref_price
     side_u = str(side).upper()
@@ -940,10 +936,10 @@ class TradingBot:
     def __init__(self, symbol, qty, DEFAULT_ADJUSTMENT_PERCENT):
         self.symbol = symbol
         self.qty = qty
-        current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
+        current_price = safe_pos_float(api.get_current_price(symbol), 0.0)
         try:
-            last_buy = _finite_pos_float(mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0)
-            last_sell = _finite_pos_float(mkt.latest_fill_price(symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0), 0.0)
+            last_buy = safe_pos_float(mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0)
+            last_sell = safe_pos_float(mkt.latest_fill_price(symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0), 0.0)
         except Exception:
             last_buy = last_sell = 0.0
         self.filled_buy_price = round(
@@ -1127,10 +1123,10 @@ class TradingBot:
                 if getattr(self, "_round_aborted", False) and not is_opp_filled():
                     print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
                     return _complete_followup()
-                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                latest_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
                 if latest_price > 0:
                     current_price = latest_price
-                current_price = _finite_pos_float(current_price, 0.0) or _finite_pos_float(filled_opp_price, 0.0)
+                current_price = safe_pos_float(current_price, 0.0) or safe_pos_float(filled_opp_price, 0.0)
                 if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
@@ -1212,7 +1208,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (2)")
                     return _complete_followup(target_qty, recent_fill_px)
 
-                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                latest_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
                 if latest_price > 0:
                     current_price = latest_price
                 bad_day = (
@@ -1495,7 +1491,7 @@ class TradingBot:
                     and now - last_start_at >= RTRADE_PAIR_START_INTERVAL_SEC
                 )
                 if can_start and not _trend_too_strong(self.symbol):
-                    current_price = _finite_pos_float(venue.current_price(), 0.0)
+                    current_price = safe_pos_float(venue.current_price(), 0.0)
                     if current_price > 0:
                         start_side = None
                         for _ in range(len(RTRADE_PAIR_DIRECTIONS)):
@@ -1563,7 +1559,7 @@ class TradingBot:
         api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
 
     def _resume_after_single_side_fill(self, filled_side: str, stale_side: str, normal_hours: float, attr_name: str, mark_fn):
-        last_px = _finite_pos_float(
+        last_px = safe_pos_float(
             mkt.latest_fill_price(self.symbol, filled_side, normal_hours * 3600.0), getattr(self, attr_name)
         )
         if last_px > 0:
@@ -1616,7 +1612,7 @@ class TradingBot:
             while True:
                 _touch_rtrade_heartbeat()
                 try:
-                    current_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                    current_price = safe_pos_float(api.get_current_price(self.symbol), 0.0)
                     if current_price <= 0:
                         print(f"[{self.symbol}] Failed to fetch current price. Retrying in {WAIT_FOR_ORDER} seconds...")
                         time.sleep(WAIT_FOR_ORDER)
@@ -1665,7 +1661,7 @@ if __name__ == "__main__":
 
     initial_price = 0.0
     for attempt in range(1, 13):
-        initial_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
+        initial_price = safe_pos_float(api.get_current_price(symbol), 0.0)
         if initial_price > 0:
             break
         print(f"[{symbol}] startup: price feed not ready yet (attempt {attempt}/12); waiting 5s...")

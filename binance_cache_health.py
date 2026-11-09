@@ -172,7 +172,6 @@ def _publish_locked() -> None:
     atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
 
 
-_normalize_cache_name = normalize_class_name
 _INVALID_VERSION_STRINGS = frozenset({"", "nan", "null", "none", "inf", "-inf", "+inf"})
 
 
@@ -190,7 +189,7 @@ def _record_cache_version(
     now_ms: Optional[int] = None,
     update_sync: bool = False,
 ) -> bool:
-    norm_name = _normalize_cache_name(cache_name)
+    norm_name = normalize_class_name(cache_name)
     version = _clean_version_str(data_version)
     fields = _SYNC_FIELDS.get(norm_name) if (norm_name and version) else None
     if fields is None:
@@ -223,14 +222,6 @@ def record_persisted_version(cache_name: str, data_version: str, *, now_ms: Opti
     return _record_cache_version(cache_name, data_version, now_ms=now_ms, update_sync=False)
 
 
-def _positive_int(value, field: str) -> int:
-    return require_int(value, field, min_value=1)
-
-
-def _nonnegative_int(value, field: str) -> int:
-    return require_int(value, field, min_value=0)
-
-
 def _pid_is_alive(pid: int) -> bool:
     pid_val = exact_pos_int(pid, default=None)
     if pid_val is None:
@@ -261,15 +252,15 @@ def inspect_health(
         if state.get("schema_version") != SCHEMA_VERSION:
             return CacheHealthStatus(False, "account_cache_schema_mismatch")
 
-        writer_pid = _positive_int(state.get("writer_pid"), "writer_pid")
-        writer_started_ms = _positive_int(state.get("writer_started_at_ms"), "writer_started_at_ms")
-        generation = _nonnegative_int(state.get("generation"), "generation")
-        _positive_int(state.get("published_at_ms"), "published_at_ms")
+        writer_pid = require_int(state.get("writer_pid"), "writer_pid", min_value=1)
+        writer_started_ms = require_int(state.get("writer_started_at_ms"), "writer_started_at_ms", min_value=1)
+        generation = require_int(state.get("generation"), "generation", min_value=0)
+        require_int(state.get("published_at_ms"), "published_at_ms", min_value=1)
         stopping = state.get("stopping")
         if not isinstance(stopping, bool):
             raise ValueError("invalid stopping")
-        order_sync_ms = _nonnegative_int(state.get("order_sync_at_ms"), "order_sync_at_ms")
-        trade_sync_ms = _nonnegative_int(state.get("trade_sync_at_ms"), "trade_sync_at_ms")
+        order_sync_ms = require_int(state.get("order_sync_at_ms"), "order_sync_at_ms", min_value=0)
+        trade_sync_ms = require_int(state.get("trade_sync_at_ms"), "trade_sync_at_ms", min_value=0)
         order_version = state.get("order_cache_version")
         trade_version = state.get("trade_cache_version")
         if not isinstance(order_version, str) or not isinstance(trade_version, str):

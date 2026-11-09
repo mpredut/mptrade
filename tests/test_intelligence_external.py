@@ -316,14 +316,15 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             ts=time.time(),
         )
 
+        import external_order_guard
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         collector.record_snapshot(fakeout_snap)
 
-        orig_collector = order_guard._whale_collector
+        orig_collector = external_order_guard._whale_collector
         orig_margins = order_guard._MARGINS
         base_margins = dict(orig_margins or order_guard._load_margins())
         try:
-            order_guard._whale_collector = collector
+            external_order_guard._whale_collector = collector
 
             # Test SHADOW mode: logs warning but allows trade
             order_guard._MARGINS = {
@@ -358,10 +359,11 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             self.assertIn("short_covering_fakeout", reason_enforce)
             self.assertEqual(scale_enforce, 0.0)
         finally:
-            order_guard._whale_collector = orig_collector
+            external_order_guard._whale_collector = orig_collector
             order_guard._MARGINS = orig_margins
 
     def test_orderbook_wall_guard_shadow_and_enforce(self):
+        import external_order_guard
         import order_guard
         from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
 
@@ -381,11 +383,11 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         collector = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
         collector.record_snapshot(wall_snap)
 
-        orig_collector = order_guard._orderbook_collector
+        orig_collector = external_order_guard._orderbook_collector
         orig_margins = order_guard._MARGINS
         base_margins = dict(orig_margins or order_guard._load_margins())
         try:
-            order_guard._orderbook_collector = collector
+            external_order_guard._orderbook_collector = collector
 
             # Test SHADOW mode
             order_guard._MARGINS = {
@@ -413,10 +415,11 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             self.assertIn("orderbook_heavily_ask_dominated", reason_enforce)
             self.assertEqual(scale_enforce, 0.0)
         finally:
-            order_guard._orderbook_collector = orig_collector
+            external_order_guard._orderbook_collector = orig_collector
             order_guard._MARGINS = orig_margins
 
     def test_funding_crowding_guard_downscales_in_enforce(self):
+        import external_order_guard
         import order_guard
         from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
 
@@ -432,11 +435,11 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         collector = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
         collector.record_telemetry(crowded_snap)
 
-        orig_collector = order_guard._derivatives_collector
+        orig_collector = external_order_guard._derivatives_collector
         orig_margins = order_guard._MARGINS
         base_margins = dict(orig_margins or order_guard._load_margins())
         try:
-            order_guard._derivatives_collector = collector
+            external_order_guard._derivatives_collector = collector
 
             # Test SHADOW mode
             order_guard._MARGINS = {
@@ -465,19 +468,20 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             self.assertIn("long_crowding_extreme", reason_enforce)
             self.assertEqual(scale_enforce, 0.50)
         finally:
-            order_guard._derivatives_collector = orig_collector
+            external_order_guard._derivatives_collector = orig_collector
             order_guard._MARGINS = orig_margins
 
     def test_whale_guard_severe_and_moderate_taker_selling(self):
+        import external_order_guard
         import order_guard
         from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
 
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
-        orig_collector = order_guard._whale_collector
+        orig_collector = external_order_guard._whale_collector
         orig_margins = order_guard._MARGINS
         base_margins = dict(orig_margins or order_guard._load_margins())
         try:
-            order_guard._whale_collector = collector
+            external_order_guard._whale_collector = collector
             order_guard._MARGINS = {
                 **base_margins,
                 "intelligence_guards_mode": "enforce",
@@ -547,7 +551,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(scale, 1.0)
         finally:
-            order_guard._whale_collector = orig_collector
+            external_order_guard._whale_collector = orig_collector
             order_guard._MARGINS = orig_margins
 
     def test_rtrade_whale_flow_checks(self):

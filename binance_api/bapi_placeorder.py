@@ -8,7 +8,7 @@ from binance.exceptions import BinanceAPIException
 
 # MYLIB
 import order_guard
-import order_lifecycle as _outcomes_log
+import order_lifecycle
 import instrument_registry as sym
 import botcore as cfg
 from botcore import (
@@ -546,7 +546,7 @@ def place_safe_order(order_type, symbol, price, qty=None,
     )
 
 
-ORDER_OUTCOMES_LOG_DIR = _outcomes_log.ORDER_OUTCOMES_LOG_DIR
+ORDER_OUTCOMES_LOG_DIR = order_lifecycle.ORDER_OUTCOMES_LOG_DIR
 
 
 def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC,

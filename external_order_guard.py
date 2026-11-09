@@ -11,7 +11,6 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 from __future__ import annotations
 
 import importlib
-import sys
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag, obj_attr, safe_float
@@ -36,9 +35,6 @@ _MICRO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
 
 
 def _get_collector(attr_name: str, module_path: str, cls_name: str):
-    og = sys.modules.get("order_guard")
-    if og and getattr(og, attr_name, None) is not None:
-        return getattr(og, attr_name)
     cur = globals().get(attr_name)
     if cur is None:
         cur = getattr(importlib.import_module(module_path), cls_name)()

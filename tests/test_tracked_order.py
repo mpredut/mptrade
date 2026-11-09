@@ -5,7 +5,7 @@ from unittest import mock
 
 from providers.strategy_executor import OrderStatus, SubmissionOutcome
 from order_retry import (
-    OrderSubmissionRefused,
+    SubmissionRefused,
     TrackedOrderLifecycle,
     propagate_submission_refusal,
 )
@@ -129,7 +129,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
 
     def test_instrument_outcome_bridge_preserves_refused_vs_unknown(self):
         with self.assertRaisesRegex(
-                OrderSubmissionRefused, "below_min_notional"):
+                SubmissionRefused, "below_min_notional"):
             propagate_submission_refusal(
                 None,
                 {"state": "refused", "reason": "below_min_notional"},
@@ -151,7 +151,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         result = self.lifecycle.submit(
             self.intent(), persist=self.store.persist,
             submit=lambda: (_ for _ in ()).throw(
-                OrderSubmissionRefused("trend_deferred")),
+                SubmissionRefused("trend_deferred")),
         )
 
         self.assertEqual(result.outcome, "refused")
@@ -320,7 +320,7 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         for _ in range(3):
             res = lifecycle.submit(
                 intent, persist=self.store.persist,
-                submit=lambda: (_ for _ in ()).throw(OrderSubmissionRefused("profit_guard")),
+                submit=lambda: (_ for _ in ()).throw(SubmissionRefused("profit_guard")),
             )
             self.assertEqual(res.outcome, "refused")
         self.assertEqual([e[0] for e in audited], ["submit_requested", "submit_refused"])

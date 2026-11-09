@@ -35,14 +35,6 @@ T = TypeVar("T")
 _MISSING = object()
 
 
-def _exact_nonneg_int(val: Any) -> int | None:
-    return exact_nonneg_int(val, default=None)
-
-
-def _positive_chunk_size(chunk_size: Any, default: int) -> int:
-    return exact_pos_int(chunk_size, default=default)
-
-
 def _resolve_target_path(path: Any, *, abspath: bool = False) -> str:
     """Validate ``path`` and resolve its canonical ``cachedb/<subdomain>/`` location."""
     if path is None or isinstance(path, (bool, int, float, bytes)):
@@ -61,7 +53,7 @@ def _json_dump_kwargs(
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"ensure_ascii": _parse_bool_flag(ensure_ascii, True)}
     if include_format_opts:
-        kwargs["indent"] = _exact_nonneg_int(indent)
+        kwargs["indent"] = exact_nonneg_int(indent, default=None)
         kwargs["sort_keys"] = _parse_bool_flag(sort_keys, False)
         kwargs["separators"] = separators
         kwargs["allow_nan"] = _parse_bool_flag(allow_nan, False)
@@ -372,7 +364,7 @@ def atomic_gzip_file(
 ) -> str:
     """Compress ``source`` into ``destination`` (default ``<source>.gz``) atomically."""
     remove_source = _parse_bool_flag(remove_source, False)
-    eff_chunk = _positive_chunk_size(chunk_size, 1024 * 1024)
+    eff_chunk = exact_pos_int(chunk_size, default=1024 * 1024)
     source_path = os.path.abspath(os.fspath(source))
     target_path = os.path.abspath(
         os.fspath(destination) if destination is not None else f"{source_path}.gz"
@@ -406,7 +398,7 @@ def read_tail_lines(
     max_b = exact_pos_int(max_bytes, default=None) if max_bytes is not None else None
     if (limit is not None and limit_i is None) or (max_bytes is not None and max_b is None) or (limit_i is None and max_b is None):
         return []
-    eff_chunk = max_b if limit_i is None else _positive_chunk_size(chunk_size, 65536)
+    eff_chunk = max_b if limit_i is None else exact_pos_int(chunk_size, default=65536)
     chunks: list[bytes] = []
     newline_count = 0
     try:
@@ -457,13 +449,13 @@ def read_tail_jsonl_dicts(
 
 def read_last_jsonl_dict(path: str, tail_bytes: int = 4096) -> dict[str, Any] | None:
     """Read and parse the last JSON dict from a JSONL file using bounded tail reads."""
-    items = read_tail_jsonl_dicts(path, limit=1, chunk_size=_positive_chunk_size(tail_bytes, 4096))
+    items = read_tail_jsonl_dicts(path, limit=1, chunk_size=exact_pos_int(tail_bytes, default=4096))
     return items[-1] if items else None
 
 
 def truncate_file_bytes(path: str, size: int) -> None:
     """Durably truncate ``path`` back to ``size`` bytes."""
-    size_i = _exact_nonneg_int(size)
+    size_i = exact_nonneg_int(size, default=None)
     if size_i is None:
         raise ValueError("size must be a non-negative integer")
     with open(_resolve_target_path(path), "r+b") as handle:
@@ -490,7 +482,7 @@ def prune_rotated_archives(base_filename: str, keep_count: int) -> list[str]:
             continue
     candidates.sort(key=lambda item: item[0], reverse=True)
     archives = [path for _, path in candidates]
-    keep = _exact_nonneg_int(keep_count) or 0
+    keep = exact_nonneg_int(keep_count, default=0) or 0
     for old_archive in archives[keep:]:
         discard_generation_file(old_archive)
     return archives[:keep]

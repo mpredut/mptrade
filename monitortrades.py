@@ -27,7 +27,7 @@ import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument as _Instrument
 from instrument_registry import load_for
-from intelligence.internal.state.volatility import resolve_cached_volatility_1h
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h as get_symbol_volatility_1h
 import order_guard
 import order_retry
 import pricewindow as pw
@@ -615,8 +615,6 @@ def _load_mt_conf(path=None):
 
 
 _load_mt_conf()
-
-get_symbol_volatility_1h = resolve_cached_volatility_1h
 
 _CACHED_EXIT_MGR_KEY: Optional[tuple] = None
 _CACHED_EXIT_MGR: Optional[PositionExitManager] = None

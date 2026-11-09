@@ -57,9 +57,6 @@ def _is_backup(path: str) -> bool:
     return any(token in name for token in (".pre_", ".bak", ".backup", ".tmp"))
 
 
-_clean_id = _clean_single_order_id
-
-
 def _first(row: dict, *names):
     for name in names:
         value = row.get(name)
@@ -87,9 +84,9 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str, inherited:
         return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
-    client_order_id = _clean_id(_first(row, "client_order_id")) or _clean_id(_first(nested_kwargs, "client_order_id"))
-    order_id = _clean_id(_first(row, "order_id", "id", "txid"))
-    intent_id = _clean_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
+    client_order_id = _clean_single_order_id(_first(row, "client_order_id")) or _clean_single_order_id(_first(nested_kwargs, "client_order_id"))
+    order_id = _clean_single_order_id(_first(row, "order_id", "id", "txid"))
+    intent_id = _clean_single_order_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol", "sz", "size")
     if not intent_id or not side or isinstance(side, bool) or safe_pos_float(quantity, default=None) is None:

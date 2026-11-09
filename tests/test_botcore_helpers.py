@@ -199,10 +199,10 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
         from lock.trade_cooldown import normalize_scalar_order_id
         from order_retry import _rev_int
-        from state_io import _exact_nonneg_int
+        from state_io import exact_nonneg_int
         self.assertEqual(normalize_scalar_order_id(large_id), large_id)
         self.assertEqual(_rev_int(large_id), large_id)
-        self.assertEqual(_exact_nonneg_int(large_id), large_id)
+        self.assertEqual(exact_nonneg_int(large_id, default=None), large_id)
 
     def test_clamp_parse_ratio_validate_env_and_heartbeat_helpers(self):
         self.assertEqual(botcore.clamp_float(1.5, 0.0, 1.0, default=0.0), 1.0)
@@ -619,16 +619,16 @@ def test_autonomous_intent_gateway_extract_price():
 
 
 def test_price_analysis_parse_strict_int():
-    from priceAnalysis import _parse_strict_int
-    assert _parse_strict_int(5) == 5
-    assert _parse_strict_int(5.0) == 5
-    assert _parse_strict_int("5.0") == 5
+    from priceAnalysis import require_int
+    assert require_int(5, error_msg="not integral") == 5
+    assert require_int(5.0, error_msg="not integral") == 5
+    assert require_int("5.0", error_msg="not integral") == 5
     with pytest.raises(ValueError, match="not integral"):
-        _parse_strict_int(3.5)
+        require_int(3.5, error_msg="not integral")
     with pytest.raises(ValueError, match="not integral"):
-        _parse_strict_int(None)
+        require_int(None, error_msg="not integral")
     with pytest.raises(ValueError, match="not integral"):
-        _parse_strict_int(True)
+        require_int(True, error_msg="not integral")
 
 
 def test_execution_audit_json_safe_value():

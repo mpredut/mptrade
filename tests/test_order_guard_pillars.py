@@ -476,7 +476,6 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
     ))
 
     with patch("external_order_guard.get_orderbook_collector", return_value=ob_collector), \
-         patch("order_guard.get_orderbook_collector", return_value=ob_collector), \
          patch.dict(order_guard._load_margins(), {
              "external_guard_mode": "enforce",
              "orderbook_wall_guard_mode": "enforce",

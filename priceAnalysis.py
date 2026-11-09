@@ -377,10 +377,6 @@ _TREND_MEMO_MAX_ENTRIES = 128
 _TREND_MEMO_NONE = object()
 
 
-def _parse_strict_int(val):
-    return require_int(val, error_msg="not integral")
-
-
 def _clone_trend_result(value):
     if value is None:
         return None
@@ -442,9 +438,9 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     try:
         wh_f = safe_pos_float(window_hours, default=None)
         sh_f = safe_pos_float(step_hours, default=None)
-        mcb_i = _parse_strict_int(min_consecutive_blocks)
-        nt_i = _parse_strict_int(noise_tolerance)
-        mpw_i = _parse_strict_int(min_points_per_window)
+        mcb_i = require_int(min_consecutive_blocks, error_msg="not integral")
+        nt_i = require_int(noise_tolerance, error_msg="not integral")
+        mpw_i = require_int(min_points_per_window, error_msg="not integral")
         lag_f = safe_nonneg_float(detection_lag_hours, default=None)
     except (TypeError, ValueError, OverflowError):
         return None
@@ -707,10 +703,6 @@ def write_all_trends(all_trends, filename=None):
         print(f"Could not write {filename}: {exc}")
     
     return all_trends
-    
-    
-def _normalize_up_down_trend(raw_dir) -> Optional[str]:
-    return normalize_trend_direction(raw_dir, default=None)
 
 
 def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=None, quant_seconds=3600*24, draw=False):
@@ -763,7 +755,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
         return None
 
-    direction = _normalize_up_down_trend(trend.get("direction"))
+    direction = normalize_trend_direction(trend.get("direction"), default=None)
     if direction is None:
         return None
 
@@ -873,7 +865,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
     side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         return np.array([]), np.array([])
-    trend_norm = _normalize_up_down_trend(trend)
+    trend_norm = normalize_trend_direction(trend, default=None)
     if trend_norm is None:
         return np.array([]), np.array([])
     aligned = (

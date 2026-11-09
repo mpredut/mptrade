@@ -275,7 +275,7 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True), \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
              patch.object(monitororder.mkt, "place", return_value=replacement_order), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
             self.assertEqual(mock_notify.call_count, 1)
@@ -426,7 +426,7 @@ class TestOrderRetryTTL:
              patch.object(monitororder.api, "cancel_order", return_value=True), \
              patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
              patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
         assert len(placed) == 1
@@ -455,7 +455,7 @@ class TestOrderRetryTTL:
              patch.object(monitororder.api, "cancel_order", return_value=True), \
              patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
              patch.object(monitororder.mkt, "place", side_effect=fake_place), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "SELL")
         assert len(placed) == 1

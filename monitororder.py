@@ -26,7 +26,7 @@ from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
-import order_lifecycle as accepted_order_persistence
+import order_lifecycle
 from botcore import (
     float_env,
     format_price_log,
@@ -38,8 +38,6 @@ from botcore import (
     safe_pos_float,
     touch_module_heartbeat,
 )
-
-_safe_pos_float = safe_pos_float
 
 _load_dotenv()
 
@@ -59,9 +57,6 @@ MODULE_ORDER_TTLS = {
 }
 
 
-_clean_monitor_id = clean_order_id_str
-
-
 def _format_duration_hm(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h" if seconds >= 3600 else f"{seconds / 60:.1f}m"
 
@@ -75,8 +70,8 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     4. Enforce MAX_GLOBAL_ORDER_TTL_SEC hard cap (3 days) without exception.
     """
     custom_map = custom_ttl_map if isinstance(custom_ttl_map, dict) else {}
-    oid_str = _clean_monitor_id(order_id)
-    cid_str = _clean_monitor_id(client_order_id)
+    oid_str = clean_order_id_str(order_id)
+    cid_str = clean_order_id_str(client_order_id)
 
     # 1. Custom TTL from placement
     for candidate_key in (oid_str, cid_str):
@@ -267,7 +262,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
             continue
 
-        oid_str = _clean_monitor_id(order_id) or _clean_monitor_id(order)
+        oid_str = clean_order_id_str(order_id) or clean_order_id_str(order)
         if not oid_str:
             print(f"Invalid order ID ({order_id}) for {symbol}, skipping.")
             continue
@@ -438,7 +433,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 else None
             )
             place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
-            client_order_id = _clean_monitor_id(place_kw.get("client_order_id")) or None
+            client_order_id = clean_order_id_str(place_kw.get("client_order_id")) or None
             if not client_order_id:
                 order_retry.complete_claim(
                     replacement_claim, "success")
@@ -563,7 +558,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     state="unknown", reason=f"replacement_exception:{exc}")
 
             if new_order:
-                tracked = accepted_order_persistence.complete_accepted_claim(
+                tracked = order_lifecycle.complete_accepted_claim(
                     order_retry, replacement_claim, order=new_order,
                     provider_name="Binance", symbol=symbol, side=order_type)
                 if not tracked:
@@ -576,7 +571,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     if isinstance(new_order, dict) and "orderId" in new_order
                     else extract_order_id(new_order)
                 )
-                new_oid = _clean_monitor_id(raw_new_id) or str(raw_new_id)
+                new_oid = clean_order_id_str(raw_new_id) or str(raw_new_id)
                 _derived_replacement_order_ids.add(new_oid)
                 _notified_placed_order_ids.add(new_oid)
                 orders[raw_new_id] = {
@@ -644,7 +639,7 @@ def warmup_open_orders():
                 orders = api.get_open_orders(side, symbol)
                 if orders and isinstance(orders, dict):
                     for oid in orders.keys():
-                        clean_oid = _clean_monitor_id(oid)
+                        clean_oid = clean_order_id_str(oid)
                         if clean_oid:
                             _notified_placed_order_ids.add(clean_oid)
                         _notified_placed_order_ids.add(str(oid))

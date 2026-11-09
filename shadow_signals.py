@@ -82,8 +82,6 @@ class KalmanJournal:
         self.out_dir = out_dir
         self.fixed_path = fixed_path
 
-    _sanitize = staticmethod(sanitize_pipe_field)
-
     def _path(self) -> str:
         return self.fixed_path or os.path.join(self.out_dir, f"tradeall_shadow_{date.today().isoformat()}.log")
 
@@ -94,7 +92,7 @@ class KalmanJournal:
             if not self.fixed_path:
                 os.makedirs(self.out_dir, exist_ok=True)
             cols = (ts, symbol, signal, "trend_start", state, old_state, price, vel, vel_std)
-            append_text_line(self._path(), "|".join(self._sanitize(c) for c in cols))
+            append_text_line(self._path(), "|".join(sanitize_pipe_field(c) for c in cols))
         except Exception as e:  # noqa: BLE001 — Logging must not stop the host.
             print(f"[shadow_signals] error writing kalman journal: {e}")
 

@@ -275,10 +275,6 @@ def _finite_float(raw, *, positive=False):
     return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
 
 
-def _clamp_confidence(raw) -> float:
-    return clamp_float(raw, 0.0, 1.0, default=0.0)
-
-
 def _price_row(row):
     """Normalize a Price24 row to ``(timestamp_seconds, positive_price)``."""
     if isinstance(row, dict):
@@ -495,7 +491,7 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         "recommended_action": str(data.get("recommended_action") or "HOLD").strip().upper(),
         "market_bias": str(data.get("market_bias") or "NEUTRAL").strip().upper(),
         "risk_level": str(data.get("risk_level") or "MODERATE").strip().upper(),
-        "confidence": _clamp_confidence(data.get("confidence")),
+        "confidence": clamp_float(data.get("confidence"), 0.0, 1.0, default=0.0),
         "ts": eval_ts,
     }
 
@@ -522,7 +518,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
     action = str(assessment.get("recommended_action") or "HOLD").strip().upper()
     bias = str(assessment.get("market_bias") or "NEUTRAL").strip().upper()
     risk = str(assessment.get("risk_level") or "MODERATE").strip().upper()
-    conf = _clamp_confidence(assessment.get("confidence"))
+    conf = clamp_float(assessment.get("confidence"), 0.0, 1.0, default=0.0)
 
     # 1. SELL threshold multiplier
     if action == "DEFENSIVE" or (bias == "BEARISH" and risk in {"HIGH", "EXTREME"}):
@@ -1123,21 +1119,15 @@ def _normalize_legacy_pending(symbol, pending, side, kind):
     return normalized
 
 
-def _normalize_legacy_sell_pending(symbol, pending):
-    return _normalize_legacy_pending(symbol, pending, "SELL", "ASSET_GUARDIAN_SELL_TIER")
-
-
-def _normalize_legacy_buy_pending(symbol, pending):
-    return _normalize_legacy_pending(symbol, pending, "BUY", "ASSET_GUARDIAN_BUY_TIER")
-
-
-def _reconcile_pending_campaign(symbol, kind, state, normalize_fn, record_terminal_fn):
+def _reconcile_pending_campaign(symbol, kind, state, record_terminal_fn):
     """Adapt generic tracked-order truth to BUY/SELL campaign accounting."""
     pending = state.get("pending")
     if not isinstance(pending, dict) or not pending:
         return state, "none"
     side_label = kind.upper()
-    pending = normalize_fn(symbol, pending)
+    pending = _normalize_legacy_pending(
+        symbol, pending, side_label, f"ASSET_GUARDIAN_{side_label}_TIER"
+    )
     box, persist = _campaign_pending_persistor(symbol, kind, state)
     if pending != state.get("pending"):
         persist(pending)
@@ -1166,13 +1156,11 @@ def _reconcile_pending_campaign(symbol, kind, state, normalize_fn, record_termin
 
 
 def _reconcile_pending_sell(symbol, state):
-    return _reconcile_pending_campaign(
-        symbol, "sell", state, _normalize_legacy_sell_pending, _record_terminal_sell)
+    return _reconcile_pending_campaign(symbol, "sell", state, _record_terminal_sell)
 
 
 def _reconcile_pending_buy(symbol, state):
-    return _reconcile_pending_campaign(
-        symbol, "buy", state, _normalize_legacy_buy_pending, _record_terminal_buy)
+    return _reconcile_pending_campaign(symbol, "buy", state, _record_terminal_buy)
 
 
 def _active_sell_orders(provider, symbol):
@@ -1606,7 +1594,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
-    p3b_conf = _clamp_confidence(p3b_assessment.get("confidence")) if isinstance(p3b_assessment, dict) else 0.0
+    p3b_conf = clamp_float(p3b_assessment.get("confidence"), 0.0, 1.0, default=0.0) if isinstance(p3b_assessment, dict) else 0.0
     p3b_str = (
         f"{p3b_assessment.get('recommended_action')}/{p3b_assessment.get('market_bias')}"
         f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"

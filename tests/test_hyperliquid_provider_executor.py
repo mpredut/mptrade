@@ -385,7 +385,7 @@ class HLExecutorContractTest(unittest.TestCase):
                          side_effect=lambda _s, _o, _p, qty, _a, **_k: qty),
             patch.object(self.p, "fee_cap_quantity",
                          side_effect=lambda _s, _o, _p, available: available),
-            patch.object(instrument_module._outcomes_log, "log_order_outcome"),
+            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
         ):
             placed = instrument.place(
                 "BUY", 60.0, 1.0, smart=False, wait_for_trend=False,

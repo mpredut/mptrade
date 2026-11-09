@@ -34,8 +34,7 @@ from providers.quantity import (
 )
 from providers.strategy_executor import SubmissionRefused
 import order_guard
-import order_lifecycle as _outcomes_log
-import order_lifecycle as accepted_order_persistence
+import order_lifecycle
 import order_retry
 
 
@@ -49,14 +48,6 @@ def _accepted_order_payload(payload):
     if str(payload.get("status") or "").upper() in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
         return False
     return extract_order_id(payload) is not None
-
-
-_order_id_from_payload = extract_order_id
-
-
-def _is_terminal_filter_refusal(reason) -> bool:
-    """Use the retry subsystem's shared deterministic-refusal classification."""
-    return order_retry.is_terminal_filter_refusal(reason)
 
 
 def _is_aborted(cb: Any) -> bool:
@@ -803,16 +794,16 @@ class Instrument:
             except Exception:
                 caller = None
             terminal_filter_refusal = bool(
-                reason and not submit_attempted and _is_terminal_filter_refusal(reason)
+                reason and not submit_attempted and order_retry.is_terminal_filter_refusal(reason)
             )
-            _outcomes_log.log_order_outcome(
+            order_lifecycle.log_order_outcome(
                 self.symbol, side_u, price, qty, submission_state,
                 None if order else reason, order_kind, caller=caller,
                 regime_context=regime_context)
             if order is not None and not caller_owns_retry:
                 try:
                     if prequeued_claim is not None:
-                        tracked = accepted_order_persistence.complete_accepted_claim(
+                        tracked = order_lifecycle.complete_accepted_claim(
                             order_retry, prequeued_claim, order=order,
                             provider_name=self.provider_name,
                             symbol=self.symbol, side=side_u)
@@ -827,7 +818,7 @@ class Instrument:
                                 side=side_u.lower(), qty=qty, price=price,
                                 market=is_market, kind=order_kind,
                                 client_order_id=prequeued_client_order_id,
-                                order_id=_order_id_from_payload(order),
+                                order_id=extract_order_id(order),
                             )
                 except Exception as _e:  # noqa: BLE001
                     print(f"[{self.symbol}] {side_u} tracking accepted failed: {_e}")

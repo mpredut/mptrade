@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_engine as strat  # noqa: E402
-from order_retry import OrderSubmissionRefused  # noqa: E402
+from order_retry import SubmissionRefused  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -195,7 +195,7 @@ class ProviderLivePathTest(unittest.TestCase):
             self.fake = FakeExecutor()
             self.s = _strategy(self.fake)
             self.fake.submit_order = MagicMock(
-                side_effect=OrderSubmissionRefused("Insufficient spot balance"),
+                side_effect=SubmissionRefused("Insufficient spot balance"),
             )
             self.assertFalse(
                 self.s._place("sell", 1.0, 60.0, kind="TP", market=True)

@@ -68,9 +68,6 @@ WEEK_SECONDS = 7 * DAY_SECONDS
 MEMORY_TRIM_SECONDS = 300
 
 
-_sanitize_field = sanitize_pipe_field
-
-
 def _daily_log_path(prefix, date):
     return os.path.join(LOGGER_DIR, f"{prefix}{date.isoformat()}.log")
 
@@ -198,7 +195,7 @@ def sample_current_prices(symbols):
         for symbol, sample_ts, current_price in pending:
             # Use the snapshot timestamp, not our clock. If the source freezes,
             # a current timestamp on stale data would create a false jagged block.
-            lines.append(f"{sample_ts}|{_sanitize_field(symbol)}|{current_price}")
+            lines.append(f"{sample_ts}|{sanitize_pipe_field(symbol)}|{current_price}")
         append_text_line(path, "\n".join(lines))
         for symbol, sample_ts, _ in pending:
             _LAST_SAMPLED_TS[symbol] = sample_ts

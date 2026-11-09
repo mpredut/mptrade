@@ -12,7 +12,7 @@ import utils as u
 from instrument_registry import casefold_get, select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
-import order_lifecycle as order_outcomes_log
+import order_lifecycle
 from providers.base import extract_order_id, normalize_side
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
@@ -132,9 +132,6 @@ def _validate_tradeall_config():
 _validate_tradeall_config()
 
 
-_sanitize_field = sanitize_pipe_field
-
-
 def log_decision(symbol, event, **fields):
     """Write one condensed, pipe-delimited row per real trend transition.
 
@@ -148,7 +145,7 @@ def log_decision(symbol, event, **fields):
         cols = [time.time(), symbol, event,
                 fields.get("state", ""), fields.get("old_state", ""), fields.get("price", ""),
                 fields.get("prev_confirm_count", "")]
-        append_text_line(path, "|".join(_sanitize_field(c) for c in cols))
+        append_text_line(path, "|".join(sanitize_pipe_field(c) for c in cols))
     except Exception as e:
         print(f"[log_decision] error writing decisions log: {e}")
 
@@ -246,7 +243,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     if blocked:
         print(f"[KALMAN-GATE] {action} {symbol} BLOCKED (kalman_trend={trend}, mode={mode}, reason={reason})")
         try:
-            logger_fn = GATE_OUTCOME_LOG or order_outcomes_log.log_order_outcome
+            logger_fn = GATE_OUTCOME_LOG or order_lifecycle.log_order_outcome
             logger_fn(symbol, action, price, None,
                       "refused", f"kalman_gate_{mode}(trend={trend})", reason)
         except Exception as _e:  # noqa: BLE001

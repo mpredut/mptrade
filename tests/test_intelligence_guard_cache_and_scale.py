@@ -3857,7 +3857,7 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
     from intelligence.macro.news_feed_collector import NewsFeedCollector
 
     # 1. _read_cached_price_history honors `now` and rejects future-dated points
-    monkeypatch.setattr(order_guard, "_resolve_cachedb_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(order_guard, "get_cachedb_dir", lambda: str(tmp_path))
     p24 = tmp_path / "cache_24_price_TAOUSDC.json"
     p24.write_text(
         json.dumps(
@@ -8685,8 +8685,9 @@ def test_iteration62_active_intents_rtrade_store_shadow_signals_and_rollback_saf
     with pytest.raises(ValueError, match="invalid rtrade checkpoint"):
         store.checkpoint("p1", None)
 
-    # 3. KalmanJournal._sanitize strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
-    assert KalmanJournal._sanitize("a|b\rc\nd") == "a/b c d"
+    # 3. sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
+    from botcore import sanitize_pipe_field
+    assert sanitize_pipe_field("a|b\rc\nd") == "a/b c d"
     tracker = KalmanStateTracker(state_path=None, now_fn=lambda: 1000.0)
     tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 5000.0}
     assert tracker.current_trend("BTCUSDC") == (None, 1e18)
@@ -10104,8 +10105,8 @@ def test_iteration89_retry_worker_digest_botcore_dotenv_credentials_and_state_io
         state_io.truncate_file_bytes(str(f_path), 4.5)
     with pytest.raises(ValueError, match="non-negative integer"):
         state_io.truncate_file_bytes(str(f_path), float("inf"))
-    assert state_io._positive_chunk_size("invalid", 4096) == 4096
-    assert state_io._positive_chunk_size(True, 4096) == 4096
+    assert state_io.exact_pos_int("invalid", default=4096) == 4096
+    assert state_io.exact_pos_int(True, default=4096) == 4096
 
 
 def test_iteration90_kraken_client_cachemanager_and_t212_client_safety(monkeypatch):
@@ -10827,8 +10828,8 @@ def test_iteration99_state_io_botcore_utils_and_alertnotifiers_safety(tmp_path, 
     assert state_io.read_tail_lines(str(sample_file), 2) == [b"line2", b"line3"]
     assert state_io.read_tail_lines(str(sample_file), 2.5) == []
     assert state_io.read_tail_lines(str(sample_file), True) == []
-    assert state_io._positive_chunk_size(4096.5, 65536) == 65536
-    assert state_io._positive_chunk_size(True, 65536) == 65536
+    assert state_io.exact_pos_int(4096.5, default=65536) == 65536
+    assert state_io.exact_pos_int(True, default=65536) == 65536
     assert state_io.prune_rotated_archives(str(sample_file), keep_count=2.5) == []
     assert state_io.prune_rotated_archives(True, keep_count=2) == []
 
@@ -12992,7 +12993,7 @@ def test_iteration125_enum_str_and_order_guard_caller_module_safety():
     # 2. resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage
     assert og.resolve_caller_module(True, client_order_id="TA_main_123") == "tradeall"
     assert og.resolve_caller_module(None, prefix=True, client_order_id="MT_stop_1") == "monitortrades"
-    assert og._provider_name(True) == ""
+    assert og.normalize_venue_name(True, default="") == ""
 
 
 
@@ -13584,12 +13585,12 @@ def test_iteration133_bapi_open_orders_cancel_and_cache_health_hygiene(monkeypat
     assert bapi_client.stop_periodic_resync(timeout=float("nan")) is True
     assert bapi_client.stop_periodic_resync(timeout=-5.0) is True
 
-    # 5. binance_cache_health._positive_int / _nonnegative_int accept integer floats and _normalize_cache_name handles class objects
-    assert bch._positive_int(100.0, "writer_pid") == 100
-    assert bch._nonnegative_int(0.0, "generation") == 0
+    # 5. binance_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
+    assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
+    assert bch.require_int(0.0, "generation", min_value=0) == 0
     class CacheOrderManager:
         pass
-    assert bch._normalize_cache_name(CacheOrderManager) == "CacheOrderManager"
+    assert bch.normalize_class_name(CacheOrderManager) == "CacheOrderManager"
 
 
 def test_iteration134_promotion_backtest_broker_and_walk_forward_runner_safety(tmp_path):
@@ -14612,11 +14613,11 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     import accepted_order_persistence as aop
     from rtrade_pair_store import RTradePairStore
 
-    # 1. active_intents: _clean_id, _parse_bool_flag, _first, _intent_row, _walk
+    # 1. active_intents: _clean_single_order_id, _parse_bool_flag, _first, _intent_row, _walk
     for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
-        assert ai._clean_id(bad) is None
-    assert ai._clean_id(777.0) == "777"
-    assert ai._clean_id("777.0") == "777"
+        assert ai._clean_single_order_id(bad) is None
+    assert ai._clean_single_order_id(777.0) == "777"
+    assert ai._clean_single_order_id("777.0") == "777"
     assert ai._parse_bool_flag("false", True) is False
     assert ai._parse_bool_flag("true", False) is True
     assert ai._parse_bool_flag(float("nan"), True) is True
@@ -15555,8 +15556,8 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
         mo.DEFAULT_ORDER_TTL_SEC, mo.MAX_GLOBAL_ORDER_TTL_SEC
     )
     assert mo.resolve_effective_order_ttl("123.0", "", custom_ttl_map={"123": 120.0}) == 120.0
-    assert mo._safe_pos_float(float("nan")) == 0.0
-    assert mo._safe_pos_float(True) == 0.0
+    assert mo.safe_pos_float(float("nan")) == 0.0
+    assert mo.safe_pos_float(True) == 0.0
 
     # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
     monkeypatch.setattr(
@@ -15690,13 +15691,13 @@ def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, m
     assert row[13] == "True"  # 1 parsed as True
     assert row[14] == ""  # "nan" reason cleaned to empty
 
-    # 4. binance_cache_health: _positive_int and _nonnegative_int accept integer strings/floats and reject bool/negative
-    assert bch._positive_int("123.0", "pid") == 123
-    assert bch._nonnegative_int("0.0", "gen") == 0
+    # 4. binance_cache_health: require_int accepts integer strings/floats and rejects bool/negative
+    assert bch.require_int("123.0", "pid", min_value=1) == 123
+    assert bch.require_int("0.0", "gen", min_value=0) == 0
     with pytest.raises(ValueError):
-        bch._positive_int("123.5", "pid")
+        bch.require_int("123.5", "pid", min_value=1)
     with pytest.raises(ValueError):
-        bch._positive_int(True, "pid")
+        bch.require_int(True, "pid", min_value=1)
 
 
 def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tmp_path, monkeypatch):
@@ -16339,7 +16340,7 @@ def test_iteration171_instrument_and_guard_hierarchy_hygiene(monkeypatch):
     monkeypatch.setattr(inst_mod.order_guard, "daily_limit_guard", lambda *a, **kw: (True, None))
     monkeypatch.setattr(inst_mod.order_guard, "check_math_profit_reference", lambda *a, **kw: True)
     monkeypatch.setattr(inst_mod.order_guard, "profit_guard", lambda *a, **kw: True)
-    monkeypatch.setattr(inst_mod._outcomes_log, "log_order_outcome", lambda *a, **kw: None)
+    monkeypatch.setattr(inst_mod.order_lifecycle, "log_order_outcome", lambda *a, **kw: None)
 
     outcome = {}
     res = inst.place(

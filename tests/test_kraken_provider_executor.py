@@ -130,7 +130,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
         with (
             patch.object(order_guard, "daily_limit_guard",
                          return_value=(True, None)),
-            patch.object(instrument_module._outcomes_log, "log_order_outcome"),
+            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
         ):
             return instrument.place(
                 "BUY", 60.0, 1.0, smart=False, wait_for_trend=False,

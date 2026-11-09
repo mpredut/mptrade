@@ -35,13 +35,11 @@ from botcore import (
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from lock import FileLock
 from order_lifecycle import (
-    OrderSubmissionRefused,
     PersistPending,
     StrategyExecutorLifecycleApi,
     SubmitIntent,
     TrackedOrderLifecycle,
     TrackedOrderResult,
-    _clean_retry_order_id,
     _is_definitive_submit_refusal,
     _lifecycle_finite,
     _status_from_terminal_payload,
@@ -49,7 +47,7 @@ from order_lifecycle import (
     propagate_submission_refusal,
 )
 from providers.order_ohlc_utils import extract_order_id, extract_orig_qty
-from providers.strategy_executor import OrderStatus
+from providers.strategy_executor import OrderStatus, SubmissionRefused
 from state_io import atomic_write_jsonl, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -272,11 +270,11 @@ def valid_record(rec):
         return False
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
     lifecycle_ok = lifecycle in {"awaiting_cancel", "submit_pending", "accepted"}
-    if lifecycle == "accepted" and _clean_retry_order_id(rec.get("order_id")) is None:
+    if lifecycle == "accepted" and extract_order_id(rec.get("order_id")) is None:
         lifecycle_ok = False
     if lifecycle == "awaiting_cancel":
         if (
-            _clean_retry_order_id(rec.get("replaces_order_id")) is None
+            extract_order_id(rec.get("replaces_order_id")) is None
             or safe_pos_float(rec.get("replaces_original_qty"), default=None) is None
         ):
             lifecycle_ok = False
@@ -447,7 +445,7 @@ def enqueue(
     lifecycle = str(lifecycle or "").lower()
     if lifecycle not in {"submit_pending", "awaiting_cancel"}:
         return None
-    clean_rep_oid = _clean_retry_order_id(replaces_order_id) if lifecycle == "awaiting_cancel" else None
+    clean_rep_oid = extract_order_id(replaces_order_id) if lifecycle == "awaiting_cancel" else None
     if lifecycle == "awaiting_cancel":
         replaces_original_qty = safe_pos_float(replaces_original_qty, default=None)
         if clean_rep_oid is None or replaces_original_qty is None:
@@ -538,7 +536,7 @@ def enqueue(
                     and normalize_venue_name(item.get("provider_name")) == provider_key
                     and _canonical_queue_symbol(item.get("symbol")) == sym_key
                     and str(item.get("side") or "").upper() == side_u
-                    and (_clean_retry_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
+                    and (extract_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
                     == clean_rep_oid
                 ):
                     return item.get("id")
@@ -782,8 +780,8 @@ def _safe_load_all() -> list:
 
 
 def _record_order_and_client_ids(r: dict) -> list:
-    oid = _clean_retry_order_id(r.get("order_id"))
-    cid = _clean_retry_order_id(_record_client_order_id(r))
+    oid = extract_order_id(r.get("order_id"))
+    cid = extract_order_id(_record_client_order_id(r))
     return [x for x in (oid, cid) if x]
 
 
@@ -900,7 +898,7 @@ def resolve_tracked_order_owner(
     audit_dir: Optional[str] = None,
 ) -> str:
     """Resolve the logical bot owner for an order across clientOrderId, outbox, and execution audit."""
-    oid_str = _clean_retry_order_id(order_id) or _clean_str(order_id)
+    oid_str = extract_order_id(order_id) or _clean_str(order_id)
     cid_str = _clean_str(client_order_id)
     owner = "unspecified"
     if cid_str:
@@ -946,7 +944,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
             str(r.get("lifecycle") or "").lower() == "accepted"
             and _canonical_queue_symbol(r.get("symbol")) == target_sym
         ):
-            oid_str = _clean_retry_order_id(r.get("order_id"))
+            oid_str = extract_order_id(r.get("order_id"))
             if oid_str and infer_record_owner(r) == target_owner and oid_str not in out:
                 out.append(oid_str)
     return out
@@ -1298,7 +1296,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
             current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
-            replaced_order_id = _clean_retry_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
+            replaced_order_id = extract_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
             replaced_symbol = _canonical_queue_symbol(rec.get("symbol"))
             if qty <= max(1e-12, current_qty * 1e-9):
                 existing.pop(index)
@@ -1320,7 +1318,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                     if not (
                         str(item.get("lifecycle") or "").lower() == "accepted"
                         and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
-                        and (_clean_retry_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
+                        and (extract_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
                     )
                 ]
             _write_nolock(existing)
@@ -1332,14 +1330,14 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     if isinstance(symbol, bool) or isinstance(order_id, bool):
         return False
     target_sym = _canonical_queue_symbol(symbol)
-    target_oid = _clean_retry_order_id(order_id)
+    target_oid = extract_order_id(order_id)
     if not target_sym or not target_oid:
         return False
     removed_records = _remove_matching_locked(
         lambda rec: (
             str(rec.get("lifecycle") or "").lower() == "accepted"
             and _canonical_queue_symbol(rec.get("symbol")) == target_sym
-            and _clean_retry_order_id(rec.get("order_id")) == target_oid
+            and extract_order_id(rec.get("order_id")) == target_oid
         )
     )
     if removed_records:

@@ -3937,10 +3937,11 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     assert b_md._parse_bool_flag("false", default=True) is False
     assert b_md._parse_bool_flag(float("nan"), default=True) is True
 
-    # 4. TrailingStop._safe_float and logging helpers tolerate string/None/bool prices and peaks
-    assert TrailingStop._safe_float("123.45", 0.0) == 123.45
-    assert TrailingStop._safe_float(True, 5.0) == 5.0
-    assert TrailingStop._safe_float(float("nan"), 5.0) == 5.0
+    # 4. trailing_core.safe_float and logging helpers tolerate string/None/bool prices and peaks
+    import trailing_core
+    assert trailing_core.safe_float("123.45", 0.0) == 123.45
+    assert trailing_core.safe_float(True, 5.0) == 5.0
+    assert trailing_core.safe_float(float("nan"), 5.0) == 5.0
     dummy_ts = object.__new__(TrailingStop)
     logged = []
     dummy_ts.log = logged.append
@@ -4915,10 +4916,10 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
     with pytest.raises(ValueError, match="benchmarks must be an iterable"):
         svc.compose(None, None, benchmarks="BTCUSDC")  # type: ignore[arg-type]
 
-    # 4. order_retry_worker._safe_int handles bool, float strings, NaN, and None
-    assert orw._safe_int(True, 0) == 0
-    assert orw._safe_int("5.0", 0) == 5
-    assert orw._safe_int(float("nan"), 3) == 3
+    # 4. order_retry_worker.safe_int handles bool, float strings, NaN, and None
+    assert orw.safe_int(True, 0) == 0
+    assert orw.safe_int("5.0", 0) == 5
+    assert orw.safe_int(float("nan"), 3) == 3
 
     # 5. state_io.load_json_state honors fail_closed for invalid/empty paths
     assert state_io.load_json_state(None, default_factory=dict, fail_closed=False, label="test") == {}  # type: ignore[arg-type]
@@ -5840,8 +5841,8 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
     import order_retry as oret
     from rtrade_pair_store import RTradePairStore
 
-    # 1. accepted_order_persistence._clean_id and active_intents._clean_id reject negative/zero and normalize '+123.0'
-    for fn in (aop._clean_id, ai._clean_id):
+    # 1. accepted_order_persistence._clean_single_order_id and active_intents._clean_single_order_id reject negative/zero and normalize '+123.0'
+    for fn in (aop._clean_single_order_id, ai._clean_single_order_id):
         assert fn(-5) is None
         assert fn("-5") is None
         assert fn("-5.0") is None
@@ -5849,17 +5850,18 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
         assert fn("+123.0") == "123"
         assert fn("RT_abc") == "RT_abc"
 
-    # 2. RTradePairStore._clean_store_id rejects negative numeric values and normalizes '+456.0'
-    assert RTradePairStore._clean_store_id(-5) == ""
-    assert RTradePairStore._clean_store_id("-5.0") == ""
-    assert RTradePairStore._clean_store_id("+0.0") == ""
-    assert RTradePairStore._clean_store_id("+456.0") == "456"
+    # 2. rtrade_pair_store.clean_order_id_str rejects negative numeric values and normalizes '+456.0'
+    import rtrade_pair_store as rps
+    assert rps.clean_order_id_str(-5) == ""
+    assert rps.clean_order_id_str("-5.0") == ""
+    assert rps.clean_order_id_str("+0.0") == ""
+    assert rps.clean_order_id_str("+456.0") == "456"
 
-    # 3. order_retry._clean_retry_order_id and float-string revision/attempts handling in claim/complete_claim/discard_expired
-    assert oret._clean_retry_order_id(-5) is None
-    assert oret._clean_retry_order_id("-5.0") is None
-    assert oret._clean_retry_order_id("+0.0") is None
-    assert oret._clean_retry_order_id("+789.0") == "789"
+    # 3. order_retry.extract_order_id and float-string revision/attempts handling in claim/complete_claim/discard_expired
+    assert oret.extract_order_id(-5) is None
+    assert oret.extract_order_id("-5.0") is None
+    assert oret.extract_order_id("+0.0") is None
+    assert oret.extract_order_id("+789.0") == "789"
 
     monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "outbox.json"))
     monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "outbox.json.lock"))
@@ -5875,16 +5877,16 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
     after = oret._read_nolock()
     assert after[0]["attempts"] == 2
 
-    # 4. monitororder._clean_monitor_id and monitortrades._extract_trade_uid
-    assert mo._clean_monitor_id("-5.0") == ""
-    assert mo._clean_monitor_id("+0.0") == ""
-    assert mo._clean_monitor_id("+321.0") == "321"
+    # 4. monitororder.clean_order_id_str and monitortrades._extract_trade_uid
+    assert mo.clean_order_id_str("-5.0") == ""
+    assert mo.clean_order_id_str("+0.0") == ""
+    assert mo.clean_order_id_str("+321.0") == "321"
     assert mt._extract_trade_uid({"id": "-5.0", "tradeId": "+999.0"}) == "999"
 
     # 5. assetguardian._resolve_blocking_sell_orders skips invalid/negative order IDs and normalizes '+555.0'
     canceled_ids = []
     monkeypatch.setattr(ag.mkt, "cancel_order", lambda sym, oid, **_kw: canceled_ids.append((sym, oid)))
-    ag._rtrade_sell_block_since["BTCUSDC"] = 1.0
+    monkeypatch.setitem(ag._rtrade_sell_block_since, "BTCUSDC", 1.0)
     rem = ag._resolve_blocking_sell_orders(
         "BTCUSDC",
         [
@@ -6673,7 +6675,7 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     """Verify ReplayMarketDataProvider.advance exact_pos_int, harness.evaluate_asset custom replay_fn, and tradeall sanitization."""
     from providers.replay_provider import ReplayMarketDataProvider
     from offline.research.hybrid_reentry.harness import evaluate_asset
-    from offline.backtests.tradeall import _parse_tick_pair, _sanitize
+    from offline.backtests.tradeall import _parse_tick_pair, sanitize_pipe_field
     from offline.runners.kraken_financial_benchmark import _format
     from strategies.spot_engine import StratParams
 
@@ -6723,8 +6725,8 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     assert len(t212_rows) == 5
     assert all("error" not in r for r in t212_rows)
 
-    # 3. tradeall._sanitize and _parse_tick_pair
-    assert _sanitize("a|b\rc\nd") == "a/b c d"
+    # 3. tradeall.sanitize_pipe_field and _parse_tick_pair
+    assert sanitize_pipe_field("a|b\rc\nd") == "a/b c d"
     assert _parse_tick_pair([0, 100.0]) is None
     assert _parse_tick_pair([-1000, 100.0]) is None
     assert _parse_tick_pair([2000, 100.0]) == (2.0, 100.0)

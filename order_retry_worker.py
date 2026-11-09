@@ -43,8 +43,6 @@ from state_io import (
     save_json_state,
 )
 
-_safe_int = safe_int
-
 WORKER_POLL_SEC = required_float_env("RETRY_WORKER_POLL_SEC")
 if WORKER_POLL_SEC <= 0:
     raise ValueError("RETRY_WORKER_POLL_SEC must be finite and > 0")
@@ -148,10 +146,6 @@ def _normalize_bypass_set(raw_bg) -> set[str]:
     return set()
 
 
-def _accepted_order(order):
-    return oq.order_id_from_response(order) is not None
-
-
 def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
     """Populate orig_qty from venue order_status when absent on the reconciled payload."""
     if oq.extract_orig_qty(order) is None and hasattr(mkt, "order_status"):
@@ -165,9 +159,6 @@ def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
         except Exception:
             pass
     return order
-
-
-_submission_requires_reconciliation = oq.submission_requires_reconciliation
 
 
 def _reconcile_client_order(mkt, symbol, client_order_id, *, provider_name=None):
@@ -510,7 +501,7 @@ def process_once(mkt, now=None):
 
         kwargs = dict(r.get("place_kwargs") or {})
         client_order_id = kwargs.get("client_order_id")
-        if _submission_requires_reconciliation(r):
+        if oq.submission_requires_reconciliation(r):
             reconciliation_state, existing_order = _reconcile_client_order(
                 mkt, symbol, client_order_id, provider_name=provider_name
             )
@@ -571,7 +562,7 @@ def process_once(mkt, now=None):
         r = dispatch_claim
         kwargs["_retry_claim"] = dispatch_claim
         attempted += 1
-        next_attempt_num = _safe_int(r.get("attempts"), 0) + 1
+        next_attempt_num = safe_int(r.get("attempts"), 0) + 1
         req_qty_before_place = r.get("qty")
         try:
             if retry_stage != "standard":
@@ -586,7 +577,7 @@ def process_once(mkt, now=None):
         sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
         if sq is not None:
             oq._set_record_qty(r, sq)
-        accepted = _accepted_order(order)
+        accepted = oq.order_id_from_response(order) is not None
         if not accepted and outcome_context.get("state") != "refused":
             reconciliation_state, recovered = _reconcile_client_order(
                 mkt, symbol, client_order_id, provider_name=provider_name
@@ -721,7 +712,7 @@ def _format_record_context(rec, *, include_lease=False):
     value_str = f"~${qty_val * effective_px:.2f} {quote_asset}" if (effective_px is not None and qty_val > 0) else "N/A"
     created_str = _format_ts(rec.get("created_ts"))
     last_attempt_str = _format_ts(rec.get("last_attempt_ts"))
-    attempts = _safe_int(rec.get("attempts"), 0)
+    attempts = safe_int(rec.get("attempts"), 0)
     raw_reason = rec.get("last_failure_reason")
     last_reason = (
         str(raw_reason).strip()
@@ -804,7 +795,7 @@ _DEFAULT_PRODUCER_QUARANTINE_MSG = (
 def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     """Alert once when an expired producer claim cannot be reconciled safely."""
     fingerprint = (
-        str(rec.get("id")), _safe_int(rec.get("revision"), 0),
+        str(rec.get("id")), safe_int(rec.get("revision"), 0),
         str(rec.get("provider_name") or "routed"), str(reason),
     )
     detail_msg = _PRODUCER_QUARANTINE_MESSAGES.get(reason) or (
@@ -842,7 +833,7 @@ _DEFAULT_RECONCILIATION_QUARANTINE_MSG = (
 def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
     """Alert once when a possibly submitted intent cannot be reconciled."""
     fingerprint = (
-        str(rec.get("id")), _safe_int(rec.get("revision"), 0),
+        str(rec.get("id")), safe_int(rec.get("revision"), 0),
         str(rec.get("provider_name") or "routed"),
         str(rec.get("last_failure_reason") or "unknown"), str(reason),
     )
@@ -857,7 +848,7 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
 def _alert_terminal(rec, status):
     """Alert on a canceled intent whose remainder is deliberately not replayed."""
     terminal_key = (
-        str(rec.get("id") or ""), _safe_int(rec.get("revision"), 0),
+        str(rec.get("id") or ""), safe_int(rec.get("revision"), 0),
         str(rec.get("order_id") or ""), str(status.venue_status or status.status or ""),
     )
     _send_quarantine_alert(

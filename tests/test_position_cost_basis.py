@@ -292,12 +292,12 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
     assert extract_remaining_qty({"remainingQty": "0.00000000", "origQty": "2.0"}) == 0.0
     assert extract_remaining_qty({"remainingQty": -1.0, "origQty": 2.0, "executedQty": 0.5}) == pytest.approx(1.5)
 
-    # 2. instrument._accepted_order_payload and _order_id_from_payload support oid/order_id and reject bool
+    # 2. instrument._accepted_order_payload and extract_order_id support oid/order_id and reject bool
     assert instrument._accepted_order_payload({"oid": 778899, "status": "resting"}) is True
-    assert instrument._order_id_from_payload({"oid": 778899}) == "778899"
+    assert instrument.extract_order_id({"oid": 778899}) == "778899"
     assert instrument._accepted_order_payload({"order_id": "ord-42"}) is True
     assert instrument._accepted_order_payload({"orderId": True}) is False
-    assert instrument._order_id_from_payload({"orderId": False}) is None
+    assert instrument.extract_order_id({"orderId": False}) is None
 
     # 3. order_retry.infer_record_owner recognizes accel_plunge_down as tradeall
     assert order_retry.infer_record_owner({"kind": "accel_plunge_down"}) == "tradeall"

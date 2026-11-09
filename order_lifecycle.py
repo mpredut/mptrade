@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from botcore import (
-    _clean_single_order_id as _clean_id,
+    _clean_single_order_id,
     _parse_bool_flag,
     check_cooldown_gate,
     exact_pos_int,
@@ -49,10 +49,6 @@ from state_io import append_text_line
 
 PersistPending = Callable[[Optional[dict]], None]
 SubmitIntent = Callable[[], object]
-
-
-def _clean_retry_order_id(val) -> Optional[str]:
-    return extract_order_id(val, default=None)
 
 
 def _lifecycle_finite(raw, *, positive: bool = False):
@@ -117,10 +113,6 @@ def propagate_submission_refusal(response, outcome_context):
     return response
 
 
-# Backwards-compatible import name for existing providers and external scripts.
-OrderSubmissionRefused = SubmissionRefused
-
-
 @dataclass(frozen=True)
 class TrackedOrderResult:
     """One lifecycle observation without equating submit acceptance with a fill."""
@@ -137,7 +129,7 @@ class TrackedOrderResult:
 
     @property
     def order_known(self) -> bool:
-        return _clean_retry_order_id(self.intent.get("order_id")) is not None
+        return extract_order_id(self.intent.get("order_id")) is not None
 
 
 class StrategyExecutorLifecycleApi:
@@ -160,21 +152,21 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: order_by_client_id is unsupported"
             )
-        clean_cid = _clean_retry_order_id(client_order_id)
+        clean_cid = extract_order_id(client_order_id)
         if not clean_cid:
             raise ProviderError("invalid client_order_id")
         return method(symbol, clean_cid)
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("status_by_order_id", "order_status")
-        clean_oid = _clean_retry_order_id(order_id)
+        clean_oid = extract_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
         return self.executor.order_status(symbol, clean_oid)
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("cancel_by_order_id", "cancel_order")
-        clean_oid = _clean_retry_order_id(order_id)
+        clean_oid = extract_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
         return self.executor.cancel_order(symbol, clean_oid)
@@ -249,7 +241,7 @@ class TrackedOrderLifecycle:
         if not isinstance(intent, dict):
             raise ValueError("tracked intent must be a dict")
         for key in ("intent_id", "client_order_id", "symbol"):
-            if _clean_retry_order_id(intent.get(key)) is None:
+            if extract_order_id(intent.get(key)) is None:
                 raise ValueError(f"tracked intent missing {key}")
         side_val = intent.get("side")
         if isinstance(side_val, bool) or not str(side_val or "").strip():
@@ -284,9 +276,9 @@ class TrackedOrderLifecycle:
         att_int = exact_pos_int(attempt, default=None)
         if att_int is None:
             raise ValueError("tracked intent attempt must be positive")
-        clean_iid = _clean_retry_order_id(intent_id)
-        clean_cid = _clean_retry_order_id(client_order_id)
-        clean_sym = _clean_retry_order_id(symbol)
+        clean_iid = extract_order_id(intent_id)
+        clean_cid = extract_order_id(client_order_id)
+        clean_sym = extract_order_id(symbol)
         if not clean_iid:
             raise ValueError("tracked intent missing intent_id")
         if not clean_cid:
@@ -317,7 +309,7 @@ class TrackedOrderLifecycle:
     def _order_fields(response) -> dict:
         if isinstance(response, SubmissionOutcome):
             fields = {"submission_outcome": response.state}
-            clean_oid = _clean_retry_order_id(response.order_id)
+            clean_oid = extract_order_id(response.order_id)
             if clean_oid is not None:
                 fields["order_id"] = clean_oid
             if response.reason:
@@ -327,7 +319,7 @@ class TrackedOrderLifecycle:
             return fields
         if isinstance(response, dict):
             fields = {}
-            order_id = _clean_retry_order_id(extract_order_id(response))
+            order_id = extract_order_id(response)
             if order_id is not None:
                 fields["order_id"] = str(order_id)
             if response.get("status") is not None:
@@ -340,7 +332,7 @@ class TrackedOrderLifecycle:
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields
-        order_id = _clean_retry_order_id(extract_order_id(response))
+        order_id = extract_order_id(response)
         return {"order_id": str(order_id)} if order_id is not None else {}
 
     def submit(self, intent: dict, *, persist: PersistPending, submit: SubmitIntent) -> TrackedOrderResult:
@@ -376,7 +368,7 @@ class TrackedOrderLifecycle:
 
         pending.update(self._order_fields(outcome))
         persist(dict(pending))
-        if _clean_retry_order_id(pending.get("order_id")):
+        if extract_order_id(pending.get("order_id")):
             self._audit(
                 "submit_accepted", pending,
                 qty=pending["requested_qty"],
@@ -416,7 +408,7 @@ class TrackedOrderLifecycle:
 
         symbol = pending["symbol"]
         client_order_id = pending["client_order_id"]
-        order_id = _clean_retry_order_id(pending.get("order_id"))
+        order_id = extract_order_id(pending.get("order_id"))
         if not order_id:
             if (
                 str(pending.get("submission_outcome") or "").strip().lower() == "refused"
@@ -536,7 +528,7 @@ def _claim_client_order_id(record) -> str | None:
     if not isinstance(record, dict):
         return None
     pk = record.get("place_kwargs")
-    return _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+    return _clean_single_order_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
 
 
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
@@ -544,16 +536,16 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     try:
         if not isinstance(claim, dict):
             return False
-        claim_id = _clean_id(claim.get("id"))
-        expected_order_id = _clean_id(order_retry_module.order_id_from_response(order))
+        claim_id = _clean_single_order_id(claim.get("id"))
+        expected_order_id = _clean_single_order_id(order_retry_module.order_id_from_response(order))
         expected_client_id = _claim_client_order_id(claim)
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
         for record in (order_retry_module.load_all() or ()):
-            if not isinstance(record, dict) or _clean_id(record.get("id")) != claim_id:
+            if not isinstance(record, dict) or _clean_single_order_id(record.get("id")) != claim_id:
                 continue
             current_client_id = _claim_client_order_id(record)
-            current_order_id = _clean_id(record.get("order_id"))
+            current_order_id = _clean_single_order_id(record.get("order_id"))
             return (
                 str(record.get("lifecycle") or "").strip().lower() == "accepted"
                 and current_order_id == expected_order_id
@@ -589,7 +581,7 @@ def complete_accepted_claim(
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
     try:
-        order_id = _clean_id(order_retry_module.order_id_from_response(order))
+        order_id = _clean_single_order_id(order_retry_module.order_id_from_response(order))
     except Exception:
         order_id = None
     claim_dict = claim if isinstance(claim, dict) else {}

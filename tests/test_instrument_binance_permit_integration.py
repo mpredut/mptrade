@@ -203,7 +203,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             patch("cacheManager.get_short_trend_manager",
                   return_value=Mock(should_wait=Mock(return_value=False))),
             patch.object(
-                instrument_module._outcomes_log, "log_order_outcome"),
+                instrument_module.order_lifecycle, "log_order_outcome"),
             patch.object(
                 market_api.api, "place", side_effect=routed_place),
             patch.object(
@@ -366,7 +366,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(order_guard, "profit_guard", side_effect=fake_profit_guard),
-            patch.object(instrument_module._outcomes_log, "log_order_outcome"),
+            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
         ):
             result = instrument.place(
                 "BUY", 100.0, 1.0, market=True, smart=False,
@@ -419,7 +419,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             patch.object(order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(order_guard, "profit_guard", side_effect=fake_profit_guard),
-            patch.object(instrument_module._outcomes_log, "log_order_outcome"),
+            patch.object(instrument_module.order_lifecycle, "log_order_outcome"),
         ):
             permit = provider.preflight_order(
                 "BTCUSDC", "BUY", 1.5, subtick_buy_price,

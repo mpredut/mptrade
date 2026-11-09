@@ -147,7 +147,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
              patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_cid"}}), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch.object(monitororder.order_retry, "complete_claim", return_value=True), \
              patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
              patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
@@ -175,7 +175,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
              patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_cid"}}), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch.object(monitororder.order_retry, "complete_claim", return_value=True), \
              patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
              patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
@@ -304,7 +304,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_TA_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
              patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_TA_cid"}}), \
-             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
              patch.object(monitororder.order_retry, "complete_claim", return_value=True), \
              patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
              patch.object(monitororder.mkt, "preflight_order", return_value=object()), \

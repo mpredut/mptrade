@@ -44,9 +44,6 @@ class RTradePairStore:
         self._mem_data = {"version": 1, "pairs": {}}
         self.terminal_retention = safe_nonneg_int(terminal_retention, default=200)
 
-    _clean_store_id = staticmethod(clean_order_id_str)
-    _parse_bool_flag = staticmethod(_parse_bool_flag)
-
     @staticmethod
     def _clean_pair_id(pair_id):
         return str(pair_id).strip() if isinstance(pair_id, str) else pair_id
@@ -94,7 +91,7 @@ class RTradePairStore:
         kind = str(intent.get("kind") or "")
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
-        if not cls._clean_store_id(intent.get("client_order_id")):
+        if not clean_order_id_str(intent.get("client_order_id")):
             raise ValueError(f"invalid rtrade intent client ID {key!r}")
         if intent.get("pair_id") not in (None, pair_id):
             raise ValueError(f"rtrade intent {key!r} belongs to another pair")
@@ -105,10 +102,10 @@ class RTradePairStore:
         if requested_price is not None:
             cls._finite_positive(requested_price, f"intent {key!r} price")
         order_id = intent.get("order_id")
-        if order_id is not None and not cls._clean_store_id(order_id):
+        if order_id is not None and not clean_order_id_str(order_id):
             raise ValueError(f"invalid rtrade intent order ID {key!r}")
         intent_id = intent.get("intent_id")
-        if intent_id is not None and not cls._clean_store_id(intent_id):
+        if intent_id is not None and not clean_order_id_str(intent_id):
             raise ValueError(f"invalid rtrade tracked intent ID {key!r}")
 
     @classmethod
@@ -134,7 +131,7 @@ class RTradePairStore:
         for ticket in state.get("tickets", []):
             if not isinstance(ticket, dict):
                 raise ValueError(f"invalid rtrade checkpoint ticket for {pair_id!r}")
-            order_id = cls._clean_store_id(ticket.get("order_id"))
+            order_id = clean_order_id_str(ticket.get("order_id"))
             side = str(ticket.get("side") or "").upper()
             if not order_id or order_id in ticket_ids or side not in {"BUY", "SELL"}:
                 raise ValueError(f"invalid rtrade checkpoint ticket identity for {pair_id!r}")
@@ -150,7 +147,7 @@ class RTradePairStore:
         for order_id, snapshot in dict(state.get("snapshots") or {}).items():
             if (
                 not isinstance(order_id, str)
-                or not cls._clean_store_id(order_id)
+                or not clean_order_id_str(order_id)
                 or not isinstance(snapshot, dict)
                 or snapshot.get("status") not in _VALID_SNAPSHOT_STATUSES
             ):
@@ -169,7 +166,7 @@ class RTradePairStore:
         if not isinstance(pairs, dict):
             raise ValueError("invalid rtrade pair store: pairs must be an object")
         for pair_id, record in pairs.items():
-            if not isinstance(pair_id, str) or not cls._clean_store_id(pair_id):
+            if not isinstance(pair_id, str) or not clean_order_id_str(pair_id):
                 raise ValueError("invalid rtrade pair key")
             if not isinstance(record, dict):
                 raise ValueError(f"invalid rtrade pair record {pair_id!r}")
@@ -267,7 +264,7 @@ class RTradePairStore:
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         price_f = None if price is None else self._finite_positive(price, f"pair {pair_id!r} price")
-        coid = self._clean_store_id(client_order_id)
+        coid = clean_order_id_str(client_order_id)
         if not coid:
             raise ValueError(f"invalid rtrade intent client ID for {pair_id!r}")
         side_u = normalize_side(side)
@@ -338,7 +335,7 @@ class RTradePairStore:
         self.mutate(op)
 
     def accepted(self, pair_id, side, order_id, kind="limit"):
-        clean_oid = self._clean_store_id(order_id)
+        clean_oid = clean_order_id_str(order_id)
         if not clean_oid:
             raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
         side_u = normalize_side(side)
@@ -369,7 +366,7 @@ class RTradePairStore:
                 rec = pairs[self._clean_pair_id(pair_id)]
                 rec["state"] = state
                 rec["phase"] = state.get("phase")
-                rec["terminal"] = self._parse_bool_flag(terminal, False)
+                rec["terminal"] = _parse_bool_flag(terminal, False)
                 rec["updated_ts"] = now
             return True
 

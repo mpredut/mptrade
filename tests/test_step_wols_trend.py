@@ -78,15 +78,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
                     self.assertAlmostEqual(res[1], got, places=12)
                     self.assertEqual(res[0], 1 if got > 0 else (-1 if got < 0 else 0))
 
-    def test_backward_compatible_aliases(self):
-        rng = np.random.default_rng(123)
-        prices = 50000 + np.cumsum(rng.normal(0, 2, 100))
-        self.assertEqual(pw.step_wols_cubic_slope(prices, 1.0), pw.step_wols_slope(prices, 1.0))
-        buf = pw.IncrementalTrendBuffer()
-        for p in prices:
-            buf.append(float(p))
-        self.assertEqual(buf.step_wols_cubic(0, len(prices) - 1, 1.0), buf.step_wols_slope(0, len(prices) - 1, 1.0))
-
     def test_eval_slice_matches_instant_trend_from_prices(self):
         rng = np.random.default_rng(3)
         prices = list(111000 + np.cumsum(rng.normal(0, 20, 600)))
@@ -445,7 +436,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(ts_obj._trend_value("BTCUSDC"), 0.04, places=6)
 
         kt_obj = kt_mod.KrakenTrailing.__new__(kt_mod.KrakenTrailing)
-        kt_obj._safe_float = lambda v, d=0.0: float(v) if v is not None else d
         with unittest.mock.patch("state_io.read_recovering_previous", return_value={"TAOUSD": snap_tao, "XBTUSD": snap_btc}):
             self.assertAlmostEqual(kt_obj._trend_value("TAOUSD"), -0.11, places=6)
             self.assertAlmostEqual(kt_obj._trend_value("XBTUSD"), 0.04, places=6)

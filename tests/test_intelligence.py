@@ -3312,7 +3312,7 @@ def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_o
     ]
     price_file = tmp_path / "cache_24_price_BTCUSDC.json"
     price_file.write_text(json.dumps({"items": ticks_desc}), encoding="utf-8")
-    monkeypatch.setattr(order_guard, "_resolve_cachedb_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(order_guard, "get_cachedb_dir", lambda: str(tmp_path))
 
     hist = order_guard._read_cached_price_history(
         "BTCUSDC",
@@ -4637,7 +4637,7 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
     assert len(store.active("TAOUSDC")) == 1
 
     # 5. assetguardian._resolve_blocking_sell_orders retains order when cancel returns False and resolves accepted order on True
-    ag._rtrade_sell_block_since["TAOUSDC"] = 100.0
+    monkeypatch.setitem(ag._rtrade_sell_block_since, "TAOUSDC", 100.0)
     monkeypatch.setattr(ag.time, "time", lambda: 100.0 + ag.RTRADE_BLOCK_CANCEL_SECONDS + 5.0)
     resolved_oids = []
     monkeypatch.setattr(ag, "resolve_accepted_order", lambda sym, oid: resolved_oids.append((sym, oid)))
