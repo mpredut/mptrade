@@ -20,9 +20,25 @@ from guard_hierarchy import (
     normalize_bypassed_guards,
     revoke_guard_bypass,
 )
-from instrument_registry import casefold_get
+from instrument_registry import (
+    InstrumentSpec,
+    casefold_get,
+    discover_tradable_specs,
+    load_registry,
+    resolve_instrument_spec,
+    select_instruments,
+)
 from providers.base import extract_order_id, resolve_market_flag
-from botcore import _parse_bool_flag, normalize_side, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    is_us_rth_open,
+    normalize_side,
+    resolve_patched_attr,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import (
@@ -65,7 +81,8 @@ class Instrument:
                  base: Optional[str] = None, quote: Optional[str] = None,
                  enabled: bool = True, isolation: str = "own_ledger",
                  market_hours: str = "24x7",
-                 params: Optional[dict] = None, api=None):
+                 params: Optional[dict] = None, api=None,
+                 spec: Optional[InstrumentSpec] = None):
         self.name = name
         self.symbol = symbol
         self.provider_name = provider
@@ -75,6 +92,21 @@ class Instrument:
         self.isolation = isolation          # 'dedicated' | 'own_ledger' (see design)
         self.market_hours = market_hours    # '24x7' | 'rth' | ...
         self.params = dict(params or {})
+        self.spec = (
+            spec
+            if isinstance(spec, InstrumentSpec)
+            else InstrumentSpec(
+                name=self.name,
+                provider=normalize_venue_name(provider) or str(provider or "").casefold(),
+                symbol=self.symbol,
+                base=self.base or "",
+                quote=self.quote or "",
+                enabled=self.enabled,
+                isolation=self.isolation,
+                market_hours=self.market_hours,
+                params=dict(self.params),
+            )
+        )
         self._api = api or _default_api
         self._provider = self._api.provider_by_name(provider)
         if self._provider is None:
@@ -82,6 +114,23 @@ class Instrument:
                 f"Instrument {name!r} ({symbol}): unknown provider {provider!r}. "
                 "Is it registered in market_api?")
         self._provider.validate_symbol(self.symbol)
+
+    @classmethod
+    def from_spec(cls, spec: InstrumentSpec, *, api=None) -> "Instrument":
+        """Bind an immutable ``InstrumentSpec`` to a provider adapter via ``MarketApi``."""
+        return cls(
+            name=spec.name,
+            symbol=spec.symbol,
+            provider=spec.provider,
+            base=spec.base,
+            quote=spec.quote,
+            enabled=spec.enabled,
+            isolation=spec.isolation,
+            market_hours=spec.market_hours,
+            params=spec.params,
+            api=api,
+            spec=spec,
+        )
 
     def _call_profit_guard_window_ref(
         self, symbol: str, side: str, safeback_sec, regime_context=None,
@@ -311,6 +360,10 @@ class Instrument:
         if not provider_execution_enabled:
             print(f"[{self.symbol}] {side_u} DRY: real provider execution is disabled")
             return _refuse_early("execution_disabled")
+        if v_norm == "t212" and "order_validity" not in kwargs:
+            inst_validity = self.param("execution", "order_validity")
+            if isinstance(inst_validity, str) and inst_validity.strip():
+                kwargs["order_validity"] = inst_validity.strip().upper()
         if self._provider.guards_internally():
             if retry_constraint_supplied:
                 return _refuse_early("retry_price_constraint_unsupported")
@@ -884,25 +937,150 @@ class Instrument:
         except Exception:  # noqa: BLE001
             return 0.0
 
-    # ── params namespaced (mt.* / tradeall.* / rtrade.*) ───────────────────────
+    # ── params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ──────────
     def param(self, consumer: str, key: str, default: Any = None,
               cast: Optional[Callable] = None) -> Any:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
-        if isinstance(consumer, bool) or isinstance(key, bool):
-            return default
-        v = casefold_get(self.params, f"{str(consumer or '').strip()}.{str(key or '').strip()}")
-        if v is None or cast is None:
-            return default if v is None else v
-        if cast is bool:
-            return _parse_bool_flag(v, default=bool(default))
-        if cast is float:
-            return safe_float(v, default=default)
-        if cast is int:
-            return safe_int(v, default=default)
-        try:
-            return cast(v)
-        except (ValueError, TypeError, OverflowError):
-            return default
+        return InstrumentSpec.parse_param(self.params, consumer, key, default=default, cast=cast)
+
+    def resolve_live_price(self, cache_dir: str = "cachedb") -> float:
+        """Fetch live market price from the bound provider or ``cachedb`` fallbacks."""
+        return resolve_instrument_live_price(self, cache_dir=cache_dir)
 
     def __repr__(self) -> str:
         return f"<Instrument {self.name} {self.symbol}@{self.provider_name} {'on' if self.enabled else 'off'}>"
+
+
+def _resolve_instrument_cls():
+    return resolve_patched_attr("Instrument", Instrument, modules=(__name__,), require_callable=True)
+
+
+def bind_instruments(specs: dict, api=None) -> dict:
+    """Bind a mapping of ``InstrumentSpec`` records to executable ``Instrument`` instances."""
+    cls = _resolve_instrument_cls()
+    out = {}
+    for name, item in (specs or {}).items():
+        if isinstance(item, InstrumentSpec):
+            out[name] = (
+                cls.from_spec(item, api=api)
+                if cls is Instrument
+                else cls(
+                    name=item.name,
+                    symbol=item.symbol,
+                    provider=item.provider,
+                    base=item.base,
+                    quote=item.quote,
+                    enabled=item.enabled,
+                    isolation=item.isolation,
+                    market_hours=item.market_hours,
+                    params=item.params,
+                    api=api,
+                )
+            )
+        else:
+            out[name] = item
+    return out
+
+
+def load_instruments(path=None, api=None) -> dict:
+    """Load and validate ``instruments.conf``, then bind all records to ``MarketApi``."""
+    return bind_instruments(load_registry(path), api=api)
+
+
+def load_for(consumer, path=None, api=None, only_enabled=True) -> dict:
+    """Bind instruments explicitly enabled for the requested consumer role."""
+    return bind_instruments(
+        select_instruments(role=consumer, path=path, only_enabled=only_enabled),
+        api=api,
+    )
+
+
+def load_tradable_instruments(
+    workspace_dir: str | None = None,
+    *,
+    only_workspace_conf: bool = False,
+    include_closed_rth: bool = False,
+    now_ts: float | None = None,
+    asset_scope: str = "all",
+    is_rth_open_fn=None,
+    api=None,
+) -> dict:
+    """Discover enabled specs across Binance, Kraken, Hyperliquid, and Trading212 and bind them to providers."""
+    ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
+    ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
+    base_specs: dict | None = None
+    if os.path.exists(ws_inst_conf) or not only_workspace_conf:
+        try:
+            base_specs = (
+                load_instruments(ws_inst_conf, api=api)
+                if os.path.exists(ws_inst_conf)
+                else load_instruments(api=api)
+            )
+        except Exception:
+            base_specs = None
+
+    specs_or_insts = discover_tradable_specs(
+        ws_dir,
+        only_workspace_conf=only_workspace_conf,
+        include_closed_rth=include_closed_rth,
+        now_ts=now_ts,
+        asset_scope=asset_scope,
+        is_rth_open_fn=is_rth_open_fn or is_us_rth_open,
+        base_specs=base_specs,
+    )
+    active_map: dict = {}
+    for name, item in specs_or_insts.items():
+        if isinstance(item, InstrumentSpec):
+            try:
+                active_map[name] = bind_instruments({name: item}, api=api)[name]
+            except Exception:
+                continue
+        else:
+            active_map[name] = item
+    return active_map
+
+
+def resolve_tradable_instrument(
+    symbol: str,
+    venue: str | None = None,
+    instruments_map: dict | None = None,
+    *,
+    workspace_dir: str | None = None,
+    api=None,
+):
+    """Resolve an enabled ``Instrument`` instance for the given symbol and venue."""
+    if instruments_map is None:
+        instruments_map = load_tradable_instruments(workspace_dir, api=api)
+    return resolve_instrument_spec(
+        symbol,
+        venue=venue,
+        instruments_map=instruments_map,
+        workspace_dir=workspace_dir,
+    )
+
+
+def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
+    """Fetch live market price for ``inst`` from its bound provider or ``cacheprice`` SSOT fallbacks."""
+    try:
+        prov = getattr(inst, "_provider", None)
+        if prov is not None and hasattr(prov, "get_current_price"):
+            px_f = safe_pos_float(prov.get_current_price(inst.symbol), default=None)
+            if px_f is not None:
+                return px_f
+    except Exception:
+        pass
+
+    from cacheprice import resolve_cached_symbol_price
+
+    venue = getattr(inst, "provider_name", None)
+    if not isinstance(venue, str):
+        venue = getattr(inst, "provider", None)
+    raw_base = getattr(inst, "base", None)
+    raw_quote = getattr(inst, "quote", None)
+    return resolve_cached_symbol_price(
+        str(getattr(inst, "symbol", "") or ""),
+        venue=venue if isinstance(venue, str) else None,
+        base=raw_base if isinstance(raw_base, str) else None,
+        quote=raw_quote if isinstance(raw_quote, str) else None,
+        cache_dir=cache_dir,
+    )

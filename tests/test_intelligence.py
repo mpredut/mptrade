@@ -8775,7 +8775,7 @@ def test_iter107_equity_crypto_scope_isolation_in_instrument_registry_and_execut
     import json
     import math
     from types import SimpleNamespace
-    from instrument_registry import resolve_instrument_live_price, resolve_tradable_instrument
+    from instrument import resolve_instrument_live_price, resolve_tradable_instrument
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
         enrich_positions_with_orders_and_cycles,
     )

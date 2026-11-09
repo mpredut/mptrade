@@ -42,6 +42,7 @@ from binance_api.bapi_ws import (
     WS_RECV_TIMEOUT,
 )
 from botcore import (
+    extract_current_price_item,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_rth_open,
@@ -60,14 +61,20 @@ from cacheInterface import (
     _now_time,
 )
 from cachepaths import (
+    _is_eq_suffix,
     cache_path,
+    cache_symbol_variants,
+    canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
+    telemetry_cache_file_path,
 )
 import instrument_registry as sym
 from instrument_registry import (
+    _DEFAULT_USD_QUOTES,
     casefold_get,
     is_equity_symbol,
     is_symbol_market_open,
@@ -83,6 +90,7 @@ from state_io import (
     atomic_write_jsonl,
     discard_generation_file,
     read_json_dict,
+    read_json_dict_recovering,
     read_tail_lines,
     save_json_state,
     write_meta_json,
@@ -1188,6 +1196,166 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if ws_manager not in self._ws_managers:
             self._ws_managers.append(ws_manager)
         ws_manager.subscribe(self)
+
+
+def _extract_latest_series_price(raw_payload: object, cands: list[str]) -> Optional[float]:
+    if not isinstance(raw_payload, dict):
+        return None
+    raw_items = raw_payload.get("items")
+    rows = None
+    if isinstance(raw_items, list):
+        rows = raw_items
+    elif isinstance(raw_items, dict):
+        for cand in cands:
+            cand_rows = casefold_get(raw_items, cand)
+            if isinstance(cand_rows, list) and cand_rows:
+                rows = cand_rows
+                break
+        if rows is None and len(raw_items) == 1:
+            only_val = next(iter(raw_items.values()))
+            if isinstance(only_val, list):
+                rows = only_val
+    if not isinstance(rows, list) or not rows:
+        return None
+    for row in reversed(rows):
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            px_f = safe_pos_float(row[1], default=None)
+            if px_f is not None:
+                return px_f
+    return None
+
+
+def resolve_cached_symbol_price(
+    symbol: str,
+    *,
+    venue: Optional[str] = None,
+    base: Optional[str] = None,
+    quote: Optional[str] = None,
+    cache_dir: str = "cachedb",
+) -> float:
+    """Resolve latest price for ``symbol`` from ``cachedb`` snapshots without importing intelligence collectors."""
+    sym_u = str(symbol or "").strip().upper()
+    if not sym_u:
+        return float("nan")
+    venue_norm = normalize_venue_name(str(venue or "")) or ""
+    inst_is_eq = venue_norm == "t212" or _is_eq_suffix(sym_u)
+    inst_base = (
+        base.strip().upper()
+        if isinstance(base, str) and base.strip()
+        else ((split_symbol_assets(sym_u) or (sym_u, ""))[0])
+    )
+    allowed_quotes = compatible_quote_suffixes(sym_u, quote, default_usd=_DEFAULT_USD_QUOTES)
+    is_usd_quote = "USD" in allowed_quotes
+
+    cache_file = os.path.join(cache_dir, "cache_current_price.json")
+    try:
+        cdata = read_json_dict_recovering(cache_file)
+        if isinstance(cdata, dict):
+            raw_items = cdata.get("items")
+            items = raw_items if isinstance(raw_items, dict) else {}
+            candidates = cache_symbol_variants(
+                symbol, include_original=True, include_base=is_usd_quote, quotes=allowed_quotes
+            )
+            if inst_base and is_usd_quote:
+                for cand in cache_symbol_variants(
+                    str(inst_base), include_original=True, include_base=True, quotes=allowed_quotes
+                ):
+                    if cand not in candidates:
+                        candidates.append(cand)
+            if inst_is_eq:
+                candidates = [
+                    c for c in candidates if _is_eq_suffix(c) or split_symbol_assets(c) is None
+                ]
+            else:
+                candidates = [c for c in candidates if not _is_eq_suffix(c)]
+
+            for cand in candidates:
+                px_f = extract_current_price_item(casefold_get(items, cand))
+                if px_f is not None:
+                    return px_f
+            if inst_base:
+                base_u = canonical_base_asset(str(inst_base))
+                for k, v in items.items():
+                    k_str = str(k).strip().upper()
+                    if _is_eq_suffix(k_str) != inst_is_eq:
+                        continue
+                    if inst_is_eq and split_symbol_assets(k_str) is not None and not _is_eq_suffix(k_str):
+                        continue
+                    if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
+                        continue
+                    if not is_usd_quote and not (split_symbol_assets(k_str) or ("", ""))[1]:
+                        continue
+                    if canonical_base_asset(k_str) == base_u and (px_f := extract_current_price_item(v)) is not None:
+                        return px_f
+    except Exception:
+        pass
+
+    lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not _is_eq_suffix(sym_u) else sym_u
+    series_cands = [
+        c
+        for c in cache_symbol_variants(
+            lookup_sym, include_original=True, include_base=False, quotes=allowed_quotes
+        )
+        if (_is_eq_suffix(c) or split_symbol_assets(c) is None) == inst_is_eq
+    ]
+    cands_upper = {c.strip().upper() for c in series_cands if c.strip()}
+    try:
+        for cand in series_cands:
+            p24_path = os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(cand))
+            if os.path.exists(p24_path) or os.path.exists(p24_path + ".previous"):
+                px_f = _extract_latest_series_price(read_json_dict_recovering(p24_path), series_cands)
+                if px_f is not None:
+                    return px_f
+            for jsonl_fn in (
+                CacheSparsePriceManager.disk_filename_for_symbol(cand),
+                Cache365PriceManager.disk_filename_for_symbol(cand),
+            ):
+                jsonl_path = os.path.join(cache_dir, jsonl_fn)
+                if not os.path.exists(jsonl_path):
+                    continue
+                for line in reversed(read_tail_lines(jsonl_path, max_bytes=64 * 1024)):
+                    try:
+                        rec = _json.loads(line)
+                    except Exception:
+                        continue
+                    pt = CachePriceManagerBase.extract_jsonl_series_point(rec, cands_upper)
+                    if pt is not None and (px_f := safe_pos_float(pt[1], default=None)) is not None:
+                        return px_f
+    except Exception:
+        pass
+
+    if is_usd_quote:
+        try:
+            ob_cands = [
+                c
+                for c in cache_symbol_variants(
+                    lookup_sym, include_original=True, include_base=True, quotes=allowed_quotes
+                )
+                if _is_eq_suffix(c.upper()) == inst_is_eq
+                and compatible_quote_suffixes(c, default_usd=_DEFAULT_USD_QUOTES) == allowed_quotes
+            ]
+            for cand in ob_cands:
+                ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", cand)
+                if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(ob_path + ".previous")):
+                    continue
+                ob = read_json_dict_recovering(ob_path)
+                if isinstance(ob, dict):
+                    raw_mid = ob.get("mid_price") if ob.get("mid_price") is not None else ob.get("ob_mid_price")
+                    ob_mid = safe_pos_float(raw_mid, default=None)
+                    if ob_mid is None:
+                        bb = safe_pos_float(ob.get("best_bid"), default=None)
+                        ba = safe_pos_float(ob.get("best_ask"), default=None)
+                        if bb is not None and ba is not None:
+                            ob_mid = (bb + ba) / 2.0
+                    if ob_mid is not None:
+                        return ob_mid
+        except Exception:
+            pass
+
+    return float("nan")
+
+
+CacheCurrentPriceManager.resolve_cached_price = staticmethod(resolve_cached_symbol_price)
 
 
 # ── Non-Binance Venue WebSocket Price Streams & Fallback Poller ───────────────

@@ -39,7 +39,7 @@ from botcore import (
     is_us_rth_open,
     load_key_value_conf,
 )
-from instrument_registry import (
+from instrument import (
     load_tradable_instruments,
     resolve_instrument_live_price,
     resolve_tradable_instrument,

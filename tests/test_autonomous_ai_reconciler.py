@@ -3947,7 +3947,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     )
     assert "age=1.0h" in ro_line
 
-    from instrument_registry import resolve_instrument_live_price
+    from instrument import resolve_instrument_live_price
     from intelligence.sentiment.guards.high_stake_guard import apply_asset_scope_filter
     from orchestratorOS.lib.technical_repair_ssot import (
         submit_supervisor_trading_decisions,
@@ -4525,7 +4525,7 @@ def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tm
     import math
     from types import SimpleNamespace
     from cachepaths import cache_symbol_variants
-    from instrument_registry import resolve_instrument_live_price
+    from instrument import resolve_instrument_live_price
 
     # 1. cache_symbol_variants prioritizes same-quote cross-venue equivalents and USD family before EUR
     v_xbtusd = cache_symbol_variants("XBTUSD")

@@ -5,18 +5,18 @@ module does not import providers, read secrets, or start workers. Callers reload
 the file explicitly; long-running processes adopt configuration at restart.
 """
 import configparser
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, replace
 import glob
 import math
 import os
 from pathlib import Path
 import re
 import sys
+from typing import Any, Callable, Optional
 import types as _types
 
 from botcore import (
     _parse_bool_flag,
-    extract_current_price_item,
     is_us_rth_open,
     load_env_file_defaults,
     load_ini_config,
@@ -24,8 +24,8 @@ from botcore import (
     normalize_side,
     parse_env_file,
     register_module_aliases,
-    resolve_patched_attr,
     safe_float,
+    safe_int,
     safe_pos_float,
 )
 from cachepaths import (
@@ -37,7 +37,6 @@ from cachepaths import (
     normalize_venue_name,
     split_symbol_assets,
 )
-from state_io import read_json_dict_recovering
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
@@ -117,6 +116,55 @@ class InstrumentSpec:
         if raw == "auto":
             return "auto"
         return "on" if _boolean(raw, "trailing.rebuy", self.name) else "off"
+
+    @staticmethod
+    def parse_param(
+        params: object,
+        consumer: str,
+        key: str,
+        default: Any = None,
+        cast: Optional[Callable] = None,
+    ) -> Any:
+        """Return ``consumer.key`` from ``params`` or ``default`` when missing or conversion fails."""
+        if isinstance(consumer, bool) or isinstance(key, bool) or not isinstance(params, dict):
+            return default
+        v = casefold_get(params, f"{str(consumer or '').strip()}.{str(key or '').strip()}")
+        if v is None or cast is None:
+            return default if v is None else v
+        if cast is bool:
+            return _parse_bool_flag(v, default=bool(default))
+        if cast is float:
+            return safe_float(v, default=default)
+        if cast is int:
+            return safe_int(v, default=default)
+        try:
+            return cast(v)
+        except (ValueError, TypeError, OverflowError):
+            return default
+
+    def param(
+        self,
+        consumer: str,
+        key: str,
+        default: Any = None,
+        cast: Optional[Callable] = None,
+    ) -> Any:
+        """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
+        return self.parse_param(self.params, consumer, key, default=default, cast=cast)
+
+    def with_execution_policy(
+        self,
+        *,
+        live_enabled: Optional[bool] = None,
+        order_validity: Optional[str] = None,
+    ) -> "InstrumentSpec":
+        """Return a new immutable ``InstrumentSpec`` with declarative execution policy parameters."""
+        updated = dict(self.params or {})
+        if live_enabled is not None:
+            updated["execution.live_enabled"] = "true" if live_enabled else "false"
+        if order_validity is not None and str(order_validity).strip():
+            updated["execution.order_validity"] = str(order_validity).strip().upper()
+        return replace(self, params=updated)
 
 
 def load_registry(path=None):
@@ -276,59 +324,26 @@ def tracked_price_instruments(role=None, *, path=None):
 
 
 # ---------------------------------------------------------------------------
-# Instrument Binding, Cross-Venue Discovery, Resolution & Live Price Lookup
+# Cross-Venue Spec Discovery & Pure Identity Selection
 # ---------------------------------------------------------------------------
 
 
-def _inst_venue(inst) -> str:
-    return normalize_venue_name(str(getattr(inst, "provider_name", "") or "")) or ""
+def _str_attr(item, name: str) -> str:
+    val = getattr(item, name, None)
+    return val.strip() if isinstance(val, str) else ""
 
 
-def _inst_symbol_u(inst) -> str:
-    return str(getattr(inst, "symbol", "") or "").strip().upper()
-
-
-def _import_instrument_cls():
-    """Import Instrument, reloading stale local modules once if a mid-run git pull updated disk files."""
-    patched = resolve_patched_attr(
-        "Instrument", None, modules=(__name__, "instruments_config"), require_callable=True
+def _candidate_venue(item) -> str:
+    raw = (
+        _str_attr(item, "provider_name")
+        or _str_attr(item, "provider")
+        or _str_attr(getattr(item, "_provider", None), "name")
     )
-    if patched is not None:
-        return patched
-    try:
-        from instrument import Instrument
-
-        return Instrument
-    except ImportError:
-        import importlib
-
-        ws_root = os.path.dirname(os.path.abspath(__file__))
-        for mod_name, mod_obj in list(sys.modules.items()):
-            mod_file = getattr(mod_obj, "__file__", None)
-            if isinstance(mod_file, str) and os.path.abspath(mod_file).startswith(ws_root) and os.path.exists(mod_file):
-                try:
-                    importlib.reload(mod_obj)
-                except Exception:
-                    pass
-        for stale_mod in ("order_guard", "instrument"):
-            sys.modules.pop(stale_mod, None)
-        from instrument import Instrument
-
-        return Instrument
+    return normalize_venue_name(raw) or ""
 
 
-def _bind(specs, api):
-    Instrument = _import_instrument_cls()
-    return {name: Instrument(**asdict(spec), api=api) for name, spec in specs.items()}
-
-
-def load_instruments(path=None, api=None):
-    return _bind(load_registry(path), api)
-
-
-def load_for(consumer, path=None, api=None, only_enabled=True):
-    """Bind instruments explicitly enabled for the requested consumer role."""
-    return _bind(select_instruments(role=consumer, path=path, only_enabled=only_enabled), api)
+def _candidate_symbol_u(item) -> str:
+    return _str_attr(item, "symbol").upper()
 
 
 def binance_symbols(path=None):
@@ -398,7 +413,7 @@ def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]
     return out
 
 
-def load_tradable_instruments(
+def discover_tradable_specs(
     workspace_dir: str | None = None,
     *,
     only_workspace_conf: bool = False,
@@ -406,61 +421,67 @@ def load_tradable_instruments(
     now_ts: float | None = None,
     asset_scope: str = "all",
     is_rth_open_fn=None,
+    base_specs: dict | None = None,
 ) -> dict:
-    """Load enabled instruments across Binance, Kraken, Hyperliquid, and Trading212 filtered by asset_scope."""
+    """Discover enabled ``InstrumentSpec`` items across Binance, Kraken, Hyperliquid, and Trading212 without binding providers."""
     ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
     rth_check = is_rth_open_fn or is_us_rth_open
     scope = (asset_scope or "all").strip().lower()
     ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
-    raw_map: dict = {}
-    if os.path.exists(ws_inst_conf) or not only_workspace_conf:
+    if base_specs is not None:
+        raw_map = dict(base_specs)
+    elif os.path.exists(ws_inst_conf) or not only_workspace_conf:
         try:
-            raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
+            raw_map = load_registry(ws_inst_conf if os.path.exists(ws_inst_conf) else None)
         except Exception:
-            try:
-                Instrument = _import_instrument_cls()
-                reg_specs = load_registry(ws_inst_conf if os.path.exists(ws_inst_conf) else None)
-                for spec_name, spec in reg_specs.items():
-                    try:
-                        raw_map[spec_name] = Instrument(**asdict(spec), api=None)
-                    except Exception:
-                        continue
-            except Exception:
-                if only_workspace_conf:
-                    return {}
-                raw_map = {}
+            if only_workspace_conf:
+                return {}
+            raw_map = {}
+    else:
+        raw_map = {}
 
     active_map: dict = {}
 
     def _existing_syms(prov: str) -> set[str]:
-        return {_inst_symbol_u(inst) for inst in active_map.values() if _inst_venue(inst) == prov}
+        return {_candidate_symbol_u(item) for item in active_map.values() if _candidate_venue(item) == prov}
 
-    def _bind_inst(
-        name: str, prov: str, sym: str, base: str, quote: str,
-        *, live: bool = False, validity: str | None = None, **kw,
+    def _add_spec(
+        name: str,
+        prov: str,
+        sym: str,
+        base: str,
+        quote: str,
+        *,
+        live: bool = False,
+        validity: str | None = None,
+        market_hours: str = "24x7",
     ) -> bool:
-        try:
-            Instrument = _import_instrument_cls()
-            inst = Instrument(name=name, provider=prov, symbol=sym, base=base, quote=quote, enabled=True, **kw)
-            if hasattr(inst, "_provider"):
-                if live:
-                    inst._provider._live_enabled = True
-                if validity:
-                    inst._provider._order_validity = validity
-            active_map[name] = inst
-            return True
-        except Exception:
-            return False
+        spec = InstrumentSpec(
+            name=name,
+            provider=normalize_venue_name(prov) or prov.casefold(),
+            symbol=sym,
+            base=base,
+            quote=quote,
+            enabled=True,
+            isolation="own_ledger",
+            market_hours=market_hours,
+            params={},
+        ).with_execution_policy(
+            live_enabled=True if live else None,
+            order_validity=validity,
+        )
+        active_map[name] = spec
+        return True
 
     if scope in ("all", "crypto"):
-        for k, inst in raw_map.items():
-            if getattr(inst, "enabled", True) is not False and _inst_venue(inst) != "t212":
-                active_map[k] = inst
+        for k, item in raw_map.items():
+            if getattr(item, "enabled", True) is not False and _candidate_venue(item) != "t212":
+                active_map[k] = item
 
         existing_kraken_syms = _existing_syms("kraken")
         for pair, base, quote in discover_kraken_cache_pairs(ws_dir):
             inst_key = f"KRAKEN_{base}" if f"KRAKEN_{base}" not in active_map else f"KRAKEN_{pair}"
-            if pair not in existing_kraken_syms and _bind_inst(inst_key, "kraken", pair, base, quote):
+            if pair not in existing_kraken_syms and _add_spec(inst_key, "kraken", pair, base, quote):
                 existing_kraken_syms.add(pair)
 
         existing_hl_syms = _existing_syms("hyperliquid")
@@ -468,34 +489,36 @@ def load_tradable_instruments(
             if (
                 pair not in existing_hl_syms
                 and base not in existing_hl_syms
-                and _bind_inst(f"HYPERLIQUID_{base}", "hyperliquid", pair, base, quote, live=True)
+                and _add_spec(f"HYPERLIQUID_{base}", "hyperliquid", pair, base, quote, live=True)
             ):
                 existing_hl_syms.add(pair)
             else:
-                for inst in active_map.values():
-                    if _inst_venue(inst) == "hyperliquid" and _inst_symbol_u(inst) in (pair, base) and hasattr(inst, "_provider"):
-                        inst._provider._live_enabled = True
+                for k, item in list(active_map.items()):
+                    if _candidate_venue(item) == "hyperliquid" and _candidate_symbol_u(item) in (pair, base):
+                        if isinstance(item, InstrumentSpec):
+                            active_map[k] = item.with_execution_policy(live_enabled=True)
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
         load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
         discovered_t212 = discover_t212_equities(ws_dir)
         discovered_tickers = {t[1].upper() for t in discovered_t212}
         has_ws_conf = os.path.exists(ws_inst_conf)
-        is_custom_raw_map = (
-            not has_ws_conf
-            and bool(raw_map)
-            and set(raw_map.keys()) != set(_REGISTRY_CACHE.get(next(iter(_REGISTRY_CACHE), ()), {}).keys() or load_registry().keys())
+        default_keys = set(
+            _REGISTRY_CACHE.get(next(iter(_REGISTRY_CACHE), ()), {}).keys()
+            or (load_registry().keys() if not has_ws_conf else ())
         )
-        for k, inst in raw_map.items():
-            if getattr(inst, "enabled", True) is not False and _inst_venue(inst) == "t212":
-                if _inst_symbol_u(inst) in discovered_tickers or is_custom_raw_map or (has_ws_conf and not discovered_tickers):
-                    if hasattr(inst, "_provider"):
-                        inst._provider._live_enabled = True
-                        inst._provider._order_validity = "DAY"
-                    active_map[k] = inst
+        is_custom_raw_map = not has_ws_conf and bool(raw_map) and set(raw_map.keys()) != default_keys
+        for k, item in raw_map.items():
+            if getattr(item, "enabled", True) is not False and _candidate_venue(item) == "t212":
+                if _candidate_symbol_u(item) in discovered_tickers or is_custom_raw_map or (has_ws_conf and not discovered_tickers):
+                    active_map[k] = (
+                        item.with_execution_policy(live_enabled=True, order_validity="DAY")
+                        if isinstance(item, InstrumentSpec)
+                        else item
+                    )
         existing_t212_syms = _existing_syms("t212")
         for inst_name, ticker, base, quote in discovered_t212:
-            if ticker not in existing_t212_syms and _bind_inst(
+            if ticker not in existing_t212_syms and _add_spec(
                 inst_name, "t212", ticker, base, quote, live=True, validity="DAY", market_hours="rth"
             ):
                 existing_t212_syms.add(ticker)
@@ -503,16 +526,16 @@ def load_tradable_instruments(
     return active_map
 
 
-def resolve_tradable_instrument(
+def resolve_instrument_spec(
     symbol: str,
     venue: str | None = None,
     instruments_map: dict | None = None,
     *,
     workspace_dir: str | None = None,
 ):
-    """Resolve an enabled Instrument instance for the given symbol and venue."""
+    """Select an enabled instrument entry matching ``symbol`` and ``venue`` without provider or network I/O."""
     if instruments_map is None:
-        instruments_map = load_tradable_instruments(workspace_dir)
+        instruments_map = discover_tradable_specs(workspace_dir)
 
     raw_sym_u = str(symbol or "").strip().upper()
     sym_norm = clean_symbol_key(symbol)
@@ -540,125 +563,38 @@ def resolve_tradable_instrument(
     variant_norms = {clean_symbol_key(v) for v in raw_variants}
 
     candidates = [
-        inst
-        for inst in instruments_map.values()
-        if getattr(inst, "enabled", True) is not False
-        and (not venue_norm or _inst_venue(inst) == venue_norm)
+        item
+        for item in instruments_map.values()
+        if getattr(item, "enabled", True) is not False
+        and (not venue_norm or _candidate_venue(item) == venue_norm)
         and (
             req_is_eq is None
-            or (_inst_venue(inst) == "t212" or _is_eq_suffix(_inst_symbol_u(inst))) == req_is_eq
+            or (_candidate_venue(item) == "t212" or _is_eq_suffix(_candidate_symbol_u(item))) == req_is_eq
         )
-        and not _inst_symbol_u(inst).endswith(_READONLY_XSTOCK_SUFFIXES)
-        and compatible_quote_suffixes(_inst_symbol_u(inst), getattr(inst, "quote", None), default_usd=_DEFAULT_USD_QUOTES) == req_quotes
+        and not _candidate_symbol_u(item).endswith(_READONLY_XSTOCK_SUFFIXES)
+        and compatible_quote_suffixes(_candidate_symbol_u(item), _str_attr(item, "quote") or None, default_usd=_DEFAULT_USD_QUOTES) == req_quotes
     ]
 
-    for inst in candidates:
-        if clean_symbol_key(inst.symbol) == sym_norm:
-            return inst
-    for inst in candidates:
-        if clean_symbol_key(inst.symbol) in variant_norms:
-            return inst
+    for item in candidates:
+        if clean_symbol_key(item.symbol) == sym_norm:
+            return item
+    for item in candidates:
+        if clean_symbol_key(item.symbol) in variant_norms:
+            return item
     if req_base:
-        for inst in candidates:
-            raw_b = getattr(inst, "base", None)
-            b_str = raw_b if isinstance(raw_b, str) and raw_b.strip() else _inst_symbol_u(inst)
+        for item in candidates:
+            raw_b = getattr(item, "base", None)
+            b_str = raw_b if isinstance(raw_b, str) and raw_b.strip() else _candidate_symbol_u(item)
             if canonical_base_asset(b_str) == req_base:
-                return inst
-    for inst in candidates:
-        inst_sym_n = clean_symbol_key(inst.symbol)
+                return item
+    for item in candidates:
+        inst_sym_n = clean_symbol_key(item.symbol)
         if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
-            return inst
+            return item
     return None
 
 
-def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
-    """Fetch live market price for ``inst`` from provider or ``cachedb`` fallbacks."""
-    try:
-        if hasattr(inst._provider, "get_current_price"):
-            px_f = safe_pos_float(inst._provider.get_current_price(inst.symbol), default=None)
-            if px_f is not None:
-                return px_f
-    except Exception:
-        pass
-
-    sym_u = _inst_symbol_u(inst)
-    inst_is_eq = _inst_venue(inst) == "t212" or _is_eq_suffix(sym_u)
-    raw_base = getattr(inst, "base", None)
-    inst_base = (
-        raw_base.strip().upper()
-        if isinstance(raw_base, str) and raw_base.strip()
-        else ((split_symbol_assets(sym_u) or (sym_u, ""))[0])
-    )
-    allowed_quotes = compatible_quote_suffixes(sym_u, getattr(inst, "quote", None), default_usd=_DEFAULT_USD_QUOTES)
-    is_usd_quote = "USD" in allowed_quotes
-
-    cache_path = os.path.join(cache_dir, "cache_current_price.json")
-    try:
-        cdata = read_json_dict_recovering(cache_path)
-        if isinstance(cdata, dict):
-            raw_items = cdata.get("items")
-            items = raw_items if isinstance(raw_items, dict) else {}
-            candidates = cache_symbol_variants(
-                inst.symbol, include_original=True, include_base=is_usd_quote, quotes=allowed_quotes
-            )
-            if inst_base and is_usd_quote:
-                for cand in cache_symbol_variants(
-                    str(inst_base), include_original=True, include_base=True, quotes=allowed_quotes
-                ):
-                    if cand not in candidates:
-                        candidates.append(cand)
-            if inst_is_eq:
-                candidates = [
-                    c for c in candidates if _is_eq_suffix(c) or split_symbol_assets(c) is None
-                ]
-            else:
-                candidates = [c for c in candidates if not _is_eq_suffix(c)]
-
-            for cand in candidates:
-                px_f = extract_current_price_item(casefold_get(items, cand))
-                if px_f is not None:
-                    return px_f
-            if inst_base:
-                base_u = canonical_base_asset(str(inst_base))
-                for k, v in items.items():
-                    k_str = str(k).strip().upper()
-                    if _is_eq_suffix(k_str) != inst_is_eq:
-                        continue
-                    if inst_is_eq and split_symbol_assets(k_str) is not None and not _is_eq_suffix(k_str):
-                        continue
-                    if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
-                        continue
-                    if not is_usd_quote and not (split_symbol_assets(k_str) or ("", ""))[1]:
-                        continue
-                    if canonical_base_asset(k_str) == base_u and (px_f := extract_current_price_item(v)) is not None:
-                        return px_f
-    except Exception:
-        pass
-
-    try:
-        from intelligence.sentiment.collectors.microstructure_collector import (
-            load_symbol_microstructure,
-            load_symbol_price_series,
-        )
-
-        lookup_sym = f"{sym_u}_US_EQ" if inst_is_eq and not _is_eq_suffix(sym_u) else str(inst.symbol or "")
-        ser_24h, _ = load_symbol_price_series(
-            cache_dir, lookup_sym, include_7d=False, quotes=allowed_quotes
-        )
-        if ser_24h:
-            px_f = safe_pos_float(ser_24h[-1][1], default=None)
-            if px_f is not None:
-                return px_f
-        if is_usd_quote:
-            minfo = load_symbol_microstructure(cache_dir, lookup_sym)
-            if isinstance(minfo, dict):
-                ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
-                if ob_mid is not None:
-                    return ob_mid
-    except Exception:
-        pass
-
-    return float("nan")
+resolve_tradable_instrument = resolve_instrument_spec
 
 
 # ─── Binance Symbol Validation & Precision Helpers ───────────────────────────
@@ -768,24 +704,6 @@ def validate_params(order_type, symbol, price=1, qty=1):
     validate_symbols(symbol)
 
 
-def get_binance_symbols(keysearch):
-    try:
-        exchange_info = _get_client().get_exchange_info()
-        if not isinstance(exchange_info, dict) or not isinstance(exchange_info.get("symbols"), list):
-            print("Number of symbols on Binance: 0")
-            return
-        raw_symbols = exchange_info["symbols"]
-        print(f"Number of symbols on Binance: {len(raw_symbols)}")
-        all_symbols = [str(s["symbol"]) for s in raw_symbols if isinstance(s, dict) and s.get("symbol")]
-        if keysearch:
-            key_up = str(keysearch).upper()
-            print(f"Symbols containing '{keysearch}': {[s for s in all_symbols if key_up in s]}")
-        else:
-            print(f"All symbols: {all_symbols}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-
 def get_quantity_precision(symbol):
     if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         return 8
@@ -800,16 +718,6 @@ def get_quantity_precision(symbol):
     except Exception as e:
         print(f"Error getting quantity precision: {e}")
     return 8
-
-
-def validate_binance_api_keys():
-    try:
-        _get_client().get_account()
-        print("The API keys are valid!")
-        return True
-    except Exception as e:
-        print(f"Error validating API keys: {e}")
-        return False
 
 
 register_module_aliases(__name__, "instruments_config", "symbols")

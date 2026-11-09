@@ -328,7 +328,8 @@ class T212Provider(MarketDataProvider):
         raise ProviderError(f"invalid T212 side: {side!r}")
 
     def _send_order(self, symbol: str, side: str, qty: float,
-                    price: Optional[float], *, market: bool) -> tuple[int, dict]:
+                    price: Optional[float], *, market: bool,
+                    order_validity: Optional[str] = None) -> tuple[int, dict]:
         if not isinstance(symbol, str) or not symbol.strip():
             raise ProviderError(f"invalid T212 symbol: {symbol!r}")
         symbol = symbol.strip()
@@ -356,12 +357,16 @@ class T212Provider(MarketDataProvider):
         if price_f is None:
             raise ProviderError(f"invalid T212 price: {price!r}")
         configured = (
-            self._order_validity
-            if self._order_validity is not None
+            order_validity
+            if order_validity is not None
             else (
-                os.environ.get("T212_ORDER_VALIDITY")
-                if "T212_ORDER_VALIDITY" in os.environ
-                else env_value(_T212_DIR, "T212_ORDER_VALIDITY")
+                self._order_validity
+                if self._order_validity is not None
+                else (
+                    os.environ.get("T212_ORDER_VALIDITY")
+                    if "T212_ORDER_VALIDITY" in os.environ
+                    else env_value(_T212_DIR, "T212_ORDER_VALIDITY")
+                )
             )
         )
         if not isinstance(configured, str) or not configured.strip():
@@ -373,6 +378,7 @@ class T212Provider(MarketDataProvider):
 
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
+        order_validity = kwargs.pop("order_validity", None)
         if not self._orders_live():
             print(
                 f"[T212][DRY] would place {side} {symbol} qty={qty} @ {price} "
@@ -386,7 +392,7 @@ class T212Provider(MarketDataProvider):
                 print(f"[T212] place_order {symbol}: refused non-positive qty={qty}")
                 return None
             status, data = self._send_order(
-                symbol, side, qty, price, market=is_market)
+                symbol, side, qty, price, market=is_market, order_validity=order_validity)
             if status not in (200, 201):
                 print(f"[T212] place_order {symbol} failed (HTTP {status}): {data}")
                 if _definitive_submit_failure(status, data):

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from instrument import load_for, load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
 from instrument_registry import ROLES  # noqa: E402
 import instrument_registry as ic  # noqa: E402
@@ -76,12 +77,12 @@ market_hours = 24x7
     def test_missing_registry_fails_closed(self):
         missing = str(Path(self._temp_dir.name) / "missing.conf")
         with self.assertRaises(FileNotFoundError):
-            ic.load_instruments(missing, api=_Api())
+            load_instruments(missing, api=_Api())
 
     def test_missing_core_field_fails_closed(self):
         path = self._write(self._valid_section().replace('quote = USD\n', ""))
         with self.assertRaisesRegex(ValueError, "missing required 'quote'"):
-            ic.load_instruments(path, api=_Api())
+            load_instruments(path, api=_Api())
 
     def test_invalid_core_enums_fail_closed(self):
         cases = {
@@ -95,27 +96,27 @@ market_hours = 24x7
             with self.subTest(field=name):
                 path = self._write(content)
                 with self.assertRaises(ValueError):
-                    ic.load_instruments(path, api=_Api())
+                    load_instruments(path, api=_Api())
 
     def test_duplicate_provider_symbol_fails_closed(self):
         path = self._write(
             self._valid_section(name="ONE", symbol="BTCUSD")
             + self._valid_section(name="TWO", symbol="btcusd"))
         with self.assertRaisesRegex(ValueError, "duplicate provider/symbol"):
-            ic.load_instruments(path, api=_Api())
+            load_instruments(path, api=_Api())
 
     def test_inline_comments_and_false_boolean_parse_without_defaults(self):
         path = self._write(
             self._valid_section(extra='enabled = off # intentionally disabled\n')
             .replace('enabled = yes\n', ""))
-        instrument = ic.load_instruments(path, api=_Api())["ONE"]
+        instrument = load_instruments(path, api=_Api())["ONE"]
         self.assertFalse(instrument.enabled)
         self.assertEqual(instrument.isolation, "own_ledger")
 
 
 class TestCurrentRegistry(unittest.TestCase):
     def test_all_enabled_mt_instruments_parse_numeric_params(self):
-        instruments = ic.load_instruments()
+        instruments = load_instruments()
         raw_sections = _raw_param_presence()
         for name, inst in instruments.items():
             if not inst.enabled:
@@ -129,7 +130,7 @@ class TestCurrentRegistry(unittest.TestCase):
                     f"[{name}] mt.{key} is present but cannot be parsed as a float")
 
     def test_budget_regressions(self):
-        instruments = ic.load_instruments()
+        instruments = load_instruments()
         cases = {
             "BINANCE_BTC": (250.0, 3500.0),
             "BINANCE_TAO": (250.0, 3500.0),
@@ -353,7 +354,7 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         assert not any(name in sys.modules for name in ("keys", "providers", "binance.client"))
         import tradeall, assetguardian
         from binance_api import trailing_stop, bapi_client
-        from instruments_config import load_for
+        from instrument import load_for
         assert "TESTUSDC" in registry.symbols
         assert "TESTUSDC" in registry.symbols_for("binance", "force_sell")
         assert "TESTUSDC" in tradeall.TRADEALL_FIRE_SYMBOLS
@@ -447,11 +448,14 @@ def test_resolve_tradable_instrument_filtering_and_variants():
 
 def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "instruments_config.discover_kraken_cache_pairs",
+        "instrument_registry.discover_kraken_cache_pairs",
         lambda ws: [("BTC/USD", "BTC", "USD"), ("BTC/EUR", "BTC", "EUR")]
     )
-    monkeypatch.setattr("instruments_config.load_registry", lambda path: {})
-    res = ic.load_tradable_instruments(str(tmp_path), asset_scope="crypto")
+    monkeypatch.setattr("instrument_registry.load_registry", lambda path: {})
+    specs = ic.discover_tradable_specs(str(tmp_path), asset_scope="crypto")
+    assert "KRAKEN_BTC" in specs
+    assert "KRAKEN_BTC/EUR" in specs
+    res = load_tradable_instruments(str(tmp_path), asset_scope="crypto")
     assert "KRAKEN_BTC" in res
     assert "KRAKEN_BTC/EUR" in res
 
@@ -617,6 +621,79 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
         assert obd_mod._has_hyperliquid_instrument("SOLUSD") is True
     finally:
         ir_mod.load_registry = orig_load
+
+
+def test_registry_execution_independence_and_layered_binding(tmp_path):
+    import ast
+    import json
+    from cacheprice import resolve_cached_symbol_price
+    from instrument import Instrument
+    from instrument_registry import InstrumentSpec
+
+    # 1. AST hygiene: instrument_registry has zero imports of execution/cache/intelligence layers and zero reload()
+    reg_src = (ROOT / "instrument_registry.py").read_text(encoding="utf-8")
+    tree = ast.parse(reg_src)
+    imported_roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    assert imported_roots.isdisjoint({"instrument", "providers", "state_io", "intelligence", "cacheprice"})
+    assert "reload(" not in reg_src
+    assert "_live_enabled" not in reg_src
+    assert "_order_validity" not in reg_src
+
+    # 2. InstrumentSpec.with_execution_policy and InstrumentSpec.param are pure value transformations
+    spec = InstrumentSpec(
+        name="T212_NVDA",
+        provider="t212",
+        symbol="NVDA_US_EQ",
+        base="NVDA",
+        quote="USD",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="rth",
+        params={"mt.buy_budget": "300"},
+    ).with_execution_policy(live_enabled=True, order_validity="DAY")
+    assert spec.param("mt", "buy_budget", None, float) == pytest.approx(300.0)
+    assert spec.param("execution", "live_enabled") == "true"
+    assert spec.param("execution", "order_validity") == "DAY"
+
+    # 3. Instrument.from_spec binds provider and forwards per-order order_validity without mutating provider state
+    captured_kwargs = {}
+
+    class _FakeT212Provider(_Provider):
+        name = "t212"
+
+        @staticmethod
+        def guards_internally():
+            return True
+
+        @staticmethod
+        def is_execution_enabled():
+            return True
+
+        @staticmethod
+        def place_order(symbol, side, price, qty, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {"orderId": "t212_1", "status": "FILLED"}
+
+    inst = Instrument.from_spec(spec, api=type("_T212Api", (), {"provider_by_name": staticmethod(lambda _n: _FakeT212Provider())})())
+    assert inst.spec is spec
+    res = inst.place("BUY", 120.0, 2.0, market=True)
+    assert res["orderId"] == "t212_1"
+    assert captured_kwargs.get("order_validity") == "DAY"
+
+    # 4. cacheprice.resolve_cached_symbol_price resolves orderbook fallback without intelligence collector imports
+    telem_dir = tmp_path / "telemetry"
+    telem_dir.mkdir(parents=True, exist_ok=True)
+    (telem_dir / "orderbook_depth_SOLUSDC.json").write_text(
+        json.dumps({"symbol": "SOLUSDC", "best_bid": 149.5, "best_ask": 150.5}),
+        encoding="utf-8",
+    )
+    assert resolve_cached_symbol_price("SOLUSDC", venue="binance", base="SOL", quote="USDC", cache_dir=str(tmp_path)) == pytest.approx(150.0)
 
 
 if __name__ == "__main__":
