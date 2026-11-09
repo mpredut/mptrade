@@ -638,11 +638,11 @@ class TestArchitectureFixes4Cases:
             def commit(self, order):
                 pass
         import contextlib
-        import instrument as inst_mod
+        import lock.cooldown as trade_cooldown
         @contextlib.contextmanager
         def fake_trade_slot(*a, **k):
             yield FakeSlot()
-        monkeypatch.setattr(inst_mod.trade_cooldown, "trade_slot", fake_trade_slot)
+        monkeypatch.setattr(trade_cooldown, "trade_slot", fake_trade_slot)
 
         inst = Instrument("binance_btcusdc", "BTCUSDC", "binance", api=mock_api)
         res = inst.place("BUY", 4.0, 100.0, regime_context=ctx, force=True, wait_for_trend=False, caller_owns_retry=True)
@@ -1295,7 +1295,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             shadow_notify="true",
         )
         ok_sh, _, _ = external_order_guard.check_external_order_guards(
-            "BTCUSDC", "SELL", 100.0, notional_eur=2000.0, margins=margins_shadow
+            "BTCUSDC", "SELL", 100.0, margins=margins_shadow
         )
         assert ok_sh is True
         assert len(notified) == 1
@@ -1303,7 +1303,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
         margins_enforce = dict(margins_shadow, funding_guard_mode="enforce")
         ok_enf, reason_enf, scale_enf = external_order_guard.check_external_order_guards(
-            "BTCUSDC", "SELL", 100.0, notional_eur=2000.0, margins=margins_enforce
+            "BTCUSDC", "SELL", 100.0, margins=margins_enforce
         )
         assert ok_enf is False
         assert "short_crowding_extreme" in reason_enf
@@ -1465,7 +1465,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """ParabolicSurgeGuard and WeibullExhaustionGuard must operate symmetrically on BUY and SELL."""
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-        from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
+        from qlimit_order_guard import check_qlimit2_order_guards
 
         p_guard = ParabolicSurgeGuard(surge_threshold_pct=10.0, pullback_required_pct=2.0)
 
@@ -1507,7 +1507,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert dec_sell_bull.suggested_scale == pytest.approx(1.0)
         assert "trend_direction_favorable" in dec_sell_bull.reason
 
-        # check_internal_order_guards enforces parabolic dump on large SELL (>= high_stake_min_notional_usd)
+        # check_qlimit2_order_guards enforces parabolic dump on SELL
         margins = _margins(
             internal_guard_mode="enforce",
             intelligence_guards_mode="enforce",
@@ -1515,11 +1515,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
             parabolic_pullback_pct=2.0,
             high_stake_min_notional_usd=700.0,
         )
-        ok_sell, reason_sell, scale_sell = check_internal_order_guards(
+        ok_sell, reason_sell, scale_sell = check_qlimit2_order_guards(
             symbol="SOLUSDC",
             side="SELL",
             price=80.0,
-            notional_eur=2500.0,
             price_history=dump_history,
             margins=margins,
             now=300.0,
@@ -1816,7 +1815,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             WhalePositioningCollector,
             WhalePositioningSnapshot,
         )
-        from llm_order_guard import check_llm_order_guards as check_intelligence_order_guards
+        from llm_order_guard import check_llm_order_guards
 
         assert _resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
         assert _resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"
@@ -1912,7 +1911,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             high_stake_min_notional_usd=1000.0,
             geopolitical_guard_mode="off",
         )
-        allowed, reason, scale = check_intelligence_order_guards(
+        allowed, reason, scale = check_llm_order_guards(
             provider="binance",
             symbol="ETHUSDC",
             order_type="BUY",
@@ -2072,9 +2071,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import utils as u
         from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
-        assert order_guard._normalize_base_asset("HYPE/USDC") == "HYPE"
-        assert order_guard._normalize_base_asset("SOL-USD") == "SOL"
-        assert order_guard._normalize_base_asset("TAO_USDC") == "TAO"
+        assert order_guard.canonical_base_asset("HYPE/USDC") == "HYPE"
+        assert order_guard.canonical_base_asset("SOL-USD") == "SOL"
+        assert order_guard.canonical_base_asset("TAO_USDC") == "TAO"
 
         # Float T in gaussian_weights_from_idx and get_trade_weight at seam (trend_len=6.0, T=6.1)
         t_arr, w_arr = u.gaussian_weights_from_idx(6.1, 0)
@@ -3081,7 +3080,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             }
         )
         allowed, reason, eff_scale = external_order_guard.check_external_order_guards(
-            "BTCUSDC", "BUY", 100.0, qty=1.0, margins=m_cfg, now=1700000000.0
+            "BTCUSDC", "BUY", 100.0, margins=m_cfg, now=1700000000.0
         )
         assert allowed is True
         assert eff_scale == pytest.approx(0.40)
@@ -3157,10 +3156,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert scale2 == pytest.approx(1.0)
         assert reason2 == "ok"
 
-        # 3. _normalize_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR
-        assert order_guard._normalize_base_asset("USDCUSDT") == "USDCUSDT"
-        assert order_guard._normalize_base_asset("USDC/USDT") == "USDCUSDT"
-        assert order_guard._normalize_base_asset("BTCUSDC") == "BTC"
+        # 3. canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR
+        assert order_guard.canonical_base_asset("USDCUSDT") == "USDCUSDT"
+        assert order_guard.canonical_base_asset("USDC/USDT") == "USDCUSDT"
+        assert order_guard.canonical_base_asset("BTCUSDC") == "BTC"
 
         # 4. check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale
         monkeypatch.setattr(
@@ -3564,7 +3563,7 @@ def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external
         "funding_guard_mode": "off",
     }
     ext_ok, ext_reason, ext_scale = external_order_guard.check_external_order_guards(
-        "TAOUSDC", "BUY", 200.0, qty=1.0, margins=m_ext_shadow, now=now_ts
+        "TAOUSDC", "BUY", 200.0, margins=m_ext_shadow, now=now_ts
     )
     assert ext_ok is True
     assert ext_scale == 1.0
@@ -4224,14 +4223,14 @@ def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propa
 
     # At simulated now=1050.0 (within 120s TTL of ts=1000.0), w_snap is fresh and blocks BUY
     allowed_fresh, reason_fresh, _ = external_order_guard.check_external_order_guards(
-        "BTCUSDC", "BUY", 100.0, qty=1.0, margins=ext_margins, now=1050.0
+        "BTCUSDC", "BUY", 100.0, margins=ext_margins, now=1050.0
     )
     assert allowed_fresh is False
     assert "severe_taker_selling_dominated" in reason_fresh
 
     # At simulated now=2000.0 (expired > 300s disk TTL), w_snap is expired -> fail-open allow
     allowed_stale, reason_stale, _ = external_order_guard.check_external_order_guards(
-        "BTCUSDC", "BUY", 100.0, qty=1.0, margins=ext_margins, now=2000.0
+        "BTCUSDC", "BUY", 100.0, margins=ext_margins, now=2000.0
     )
     assert allowed_stale is True
     assert reason_stale == "ok"
@@ -6219,14 +6218,12 @@ def test_iteration32_external_order_guard_position_exit_manager_and_monitortrade
     )
     import monitortrades as mt
 
-    # 1. check_external_order_guards with NaN now and invalid notional_eur
+    # 1. check_external_order_guards with NaN now
     eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
     ok, reason, scale = eog.check_external_order_guards(
         "btc/usdc",
         "BUY",
         True,
-        qty=True,
-        notional_eur="bad",
         now=float("nan"),
         margins={"intelligence_guards_mode": "off"},
     )
@@ -11622,6 +11619,7 @@ def test_iteration110_trailing_core_cachepaths_and_utils_safety(tmp_path):
     # 3. utils: value_diff_to_percent, secondsTo*, cache_path
     assert u.value_diff_to_percent(True, 100.0) == 0.0
     assert u.value_diff_to_percent(float("nan"), 100.0) == 0.0
+    assert u.value_diff_to_percent(0.0, 100.0) == 0.0
     assert u.secondsToDays(True) == 0.0
     assert u.secondsToHours(None) == 0.0
     assert u.secondsToMinutes("bad") == 0.0
@@ -11795,12 +11793,7 @@ def test_iteration112_market_api_spot_rules_and_spot_replay_safety(monkeypatch):
     import strategies.spot_rules as sr
     import strategies.spot_replay as srep
 
-    # 1. _step_decimals handles scientific notation and rejects bool/None
-    assert ma._step_decimals("1e-05") == 5
-    assert ma._step_decimals(True) == 0
-    assert ma._step_decimals(None) == 0
-
-    # 2. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
+    # 1. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
     b_prov = ma.BinanceProvider()
     monkeypatch.setattr(
         ma,
@@ -14756,7 +14749,7 @@ def test_iteration150_walk_forward_compare_analyze_volatility_and_kraken_bt_para
     assert av_mod.pct(True, 100.0) == 0.0
     assert av_mod.pct(100.0, float("nan")) == 0.0
     assert av_mod.pct(100.0, -5.0) == 0.0
-    assert av_mod.pullbacks([True, float("nan"), -10.0, 100.0, 80.0, 105.0]) == [25.0]
+    assert av_mod.pullbacks([True, float("nan"), -10.0, 100.0, 80.0, 105.0]) == [20.0]
 
     # 3. kraken.backtest._bt_params float-string maxdca and NaN rejection
     bt_p = k_bt._bt_params({"entry": "150.0", "maxdca": "8.0"})
@@ -15825,7 +15818,7 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     from notify_engine import alertnotifiers as an
     import log
 
-    # 1. utils: beep, get_interval_time, are_difference_equal_with_aprox_proc, are_close_random
+    # 1. utils: beep, get_interval_time, are_close_random
     u.beep(None)
     u.beep(False)
     u.beep(0)
@@ -15834,8 +15827,6 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     assert 95.0 <= iv <= 105.0
     iv_nan = u.get_interval_time(float("nan"), True)
     assert iv_nan > 7000.0
-    ok, _, tol = u.are_difference_equal_with_aprox_proc(100.0, 110.0, target_percent="10.0")
-    assert ok is True and tol == pytest.approx(2.5)
     assert isinstance(u.are_close_random(100.0, 100.5, target_tolerance_percent="1.0"), bool)
 
     # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
@@ -16374,12 +16365,12 @@ def test_iteration172_order_guard_qlimit_external_and_llm_side_and_bool_hygiene(
     import external_order_guard as eog
     import llm_order_guard as llog
 
-    # 1. order_guard._normalize_side_token & opposite_side
-    assert og._normalize_side_token(" bid ") == "BUY"
-    assert og._normalize_side_token("long") == "BUY"
-    assert og._normalize_side_token(" ask ") == "SELL"
-    assert og._normalize_side_token("A") == "SELL"
-    assert og._normalize_side_token("short") == "SELL"
+    # 1. order_guard.normalize_side & opposite_side
+    assert og.normalize_side(" bid ") == "BUY"
+    assert og.normalize_side("long") == "BUY"
+    assert og.normalize_side(" ask ") == "SELL"
+    assert og.normalize_side("A") == "SELL"
+    assert og.normalize_side("short") == "SELL"
     assert og.opposite_side("BID") == "SELL"
     assert og.opposite_side("ASK") == "BUY"
 

@@ -756,11 +756,11 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_validate_guard_mode_cfg_and_margins_validation_fail_fast(self):
         """Verify invalid Pillar 1-4 guard modes or discrete policies fail fast instead of silently passing."""
-        from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
+        from qlimit_order_guard import check_qlimit2_order_guards
         from external_order_guard import check_external_order_guards
         from llm_order_guard import (
             check_geopolitical_order_guards,
-            check_llm_order_guards as check_intelligence_order_guards,
+            check_llm_order_guards,
         )
 
         for valid_mode in ("off", "shadow", "enforce"):
@@ -786,11 +786,11 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             order_guard._validate_margins_cfg(bad_ref_cfg, "order_guard.conf")
 
         with self.assertRaises(ValueError):
-            check_internal_order_guards("BTCUSDC", "BUY", 80000.0, margins=dict(base_full, internal_guard_mode="on"))
+            check_qlimit2_order_guards("BTCUSDC", "BUY", 80000.0, margins=dict(base_full, internal_guard_mode="on"))
         with self.assertRaises(ValueError):
             check_external_order_guards("BTCUSDC", "BUY", 80000.0, margins=dict(base_full, whale_guard_mode="strict"))
         with self.assertRaises(ValueError):
-            check_intelligence_order_guards("binance", "BTCUSDC", "BUY", 80000.0, qty=1.0, margins=dict(base_full, llm_guard_mode="true"))
+            check_llm_order_guards("binance", "BTCUSDC", "BUY", 80000.0, qty=1.0, margins=dict(base_full, llm_guard_mode="true"))
         with self.assertRaises(ValueError):
             check_geopolitical_order_guards("BTCUSDC", "BUY", margins=dict(base_full, geopolitical_guard_mode="1"))
 

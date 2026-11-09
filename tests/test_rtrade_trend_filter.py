@@ -18,12 +18,14 @@ class TrendFilterTest(unittest.TestCase):
         self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
         self._k = rtrade.RTRADE_TREND_FILTER_K
         self._cm = sys.modules.get("cacheManager")
+        self._rtrade_cm = rtrade.cm
         rtrade.RTRADE_TREND_FILTER_ENABLED = True
         rtrade.RTRADE_TREND_FILTER_K = 2.0
 
     def tearDown(self):
         rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
         rtrade.RTRADE_TREND_FILTER_K = self._k
+        rtrade.cm = self._rtrade_cm
         if self._cm is not None:
             sys.modules["cacheManager"] = self._cm
         else:
@@ -37,6 +39,7 @@ class TrendFilterTest(unittest.TestCase):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
+        rtrade.cm = m
 
     def test_disabled_returns_false(self):
         rtrade.RTRADE_TREND_FILTER_ENABLED = False
@@ -62,6 +65,7 @@ class TrendFilterTest(unittest.TestCase):
             raise RuntimeError("cm down")
         m.get_short_trend_manager = boom
         sys.modules["cacheManager"] = m
+        rtrade.cm = m
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))          # An error -> stand aside (fail-closed).
 
 class FollowupForceTest(unittest.TestCase):
@@ -72,6 +76,7 @@ class FollowupForceTest(unittest.TestCase):
         self._k = rtrade.RTRADE_TREND_FILTER_K
         self._flip = getattr(rtrade, "RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED", False)
         self._cm = sys.modules.get("cacheManager")
+        self._rtrade_cm = rtrade.cm
         rtrade.RTRADE_TREND_FILTER_ENABLED = True
         rtrade.RTRADE_TREND_FILTER_K = 2.0
         rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = True
@@ -80,6 +85,7 @@ class FollowupForceTest(unittest.TestCase):
         rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
         rtrade.RTRADE_TREND_FILTER_K = self._k
         rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = self._flip
+        rtrade.cm = self._rtrade_cm
         if self._cm is not None:
             sys.modules["cacheManager"] = self._cm
         else:
@@ -93,6 +99,7 @@ class FollowupForceTest(unittest.TestCase):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
+        rtrade.cm = m
 
     def test_directional_force_policy(self):
         cases = (
@@ -130,6 +137,7 @@ class MarketRegimeTest(unittest.TestCase):
         self._k = rtrade.RTRADE_TREND_FILTER_K
         self._flip = getattr(rtrade, "RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED", False)
         self._cm = sys.modules.get("cacheManager")
+        self._rtrade_cm = rtrade.cm
         rtrade.RTRADE_TREND_FILTER_ENABLED = True
         rtrade.RTRADE_TREND_FILTER_K = 2.0
         rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = True
@@ -138,6 +146,7 @@ class MarketRegimeTest(unittest.TestCase):
         rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
         rtrade.RTRADE_TREND_FILTER_K = self._k
         rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = self._flip
+        rtrade.cm = self._rtrade_cm
         if self._cm is not None:
             sys.modules["cacheManager"] = self._cm
         else:
@@ -150,6 +159,7 @@ class MarketRegimeTest(unittest.TestCase):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
+        rtrade.cm = m
 
     def test_regimes_use_signed_gradient_and_adaptive_noise(self):
         for gradient, expected in ((0.5, "bull"), (-0.5, "bear"),

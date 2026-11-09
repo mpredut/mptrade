@@ -268,7 +268,6 @@ def load_trades_from_file(filename):
     except Exception:
         print("Error reading file.")
         trade_cache = []
-    print(set(trade.get('symbol') for trade in trade_cache if isinstance(trade, dict) and trade.get('symbol')))
 
 
 # Return recent BUY or SELL fills from the manager cache.

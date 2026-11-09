@@ -59,11 +59,6 @@ PLACE_ORDER_SAFEBACK_SEC = required_int_env("PLACE_ORDER_SAFEBACK_SEC")
 PLACE_ORDER_MIN_NOTIONAL = required_float_env("PLACE_ORDER_MIN_NOTIONAL")
 
 
-class WeightLimitBlock(Exception):
-    """Raised when the 24-hour trade limit makes retrying pointless."""
-    pass
-
-
 _CACHE_SUBMIT_PERMIT_TTL_SEC = binance_cache_health.SUBMIT_PERMIT_TTL_SEC
 _CACHE_SUBMIT_PERMIT_ISSUER = object()
 
@@ -557,7 +552,7 @@ ORDER_OUTCOMES_LOG_DIR = _outcomes_log.ORDER_OUTCOMES_LOG_DIR
 
 
 def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC,
-                      force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None,
+                      force=False, cancelorders=True, hours=PLACE_ORDER_HOURS,
                       motivation=None, _reason_out=None, **kwargs):
     return _place_via_common_pipeline(
         order_type, symbol, price, qty, smart=True,

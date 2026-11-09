@@ -312,8 +312,8 @@ class ReplayDeterminismTest(unittest.TestCase):
         self.assertIsNotNone(strat.exit_manager.vol_resolver)
 
         # Even with mocked external cached volatility returning 0.35, replay must ignore it
-        with patch.object(mod, "resolve_cached_volatility_1h", return_value=0.35), \
-             patch.object(mod, "resolve_cached_volatility_1h_pct", return_value=35.0):
+        with patch("intelligence.internal.state.volatility.resolve_cached_volatility_1h", return_value=0.35), \
+             patch("intelligence.internal.state.volatility.resolve_cached_volatility_1h_pct", return_value=35.0):
             vol_ratio, vol_src = strat._vol_1h_ratio()
             self.assertEqual(vol_ratio, 0.0)
             self.assertEqual(vol_src, "none")
@@ -578,7 +578,7 @@ class TestNowFnDefaultsToRealTime(unittest.TestCase):
     def test_get_relevant_trade_uses_real_time_by_default(self):
         import time as real_time
         trade_orders = [{"timestamp": int(real_time.time() * 1000) - 1000, "price": 42.0}]
-        _, trade_time, _ = mt.get_relevant_trade(trade_orders, "BUY", threshold_s=3600, symbol=SYMBOL)
+        _, trade_time, _ = mt.get_relevant_trade(trade_orders, "BUY", symbol=SYMBOL)
         self.assertAlmostEqual(trade_time, real_time.time(), delta=5)
 
 

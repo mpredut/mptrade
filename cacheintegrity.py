@@ -33,7 +33,7 @@ def normalize_timestamp_map(
     return normalized
 
 
-def snapshot_data_version(items: dict[str, Any], fetchtime: dict[str, Any] | None = None) -> str:
+def snapshot_data_version(items: dict[str, Any]) -> str:
     """Compute a deterministic Blake2s-128 content version for an Order items snapshot."""
     canonical = json.dumps({"items": items}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "snapshot:" + hashlib.blake2s(canonical, digest_size=16).hexdigest()
@@ -414,7 +414,7 @@ def read_order_snapshot_strict(
             raise ValueError("Order cache counts differ from its manifest")
         if normalized_fetchtime != metadata["fetchtime"]:
             raise ValueError("Order cache fetchtimes differ from its manifest")
-        if snapshot_data_version(items, normalized_fetchtime) != required_version:
+        if snapshot_data_version(items) != required_version:
             raise ValueError("Order cache digest is invalid")
         return items, normalized_fetchtime, actual_counts
     except account_cache_health.AccountCacheNotReady:

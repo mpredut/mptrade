@@ -321,8 +321,8 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
 
 class BinanceCacheHealthConfigTest(unittest.TestCase):
     def test_positive_finite_values_are_accepted(self):
-        self.assertEqual(health._positive_finite(1, "TEST_VALUE"), 1.0)
-        self.assertEqual(health._positive_finite("0.5", "TEST_VALUE"), 0.5)
+        self.assertEqual(health.require_pos_float(1, "TEST_VALUE"), 1.0)
+        self.assertEqual(health.require_pos_float("0.5", "TEST_VALUE"), 0.5)
 
     def test_zero_negative_nan_and_infinity_are_rejected(self):
         import math
@@ -330,7 +330,7 @@ class BinanceCacheHealthConfigTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(
                         ValueError, "must be finite and positive"):
-                    health._positive_finite(value, "TEST_VALUE")
+                    health.require_pos_float(value, "TEST_VALUE")
 
 
 if __name__ == "__main__":

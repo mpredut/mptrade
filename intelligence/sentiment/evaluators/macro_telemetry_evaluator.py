@@ -1,7 +1,6 @@
 """Macro benchmark options surface, summary formatting, asset scope filtering, and live flow divergence evaluators."""
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -1096,13 +1095,11 @@ def enrich_sentiment_advisor_live_flow_divergence(
 
 def format_bottom_structure_6h_parts(
     m24: Dict[str, Any],
-    btc_m24: Optional[Dict[str, Any]] = None,
     *,
     prior_label: str = "prior_6h_low",
     px_prefix: str = "$",
-    check_smt: bool = True,
 ) -> Tuple[Optional[str], List[str]]:
-    """Build 6h intraday bottom structure label and formatted metric parts (including SMT vs BTC)."""
+    """Build 6h intraday bottom structure label and formatted metric parts."""
     b_struct = m24.get("bottom_structure_6h") if isinstance(m24, dict) else None
     if not b_struct:
         return None, []

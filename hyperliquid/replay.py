@@ -30,7 +30,7 @@ from offline.backtests.execution import (
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import calculate_performance_metrics, round_metric
+from offline.backtests.metrics import round_metric
 
 
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:

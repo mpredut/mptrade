@@ -505,7 +505,7 @@ class TestTrendState(unittest.TestCase):
         self.now = 1000.0
 
     def _ts(self, exp_time=9999, fresh_time=60):
-        return ta.TrendState(3600, exp_time, fresh_time, now_fn=lambda: self.now)
+        return ta.TrendState(exp_time, fresh_time, now_fn=lambda: self.now)
 
     def test_trend_lifecycle(self):
         with self.subTest(msg="initial_state"):
@@ -557,7 +557,7 @@ class TestTrendStateCooldown(unittest.TestCase):
 
     def _ts_with_clock(self):
         clock = {"t": 1000.0}
-        ts = ta.TrendState(3600, 9999, 60, now_fn=lambda: clock["t"])
+        ts = ta.TrendState(9999, 60, now_fn=lambda: clock["t"])
         return ts, clock
 
     def test_confirmation_limit_and_reset(self):
@@ -1131,7 +1131,7 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
 
 class TestLogicSmall(unittest.TestCase):
     def test_logic_small_fires_buy_on_positive_surge(self):
-        trend_state = ta.TrendState(3600, 300, 300)
+        trend_state = ta.TrendState(300, 300)
         with patch.object(ta, "track_and_place_order", return_value=[123]) as mock_order:
             ta.logic_small("SMALL", True, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
             mock_order.assert_called_once_with(
@@ -1143,7 +1143,7 @@ class TestLogicSmall(unittest.TestCase):
             self.assertEqual(trend_state._confirmed_count_up, 1)
 
     def test_logic_small_fires_sell_on_negative_plunge(self):
-        trend_state = ta.TrendState(3600, 300, 300)
+        trend_state = ta.TrendState(300, 300)
         with patch.object(ta, "track_and_place_order", return_value=[456]) as mock_order:
             ta.logic_small("SMALL", True, "BTCUSDT", -1, -4.0, trend_state, 60000.0)
             mock_order.assert_called_once_with(
@@ -1155,7 +1155,7 @@ class TestLogicSmall(unittest.TestCase):
             self.assertEqual(trend_state._confirmed_count_down, 1)
 
     def test_logic_small_respects_enable_and_threshold(self):
-        trend_state = ta.TrendState(3600, 300, 300)
+        trend_state = ta.TrendState(300, 300)
         with patch.object(ta, "track_and_place_order") as mock_order:
             # Below threshold
             ta.logic_small("SMALL", True, "BTCUSDT", 1, ta.SMALL_SLOPE_THRESHOLD - 0.5, trend_state, 60000.0)
@@ -1165,7 +1165,7 @@ class TestLogicSmall(unittest.TestCase):
             mock_order.assert_not_called()
 
     def test_logic_small_fires_sell_on_acceleration_plunge(self):
-        trend_state = ta.TrendState(3600, 300, 300)
+        trend_state = ta.TrendState(300, 300)
         pw = MagicMock()
         pw.calculate_acceleration.side_effect = [(-0.45, -0.35), (-0.30, -0.10)]
         with patch.object(ta, "track_and_place_order", return_value=[789]) as mock_order:

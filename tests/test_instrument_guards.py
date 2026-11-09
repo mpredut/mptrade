@@ -508,15 +508,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             buy = inst.place(
                 "BUY", 99.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_guards={"profit_guard"},
-                cooldown_pair_id="pair-1", caller_owns_retry=True)
+                caller_owns_retry=True)
             sell = inst.place(
                 "SELL", 101.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_guards={"profit_guard"},
-                cooldown_pair_id="pair-1", caller_owns_retry=True)
+                caller_owns_retry=True)
             buy2 = inst.place(
                 "BUY", 98.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_guards={"profit_guard"},
-                cooldown_pair_id="pair-1", caller_owns_retry=True)
+                caller_owns_retry=True)
 
             self.assertIsNotNone(buy)
             self.assertIsNotNone(sell)
@@ -1063,7 +1063,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_fine_grained_bypass_guards_granularity(self):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
-        from instrument import normalize_bypassed_guards, GUARD_CATALOG
+        from guard_hierarchy import GUARD_CATALOG, normalize_bypassed_guards
 
         # 0. GUARD_CATALOG completeness (new canonical codes exist, legacy G1..G10 removed)
         canonical_codes = {

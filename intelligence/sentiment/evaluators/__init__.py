@@ -68,7 +68,6 @@ if TYPE_CHECKING:
         build_cross_market_context,
         compute_enterprise_portfolio_risk_metrics,
         enrich_open_limit_orders_tca,
-        enrich_recent_orders_markout,
         resolve_symbol_price,
         resolve_venue_fee_and_limits,
     )
@@ -112,7 +111,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     "enrich_microstructure_cvd": "intelligence.sentiment.evaluators.microstructure_evaluator",
     "enrich_open_limit_orders_tca": "intelligence.sentiment.evaluators.tca_risk_evaluator",
     "enrich_positions_with_orders_and_cycles": "intelligence.sentiment.evaluators.portfolio_evaluator",
-    "enrich_recent_orders_markout": "intelligence.sentiment.evaluators.tca_risk_evaluator",
     "enrich_sentiment_advisor_live_flow_divergence": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
     "evaluate_institutional_posture_divergence": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
     "extract_symbol_recent_fills": "intelligence.sentiment.evaluators.portfolio_evaluator",

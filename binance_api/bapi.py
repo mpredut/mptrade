@@ -178,10 +178,6 @@ def get_account_assets_balances(raise_errors=False):
 
 
 
-def _clean_bapi_oid_str(val):
-    return clean_order_id(val) if isinstance(val, str) else val
-
-
 _normalize_bapi_oid = normalize_scalar_order_id
 
 

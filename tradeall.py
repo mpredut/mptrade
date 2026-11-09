@@ -68,8 +68,6 @@ SMALL_SLOPE_THRESHOLD = required_float_env("TRADEALL_SMALL_SLOPE_THRESHOLD")
 # Proactive kinematic parameters (Velocity & Acceleration)
 ACCEL_ENABLED = required_bool_env("TRADEALL_ACCEL_ENABLED")
 ACCEL_WINDOW_SEC = required_float_env("TRADEALL_ACCEL_WINDOW_SEC")
-ACCEL_INFLECTION_THRESHOLD = required_float_env("TRADEALL_ACCEL_INFLECTION_THRESHOLD")
-ACCEL_SURGE_THRESHOLD = required_float_env("TRADEALL_ACCEL_SURGE_THRESHOLD")
 ACCEL_MIN_VEL_SHORT = required_float_env("TRADEALL_ACCEL_MIN_VEL_SHORT")
 ACCEL_MIN_ACC_SHORT = required_float_env("TRADEALL_ACCEL_MIN_ACC_SHORT")
 ACCEL_MIN_VEL_MED = required_float_env("TRADEALL_ACCEL_MIN_VEL_MED")
@@ -112,8 +110,6 @@ def _validate_tradeall_config():
         "ORDER_EXPIRY_HOURS": ORDER_EXPIRY_HOURS,
         "SMALL_SLOPE_THRESHOLD": SMALL_SLOPE_THRESHOLD,
         "ACCEL_WINDOW_SEC": ACCEL_WINDOW_SEC,
-        "ACCEL_INFLECTION_THRESHOLD": ACCEL_INFLECTION_THRESHOLD,
-        "ACCEL_SURGE_THRESHOLD": ACCEL_SURGE_THRESHOLD,
     }
     for name, value in positive.items():
         if safe_pos_float(value, default=None) is None:
@@ -376,14 +372,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
 
 
 class TrendState:
-    def __init__(self, max_duration_seconds, expiration_trend_time, fresh_trend_time, now_fn=time.time):
+    def __init__(self, expiration_trend_time, fresh_trend_time, now_fn=time.time):
         self.state = 'HOLD'
         self.old_state = self.state
         self.expired = False
         self.start_time = None
         self.end_time = None
         self.last_confirmation_time = None
-        self.max_duration_seconds = max_duration_seconds    # Unused maximum permitted trend duration.
         self.confirm_count = 0
         self.expiration_trend_time = expiration_trend_time  # Maximum seconds between confirmations.
         self.fresh_trend_time = fresh_trend_time            # Freshness threshold.
@@ -784,10 +779,8 @@ class TrendCoordinator:
         self.trend_states = {}
         self.trend_states_big = {}
         for symbol in self.symbols:
-            self.trend_states[symbol] = TrendState(max_duration_seconds=2.5 * 60 * 60,
-                                                   expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
-            self.trend_states_big[symbol] = TrendState(max_duration_seconds=3 * 60 * 60,
-                                                       expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
+            self.trend_states[symbol] = TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
+            self.trend_states_big[symbol] = TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
             # Windows and the fast channel live in ``instant_mgr``; subscribe here.
             # Use Cache24 only for its evaluation signal (dirty flag and event).
             if cache24_managers is not None:
@@ -832,13 +825,11 @@ class TrendCoordinator:
         symbol = self._resolve_symbol(symbol)
         if symbol not in self.trend_states:
             self.trend_states[symbol] = TrendState(
-                max_duration_seconds=2.5 * 60 * 60,
                 expiration_trend_time=2.7 * 60,
                 fresh_trend_time=3.7 * 60,
             )
         if symbol not in self.trend_states_big:
             self.trend_states_big[symbol] = TrendState(
-                max_duration_seconds=3 * 60 * 60,
                 expiration_trend_time=2.7 * 60,
                 fresh_trend_time=3.7 * 60,
             )

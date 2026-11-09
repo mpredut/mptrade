@@ -33,9 +33,7 @@ from intelligence.macro.calendar_ssot import resolve_global_trading_session
 from intelligence.sentiment.gemini_client import GeminiClient
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from cachepaths import cache_path
-from state_io import read_json_dict, save_json_state
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")

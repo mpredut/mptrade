@@ -130,8 +130,6 @@ class KrakenExecutorContractTest(unittest.TestCase):
         with (
             patch.object(order_guard, "daily_limit_guard",
                          return_value=(True, None)),
-            patch("instrument.trade_cooldown.trade_slot",
-                  return_value=self._slot_context()),
             patch.object(instrument_module._outcomes_log, "log_order_outcome"),
         ):
             return instrument.place(

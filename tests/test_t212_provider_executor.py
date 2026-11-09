@@ -312,8 +312,7 @@ class T212ExecutorContractTest(unittest.TestCase):
         import order_guard
         inst = Instrument("RGNT", "RGNT_US_EQ", "t212", api=MarketApi([self.provider]))
         outcome = {}
-        with mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)), \
-             mock.patch("instrument.trade_cooldown.trade_slot"):
+        with mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)):
             placed = inst.place(
                 "SELL", 1.38, 72.46, smart=False, wait_for_trend=False,
                 caller_owns_retry=True, _outcome_context=outcome,

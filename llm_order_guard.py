@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag, format_price_log
+from botcore import _parse_bool_flag
 from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.macro_sentiment_ssot import (
@@ -439,6 +439,3 @@ def check_llm_order_guards(
             active_reason = geo_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
-
-
-check_intelligence_order_guards = check_llm_order_guards

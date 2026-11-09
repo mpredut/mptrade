@@ -38,7 +38,7 @@ import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 base_of = utils.base_asset
 
 
-from botcore import safe_float, safe_pos_float
+from botcore import safe_float
 
 
 def free_direct(base):

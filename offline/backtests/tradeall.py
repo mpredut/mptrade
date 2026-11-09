@@ -373,9 +373,9 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                                          window_seconds=ta.WINDOW_SECONDS_BIG)
             analyzer_small = ta.WindowAnalyzer(window_small)
             analyzer_big = ta.WindowAnalyzer(window_big)
-            trend_state = ta.TrendState(max_duration_seconds=2.5 * 60 * 60, expiration_trend_time=2.7 * 60,
+            trend_state = ta.TrendState(expiration_trend_time=2.7 * 60,
                                          fresh_trend_time=3.7 * 60, now_fn=clock)
-            trend_state_big = ta.TrendState(max_duration_seconds=3 * 60 * 60, expiration_trend_time=2.7 * 60,
+            trend_state_big = ta.TrendState(expiration_trend_time=2.7 * 60,
                                              fresh_trend_time=3.7 * 60, now_fn=clock)
 
             shadow = shadow_signals.KalmanStateTracker(

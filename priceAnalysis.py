@@ -15,7 +15,6 @@ from datetime import datetime
 import utils as u
 from botcore import (
     _parse_bool_flag,
-    exact_int,
     load_dotenv as _load_dotenv,
     lru_dict_put,
     normalize_epoch_sec,
@@ -324,79 +323,6 @@ def _load_sorted_price_series(
     return ts_arr, px_arr
 
 
-# Weighted moving average (WMA).
-def trend_wma(symbol: str, window_hours: int = 6):
-    window_hours = safe_pos_float(window_hours, 6.0)
-    series = _load_sorted_price_series(symbol)
-    if series is None:
-        return None
-    timestamps, prices = series
-
-    delta = float(np.median(np.diff(timestamps)))
-    if not np.isfinite(delta) or delta <= 0:
-        return None
-    points_per_hour = max(1, int(round(3600.0 / delta)))
-    window = max(1, min(int(round(points_per_hour * window_hours)), len(prices)))
-
-    wma_prices = weighted_moving_average(prices, window)
-
-    # Determine direction by comparing the newest WMA with its predecessor.
-    if wma_prices[-1] > wma_prices[-2]:
-        trend_direction = 'up'
-    else:
-        trend_direction = 'down'
-
-    # Visualization.
-    plt.figure(figsize=(12,5))
-    plt.plot(timestamps, prices, label='Price', color='blue')
-    plt.plot(timestamps, wma_prices, label=f'WMA {window_hours}h', color='red', linewidth=2)
-    plt.xlabel('Timestamp')
-    plt.ylabel('Price')
-    plt.title(f"{symbol} - Trend WMA: {trend_direction}")
-    plt.legend()
-    plt.show()
-
-    return {'direction': trend_direction}
-
-
-
-# Intentionally retained reference implementation for Holt's Linear Trend. The
-# active path uses detect_long_term_trend, but this may be resumed later.
-# from statsmodels.tsa.holtwinters import Holt
-# def trend_holt(symbol: str, smoothing_level: float = 0.3, smoothing_slope: float = 0.1, forecast_hours: int = 1):
-    # data = priceLstFor(symbol)
-    # if len(data) < 2:
-        # return None
-    # data = sorted(data, key=lambda x: x[0])
-    # timestamps, prices = zip(*data)
-    # timestamps = np.array(timestamps)
-    # prices = np.array(prices)
-    # delta = np.median(np.diff(timestamps))
-    # points_per_hour = int(3600 / delta)
-    # model = Holt(prices).fit(smoothing_level=smoothing_level, smoothing_slope=smoothing_slope, optimized=False)
-    # fitted = model.fittedvalues
-    # forecast_points = forecast_hours * points_per_hour   # Short trend forecast.
-    # future = model.forecast(forecast_points)
-    # trend_direction = 'up' if future[-1] > fitted[-1] else 'down'
-    # return {'direction': trend_direction, 'fitted': fitted, 'forecast': future}
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def slope_tolerance_per_(symbol, price,
-                              base_tolerance = 0.0015,
-                              ):
-    min_tol = 0.0005
-    max_tol = 2000.0
-    price_f = safe_pos_float(price, default=None)
-    if price_f is None:
-        return min_tol
-    base_f = safe_pos_float(base_tolerance, 0.0015)
-    relative_tolerance = base_f * price_f
-    adaptive_tolerance = min(max(relative_tolerance, min_tol), max_tol)
-    return adaptive_tolerance
-
-
-
 def _fast_linear_regression_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Compute OLS linear slope and intercept in O(N) without LAPACK/SVD matrix overhead."""
     dx = x - x[0]
@@ -410,133 +336,6 @@ def _fast_linear_regression_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, flo
     intercept = mean_y - slope * mean_dx
     return slope, intercept
 
-
-# Intentionally retained legacy trend detection based on block-to-block slopes,
-# average reference slope, and relative tolerance. The active fixed path uses
-# time-based windows, Mann-Kendall, and noise tolerance.
-def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
-                                slope_tolerance: float = 0.0028, persistence_factor: float = 1.5,
-                                lookback_days=30, draw: bool = True) -> Optional[dict]:
-
-    window_hours = safe_pos_float(window_hours, 24.0)
-    step_hours = safe_pos_float(step_hours, 8.0)
-    persistence_factor = safe_pos_float(persistence_factor, 1.5)
-    lookback_days = safe_pos_float(lookback_days, 30.0)
-    series = _load_sorted_price_series(symbol, lookback_days=lookback_days)
-    if series is None:
-        return None
-    timestamps, prices = series
-    
-    delta = float(np.median(np.diff(timestamps)))
-    if not np.isfinite(delta) or delta <= 0:
-        return None
-    points_per_hour = max(1, int(round(3600.0 / delta))) # Price points per hour.
-    window = max(1, min(int(round(points_per_hour * window_hours)), len(prices))) # Points per window.
-    step = max(1, int(round(points_per_hour * step_hours)))     # Points per step.
-    
-    _dbg(f"[DEBUG] {symbol}: point count={len(prices)}, window={window}, step={step}, delta(s)={delta}")
-    _dbg(f"[DEBUG] {symbol}: window count={len(prices)/window}, step count in price {len(prices)/step}")
-    _dbg(f"[DEBUG] {symbol}: slope_tolerance={slope_tolerance}")
- 
-    last_slope_h = None
-    sum_slope = 0
-    trend_start_ts = timestamps[-1]
-    trend_ref_slope_h = None
-    trend_ref_count = 1
-    trend_block = 0
-    trend_block_ups = 0
-    trend_block_indices = []
-    
-    trend_block_indices_test=[]
-    
-    for start in range(len(prices) - window, -1, -step):
-        _dbg(f"[DEBUG] start {start}")
-        trend_block +=1
-        end = start + window
-        x_block = timestamps[start:end] - timestamps[start]
-        y_block = prices[start:end]
-
-        slope_s, intercept = _fast_linear_regression_1d(x_block, y_block)  # price increase per second
-        
-        trend_block_indices_test.append((0, window))
-
-        slope_h = slope_s * 3600 # slope per h
-        if slope_h > 0 :
-            trend_block_ups +=1
-
-        avg_price = prices[0]
-        relative_tolerance = slope_tolerance_per_(symbol, avg_price, slope_tolerance) 
-
-        _dbg(f"[DEBUG] {symbol}: relative_tolerance={relative_tolerance}, slope_h={slope_h}, last_slope_h={last_slope_h}")
-        #drawPriceLst(x_block, y_block, trend_block_indices, symbol, "up", slope_h)
-     
-        if trend_ref_slope_h is None or last_slope_h is None:
-            trend_ref_slope_h = slope_h
-            trend_start_ts = timestamps[start]
-            last_slope_h = slope_h
-
-        continue_trend = True
-                    
-        if(trend_ref_slope_h * slope_h < 0):  # opposite trend sign
-            if(len(trend_block_indices) == 0):
-                continue
-            avg_slope = sum_slope / len(trend_block_indices)
-            _dbg(f"[DEBUG] the current trend differs {slope_h}. Compared against trend_ref_slope_h={trend_ref_slope_h} and avg_slope={avg_slope}")
-            if abs(slope_h - trend_ref_slope_h) >= relative_tolerance: # Significant difference from the starting trend.
-                continue_trend = False;
-            if abs(slope_h - avg_slope) >= relative_tolerance:  # Large difference from the mean.
-                continue_trend = False;
-        else:
-            continue_trend = True
-                        
-        if continue_trend:
-            if (trend_ref_slope_h * slope_h < 0):  # sign changed
-                trend_ref_slope_h = slope_h
-                trend_ref_count = 1
-                print("CONTINUE ... ")
-            else:  # update the mean reference slope
-                
-                # w < 1 makes the previous mean count less than one new observation.
-                #trend_ref_slope_h = (w * trend_ref_slope_h + slope_h) / (w + 1)              
-                trend_ref_slope_h =  (trend_ref_slope_h * trend_ref_count + slope_h) / (trend_ref_count + 1);
-                trend_ref_count += 1
-            
-            sum_slope += slope_h            
-            trend_block_indices.append((start, end))
-            trend_start_ts = timestamps[start]
-            last_slope_h = slope_h
-        else:
-            # The trend has broken.
-            print("BREAK!")
-            break
-               
-    duration_seconds = timestamps[-1] - trend_start_ts
-    duration_hours = duration_seconds / 3600
-    estimated_future_hours = duration_hours * persistence_factor
-    
-    if duration_seconds <= 0:
-        print(f"[{symbol}] duration_seconds={duration_seconds}, not enough data for a trend.")
-        return None
-    
-    if trend_ref_slope_h is None:
-        print(f"[{symbol}] trend_ref_slope_h is None, the trend direction cannot be determined.")
-        return None        # Not enough data to calculate slope
-    
-    print(f"trend_block {trend_block} and trend_block_ups {trend_block_ups}")
-    trend_direction = 'up' if trend_ref_slope_h > 0 else 'down'
-
-    if _parse_bool_flag(draw, True):
-        drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_direction, duration_hours)
-
-    return {
-        'timestamp': int(time.time()),
-        'direction': trend_direction,
-        'start_timestamp': trend_start_ts,
-        'duration_seconds': duration_seconds,
-        'estimated_future_hours': estimated_future_hours
-    }
-
-            
 
 def format_duration(seconds):
     """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
@@ -594,9 +393,7 @@ def _clone_trend_result(value):
 
 
 def _store_trend_memo(cache_key: tuple, value):
-    if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
-        _trend_memo_cache.clear()
-    _trend_memo_cache[cache_key] = _TREND_MEMO_NONE if value is None else value
+    lru_dict_put(_trend_memo_cache, cache_key, _TREND_MEMO_NONE if value is None else value, _TREND_MEMO_MAX_ENTRIES)
     return _clone_trend_result(value)
 
 
@@ -1036,10 +833,10 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         plt.legend()
         plt.show()
 
-    last_w[memo_key] = w        # w is already sliced from current position.
-    last_timestamp[memo_key] = timestamp
-    last_calc_time[memo_key] = curr_now
-    last_duration[memo_key] = dur_sec
+    lru_dict_put(last_w, memo_key, w, 256)
+    lru_dict_put(last_timestamp, memo_key, timestamp, 256)
+    lru_dict_put(last_calc_time, memo_key, curr_now, 256)
+    lru_dict_put(last_duration, memo_key, dur_sec, 256)
     return current_weight     # w[0] is the current weight.
 
 last_timestamp = {}

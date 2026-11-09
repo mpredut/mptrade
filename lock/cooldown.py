@@ -24,7 +24,6 @@ from botcore import (
     _parse_bool_flag,
     clean_json_value,
     clean_order_id,
-    exact_pos_int,
     load_ini_config,
     normalize_scalar_order_id,
     normalize_side,

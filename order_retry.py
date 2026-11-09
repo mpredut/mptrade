@@ -769,7 +769,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
     return None
 
 
-def load_all(now=None):
+def load_all():
     """Return all queued entries under lock, failing closed on any corruption."""
     with _locked_queue() as existing:
         return existing
@@ -953,7 +953,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     return out
 
 
-def load_validated(now=None):
+def load_validated():
     """Return the queue only when every durable record is semantically valid."""
     with _locked_queue(validate=True) as existing:
         return existing
@@ -1463,7 +1463,6 @@ def discard(ids):
     return _remove_matching_locked(lambda rec: rec.get("id") in ids)
 
 
-load_queue = load_all
 remove_ids = discard
 
 

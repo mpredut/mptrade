@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import signal
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -27,7 +26,6 @@ from botcore import _parse_bool_flag, load_dotenv
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
-    compute_step_retry_ts,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
     is_interval_due,
@@ -38,9 +36,7 @@ from intelligence.macro_sentiment_ssot import (
     run_scheduled_step,
     safe_nonneg_ts,
     safe_pos_float,
-    sanitize_heartbeat_status,
     write_daemon_heartbeat,
-    write_daemon_heartbeat_files,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
@@ -312,6 +308,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "news": self.news_interval_sec,
                 "fear_greed": self.fear_greed_interval_sec,
                 "breadth": self.breadth_interval_sec,
+                "macro_benchmarks": getattr(self, "macro_benchmarks_interval_sec", None),
             },
             logger_inst=logger,
         )

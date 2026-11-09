@@ -16,7 +16,6 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
-    exact_int,
     exact_pos_int,
     load_dotenv,
     normalize_class_name,
@@ -33,11 +32,6 @@ from state_io import atomic_write_json, read_json_dict, read_text_file, read_tex
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
-
-
-def _positive_finite(value: float, name: str) -> float:
-    return require_pos_float(value, name)
-
 
 MAX_AGE_SEC = require_pos_float(
     required_float_env("CM_BINANCE_ACCOUNT_CACHE_MAX_AGE_SEC"),
@@ -227,10 +221,6 @@ def record_successful_sync(cache_name: str, data_version: str, *, now_ms: Option
 def record_persisted_version(cache_name: str, data_version: str, *, now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
     return _record_cache_version(cache_name, data_version, now_ms=now_ms, update_sync=False)
-
-
-def _exact_int(value: Any) -> Optional[int]:
-    return exact_int(value, default=None)
 
 
 def _positive_int(value, field: str) -> int:

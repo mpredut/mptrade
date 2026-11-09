@@ -248,7 +248,7 @@ rung_relogin() {
 
 rung_reinstall() {
     if [ ! -t 0 ] && [ -z "${PIA_ALLOW_HEADLESS_REINSTALL:-}" ]; then
-        log "rung 4: SKIPPED (headless/cron: the interactive PIA installer cannot run unattended)"
+        log "rung 5: SKIPPED (headless/cron: the interactive PIA installer cannot run unattended)"
         alert "PIA may need a manual reinstall ($(hostname))" \
 "The recovery ladder reached the reinstall rung, but the PIA installer needs an interactive
 terminal and cannot run from cron. Most outages here are network- or DIP-token-related, NOT a
@@ -260,12 +260,12 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
     [ -f "$REINSTALL_MARK" ] && last=$(cat "$REINSTALL_MARK" 2>/dev/null || echo 0)
     local age=$(( $(date +%s) - last ))
     if [ "$age" -lt "$REINSTALL_COOLDOWN" ]; then
-        log "rung 4: SKIPPED (reinstalled $((age/3600))h ago, cooldown $((REINSTALL_COOLDOWN/3600))h)"
+        log "rung 5: SKIPPED (reinstalled $((age/3600))h ago, cooldown $((REINSTALL_COOLDOWN/3600))h)"
         return 1
     fi
-    net_raw_ok || { log "rung 4: SKIPPED (the installer cannot be downloaded without internet)"; return 1; }
+    net_raw_ok || { log "rung 5: SKIPPED (the installer cannot be downloaded without internet)"; return 1; }
 
-    log "rung 4: reinstalling PIA from $INSTALLER_URL"
+    log "rung 5: reinstalling PIA from $INSTALLER_URL"
     local tmp
     tmp=$(mktemp -d /tmp/pia_reinstall.XXXXXX)
     if ! curl -fsSL -m 600 -o "$tmp/pia.run" "$INSTALLER_URL"; then
@@ -421,7 +421,9 @@ VPN IP: $(pia get vpnip) | region: $(pia get region)
 If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored."
         systemctl reset-failed pia.service >/dev/null 2>&1
         systemctl start pia.service        >/dev/null 2>&1
-        systemctl start python_orchestrator.service >/dev/null 2>&1
+        if [ ! -e "$ROOT/FLEET_PAUSED" ]; then
+            systemctl start python_orchestrator.service >/dev/null 2>&1
+        fi
         exit 0
     fi
     log "$rung did not fix it; escalating"

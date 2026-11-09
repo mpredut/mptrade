@@ -139,14 +139,6 @@ def _parse_binance_order_id(order_id: Any, context: str) -> int:
     return require_int_order_id(order_id, context)
 
 
-def _step_decimals(step: str) -> int:
-    """Return significant decimals in a Binance stepSize/tickSize."""
-    try:
-        return decimal_places(step)
-    except Exception:
-        return 0
-
-
 class BinanceProvider(MarketDataProvider):
     """Adapt Binance market data, account reads, and execution mechanics.
 

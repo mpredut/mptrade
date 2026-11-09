@@ -332,7 +332,6 @@ class _LivePairVenue:
             response = mkt.place(
                 self.symbol, side, price, qty,
                 force=False, cancelorders=False, hours=hours, smart=False,
-                cooldown_pair_id=pair_id,
                 bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
                 allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD and side == "SELL"),
                 caller_owns_retry=True, motivation="rtrade_pair_quote",
@@ -768,7 +767,6 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
     if RTRADE_TREND_FILTER_ENABLED:
         allow_fb = RTRADE_TREND_OHLC_FALLBACK_ENABLED
         try:
-            import cacheManager as cm
             dyn = cm.get_short_trend_manager().get_short_trend_for_window(symbol, RTRADE_TREND_WINDOW_SEC)
         except Exception:
             dyn = None
@@ -942,7 +940,6 @@ class TradingBot:
     def __init__(self, symbol, qty, DEFAULT_ADJUSTMENT_PERCENT):
         self.symbol = symbol
         self.qty = qty
-        self.transaction_state = "COMPLETED"
         current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
         try:
             last_buy = _finite_pos_float(mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0)
@@ -1169,10 +1166,6 @@ class TradingBot:
                         adjustment_percent, failure_count, desp_hours_base, normal_hours,
                         submit_cache_permit, outcome_context,
                     )
-                except po.WeightLimitBlock as e:
-                    self._finish_side_precheck(side, aborted=not is_opp_filled())
-                    print(f"[{self.symbol}] 24h limit reached{'' if is_buy else ' (SELL)'} — exiting without retry ({e})")
-                    return _complete_followup()
                 except Exception:
                     self._finish_side_precheck(side, aborted=not is_opp_filled())
                     raise

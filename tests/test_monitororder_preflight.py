@@ -445,8 +445,6 @@ class MonitorOrderPreflightTest(unittest.TestCase):
             mock.patch.object(
                 monitororder.u, "are_close", return_value=True),
             mock.patch.object(
-                monitororder.trade_cooldown, "get_last_trade_age", return_value=1.0),
-            mock.patch.object(
                 monitororder.mkt, "preflight_order", return_value=permit),
             mock.patch.object(
                 monitororder.api, "cancel_order", return_value=True) as cancel_order,

@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import signal
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -52,7 +51,6 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat,
-    write_daemon_heartbeat_files,
 )
 
 load_dotenv()

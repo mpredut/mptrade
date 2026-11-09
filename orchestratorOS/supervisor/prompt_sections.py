@@ -679,10 +679,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         if pinfo.get("bottom_structure_6h"):
             _, b_parts = format_bottom_structure_6h_parts(
                 pinfo,
-                btc_entry,
                 prior_label="prior_low",
                 px_prefix="",
-                check_smt=False,
             )
             if b_parts:
                 extras.append(f"bottom_6h({', '.join(b_parts)})")

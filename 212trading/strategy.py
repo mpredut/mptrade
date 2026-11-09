@@ -9,14 +9,13 @@ state survives restarts. T212 FX conversion fees apply on both BUY and SELL legs
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields as _dc_fields
+from dataclasses import dataclass, field
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
@@ -27,8 +26,8 @@ ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from ipo_common import (
     log as _log, notify, are_close, required_env, required_float_env,
-    required_int_env, required_bool_env, _parse_bool_flag, safe_float,
-    safe_pos_float, safe_nonneg_float, exact_int, exact_pos_int, exact_nonneg_int,
+    required_bool_env, _parse_bool_flag, safe_float,
+    safe_pos_float, safe_nonneg_float,
     normalize_epoch_sec,
 )
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -51,18 +50,13 @@ from strategies.base_spot_mixin import (
     sanitize_common_spot_state,
 )
 from strategies.state_store import (
-    JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
-    compute_adaptive_reentry_pullback_pct, find_open_order,
-    state_path_for as _shared_state_path_for, update_post_sell_anchors,
+    state_path_for as _shared_state_path_for,
 )
 from strategies.position_exit_manager import (
-    PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction, ReentrySnapshot,
+    PositionExitManager, ExitAction,
 )
 from order_lifecycle import restore_cancelled_orders
-from intelligence.internal.state.volatility import (
-    resolve_cached_volatility_1h, resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
-)
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 

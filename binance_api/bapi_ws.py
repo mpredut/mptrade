@@ -618,7 +618,7 @@ class BinanceAccountStream(BinanceWSBase):
         async with websockets.connect(
             WS_API_URL,
             ping_interval=WS_PING_INTERVAL,
-            ping_timeout=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_TIMEOUT,
             close_timeout=WS_CLOSE_TIMEOUT,
         ) as ws:
             # Login

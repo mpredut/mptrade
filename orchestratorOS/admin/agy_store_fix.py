@@ -588,9 +588,7 @@ def last_store_activity() -> float:
                 p = os.path.join(d, name)
                 try:
                     cid = name.split(".", 1)[0]
-                    if name.endswith(".db-wal") and os.path.getsize(p) > 0 and cid not in ignored:
-                        newest = max(newest, os.stat(p).st_mtime)
-                    elif name.endswith((".db", ".db-wal")) and cid not in ignored:
+                    if name.endswith((".db", ".db-wal")) and cid not in ignored:
                         newest = max(newest, os.stat(p).st_mtime)
                 except OSError:
                     pass

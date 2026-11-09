@@ -884,7 +884,6 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     # 3. TCA & risk evaluator owns TCA/risk/cross-market evaluators and is re-exported cleanly
     assert portfolio_evaluator.compute_enterprise_portfolio_risk_metrics is tca_risk_evaluator.compute_enterprise_portfolio_risk_metrics
     assert portfolio_evaluator.enrich_open_limit_orders_tca is tca_risk_evaluator.enrich_open_limit_orders_tca
-    assert portfolio_evaluator.enrich_recent_orders_markout is tca_risk_evaluator.enrich_recent_orders_markout
     assert portfolio_evaluator.build_cross_market_context is tca_risk_evaluator.build_cross_market_context
 
     # 4. Daemon SSOT owns daemon runtime primitives & base collector/agent classes and is re-exported in macro_sentiment_ssot
@@ -3654,7 +3653,6 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
     # 2. tradeall.TrendState normalizes millisecond clock values (> 1e11) for freshness/expiration/cooldown
     now_ms = [1700000000000.0]
     ts = tradeall.TrendState(
-        max_duration_seconds=3600,
         expiration_trend_time=120,
         fresh_trend_time=200,
         now_fn=lambda: now_ms[0],
@@ -4416,10 +4414,12 @@ def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_
     assert state["BTC"]["rebuy"]["sell_price"] == 96.0
     assert "exit_sold_qty" not in state["BTC"]
 
-    # 4. monitororder.reset_monitororder_state_for_test clears initial_prices
-    monitororder.initial_prices["123"] = 100.0
+    # 4. monitororder.reset_monitororder_state_for_test clears initial_buy_prices and initial_sell_prices
+    monitororder.initial_buy_prices["123"] = 100.0
+    monitororder.initial_sell_prices["456"] = 200.0
     monitororder.reset_monitororder_state_for_test()
-    assert len(monitororder.initial_prices) == 0
+    assert len(monitororder.initial_buy_prices) == 0
+    assert len(monitororder.initial_sell_prices) == 0
 
     # 5. monitortrades._restore_pending_exit_state restores _hard_tp_last when a pending Hard-TP order is canceled
     monitortrades._hard_tp_last["BTCUSDC"] = 1000.0
@@ -4461,8 +4461,8 @@ def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_sc
         sample_rate_sec=1.0,
     )
     dummy_an = types.SimpleNamespace(check_price_change=lambda _: (4.0, 1))
-    ts1 = ta.TrendState(3600, 300, 300)
-    ts2 = ta.TrendState(3600, 300, 300)
+    ts1 = ta.TrendState(300, 300)
+    ts2 = ta.TrendState(300, 300)
     ta.handle_symbol("BTCUSDC", 101.0, dummy_pw, dummy_pw, dummy_an, dummy_an, ts1, ts2, regime_ctx="dummy")
     assert logic_calls == [("BIG", False)]
 

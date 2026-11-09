@@ -38,7 +38,6 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 )
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-    compute_cross_asset_regime,
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
 )
@@ -72,7 +71,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
-    resolve_cachedb_filepath,
 )
 
 read_json_cached = _default_read_json_cached
@@ -791,7 +789,7 @@ def collect_pretrade_telemetry(
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
             if m24.get("bottom_structure_6h"):
                 _, b_parts = format_bottom_structure_6h_parts(
-                    m24, btc_m24, prior_label="prior_6h_low", px_prefix="$", check_smt=False
+                    m24, prior_label="prior_6h_low", px_prefix="$"
                 )
                 if b_parts:
                     telemetry["6h Intraday Bottom Structure"] = ", ".join(b_parts)

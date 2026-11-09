@@ -74,6 +74,7 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         """Verify place_order_mechanics handles market=True equivalently to force=True."""
         with patch.object(po.api, "get_free_balance", return_value=100.0), \
              patch.object(po.api, "get_current_price", return_value=50.0), \
+             patch.object(po.client, "get_symbol_info", return_value={}), \
              patch("providers.binance_filters.BinanceOrderRules.from_symbol_info") as mock_from_info, \
              patch.object(po, "_submit_binance_order", return_value={"orderId": 999}) as mock_submit:
 

@@ -144,9 +144,9 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     import shadow_signals
 
     monkeypatch.setenv("TEST_SHADOW_FLOAT", "nan")
-    assert shadow_signals._f_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
+    assert shadow_signals.pos_float_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
     monkeypatch.setenv("TEST_SHADOW_FLOAT", "-1")
-    assert shadow_signals._f_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
+    assert shadow_signals.pos_float_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
 
     tracker = shadow_signals.KalmanStateTracker(state_path=str(tmp_path / "kalman.json"))
     tracker._last_state_write = 9999999999.0
@@ -200,7 +200,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     with pytest.raises(binance_filters.BinanceFilterError):
         binance_filters.decimal_places(Decimal("NaN"))
     with pytest.raises(ValueError):
-        binance_cache_health._positive_finite(True, "test")
+        binance_cache_health.require_pos_float(True, "test")
 
     summary = active_intents._build_summary(
         intents=[{"symbol": "BTCUSDC", "side": "BUY", "requested_qty": "bad", "executed_qty": None, "requested_price": "nan"}],

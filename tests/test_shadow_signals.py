@@ -192,7 +192,7 @@ class TestShadowRuntime(unittest.TestCase):
             px = 74000.0 * (1.0 + 0.0012 * t_min + 0.0018 * (t_min ** 2))
             pw.process_price(px)
 
-        trend_state = ta.TrendState("BTCUSDC", 3600.0, 222.0)
+        trend_state = ta.TrendState(3600.0, 222.0)
         with patch.object(ta, "track_and_place_order", return_value={"orderId": "1"}) as mock_place:
             ta.logic_small(
                 "SMALL", True, "BTCUSDC",
@@ -217,7 +217,7 @@ class TestShadowRuntime(unittest.TestCase):
             px = 280.0 * (1.0 - 0.0012 * t_min - 0.0018 * (t_min ** 2))
             pw.process_price(px)
 
-        trend_state = ta.TrendState("TAOUSDC", 3600.0, 222.0)
+        trend_state = ta.TrendState(3600.0, 222.0)
         with patch.object(ta, "track_and_place_order", return_value={"orderId": "2"}) as mock_place:
             ta.logic_small(
                 "SMALL", True, "TAOUSDC",

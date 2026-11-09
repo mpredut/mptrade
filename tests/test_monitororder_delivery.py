@@ -26,9 +26,6 @@ def isolated_retry_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(
         monitororder.mkt, "order_filter_refusal",
         lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        monitororder.trade_cooldown, "get_last_trade_age",
-        lambda *_args, **_kwargs: 999.0)
     monitororder.reset_monitororder_state_for_test()
     yield
     monitororder.reset_monitororder_state_for_test()

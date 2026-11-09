@@ -54,10 +54,8 @@ format_price_log = botcore.format_price_log
 def value_diff_to_percent(value1, value2):
     v1 = botcore.safe_float(value1, default=None)
     v2 = botcore.safe_float(value2, default=None)
-    if v1 is None or v2 is None:
+    if v1 is None or v2 is None or v1 == 0.0:
         return 0.0
-    if v1 == 0.0:
-        return v2
     return botcore.safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
 
 
@@ -69,14 +67,6 @@ def slope(val1, idx1, val2, idx2):
     if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
         return 0.0
     return botcore.safe_float((v2 - v1) / (i2 - i1), default=0.0)
-
-
-def are_difference_equal_with_aprox_proc(value1, value2, target_percent=10.0):
-    """Deprecated compatibility wrapper around ``botcore.diff_equals_percent``."""
-    tpf = botcore.safe_float(target_percent, default=10.0)
-    tp = tpf if tpf >= 0.0 else 10.0
-    tolerance = tp * 0.25
-    return botcore.diff_equals_percent(value1, value2, tp, tolerance), 0, tolerance
 
 
 def are_close_random(value1, value2, target_tolerance_percent=1.0):
@@ -187,9 +177,6 @@ def gaussian_weights_from_idx(T, idx: int):
     w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
     w_full = w_full / w_full.sum()
     return t_full[idx_int:], w_full[idx_int:]
-
-
-gaussian_weights = gaussian_weights_from_idx
 
 
 def _load_ed25519_signing_key():

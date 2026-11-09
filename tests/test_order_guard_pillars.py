@@ -10,7 +10,7 @@ import time
 from unittest.mock import patch
 
 import order_guard
-from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
+from qlimit_order_guard import check_qlimit2_order_guards
 from external_order_guard import (
     check_external_order_guards,
     get_whale_collector,
@@ -19,7 +19,7 @@ from external_order_guard import (
 )
 from llm_order_guard import (
     check_geopolitical_order_guards,
-    check_llm_order_guards as check_intelligence_order_guards,
+    check_llm_order_guards,
 )
 from intelligence.macro.geopolitical_analyzer import (
     GeopoliticalThreatAssessment,
@@ -41,7 +41,7 @@ def _margins(**overrides):
 
 def test_internal_guard_non_buy_order_passes():
     # Stop-loss / bypass_guards={'all'} order is exempt
-    allowed, reason, scale = check_internal_order_guards(
+    allowed, reason, scale = check_qlimit2_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
@@ -52,7 +52,7 @@ def test_internal_guard_non_buy_order_passes():
     assert scale == 1.0
 
     # Unsupported side passes
-    allowed_hold, reason_hold, scale_hold = check_internal_order_guards(
+    allowed_hold, reason_hold, scale_hold = check_qlimit2_order_guards(
         symbol="BTCUSDC",
         side="HOLD",
         price=60000.0,
@@ -63,7 +63,7 @@ def test_internal_guard_non_buy_order_passes():
 
 
 def test_internal_order_guards_off():
-    allowed, reason, scale = check_internal_order_guards(
+    allowed, reason, scale = check_qlimit2_order_guards(
         symbol="BTCUSDC",
         side="BUY",
         price=60000.0,
@@ -88,7 +88,7 @@ def test_internal_parabolic_surge_guard():
         parabolic_pullback_pct=2.0,
     )
 
-    allowed, reason, scale = check_internal_order_guards(
+    allowed, reason, scale = check_qlimit2_order_guards(
         symbol="BTCUSDC",
         side="BUY",
         price=65000.0,
@@ -110,7 +110,6 @@ def test_external_microstructure_sell_and_stop_loss_exempt():
         symbol="BTCUSDC",
         side="HOLD",
         price=60000.0,
-        qty=0.01,
     )
     assert allowed is True
     assert reason == "not_supported_side"
@@ -121,7 +120,6 @@ def test_external_microstructure_sell_and_stop_loss_exempt():
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
-        notional_eur=5000.0,
         bypass_guards={"all"},
     )
     assert allowed is True
@@ -158,7 +156,6 @@ def test_external_microstructure_large_sell_whale_support_defer():
             symbol="BTCUSDC",
             side="SELL",
             price=60000.0,
-            notional_eur=5000.0,
             margins=margins,
         )
         assert allowed is False
@@ -237,7 +234,7 @@ def test_external_microstructure_funding_crowding_downscale():
 
 def test_intelligence_sell_and_stop_loss_exempt():
     # Small sell order (< high_stake_min_notional_usd = 700 USD) skips GLLM1 symmetrically (like small BUY) and returns 'ok'
-    allowed, reason, scale = check_intelligence_order_guards(
+    allowed, reason, scale = check_llm_order_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="SELL",
@@ -249,7 +246,7 @@ def test_intelligence_sell_and_stop_loss_exempt():
     assert scale == 1.0
 
     # Stop-loss / bypass_guards={'all'} order
-    allowed, reason, scale = check_intelligence_order_guards(
+    allowed, reason, scale = check_llm_order_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="SELL",
@@ -282,7 +279,7 @@ def test_intelligence_geopolitical_veto_in_enforce_mode():
     )
 
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
-        allowed, reason, scale = check_intelligence_order_guards(
+        allowed, reason, scale = check_llm_order_guards(
             provider="binance",
             symbol="BTCUSDC",
             order_type="BUY",
@@ -313,7 +310,7 @@ def test_intelligence_geopolitical_downscale_in_enforce_mode():
     )
 
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
-        allowed, reason, scale = check_intelligence_order_guards(
+        allowed, reason, scale = check_llm_order_guards(
             provider="binance",
             symbol="BTCUSDC",
             order_type="BUY",
@@ -603,13 +600,13 @@ def test_pillars_fail_fast_on_missing_config_keys():
     from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
 
     with pytest.raises(KeyError):
-        check_internal_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
+        check_qlimit2_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
 
     with pytest.raises(KeyError):
         check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
 
     with pytest.raises(KeyError):
-        check_intelligence_order_guards("binance", "BTCUSDC", "BUY", 60000.0, margins={})
+        check_llm_order_guards("binance", "BTCUSDC", "BUY", 60000.0, margins={})
 
     with pytest.raises(KeyError):
         check_geopolitical_order_guards("BTCUSDC", "BUY", margins={})
@@ -666,7 +663,7 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
         high_stake_min_notional_usd=700.0,
     )
     ok, reason, scale = qlimit_order_guard.check_qlimit2_order_guards(
-        "TAOUSDC", "SELL", 250.0, qty=4.0, notional_eur=1000.0, price_history=[], margins=m
+        "TAOUSDC", "SELL", 250.0, price_history=[], margins=m
     )
     assert ok is True
     assert scale == 1.0
@@ -704,7 +701,7 @@ def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
 
     # 1. With G_QLIMIT1 active, limit_p90 = max(6.7, 9.38) = 9.38d -> 8.0d is allowed at 1.0 scale
     ok_active, _, scale_active = qlimit_order_guard.check_qlimit2_order_guards(
-        "BTCUSDC", "BUY", 65000.0, qty=0.01, notional_eur=650.0, price_history=[], margins=m
+        "BTCUSDC", "BUY", 65000.0, price_history=[], margins=m
     )
     assert ok_active is True
     assert scale_active == 1.0
@@ -714,8 +711,6 @@ def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
         "BTCUSDC",
         "BUY",
         65000.0,
-        qty=0.01,
-        notional_eur=650.0,
         price_history=[],
         margins=m,
         bypass_guards={"G_QLIMIT1"},
@@ -1570,9 +1565,9 @@ def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_pa
     # 1. MacroAnalyzer.start() exits immediately without sleeping when SIGTERM handler raises SystemExit(0)
     ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["BTCUSDC"])
     sleep_calls = []
-    monkeypatch.setattr("intelligence.macro_analyzer.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("intelligence.macro.daemon_ssot.time.sleep", lambda s: sleep_calls.append(s))
     registered_handlers = {}
-    monkeypatch.setattr("intelligence.macro_analyzer.signal.signal", lambda sig, fn: registered_handlers.setdefault(sig, fn))
+    monkeypatch.setattr(signal, "signal", lambda sig, fn: registered_handlers.setdefault(sig, fn))
 
     def _ma_cycle(force=False):
         registered_handlers[signal.SIGTERM](signal.SIGTERM, None)
@@ -1585,8 +1580,7 @@ def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_pa
     # 2. IntelligenceTelemetryDaemon.start() exits immediately without sleeping when SIGTERM handler raises SystemExit(0)
     itd = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_macro=True, skip_external=True)
     itd_handlers = {}
-    monkeypatch.setattr("intelligence.daemon.time.sleep", lambda s: sleep_calls.append(s))
-    monkeypatch.setattr("intelligence.daemon.signal.signal", lambda sig, fn: itd_handlers.setdefault(sig, fn))
+    monkeypatch.setattr(signal, "signal", lambda sig, fn: itd_handlers.setdefault(sig, fn))
 
     def _itd_cycle(force=False):
         itd_handlers[signal.SIGTERM](signal.SIGTERM, None)

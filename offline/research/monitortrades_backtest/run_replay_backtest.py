@@ -254,18 +254,18 @@ def run_symbol(
     min_hard_tp_gain_ratio = float("inf")
     hard_tp_cooldown_dts: list[float] = []
 
-    def _fast_get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
+    def _fast_get_relevant_trade(trade_orders, trade_type, symbol=None):
         if not trade_orders:
             if quiet:
                 return None, 0, True
-            return orig_get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn)
+            return orig_get_relevant_trade(trade_orders, trade_type, symbol)
         if len(trade_orders) > 1 and not getattr(trade_orders, "_sorted_desc", False):
             trade_orders.sort(key=lambda x: x["timestamp"], reverse=True)
             if hasattr(trade_orders, "_sorted_desc"):
                 trade_orders._sorted_desc = True
                 trade_orders._summary = None
         if not quiet:
-            return orig_get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn)
+            return orig_get_relevant_trade(trade_orders, trade_type, symbol)
         first = trade_orders[0]
         return float(first["price"]), float(first["timestamp"]) / 1000.0, True
 
@@ -452,8 +452,8 @@ def run_symbol(
                             symbol, maxage_s, api=provider,
                             buy_orders=b_ords, sell_orders=s_ords, now_ts=int(now_s),
                         )
-                        b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol, now_fn=_now_fn)
-                        s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol, now_fn=_now_fn)
+                        b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol)
+                        s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol)
                         active_avg_buy = float(
                             pos.get("active_average_buy_price")
                             or pos.get("average_buy_price")

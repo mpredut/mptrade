@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -45,7 +44,6 @@ from kraken_client import KrakenClient  # noqa: E402
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
-    extract_short_trend_slope,
     extract_trailing_intent_action_asset,
     load_trailing_common_env,
     parse_trailing_cli_args,
@@ -54,7 +52,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
 )
 should_sell = should_sell  # Re-exported for kraken tests/compatibility
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
-from providers.base import extract_order_side, extract_timestamp_s  # noqa: E402
+from providers.base import extract_order_side  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     _kraken_balance_asset_candidates,
@@ -67,11 +65,10 @@ from order_retry import (  # noqa: E402
     TrackedOrderResult,
 )
 from credentials import kraken_credentials  # noqa: E402
-from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset  # noqa: E402
+from cachepaths import cache_path  # noqa: E402
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
 from instrument_registry import casefold_get, select_instruments  # noqa: E402
 import order_guard  # noqa: E402
-from state_io import read_json_dict  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
 CACHE_TREND = cache_path("cache_short_trend.json")

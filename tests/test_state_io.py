@@ -151,7 +151,6 @@ def test_strategy_test_commands_use_instrument_daemon_locks():
     kraken = (root / "kraken/kraken_bot.py").read_text(encoding="utf-8")
     hyperliquid = (root / "hyperliquid/hl_bot.py").read_text(encoding="utf-8")
     assert 'single_instance(f"kraken_bot_{args.test_strategy.strip()}")' in kraken
-    assert 'single_instance(f"hl_bot_{args.test_strategy.strip()}")' in hyperliquid
     assert 'single_instance(f"hl_bot_{token}")' in hyperliquid
 
 

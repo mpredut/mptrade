@@ -1,6 +1,5 @@
 import builtins
 import json
-import math
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -1537,8 +1536,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if _verbose:
             print(f"No trade orders found for {symbol} in the last {maxage_trade_s} seconds.")
         return
-    buy_price, buy_time, _ = get_relevant_trade(trade_orders_buy, "BUY", symbol=symbol, now_fn=now_fn)
-    sell_price, sell_time, _ = get_relevant_trade(trade_orders_sell, "SELL", symbol=symbol, now_fn=now_fn)
+    buy_price, buy_time, _ = get_relevant_trade(trade_orders_buy, "BUY", symbol=symbol)
+    sell_price, sell_time, _ = get_relevant_trade(trade_orders_sell, "SELL", symbol=symbol)
 
     position = get_position_stats(
         symbol, maxage_trade_s, api=inst.provider,

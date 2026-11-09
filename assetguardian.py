@@ -19,7 +19,7 @@ from providers.execution_audit import ExecutionAudit
 from order_retry import propagate_submission_refusal, resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from guard_hierarchy import GUARD_REGISTRY
 from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
 from lock import FileLock
 import order_guard as _og
@@ -65,42 +65,29 @@ def _validate_required_config_presence():
     validate_required_env_keys(REQUIRED_CONFIG_KEYS, label="AssetGuardian")
 
 
-_required_config = required_env
-_required_float_config = required_float_env
-_required_int_config = required_int_env
-
 # Every financial/operational parameter is mandatory in config.env.
 # There are deliberately no hidden code defaults: a missing key stops startup.
 _validate_required_config_presence()
-CHECK_INTERVAL_SECONDS = _required_float_config("AG_CHECK_INTERVAL_SEC")
-ASSET_REFERENCE_MINUTES_BACK_DEFAULT = _required_float_config("AG_REFERENCE_MINUTES_BACK")
-BUY_USE_CASH_RATIO = _required_float_config("AG_BUY_USE_CASH_RATIO")
-SELL_REARM_GROWTH_PERCENT = _required_float_config("AG_SELL_REARM_GROWTH_PCT")
-ORDER_MAX_AGE_SECONDS = _required_float_config("AG_ORDER_MAX_AGE_SEC")
-RECOVERY_RESET_PERCENT = _required_float_config("AG_RECOVERY_RESET_PCT")
-NEAR_TRIGGER_SECONDS = _required_float_config("AG_NEAR_TRIGGER_SEC")
-ACTIVE_TRIGGER_SECONDS = _required_float_config("AG_ACTIVE_TRIGGER_SEC")
-NEAR_TRIGGER_DISTANCE_PCT = _required_float_config("AG_NEAR_TRIGGER_DISTANCE_PCT")
-TREND_DEFER_MAX_SECONDS = _required_float_config("AG_TREND_DEFER_MAX_SEC")
-PORTFOLIO_GROWTH_PERCENT = _required_float_config("AG_PORTFOLIO_GROWTH_PCT")
-PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = _required_float_config("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
-PORTFOLIO_SELL_ALLOCATION = _required_float_config("AG_PORTFOLIO_SELL_ALLOCATION")
-PORTFOLIO_SELL_MAX_DISCOUNT = _required_float_config("AG_PORTFOLIO_SELL_MAX_DISCOUNT")
-RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config("AG_RTRADE_BLOCK_CANCEL_SEC")
-P3B_MAX_AGE_SECONDS = _required_float_config("AG_P3B_MAX_AGE_SEC")
-P3B_SELL_DEFENSIVE_MAX_DISCOUNT = _required_float_config("AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT")
-P3B_SELL_TRIM_MAX_DISCOUNT = _required_float_config("AG_P3B_SELL_TRIM_MAX_DISCOUNT")
-P3B_BUY_ACCUMULATE_MAX_DISCOUNT = _required_float_config("AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT")
-P3B_BUY_DEFENSIVE_MAX_PENALTY = _required_float_config("AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
-
-
-def _parse_tiers(raw):
-    tiers = []
-    for item in str(raw).split(","):
-        threshold, allocation = item.strip().split(":", 1)
-        tiers.append((float(threshold), float(allocation)))
-    tiers.sort()
-    return tuple(tiers)
+CHECK_INTERVAL_SECONDS = required_float_env("AG_CHECK_INTERVAL_SEC")
+ASSET_REFERENCE_MINUTES_BACK_DEFAULT = required_float_env("AG_REFERENCE_MINUTES_BACK")
+BUY_USE_CASH_RATIO = required_float_env("AG_BUY_USE_CASH_RATIO")
+SELL_REARM_GROWTH_PERCENT = required_float_env("AG_SELL_REARM_GROWTH_PCT")
+ORDER_MAX_AGE_SECONDS = required_float_env("AG_ORDER_MAX_AGE_SEC")
+RECOVERY_RESET_PERCENT = required_float_env("AG_RECOVERY_RESET_PCT")
+NEAR_TRIGGER_SECONDS = required_float_env("AG_NEAR_TRIGGER_SEC")
+ACTIVE_TRIGGER_SECONDS = required_float_env("AG_ACTIVE_TRIGGER_SEC")
+NEAR_TRIGGER_DISTANCE_PCT = required_float_env("AG_NEAR_TRIGGER_DISTANCE_PCT")
+TREND_DEFER_MAX_SECONDS = required_float_env("AG_TREND_DEFER_MAX_SEC")
+PORTFOLIO_GROWTH_PERCENT = required_float_env("AG_PORTFOLIO_GROWTH_PCT")
+PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = required_float_env("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
+PORTFOLIO_SELL_ALLOCATION = required_float_env("AG_PORTFOLIO_SELL_ALLOCATION")
+PORTFOLIO_SELL_MAX_DISCOUNT = required_float_env("AG_PORTFOLIO_SELL_MAX_DISCOUNT")
+RTRADE_BLOCK_CANCEL_SECONDS = required_float_env("AG_RTRADE_BLOCK_CANCEL_SEC")
+P3B_MAX_AGE_SECONDS = required_float_env("AG_P3B_MAX_AGE_SEC")
+P3B_SELL_DEFENSIVE_MAX_DISCOUNT = required_float_env("AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT")
+P3B_SELL_TRIM_MAX_DISCOUNT = required_float_env("AG_P3B_SELL_TRIM_MAX_DISCOUNT")
+P3B_BUY_ACCUMULATE_MAX_DISCOUNT = required_float_env("AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT")
+P3B_BUY_DEFENSIVE_MAX_PENALTY = required_float_env("AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
 
 
 def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
@@ -179,7 +166,7 @@ SELL_TIERS = _build_dynamic_sell_tiers()
 GUARDED_BUY_THRESHOLD = min((t for t, _ in BUY_TIERS), default=None)
 TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = TRACKED_SYMBOLS[0] if TRACKED_SYMBOLS else "BTCUSDC"
-ORDER_MISSING_CONFIRMATIONS = _required_int_config("AG_ORDER_MISSING_CONFIRMATIONS")
+ORDER_MISSING_CONFIRMATIONS = required_int_env("AG_ORDER_MISSING_CONFIRMATIONS")
 
 
 class AssetGuardianState:

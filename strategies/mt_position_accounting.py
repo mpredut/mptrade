@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import builtins
 import math
-import sys
 from typing import Any, Optional, Tuple
 
 from botcore import (
@@ -81,7 +80,7 @@ def _order_timestamp_ms(order: dict) -> float:
     return float(extract_timestamp_ms(order, default=0) or 0)
 
 
-def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
+def get_relevant_trade(trade_orders, trade_type, symbol=None):
     """Return latest execution price and timestamp for trade_type in normalized format."""
     if not trade_orders:
         if builtins.print.__name__ != "_dummy_print":

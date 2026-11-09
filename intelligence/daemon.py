@@ -14,7 +14,6 @@ import argparse
 import json
 import logging
 import os
-import signal
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -28,7 +27,6 @@ from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
-    compute_step_retry_ts,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
     is_interval_due,
@@ -40,9 +38,7 @@ from intelligence.macro_sentiment_ssot import (
     run_daemon_loop,
     run_scheduled_step,
     safe_pos_float,
-    sanitize_heartbeat_status,
     write_daemon_heartbeat,
-    write_daemon_heartbeat_files,
 )
 
 load_dotenv()

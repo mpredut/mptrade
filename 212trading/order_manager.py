@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
 import uuid
@@ -123,7 +122,7 @@ def _marker_path(ticker: str, *, test: bool = False) -> str:
     )
 
 
-def _read_or_migrate_marker(ticker: str, marker_path: str) -> dict | None:
+def _read_or_migrate_marker(marker_path: str) -> dict | None:
     return _read_marker(marker_path)
 
 
@@ -428,7 +427,7 @@ def place_order_with_retry(
     marker_path = _marker_path(ticker, test=not write_marker)
     now = time.time()
     try:
-        record = _read_or_migrate_marker(ticker, marker_path)
+        record = _read_or_migrate_marker(marker_path)
     except RuntimeError as exc:
         log(f"  ! [ORDER] {exc} — NOT sending without verifiable durable state")
         return False

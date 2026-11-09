@@ -8,13 +8,11 @@ Reusable for any new asset.
 """
 from __future__ import annotations
 
-import json
 import os
 import statistics
 import sys
 import urllib.error
 import urllib.parse
-import urllib.request
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -87,7 +85,7 @@ def pullbacks(closes):
                 dips.append(cur)
             peak = c; cur = 0.0
         else:
-            cur = max(cur, pct(peak, c))
+            cur = max(cur, (peak - c) / peak * 100.0)
     if cur > 0:
         dips.append(cur)
     return dips

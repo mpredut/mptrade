@@ -695,7 +695,8 @@ class TestOrderGuardWithGemini:
             "default": 1.15,
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
-        order_guard._SHADOW_NOTIFY_COOLDOWN.clear()
+        import llm_order_guard
+        llm_order_guard._GEO_SHADOW_NOTIFY_COOLDOWN.clear()
 
         shock_geo = GeopoliticalThreatAssessment(
             threat_level="CRITICAL_SHOCK",

@@ -1471,15 +1471,16 @@ def apply_reconciliation_plan(
         and raw_search_block
         and isinstance(raw_replace_block, str)
     ):
-        target_file = os.path.join(workspace_dir, raw_target_file.strip())
+        target_file = raw_target_file.strip()
+        full_target_file = os.path.join(workspace_dir, target_file)
         rationale = _nonbool_str(code_fix.get("rationale")).strip() or "Autonomous self-heal patch"
         replace_block = raw_replace_block
         if not is_enforce:
             if log:
-                log.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
+                log.info("[SHADOW WOULD APPLY] Code patch on %s: %s", full_target_file, rationale)
         elif callable(apply_patch_fn):
             if log:
-                log.info("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", target_file, rationale)
+                log.info("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", full_target_file, rationale)
             tests_passed = apply_patch_fn(target_file=target_file, search_block=raw_search_block, replace_block=replace_block, rationale=rationale)
 
     return is_enforce and bool(venue_executed or (has_fix and tests_passed)), tests_passed

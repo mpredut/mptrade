@@ -55,7 +55,6 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     compute_enterprise_portfolio_risk_metrics,
     enrich_open_limit_orders_tca,
     enrich_positions_with_orders_and_cycles,
-    enrich_recent_orders_markout,
     extract_symbol_recent_fills,
     parse_venue_cycle_state,
     reconcile_venue_cycles_with_recent_orders,

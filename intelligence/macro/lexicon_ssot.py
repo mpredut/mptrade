@@ -1209,12 +1209,10 @@ def headline_content_stems(title: Any) -> Set[str]:
             stems.add(num_grp.replace(",", ""))
             continue
         tok = m.group(0)
-        if tok in stopwords and tok not in _HEADLINE_DEDUP_RETAINED_STEMS:
-            continue
         stem = _normalize_semantic_stem(tok)
-        if (len(stem) >= 3 or stem in _HEADLINE_DEDUP_RETAINED_STEMS) and (
-            stem not in stopwords or stem in _HEADLINE_DEDUP_RETAINED_STEMS
-        ):
+        if (tok in stopwords or stem in stopwords) and stem not in _HEADLINE_DEDUP_RETAINED_STEMS:
+            continue
+        if len(stem) >= 3 or stem in _HEADLINE_DEDUP_RETAINED_STEMS:
             stems.add(stem)
     if len(_HEADLINE_STEMS_CACHE) >= 2048:
         _HEADLINE_STEMS_CACHE.clear()

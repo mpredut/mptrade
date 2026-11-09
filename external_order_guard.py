@@ -11,11 +11,10 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 from __future__ import annotations
 
 import importlib
-import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag, format_price_log, obj_attr, safe_float
+from botcore import _parse_bool_flag, obj_attr, safe_float
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
@@ -29,8 +28,6 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     safe_pos_float,
 )
-
-logger = logging.getLogger("external_order_guard")
 
 _whale_collector = None
 _orderbook_collector = None
@@ -69,8 +66,6 @@ def check_external_order_guards(
     side: str,
     price: float,
     *,
-    qty: Optional[float] = None,
-    notional_eur: Optional[float] = None,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,

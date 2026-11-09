@@ -321,7 +321,7 @@ def test_place_order_smart_delegates_to_common_pipeline_with_motivation():
         result = po.place_order_smart(
             "sell", TAO_SYMBOL, 230.0, 1.5,
             safeback_seconds=456, force=False, cancelorders=False,
-            hours=1.25, pair=True, motivation="legacy-test",
+            hours=1.25, motivation="legacy-test",
         )
 
     assert result == expected

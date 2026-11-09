@@ -275,7 +275,7 @@ def inspect_fleet(json_output: bool = False):
             asks_str = f"${ob.get('ask_depth_usd', 0)/1e3:,.1f}K" if ob.get("ask_depth_usd") else "N/A"
             imb_str = f"{ob.get('imbalance_ratio', 0):.3f}" if ob.get("imbalance_ratio") is not None else "N/A"
             wall_str = (
-                f"${ob.get('largest_bid_wall_usd', 0)/1e3:,.1f}K @ ${ob.get('largest_bid_wall_price', 0):,.2f}"
+                f"${ob.get('largest_bid_wall_usd', 0)/1e3:,.1f}K @ ${(ob.get('largest_bid_wall_price') or 0):,.2f}"
                 if ob.get("largest_bid_wall_usd")
                 else "N/A"
             )

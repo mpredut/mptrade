@@ -27,18 +27,18 @@ class AssetGuardianTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(key, None)
                 with self.assertRaisesRegex(ValueError, key):
-                    ag._required_config(key)
+                    ag.required_env(key)
             for value in ("", "   ", "\t"):
                 with self.subTest(value=value), mock.patch.dict(os.environ, {key: value}):
                     with self.assertRaisesRegex(ValueError, key):
-                        ag._required_config(key)
+                        ag.required_env(key)
 
         with self.subTest(msg="test_required_numeric_config_has_no_implicit_fallback"):
             key = "AG_REQUIRED_NUMERIC_REGRESSION_TEST"
             with mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(key, None)
                 with self.assertRaisesRegex(ValueError, key):
-                    ag._required_float_config(key)
+                    ag.required_float_env(key)
 
         with self.subTest(msg="test_config_preflight_reports_every_missing_setting"):
             env = {name: "1" for name in ag.REQUIRED_CONFIG_KEYS}

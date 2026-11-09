@@ -10,7 +10,6 @@ the process manifest with existing gates/configuration and flags only two active
 from __future__ import annotations
 
 import argparse
-import ast
 import configparser
 from dataclasses import asdict, dataclass
 import json
@@ -29,7 +28,6 @@ from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
 from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
 from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
-from state_io import read_text_file  # noqa: E402
 
 
 _truthy = _parse_bool_flag

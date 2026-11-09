@@ -385,8 +385,6 @@ class HLExecutorContractTest(unittest.TestCase):
                          side_effect=lambda _s, _o, _p, qty, _a, **_k: qty),
             patch.object(self.p, "fee_cap_quantity",
                          side_effect=lambda _s, _o, _p, available: available),
-            patch("instrument.trade_cooldown.trade_slot",
-                  return_value=SlotContext()),
             patch.object(instrument_module._outcomes_log, "log_order_outcome"),
         ):
             placed = instrument.place(

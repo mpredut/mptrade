@@ -23,7 +23,6 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,
     compute_enterprise_portfolio_risk_metrics,
     enrich_open_limit_orders_tca,
-    enrich_recent_orders_markout,
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )

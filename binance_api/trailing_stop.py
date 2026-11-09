@@ -42,7 +42,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # binance_a
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)   # also support direct execution (python binance_api/trailing_stop.py)
 
-from instrument_registry import casefold_get, select_instruments
+from instrument_registry import select_instruments
 from order_retry import (
     TrackedOrderLifecycle,
     propagate_submission_refusal,
@@ -51,7 +51,6 @@ from order_retry import (
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
-    extract_short_trend_slope,
     load_trailing_common_env,
     parse_trailing_cli_args,
     should_sell,
@@ -59,7 +58,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
 should_sell = should_sell  # Re-exported for test compatibility
 from botcore import (load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
-from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
+from cachepaths import cache_path  # noqa: E402
 
 DEFAULT_STATE = cache_path("trailing_state.json")
 

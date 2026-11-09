@@ -16,7 +16,6 @@ from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
 from guard_hierarchy import (
-    GUARD_CATALOG,  # noqa: F401 (re-export: test compat)
     GUARD_REGISTRY,
     normalize_bypassed_guards,
     revoke_guard_bypass,
@@ -38,7 +37,6 @@ import order_guard
 import order_lifecycle as _outcomes_log
 import order_lifecycle as accepted_order_persistence
 import order_retry
-import lock.cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 
 
 _EXECUTION_AUDIT = ExecutionAudit()
@@ -292,7 +290,6 @@ class Instrument:
         bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
         bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
         wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
-        kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)
 
         if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:

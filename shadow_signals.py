@@ -20,12 +20,8 @@ import time
 from datetime import date
 
 from botcore import (
-    float_env,
-    load_shadow_environment,
     normalize_epoch_sec,
     pos_float_env,
-    prepare_shadow_runtime,
-    require_shadow_interval,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_ts,
@@ -51,7 +47,6 @@ from state_io import append_text_line, durable_replace_file, read_json_dict, sav
 # Feed Kalman at a subsampled cadence. One-second ticks track minute oscillations
 # and produced thousands of daily transitions; 60 seconds yields about four BTC
 # transitions per day, comparable with the primary model's timescale.
-_f_env = pos_float_env
 KALMAN_SAMPLE_SEC = pos_float_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
 
 

@@ -216,14 +216,6 @@ def resolve_venue_fee_and_limits(
     return out
 
 
-def enrich_recent_orders_markout(
-    recent_orders: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-) -> None:
-    """Deprecated no-op: spot-to-last-fill delta is already exposed via `pnl_vs_last_buy_pct` / `chg_vs_last_sell_pct`."""
-    return
-
-
 def enrich_open_limit_orders_tca(
     open_orders: List[Dict[str, Any]],
     prices_and_trends: Dict[str, Any],
@@ -745,7 +737,6 @@ __all__ = [
     "build_cross_market_context",
     "compute_enterprise_portfolio_risk_metrics",
     "enrich_open_limit_orders_tca",
-    "enrich_recent_orders_markout",
     "resolve_symbol_price",
     "resolve_venue_fee_and_limits",
 ]

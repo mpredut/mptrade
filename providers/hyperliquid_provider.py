@@ -288,6 +288,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
         self.validate_symbol(symbol)
+        lim = self.clamp_orderbook_limit(limit)
         c = self._hl()
         pair = self._pair()
         try:
@@ -295,7 +296,10 @@ class HyperliquidProvider(MarketDataProvider):
                 raw = c.info.l2_snapshot(pair)
                 norm = self.normalize_orderbook_payload(raw)
                 if norm is not None:
-                    return norm
+                    return {
+                        "bids": list(norm.get("bids") or [])[:lim],
+                        "asks": list(norm.get("asks") or [])[:lim],
+                    }
             from botcore import fetch_json_post
 
             raw = fetch_json_post(
@@ -303,7 +307,13 @@ class HyperliquidProvider(MarketDataProvider):
                 {"type": "l2Book", "coin": self._token},
                 timeout=4.0,
             )
-            return self.normalize_orderbook_payload(raw)
+            norm = self.normalize_orderbook_payload(raw)
+            if norm is not None:
+                return {
+                    "bids": list(norm.get("bids") or [])[:lim],
+                    "asks": list(norm.get("asks") or [])[:lim],
+                }
+            return None
         except Exception as e:  # noqa: BLE001
             print(f"[HL] get_orderbook({symbol}) failed: {e}")
             return None

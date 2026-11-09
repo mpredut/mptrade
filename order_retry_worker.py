@@ -56,7 +56,6 @@ _AUDIT = ExecutionAudit()
 _RECONCILE_FOUND = "found"
 _RECONCILE_NOT_FOUND = "not_found"
 _RECONCILE_UNAVAILABLE = "unavailable"
-_AMBIGUOUS_SUBMISSION_REASONS = oq.POSSIBLY_SUBMITTED_REASONS
 
 
 class _PersistentQuarantineSet(set):
@@ -425,7 +424,7 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
 def process_once(mkt, now=None):
     """Advance each due outbox record by at most one non-blocking lifecycle step."""
     now = oq._clean_now_sec(now)
-    snapshot = oq.load_validated(now)
+    snapshot = oq.load_validated()
 
     to_retry, to_observe, to_reconcile_cancel, live_producer_reconciliation, expired = [], [], [], [], []
     skipped_price = 0
@@ -655,7 +654,7 @@ def process_once(mkt, now=None):
         "expired": len(expired),
         "skipped_price": skipped_price,
         "quarantined": quarantined,
-        "remaining": len(oq.load_all(now)),
+        "remaining": len(oq.load_all()),
     }
 
 

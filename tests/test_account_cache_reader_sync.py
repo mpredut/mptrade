@@ -1636,7 +1636,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             )
             v2_items = {"BTCUSDC": [first_order, second_order]}
             v2_ft = {"BTCUSDC": now_ms + 1000}
-            v2_version = writer._snapshot_data_version(v2_items, v2_ft)
+            v2_version = writer._snapshot_data_version(v2_items)
             with cm.atomic_write(writer.filename) as handle:
                 json.dump(
                     {

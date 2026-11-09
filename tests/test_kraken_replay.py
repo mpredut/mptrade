@@ -7,7 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "kraken"))
@@ -292,7 +292,7 @@ class ReplayEngineTest(unittest.TestCase):
             surge_guard=True, surge_gain_pct=18.0, surge_move_pct=10.0,
             surge_window_hours=96.0, trend_interval=60,
         )
-        client = rp.MagicMock()
+        client = MagicMock()
         client.pair_precision.return_value = rp.PairPrecision(5, 8, 0.0, "REPLAY")
         client.free_balance.return_value = 1.0
         strategy = rp._strat.Strategy(

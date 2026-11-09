@@ -971,7 +971,7 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
         mod_av = importlib.util.module_from_spec(spec_av)
         spec_av.loader.exec_module(mod_av)
         assert mod_av.pullbacks([]) == []
-        assert mod_av.pullbacks([100.0, 80.0, 102.0]) == [25.0]
+        assert mod_av.pullbacks([100.0, 80.0, 102.0]) == [20.0]
 
         spec_t212_bt = importlib.util.spec_from_file_location("t212_backtest_test", root_dir / "212trading/backtest.py")
         mod_t212_bt = importlib.util.module_from_spec(spec_t212_bt)
@@ -2931,10 +2931,7 @@ def test_root_modules_batch4_hardening():
     v1_big, v2_big = utils.decrese_value_by_increment_exp(-1e6, 100.0)
     assert v1_big >= 0.0 and v2_big >= 0.0
 
-    # priceAnalysis.slope_tolerance_per_ and get_trade_weight
-    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", None) == 0.0005
-    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", True) == 0.0005
-    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", 100000.0, base_tolerance=True) == 150.0
+    # priceAnalysis.get_trade_weight
     t_seq, w_seq = priceAnalysis.get_trade_weight(
         100, 50, "up", "BUY", exceed_percent=True, max_against_trend=None, peak_weight=float("nan"), min_weight=False
     )
@@ -5326,7 +5323,7 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
     assert cfg[10] == 0.0
 
     # 6. tradeall.TrendState.is_trend_a_minim_validated returns False when trend has not started
-    ts = tradeall.TrendState(100, 50, 50)
+    ts = tradeall.TrendState(50, 50)
     assert ts.is_trend_a_minim_validated() is False
     assert ts.is_trend_consistent_validated() is False
     assert ts.is_trend_uniform_confirmed() is False
@@ -5775,11 +5772,7 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
     import cacheintegrity as ci
     import priceAnalysis as pa
 
-    # 1. bapi: _clean_bapi_oid_str, cancel_order, check_order_filled
-    assert bapi._clean_bapi_oid_str(" +12345.0 ") == "12345"
-    assert bapi._clean_bapi_oid_str("-5") is None
-    assert bapi._clean_bapi_oid_str("+0.0") is None
-    assert bapi._clean_bapi_oid_str("-0.0") is None
+    # 1. bapi: cancel_order, check_order_filled
     assert bapi.cancel_order("   ", 123) is False
     assert bapi.cancel_order(True, 123) is False  # type: ignore[arg-type]
     assert bapi.cancel_order("BTCUSDC", "-5") is False

@@ -805,7 +805,7 @@ class CacheManagerInterface(ABC):
                 fetchtime, rest_sync_cursor, counts = (
                     base_meta["fetchtime"], base_meta["rest_sync_cursor"], base_meta["counts"]
                 )
-                data_version = self._snapshot_data_version(self.cache, fetchtime)
+                data_version = self._snapshot_data_version(self.cache)
                 payload = {
                     "items": self.cache,
                     "fetchtime": fetchtime,

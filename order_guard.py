@@ -65,7 +65,6 @@ _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
 _MARGINS_FILE_MTIME: float = 0.0
 _MARGINS_LAST_CHECK: float = 0.0
-from llm_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN  # noqa: F401
 
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
@@ -322,11 +321,6 @@ def resolve_caller_module(
         return _PROCESS_TO_MODULE.get(get_process_name())
     except Exception:
         return None
-
-
-_normalize_side_token = normalize_side
-
-# _parse_bool_flag imported from botcore (SSOT)
 
 
 def opposite_side(order_type: str) -> str:
@@ -1051,9 +1045,6 @@ from external_order_guard import (
 )
 
 
-_normalize_base_asset = canonical_base_asset
-
-
 def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
     return normalize_trend_direction(raw_dir, default=None, preserve_bull_bear=True)
 
@@ -1492,8 +1483,6 @@ def check_intelligence_guards(
             symbol=symbol,
             side=side,
             price=px_clean,
-            qty=qty,
-            notional_eur=computed_notional,
             price_history=price_history,
             trend_duration_seconds=explicit_dur_sec,
             regime_context=regime_context,
@@ -1577,8 +1566,6 @@ def _evaluate_intelligence_guards_raw(
             symbol=symbol,
             side=side,
             price=price,
-            qty=qty,
-            notional_eur=computed_notional,
             price_history=price_history,
             trend_duration_seconds=trend_duration_seconds,
             regime_context=regime_context,
@@ -1597,8 +1584,6 @@ def _evaluate_intelligence_guards_raw(
             symbol=symbol,
             side=side,
             price=price,
-            qty=qty,
-            notional_eur=computed_notional,
             margins=m,
             now=now,
             bypass_guards=bypassed,

@@ -35,7 +35,7 @@ MAXAGE = 17 * 24 * 3600
 failures = []
 
 
-from botcore import safe_float, safe_pos_float
+from botcore import safe_float
 
 _f = safe_float
 

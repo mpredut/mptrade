@@ -5,16 +5,11 @@ from datetime import datetime, timezone
 import glob as _glob
 import logging
 import os
-import time as _time
 from typing import Any, Callable, Dict, List, Optional
-import urllib.parse as _urlparse
 
 from botcore import extract_current_price_item, fetch_public_json
 from cachepaths import (
-    cache_symbol_variants,
     canonical_base_asset,
-    compatible_quote_suffixes,
-    get_cachedb_dir,
     normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -23,7 +18,6 @@ from intelligence.macro_sentiment_ssot import (
     get_binance_btc_ticker_url,
     get_breadth_excluded_bases,
     get_coinbase_btc_ticker_url,
-    get_cross_asset_regimes,
     get_deribit_dvol_url,
     get_deribit_hist_vol_url,
     get_deribit_options_book_url,
@@ -35,21 +29,17 @@ from intelligence.macro_sentiment_ssot import (
     is_excluded_reference_news_item,
     is_off_topic_general_news_title,
     normalize_epoch_sec,
-    obj_attr,
     read_first_cached_dict,
     resolve_macro_economic_calendar,
     resolve_now_ts,
     resolve_patched_attr,
     resolve_read_json_cached,
     safe_float,
-    safe_nonneg_ts,
     safe_pos_float,
     split_headlines_digest,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
-    load_symbol_microstructure,
-    load_symbol_price_series,
     resolve_cached_btc_24h_change_pct,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
@@ -58,7 +48,6 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
-    load_symbol_best_recent_fills,
     load_venue_trailing_maps,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -78,25 +67,17 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     reconcile_live_venue_equity_summary,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    _MICRO_PRICE_ANCHOR_KEYS,
-    _first_variant_dict,
-    compute_liquidation_clusters,
     enrich_cross_venue_trends,
-    enrich_microstructure_cvd,
     sync_sibling_symbol_telemetry,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
     build_cross_market_context,
     compute_enterprise_portfolio_risk_metrics,
     enrich_open_limit_orders_tca,
-    extract_symbol_recent_fills,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    _prices_diverged,
     apply_live_24trend_windows,
     apply_short_trend_item,
-    compute_24h_price_metrics,
-    compute_cross_btc_metrics,
 )
 from instrument_registry import casefold_get
 from providers.base import extract_timestamp_s, resolve_ssot_price_from_cache
@@ -668,7 +649,6 @@ def harvest_macro_and_news_sensors(
             for t in gt_digest_titles
             if filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
         ]
-        gt_digest_had_purged_noise = len(valid_digest_titles) < len(gt_digest_titles)
         gt_digest_invalid = bool(gt_digest_titles and not valid_digest_titles)
         all_valid_digest_aged_90m = bool(
             valid_digest_titles

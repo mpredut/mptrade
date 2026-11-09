@@ -398,35 +398,21 @@ class TestBoundedPlotIndices(unittest.TestCase):
             ])
             np.testing.assert_allclose(wma3, expected, rtol=1e-12)
 
-        with self.subTest(msg="trend_wma_handles_ms_timestamps_and_large_delta"):
-            ts_ms = [1_700_000_000_000 + i * 4 * 3600 * 1000 for i in range(10)]
-            data_ms = [[t, 100.0 + i * 2.0] for i, t in enumerate(ts_ms)]
-            with patch.object(pa, "priceLstFor", return_value=data_ms), patch.object(pa.plt, "show"):
-                res = pa.trend_wma("TESTUSDC", window_hours=8)
-            self.assertEqual(res["direction"], "up")
-
-            with patch.object(pa, "priceLstFor", return_value=[[1000, 10.0], [1000, 11.0]]):
-                self.assertIsNone(pa.trend_wma("TESTUSDC"))
-
-        with self.subTest(msg="getTrendLongTerm_handles_post_cutoff_single_point_and_coarse_delta"):
+        with self.subTest(msg="getTrendLongTerm_fixed_handles_post_cutoff_single_point_and_coarse_delta"):
             now_s = time.time()
             sparse = [[now_s - 40 * 86400, 100.0], [now_s - 60, 105.0]]
             with patch.object(pa, "priceLstFor", return_value=sparse):
-                self.assertIsNone(pa.getTrendLongTerm("TESTUSDC", lookback_days=5, draw=False))
+                self.assertIsNone(pa.getTrendLongTerm_fixed("TESTUSDC", lookback_days=5, draw=False))
 
-            coarse = [[now_s - (20 - i) * 7200, 100.0 + i * 1.5] for i in range(20)]
+            coarse = [[now_s - (40 - i) * 1800, 100.0 + i * 1.5] for i in range(40)]
             with patch.object(pa, "priceLstFor", return_value=coarse):
-                res_lt = pa.getTrendLongTerm("TESTUSDC", window_hours=6, step_hours=2, lookback_days=5, draw=False)
+                res_lt = pa.getTrendLongTerm_fixed(
+                    "TESTUSDC", window_hours=6, step_hours=2, lookback_days=5,
+                    draw=False, detection_lag_hours=0.0, mk_alpha=None,
+                )
                 self.assertIsNotNone(res_lt)
                 self.assertEqual(res_lt["direction"], "up")
                 self.assertGreater(res_lt["duration_seconds"], 6 * 3600.0)
-
-        with self.subTest(msg="trend_wma_detects_downtrend_when_window_equals_series_length"):
-            ts_ms = [1_700_000_000_000 + i * 3600 * 1000 for i in range(4)]
-            data_down = [[t, 200.0 - i * 10.0] for i, t in enumerate(ts_ms)]
-            with patch.object(pa, "priceLstFor", return_value=data_down), patch.object(pa.plt, "show"):
-                res_down = pa.trend_wma("TESTUSDC", window_hours=12)
-            self.assertEqual(res_down["direction"], "down")
 
         with self.subTest(msg="detect_long_term_trend_memo_invalidates_on_interior_change"):
             ts = [1_700_000_000.0 + i * 3600.0 for i in range(60)]

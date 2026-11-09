@@ -14,7 +14,6 @@ Executes in 0 ms (100% local in-memory calculation, zero network or external I/O
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import normalize_side, safe_nonneg_float
@@ -25,8 +24,6 @@ from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.state.survival import get_cached_t_entry
 from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
 import order_guard as _og
-
-logger = logging.getLogger("qlimit_order_guard")
 
 
 def _resolve_trend_duration(symbol: str) -> float:
@@ -87,8 +84,6 @@ def check_qlimit2_order_guards(
     side: str,
     price: float,
     *,
-    qty: Optional[float] = None,
-    notional_eur: Optional[float] = None,
     price_history: Optional[List[Tuple[float, float]]] = None,
     trend_duration_seconds: float = 0.0,
     regime_context: Any = None,
@@ -205,6 +200,3 @@ def check_qlimit2_order_guards(
                 active_reason = e_dec.reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
-
-
-check_internal_order_guards = check_qlimit2_order_guards

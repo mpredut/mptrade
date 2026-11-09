@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import sys
-from unittest.mock import MagicMock
 
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (

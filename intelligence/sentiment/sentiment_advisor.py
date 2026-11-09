@@ -1,7 +1,7 @@
 """Periodic macro sentiment advisor synthesizing market breadth, crowd sentiment, and positioning."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -25,9 +25,7 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-from orchestratorOS.agy.topics import topic_spec
 from cachepaths import cache_path
-from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 

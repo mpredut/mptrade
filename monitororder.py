@@ -13,7 +13,6 @@ import instrument_registry as sym
 from binance_api import bapi as api
 from binance_api import order_id_context as rc
 from providers.base import (
-    _clean_single_order_id,
     clean_order_id_str,
     extract_client_order_id,
     extract_order_id,
@@ -28,7 +27,6 @@ from providers.market_api import api as mkt  # Single guarded proxy (Instrument.
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle as accepted_order_persistence
-import lock.cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
     float_env,
     format_price_log,
@@ -46,7 +44,6 @@ _safe_pos_float = safe_pos_float
 _load_dotenv()
 
 MAX_PROC = required_float_env("MONITOR_MAX_PROC")
-monitor_interval = 3.7
 MAX_TRACKED_ORDER_IDS = 10_000
 
 # Order Market TTL configurations (in seconds)
@@ -164,7 +161,6 @@ class _OrderedIdSet:
         return iter(self._d)
 
 
-initial_prices = OrderedDict()
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
@@ -180,7 +176,6 @@ def reset_monitororder_state_for_test():
     _notified_placed_order_ids.clear()
     _notified_expired_order_ids.clear()
     _derived_replacement_order_ids.clear()
-    initial_prices.clear()
     initial_sell_prices.clear()
     initial_buy_prices.clear()
     _monitororder_initialized = False

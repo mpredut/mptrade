@@ -196,7 +196,6 @@ class BinancePricePlatform(PricePlatformInterface):
     def supports_symbol(self, symbol: str) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
-        self.refresh_symbols()
         return self._resolve_trading_pair(symbol) is not None
     
     def get_price(self, symbol: str) -> Optional[float]:
