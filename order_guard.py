@@ -17,7 +17,6 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import statistics
 import time
-from abc import ABC, abstractmethod
 from botcore import (
     _parse_bool_flag,
     clean_scale,
@@ -40,7 +39,6 @@ from cachepaths import (
     _is_eq_suffix,
     cache_24_price_filename,
     cache_symbol_variants,
-    canonical_base_asset,
     get_cachedb_dir,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -1804,7 +1802,6 @@ def profit_guard(
 from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
-    OrderGuardEvaluatorInterface,
 )
 
 

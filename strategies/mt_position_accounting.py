@@ -21,11 +21,11 @@ from order_lifecycle import restore_cancelled_orders
 from providers.base import (
     extract_order_id,
     extract_order_price,
-    extract_order_qty,
-    extract_order_side,
     extract_timestamp_ms,
 )
 from providers.order_ohlc_utils import (
+    extract_order_qty,
+    extract_order_side,
     extract_remaining_qty,
     resolve_order_actor,
 )
@@ -121,10 +121,6 @@ def _summarize_orders(orders):
     return total_qty, total_val, sig
 
 
-def _make_order_signature(orders):
-    return _summarize_orders(orders)[2]
-
-
 def _api_cache_identity(api) -> tuple[str, int]:
     name = getattr(api, "name", None) or getattr(api, "provider_label", None) or type(api).__name__
     return (str(name), id(api))
@@ -178,11 +174,6 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
             else:
                 cost_qty -= q
     return owned, active_avg, last_cycle_avg
-
-
-def _compute_spot_owned_qty(buy_orders, sell_orders) -> float:
-    """Compute remaining spot-attributed inventory in the lookback window."""
-    return _compute_spot_position(buy_orders, sell_orders)[0]
 
 
 def _coerce_order_list(orders) -> list:

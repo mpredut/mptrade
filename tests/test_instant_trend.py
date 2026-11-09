@@ -1163,12 +1163,12 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(bapi_ws.BinanceAccountStream._classify(None), ("event", {}))
 
         # providers.base extractors reject bool values instead of treating True as 1.0 or "TRUE"
-        from providers.base import (
-            extract_order_price,
+        from providers.base import extract_order_price
+        from providers.order_ohlc_utils import (
             extract_order_qty,
             extract_order_side,
+            extract_remaining_qty,
         )
-        from providers.order_ohlc_utils import extract_remaining_qty
 
         self.assertEqual(extract_order_price({"price": True}), 0.0)
         self.assertEqual(extract_order_price({"cost": True, "vol": 1.0}), 0.0)
@@ -1674,7 +1674,11 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
     def test_audit40_update_frequency_expiry_and_bapi_timestamp_guards(self):
         """Audit #40: get_update_frequency prunes expired samples, _ws_is_healthy guards clock rollback, and base/bapi timestamp & fee guards."""
         from binance_api import bapi
-        from providers.base import extract_order_fee, extract_timestamp_ms, extract_timestamp_s
+        from providers.base import (
+            extract_timestamp_ms,
+            extract_timestamp_s,
+        )
+        from providers.order_ohlc_utils import extract_order_fee
 
         # 1. CacheCurrentPriceManager.get_update_frequency prunes expired samples when stream stalls
         cpm = cm.CacheCurrentPriceManager(

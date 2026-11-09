@@ -5,7 +5,7 @@ import glob as _glob
 import logging
 import os
 import time as _time
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
@@ -13,7 +13,6 @@ from botcore import (
     is_live_network_backfill_enabled,
     load_dotenv,
     load_local_module,
-    safe_pos_int,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,

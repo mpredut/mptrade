@@ -41,7 +41,6 @@ from cacheInterface import (
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     CACHE_ASSET_VALUE_FILENAME,
-    CACHE_CURRENT_PRICE_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     CACHE_ORDER_FILENAME,
@@ -55,13 +54,15 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from providers.base import (
-    clean_order_id,
     extract_order_price,
-    extract_order_qty,
-    extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
     normalize_side,
+)
+from providers.order_ohlc_utils import (
+    clean_order_id,
+    extract_order_qty,
+    extract_order_side,
 )
 from state_io import (
     atomic_snapshot_file,

@@ -2069,11 +2069,12 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """
         import priceAnalysis as pa
         import utils as u
+        from cachepaths import canonical_base_asset
         from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
-        assert order_guard.canonical_base_asset("HYPE/USDC") == "HYPE"
-        assert order_guard.canonical_base_asset("SOL-USD") == "SOL"
-        assert order_guard.canonical_base_asset("TAO_USDC") == "TAO"
+        assert canonical_base_asset("HYPE/USDC") == "HYPE"
+        assert canonical_base_asset("SOL-USD") == "SOL"
+        assert canonical_base_asset("TAO_USDC") == "TAO"
 
         # Float T in gaussian_weights_from_idx and get_trade_weight at seam (trend_len=6.0, T=6.1)
         t_arr, w_arr = u.gaussian_weights_from_idx(6.1, 0)
@@ -3156,9 +3157,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert reason2 == "ok"
 
         # 3. canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR
-        assert order_guard.canonical_base_asset("USDCUSDT") == "USDCUSDT"
-        assert order_guard.canonical_base_asset("USDC/USDT") == "USDCUSDT"
-        assert order_guard.canonical_base_asset("BTCUSDC") == "BTC"
+        from cachepaths import canonical_base_asset
+        assert canonical_base_asset("USDCUSDT") == "USDCUSDT"
+        assert canonical_base_asset("USDC/USDT") == "USDCUSDT"
+        assert canonical_base_asset("BTCUSDC") == "BTC"
 
         # 4. check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale
         monkeypatch.setattr(
@@ -10564,8 +10566,8 @@ def test_iteration96_provider_base_replay_quantity_and_market_api_safety():
     from providers.base import (
         MarketDataProvider,
         aggregate_fills_by_order_id,
-        extract_order_side,
     )
+    from providers.order_ohlc_utils import extract_order_side
     from providers.market_api import BinanceProvider, MarketApi
     from providers.quantity import balance_cap_quantity, resolve_assets
     from providers.replay_provider import ReplayMarketDataProvider
@@ -11537,21 +11539,23 @@ def test_iteration108_binance_filters_bapi_ws_normalize_and_bapi_safety():
 def test_iteration109_providers_base_http_resilience_replay_and_trailing_stop_safety(tmp_path):
     """Iteration 109: Verify providers.base, http_resilience, replay_provider, and trailing_stop safety."""
     from types import SimpleNamespace
+    import botcore
     from providers import base as pbase
     from providers import http_resilience as hres
+    from providers import order_ohlc_utils as oou
     from providers import replay_provider as rprov
     from binance_api import trailing_stop as bts
 
-    # 1. providers.base: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
-    assert pbase.env_value(True, "KEY") is None
-    assert pbase.env_value(str(tmp_path), True) is None
+    # 1. botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
+    assert botcore.env_value(True, "KEY") is None
+    assert botcore.env_value(str(tmp_path), True) is None
     assert pbase.bool_env(True, default=True) is True
     assert pbase.bool_env("", default=False) is False
     assert pbase.extract_order_id({"orderId": {}}) is None
     assert pbase.extract_order_id({"orderId": set()}) is None
     assert pbase.extract_order_id(object()) is None
 
-    fee_res = pbase.extract_order_fee(
+    fee_res = oou.extract_order_fee(
         {"commission": "0.1", "commissionAsset": [1, 2]},
         base_asset=True,
         quote_asset=True,
@@ -15871,20 +15875,22 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
 
 def test_iteration164_providers_base_market_api_kraken_and_t212_hygiene(tmp_path, monkeypatch):
     from types import SimpleNamespace
+    import botcore
     from providers import base as pbase
     from providers import market_api as mapi
+    from providers import order_ohlc_utils as oou
     from providers.kraken_provider import KrakenProvider
     from providers.t212_provider import T212Provider
 
-    # 1. providers.base: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
+    # 1. botcore/providers: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
     (tmp_path / ".env").write_text('QUOTED_KEY="my_secret#1" # trailing comment\nFLAG_KEY="true" # comment\n', encoding="utf-8")
-    assert pbase.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
+    assert botcore.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
     assert pbase.bool_env("FLAG_KEY", folder=str(tmp_path), default="false") is True
     assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default="false") is False
     assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default=float("nan")) is False
-    fee_res = pbase.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="false")
+    fee_res = oou.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="false")
     assert fee_res is not None and fee_res["fee_asset"] == "USDC"
-    assert pbase.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="true") is None
+    assert oou.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="true") is None
 
     # 2. providers.market_api: BinanceProvider.ohlc_series with "15.0", MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot="false")
     bp = mapi.BinanceProvider()
@@ -16173,6 +16179,7 @@ def test_iteration169_providers_base_hyperliquid_kraken_and_t212_hygiene(monkeyp
     from providers import base as pbase
     from providers import hyperliquid_provider as hlp
     from providers import kraken_provider as krp
+    from providers import order_ohlc_utils as oou
     from providers import t212_provider as t212p
     from providers.strategy_executor import PairPrecision, ProviderError
 
@@ -16180,9 +16187,9 @@ def test_iteration169_providers_base_hyperliquid_kraken_and_t212_hygiene(monkeyp
     assert pbase._parse_bool_flag("", default=True) is True
     assert pbase._parse_bool_flag("y", default=False) is True
     assert pbase._parse_bool_flag("n", default=True) is False
-    assert pbase.extract_order_side({"type": "A"}) == "SELL"
-    assert pbase.extract_order_side({"isBuyer": "y"}) == "BUY"
-    assert pbase.extract_order_side({"isBuyer": "n"}) == "SELL"
+    assert oou.extract_order_side({"type": "A"}) == "SELL"
+    assert oou.extract_order_side({"isBuyer": "y"}) == "BUY"
+    assert oou.extract_order_side({"isBuyer": "n"}) == "SELL"
 
     # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
     hl = hlp.HyperliquidProvider(token="HYPE", live_enabled=False)
@@ -17033,8 +17040,7 @@ def test_iteration184_centralized_state_io_json_helpers_and_fetch_public_json(tm
     import state_io
     import intelligence.macro_sentiment_ssot as ssot
 
-    # 1. fetch_public_json is centralized in botcore/state_io and re-exported in macro_sentiment_ssot
-    assert state_io.fetch_public_json is botcore.fetch_public_json
+    # 1. fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot
     assert ssot.fetch_public_json is botcore.fetch_public_json
 
     # 2. read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files
@@ -17063,7 +17069,7 @@ def test_iteration185_atomic_write_jsonl_bapi_snapshot_cache_rows_and_clean_orde
     import state_io
     from binance_api import bapi_allorders as ao
     import binance_api.market_data as md
-    from providers.base import clean_order_id
+    from providers.order_ohlc_utils import clean_order_id
 
     # 1. state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts
     p_jsonl = tmp_path / "orders.jsonl"

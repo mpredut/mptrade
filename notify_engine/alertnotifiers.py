@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 sys.modules.setdefault("alertnotifiers", sys.modules[__name__])
 import time
@@ -944,18 +943,6 @@ def pop_due_bulk_batch(
         channel_state["sent"] = safe_nonneg_int(channel_state.get("sent", 0), default=0) + 1
         _save_delivery_state(path, state)
         return synthesize_bulk_notifications(items)
-
-
-def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple[bool, str, bool]:
-    """Atomically reserve one delivery across processes via the common gate."""
-    first = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
-    title = str(first.get("name") or first.get("title") or "Alert")
-    body = str(first.get("body") or first.get("message") or "")
-    prio = "urgent" if urgent else "high"
-    allowed, reason, warn_once, _ = pass_common_gate(
-        channel, title, body, prio, "", alerts, urgent=urgent,
-    )
-    return allowed, reason, warn_once
 
 
 def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:

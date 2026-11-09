@@ -47,7 +47,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import notify
-from providers.base import clean_order_id
+from providers.order_ohlc_utils import clean_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token, state_path_for as _shared_state_path_for

@@ -62,9 +62,11 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from providers.base import (
     extract_order_id,
+    normalize_timestamp_ms,
+)
+from providers.order_ohlc_utils import (
     extract_order_side,
     normalize_open_order,
-    normalize_timestamp_ms,
     resolve_order_origin,
 )
 from providers.execution_audit import collect_known_ai_order_ids, intent_venue_client_order_ids

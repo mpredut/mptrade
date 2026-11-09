@@ -691,13 +691,15 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         FearGreedCollector,
         MarketBreadthCollector,
     )
+    from intelligence.internal.guards.guard_decision import (
+        OrderGuardEvaluatorBase,
+        OrderGuardEvaluatorFactory,
+        OrderGuardEvaluatorInterface,
+    )
     from order_guard import (
         CompositeProfitGuardEvaluator,
         IntelligenceMacroSentimentGuardEvaluator,
         MathProfitReferenceGuardEvaluator,
-        OrderGuardEvaluatorBase,
-        OrderGuardEvaluatorFactory,
-        OrderGuardEvaluatorInterface,
     )
 
     assert (CacheOrderManager.DEFAULT_FILENAME, "binance") in _resolve_order_cache_files()

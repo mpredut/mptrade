@@ -27,7 +27,6 @@ from botcore import (
 )
 from cachepaths import (
     cache_symbol_variants,
-    canonical_symbol_key,
     compatible_quote_suffixes,
     normalize_cache_base_asset,
     resolve_cache_dir_path,

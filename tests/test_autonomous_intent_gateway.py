@@ -1243,7 +1243,7 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
 
     # 4. Kraken / Hyperliquid hash the AI_ client ID into 128-bit form: response-lost intents still match
     #    their own resting order, open orders are labeled AI, and another AI intent's order is not adopted.
-    from providers.base import normalize_open_order
+    from providers.order_ohlc_utils import normalize_open_order
     from providers.execution_audit import collect_known_ai_order_ids
     from providers.hyperliquid_provider import _cloid_for_client_order_id
     from providers.kraken_provider import _kraken_client_order_id

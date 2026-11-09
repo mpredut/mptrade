@@ -121,7 +121,7 @@ def test_binance_missing_commission_returns_none_instead_of_keyerror(binance_his
 
 
 def test_extract_order_fee_canonical_across_venues():
-    from providers.base import extract_order_fee
+    from providers.order_ohlc_utils import extract_order_fee
 
     # Binance REST trade shape
     info = extract_order_fee(
@@ -347,11 +347,13 @@ def test_cross_venue_and_ws_extract_normalization_edges():
     from providers.base import (
         extract_order_id,
         extract_order_price,
-        extract_order_qty,
-        extract_order_side,
         extract_timestamp_ms,
     )
-    from providers.order_ohlc_utils import extract_remaining_qty
+    from providers.order_ohlc_utils import (
+        extract_order_qty,
+        extract_order_side,
+        extract_remaining_qty,
+    )
     from binance_api.order_id_context import resolve_order_owner
 
     # 1. Binance WS executionReport: remainingQty from q - z, price from L/Z, timestamp from T/E, side from S

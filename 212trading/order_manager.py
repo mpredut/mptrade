@@ -34,7 +34,8 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from state_io import atomic_write_json, previous_generation_path, read_json_dict
-from providers.base import extract_order_id, extract_order_side
+from providers.base import extract_order_id
+from providers.order_ohlc_utils import extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:

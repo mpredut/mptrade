@@ -23,11 +23,13 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from binance_api import bapi as api                  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
-from providers.base import (                         # noqa: E402
+from providers.base import (
     extract_order_price,
+    extract_timestamp_ms,
+)
+from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
-    extract_timestamp_ms,
 )
 from providers.market_api import api as mkt                     # noqa: E402  (facada singleton)
 from instrument_registry import symbols_for                     # noqa: E402

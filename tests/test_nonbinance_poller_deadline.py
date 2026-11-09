@@ -542,7 +542,7 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertAlmostEqual(hlp.position_cost_basis("HYPEUSDC", 3.0, 3600.0), 30.10, places=4)
 
         # 6. Kraken fee asset aliases (XXBT / ZUSD), live price geometry 15m/6h updates, and open order ts lookup from list intents
-        from providers.base import extract_order_fee
+        from providers.order_ohlc_utils import extract_order_fee
         from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
         from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 

@@ -25,9 +25,11 @@ ensure_local_module_priority(_HERE, "ipo_common", "t212_client")
 from ipo_common import load_t212_environment  # noqa: E402
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from providers.base import (  # noqa: E402
+from providers.base import (
     extract_order_id,
     extract_order_price,
+)
+from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
 )

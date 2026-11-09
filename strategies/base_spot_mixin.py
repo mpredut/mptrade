@@ -24,7 +24,8 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
-from providers.base import clean_order_id, normalize_side
+from providers.base import normalize_side
+from providers.order_ohlc_utils import clean_order_id
 from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,

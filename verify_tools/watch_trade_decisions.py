@@ -22,7 +22,11 @@ if _ROOT not in sys.path:
 from binance_api import bapi as api  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
-from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
+from providers.base import (
+    extract_order_price,
+    extract_timestamp_ms,
+)
+from providers.order_ohlc_utils import extract_order_qty
 from botcore import safe_float, safe_pos_float  # noqa: E402
 from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402

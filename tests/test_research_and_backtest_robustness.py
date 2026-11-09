@@ -1343,7 +1343,8 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
 
 
 def test_provider_env_value_and_order_price_validation(tmp_path):
-    from providers.base import bool_env, env_value
+    from botcore import env_value
+    from providers.base import bool_env
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
     from providers.strategy_executor import ProviderError
@@ -3912,7 +3913,11 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     import binance_api.bapi_ws_bridge as bapi_ws_bridge
     import binance_api.market_data as b_md
     from binance_api.trailing_stop import TrailingStop
-    from providers.base import MarketDataProvider, aggregate_fills_by_order_id, extract_order_side
+    from providers.base import (
+        MarketDataProvider,
+        aggregate_fills_by_order_id,
+    )
+    from providers.order_ohlc_utils import extract_order_side
     from providers.quantity import balance_cap_quantity
     from providers.replay_provider import ReplayMarketDataProvider
 
@@ -5573,7 +5578,8 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
 
 def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     import pytest
-    from providers.base import extract_order_fee, extract_order_price
+    from providers.base import extract_order_price
+    from providers.order_ohlc_utils import extract_order_fee
     from providers.market_api import MarketApi, ProviderError
     from strategies import spot_engine, spot_replay, spot_rules
     from strategies.position_exit_manager import (
@@ -5906,17 +5912,17 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     import asyncio
     import cacheManager as cm
     import liquidation_signal as ls_mod
-    from providers import base as pbase
+    from providers import order_ohlc_utils as oou
     from providers import quantity as pqty
     from providers import market_api as pmarket
     from providers import kraken_provider as pkraken
     from providers.strategy_executor import ProviderError
 
-    # 1. providers.base.clean_order_id normalizes '+12345.0' and rejects '+0.0'
-    assert pbase.clean_order_id("+12345.0") == "12345"
-    assert pbase.clean_order_id("+12345") == "12345"
-    assert pbase.clean_order_id("+0.0") is None
-    assert pbase.clean_order_id("-0.0") is None
+    # 1. providers.order_ohlc_utils.clean_order_id normalizes '+12345.0' and rejects '+0.0'
+    assert oou.clean_order_id("+12345.0") == "12345"
+    assert oou.clean_order_id("+12345") == "12345"
+    assert oou.clean_order_id("+0.0") is None
+    assert oou.clean_order_id("-0.0") is None
 
     # 2. providers.quantity.clean_order_id_str rejects negative/non-integer floats and normalizes '+777.0'
     assert pqty.clean_order_id_str(-5) == ""

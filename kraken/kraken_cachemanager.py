@@ -54,13 +54,15 @@ from credentials import CredentialConfigurationError, kraken_credentials
 from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
 from instrument_registry import symbols_for
 from providers.base import (
-    clean_order_id,
-    extract_order_fee,
     extract_order_id,
     extract_order_price,
+    extract_timestamp_ms,
+)
+from providers.order_ohlc_utils import (
+    clean_order_id,
+    extract_order_fee,
     extract_order_qty,
     extract_order_side,
-    extract_timestamp_ms,
 )
 from providers.kraken_provider import _kraken_pair_key, _kraken_pair_matches
 

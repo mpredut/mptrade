@@ -553,11 +553,13 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
     def test_canonical_order_normalization_and_bapi_trade_unification(self):
         from providers.base import (
             extract_order_price,
-            extract_order_qty,
-            extract_order_side,
             extract_timestamp_ms,
         )
-        from providers.order_ohlc_utils import normalize_order
+        from providers.order_ohlc_utils import (
+            extract_order_qty,
+            extract_order_side,
+            normalize_order,
+        )
         import binance_api.bapi as bapi_mod
         import binance_api.bapi_allorders as bapi_all
         import binance_api.bapi_trades as bapi_tr

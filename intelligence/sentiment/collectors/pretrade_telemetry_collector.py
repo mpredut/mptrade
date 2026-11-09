@@ -11,7 +11,6 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 from botcore import (
     extract_current_price_item,
     is_live_network_backfill_enabled,
-    load_local_module,
 )
 from cachepaths import (
     CACHE_DERIVATIVES_TELEMETRY_PREFIX,

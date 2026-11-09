@@ -32,9 +32,12 @@ from .base import (
     MarketDataProvider,
     aggregate_fills_by_order_id,
     extract_order_id,
+)
+from .order_ohlc_utils import (
+    normalize_order,
+    require_clean_order_id,
     resolve_market_flag,
 )
-from .order_ohlc_utils import normalize_order, require_clean_order_id
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,

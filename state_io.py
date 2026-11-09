@@ -27,7 +27,6 @@ from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
-    fetch_public_json,  # noqa: F401 (re-export: SSOT compat)
 )
 from cachepaths import STALE_STAGING_MAX_AGE_SEC, resolve_cachedb_filepath
 

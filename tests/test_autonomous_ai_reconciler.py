@@ -1261,9 +1261,9 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
     assert parse_shadow.safe_int(True) == 0
     assert parse_shadow._last_valid_record(['{"pair": "HYPEUSD"}', "{bad json"]) == {"pair": "HYPEUSD"}
 
-    assert kraken_pnl_backfill.safe_float(None) == 0.0
-    assert kraken_pnl_backfill.safe_float(True) == 0.0
-    assert kraken_pnl_backfill.safe_float(float("nan")) == 0.0
+    assert kraken_pnl_backfill.safe_pos_float(None) == 0.0
+    assert kraken_pnl_backfill.safe_pos_float(True) == 0.0
+    assert kraken_pnl_backfill.safe_pos_float(float("nan")) == 0.0
 
     ts_arr, px_arr, dt_list = drawprices.to_series([(1700000000000, float("nan")), (True, 100.0), (1700000001000, 50.0)])
     assert len(px_arr) == 1 and px_arr[0] == 50.0
@@ -3126,7 +3126,11 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     assert "dd_from_peak_pct" not in positions[0]
 
     # 8. extract_executed_qty & build_last_cycle_execution_status report OPEN_RESTING (not PARTIALLY_FILLED) on unfilled resting limit orders
-    from providers.order_ohlc_utils import extract_executed_qty
+    from providers.order_ohlc_utils import (
+        extract_executed_qty,
+        extract_order_side,
+        normalize_open_order,
+    )
     from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
 
     assert extract_executed_qty({"status": "NEW", "origQty": "0.005", "executedQty": "0.0"}) == 0.0
@@ -3851,8 +3855,11 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert macro_map["market_breadth"]["advance_ratio"] == pytest.approx(0.35)
     assert macro_map["sentiment_advisor"]["market_bias"] == "NEUTRAL"
 
-    from providers.base import extract_order_side, normalize_open_order
-    from providers.order_ohlc_utils import extract_executed_qty
+    from providers.order_ohlc_utils import (
+        extract_executed_qty,
+        extract_order_side,
+        normalize_open_order,
+    )
 
     assert extract_order_side({"type": "limit", "descr": {"type": "buy"}}) == "BUY"
     assert extract_order_side({"dir": "Spot", "isBuyer": True}) == "BUY"

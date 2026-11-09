@@ -15,9 +15,11 @@ from binance_api.order_id_context import resolve_order_owner
 from instrument_registry import symbols_for
 from providers.base import (
     extract_order_price,
+    extract_timestamp_ms,
+)
+from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
-    extract_timestamp_ms,
 )
 from state_io import read_json_dict
 

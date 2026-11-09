@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 import os
-import time
 from collections import deque
 from dataclasses import dataclass, fields
 from typing import Callable
@@ -23,12 +22,12 @@ from botcore import (
     safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
-from providers.base import (
+from providers.base import normalize_side
+from providers.order_ohlc_utils import (
     clean_order_id,
     extract_order_side,
-    normalize_side,
+    extract_remaining_qty,
 )
-from providers.order_ohlc_utils import extract_remaining_qty
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError
 from order_lifecycle import StrategyExecutorLifecycleApi, TrackedOrderLifecycle

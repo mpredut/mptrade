@@ -18,7 +18,7 @@ import order_guard
 import order_retry
 import order_retry_worker
 from providers import market_api
-from providers.base import clean_order_id
+from providers.order_ohlc_utils import clean_order_id
 from providers.market_api import BinanceProvider, MarketApi
 
 

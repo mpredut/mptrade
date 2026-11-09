@@ -20,7 +20,8 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from providers.base import clean_order_id, normalize_side
+from providers.base import normalize_side
+from providers.order_ohlc_utils import clean_order_id
 
 
 _MAX_LIMIT_REVISION = 1_000_000

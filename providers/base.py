@@ -12,7 +12,6 @@ from typing import Any, List, Optional
 from botcore import (
     _parse_bool_flag,
     bool_env,
-    env_value,
     exact_nonneg_int,
     exact_pos_int,
     extract_current_price_item,
@@ -68,19 +67,12 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     _is_fresh_obs_ts,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
-    clean_order_id,
-    extract_order_fee,
     extract_order_id,
     extract_order_price,
-    extract_order_qty,
-    extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
-    normalize_open_order,
     normalize_side,
     normalize_timestamp_ms,
-    resolve_market_flag,
-    resolve_order_origin,
 )
 from .quantity import (  # noqa: E402, F401
     compute_fills_cost_basis,

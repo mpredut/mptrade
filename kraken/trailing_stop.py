@@ -61,7 +61,7 @@ from trailing_core import (  # noqa: E402
     vwap_or_fallback,
 )
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
-from providers.base import extract_order_side  # noqa: E402
+from providers.order_ohlc_utils import extract_order_side
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     _kraken_balance_asset_candidates,

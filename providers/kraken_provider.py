@@ -32,16 +32,16 @@ from botcore import (
 from .base import (
     MarketDataProvider,
     bool_env,
-    extract_order_fee,
     extract_order_id,
-    resolve_market_flag,
 )
 from .order_ohlc_utils import (
     _derive_128bit_client_order_id,
     build_open_order_entry,
     build_price_history_points,
+    extract_order_fee,
     normalize_order,
     require_clean_order_id,
+    resolve_market_flag,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,

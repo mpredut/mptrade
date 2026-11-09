@@ -15,12 +15,12 @@ from botcore import clean_order_id_str
 from providers.base import (
     extract_order_id,
     extract_order_price,
-    extract_order_qty,
     extract_timestamp_s,
     normalize_side,
 )
 from providers.order_ohlc_utils import (
     extract_client_order_id,
+    extract_order_qty,
     extract_remaining_qty,
 )
 from cachepaths import split_symbol_assets

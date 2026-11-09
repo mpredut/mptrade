@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import sys
-import time
 from typing import Any, Dict, List, Optional
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

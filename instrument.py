@@ -27,7 +27,8 @@ from instrument_registry import (
     resolve_instrument_spec,
     select_instruments,
 )
-from providers.base import extract_order_id, resolve_market_flag
+from providers.base import extract_order_id
+from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
     is_us_rth_open,

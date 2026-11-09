@@ -927,14 +927,12 @@ class TestEnrichedPretradeTelemetry:
 
 def test_order_actor_resolution_and_recent_fills_tagging():
     """Verify AI vs BOT actor resolution on orders, open orders, and recent fills extraction."""
-    from providers.base import (
-        normalize_open_order,
-        resolve_order_origin,
-    )
     from providers.order_ohlc_utils import (
         extract_client_order_id,
         format_actor_tag,
+        normalize_open_order,
         resolve_order_actor,
+        resolve_order_origin,
     )
     from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
 
