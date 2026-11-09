@@ -640,8 +640,9 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
                 imported_roots.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported_roots.add(node.module.split(".")[0])
-    assert imported_roots.isdisjoint({"instrument", "providers", "state_io", "intelligence", "cacheprice"})
+    assert imported_roots.isdisjoint({"instrument", "providers", "state_io", "intelligence", "cacheprice", "binance_api"})
     assert "reload(" not in reg_src
+    assert "load_env_file_defaults" not in reg_src
     assert "_live_enabled" not in reg_src
     assert "_order_validity" not in reg_src
 
@@ -685,6 +686,7 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
     res = inst.place("BUY", 120.0, 2.0, market=True)
     assert res["orderId"] == "t212_1"
     assert captured_kwargs.get("order_validity") == "DAY"
+    assert captured_kwargs.get("live_enabled") is True
 
     # 4. cacheprice.resolve_cached_symbol_price resolves orderbook fallback without intelligence collector imports
     telem_dir = tmp_path / "telemetry"

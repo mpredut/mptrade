@@ -18,7 +18,6 @@ import types as _types
 from botcore import (
     _parse_bool_flag,
     is_us_rth_open,
-    load_env_file_defaults,
     load_ini_config,
     lru_dict_put,
     normalize_side,
@@ -391,7 +390,7 @@ def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
     cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
     if not os.path.exists(cfg_path):
         return []
-    kv = load_env_file_defaults(cfg_path)
+    kv = parse_env_file(cfg_path)
     if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
         return []
     token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
@@ -500,7 +499,6 @@ def discover_tradable_specs(
                             active_map[k] = item.with_execution_policy(live_enabled=True)
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
-        load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
         discovered_t212 = discover_t212_equities(ws_dir)
         discovered_tickers = {t[1].upper() for t in discovered_t212}
         has_ws_conf = os.path.exists(ws_inst_conf)
@@ -642,9 +640,7 @@ def __getattr__(name: str):
 
 
 def _get_client():
-    from binance_api.bapi_client import client
-
-    return client
+    return None
 
 
 def _resolve_cur_symbols() -> list:

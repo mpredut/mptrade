@@ -535,7 +535,8 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         is_buy = s_norm == "BUY"
         side = s_norm
-        live = self.execution_enabled()
+        live_override = kwargs.pop("live_enabled", None)
+        live = self.execution_enabled() if live_override is None else _parse_bool_flag(live_override, False)
         is_market = resolve_market_flag(force=force, **kwargs)
         try:
             submit_px, order_tif = self._resolve_spot_order_price_and_tif(

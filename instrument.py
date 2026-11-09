@@ -32,6 +32,7 @@ from providers.base import extract_order_id, resolve_market_flag
 from botcore import (
     _parse_bool_flag,
     is_us_rth_open,
+    load_env_file_defaults,
     normalize_side,
     resolve_patched_attr,
     safe_float,
@@ -94,7 +95,7 @@ class Instrument:
         self.params = dict(params or {})
         self.spec = (
             spec
-            if isinstance(spec, InstrumentSpec)
+            if (isinstance(spec, InstrumentSpec) or type(spec).__name__ == "InstrumentSpec")
             else InstrumentSpec(
                 name=self.name,
                 provider=normalize_venue_name(provider) or str(provider or "").casefold(),
@@ -352,14 +353,21 @@ class Instrument:
             print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider")
             return _refuse_early("invalid_cache_permit_provider")
         execution_enabled = getattr(self._provider, "execution_enabled", None)
+        inst_live = self.param("execution", "live_enabled", None, bool)
         try:
-            provider_execution_enabled = True if not callable(execution_enabled) else bool(execution_enabled())
+            provider_execution_enabled = (
+                bool(inst_live)
+                if inst_live is not None
+                else (True if not callable(execution_enabled) else bool(execution_enabled()))
+            )
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
             print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): execution_gate_unavailable ({exc})")
             return _refuse_early("execution_gate_unavailable")
         if not provider_execution_enabled:
             print(f"[{self.symbol}] {side_u} DRY: real provider execution is disabled")
             return _refuse_early("execution_disabled")
+        if inst_live is not None and "live_enabled" not in kwargs:
+            kwargs["live_enabled"] = provider_execution_enabled
         if v_norm == "t212" and "order_validity" not in kwargs:
             inst_validity = self.param("execution", "order_validity")
             if isinstance(inst_validity, str) and inst_validity.strip():
@@ -955,12 +963,16 @@ def _resolve_instrument_cls():
     return resolve_patched_attr("Instrument", Instrument, modules=(__name__,), require_callable=True)
 
 
+def _is_instrument_spec(item) -> bool:
+    return isinstance(item, InstrumentSpec) or type(item).__name__ == "InstrumentSpec"
+
+
 def bind_instruments(specs: dict, api=None) -> dict:
     """Bind a mapping of ``InstrumentSpec`` records to executable ``Instrument`` instances."""
     cls = _resolve_instrument_cls()
     out = {}
     for name, item in (specs or {}).items():
-        if isinstance(item, InstrumentSpec):
+        if _is_instrument_spec(item):
             out[name] = (
                 cls.from_spec(item, api=api)
                 if cls is Instrument
@@ -1007,6 +1019,11 @@ def load_tradable_instruments(
 ) -> dict:
     """Discover enabled specs across Binance, Kraken, Hyperliquid, and Trading212 and bind them to providers."""
     ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
+    scope = (asset_scope or "all").strip().lower()
+    if scope in ("all", "crypto"):
+        load_env_file_defaults(os.path.join(ws_dir, "hyperliquid", "config.env"))
+    if scope in ("all", "equities"):
+        load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
     ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
     base_specs: dict | None = None
     if os.path.exists(ws_inst_conf) or not only_workspace_conf:
@@ -1030,7 +1047,7 @@ def load_tradable_instruments(
     )
     active_map: dict = {}
     for name, item in specs_or_insts.items():
-        if isinstance(item, InstrumentSpec):
+        if _is_instrument_spec(item):
             try:
                 active_map[name] = bind_instruments({name: item}, api=api)[name]
             except Exception:
