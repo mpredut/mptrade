@@ -1770,7 +1770,7 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
     from datetime import datetime, timezone
     from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
     from orchestratorOS.lib.technical_repair_ssot import apply_code_patch_safely, apply_reconciliation_plan
-    from orchestratorOS.supervisor.prompt_formatters import _format_tradable_position_line
+    from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line
 
     # 1a. apply_reconciliation_plan must reject missing/None replace_block instead of coercing to ""
     called_patches = []
@@ -9598,6 +9598,10 @@ def test_harvest_positions_dedup_bare_equity_pretrade_and_assetguardian_recovery
     (ldir / "assetguardian.log").write_text(
         "17:59:38 [assetguardian.py:435] ERROR reading AssetValue cache via cacheManager: stat: path should be string, bytes, os.PathLike or integer, not NoneType\n"
         "18:00:32 [BTCUSDC] price=74849.18000000, window_min/max=73501.11000000/75905.55000000, minutes_back=1440.0\n",
+        encoding="utf-8",
+    )
+    (ldir / ".inspect_all_prompts_2026-11-09.log").write_text(
+        "19:45:30 ERROR fake prompt inspection log line\n",
         encoding="utf-8",
     )
     summary = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=1.0)
