@@ -652,7 +652,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     if _parse_bool_flag(draw, True):
         drawPriceLst(timestamps, prices, res['blocks'], symbol, direction, dur / 3600.0)
 
-    est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol)
+    est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol, allow_network=True)
     return {
         'timestamp': int(time.time()),
         'direction': direction,
@@ -706,12 +706,22 @@ def write_all_trends(all_trends, filename=None):
     return all_trends
 
 
-def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=None, quant_seconds=3600*24, draw=False):
+def get_weight_for_cash_permission_at_quant_time(
+    symbol,
+    order_type,
+    T_quanta=None,
+    quant_seconds=3600*24,
+    draw=False,
+    *,
+    allow_network: bool = False,
+):
     """Use an empirical per-symbol T when ``T_quanta`` is None.
 
     trend_survival.estimate_T blends history with a 14-day prior, favoring
     empirical data when enough episodes exist, and caches it on disk. Passing 14
-    explicitly restores legacy behavior.
+    explicitly restores legacy behavior. Read-only consumers (`allow_network=False`,
+    the default on the order guard path) read `cache_T_trend.json` in 0 ms without
+    triggering live OHLC network fetches or disk writes.
     """
     import cacheManager as cm
 
@@ -743,7 +753,18 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     est = None
     if T_quanta is None:
         try:
-            est = estimate_T(symbol)
+            from intelligence.internal.state import survival as _surv_mod
+
+            is_est_patched = (
+                estimate_T is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
+                or fetch_klines is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
+            )
+            if _parse_bool_flag(allow_network, False) or is_est_patched:
+                est = estimate_T(symbol)
+            else:
+                est = _surv_mod.get_cached_t_entry(symbol) or {"T": 14}
             T_quanta = est["T"]
         except Exception as e:
             T_quanta = 14

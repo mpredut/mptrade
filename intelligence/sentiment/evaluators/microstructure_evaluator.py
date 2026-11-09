@@ -738,8 +738,9 @@ def update_microstructure_cycle_deltas(
     microstructure: Dict[str, Any],
     *,
     now_ts: Optional[float] = None,
+    persist: bool = True,
 ) -> None:
-    """Compute and persist rolling microstructure `cycle_delta` metrics in `microstructure_cycle_history.json`."""
+    """Compute and optionally persist rolling microstructure `cycle_delta` metrics in `microstructure_cycle_history.json`."""
     if not cache_dir or not microstructure:
         return
     eff_now = resolve_now_ts(now_ts)
@@ -921,7 +922,7 @@ def update_microstructure_cycle_deltas(
                 ):
                     if shared_dk in prim_cd:
                         sib_cd[shared_dk] = prim_cd[shared_dk]
-    if mhist_dirty and (is_live_network_backfill_enabled() or not is_repo_cachedb):
+    if persist and mhist_dirty and (is_live_network_backfill_enabled() or not is_repo_cachedb):
         try:
             os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
             save_json_state(mhist_path, mhist, indent=2)
@@ -937,6 +938,8 @@ def enrich_cross_venue_trends(
     priceanalysis_data: Any,
     t_trend_map: Any,
     watcher_price_items: Any,
+    *,
+    allow_network: Optional[bool] = None,
 ) -> None:
     """Enrich every symbol with cross-venue short slopes, Kalman velocity, long trend, Weibull, and 7d range."""
     def _unwrap_items_dict(raw: Any) -> Dict[str, Any]:
@@ -1092,16 +1095,23 @@ def enrich_cross_venue_trends(
         elif (
             entry.get("weibull_median_d") is None
             and not sym.endswith(("_EQ", "_US_EQ"))
-            and is_live_network_backfill_enabled()
+            and allow_network is not False
         ):
             try:
+                from intelligence.internal.state import survival as _surv_mod
                 from intelligence.internal.state.survival import estimate_T
 
-                if isinstance(est_tt := estimate_T(sym), dict) and est_tt.get("median_d") is not None:
-                    entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
-                    tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
-                    if isinstance(t_trend_map, dict):
-                        t_trend_map[sym] = est_tt
+                is_est_patched = (
+                    estimate_T is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                    or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                    or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
+                )
+                if (bool(allow_network) and is_live_network_backfill_enabled()) or is_est_patched:
+                    if isinstance(est_tt := estimate_T(sym), dict) and est_tt.get("median_d") is not None:
+                        entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
+                        tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
+                        if isinstance(t_trend_map, dict):
+                            t_trend_map[sym] = est_tt
             except Exception:
                 pass
         cur_est_rem = safe_float(entry.get("long_trend_est_rem_hours"), default=None)
@@ -1176,6 +1186,7 @@ def sync_sibling_symbol_telemetry(
     *,
     cache_dir: Optional[str] = None,
     now_ts: Optional[float] = None,
+    persist_cycle_deltas: bool = True,
 ) -> None:
     """Symmetric cross-venue & sibling symbol synchronization across Binance, Kraken, Hyperliquid, and T212/xStocks."""
     if not isinstance(prices_and_trends, dict):
@@ -1298,7 +1309,7 @@ def sync_sibling_symbol_telemetry(
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
 
     reconcile_sibling_flow_and_liq_regimes(microstructure, prices_and_trends)
-    update_microstructure_cycle_deltas(cache_dir, microstructure, now_ts=now_ts)
+    update_microstructure_cycle_deltas(cache_dir, microstructure, now_ts=now_ts, persist=persist_cycle_deltas)
 
 
 def reconcile_sibling_flow_and_liq_regimes(

@@ -753,3 +753,81 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         assert isinstance(ev, TelemetryEvaluatorInterface)
         assert TelemetryEvaluatorFactory.get_evaluator(eval_cls) is ev
 
+
+def test_external_collectors_and_survival_producer_consumer_decoupling(
+    temp_cache_dir: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verify Step 2 Producer-Consumer decoupling across external symbol collectors, survival estimation, and cycle deltas."""
+    import external_order_guard as eog
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+    from intelligence.internal.state import survival as surv_mod
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+        update_microstructure_cycle_deltas,
+    )
+
+    monkeypatch.setenv("MPTRADE_ENABLE_LIVE_BACKFILL", "1")
+    monkeypatch.setattr(eog, "_whale_collector", None)
+    monkeypatch.setattr(eog, "_orderbook_collector", None)
+    monkeypatch.setattr(eog, "_derivatives_collector", None)
+
+    # 1. External order guard initializes collectors as read-only consumers (start_sync=False)
+    wh_reader, ob_reader, dt_reader = eog.ensure_external_collector_readers()
+    for col in (wh_reader, ob_reader, dt_reader):
+        assert col.start_sync is False
+        assert col.is_read_only_consumer() is True
+        assert col.is_read_only_consumer(allow_network=True) is False
+
+    # 2. GlobalTelemetryCollector (ExternalTelemetryMixin) initializes collectors as producers (start_sync=True)
+    daemon = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=temp_cache_dir)
+    for col in (daemon.orderbook_collector, daemon.derivatives_collector, daemon.whale_collector):
+        assert col.start_sync is True
+        assert col.is_read_only_consumer() is False
+        assert col.is_read_only_consumer(allow_network=False) is True
+
+    # 3. Read-only consumer collectors never trigger HTTP fetches or sibling disk writes on cache miss
+    http_calls: list[str] = []
+    monkeypatch.setattr(
+        OrderbookDepthCollector,
+        "_fetch_json_dict",
+        classmethod(lambda cls, url, *a, **kw: http_calls.append(url) or {}),
+    )
+    ob_consumer = OrderbookDepthCollector(cache_dir=temp_cache_dir, start_sync=False)
+    assert ob_consumer.fetch("UNLISTEDUSDC", now=1700000100.0) is None
+    assert ob_consumer.read_snapshot("UNLISTEDUSDC", now=1700000100.0) is None
+    assert http_calls == []
+
+    # 4. estimate_remaining_trend_hours and enrich_cross_venue_trends do not trigger live kline fetches by default
+    kline_calls: list[str] = []
+    monkeypatch.setattr(
+        surv_mod,
+        "fetch_klines",
+        surv_mod._ORIG_FETCH_KLINES,
+    )
+    monkeypatch.setattr(
+        surv_mod,
+        "get_cached_t_entry",
+        lambda sym: None,
+    )
+    rem_h = surv_mod.estimate_remaining_trend_hours(48.0, symbol="UNLISTEDUSDC")
+    assert rem_h == pytest.approx(24.0)
+
+    pt_map = {"UNLISTEDUSDC": {"price": 10.0, "long_trend_hours": 24.0}}
+    enrich_cross_venue_trends(pt_map, {}, {}, {}, {}, {}, {})
+    assert "weibull_median_d" not in pt_map["UNLISTEDUSDC"]
+    assert kline_calls == []
+
+    # 5. update_microstructure_cycle_deltas with persist=False computes cycle_delta in-memory without writing disk
+    mhist_path = os.path.join(temp_cache_dir, "microstructure_cycle_history.json")
+    if os.path.exists(mhist_path):
+        os.remove(mhist_path)
+    micro_map = {"BTCUSDC": {"ob_imbalance": 0.62, "cvd_15m_usd": 120000.0}}
+    update_microstructure_cycle_deltas(temp_cache_dir, micro_map, now_ts=1700000100.0, persist=False)
+    assert not os.path.exists(mhist_path)
+    update_microstructure_cycle_deltas(temp_cache_dir, micro_map, now_ts=1700000100.0, persist=True)
+    assert os.path.exists(mhist_path)
+
+

@@ -81,8 +81,10 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         cache_ttl_sec: float = 60.0,
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 120.0,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
-        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 120.0)
+        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 120.0, start_sync=start_sync)
 
     def _fetch_hyperliquid_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
         """Fetch native funding rate and open interest from Hyperliquid L1 metaAndAssetCtxs."""
@@ -149,7 +151,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     def fetch(
         self,
         symbol: str,
-        allow_network: bool = True,
+        allow_network: Optional[bool] = None,
         now: Optional[float] = None,
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures or Hyperliquid L1 endpoint."""

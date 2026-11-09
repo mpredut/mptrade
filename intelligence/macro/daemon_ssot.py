@@ -449,16 +449,19 @@ class ExternalTelemetryMixin:
             cache_ttl_sec=ob_ttl,
             cache_dir=self.cache_dir,
             disk_ttl_sec=ob_ttl,
+            start_sync=True,
         )
         self.derivatives_collector = DerivativesTelemetryCollector(
             cache_ttl_sec=deriv_ttl,
             cache_dir=self.cache_dir,
             disk_ttl_sec=deriv_ttl,
+            start_sync=True,
         )
         self.whale_collector = WhalePositioningCollector(
             cache_ttl_sec=whale_ttl,
             cache_dir=self.cache_dir,
             disk_ttl_sec=whale_ttl,
+            start_sync=True,
         )
 
     @staticmethod

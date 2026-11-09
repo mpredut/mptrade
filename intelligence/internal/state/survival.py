@@ -512,6 +512,8 @@ def estimate_remaining_trend_hours(
     p90_d: Optional[float] = None,
     p_cont: Optional[Dict[str, Any]] = None,
     symbol: Optional[str] = None,
+    *,
+    allow_network: bool = False,
 ) -> float:
     """Estimate conditional remaining trend duration (hours) from Weibull + empirical survival distribution."""
     dur_h = safe_nonneg_float(duration_hours, default=0.0) or 0.0
@@ -521,12 +523,20 @@ def estimate_remaining_trend_hours(
     p90_f = safe_pos_float(p90_d, default=None)
     if (med_f is None or p90_f is None or p_cont is None) and isinstance(symbol, str) and symbol.strip():
         cached_ent = get_cached_t_entry(symbol)
-        if cached_ent is None and is_live_network_backfill_enabled():
+        _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+        is_est_patched = (
+            _est_fn is not _ORIG_ESTIMATE_T
+            or _resolve_facade_attr("fetch_klines", fetch_klines, _ORIG_FETCH_KLINES) is not _ORIG_FETCH_KLINES
+        )
+        if (
+            cached_ent is None
+            and (_parse_bool_flag(allow_network, False) or is_est_patched)
+            and (is_live_network_backfill_enabled() or is_est_patched)
+        ):
             sym_key = symbol.strip().upper()
             now_s = time.time()
-            if (now_s - _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)) >= _ON_DEMAND_T_MISS_TTL_SEC:
+            if (now_s - _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)) >= _ON_DEMAND_T_MISS_TTL_SEC or is_est_patched:
                 try:
-                    _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
                     cached_ent = _est_fn(symbol)
                     if cached_ent is None:
                         lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)

@@ -113,8 +113,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         whale_wall_usd: float = 500_000.0,
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 60.0,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
-        super().__init__(cache_ttl_sec, 5.0, cache_dir, disk_ttl_sec, 60.0)
+        super().__init__(cache_ttl_sec, 5.0, cache_dir, disk_ttl_sec, 60.0, start_sync=start_sync)
         self.depth_band_pct = safe_pos_float(depth_band_pct, default=1.5) or 1.5
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
         self._preferred_url: Dict[str, str] = {}
@@ -122,7 +124,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
     def fetch(
         self,
         symbol: str,
-        allow_network: bool = True,
+        allow_network: Optional[bool] = None,
         now: Optional[float] = None,
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance or Kraken public API."""

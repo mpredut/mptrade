@@ -37,24 +37,33 @@ _MICRO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
 def _get_collector(attr_name: str, module_path: str, cls_name: str):
     cur = globals().get(attr_name)
     if cur is None:
-        cur = getattr(importlib.import_module(module_path), cls_name)()
+        cls_obj = getattr(importlib.import_module(module_path), cls_name)
+        try:
+            cur = cls_obj(start_sync=False)
+        except TypeError:
+            cur = cls_obj()
         globals()[attr_name] = cur
     return cur
 
 
 def get_whale_collector():
-    """Lazily load singleton whale positioning collector."""
+    """Lazily load singleton whale positioning collector (read-only consumer, start_sync=False)."""
     return _get_collector("_whale_collector", "intelligence.external.collectors.whale_positioning_collector", "WhalePositioningCollector")
 
 
 def get_orderbook_collector():
-    """Lazily load singleton orderbook depth collector."""
+    """Lazily load singleton orderbook depth collector (read-only consumer, start_sync=False)."""
     return _get_collector("_orderbook_collector", "intelligence.external.collectors.orderbook_depth_collector", "OrderbookDepthCollector")
 
 
 def get_derivatives_collector():
-    """Lazily load singleton derivatives telemetry collector."""
+    """Lazily load singleton derivatives telemetry collector (read-only consumer, start_sync=False)."""
     return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry_collector", "DerivativesTelemetryCollector")
+
+
+def ensure_external_collector_readers() -> Tuple[Any, Any, Any]:
+    """Initialize and return read-only external telemetry collector consumers (whale, orderbook, derivatives)."""
+    return get_whale_collector(), get_orderbook_collector(), get_derivatives_collector()
 
 
 def check_external_order_guards(

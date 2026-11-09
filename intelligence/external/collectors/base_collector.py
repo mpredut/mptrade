@@ -225,6 +225,7 @@ class _DiskBackedSymbolCollector:
     _DISK_FILE_PREFIX: str = ""
     _SNAPSHOT_CLS: Any = None
     _QUOTE_ISOLATED: bool = False
+    start_sync: bool = False
 
     def __init__(
         self,
@@ -233,11 +234,37 @@ class _DiskBackedSymbolCollector:
         cache_dir: Optional[str],
         disk_ttl_sec: float,
         default_disk_ttl: float,
+        *,
+        start_sync: Optional[bool] = None,
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
         self.cache_dir = cache_dir
         self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
+        self._explicit_start_sync: Optional[bool] = (
+            _parse_bool_flag(start_sync, default=False) if start_sync is not None else None
+        )
+        self.start_sync = bool(self._explicit_start_sync) if self._explicit_start_sync is not None else False
         self._cache: Dict[str, tuple[float, Any]] = {}
+
+    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
+        """Return True when this collector operates in read-only consumer mode (``start_sync=False``)."""
+        if allow_network is not None:
+            return not _parse_bool_flag(allow_network, default=False)
+        return not bool(self.start_sync)
+
+    def read_snapshot(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
+        """Read-only consumer accessor: return fresh snapshot from memory/disk cache in 0 ms without network or disk writes."""
+        fetch_fn = getattr(self, "fetch", None)
+        if not callable(fetch_fn):
+            return None
+        return fetch_fn(symbol, allow_network=False, now=now)
+
+    def refresh_snapshot(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
+        """Producer accessor: fetch live snapshot from external venue and persist to disk cache."""
+        fetch_fn = getattr(self, "fetch", None)
+        if not callable(fetch_fn):
+            return None
+        return fetch_fn(symbol, allow_network=True, now=now)
 
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)
@@ -380,7 +407,14 @@ class _DiskBackedSymbolCollector:
         if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
             return None, 0.0, None, None, False
         now_f = resolve_now_ts(now)
-        allow_net_bool = True if allow_network is None else _parse_bool_flag(allow_network, default=False)
+        if allow_network is None:
+            allow_net_bool = (
+                True
+                if getattr(self, "_explicit_start_sync", None) is None
+                else bool(getattr(self, "start_sync", False))
+            )
+        else:
+            allow_net_bool = _parse_bool_flag(allow_network, default=False)
         if self._is_exact_venue_symbol(sym_clean):
             cached_ex, fresh_ex = self._lookup_cached(sym_clean, now_f, exact_only=True)
             if fresh_ex is not None:
