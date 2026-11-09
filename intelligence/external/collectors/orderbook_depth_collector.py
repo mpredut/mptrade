@@ -13,42 +13,30 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_pos_float
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     fetch_public_json,
-    is_cache_fresh,
-    resolve_now_ts as _effective_now_ts,
 )
 from cachepaths import (
-    cache_symbol_variants,
     canonical_symbol_key,
-    compatible_quote_suffixes,
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
-    resolve_cache_dir_path,
     resolve_kraken_lookup_symbol,
-    telemetry_cache_file_path,
 )
-from providers.base import MarketDataProvider, resolve_ssot_price_from_cache
+from providers.base import MarketDataProvider
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
-    _REGISTRY_SPECS_CACHE,
-    _cached_registry_specs,
     _clean_dict_float,
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
-    _extract_base_asset,
-    _fetch_hyperliquid_asset_ctx,
     _has_hyperliquid_instrument,
     _is_multi_venue_base,
-    _resolve_binance_lookup_symbol,
     _resolve_configured_venue,
-    _symbol_variants,
     round_spread_bps,
 )
 
@@ -150,7 +138,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 logger.warning("Could not fetch equity orderbook depth for %s: %s", symbol, eq_exc)
             return self._fallback_stale(symbol, cached)
 
-        lookup_sym = _resolve_binance_lookup_symbol(symbol)
+        lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)
         try:
             data = None
@@ -158,7 +146,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
             hl_book_url = ""
             if canon_sym.endswith("EUR"):
-                base_asset = _extract_base_asset(canon_sym)
+                base_asset = normalize_cache_base_asset(canon_sym)
                 bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
                 krk_eur_pair = (
                     "XBTEUR"
@@ -170,7 +158,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",
                 )
             else:
-                usdc_sym = f"{_extract_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
+                usdc_sym = f"{normalize_cache_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
                 spot_urls = (
                     (
                         f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
@@ -179,7 +167,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     if (usdc_sym and usdc_sym != lookup_sym)
                     else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
                 )
-                hl_coin = _extract_base_asset(canon_sym)
+                hl_coin = normalize_cache_base_asset(canon_sym)
                 hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
                 venue = _resolve_configured_venue(canon_sym)
                 multi_venue = _is_multi_venue_base(canon_sym)

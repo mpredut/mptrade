@@ -1802,10 +1802,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_cross_venue_collector_normalization_and_intelligence_context_validation(self, tmp_path, monkeypatch):
         """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
         and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
+        from cachepaths import resolve_binance_lookup_symbol
         from intelligence.external.collectors.orderbook_depth import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
-            _resolve_binance_lookup_symbol,
         )
         from intelligence.external.collectors.derivatives_telemetry import (
             DerivativesTelemetry,
@@ -1817,10 +1817,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         from llm_order_guard import check_llm_order_guards
 
-        assert _resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
-        assert _resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"
-        assert _resolve_binance_lookup_symbol("BTCEUR") == "BTCUSDT"
-        assert _resolve_binance_lookup_symbol("USDCUSDT") == "USDCUSDT"
+        assert resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
+        assert resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"
+        assert resolve_binance_lookup_symbol("BTCEUR") == "BTCUSDT"
+        assert resolve_binance_lookup_symbol("USDCUSDT") == "USDCUSDT"
 
         now_ts = time.time()
         ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
@@ -1993,16 +1993,16 @@ class TestBatch6IntelligenceAndRoutingFixes:
         and _symbol_variants prioritizes USDC before USDT and supports bare base assets."""
         import qlimit_order_guard
         from intelligence.internal.state import survival
+        from cachepaths import cache_symbol_variants
         from intelligence.external.collectors.orderbook_depth import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
-            _symbol_variants,
         )
 
-        # 1. Verify _symbol_variants prioritizes USDC before USDT and supports bare base symbols
-        variants_tao = _symbol_variants("TAOUSD")
+        # 1. Verify cache_symbol_variants prioritizes USDC before USDT and supports bare base symbols
+        variants_tao = cache_symbol_variants("TAOUSD")
         assert variants_tao.index("TAOUSDC") < variants_tao.index("TAOUSDT")
-        variants_bare = _symbol_variants("HYPE")
+        variants_bare = cache_symbol_variants("HYPE")
         assert "HYPEUSDC" in variants_bare
         assert "HYPEUSDT" in variants_bare
         assert variants_bare.index("HYPEUSDC") < variants_bare.index("HYPEUSDT")
@@ -2586,11 +2586,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
            or fall back to legacy files when the primary file is corrupted.
         4. bapi_placeorder.place_safe_order propagates exact refusal reason into _reason_out.
         """
+        from cachepaths import cache_symbol_variants, normalize_cache_base_asset
         from intelligence.external.collectors.orderbook_depth import (
             OrderbookDepthCollector,
             OrderbookSnapshot,
-            _extract_base_asset,
-            _symbol_variants,
         )
         from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
@@ -2654,9 +2653,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert "HighStake vetoed" in reason2
 
         # 2. OrderbookDepthCollector TTL on direct OrderbookSnapshot & underscore symbol variants
-        assert _extract_base_asset("TAO_USD") == "TAO"
-        assert _extract_base_asset("BTCFDUSD") == "BTC"
-        assert "TAOUSDC" in _symbol_variants("TAO_USD")
+        assert normalize_cache_base_asset("TAO_USD") == "TAO"
+        assert normalize_cache_base_asset("BTCFDUSD") == "BTC"
+        assert "TAOUSDC" in cache_symbol_variants("TAO_USD")
         ob_col = OrderbookDepthCollector(cache_ttl_sec=5.0, cache_dir=str(tmp_path))
         ob_col._cache["BTCUSDC"] = OrderbookSnapshot(
             symbol="BTCUSDC", mid_price=85000.0, bid_depth_usd=1000.0, ask_depth_usd=1000.0,
@@ -3189,7 +3188,7 @@ def test_iteration13_assetguardian_p3b_recovery_and_gllm2_bypass_survival_usdcus
     import json
     import time
     import assetguardian as ag
-    from intelligence.internal.state.survival import _extract_base_symbol
+    from cachepaths import normalize_cache_base_asset
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
@@ -3234,11 +3233,11 @@ def test_iteration13_assetguardian_p3b_recovery_and_gllm2_bypass_survival_usdcus
     assert buy_m2 > 1.0
     assert eff_assess2 is recovered
 
-    # 2. survival._extract_base_symbol preserves USDCUSDT and strips RON/GBP quotes
-    assert _extract_base_symbol("USDCUSDT") == "USDCUSDT"
-    assert _extract_base_symbol("USDC/USDT") == "USDCUSDT"
-    assert _extract_base_symbol("BTCRON") == "BTC"
-    assert _extract_base_symbol("ETHGBP") == "ETH"
+    # 2. normalize_cache_base_asset preserves USDCUSDT and strips RON/GBP quotes
+    assert normalize_cache_base_asset("USDCUSDT") == "USDCUSDT"
+    assert normalize_cache_base_asset("USDC/USDT") == "USDCUSDT"
+    assert normalize_cache_base_asset("BTCRON") == "BTC"
+    assert normalize_cache_base_asset("ETHGBP") == "ETH"
 
     # 3. CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient
     #    to WeibullExhaustionGuard.check so counter-trend SELL in mature bull trend (gradient > 0) is not downscaled
@@ -3615,9 +3614,9 @@ def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired
         PositionExitManager,
         PositionSnapshot,
     )
+    from cachepaths import normalize_cache_base_asset
     from intelligence.external.collectors.orderbook_depth import (
         OrderbookDepthCollector,
-        _extract_base_asset,
     )
     from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
@@ -3705,7 +3704,7 @@ def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired
     from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
 
-    assert _extract_base_asset("USDCUSDT") == "USDCUSDT"
+    assert normalize_cache_base_asset("USDCUSDT") == "USDCUSDT"
 
     ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=60, disk_ttl_sec=60)
     ob_snap_valid = OrderbookSnapshot(
@@ -8699,12 +8698,13 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
     """Iteration 63: liquidation_signal OverflowError/start-lock safety, credentials boolean rejection, pricewindow EMA/recent_n guards, and assetguardian non-negative budget clamping."""
     import json
     import assetguardian
+    from botcore import safe_pos_float
     from credentials import CredentialProfileMissingError, resolve_credential_pair
-    from liquidation_signal import LiquidationSignal, _safe_pos_float
+    from liquidation_signal import LiquidationSignal
     from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
 
-    # 1. liquidation_signal _safe_pos_float & _ingest handle OverflowError and start() has _start_lock
-    assert _safe_pos_float(10**400, 42.0) == 42.0
+    # 1. liquidation_signal safe_pos_float & _ingest handle OverflowError and start() has _start_lock
+    assert safe_pos_float(10**400, 42.0) == 42.0
     sig = LiquidationSignal(symbols=["BTCUSDT"])
     assert hasattr(sig, "_start_lock")
     sig._ingest(json.dumps({
@@ -8840,11 +8840,10 @@ def test_iteration65_trailing_core_kraken_trailing_and_autonomous_gateway_safety
     import json
     import math
     from types import SimpleNamespace
+    from botcore import is_us_rth_open, safe_float
     from trailing_core import TrailingCore
     from orchestratorTrade.autonomous_intent_gateway import (
         AutonomousIntentGateway,
-        _is_us_rth_open,
-        _parse_finite_float,
     )
 
     # 1. TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices
@@ -8876,11 +8875,11 @@ def test_iteration65_trailing_core_kraken_trailing_and_autonomous_gateway_safety
     assert tc.save({"BTC": {"tags": {"a", "b"}, "peak": float("nan")}}) is True
     tc.check_once()  # does not raise ValueError on "not-a-number" price
 
-    # 2. _parse_finite_float & _is_us_rth_open handle OverflowError, booleans, and out-of-range timestamps
-    assert _parse_finite_float(10**400, 12.5) == 12.5
-    assert isinstance(_is_us_rth_open(True), bool)
-    assert isinstance(_is_us_rth_open(float("inf")), bool)
-    assert isinstance(_is_us_rth_open(1e20), bool)
+    # 2. safe_float & is_us_rth_open handle OverflowError, booleans, and out-of-range timestamps
+    assert safe_float(10**400, 12.5) == 12.5
+    assert isinstance(is_us_rth_open(True), bool)
+    assert isinstance(is_us_rth_open(float("inf")), bool)
+    assert isinstance(is_us_rth_open(1e20), bool)
 
     # 3. AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache
     ws = tmp_path / "gw_ws"
@@ -11111,7 +11110,7 @@ def test_iteration102_composite_priceanalysis_survival_and_volatility_safety():
     assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", "BUY", quant_seconds=False) is None
 
     # 3. survival: non-str symbol and episodes length mismatch / bool args
-    assert survival._extract_base_symbol(True) == ""
+    assert survival.normalize_cache_base_asset(True) == ""
     assert survival._lookup_t_cache_entry({"BTCUSDC": {"T": 10}}, True) is None
     est_bad = survival.estimate_T(True, prior_T=12.0)
     assert est_bad["T"] == 12 and est_bad["n"] == 0
@@ -11129,12 +11128,14 @@ def test_iteration102_composite_priceanalysis_survival_and_volatility_safety():
 def test_iteration103_external_collectors_and_t212_ipo_import_safety():
     """Iteration 103: Verify external collectors symbol/side/from_dict safety and 212trading.ipo self-contained import."""
     import importlib
+    from cachepaths import (
+        cache_symbol_variants,
+        normalize_cache_base_asset,
+        resolve_binance_lookup_symbol,
+    )
     from intelligence.external.collectors.orderbook_depth import (
         OrderbookDepthCollector,
         OrderbookSnapshot,
-        _extract_base_asset,
-        _resolve_binance_lookup_symbol,
-        _symbol_variants,
     )
     from intelligence.external.collectors.derivatives_telemetry import (
         DerivativesTelemetry,
@@ -11147,9 +11148,9 @@ def test_iteration103_external_collectors_and_t212_ipo_import_safety():
     from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
 
     # 1. orderbook_depth helpers & collector
-    assert _extract_base_asset(True) == ""
-    assert _resolve_binance_lookup_symbol(True) == ""
-    assert _symbol_variants(True) == []
+    assert normalize_cache_base_asset(True) == ""
+    assert resolve_binance_lookup_symbol(True) == ""
+    assert cache_symbol_variants(True) == []
     obs = OrderbookSnapshot.from_dict({"symbol": True, "mid_price": -10, "imbalance_ratio": 2.5})
     assert obs.symbol == "" and obs.mid_price == 0.0 and obs.imbalance_ratio == 1.0
     obc = OrderbookDepthCollector(cache_dir=None)
@@ -12740,11 +12741,11 @@ def test_iteration122_notify_engine_new_coins_and_trigger_event_safety(monkeypat
     fac = ncd.NewCoinsFactory(enabled_sources=" coinmarketcap , binance ", cmc_api_key="valid_key")
     assert set(fac.get_available_sources()) == {"coinmarketcap", "binance"}
 
-    # 4. kalman_trigger._f_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
+    # 4. kalman_trigger.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
     monkeypatch.setenv("TEST_KALMAN_ENV", "0.0025 # comment")
-    assert kt._f_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
+    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
     monkeypatch.setenv("TEST_KALMAN_ENV", "-1.0")
-    assert kt._f_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
+    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
 
     ev = TriggerEvent(action="entry", side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
     assert ev.is_executable() is True

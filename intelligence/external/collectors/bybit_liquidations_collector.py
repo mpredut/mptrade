@@ -331,11 +331,6 @@ class BybitLiquidationCollector:
         return recent_rate / base_rate if base_rate > 0 else 0.0
 
 
-BYBIT_URL = BYBIT_WS_URL
-_safe_pos_float = safe_pos_float
-_clean_liq_symbol = clean_symbol_key
-
-
 class LiquidationSignal(BybitLiquidationCollector):
     """Background thread holding a rolling window of Bybit liquidations."""
 

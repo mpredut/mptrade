@@ -44,7 +44,6 @@ from intelligence.macro_sentiment_ssot import (
 load_dotenv()
 
 logger = logging.getLogger("intelligence.daemon")
-_as_bool = _parse_bool_flag
 
 
 class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):

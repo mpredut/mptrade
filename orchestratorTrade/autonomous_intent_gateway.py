@@ -36,14 +36,10 @@ if ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
-    extract_current_price_item,
-    is_us_rth_open as _is_us_rth_open,
+    is_us_rth_open,
     load_key_value_conf,
-    safe_float,
 )
 from instrument_registry import (
-    discover_kraken_cache_pairs as _discover_kraken_cache_pairs,
-    discover_t212_equities as _discover_t212_equities,
     load_tradable_instruments as _load_tradable_instruments,
     resolve_instrument_live_price,
     resolve_tradable_instrument,
@@ -52,10 +48,8 @@ from providers.execution_audit import (
     append_intent_history as _append_intent_history,
     cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
-    extract_intent_notional as _extract_intent_notional,
     find_duplicate_ai_open_limit_order,
     load_durable_intents_state,
-    parse_intent_confidence as _parse_intent_confidence,
     parse_intent_gateway_config,
     preflight_intent_and_resolve_price,
     reconcile_intents_from_execution_audit,
@@ -106,7 +100,6 @@ class TradeIntentRecord:
 
 
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
-_parse_finite_float = safe_float
 
 
 class AutonomousIntentGateway:
@@ -182,7 +175,7 @@ class AutonomousIntentGateway:
             include_closed_rth=include_closed_rth,
             now_ts=now_ts,
             asset_scope=asset_scope,
-            is_rth_open_fn=_is_us_rth_open,
+            is_rth_open_fn=is_us_rth_open,
         )
 
     def resolve_instrument(

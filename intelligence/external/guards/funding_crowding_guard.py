@@ -9,18 +9,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import safe_float, safe_pos_float
+from botcore import obj_attr, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     fetch_guard_snapshot,
-    normalize_guard_side,
-    snap_attr,
 )
 from intelligence.external.collectors.derivatives_telemetry_collector import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
+from providers.base import normalize_side
 
 
 class FundingCrowdingGuard:
@@ -57,7 +56,7 @@ class FundingCrowdingGuard:
         snapshot: Optional[DerivativesTelemetry] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm = normalize_guard_side(side)
+        side_norm = normalize_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="FundingCrowdingGuard",
@@ -74,7 +73,7 @@ class FundingCrowdingGuard:
                 reason="no_telemetry_data",
             )
 
-        fr = safe_float(snap_attr(telemetry, "funding_rate"), default=0.0) or 0.0
+        fr = safe_float(obj_attr(telemetry, "funding_rate"), default=0.0) or 0.0
 
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:

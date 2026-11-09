@@ -856,10 +856,11 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
     assert status["age_seconds"] is None
     assert status["age_formatted"] == "unknown"
 
-    # 2. MacroAnalyzer._resolve_now handles NaN/bool/None safely
-    now_res = MacroAnalyzer._resolve_now(float("nan"))
+    # 2. resolve_now_ts handles NaN/bool/None safely
+    from botcore import resolve_now_ts
+    now_res = resolve_now_ts(float("nan"))
     assert math.isfinite(now_res) and now_res > 0
-    now_bool = MacroAnalyzer._resolve_now(True)
+    now_bool = resolve_now_ts(True)
     assert math.isfinite(now_bool) and now_bool > 1000.0
 
     # 3. Instrument.min_qty handles bool/NaN/negative safely
@@ -1021,11 +1022,12 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard, weibull_survival_and_hazard
     from orchestratorOS.livecheck import os_resources_watchdog as orw
 
-    # 1. smart_stop_loss_guard handles bool/NaN/None in _format_price, _resolve_now, and on_recovered
+    # 1. smart_stop_loss_guard handles bool/NaN/None in _format_price, resolve_now_ts, and on_recovered
+    from botcore import resolve_now_ts
     assert sslg._format_price(True) == ""
-    assert sslg._resolve_now(0.0) == 0.0
-    assert sslg._resolve_now(float("nan")) > 1_000_000_000.0
-    assert sslg._resolve_now(True) > 1_000_000_000.0
+    assert resolve_now_ts(0.0, allow_zero=True) == 0.0
+    assert resolve_now_ts(float("nan"), allow_zero=True) > 1_000_000_000.0
+    assert resolve_now_ts(True, allow_zero=True) > 1_000_000_000.0
     guard = sslg.SmartStopLossGuard(mode="enforce")
     monkeypatch.setitem(
         sslg._GRACE_TRACKER,
@@ -1147,7 +1149,7 @@ def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
     )
     nc = NewsFeedCollector(history_file=str(nf_path), cache_ttl_sec=float("nan"), rolling_window_sec=True)
     assert nc.cache_ttl_sec == 60.0 and nc.rolling_window_sec == 14400.0
-    assert len(nc._history) == 1 and nc._history is nc._aggregated_pool
+    assert len(nc._aggregated_pool) == 1
 
     ma = MacroAnalyzer(cache_dir=str(tmp_path))
     ma.shadow_notify = False
@@ -1455,7 +1457,7 @@ def test_datasets_execution_calibration_and_benchmark_hardening():
     )
     assert len(cal["orders"]) == 1 and cal["orders"][0]["filled_qty"] == 0.0
 
-    assert bfb._present([1.0, None, True, float("nan"), 2.0]) == [1.0, 2.0]
+    assert bec.clean_finite_floats([1.0, None, True, float("nan"), 2.0]) == [1.0, 2.0]
     with pytest.raises(ValueError):
         bfb.aggregate_financial_windows([], initial_capital=True)
 

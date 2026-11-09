@@ -8,18 +8,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import obj_attr, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     fetch_guard_snapshot,
-    normalize_guard_side,
-    snap_attr,
 )
 from intelligence.external.collectors.orderbook_depth_collector import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
+from providers.base import normalize_side
 
 
 class OrderbookWallGuard:
@@ -55,7 +54,7 @@ class OrderbookWallGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
-        side_norm = normalize_guard_side(side)
+        side_norm = normalize_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="OrderbookWallGuard",
@@ -70,28 +69,28 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        raw_imb = snap_attr(snapshot, "imbalance_ratio")
+        raw_imb = obj_attr(snapshot, "imbalance_ratio")
         if raw_imb is None:
-            raw_imb = snap_attr(snapshot, "ob_imbalance")
+            raw_imb = obj_attr(snapshot, "ob_imbalance")
         imb = clean_scale(raw_imb, default=0.5, allow_percentage=True)
-        raw_ask_usd = snap_attr(snapshot, "largest_ask_wall_usd")
+        raw_ask_usd = obj_attr(snapshot, "largest_ask_wall_usd")
         ask_wall_usd = safe_nonneg_float(
-            raw_ask_usd if raw_ask_usd is not None else snap_attr(snapshot, "ask_wall_usd"),
+            raw_ask_usd if raw_ask_usd is not None else obj_attr(snapshot, "ask_wall_usd"),
             default=0.0,
         )
-        raw_ask_px = snap_attr(snapshot, "largest_ask_wall_price")
+        raw_ask_px = obj_attr(snapshot, "largest_ask_wall_price")
         ask_wall_px = safe_nonneg_float(
-            raw_ask_px if raw_ask_px is not None else snap_attr(snapshot, "ask_wall_px"),
+            raw_ask_px if raw_ask_px is not None else obj_attr(snapshot, "ask_wall_px"),
             default=0.0,
         )
-        raw_bid_usd = snap_attr(snapshot, "largest_bid_wall_usd")
+        raw_bid_usd = obj_attr(snapshot, "largest_bid_wall_usd")
         bid_wall_usd = safe_nonneg_float(
-            raw_bid_usd if raw_bid_usd is not None else snap_attr(snapshot, "bid_wall_usd"),
+            raw_bid_usd if raw_bid_usd is not None else obj_attr(snapshot, "bid_wall_usd"),
             default=0.0,
         )
-        raw_bid_px = snap_attr(snapshot, "largest_bid_wall_price")
+        raw_bid_px = obj_attr(snapshot, "largest_bid_wall_price")
         bid_wall_px = safe_nonneg_float(
-            raw_bid_px if raw_bid_px is not None else snap_attr(snapshot, "bid_wall_px"),
+            raw_bid_px if raw_bid_px is not None else obj_attr(snapshot, "bid_wall_px"),
             default=0.0,
         )
 

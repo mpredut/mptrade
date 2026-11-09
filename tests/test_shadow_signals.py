@@ -98,7 +98,7 @@ class TestVolAndThresholds(unittest.TestCase):
     """Minimal sanity check on the rest of the module — unchanged by the gap fix."""
 
     def test_warmup_outputs_are_unavailable(self):
-        self.assertIsNone(ss.vol_1h_pct([100.0] * 5, sample_rate_sec=1.0))
+        self.assertIsNone(ss.calculate_volatility_1h([100.0] * 5, sample_rate_sec=1.0))
         reentry, dca = ss.adaptive_thresholds(None)
         self.assertIsNone(reentry)
         self.assertIsNone(dca)

@@ -4,11 +4,10 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple
 
-from botcore import float_env, normalize_epoch_sec, pos_float_env, safe_float, safe_pos_float
+from botcore import normalize_epoch_sec, pos_float_env, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 
 
-_f_env = pos_float_env
 KALMAN_QR = pos_float_env("SHADOW_KALMAN_QR", 0.0005)
 CONF_ENTER = 1.64
 CONF_EXIT = pos_float_env("SHADOW_KALMAN_EXIT", 0.8)

@@ -623,8 +623,6 @@ class CachedTopicAssessmentAgent:
             return cache_path(self.DEFAULT_CACHE_FILENAME)
         return str(raw_f)
 
-    _effective_cache_file = _effective_state_file
-
     def _effective_cache_dir(self) -> str:
         from cachepaths import cachedb_root_for_file
 

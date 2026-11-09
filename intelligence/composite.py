@@ -39,7 +39,6 @@ from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
     normalize_epoch_sec,
-    normalize_order_side,
     obj_attr,
     resolve_now_ts,
     resolve_order_notional,
@@ -47,6 +46,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from instrument_registry import is_equity_symbol
+from providers.base import normalize_side
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class CompositeMarketIntelligence:
         raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass = resolve_qlimit2_sub_bypasses(bypass_guards)
         recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
-        side = normalize_order_side(side)
+        side = normalize_side(side)
         if now is not None:
             now = normalize_epoch_sec(now, default=None)
 
@@ -362,7 +362,7 @@ class CompositeMarketIntelligence:
             active_trigger = triggered_events[0] if triggered_events else None
 
         raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
-        side = normalize_order_side(str(raw_side or "HOLD") if not isinstance(raw_side, bool) else "HOLD") or "HOLD"
+        side = normalize_side(str(raw_side or "HOLD") if not isinstance(raw_side, bool) else "HOLD") or "HOLD"
 
         if active_trigger and active_trigger.is_executable():
             guard_dec = self.evaluate_guards(

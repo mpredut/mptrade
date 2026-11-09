@@ -48,7 +48,7 @@ from botcore import (
     clean_scale,
     evaluate_heartbeat_files_freshness,
     exact_pos_int,
-    fetch_public_json as _fetch_public_json,
+    fetch_public_json,
     is_cache_fresh,
     is_interval_due,
     load_ini_config,
@@ -71,8 +71,6 @@ from botcore import (
     sanitize_heartbeat_status,
     split_csv as _split_csv,
 )
-
-fetch_public_json = _fetch_public_json
 from cachepaths import (
     cache_path,
     cache_symbol_variants,

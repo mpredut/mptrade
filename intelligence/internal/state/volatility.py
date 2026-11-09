@@ -11,13 +11,12 @@ try:
 except Exception:
     np = None  # type: ignore[assignment]
 
-from botcore import float_env, pos_float_env, safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
+from botcore import pos_float_env, safe_nonneg_float, safe_pos_float
+from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached
 
 
-_f_env = pos_float_env
 K_REENTRY_DEFAULT = pos_float_env("SHADOW_K_REENTRY", 2.0)
 K_DCA_DEFAULT = pos_float_env("SHADOW_K_DCA", 1.0)
 
@@ -260,10 +259,6 @@ def adaptive_thresholds(
     if vol_f is None or kr_f is None or kd_f is None:
         return None, None
     return round(kr_f * vol_f, 3), round(kd_f * vol_f, 3)
-
-
-# Direct backwards-compatible alias
-vol_1h_pct = calculate_volatility_1h
 
 
 def vol_pct_to_ratio(vol_pct: float) -> float:

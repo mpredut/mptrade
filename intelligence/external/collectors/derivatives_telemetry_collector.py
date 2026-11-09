@@ -11,14 +11,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from botcore import safe_nonneg_float, safe_pos_float
-from cachepaths import canonical_symbol_key
+from cachepaths import canonical_symbol_key, resolve_binance_lookup_symbol
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
-    _extract_base_asset,
-    _resolve_binance_lookup_symbol,
     _resolve_configured_venue,
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json
@@ -176,7 +174,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                 pass
 
         # Use USDT-perp pair as proxy for non-USDT quotes
-        lookup_sym = _resolve_binance_lookup_symbol(symbol)
+        lookup_sym = resolve_binance_lookup_symbol(symbol)
         try:
             # 1. Premium index endpoint (funding rate)
             url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"

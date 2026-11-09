@@ -30,6 +30,7 @@ from botcore import (
     clean_scale,
     load_dotenv,
     normalize_epoch_sec,
+    obj_attr,
     required_float_env,
     resolve_now_ts,
     safe_float,
@@ -42,7 +43,6 @@ from intelligence.internal.guards.guard_decision import (
     fetch_guard_snapshot,
     normalize_guard_mode,
     resolve_hierarchical_guard_mode,
-    snap_attr as _obj_attr,
 )
 from intelligence.macro_sentiment_ssot import check_cooldown_gate
 from state_io import read_json_dict_cached, save_json_state
@@ -54,10 +54,6 @@ logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
 _DEFAULT_SMART_SL_STATE_FILE = os.path.join("cachedb", "smart_stop_loss_state.json")
 _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
-
-
-def _resolve_now(now: Optional[float]) -> float:
-    return resolve_now_ts(now, allow_zero=True)
 
 
 def _effective_smart_sl_state_file() -> str:
@@ -116,7 +112,7 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
-    now_curr = _resolve_now(now_ts)
+    now_curr = resolve_now_ts(now_ts, allow_zero=True)
     clean_data = {
         norm_k: dict(v, start_ts=sts_sec)
         for k, v in data.items()
@@ -235,8 +231,6 @@ def flush_smart_stop_loss_alerts() -> int:
 class SmartStopLossGuard:
     """Evaluates whether a triggered stop-loss is an artificial wick hunt absorbed by whales."""
 
-    _normalize_mode = staticmethod(normalize_guard_mode)
-
     def __init__(
         self,
         mode: str = "enforce",
@@ -246,7 +240,7 @@ class SmartStopLossGuard:
         min_whale_long_pct: float = 0.60,
         min_taker_ratio: float = 0.85,
     ) -> None:
-        self.mode = self._normalize_mode(mode, default="enforce")
+        self.mode = normalize_guard_mode(mode, default="enforce")
         self.max_threshold_pct = safe_pos_float(max_threshold_pct, 6.0)
         self.grace_seconds = safe_nonneg_float(grace_seconds, 120.0)
         self.disaster_buffer_pct = safe_nonneg_float(disaster_buffer_pct, 0.85)
@@ -274,7 +268,7 @@ class SmartStopLossGuard:
             - should_execute = True  -> Proceed with stop-loss placement.
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
-        now_ts = _resolve_now(now)
+        now_ts = resolve_now_ts(now, allow_zero=True)
         sym_key = clean_guard_symbol_key(symbol)
         is_sim = _is_simulated_provider(provider)
         price_decrease = safe_float(price_decrease, 0.0)
@@ -324,14 +318,14 @@ class SmartStopLossGuard:
             else (None if is_sim else fetch_guard_snapshot(get_orderbook_collector(), sym_key, now=now_ts, allow_network=False))
         )
 
-        raw_top_long = _obj_attr(w_snap, "top_traders_long_pct", _obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
+        raw_top_long = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
         top_long_pct = clean_scale(raw_top_long, default=0.50, allow_percent=True)
-        taker_ratio = safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
-        raw_div_reg = _obj_attr(w_snap, "divergence_regime", _obj_attr(w_snap, "div_regime", None)) if w_snap else None
+        taker_ratio = safe_float(obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
+        raw_div_reg = obj_attr(w_snap, "divergence_regime", obj_attr(w_snap, "div_regime", None)) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
-        raw_imb = _obj_attr(ob_snap, "imbalance_ratio", _obj_attr(ob_snap, "ob_imbalance", 0.50)) if ob_snap else 0.50
+        raw_imb = obj_attr(ob_snap, "imbalance_ratio", obj_attr(ob_snap, "ob_imbalance", 0.50)) if ob_snap else 0.50
         imbalance = clean_scale(raw_imb, default=0.50, allow_percent=True)
-        raw_bid_wall = _obj_attr(ob_snap, "largest_bid_wall_usd", _obj_attr(ob_snap, "bid_wall_usd", 0.0)) if ob_snap else 0.0
+        raw_bid_wall = obj_attr(ob_snap, "largest_bid_wall_usd", obj_attr(ob_snap, "bid_wall_usd", 0.0)) if ob_snap else 0.0
         bid_wall = safe_float(raw_bid_wall, 0.0)
 
         meta.update({
@@ -454,7 +448,7 @@ class SmartStopLossGuard:
         sym_key = clean_guard_symbol_key(symbol)
         if not sym_key:
             return False
-        now_ts = _resolve_now(now)
+        now_ts = resolve_now_ts(now, allow_zero=True)
         is_sim_call = _is_simulated_provider(provider)
         tracker = _load_grace_state(is_sim=is_sim_call, now_ts=now_ts)
         grace_info = tracker.pop(sym_key, None)

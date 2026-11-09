@@ -1,7 +1,7 @@
 """Raw statistical metrics and empirical states."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from intelligence.internal.state.persistence import (
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
         get_kalman_state_path,
         resolve_cached_volatility_1h,
         resolve_cached_volatility_1h_pct,
-        vol_1h_pct,
         vol_pct_to_ratio,
         vol_ratio_to_pct,
     )
@@ -24,7 +23,6 @@ if TYPE_CHECKING:
 _LAZY_IMPORTS: dict[str, str] = {
     "calculate_volatility_1h": "intelligence.internal.state.volatility",
     "adaptive_thresholds": "intelligence.internal.state.volatility",
-    "vol_1h_pct": "intelligence.internal.state.volatility",
     "vol_pct_to_ratio": "intelligence.internal.state.volatility",
     "vol_ratio_to_pct": "intelligence.internal.state.volatility",
     "get_kalman_state_path": "intelligence.internal.state.volatility",

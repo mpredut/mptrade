@@ -15,7 +15,11 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from intelligence.internal.state.persistence import mann_kendall, hurst_rs, hurst_regime  # noqa: E402
+from intelligence.internal.state.persistence import (  # noqa: E402
+    calculate_hurst_exponent,
+    calculate_mann_kendall,
+    classify_hurst_regime,
+)
 from priceAnalysis import detect_long_term_trend  # noqa: E402
 
 H = 3600.0
@@ -149,17 +153,17 @@ class TestMannKendall(unittest.TestCase):
     def test_monotonic_trends_are_significant(self):
         for label, delta, expected_sign in (("up", 0.5, 1), ("down", -0.5, -1)):
             with self.subTest(direction=label):
-                _, z, p = mann_kendall([100 + delta * i for i in range(24)])
+                _, z, p = calculate_mann_kendall([100 + delta * i for i in range(24)])
                 self.assertGreater(z * expected_sign, 0)
                 self.assertLess(p, 0.01)
 
     def test_zgomot_alb_nesemnificativ(self):
         rng = np.random.default_rng(42)
-        s, z, p = mann_kendall(100 + rng.normal(0, 1, 24))
+        s, z, p = calculate_mann_kendall(100 + rng.normal(0, 1, 24))
         self.assertGreater(p, 0.1, "pure noise must not look like a trend")
 
     def test_serie_scurta_nesemnificativa(self):
-        _, _, p = mann_kendall([1, 2, 3])
+        _, _, p = calculate_mann_kendall([1, 2, 3])
         self.assertEqual(p, 1.0)
 
 
@@ -177,16 +181,16 @@ class TestHurst(unittest.TestCase):
                  ("mean-reverting", -0.6, lambda h: h < 0.45))
         for label, phi, predicate in cases:
             with self.subTest(regime=label):
-                self.assertTrue(predicate(hurst_rs(self._series(phi))))
+                self.assertTrue(predicate(calculate_hurst_exponent(self._series(phi))))
 
     def test_serie_scurta_da_none(self):
-        self.assertIsNone(hurst_rs([100, 101, 102]))
+        self.assertIsNone(calculate_hurst_exponent([100, 101, 102]))
 
     def test_regimuri(self):
-        self.assertEqual(hurst_regime(0.65), "persistent")
-        self.assertEqual(hurst_regime(0.30), "mean-reverting")
-        self.assertEqual(hurst_regime(0.50), "random-walk")
-        self.assertEqual(hurst_regime(None), "necunoscut")
+        self.assertEqual(classify_hurst_regime(0.65), "persistent")
+        self.assertEqual(classify_hurst_regime(0.30), "mean_reverting")
+        self.assertEqual(classify_hurst_regime(0.50), "random_walk")
+        self.assertEqual(classify_hurst_regime(None), "unknown")
 
 
 class TestFiltruMKInDetector(unittest.TestCase):

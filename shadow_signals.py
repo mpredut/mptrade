@@ -34,7 +34,7 @@ from intelligence.internal.state.volatility import (
     K_DCA_DEFAULT as K_DCA,
     K_REENTRY_DEFAULT as K_REENTRY,
     adaptive_thresholds,
-    vol_1h_pct,
+    calculate_volatility_1h,
 )
 from intelligence.internal.triggers.kalman_trigger import (
     GAP_RESET_SEC,
@@ -336,7 +336,7 @@ class KalmanStateTracker:
             if last_vol_t > ts:
                 last_vol_t = -1e18
             if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
-                v1h = vol_1h_pct(big_prices, big_sample_rate)
+                v1h = calculate_volatility_1h(big_prices, big_sample_rate)
                 self._last_vol_time[symbol] = ts
                 self._last_vol_fields[symbol] = v1h
             else:

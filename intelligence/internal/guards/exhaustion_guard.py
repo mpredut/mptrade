@@ -5,10 +5,8 @@ import math
 from typing import Optional, Tuple
 
 from botcore import clean_scale, safe_pos_float
-from intelligence.internal.guards.guard_decision import (
-    GuardDecision,
-    normalize_guard_side,
-)
+from intelligence.internal.guards.guard_decision import GuardDecision
+from providers.base import normalize_side
 
 
 def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float, float]:
@@ -80,7 +78,7 @@ class WeibullExhaustionGuard:
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
 
-        side_u = normalize_guard_side(side)
+        side_u = normalize_side(side)
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
 

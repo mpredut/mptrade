@@ -5,22 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import clean_scale, safe_float
 from cachepaths import canonical_symbol_key
-from providers.base import normalize_side
-
-snap_attr = obj_attr
-safe_guard_float = safe_float
-
-
-def safe_pos_guard_float(val: Any, default: Any = None, *, allow_zero: bool = False) -> Any:
-    """Safely coerce ``val`` to a positive (or non-negative when ``allow_zero=True``) finite float."""
-    return (safe_nonneg_float if allow_zero else safe_pos_float)(val, default)
-
-
-def normalize_guard_side(side: Any) -> str:
-    """Normalize order side aliases ('BUY'/'B'/'BID'/'LONG' -> 'BUY', 'SELL'/'S'/'ASK'/'A'/'SHORT' -> 'SELL')."""
-    return normalize_side(side)
 
 
 def normalize_guard_mode(val: Any, default: str = "enforce") -> str:

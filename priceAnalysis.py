@@ -30,9 +30,9 @@ from botcore import (
 )
 from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset, canonical_symbol_key
 from intelligence.internal.state.persistence import (
-    calculate_hurst_exponent as hurst_rs,
-    calculate_mann_kendall as mann_kendall,
-    classify_hurst_regime as hurst_regime,
+    calculate_hurst_exponent,
+    calculate_mann_kendall,
+    classify_hurst_regime,
 )
 from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours, fetch_klines
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
@@ -552,7 +552,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if mk_alpha:
         # Mann-Kendall requires the current window's slope to be statistically
         # significant rather than noise before reporting a direction.
-        _, _, p_mk = mann_kendall(prices[cur_idx[0]:cur_idx[1]])
+        _, _, p_mk = calculate_mann_kendall(prices[cur_idx[0]:cur_idx[1]])
         if p_mk > mk_alpha:
             return _store_trend_memo(cache_key, None)
     current_sign = float(np.sign(cur))
@@ -632,9 +632,9 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 
     # Hurst regime is informational: persistence favors trend following, while
     # mean reversion suggests trends decay quickly.
-    h = hurst_rs(prices)
+    h = calculate_hurst_exponent(prices)
     res['hurst'] = h
-    res['regime'] = hurst_regime(h)
+    res['regime'] = classify_hurst_regime(h)
     print(f"[{symbol}] Hurst={h:.2f} ({res['regime']})" if h else f"[{symbol}] Hurst: series too short")
 
     direction = res['direction']

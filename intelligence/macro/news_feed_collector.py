@@ -126,11 +126,6 @@ class NewsFeedCollector:
             return cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
         return str(resolve_cachedb_filepath(self.history_file))
 
-    @property
-    def _history(self) -> Dict[str, Tuple[float, NewsHeadline]]:
-        """Backward-compatible alias for _aggregated_pool."""
-        return self._aggregated_pool
-
     def _normalize_title(self, title: Any) -> str:
         if not isinstance(title, str):
             return ""
@@ -154,8 +149,8 @@ class NewsFeedCollector:
             dict.fromkeys([*(getattr(primary, "matched_keywords", ()) or ()), *(getattr(secondary, "matched_keywords", ()) or ())])
         )
         merged_sev = (
-            self._as_bool_flag(getattr(primary, "is_high_severity", False))
-            or self._as_bool_flag(getattr(secondary, "is_high_severity", False))
+            _parse_bool_flag(getattr(primary, "is_high_severity", False), False)
+            or _parse_bool_flag(getattr(secondary, "is_high_severity", False), False)
             or bool(merged_kws)
         )
         return (
@@ -207,7 +202,7 @@ class NewsFeedCollector:
             is_sev = (
                 False
                 if had_only_noise_kws
-                else self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0))
+                else _parse_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0), False)
             )
             raw_fs_ts = normalize_epoch_sec(safe_pos_float(item.get("first_seen_ts"), -1.0), default=-1.0)
             return NewsHeadline(
@@ -306,8 +301,6 @@ class NewsFeedCollector:
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", hist_file, e)
 
-    _as_bool_flag = staticmethod(_parse_bool_flag)
-
     def _CacheDirOrNone(self) -> Optional[str]:
         try:
             return self._cache_dir()
@@ -324,7 +317,7 @@ class NewsFeedCollector:
         max_headlines: Optional[int] = None,
         pass_now_ts: bool = False,
     ) -> NewsFeedSnapshot:
-        high_sev = [h for h in all_headlines if cls._as_bool_flag(getattr(h, "is_high_severity", False))]
+        high_sev = [h for h in all_headlines if _parse_bool_flag(getattr(h, "is_high_severity", False), False)]
         titles = [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)]
         has_shock = len(high_sev) >= 3 or (
             has_acute_shock_keywords(titles, cache_dir=cache_dir, now_ts=now)
@@ -354,7 +347,7 @@ class NewsFeedCollector:
             )
             for v in sorted(
                 pool_values,
-                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
+                key=lambda x: (1 if _parse_bool_flag(getattr(x[1], "is_high_severity", False), False) else 0, x[0]),
                 reverse=True,
             )
         ]
@@ -552,7 +545,7 @@ class NewsFeedCollector:
                 if not isinstance(title_str, str) or not title_str:
                     continue
                 updated_kws = match_high_severity_keywords(title_str, cache_dir=cache_dir, now_ts=now)
-                if updated_kws and not self._as_bool_flag(getattr(h_item, "is_high_severity", False)):
+                if updated_kws and not _parse_bool_flag(getattr(h_item, "is_high_severity", False), False):
                     existing_kws = getattr(h_item, "matched_keywords", ()) or ()
                     merged_kws = tuple(dict.fromkeys(list(existing_kws) + list(updated_kws)))
                     self._aggregated_pool[norm_key] = (

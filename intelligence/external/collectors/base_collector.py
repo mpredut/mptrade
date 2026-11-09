@@ -43,16 +43,12 @@ from intelligence.macro_sentiment_ssot import (
     get_yahoo_equity_chart_5d_url,
     is_cache_fresh,
     resolve_derived_telemetry_intervals,
-    resolve_now_ts as _effective_now_ts,
+    resolve_now_ts,
 )
 from providers.base import resolve_ssot_price_from_cache
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")
-
-_extract_base_asset = normalize_cache_base_asset
-_resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
-_symbol_variants = cache_symbol_variants
 
 _REGISTRY_SPECS_CACHE: Tuple[float, Tuple[Any, ...]] = (0.0, ())
 
@@ -113,7 +109,7 @@ def _resolve_configured_venue(symbol: str) -> str:
 
 def _is_multi_venue_base(symbol: str) -> bool:
     """Return True when the symbol's base asset is tracked across multiple venues/quotes."""
-    base = _extract_base_asset(symbol)
+    base = normalize_cache_base_asset(symbol)
     if not base:
         return False
     try:
@@ -134,7 +130,7 @@ def _has_hyperliquid_instrument(symbol: str) -> bool:
     """Return True when the symbol or its base asset is configured on Hyperliquid in SSOT."""
     if _resolve_configured_venue(symbol) == "hyperliquid":
         return True
-    base = _extract_base_asset(symbol)
+    base = normalize_cache_base_asset(symbol)
     if not base:
         return False
     try:
@@ -251,13 +247,11 @@ class _DiskBackedSymbolCollector:
     def _disk_path(self, symbol: str) -> Optional[str]:
         return telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, symbol)
 
-    _as_bool_flag = staticmethod(_parse_bool_flag)
-
     def _candidate_variants(self, symbol: str) -> List[Any]:
         if self._QUOTE_ISOLATED:
             quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD"))
-            return _symbol_variants(symbol, quotes=quotes)
-        return _symbol_variants(symbol)
+            return cache_symbol_variants(symbol, quotes=quotes)
+        return cache_symbol_variants(symbol)
 
     def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
         sym_clean = symbol.strip().upper()
@@ -285,7 +279,7 @@ class _DiskBackedSymbolCollector:
         return rec_fn(path, default=None)
 
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False, exact_only: bool = False) -> Optional[Any]:
-        ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
+        ignore_ttl_b = _parse_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         sym_clean = symbol.strip().upper()
         cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
@@ -357,7 +351,7 @@ class _DiskBackedSymbolCollector:
             return
         ts_val = safe_pos_float(getattr(item, "ts", None), default=None) or time.time()
         self._cache[item.symbol.strip().upper()] = (ts_val, item)
-        if self._as_bool_flag(save_to_disk, default=False):
+        if _parse_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
 
     def _sync_existing_sibling_disk_file(self, sym_clean: str, snapshot: Any) -> None:
@@ -387,8 +381,8 @@ class _DiskBackedSymbolCollector:
     ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
         if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
             return None, 0.0, None, None, False
-        now_f = _effective_now_ts(now)
-        allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
+        now_f = resolve_now_ts(now)
+        allow_net_bool = True if allow_network is None else _parse_bool_flag(allow_network, default=False)
         if self._is_exact_venue_symbol(sym_clean):
             cached_ex, fresh_ex = self._lookup_cached(sym_clean, now_f, exact_only=True)
             if fresh_ex is not None:
@@ -548,7 +542,7 @@ class _DiskBackedSymbolCollector:
         timeout: float = 4.0,
     ) -> Optional[Dict[str, Any]]:
         """Fetch the Hyperliquid `metaAndAssetCtxs` context dict for `symbol`'s base coin."""
-        base_coin = _extract_base_asset(symbol)
+        base_coin = normalize_cache_base_asset(symbol)
         if not base_coin:
             return None
         raw = self._fetch_json_dict(
@@ -661,7 +655,7 @@ class _DiskBackedSymbolCollector:
         include_options: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Fetch and memoize zero-cost equity quote, intraday 5m OHLCV, and Cboe options OI for ``symbol``."""
-        ticker = _extract_base_asset(symbol)
+        ticker = normalize_cache_base_asset(symbol)
         if not ticker:
             return None
         derived_intervals = resolve_derived_telemetry_intervals()
@@ -802,6 +796,3 @@ class _DiskBackedSymbolCollector:
                 no_options_ttl=no_options_ttl,
             )
         return ctx_out
-
-
-_fetch_hyperliquid_asset_ctx = _DiskBackedSymbolCollector._fetch_hyperliquid_asset_ctx

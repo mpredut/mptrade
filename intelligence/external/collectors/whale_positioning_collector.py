@@ -14,21 +14,23 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import canonical_symbol_key, telemetry_cache_file_path
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_symbol_key,
+    normalize_cache_base_asset,
+    resolve_binance_lookup_symbol,
+    telemetry_cache_file_path,
+)
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
-    _effective_now_ts,
-    _extract_base_asset,
     _has_hyperliquid_instrument,
-    _resolve_binance_lookup_symbol,
     _resolve_configured_venue,
-    _symbol_variants,
     is_cache_fresh,
 )
-from intelligence.macro_sentiment_ssot import fetch_public_json
+from intelligence.macro_sentiment_ssot import fetch_public_json, resolve_now_ts
 from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
@@ -131,9 +133,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not self._effective_cache_dir() or not isinstance(symbol, str) or not symbol.strip():
             return None
         try:
-            now_ts = _effective_now_ts(now)
+            now_ts = resolve_now_ts(now)
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            for s in _symbol_variants(symbol):
+            for s in cache_symbol_variants(symbol):
                 if not (p := telemetry_cache_file_path(self.cache_dir, "derivatives_telemetry", s)):
                     continue
                 try:
@@ -249,7 +251,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 logger.warning("Could not fetch equity whale positioning for %s: %s", symbol, eq_exc)
             return self._fallback_stale(symbol, cached)
 
-        lookup_sym = _resolve_binance_lookup_symbol(symbol)
+        lookup_sym = resolve_binance_lookup_symbol(symbol)
         try:
             # 1. Top Trader Long/Short Position Ratio (5m granularity for fresh intra-cycle updates)
             url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=5m&limit=2"
@@ -365,7 +367,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         """Fallback to Hyperliquid L1 recentTrades and metaAndAssetCtxs for HYPE/HL symbols."""
         if not _has_hyperliquid_instrument(symbol):
             return None
-        base_coin = _extract_base_asset(symbol)
+        base_coin = normalize_cache_base_asset(symbol)
         if not base_coin:
             return None
         trades_raw = self._fetch_json_dict(

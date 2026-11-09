@@ -26,8 +26,6 @@ if _ROOT_DIR not in sys.path:
 from botcore import _parse_bool_flag, load_dotenv
 from cachepaths import resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
-    DEFAULT_GEOPOLITICAL_INTERVAL_SEC,
-    DEFAULT_SENTIMENT_INTERVAL_SEC,
     clean_scale,
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
@@ -70,8 +68,6 @@ def _call_with_optional_kwarg(fn: Any, *args: Any, opt_key: str, opt_val: Any, i
 class MacroAnalyzer:
     """Orchestrates periodic macro and sentiment LLM synthesis and publishes assessments."""
 
-    _resolve_now = staticmethod(resolve_now_ts)
-
     def __init__(
         self,
         cache_dir: str = "cachedb",
@@ -112,7 +108,7 @@ class MacroAnalyzer:
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_eval.json"),
         )
-        self.llm_advisor = self.gemini_advisor = self.sentiment_advisor
+        self.gemini_advisor = self.sentiment_advisor
 
         cached_geo_ts = safe_nonneg_ts(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
         cached_adv_ts = safe_nonneg_ts(
@@ -179,7 +175,7 @@ class MacroAnalyzer:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
         force = _parse_bool_flag(force, False)
         try:
-            eval_now = self._resolve_now(now)
+            eval_now = resolve_now_ts(now)
             news_snap = self._load_news_snapshot(eval_now, explicit_now=now)
             assessment = _call_with_optional_kwarg(
                 self.geopolitical_analyzer.assess,
@@ -221,7 +217,7 @@ class MacroAnalyzer:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
         force = _parse_bool_flag(force, False)
         try:
-            eval_now = self._resolve_now(now)
+            eval_now = resolve_now_ts(now)
             fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=eval_now)
             mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=eval_now)
             whale_data = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
@@ -291,7 +287,7 @@ class MacroAnalyzer:
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose context-adaptive interval has elapsed."""
         force = _parse_bool_flag(force, False)
-        current_ts = self._resolve_now(now)
+        current_ts = resolve_now_ts(now)
         session_ctx = resolve_global_trading_session(current_ts)
         results: Dict[str, Any] = {
             "ts": current_ts,

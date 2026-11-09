@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import clean_scale, safe_float, safe_pos_float
-from intelligence.internal.guards.guard_decision import fetch_guard_snapshot, snap_attr
+from botcore import clean_scale, obj_attr, safe_float, safe_pos_float
+from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
@@ -63,18 +63,18 @@ class WhaleAccumulationTrigger:
         if snapshot is None:
             return None
 
-        raw_long_pct = snap_attr(snapshot, "top_traders_long_pct", None)
+        raw_long_pct = obj_attr(snapshot, "top_traders_long_pct", None)
         if raw_long_pct is None:
-            raw_long_pct = snap_attr(snapshot, "whale_long_pct", None)
+            raw_long_pct = obj_attr(snapshot, "whale_long_pct", None)
         top_long_pct = clean_scale(raw_long_pct, default=None, allow_percent=True)
-        taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio", None), default=None)
-        raw_oi_chg = snap_attr(snapshot, "open_interest_1h_change_pct", None)
+        taker_ratio = safe_float(obj_attr(snapshot, "taker_buy_sell_ratio", None), default=None)
+        raw_oi_chg = obj_attr(snapshot, "open_interest_1h_change_pct", None)
         if raw_oi_chg is None:
-            raw_oi_chg = snap_attr(snapshot, "oi_1h_chg_pct", None)
+            raw_oi_chg = obj_attr(snapshot, "oi_1h_chg_pct", None)
         oi_chg = safe_float(raw_oi_chg, default=None)
-        raw_regime = snap_attr(snapshot, "divergence_regime", None)
+        raw_regime = obj_attr(snapshot, "divergence_regime", None)
         if raw_regime is None:
-            raw_regime = snap_attr(snapshot, "div_regime", "neutral")
+            raw_regime = obj_attr(snapshot, "div_regime", "neutral")
         regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
         if top_long_pct is None or taker_ratio is None or oi_chg is None:
             return None

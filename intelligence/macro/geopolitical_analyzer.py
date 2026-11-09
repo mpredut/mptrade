@@ -118,7 +118,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         fb_flag = (
             is_fallback
             if is_fallback is not None
-            else (("LLM fallback" in summary_str) if raw_fb is None else self._as_bool_flag(raw_fb))
+            else (("LLM fallback" in summary_str) if raw_fb is None else _parse_bool_flag(raw_fb, False))
         )
         hl_count = (
             headlines_analyzed
@@ -156,10 +156,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     ) -> GeopoliticalThreatAssessment:
         self._last_headlines_digest = digest
         return self._commit_topic_assessment(assessment, now)
-
-    @staticmethod
-    def _as_bool_flag(val: Any) -> bool:
-        return _parse_bool_flag(val, False)
 
     @staticmethod
     def _headline_effective_ts(h: Any, now: float) -> float:
@@ -215,7 +211,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         now_ts: Optional[float] = None,
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
-        force_refresh = self._as_bool_flag(force_refresh)
+        force_refresh = _parse_bool_flag(force_refresh, False)
         now = resolve_now_ts(now_ts)
         effective_ttl = (
             self.fallback_retry_ttl_sec
@@ -289,7 +285,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         acute_shock_alert = (
             news_snapshot is not None
             and not all_high_sev_aged_90m
-            and self._as_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False))
+            and _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False), False)
             and self._cached_assessment is not None
             and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
             and has_new_acute_phrase

@@ -35,8 +35,8 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
-from instrument_registry import casefold_get, is_equity_symbol
+from cachepaths import cache_path, canonical_symbol_key, normalize_cache_base_asset
+from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from state_io import read_json_dict_cached, save_json_state
 
@@ -335,14 +335,7 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     }
 
 
-_extract_base_symbol = normalize_cache_base_asset
-
-
 _T_CACHE_FILE_MEMO: dict = {}
-
-
-def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
-    return read_json_dict_cached(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
@@ -353,7 +346,7 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
 def get_cached_t_entry(symbol: str) -> Optional[dict]:
     """Read and look up the cached T entry for ``symbol`` from disk in 0 ms."""
     try:
-        data = _read_t_cache_dict(_effective_t_cache_file())
+        data = read_json_dict_cached(_effective_t_cache_file(), _T_CACHE_FILE_MEMO, max_entries=16)
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
@@ -387,7 +380,7 @@ def estimate_T(
     if not isinstance(symbol, str) or not symbol.strip():
         return fallback_res
     t_cache_path = _effective_t_cache_file()
-    loaded_cache = _read_t_cache_dict(t_cache_path)
+    loaded_cache = read_json_dict_cached(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
     cache = dict(loaded_cache) if isinstance(loaded_cache, dict) else {}
 
     ent = _lookup_t_cache_entry(cache, symbol)
@@ -401,7 +394,7 @@ def estimate_T(
     sym_u = symbol.upper().strip()
     is_eq = is_equity_symbol(sym_u)
     clean_sym_u = sym_u if is_eq else canonical_symbol_key(sym_u)
-    base = _extract_base_symbol(sym_u)
+    base = normalize_cache_base_asset(sym_u)
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
     if not is_eq and base and clean_sym_u != "USDCUSDT":
         for suffix in ("USDC", "USDT"):

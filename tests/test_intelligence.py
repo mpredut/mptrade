@@ -2060,8 +2060,8 @@ def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_
         encoding="utf-8",
     )
     collector = NewsFeedCollector(history_file=str(hist_file))
-    assert len(collector._history) == 1
-    loaded_h = next(iter(collector._history.values()))[1]
+    assert len(collector._aggregated_pool) == 1
+    loaded_h = next(iter(collector._aggregated_pool.values()))[1]
     assert loaded_h.title == "ECB holds rates steady"
 
 

@@ -607,7 +607,7 @@ def test_kraken_cache_touch_ws_fetchtimes():
 
 
 def test_autonomous_intent_gateway_extract_price():
-    from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item
+    from botcore import extract_current_price_item
     assert extract_current_price_item(100.5) == 100.5
     assert extract_current_price_item({"price": "101.2"}) == 101.2
     assert extract_current_price_item({"c": 102.3}) == 102.3

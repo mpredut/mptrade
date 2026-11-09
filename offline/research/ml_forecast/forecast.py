@@ -24,12 +24,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
-from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall, calculate_hurst_exponent as hurst_rs  # noqa: E402
+from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
 from botcore import safe_float, safe_pos_float, safe_pos_int  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
-
-_safe_f = safe_float
-_safe_int = safe_pos_int
 
 HORIZON_H = 24
 WARMUP = 240            # history hours required for features; Hurst uses 240h
@@ -45,9 +42,9 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     r72 = logp[i] - logp[i - 72]
     vol24 = float(np.std(np.diff(logp[i - 24:i + 1])))
     vol72 = float(np.std(np.diff(logp[i - 72:i + 1])))
-    _, mk_z_raw, _ = mann_kendall(px[i - 24:i + 1])
+    _, mk_z_raw, _ = calculate_mann_kendall(px[i - 24:i + 1])
     mk_z = safe_float(mk_z_raw, 0.0)
-    h_raw = hurst_rs(px[i - WARMUP:i + 1])
+    h_raw = calculate_hurst_exponent(px[i - WARMUP:i + 1])
     h = safe_float(h_raw, 0.5)
     d = np.diff(px[i - 14:i + 1])
     up, dn = d[d > 0].sum(), -d[d < 0].sum()

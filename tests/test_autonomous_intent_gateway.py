@@ -717,9 +717,9 @@ def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_
 
 def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_workspace):
     import json
-    from orchestratorTrade.autonomous_intent_gateway import (
-        _extract_intent_notional,
-        _parse_intent_confidence,
+    from providers.execution_audit import (
+        extract_intent_notional as _extract_intent_notional,
+        parse_intent_confidence as _parse_intent_confidence,
     )
 
     ws, _ = temp_workspace

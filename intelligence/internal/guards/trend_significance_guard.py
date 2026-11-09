@@ -7,12 +7,8 @@ from Brownian noise (Mann-Kendall p-value > alpha) or executing momentum strateg
 from __future__ import annotations
 
 from typing import Sequence
-from botcore import safe_float, safe_nonneg_float
-from intelligence.internal.guards.guard_decision import (
-    GuardDecision,
-    normalize_guard_side,
-    snap_attr,
-)
+from botcore import obj_attr, safe_float, safe_nonneg_float
+from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.internal.state.persistence import (
     _extract_finite_prices,
@@ -20,6 +16,7 @@ from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     classify_hurst_regime,
 )
+from providers.base import normalize_side
 
 
 class TrendSignificanceGuard:
@@ -51,14 +48,14 @@ class TrendSignificanceGuard:
                 guard_name="TrendSignificanceGuard",
                 reason="not_an_entry_trigger",
             )
-        raw_action = snap_attr(trigger, "action")
-        raw_side = snap_attr(trigger, "side")
+        raw_action = obj_attr(trigger, "action")
+        raw_side = obj_attr(trigger, "side")
         action_u = (
             raw_action.value
             if isinstance(raw_action, TriggerAction)
             else ("" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper())
         )
-        side_u = normalize_guard_side(
+        side_u = normalize_side(
             raw_side.value
             if isinstance(raw_side, TriggerSide)
             else ("" if isinstance(raw_side, bool) or raw_side is None else str(raw_side))

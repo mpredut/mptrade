@@ -7,11 +7,11 @@ from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
-    normalize_order_side,
     normalize_recommended_brake,
     normalize_threat_level,
     obj_attr,
 )
+from providers.base import normalize_side
 
 
 class GeopoliticalShockGuard:
@@ -29,7 +29,7 @@ class GeopoliticalShockGuard:
         market_absorbed: bool = False,
     ) -> GuardDecision:
         """Evaluate order against current geopolitical threat assessment."""
-        if normalize_order_side(side) != "BUY":
+        if normalize_side(side) != "BUY":
             return GuardDecision.allow("GeopoliticalShockGuard", "sell_permitted_in_shock")
         if assessment is None:
             return GuardDecision.allow("GeopoliticalShockGuard", "no_geopolitical_data")

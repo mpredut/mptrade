@@ -8,16 +8,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import safe_float, safe_pos_float
-from intelligence.internal.guards.guard_decision import (
-    GuardDecision,
-    normalize_guard_side,
-    snap_attr,
-)
+from botcore import obj_attr, safe_float, safe_pos_float
+from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
+from providers.base import normalize_side
 
 
 class LiquidationCascadeGuard:
@@ -46,7 +43,7 @@ class LiquidationCascadeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
-        side_norm = normalize_guard_side(side)
+        side_norm = normalize_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="LiquidationCascadeGuard",
@@ -69,8 +66,8 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
-        long_liq = safe_float(snap_attr(summary, "long_liq_usd"), default=0.0) or 0.0
-        short_liq = safe_float(snap_attr(summary, "short_liq_usd"), default=0.0) or 0.0
+        long_liq = safe_float(obj_attr(summary, "long_liq_usd"), default=0.0) or 0.0
+        short_liq = safe_float(obj_attr(summary, "short_liq_usd"), default=0.0) or 0.0
 
         # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
         if side_norm == "BUY" and long_liq >= self.max_active_cascade_usd:

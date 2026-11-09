@@ -479,7 +479,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         gradient, _gc, _sf, _gr = window_small.get_short_trend()
                         slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
                     if not shadow.compute_vol and shadow_fields:
-                        v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
+                        v1h = shadow_signals.calculate_volatility_1h(window_big.prices, window_big.sample_rate_sec)
                         adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
                         shadow_fields = {
                             **shadow_fields,

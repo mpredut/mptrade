@@ -7,8 +7,8 @@ from botcore import normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     clean_guard_symbol_key,
-    normalize_guard_side,
 )
+from providers.base import normalize_side
 
 
 class ParabolicSurgeGuard:
@@ -44,7 +44,7 @@ class ParabolicSurgeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
-        side_u = normalize_guard_side(side)
+        side_u = normalize_side(side)
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 

@@ -8,18 +8,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     fetch_guard_snapshot,
-    normalize_guard_side,
-    snap_attr,
 )
 from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
 from intelligence.macro_sentiment_ssot import clean_scale
+from providers.base import normalize_side
 
 
 class WhaleDivergenceGuard:
@@ -58,7 +57,7 @@ class WhaleDivergenceGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        side_norm = normalize_guard_side(side)
+        side_norm = normalize_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="WhaleDivergenceGuard",
@@ -73,18 +72,18 @@ class WhaleDivergenceGuard:
                 reason="no_whale_snapshot_data",
             )
 
-        raw_reg = snap_attr(snapshot, "divergence_regime")
+        raw_reg = obj_attr(snapshot, "divergence_regime")
         if raw_reg is None:
-            raw_reg = snap_attr(snapshot, "div_regime")
+            raw_reg = obj_attr(snapshot, "div_regime")
         regime = str(raw_reg or "neutral").strip().lower()
-        raw_oi_1h = snap_attr(snapshot, "open_interest_1h_change_pct")
+        raw_oi_1h = obj_attr(snapshot, "open_interest_1h_change_pct")
         if raw_oi_1h is None:
-            raw_oi_1h = snap_attr(snapshot, "oi_1h_chg_pct")
+            raw_oi_1h = obj_attr(snapshot, "oi_1h_chg_pct")
         oi_1h = safe_float(raw_oi_1h, default=0.0)
-        taker_ratio = safe_nonneg_float(snap_attr(snapshot, "taker_buy_sell_ratio"), default=1.0)
-        raw_long_pct = snap_attr(snapshot, "top_traders_long_pct")
+        taker_ratio = safe_nonneg_float(obj_attr(snapshot, "taker_buy_sell_ratio"), default=1.0)
+        raw_long_pct = obj_attr(snapshot, "top_traders_long_pct")
         if raw_long_pct is None:
-            raw_long_pct = snap_attr(snapshot, "whale_long_pct")
+            raw_long_pct = obj_attr(snapshot, "whale_long_pct")
         top_long_pct = clean_scale(raw_long_pct, default=0.5, allow_percentage=True)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)

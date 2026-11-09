@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import clean_scale, safe_float, safe_pos_float
-from intelligence.internal.guards.guard_decision import snap_attr
+from botcore import clean_scale, obj_attr, safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
@@ -61,21 +60,21 @@ class LiquidationCapitulationTrigger:
         if summary is None:
             return None
 
-        long_liq = safe_float(snap_attr(summary, "long_liq_usd", None), default=None)
-        short_liq = safe_float(snap_attr(summary, "short_liq_usd", None), default=None)
-        total_usd = safe_float(snap_attr(summary, "total_usd", None), default=None)
+        long_liq = safe_float(obj_attr(summary, "long_liq_usd", None), default=None)
+        short_liq = safe_float(obj_attr(summary, "short_liq_usd", None), default=None)
+        total_usd = safe_float(obj_attr(summary, "total_usd", None), default=None)
         has_total_key = ("total_usd" in summary) if isinstance(summary, dict) else hasattr(summary, "total_usd")
         if not has_total_key and long_liq is not None and short_liq is not None:
             total_usd = long_liq + short_liq
         has_cap_key = ("capitulation_ratio" in summary) if isinstance(summary, dict) else hasattr(summary, "capitulation_ratio")
-        cap_ratio = clean_scale(snap_attr(summary, "capitulation_ratio", None), default=None, allow_percent=True)
+        cap_ratio = clean_scale(obj_attr(summary, "capitulation_ratio", None), default=None, allow_percent=True)
         if not has_cap_key and total_usd is not None and total_usd > 0.0 and long_liq is not None:
             cap_ratio = long_liq / total_usd
         has_sq_key = ("squeeze_ratio" in summary) if isinstance(summary, dict) else hasattr(summary, "squeeze_ratio")
-        sq_ratio = clean_scale(snap_attr(summary, "squeeze_ratio", None), default=None, allow_percent=True)
+        sq_ratio = clean_scale(obj_attr(summary, "squeeze_ratio", None), default=None, allow_percent=True)
         if not has_sq_key and total_usd is not None and total_usd > 0.0 and short_liq is not None:
             sq_ratio = short_liq / total_usd
-        win_sec = safe_float(snap_attr(summary, "window_sec", None), default=self.window_sec)
+        win_sec = safe_float(obj_attr(summary, "window_sec", None), default=self.window_sec)
         if (
             total_usd is None
             or long_liq is None

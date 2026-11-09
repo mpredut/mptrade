@@ -1838,7 +1838,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
        and exposed in both crypto and equities (t212) scopes, linked with SPCX_US_EQ.
     """
     from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset, split_symbol_assets
-    from orchestratorTrade.autonomous_intent_gateway import _discover_kraken_cache_pairs
+    from instrument_registry import discover_kraken_cache_pairs
 
     assert normalize_cache_base_asset("SPCXx.T") == "SPCX"
     assert canonical_base_asset("XBTUSD") == "BTC"
@@ -1961,7 +1961,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
         encoding="utf-8",
     )
 
-    assert _discover_kraken_cache_pairs(str(tmp_path)) == [("HYPEUSD", "HYPE", "USD")]
+    assert discover_kraken_cache_pairs(str(tmp_path)) == [("HYPEUSD", "HYPE", "USD")]
 
     reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
     snap_crypto = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
@@ -2184,9 +2184,9 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
 
 def test_extract_current_price_item_instrument_resolution_and_trailing_state_normalization(tmp_path):
     """Verify extract_current_price_item, canonical base priority in resolve_instrument, and trailing_state key normalization."""
+    from botcore import extract_current_price_item
     from orchestratorTrade.autonomous_intent_gateway import (
         AutonomousIntentGateway,
-        extract_current_price_item,
     )
     from intelligence.sentiment.guards.high_stake_guard import (
         compute_24h_price_metrics,
@@ -2433,17 +2433,13 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert submitted["status"] == "OBSERVED_SHADOW"
 
     # 8. ExecutionAudit, MarketApi.provider_by_name, resolve_assets, and Kraken balance candidates normalize venue/asset aliases
+    from botcore import obj_attr, safe_float, safe_pos_float
+    from providers.base import normalize_side
     from providers.execution_audit import intent_client_order_id, new_intent_id
     from providers.kraken_provider import _kraken_balance_asset_candidates
     from providers.market_api import api as market_api
     from providers.quantity import resolve_assets
-    from intelligence.internal.guards.guard_decision import (
-        clean_guard_symbol_key,
-        normalize_guard_side,
-        safe_guard_float,
-        safe_pos_guard_float,
-        snap_attr,
-    )
+    from intelligence.internal.guards.guard_decision import clean_guard_symbol_key
 
     hl_intent = new_intent_id("hl", "HYPEUSDC", "buy")
     assert hl_intent.startswith("hyperliquid-HYPEUSDC-buy-")
@@ -2465,17 +2461,17 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert "USD" in _kraken_balance_asset_candidates("ZUSD")
     assert "SPCX" in _kraken_balance_asset_candidates("SPCXx.T")
 
-    assert normalize_guard_side("long") == "BUY"
-    assert normalize_guard_side("short") == "SELL"
-    assert normalize_guard_side("INVALID") == ""
-    assert normalize_guard_side("HOLD") == ""
+    assert normalize_side("long") == "BUY"
+    assert normalize_side("short") == "SELL"
+    assert normalize_side("INVALID") == ""
+    assert normalize_side("HOLD") == ""
     from intelligence.macro_sentiment_ssot import normalize_order_side
     assert normalize_order_side("INVALID") == ""
     assert normalize_order_side("HOLD") == ""
     assert clean_guard_symbol_key("hype/usdc") == "HYPEUSDC"
-    assert snap_attr({"x": 42}, "x") == 42
-    assert safe_guard_float("3.5", 0.0) == 3.5
-    assert safe_pos_guard_float("-1.0", 2.0) == 2.0
+    assert obj_attr({"x": 42}, "x") == 42
+    assert safe_float("3.5", 0.0) == 3.5
+    assert safe_pos_float("-1.0", 2.0) == 2.0
 
     # 9. instrument_registry, order_retry, rtrade_pair, and 212trading normalize venue, side, and T212 ticker aliases
     from instrument_registry import select_instruments

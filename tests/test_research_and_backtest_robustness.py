@@ -1218,15 +1218,17 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
     assert len(idx["intents"]) == 1
     assert idx["intents"][0]["symbol"] == "BTCUSD"
 
-    # 4. autonomous_intent_gateway discovers T212 configs, Kraken export pairs, and audit files inside bracketed dir
+    # 4. autonomous_intent_gateway / instrument_registry discovers T212 configs, Kraken export pairs, and audit files inside bracketed dir
+    from instrument_registry import discover_kraken_cache_pairs, discover_t212_equities
+
     t212_dir = bracket_dir / "212trading"
     t212_dir.mkdir(parents=True, exist_ok=True)
     (t212_dir / "config.nvda.env").write_text("export T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
-    eqs = aig._discover_t212_equities(str(bracket_dir))
+    eqs = discover_t212_equities(str(bracket_dir))
     assert ("T212_NVDA", "NVDA_US_EQ", "NVDA_US_EQ", "USD") in eqs
 
     (kr_dir / "config.env").write_text('export KRAKEN_CACHE_PAIRS="SOLUSD,ATOMUSD"\n', encoding="utf-8")
-    kr_pairs = aig._discover_kraken_cache_pairs(str(bracket_dir))
+    kr_pairs = discover_kraken_cache_pairs(str(bracket_dir))
     assert ("SOLUSD", "SOL", "USD") in kr_pairs
 
 
@@ -3583,8 +3585,8 @@ def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(cap
     from intelligence.sentiment.gemini_client import GeminiClient
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
 
-    # 1. IntelligenceTelemetryDaemon._as_bool rejects NaN and write_heartbeat sanitizes NaN/None status
-    assert idaemon._as_bool(float("nan")) is False
+    # 1. IntelligenceTelemetryDaemon._parse_bool_flag rejects NaN and write_heartbeat sanitizes NaN/None status
+    assert idaemon._parse_bool_flag(float("nan")) is False
     dm = object.__new__(idaemon.IntelligenceTelemetryDaemon)
     dm.symbols = ["BTCUSDC"]
     dm.orderbook_interval_sec = 15.0
