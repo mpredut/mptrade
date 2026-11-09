@@ -1261,9 +1261,9 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
     assert parse_shadow._i(True) == 0
     assert parse_shadow._last_valid_record(['{"pair": "HYPEUSD"}', "{bad json"]) == {"pair": "HYPEUSD"}
 
-    assert kraken_pnl_backfill._safe_float(None) == 0.0
-    assert kraken_pnl_backfill._safe_float(True) == 0.0
-    assert kraken_pnl_backfill._safe_float(float("nan")) == 0.0
+    assert kraken_pnl_backfill.safe_float(None) == 0.0
+    assert kraken_pnl_backfill.safe_float(True) == 0.0
+    assert kraken_pnl_backfill.safe_float(float("nan")) == 0.0
 
     ts_arr, px_arr, dt_list = drawprices.to_series([(1700000000000, float("nan")), (True, 100.0), (1700000001000, 50.0)])
     assert len(px_arr) == 1 and px_arr[0] == 50.0
@@ -2465,9 +2465,9 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert normalize_side("short") == "SELL"
     assert normalize_side("INVALID") == ""
     assert normalize_side("HOLD") == ""
-    from intelligence.macro_sentiment_ssot import normalize_order_side
-    assert normalize_order_side("INVALID") == ""
-    assert normalize_order_side("HOLD") == ""
+    from intelligence.macro_sentiment_ssot import normalize_side as ssot_normalize_side
+    assert ssot_normalize_side("INVALID") == ""
+    assert ssot_normalize_side("HOLD") == ""
     assert clean_guard_symbol_key("hype/usdc") == "HYPEUSDC"
     assert obj_attr({"x": 42}, "x") == 42
     assert safe_float("3.5", 0.0) == 3.5

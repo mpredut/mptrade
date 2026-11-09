@@ -29,8 +29,6 @@ from providers.base import (
 )
 from state_io import save_json_state
 
-_safe_float = safe_float
-
 KD = os.path.join(ROOT, 'kraken')
 OUT = os.path.join(_HERE, 'kraken_trades_full.json')
 

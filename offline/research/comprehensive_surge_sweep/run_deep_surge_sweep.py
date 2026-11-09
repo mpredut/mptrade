@@ -42,9 +42,6 @@ from strategies.spot_replay import align_spot_interval_params, run_replay
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
-_safe_f = safe_float
-_safe_int = safe_nonneg_int
-
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
 DEFAULT_OUT_DIR = os.path.join(ROOT, "offline", "results", "surge_sweep")
 ASSETS = ["HYPE", "TAO", "ADA", "BTC", "ETH"]

@@ -60,22 +60,15 @@ def _kraken_price(pair: str):
         return None
 
 
-_f = safe_float
-
-
-def _is_paper(val) -> bool:
-    return _parse_bool_flag(val, False)
-
-
 def kraken_rows() -> list[dict]:
     rows = []
     for pair, label, paper in KRAKEN_PAIRS:
         s = _load_state(pair)
         if s is None:
             continue
-        qty = _f(s.get("qty"))
-        cost = _f(s.get("cost"))
-        px = _f(_kraken_price(pair), 0.0)
+        qty = safe_float(s.get("qty"))
+        cost = safe_float(s.get("cost"))
+        px = safe_float(_kraken_price(pair), 0.0)
         upnl = (px - cost / qty) * qty if qty > 1e-12 and px > 0 else 0.0
         # Unrealised drawdown as a % of cost (this triggers the risk alert).
         dd_pct = (upnl / cost * 100.0) if cost > 1e-9 else 0.0
@@ -88,9 +81,9 @@ def kraken_rows() -> list[dict]:
             "value_usd": round(qty * px, 2),
             "cost": round(cost, 2),
             "dd_pct": round(dd_pct, 2),
-            "realized_net": round(_f(s.get("realized_net")), 2),
+            "realized_net": round(safe_float(s.get("realized_net")), 2),
             "unrealized": round(upnl, 2),
-            "spent": round(_f(s.get("spent")), 0),
+            "spent": round(safe_float(s.get("spent")), 0),
             "cycle": s.get("cycle"),
             "dca_buys": s.get("dca_buys"),
             "open_orders": open_orders_cnt,
@@ -109,10 +102,10 @@ def hl_row() -> dict | None:
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             c = HLClient.public(account_address=addr, mainnet=True)
             ss = c.info.spot_user_state(addr)
-            mid = _f(c.spot_mid(c.resolve_spot_pair("HYPE")), 0.0)
+            mid = safe_float(c.spot_mid(c.resolve_spot_pair("HYPE")), 0.0)
         raw_balances = ss.get("balances") if isinstance(ss, dict) and isinstance(ss.get("balances"), list) else []
-        hype = next((_f(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "HYPE"), 0.0)
-        usdc = next((_f(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "USDC"), 0.0)
+        hype = next((safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "HYPE"), 0.0)
+        usdc = next((safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "USDC"), 0.0)
         return {"engine": "HL HYPE (long-hold)", "paper": False, "qty": round(hype, 4),
                 "value_usd": round(hype * mid, 2), "cash_usd": round(usdc, 2)}
     except Exception as e:  # noqa: BLE001
@@ -165,10 +158,6 @@ def _ntfy(title: str, body: str) -> None:
         pass
 
 
-def _alert_state() -> dict:
-    return read_json_dict(ALERT_STATE, default={}, recover_previous=True)
-
-
 def _save_alert_state(st: dict) -> None:
     try:
         save_json_state(ALERT_STATE, st)
@@ -185,21 +174,21 @@ def run_alerts(kr: list[dict]) -> list[str]:
     realert_hours = abs(_policy_float("RISK_DD_REALERT_HOURS"))
     worsen_pct = abs(_policy_float("RISK_DD_WORSEN_PCT"))
     now = datetime.now(timezone.utc)
-    st = _alert_state()
+    st = read_json_dict(ALERT_STATE, default={}, recover_previous=True)
     fired = []
     for r in kr:
         if not isinstance(r, dict):
             continue
         engine = str(r.get("engine") or "").strip()
-        if not engine or _is_paper(r.get("paper")) or _f(r.get("qty"), 0.0) <= 1e-9:
+        if not engine or _parse_bool_flag(r.get("paper"), False) or safe_float(r.get("qty"), 0.0) <= 1e-9:
             continue
-        dd = _f(r.get("dd_pct"), 0.0)  # Negative means a loss.
+        dd = safe_float(r.get("dd_pct"), 0.0)  # Negative means a loss.
         if dd > -threshold:
             st.pop(engine, None)  # Back under the threshold -> reset.
             continue
         prev = st.get(engine, {})
         prev = prev if isinstance(prev, dict) else {}
-        prev_dd = _f(prev.get("dd"), 0.0)
+        prev_dd = safe_float(prev.get("dd"), 0.0)
         prev_ts = prev.get("ts")
         stale = True
         if prev_ts and not isinstance(prev_ts, bool):
@@ -212,8 +201,8 @@ def run_alerts(kr: list[dict]) -> list[str]:
             except (TypeError, ValueError):
                 stale = True
         if stale or dd <= prev_dd - worsen_pct:
-            unreal = _f(r.get("unrealized"), 0.0)
-            cost = _f(r.get("cost"), 0.0)
+            unreal = safe_float(r.get("unrealized"), 0.0)
+            cost = safe_float(r.get("cost"), 0.0)
             _ntfy(
                 f"⚠️ Risk {engine}: DD {dd:.1f}%",
                 f"{engine} unrealized drawdown {dd:.1f}% "
@@ -234,8 +223,8 @@ def main() -> int:
 
     kr = kraken_rows()
     hl = hl_row()
-    real_total = sum(_f(r.get("realized_net"), 0.0) for r in kr if isinstance(r, dict) and not _is_paper(r.get("paper")))
-    upnl_total = sum(_f(r.get("unrealized"), 0.0) for r in kr if isinstance(r, dict) and not _is_paper(r.get("paper")))
+    real_total = sum(safe_float(r.get("realized_net"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
+    upnl_total = sum(safe_float(r.get("unrealized"), 0.0) for r in kr if isinstance(r, dict) and not _parse_bool_flag(r.get("paper"), False))
     snap = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "kraken": kr, "hl": hl,
             "kraken_real_realized_net": round(real_total, 2),

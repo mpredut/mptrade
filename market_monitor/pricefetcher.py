@@ -584,7 +584,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
     def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None,
                  read_only=False, max_symbols: Optional[int] = None):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
-        self.max_monitored_symbols = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
+        self.max_monitored_symbols = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
         initial_symbols = []
         seen_bases = set()
         for symbol in (symbols or ()):
@@ -963,14 +963,11 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
 
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
-def _safe_max_symbols(val, default: int = MAX_MONITORED_SYMBOLS) -> int:
-    return safe_pos_int(val, default=default)
-
 
 def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):
     extra_kwargs = {"cmc_api_key": cmc_api_key}
     if max_symbols is not None and not isinstance(max_symbols, bool):
-        extra_kwargs["max_symbols"] = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
+        extra_kwargs["max_symbols"] = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
     CacheFactory.register(
         "PriceMulti",
         CacheAllPriceFetcherManager,
@@ -1058,7 +1055,7 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
             seen_bases.add(base_symbol)
             all_symbols.append(sym_default)
     
-    eff_max = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
+    eff_max = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
     all_symbols = list(dict.fromkeys(all_symbols))
     all_symbols = [s for s in all_symbols if is_valid_symbol_for_monitoring(s)]
     all_symbols = all_symbols[:eff_max]

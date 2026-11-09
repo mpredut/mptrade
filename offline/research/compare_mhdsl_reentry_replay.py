@@ -15,9 +15,6 @@ from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
 from botcore import safe_float, safe_nonneg_int
 
-_safe_f = safe_float
-_safe_int = safe_nonneg_int
-
 
 def run_comparison(csv_path=None):
     csv_file = csv_path or os.path.join(ROOT, "offline", "research", "hype_dataset", "HYPEUSDC_240m_hlspot.csv")

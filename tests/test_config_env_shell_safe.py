@@ -1277,9 +1277,9 @@ def test_new_coins_discovery_and_pricefetcher_hardening():
     with pytest.raises(ValueError):
         mon.start_monitoring(interval_seconds=float("nan"))
 
-    assert pf._safe_max_symbols(float("nan")) == pf.MAX_MONITORED_SYMBOLS
-    assert pf._safe_max_symbols(True) == pf.MAX_MONITORED_SYMBOLS
-    assert pf._safe_max_symbols(12) == 12
+    assert pf.safe_pos_int(float("nan"), default=pf.MAX_MONITORED_SYMBOLS) == pf.MAX_MONITORED_SYMBOLS
+    assert pf.safe_pos_int(True, default=pf.MAX_MONITORED_SYMBOLS) == pf.MAX_MONITORED_SYMBOLS
+    assert pf.safe_pos_int(12, default=pf.MAX_MONITORED_SYMBOLS) == 12
     yahoo = pf.StockYahooPricePlatform(tickers=["NVDA"])
     assert yahoo.supports_symbol(None) is False
     assert yahoo.supports_symbol("NVDA") is True
@@ -1345,10 +1345,10 @@ def test_log_configure_and_verify_tools_hardening():
     res_t = thresholds_from_prices([None, True, float("nan"), -5.0, 100.0, 110.0, 95.0], window=1, pct=85)
     assert res_t is not None and len(res_t) == 4 and all(v >= 3.0 for v in res_t[:2])
 
-    assert ps._f(True, 0.0) == 0.0
-    assert ps._f(float("nan"), 0.0) == 0.0
-    assert ps._f(float("inf"), 1.5) == 1.5
-    assert ps._f("42.5", 0.0) == 42.5
+    assert ps.safe_float(True, 0.0) == 0.0
+    assert ps.safe_float(float("nan"), 0.0) == 0.0
+    assert ps.safe_float(float("inf"), 1.5) == 1.5
+    assert ps.safe_float("42.5", 0.0) == 42.5
 
 
 def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
@@ -1383,9 +1383,9 @@ def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
     assert len(top_mod.condense_decision('{"decision": "HOLD", "summary": "ok"}', max_len=True)) > 10
     assert len(top_mod.condense_decision('{"decision": "HOLD", "summary": "ok"}', max_len=float("nan"))) > 10
 
-    assert wtd._f(True, 0.0) == 0.0
-    assert wtd._f(float("nan"), 0.0) == 0.0
-    assert wtd._f("12.5", 0.0) == 12.5
+    assert wtd.safe_float(True, 0.0) == 0.0
+    assert wtd.safe_float(float("nan"), 0.0) == 0.0
+    assert wtd.safe_float("12.5", 0.0) == 12.5
 
 
 def test_backtest_metrics_walk_forward_and_execution_hardening():

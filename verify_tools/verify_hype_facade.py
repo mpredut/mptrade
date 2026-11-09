@@ -37,8 +37,6 @@ failures = []
 
 from botcore import safe_float
 
-_f = safe_float
-
 
 def check(name, cond, detail=""):
     print(f"  [{'OK ' if cond else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}")
@@ -64,7 +62,7 @@ def main():
 
     print("\n==== HYPE MARKET DATA (public, no key) ====")
     price = mkt.get_current_price(HYPE)
-    price_f = _f(price, 0.0)
+    price_f = safe_float(price, 0.0)
     print(f"  get_current_price(HYPEUSDC) = {price}")
     check("valid SPOT price (>0)", price_f > 0.0,
           repr(price))
@@ -76,14 +74,14 @@ def main():
     if hist_dicts:
         print(f"    first={hist_dicts[0]}  last={hist_dicts[-1]}")
     asc = bool(hist_dicts) and all(
-        _f(hist_dicts[i].get("timestamp"), 0.0) <= _f(hist_dicts[i + 1].get("timestamp"), 0.0)
+        safe_float(hist_dicts[i].get("timestamp"), 0.0) <= safe_float(hist_dicts[i + 1].get("timestamp"), 0.0)
         for i in range(len(hist_dicts) - 1)
     )
-    pos = bool(hist_dicts) and all(_f(p.get("price"), 0.0) > 0.0 for p in hist_dicts)
+    pos = bool(hist_dicts) and all(safe_float(p.get("price"), 0.0) > 0.0 for p in hist_dicts)
     check("the history is granular, ascending, with prices>0", bool(hist_dicts) and asc and pos,
           f"n={n} asc={asc} pos={pos}")
     if price_f > 0.0 and hist_dicts:
-        last = _f(hist_dicts[-1].get("price"), 0.0)
+        last = safe_float(hist_dicts[-1].get("price"), 0.0)
         near = last > 0.0 and abs(last - price_f) / price_f < 0.10
         check("the last close ~ the current price (<10%)", near,
               f"close={last} price={price}")
@@ -94,7 +92,7 @@ def main():
     print(f"  free_balance(HYPE) = {free_hype}")
     print("  free_balance(USDC) = "
           f"{free_usdc}  (provider explicit: hyperliquid)")
-    check("free_balance(HYPE) numeric >=0", _f(free_hype, -1.0) >= 0.0,
+    check("free_balance(HYPE) numeric >=0", safe_float(free_hype, -1.0) >= 0.0,
           repr(free_hype))
 
     buys = mkt.get_orders(HYPE, "BUY", MAXAGE) or []
@@ -129,8 +127,8 @@ def main():
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
     if valid_buys and price_f > 0.0:
-        last_buy = _f(
-            extract_order_price(sorted(valid_buys, key=lambda x: _f(extract_timestamp_ms(x, default=0), 0.0), reverse=True)[0]),
+        last_buy = safe_float(
+            extract_order_price(sorted(valid_buys, key=lambda x: safe_float(extract_timestamp_ms(x, default=0), 0.0), reverse=True)[0]),
             0.0,
         )
         if last_buy > 0:

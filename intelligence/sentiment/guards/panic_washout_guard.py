@@ -6,7 +6,7 @@ from typing import Optional
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
-    normalize_order_side,
+    normalize_side,
     obj_attr,
     safe_float,
     safe_thresh,
@@ -43,7 +43,7 @@ class PanicWashoutGuard:
         asset_24h_change_pct: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order against macro panic and market-wide capitulation."""
-        if normalize_order_side(side) != "BUY":
+        if normalize_side(side) != "BUY":
             return GuardDecision.allow("PanicWashoutGuard", "sell_permitted_in_panic")
 
         # 1. Check severe accelerating Fear & Greed free-fall

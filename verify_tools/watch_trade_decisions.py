@@ -24,7 +24,6 @@ from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
-_f = safe_float  # noqa: F401 (re-export: test compat)
 from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
 
@@ -32,11 +31,10 @@ SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
 import utils  # noqa: E402 — base_asset centralized in utils
-_base = utils.base_asset
 
 
 def free_qty(symbol):
-    base_up = str(_base(symbol) or "").strip().upper()
+    base_up = str(utils.base_asset(symbol) or "").strip().upper()
     for b in (api.get_account_assets_balances() or []):
         if isinstance(b, dict) and str(b.get("asset") or "").strip().upper() == base_up:
             return safe_float(b.get("free", 0), default=0.0)

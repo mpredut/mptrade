@@ -75,9 +75,6 @@ def _import_t212():
     return rp._strat, rp
 
 
-build_equity_variants = build_ablation_variants
-
-
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     print("======================================================================")

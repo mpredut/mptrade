@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Optional, Sequence
 from botcore import _parse_bool_flag, fetch_public_json, resolve_patched_attr
 from intelligence.internal.guards.guard_decision import GuardDecision, normalize_guard_mode
 from intelligence.macro_sentiment_ssot import (
-    clean_scale, clean_symbol_key, is_cache_fresh, normalize_order_side,
+    clean_scale, clean_symbol_key, is_cache_fresh, normalize_side,
     resolve_now_ts, resolve_order_notional, safe_float, safe_nonneg_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
@@ -51,7 +51,6 @@ query_topic_json = _default_query_topic_json
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_USD = 700.0
-DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
 DEFAULT_LLM_GUARD_CACHE_TTL_SEC = 600.0
 DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 HIGH_STAKE_NOTIONAL_JUMP_RATIO = 1.0
@@ -149,9 +148,6 @@ class PreTradeLLMGuardBase:
     DEFAULT_FALLBACK: str = "allow"
     DEFAULT_CACHE_TTL_SEC: float = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 
-    _normalize_mode = staticmethod(normalize_guard_mode)
-    _as_bool_flag = staticmethod(_parse_bool_flag)
-
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
@@ -165,8 +161,8 @@ class PreTradeLLMGuardBase:
         self.gemini_client = gemini_client or GeminiClient()
         self.timeout_sec = safe_pos_float(timeout_sec, self.DEFAULT_TIMEOUT_SEC)
         self.fallback_action = str(fallback_action or self.DEFAULT_FALLBACK).strip().lower()
-        self.mode = self._normalize_mode(mode, default="enforce")
-        self.notify_enabled = self._as_bool_flag(notify_enabled)
+        self.mode = normalize_guard_mode(mode, default="enforce")
+        self.notify_enabled = _parse_bool_flag(notify_enabled)
         self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
             cache_ttl_sec, self._explicit_client, self.gemini_client, self.DEFAULT_CACHE_TTL_SEC
         )
@@ -416,7 +412,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        side_norm = normalize_order_side(side)
+        side_norm = normalize_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 

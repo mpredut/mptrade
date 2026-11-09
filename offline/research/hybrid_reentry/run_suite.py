@@ -13,9 +13,6 @@ if ROOT not in sys.path:
 
 from botcore import safe_float, safe_nonneg_int
 from state_io import atomic_write_json
-
-_safe_f = safe_float
-_safe_int = safe_nonneg_int
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,

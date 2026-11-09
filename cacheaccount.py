@@ -53,6 +53,7 @@ from state_io import (
     atomic_snapshot_file,
     atomic_text_writer as atomic_write,
     atomic_write_json,
+    discard_generation_file,
     meta_file_path,
     read_json_dict,
     read_recovering_previous,
@@ -175,7 +176,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             return self._stage_previous_generation(), True
         if os.path.exists(self.filename):
             return self._stage_previous_generation(), True
-        self._discard_generation_file(self._previous_generation_path())
+        discard_generation_file(self._previous_generation_path())
         return None, False
 
     def _load_versioned_account_meta(self, *, optional=False, required_version=None):
@@ -593,7 +594,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     ):
                         raise ValueError("Trade suffix digest differs from manifest")
                     candidate_cache = None
-                    self._discard_generation_file(self._previous_generation_path())
+                    discard_generation_file(self._previous_generation_path())
                 except (
                     account_cache_health.AccountCacheNotReady,
                     OSError,
@@ -861,7 +862,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         self._restore_memory_state_locked(original_state)
                         self._account_cache_dirty = original_dirty
                         self._legacy_jsonl_needs_rewrite = original_needs_rewrite
-                        self._discard_generation_file(archive)
+                        discard_generation_file(archive)
                         builtins.print(
                             f"[{self.cls_name}][maintain] Trade rotation "
                             "aborted because generation publication failed"
@@ -876,7 +877,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     self._account_cache_dirty = original_dirty
                     self._legacy_jsonl_needs_rewrite = original_needs_rewrite
             if not published and archive is not None:
-                self._discard_generation_file(archive)
+                discard_generation_file(archive)
             builtins.print(f"[{self.cls_name}][maintain] Trade rotation failed: {exc}")
             return False
 

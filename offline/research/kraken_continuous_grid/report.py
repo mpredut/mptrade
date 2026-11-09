@@ -11,8 +11,6 @@ if ROOT not in sys.path:
 from botcore import safe_float
 from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
-_load_jsonl_dicts = read_jsonl_dicts
-
 
 def q(xs, p):
     pf = safe_float(p, default=None)
@@ -69,7 +67,7 @@ def _format_errors_section(errors: list[dict], *, label_fn=None) -> list[str]:
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results_path = os.path.join(exp, "results.jsonl")
-    rows = _load_jsonl_dicts(results_path)
+    rows = read_jsonl_dicts(results_path)
     errors = [r for r in rows if "error" in r]
     rows = [r for r in rows if "error" not in r and "cfg" in r and "asset" in r]
     by = defaultdict(dict)

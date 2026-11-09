@@ -881,7 +881,3 @@ def query_topic_json(
         call_kwargs["conversation_id"] = conversation_id
     resp = client.query_json(prompt, **call_kwargs)
     return resp if isinstance(resp, dict) and resp else None
-
-
-# Generic LLM alias
-LLMClient = GeminiClient

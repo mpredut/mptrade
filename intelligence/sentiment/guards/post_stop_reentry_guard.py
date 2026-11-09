@@ -243,7 +243,7 @@ def get_post_stop_reentry_guard(
         "timeout_sec": safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC),
         "fallback_action": str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK,
         "mode": resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce"),
-        "notify_enabled": True if raw_notify is None else PostStopReentryGuard._as_bool_flag(raw_notify, default=False),
+        "notify_enabled": True if raw_notify is None else _parse_bool_flag(raw_notify, default=False),
         "cache_ttl_sec": safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC),
     }
     if gemini_client is not None:

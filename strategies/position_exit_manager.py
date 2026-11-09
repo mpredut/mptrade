@@ -352,11 +352,6 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
         pass
 
 
-def _resolve_now_s(current_time_s: Optional[float]) -> float:
-    """Resolve explicit simulation/snapshot timestamp or fall back to wall-clock time."""
-    return resolve_now_ts(current_time_s, allow_zero=True)
-
-
 def _clamp_state_ts(state_dict: Dict[str, Any], key: str, now: float) -> float:
     val = safe_nonneg_float(state_dict.get(key), default=None)
     if val is None or val > now:
@@ -502,7 +497,7 @@ class PositionExitManager:
         """Record successful execution of a Hard-TP order to arm cooldown."""
         sym_clean = _clean_symbol_str(symbol)
         if sym_clean:
-            self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
+            self.hard_tp_last[sym_clean] = resolve_now_ts(timestamp, allow_zero=True)
 
     def _resolve_effective_vol_1h(
         self, symbol: str, vol_1h: Optional[float] = None, vol_source: str = "default",
@@ -586,7 +581,7 @@ class PositionExitManager:
     ) -> ExitDecision:
         """Evaluate Stop-Loss with strict hierarchical priorities (Disaster Floor -> Bounce -> Smart SL)."""
         symbol = _clean_symbol_str(snapshot.symbol)
-        now = _resolve_now_s(snapshot.current_time_s)
+        now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
         lost_threshold = _resolve_positive_threshold(custom_threshold, self.config.lost_threshold)
 
         if not snapshot.is_valid_price:
@@ -807,7 +802,7 @@ class PositionExitManager:
     ) -> ExitDecision:
         """Evaluate Take-Profit with trend-riding mirror symmetry."""
         symbol = _clean_symbol_str(snapshot.symbol)
-        now = _resolve_now_s(snapshot.current_time_s)
+        now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
         gain_threshold = _resolve_positive_threshold(custom_threshold, self.config.gain_threshold)
 
         if not snapshot.is_valid_price:
@@ -962,7 +957,7 @@ class PositionExitManager:
             if isinstance(snapshot.last_exit_kind, str) and snapshot.last_exit_kind.strip()
             else "SELL"
         )
-        now = _resolve_now_s(snapshot.current_time_s)
+        now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
 
         if not snapshot.is_valid_price:
             return self._reentry_wait("invalid_current_price")
@@ -1118,7 +1113,7 @@ class PositionExitManager:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
         symbol = _clean_symbol_str(snapshot.symbol)
 
-        tp_spike = self._check_hard_tp_spike(snapshot, _resolve_now_s(snapshot.current_time_s))
+        tp_spike = self._check_hard_tp_spike(snapshot, resolve_now_ts(snapshot.current_time_s, allow_zero=True))
         if tp_spike is not None:
             _clear_smart_sl(symbol, snapshot.provider)
             return tp_spike

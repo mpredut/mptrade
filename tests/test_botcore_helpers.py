@@ -198,10 +198,10 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(normalize_venue_name(SimpleNamespace(name="Kraken_Spot")), "kraken")
         self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
         from lock.trade_cooldown import normalize_scalar_order_id
-        from order_retry import _rev_int
+        from order_retry import exact_int
         from state_io import exact_nonneg_int
         self.assertEqual(normalize_scalar_order_id(large_id), large_id)
-        self.assertEqual(_rev_int(large_id), large_id)
+        self.assertEqual(exact_int(large_id), large_id)
         self.assertEqual(exact_nonneg_int(large_id, default=None), large_id)
 
     def test_clamp_parse_ratio_validate_env_and_heartbeat_helpers(self):

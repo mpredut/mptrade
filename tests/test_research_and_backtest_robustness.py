@@ -1326,10 +1326,10 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     assert sys.path == before_path
     assert sys.modules.get("common") is sentinel_common
 
-    # 5. verify_hype_facade._f rejects booleans and non-finite numbers
-    assert vhf._f(True, -1.0) == -1.0
-    assert vhf._f(float("nan"), -1.0) == -1.0
-    assert vhf._f("12.5", 0.0) == 12.5
+    # 5. verify_hype_facade.safe_float rejects booleans and non-finite numbers
+    assert vhf.safe_float(True, -1.0) == -1.0
+    assert vhf.safe_float(float("nan"), -1.0) == -1.0
+    assert vhf.safe_float("12.5", 0.0) == 12.5
 
     # 6. kraken/shadow_live._print_block handles missing "current" key in configs without KeyError
     from kraken import shadow_live as k_sh
@@ -3307,13 +3307,13 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
     assert avg == 100.0
     assert net == 1.5
 
-    # 2. portfolio_snapshot._is_paper handles boolean strings and ints consistently
-    assert portfolio_snapshot._is_paper("false") is False
-    assert portfolio_snapshot._is_paper("true") is True
-    assert portfolio_snapshot._is_paper(False) is False
-    assert portfolio_snapshot._is_paper(True) is True
-    assert portfolio_snapshot._is_paper(0) is False
-    assert portfolio_snapshot._is_paper(1) is True
+    # 2. portfolio_snapshot._parse_bool_flag handles boolean strings and ints consistently
+    assert portfolio_snapshot._parse_bool_flag("false", False) is False
+    assert portfolio_snapshot._parse_bool_flag("true", False) is True
+    assert portfolio_snapshot._parse_bool_flag(False, False) is False
+    assert portfolio_snapshot._parse_bool_flag(True, False) is True
+    assert portfolio_snapshot._parse_bool_flag(0, False) is False
+    assert portfolio_snapshot._parse_bool_flag(1, False) is True
 
     # 3. pnl_report.per_bot skips orders where both cummulativeQuoteQty and price are zero
     monkeypatch.setattr(
@@ -4189,9 +4189,9 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
     dec = pem.evaluate_take_profit(snap)
     assert dec.should_exit is True
 
-    # 5. verify_tools/portfolio_snapshot._is_paper handles NaN float safely
-    assert ps._is_paper(float("nan")) is False
-    assert ps._is_paper(1.0) is True
+    # 5. verify_tools/portfolio_snapshot._parse_bool_flag handles NaN float safely
+    assert ps._parse_bool_flag(float("nan"), False) is False
+    assert ps._parse_bool_flag(1.0, False) is True
 
 
 def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
@@ -4946,11 +4946,11 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     from offline.research import intelligence_backtest as ibt
     from verify_tools import pnl_report, portfolio_snapshot
 
-    # 1. intelligence_backtest._safe_float handles malformed strings, bools, and NaN
-    assert ibt._safe_float("bad", 3.5) == 3.5
-    assert ibt._safe_float(float("nan"), 1e-4) == 1e-4
-    assert ibt._safe_float(True, 2.0) == 2.0
-    assert ibt._safe_float("12.5", 0.0) == 12.5
+    # 1. intelligence_backtest.safe_float handles malformed strings, bools, and NaN
+    assert ibt.safe_float("bad", 3.5) == 3.5
+    assert ibt.safe_float(float("nan"), 1e-4) == 1e-4
+    assert ibt.safe_float(True, 2.0) == 2.0
+    assert ibt.safe_float("12.5", 0.0) == 12.5
 
     # 2. volatility._extract_vol_ratio_from_file continues searching symbol variants if earlier variant lacks valid vol_1h_pct
     vol_file = tmp_path / "vol.json"
@@ -5250,9 +5250,9 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
     }
     assert oq.is_expired(rec, now=1010.0) is False
     assert oq.is_due(rec, now=1000.0 + oq.RETRY_INTERVAL_SEC + 1.0) is True
-    assert oq._rev_int("2.0", -1) == 2
-    assert oq._rev_int(None, -1) == -1
-    assert oq._rev_int(True, -1) == -1
+    assert oq.exact_int("2.0", -1) == 2
+    assert oq.exact_int(None, -1) == -1
+    assert oq.exact_int(True, -1) == -1
 
     # 2. order_retry_worker._alert_giveups handles attempts=None or float-string without TypeError
     monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl"))
@@ -6011,8 +6011,8 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     assert rp._parse_bool_flag("1.0") is True
 
     # 5. lock.cooldown and lock.trade_cooldown hardening
-    assert cd_mod._as_bool_flag("0.0", True) is False
-    assert cd_mod._as_bool_flag("1.0", False) is True
+    assert cd_mod._parse_bool_flag("0.0", True) is False
+    assert cd_mod._parse_bool_flag("1.0", False) is True
     assert tcd_mod.clean_order_id("-5") is None
     assert tcd_mod.clean_order_id("+0.0") is None
     assert tcd_mod.clean_order_id("+321.0") == "321"
@@ -6106,10 +6106,11 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     dec_hsg = hsg.check("BTCUSDC", "BUY", price=100.0, qty=10.0, notional_eur=0.0, telemetry={"k": "v"})
     assert dec_hsg.suggested_scale == 0.4
 
-    # 5. PostStopReentryGuard._as_bool_flag and get_post_stop_reentry_guard partial margins
-    assert PostStopReentryGuard._as_bool_flag("0.0", default=True) is False
-    assert PostStopReentryGuard._as_bool_flag("1.0", default=False) is True
-    assert PostStopReentryGuard._as_bool_flag("unknown_token", default=False) is False
+    # 5. _parse_bool_flag and get_post_stop_reentry_guard partial margins
+    from botcore import _parse_bool_flag
+    assert _parse_bool_flag("0.0", default=True) is False
+    assert _parse_bool_flag("1.0", default=False) is True
+    assert _parse_bool_flag("unknown_token", default=False) is False
     ps_guard = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "off"}, gemini_client=_DummyGemini())  # type: ignore[arg-type]
     assert ps_guard.mode == "off"
 
@@ -6469,7 +6470,7 @@ def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monk
     # 1. Negative MPTRADE_UPWARD_EPSILON_K clamps to UPWARD_EPSILON_K (0.25) in both modules
     monkeypatch.setenv("MPTRADE_UPWARD_EPSILON_K", "-5.0")
     assert resolve_upward_eps_k() == UPWARD_EPSILON_K
-    assert rb._resolve_upward_eps_k() == UPWARD_EPSILON_K
+    assert rb.resolve_upward_eps_k() == UPWARD_EPSILON_K
     # With eps=1.0 and k=0.25, gc=0.10 (< 0.25) must NOT be trend_up even if negative env was set
     assert _is_trend_up_tuple((1, 0.10, 0.10, 0.10), eps=1.0, n_samples=10) is False
     assert _is_trend_up_tuple((1, 0.30, 0.30, 0.30), eps=1.0, n_samples=10) is True

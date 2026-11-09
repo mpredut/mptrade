@@ -78,6 +78,7 @@ from providers.base import (
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer as atomic_write,
+    discard_generation_file,
     read_json_dict,
     read_tail_lines,
     save_json_state,
@@ -586,7 +587,7 @@ class Cache365PriceManager(Cache24PriceManager):
                         backup_path = None
                         return False
                 if backup_path is not None:
-                    self._discard_generation_file(backup_path)
+                    discard_generation_file(backup_path)
                     backup_path = None
             if changed:
                 builtins.print(

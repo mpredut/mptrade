@@ -265,7 +265,7 @@ def valid_record(rec):
         return False
     qty = safe_pos_float(rec.get("qty"), default=None)
     created = safe_pos_float(rec.get("created_ts"), default=None)
-    revision = _rev_int(rec.get("revision", 0), default=-1)
+    revision = exact_int(rec.get("revision", 0), default=-1)
     if qty is None or created is None or revision < 0:
         return False
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
@@ -481,7 +481,7 @@ def enqueue(
         return None
     qty, now = qty_f, now_f
     cts = safe_pos_float(now if created_ts is None else created_ts, default=None)
-    attempts_i = _rev_int(attempts, default=-1)
+    attempts_i = exact_int(attempts, default=-1)
     last_attempt_f = safe_float(last_attempt_ts, default=None)
     if cts is None or attempts_i < 0 or last_attempt_f is None:
         return None
@@ -583,7 +583,7 @@ def enqueue(
                     e["prefix"] = pfx
                     e["place_kwargs"] = refreshed_kwargs
                     e["created_ts"] = min(safe_pos_float(e.get("created_ts"), default=cts) or cts, cts)
-                    prev_attempts = max(0, _rev_int(e.get("attempts"), 0))
+                    prev_attempts = max(0, exact_int(e.get("attempts"), 0))
                     prev_last_ts = safe_pos_float(e.get("last_attempt_ts"), default=None)
                     e["attempts"] = max(prev_attempts, int(attempts))
                     e["last_attempt_ts"] = max(
@@ -669,10 +669,6 @@ def enqueue_claimed(
     )
 
 
-def _rev_int(val, default=-1):
-    return exact_int(val, default=default)
-
-
 def _record_client_order_id(rec: object):
     if not isinstance(rec, dict):
         return None
@@ -684,8 +680,8 @@ def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id:
     return (
         record.get("id") == claim_snapshot.get("id")
         and record.get("claim_token") == claim_snapshot.get("claim_token")
-        and _rev_int(record.get("revision"), 0) == _rev_int(claim_snapshot.get("claim_revision"), -1)
-        and _rev_int(record.get("claim_revision"), -1) == _rev_int(claim_snapshot.get("claim_revision"), -2)
+        and exact_int(record.get("revision"), 0) == exact_int(claim_snapshot.get("claim_revision"), -1)
+        and exact_int(record.get("claim_revision"), -1) == exact_int(claim_snapshot.get("claim_revision"), -2)
         and _record_client_order_id(record) == snapshot_client_id
     )
 
@@ -1009,7 +1005,7 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None, s
                 continue
             previous = rec.get("last_failure_reason")
             reason = str(failure_reason) if failure_reason is not None else None
-            prev_attempts = max(0, _rev_int(rec.get("attempts"), 0))
+            prev_attempts = max(0, exact_int(rec.get("attempts"), 0))
             _shift_ttl_after_deferral(
                 rec, previous, reason, prev_attempts,
                 safe_pos_float(rec.get("last_attempt_ts"), default=None), now,
@@ -1127,7 +1123,7 @@ def claim(ids, now=None, lease_sec=None):
         for rec in existing:
             if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
-            revision = max(0, _rev_int(rec.get("revision"), 0))
+            revision = max(0, exact_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
             pfx = rec.get("prefix") or placement.get("prefix") or "OR"
             placement.setdefault("client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
@@ -1175,7 +1171,7 @@ def complete_claim(
                 continue
             claimed_client_id = _record_client_order_id(claimed)
             same_revision = (
-                _rev_int(rec.get("revision"), 0) == _rev_int(claimed.get("claim_revision"), -1)
+                exact_int(rec.get("revision"), 0) == exact_int(claimed.get("claim_revision"), -1)
                 and claimed_client_id is not None
                 and _record_client_order_id(rec) == claimed_client_id
             )
@@ -1193,8 +1189,8 @@ def complete_claim(
                 if not _apply_accepted(rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"
                     rec["attempts"] = max(
-                        max(0, _rev_int(rec.get("attempts"), 0)),
-                        max(0, _rev_int(claimed.get("attempts"), 0)),
+                        max(0, exact_int(rec.get("attempts"), 0)),
+                        max(0, exact_int(claimed.get("attempts"), 0)),
                     ) + 1
                     rec["last_attempt_ts"] = now
             elif outcome == "observed":
@@ -1223,7 +1219,7 @@ def complete_claim(
                 rec["delivered_qty"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + min(current_qty, filled_qty)
                 if remaining_qty <= max(1e-12, current_qty * 1e-9):
                     continue
-                revision = max(0, _rev_int(rec.get("revision"), 0)) + 1
+                revision = max(0, exact_int(rec.get("revision"), 0)) + 1
                 rec["revision"] = revision
                 rec["qty"] = remaining_qty
                 rec["attempts"] = 0
@@ -1245,8 +1241,8 @@ def complete_claim(
                 rec["place_kwargs"] = placement
             elif outcome == "failure":
                 prev_attempts = max(
-                    max(0, _rev_int(rec.get("attempts"), 0)),
-                    max(0, _rev_int(claimed.get("attempts"), 0)),
+                    max(0, exact_int(rec.get("attempts"), 0)),
+                    max(0, exact_int(claimed.get("attempts"), 0)),
                 )
                 prev_last_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
                 rec["attempts"] = prev_attempts + 1
@@ -1288,7 +1284,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
             if not (
                 rec.get("id") == claimed.get("id")
                 and rec.get("claim_token") == claimed.get("claim_token")
-                and _rev_int(rec.get("revision"), 0) == _rev_int(claimed.get("claim_revision"), -1)
+                and exact_int(rec.get("revision"), 0) == exact_int(claimed.get("claim_revision"), -1)
             ):
                 continue
             if str(rec.get("lifecycle") or "").lower() != "awaiting_cancel":
@@ -1434,7 +1430,7 @@ def discard_expired(snapshots, now=None):
     for snapshot in snapshots:
         if not isinstance(snapshot, dict):
             continue
-        rev = _rev_int(snapshot.get("revision"), -1)
+        rev = exact_int(snapshot.get("revision"), -1)
         if rev >= 0:
             key = (snapshot.get("id"), rev, _record_client_order_id(snapshot))
             if key[0] and key[2]:
@@ -1443,7 +1439,7 @@ def discard_expired(snapshots, now=None):
         return []
     return _remove_matching_locked(
         lambda record: (
-            (record.get("id"), _rev_int(record.get("revision"), 0), _record_client_order_id(record)) in exact
+            (record.get("id"), exact_int(record.get("revision"), 0), _record_client_order_id(record)) in exact
             and is_expired(record, now)
         ),
         validate=True,
@@ -1458,9 +1454,6 @@ def discard(ids):
     if not ids:
         return []
     return _remove_matching_locked(lambda rec: rec.get("id") in ids)
-
-
-remove_ids = discard
 
 
 def resolve(symbol, side):

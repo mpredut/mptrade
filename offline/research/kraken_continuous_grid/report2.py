@@ -9,10 +9,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import atomic_write_text
+from state_io import atomic_write_text, read_jsonl_dicts
 from offline.research.kraken_continuous_grid.report import (
     _format_errors_section,
-    _load_jsonl_dicts,
     _resolve_exp_dir,
 )
 
@@ -20,9 +19,9 @@ from offline.research.kraken_continuous_grid.report import (
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results2_path = os.path.join(exp, "results2.jsonl")
-    rows = _load_jsonl_dicts(results2_path)
+    rows = read_jsonl_dicts(results2_path)
     results_path = os.path.join(exp, "results.jsonl")
-    wave1 = _load_jsonl_dicts(results_path)
+    wave1 = read_jsonl_dicts(results_path)
     errors = [r for r in rows if r.get("kind") == "error"]
     L = ["# Overnight wave 2: selection, fine overlay grid, fee stress\n"]
 

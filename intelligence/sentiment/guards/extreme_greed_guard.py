@@ -6,10 +6,10 @@ from typing import Optional
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
-    normalize_order_side,
+    normalize_side,
     obj_attr,
     safe_float,
-    safe_thresh as _safe_thresh,
+    safe_thresh,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
@@ -28,8 +28,8 @@ class ExtremeGreedGuard:
         hard_veto_threshold: int = 90,
         downscale_factor: float = 0.35,
     ) -> None:
-        self.downscale_threshold = _safe_thresh(downscale_threshold, 80)
-        self.hard_veto_threshold = _safe_thresh(hard_veto_threshold, 90)
+        self.downscale_threshold = safe_thresh(downscale_threshold, 80)
+        self.hard_veto_threshold = safe_thresh(hard_veto_threshold, 90)
         if self.downscale_threshold > self.hard_veto_threshold:
             self.downscale_threshold = self.hard_veto_threshold
         self.downscale_factor = clean_scale(downscale_factor, 0.35, allow_percent=True, min_positive=True)
@@ -44,7 +44,7 @@ class ExtremeGreedGuard:
         if snapshot is None:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
 
-        if normalize_order_side(side) != "BUY":
+        if normalize_side(side) != "BUY":
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
         val_f = safe_float(obj_attr(snapshot, "value", None), default=None)

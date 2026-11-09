@@ -39,15 +39,11 @@ if not all(
     raise ValueError("resource watchdog configuration values must be positive")
 
 
-def _fleet_scripts():
-    return fleet_script_basenames(str(ROOT))
-
-
 def _managed_script(proc):
     if not isinstance(proc, dict):
         return None
     parts = str(proc.get("command") or "").split()
-    scripts = _fleet_scripts()
+    scripts = fleet_script_basenames(str(ROOT))
     pid = exact_pos_int(proc.get("pid"), default=None)
     if pid is None or pid <= 1:
         return None

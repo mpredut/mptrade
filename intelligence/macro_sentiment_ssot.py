@@ -109,8 +109,6 @@ _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": Non
 # 0. Universal Coercion, Cache Freshness, Attribute & Daemon Primitives
 # ============================================================================
 
-normalize_order_side = normalize_side
-
 
 def extract_high_severity_headlines_and_digest(
     news_snapshot: Any,
@@ -609,9 +607,6 @@ def resolve_save_json_state(
     )
 
 
-_resolve_ssot_json_reader = resolve_read_json_cached
-
-
 def read_first_cached_dict(
     cache_dir: str,
     group_key: str = "",
@@ -619,7 +614,7 @@ def read_first_cached_dict(
     read_json_fn: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Read and return the first non-empty cached dict and its path from candidate filenames."""
-    reader = _resolve_ssot_json_reader(read_json_fn)
+    reader = resolve_read_json_cached(read_json_fn)
     candidates = (*(get_cache_filenames(group_key) if group_key else ()), *extra_filenames)
     for fname in dict.fromkeys(f for f in candidates if f):
         path = os.path.join(cache_dir, fname)
@@ -643,7 +638,7 @@ def load_cached_fear_greed_snapshot(
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
-    reader = _resolve_ssot_json_reader()
+    reader = resolve_read_json_cached()
     eval_now = resolve_now_ts(now_ts)
     for fg_fname in get_cache_filenames("fear_greed_files"):
         fg_path = os.path.join(cache_dir, fg_fname)
@@ -701,7 +696,7 @@ def load_cached_market_breadth_snapshot(
             and s_clean.isascii()
         )
 
-    reader = _resolve_ssot_json_reader()
+    reader = resolve_read_json_cached()
     eval_now = resolve_now_ts(now_ts)
     for mb_fname in get_cache_filenames("market_breadth_files"):
         mb_path = os.path.join(cache_dir, mb_fname)
@@ -748,7 +743,7 @@ def load_cached_whale_telemetry(
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
-    reader = _resolve_ssot_json_reader()
+    reader = resolve_read_json_cached()
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (parse_symbol_list(symbols) or ["BTCUSDC"]):
         best_w: Optional[Dict[str, Any]] = None

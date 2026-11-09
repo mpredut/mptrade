@@ -232,10 +232,6 @@ def load_price_samples(symbol, days_back):
     return _parse_price_sample_rows(_read_daily_pipe_rows(PRICE_SAMPLES_PREFIX, 3, days_back), symbol, require_pos_ts=False)
 
 
-def _cachedb_dir() -> str:
-    return get_cachedb_dir()
-
-
 def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     """Read Cache24 ``[[ts_ms, price], ...]`` entries from cachedb.
 
@@ -243,7 +239,7 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     weekly caller reads only their ``max_bytes`` tail. The legacy JSON format
     used by the live 24-hour cache remains supported unchanged.
     """
-    path = str(resolve_cachedb_filepath(os.path.join(_cachedb_dir(), filename)))
+    path = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), filename)))
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):

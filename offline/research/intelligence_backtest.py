@@ -24,8 +24,6 @@ from cachepaths import cache_path as resolve_cache_path
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
-
-_safe_float = safe_float
 from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger

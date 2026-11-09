@@ -38,9 +38,6 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 }
 
 
-_safe_num = safe_float
-
-
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
     d = safe_pos_float(days_back, default=None)
     return min(d, 3650.0) if d is not None else float(default)

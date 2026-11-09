@@ -82,13 +82,6 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
     return ts is not None and ttl_f is not None and now_f is not None and 0.0 <= (now_f - ts) < ttl_f
 
 
-def _sanitize_json_payload(value):
-    return clean_json_value(value, stringify_keys=False)
-
-
-_as_bool_flag = _parse_bool_flag
-
-
 def _safe_list(val) -> list:
     return list(val) if isinstance(val, (list, tuple, set, frozenset)) else []
 
@@ -167,7 +160,7 @@ class Cooldown:
         return read_json_dict(self.state_path, default={}, recover_previous=True)
 
     def _write(self, state):
-        save_json_state(self.state_path, _sanitize_json_payload(state), indent=2)
+        save_json_state(self.state_path, clean_json_value(state, stringify_keys=False), indent=2)
 
     @staticmethod
     def _clean_group_args(key, group_id, member):
@@ -317,7 +310,7 @@ class Cooldown:
         key, group_id, member = self._clean_group_args(key, group_id, member)
         if not key or not group_id or not member:
             return False
-        keep_group = _as_bool_flag(keep_group, True)
+        keep_group = _parse_bool_flag(keep_group, True)
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)

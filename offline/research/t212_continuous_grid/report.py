@@ -11,8 +11,7 @@ if ROOT not in sys.path:
 from botcore import safe_float
 from state_io import atomic_write_text, read_jsonl_dicts
 
-REPO = ROOT
-EXP = os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
+EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 

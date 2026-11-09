@@ -8919,7 +8919,7 @@ def test_iteration66_notify_engine_and_market_monitor_safety(tmp_path, monkeypat
     )
     from notify_engine import mailer
     from market_monitor.pricechecker import PriceChecker
-    from market_monitor.new_coins_discovery import _safe_days_back, _safe_num
+    from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
 
     # 1. synthesize_bulk_notifications handles float-string, negative, or invalid counts safely
     title, body, prio, topic = synthesize_bulk_notifications([
@@ -14015,9 +14015,10 @@ def test_iteration141_execution_audit_kraken_and_hyperliquid_provider_id_hygiene
         assert intent_client_order_id("kraken", bad_intent) is None  # type: ignore[arg-type]
         assert intent_client_order_id("hyperliquid", bad_intent) is None  # type: ignore[arg-type]
 
-    assert AuditedStrategyExecutor._norm_order_id_key("nan") == ""
-    assert AuditedStrategyExecutor._norm_order_id_key(["123"]) == ""
-    assert AuditedStrategyExecutor._norm_order_id_key(12345.0) == "12345"
+    from providers.execution_audit import clean_order_id_str
+    assert clean_order_id_str("nan") == ""
+    assert clean_order_id_str(["123"]) == ""
+    assert clean_order_id_str(12345.0) == "12345"
 
     seen_submits = []
     fake_exec = SimpleNamespace(

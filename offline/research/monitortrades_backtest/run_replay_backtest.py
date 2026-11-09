@@ -97,13 +97,6 @@ SYMBOLS = _LiveSymbols()
 _TREND_TAPE_CACHE: dict[tuple, tuple[bool, ...]] = {}
 
 
-def _norm_trend_window_sec(trend_window_seconds: float | None) -> float:
-    return safe_pos_float(trend_window_seconds, DEFAULT_WINDOW_SECONDS)
-
-
-_resolve_upward_eps_k = resolve_upward_eps_k
-
-
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
     return (
         str(symbol),
@@ -112,8 +105,8 @@ def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | N
         series[-1] if series else None,
         pw.step_wols_power_for_symbol(symbol),
         pw.fast_trend_window_for_symbol(symbol),
-        _resolve_upward_eps_k(),
-        _norm_trend_window_sec(trend_window_seconds),
+        resolve_upward_eps_k(),
+        safe_pos_float(trend_window_seconds, DEFAULT_WINDOW_SECONDS),
     )
 
 
@@ -129,7 +122,7 @@ def prewarm_trend_series(
     """Precompute and cache the deterministic is_trend_up boolean sequence for series."""
     if not series:
         return ()
-    win_sec = _norm_trend_window_sec(trend_window_seconds)
+    win_sec = safe_pos_float(trend_window_seconds, DEFAULT_WINDOW_SECONDS)
     key = _series_cache_key(symbol, series, win_sec)
     cached = _TREND_TAPE_CACHE.get(key)
     if cached is not None:
@@ -144,7 +137,7 @@ def prewarm_trend_series(
     sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
     cur_len = 0
     prev_ts = None
-    up_k = _resolve_upward_eps_k()
+    up_k = resolve_upward_eps_k()
     sym_pwr = pw.step_wols_power_for_symbol(symbol)
     tape: list[bool] = []
     for ts, px in series:

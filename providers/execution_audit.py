@@ -244,14 +244,12 @@ class AuditedStrategyExecutor:
             return ""
         return canonical_symbol_key(symbol) or clean_symbol_key(symbol)
 
-    _norm_order_id_key = staticmethod(clean_order_id_str)
-
     @staticmethod
     def _lru_put(cache: OrderedDict, key: Any, value: Any) -> None:
         lru_dict_put(cache, key, value, _CACHE_MAX)
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
-        oid_key = self._norm_order_id_key(order_id)
+        oid_key = clean_order_id_str(order_id)
         if not oid_key:
             return
         sym_key = self._norm_symbol_key(symbol)
@@ -259,11 +257,11 @@ class AuditedStrategyExecutor:
             self._lru_put(self._intent_by_order, (sym_key, oid_key), intent_id)
 
     def _intent(self, symbol: str, order_id: str, explicit: Optional[str] = None) -> str:
-        clean_exp = self._norm_order_id_key(explicit)
+        clean_exp = clean_order_id_str(explicit)
         if clean_exp:
             self._remember(symbol, order_id, clean_exp)
             return clean_exp
-        oid_key = self._norm_order_id_key(order_id)
+        oid_key = clean_order_id_str(order_id)
         if oid_key:
             sym_key = self._norm_symbol_key(symbol)
             with self._lock:
@@ -297,7 +295,7 @@ class AuditedStrategyExecutor:
             cache_permit=None,
             _requested_recorded: bool = False) -> SubmissionOutcome:
         """Submit once and retain refusal versus response-loss ambiguity."""
-        clean_cid = self._norm_order_id_key(client_order_id) or None
+        clean_cid = clean_order_id_str(client_order_id) or None
         client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
         is_market = _parse_bool_flag(market, False)
         fields = {
@@ -356,7 +354,7 @@ class AuditedStrategyExecutor:
             status.status, status.filled_qty, status.cost, status.fee,
             status.venue_status,
         )
-        oid_key = self._norm_order_id_key(order_id)
+        oid_key = clean_order_id_str(order_id)
         key = (self._norm_symbol_key(symbol), oid_key)
         with self._lock:
             changed = self._last_status.get(key) != fingerprint

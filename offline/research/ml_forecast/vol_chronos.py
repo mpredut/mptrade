@@ -27,8 +27,6 @@ from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from botcore import safe_nonneg_int, safe_pos_int  # noqa: E402
 from offline.research.ml_forecast.forecast import _to_price_array  # noqa: E402
 
-_safe_int = safe_pos_int
-
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
 MAX_CONTEXT = 512                       # maximum history hours supplied per prediction
 BATCH = 8                               # test windows batched per call

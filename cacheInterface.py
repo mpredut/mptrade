@@ -62,8 +62,6 @@ from state_io import (
 )
 import utils as u
 
-_bapi_ws_health = _bapi_ws_bridge
-
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv()
 
@@ -96,16 +94,16 @@ for _name, _value in (
     if _value <= 0:
         raise ValueError(f"{_name} must be positive")
 
-# WS-only mode and health state live in ``binance_api.bapi_ws_health``.
-WS_ONLY_MODE = _bapi_ws_health.WS_ONLY_MODE
-WS_LOSS_TIMEOUT_SEC = _bapi_ws_health.WS_LOSS_TIMEOUT_SEC
-WS_EVENT_LOG_ENABLED = _bapi_ws_health.WS_EVENT_LOG_ENABLED
+# WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
+WS_ONLY_MODE = _bapi_ws_bridge.WS_ONLY_MODE
+WS_LOSS_TIMEOUT_SEC = _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC
+WS_EVENT_LOG_ENABLED = _bapi_ws_bridge.WS_EVENT_LOG_ENABLED
 
-_ws_health_lock = _bapi_ws_health._ws_health_lock
-_ws_available = _bapi_ws_health._ws_available
-_ws_last_event_ts = _bapi_ws_health._ws_last_event_ts
-_ws_is_healthy = _bapi_ws_health._ws_is_healthy
-_ws_needs_rest_resync = _bapi_ws_health._ws_needs_rest_resync
+_ws_health_lock = _bapi_ws_bridge._ws_health_lock
+_ws_available = _bapi_ws_bridge._ws_available
+_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
+_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+_ws_needs_rest_resync = _bapi_ws_bridge._ws_needs_rest_resync
 
 _CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
 _TRADE_CACHE_CLASSES = {"CacheTradeManager"}
@@ -149,23 +147,23 @@ def _monotonic_time() -> float:
 
 def _mark_ws_available(value):
     global _ws_available
-    _ws_available = _bapi_ws_health.mark_ws_available(value)
+    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
 
 
 def _mark_ws_event_received():
     global _ws_last_event_ts, _ws_is_healthy
-    _ws_last_event_ts = _bapi_ws_health.mark_ws_event_received()
-    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
+    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 
 def _mark_ws_unhealthy():
     global _ws_is_healthy
-    _bapi_ws_health.mark_ws_unhealthy()
-    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
+    _bapi_ws_bridge.mark_ws_unhealthy()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 
 def _should_poll_for_manager(cls_name):
-    return _bapi_ws_health.should_poll_for_manager(
+    return _bapi_ws_bridge.should_poll_for_manager(
         cls_name,
         ws_only_mode=_cm_override("WS_ONLY_MODE", WS_ONLY_MODE),
         ws_available=_cm_override("_ws_available", _ws_available),
@@ -792,8 +790,6 @@ class CacheManagerInterface(ABC):
         """Atomically restore data matching the still-current manifest."""
         restore_previous_generation(self.filename, backup_path=backup_path)
 
-    _discard_generation_file = staticmethod(discard_generation_file)
-
     def _load_jsonl(self):
         """Load JSONL state from disk."""
         return self._load_jsonl_generation_locked()
@@ -837,7 +833,7 @@ class CacheManagerInterface(ABC):
                             continue
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not had_invalid_line and os.path.exists(backup_path):
-                self._discard_generation_file(backup_path)
+                discard_generation_file(backup_path)
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             self._hydrate_fetchtimes_from_mapping_locked(
                 legacy_metadata, preserve_if_missing=True
@@ -1089,7 +1085,7 @@ class CacheManagerInterface(ABC):
         if self._is_account_cache():
             with self.lock:
                 self._last_complete_sync_at_ms = account_cycle_high_water or 0
-        _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
+        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
 
     def on_items_update(self, symbol, items):
