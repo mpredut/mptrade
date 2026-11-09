@@ -1578,10 +1578,10 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
             now_ms = int(time.time() * 1000)
             with mgr.lock:
                 mgr.cache["BTC"] = [[now_ms, 95000.0]]
-            mixin = cm._PriceSeriesCacheMixin()
-            mixin.lock = cm.threading.RLock()
-            mixin.cache = {}
-            items = mixin.get_remote_items("BTC", 0)
+            price_base = object.__new__(cm.CachePriceManagerBase)
+            price_base.lock = cm.threading.RLock()
+            price_base.cache = {}
+            items = price_base.get_remote_items("BTC", 0)
             self.assertEqual(items, [[now_ms, 95000.0]])
             self.assertIsNone(mgr.thread)
 

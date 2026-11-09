@@ -1,14 +1,14 @@
 """Account domain cache hierarchy (Level 2 abstract base + Level 3 concrete classes).
 
 Provides:
-- ``CacheAccountManagerBase(CacheManagerInterface, ABC)`` (alias ``AccountCacheManagerBase``):
-  Abstract base class for versioned account caches (``Order`` and ``Trade``) with
-  schema-v2 manifests, ``.previous`` crash recovery, and reader synchronization.
-- ``CacheTradeManager(CacheAccountManagerBase)`` (alias ``CacheTrade``):
+- ``CacheAccountManagerBase(CacheManagerInterface, ABC)``:
+  Abstract base class for account-domain caches (``Order``, ``Trade``, ``AssetValue``)
+  with schema-v2 manifests, ``.previous`` crash recovery, and reader synchronization.
+- ``CacheTradeManager(CacheAccountManagerBase)``:
   Immutable trade fill cache backed by byte-boundary JSONL and Blake2s digests.
-- ``CacheOrderManager(CacheAccountManagerBase)`` (alias ``CacheOrder``):
+- ``CacheOrderManager(CacheAccountManagerBase)``:
   Order aggregate cache backed by versioned JSON snapshots.
-- ``CacheAssetValueManager(CacheManagerInterface)`` (alias ``CacheAssetValue``):
+- ``CacheAssetValueManager(CacheAccountManagerBase)``:
   Account/portfolio NAV history cache backed by append-only JSONL.
 """
 
@@ -289,9 +289,6 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
                     f"{self.cls_name} received a malformed Binance {row_label} row: {row!r}"
                 )
         return rows
-
-
-AccountCacheManagerBase = CacheAccountManagerBase
 
 
 class CacheTradeManager(CacheAccountManagerBase):
@@ -992,9 +989,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         return latest_price
 
 
-CacheTrade = CacheTradeManager
-
-
 class CacheOrderManager(CacheAccountManagerBase):
     """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
 
@@ -1411,9 +1405,6 @@ class CacheOrderManager(CacheAccountManagerBase):
                 self._advance_symbol_fetchtime_locked(symbol, now_ms)
 
 
-CacheOrder = CacheOrderManager
-
-
 class CacheAssetValueManager(CacheAccountManagerBase):
     """Account/portfolio total asset value history cache (Level 3) backed by append-only JSONL."""
 
@@ -1554,6 +1545,3 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             snapshot["venues_usd"] = venues_usd
             snapshot["portfolio_total_usd"] = round(sum(venues_usd.values()), 2)
         return [snapshot]
-
-
-CacheAssetValue = CacheAssetValueManager

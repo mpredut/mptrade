@@ -72,13 +72,9 @@ from cacheInterface import (
     _strict_int_field,
 )
 from cacheaccount import (
-    AccountCacheManagerBase,
     CacheAccountManagerBase,
-    CacheAssetValue,
     CacheAssetValueManager,
-    CacheOrder,
     CacheOrderManager,
-    CacheTrade,
     CacheTradeManager,
 )
 import cacheintegrity as _cache_integrity
@@ -91,21 +87,15 @@ from cachepaths import (
     normalize_venue_name,
 )
 from cacheprice import (
-    Cache24Price,
     Cache24PriceManager,
-    Cache365Price,
     Cache365PriceManager,
-    CacheCurrentPrice,
     CacheCurrentPriceManager,
     CachePriceManagerBase,
-    CachePriceSeriesMixin,
-    CacheSparsePrice,
     CacheSparsePriceManager,
     HyperliquidPriceStream,
     KrakenPriceStream,
     _NB_FETCH_DEADLINE_SEC,
     _NonBinanceTrendPoller,
-    _PriceSeriesCacheMixin,
     _VenuePriceStreamBase,
     _fetch_price_with_deadline,
     _start_nonbinance_trend_poller,
@@ -115,9 +105,7 @@ from cachetrend import (
     CM_DYNAMIC_WINDOW_MAX_SEC,
     CM_DYNAMIC_WINDOW_MIN_SEC,
     CM_PUBLISHED_TREND_WINDOWS_SEC,
-    CacheLongTrend,
     CacheLongTrendManager,
-    CacheShortTrend,
     CacheShortTrendManager,
     CacheTrendManagerBase,
 )
@@ -653,25 +641,16 @@ def get_order_manager(symbols=None, *, start_sync=True):
     return CacheFactory.get("Order", symbols, start_sync=start_sync)
 
 
-def get_sparse_price_managers(symbols=None, *, start_sync=True):
+def get_sparse_price_manager(symbols=None, *, start_sync=True):
     return CacheFactory.get("SparsePrice", symbols, start_sync=start_sync)
 
 
-get_sparse_price_manager = get_sparse_price_managers
-
-
-def get_24_price_managers(symbols=None, *, start_sync=True):
+def get_24_price_manager(symbols=None, *, start_sync=True):
     return CacheFactory.get("24Price", symbols, start_sync=start_sync)
 
 
-get_24_price_manager = get_24_price_managers
-
-
-def get_365_price_managers(symbols=None, *, start_sync=True):
+def get_365_price_manager(symbols=None, *, start_sync=True):
     return CacheFactory.get("365Price", symbols, start_sync=start_sync)
-
-
-get_365_price_manager = get_365_price_managers
 
 
 def get_long_trend_manager(symbols=None, *, start_sync=True):

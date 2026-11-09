@@ -608,11 +608,11 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
     def test_24trend_live_and_hist_persistence_and_reader_fallback(self):
         entries = _entries_trending(200, 1.0, 60000.0, 5.0)
         c24_path = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
-        c24 = cm.Cache24Price(sync_ts=9999, symbols=["BTCUSDT"], filename=c24_path, api_client=mock_api)
+        c24 = cm.Cache24PriceManager(sync_ts=9999, symbols=["BTCUSDT"], filename=c24_path, api_client=mock_api)
         c24.cache["BTCUSDT"] = [list(e) for e in entries]
         c24.save_state_to_file()
 
-        cpm = cm.CacheCurrentPrice(
+        cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["BTCUSDT"],
             filename=os.path.join(self.tmp, "cp.json"),
@@ -621,7 +621,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             market_api=mock_api,
         )
         trend_file = os.path.join(self.tmp, "cache_short_trend.json")
-        writer = cm.CacheShortTrend(["BTCUSDT"], trend_file, writer=True)
+        writer = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=True)
         writer.start_computation({"BTCUSDT": c24}, cpm)
 
         # Request dynamic window 60s and flush writer
@@ -653,7 +653,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIn(f"{t1_ms}_{t2_ms}", hist_payload)
 
         # Reader process without start_computation can serve hist slice from disk and compute new window from cache_24_price
-        reader = cm.CacheShortTrend(["BTCUSDT"], trend_file, writer=False)
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
         cached_slice = reader.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
         self.assertIsNotNone(cached_slice)
         self.assertEqual(cached_slice["final_trend"], slice_res["final_trend"])
@@ -667,7 +667,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
 
         stream = BinancePriceStream(["BTCUSDT"])
         c24 = _make_cache24("BTCUSDT", [], self.tmp)
-        cpm = cm.CacheCurrentPrice(
+        cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
             symbols=["BTCUSDT"],
             filename=os.path.join(self.tmp, "cp_ws.json"),
@@ -688,18 +688,27 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(c24.cache["BTCUSDT"][-1], [provider_ts_ms, 64321.50])
 
     def test_class_names_and_backward_compatible_aliases(self):
-        self.assertIs(cm.Cache24Price, cm.Cache24PriceManager)
-        self.assertIs(cm.Cache365Price, cm.Cache365PriceManager)
-        self.assertIs(cm.CacheSparsePrice, cm.CacheSparsePriceManager)
-        self.assertIs(cm.CacheCurrentPrice, cm.CacheCurrentPriceManager)
-        self.assertIs(cm.CacheShortTrend, cm.CacheShortTrendManager)
-        self.assertIs(cm.CacheLongTrend, cm.CacheLongTrendManager)
-        self.assertIs(cm.CacheAssetValue, cm.CacheAssetValueManager)
-        self.assertIs(cm.CacheTrade, cm.CacheTradeManager)
-        self.assertIs(cm.CacheOrder, cm.CacheOrderManager)
-        self.assertTrue(issubclass(cm.CacheShortTrendManager, cm.CacheManagerInterface))
-        self.assertTrue(issubclass(cm.CacheLongTrendManager, cm.CacheManagerInterface))
+        self.assertTrue(issubclass(cm.CacheShortTrendManager, cm.CacheTrendManagerBase))
+        self.assertTrue(issubclass(cm.CacheLongTrendManager, cm.CacheTrendManagerBase))
+        self.assertTrue(issubclass(cm.CacheTrendManagerBase, cm.CacheManagerInterface))
+        self.assertTrue(issubclass(cm.CachePriceManagerBase, cm.CacheManagerInterface))
+        self.assertTrue(issubclass(cm.CacheAccountManagerBase, cm.CacheManagerInterface))
         for legacy_alias in (
+            "AccountCacheManagerBase",
+            "CachePriceSeriesMixin",
+            "_PriceSeriesCacheMixin",
+            "Cache24Price",
+            "Cache365Price",
+            "CacheSparsePrice",
+            "CacheCurrentPrice",
+            "CacheShortTrend",
+            "CacheLongTrend",
+            "CacheAssetValue",
+            "CacheTrade",
+            "CacheOrder",
+            "get_24_price_managers",
+            "get_365_price_managers",
+            "get_sparse_price_managers",
             "Cache24LongPrice",
             "Cache24LongPriceManager",
             "CachePriceShortTrend",
@@ -818,13 +827,14 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             "import cacheManager as cm; "
             "assert ct.CacheShortTrendManager is cm.CacheShortTrendManager; "
             "assert ct.CacheLongTrendManager is cm.CacheLongTrendManager; "
-            "assert cp.HyperliquidPriceStream is ct.HyperliquidPriceStream; "
-            "assert cp.KrakenPriceStream is ct.KrakenPriceStream; "
-            "assert ct.get_short_trend_manager is cm.get_short_trend_manager; "
+            "assert cp.HyperliquidPriceStream is cm.HyperliquidPriceStream; "
+            "assert cp.KrakenPriceStream is cm.KrakenPriceStream; "
             "assert cm.CacheFactory._CONFIG['LongTrend']['class'] is ct.CacheLongTrendManager; "
-            "assert cm.get_24_price_manager is cm.get_24_price_managers; "
-            "assert cm.get_365_price_manager is cm.get_365_price_managers; "
-            "assert cm.get_sparse_price_manager is cm.get_sparse_price_managers"
+            "assert callable(cm.get_24_price_manager); "
+            "assert callable(cm.get_365_price_manager); "
+            "assert callable(cm.get_sparse_price_manager); "
+            "assert not hasattr(cm, 'get_24_price_managers'); "
+            "assert not hasattr(ct, 'HyperliquidPriceStream')"
         )
         proc = subprocess.run(
             [sys.executable, "-c", code],
@@ -858,7 +868,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
 
         with patch.object(pf.PricePlatformFactory, "_discover_all_symbols", return_value=None), \
              patch.object(pf.PricePlatformFactory, "check_symbol_support", return_value={"Binance": True}):
-            mgr = pf.CachePriceMulti(
+            mgr = pf.CacheAllPriceFetcherManager(
                 sync_ts=9999,
                 symbols=["BTCUSDT"],
                 filename=pf_file,

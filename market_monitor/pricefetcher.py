@@ -957,9 +957,6 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return self.save_state_to_file()
 
 
-CachePriceMulti = CacheAllPriceFetcherManager
-
-
 # ============================================
 # Main functions
 # ============================================

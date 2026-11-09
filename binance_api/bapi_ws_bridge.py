@@ -17,9 +17,9 @@ from instrument_registry import casefold_get
 import log  # keep print behavior aligned with the rest of the runtime
 _ = log
 
-ORDER_CACHE_CLASSES = frozenset({"CacheOrder", "CacheOrderManager"})
-TRADE_CACHE_CLASSES = frozenset({"CacheTrade", "CacheTradeManager"})
-ASSET_VALUE_CACHE_CLASSES = frozenset({"CacheAssetValue", "CacheAssetValueManager"})
+ORDER_CACHE_CLASSES = frozenset({"CacheOrderManager"})
+TRADE_CACHE_CLASSES = frozenset({"CacheTradeManager"})
+ASSET_VALUE_CACHE_CLASSES = frozenset({"CacheAssetValueManager"})
 WS_MANAGED_CACHE_CLASSES = (
     ORDER_CACHE_CLASSES | TRADE_CACHE_CLASSES | ASSET_VALUE_CACHE_CLASSES
 )

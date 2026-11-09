@@ -108,8 +108,8 @@ _ws_is_healthy = _bapi_ws_health._ws_is_healthy
 _ws_needs_rest_resync = _bapi_ws_health._ws_needs_rest_resync
 
 _CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
-_TRADE_CACHE_CLASSES = {"CacheTrade", "CacheTradeManager"}
-_ORDER_CACHE_CLASSES = {"CacheOrder", "CacheOrderManager"}
+_TRADE_CACHE_CLASSES = {"CacheTradeManager"}
+_ORDER_CACHE_CLASSES = {"CacheOrderManager"}
 _ACCOUNT_CACHE_CLASSES = _ORDER_CACHE_CLASSES | _TRADE_CACHE_CLASSES
 
 _ORIG_BASE_ATTRS = {

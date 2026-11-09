@@ -684,11 +684,11 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     assert trows[0]["commission"] == "0.06"
     assert trows[0]["commissionAsset"] == "USDC"
 
-    # 3. CacheCurrentPrice._persist_items accepts canonical [[ts_ms, price]] and [ts_ms, price] and rejects bare [price]
+    # 3. CacheCurrentPriceManager._persist_items accepts canonical [[ts_ms, price]] and [ts_ms, price] and rejects bare [price]
     cp_file = str(tmp_path / "cp_poly.json")
     with open(cp_file, "w", encoding="utf-8") as fh:
         json.dump({"items": {}, "fetchtime": {}}, fh)
-    cp_mgr = cm.CacheCurrentPrice(60, ["BTCUSDC"], cp_file)
+    cp_mgr = cm.CacheCurrentPriceManager(60, ["BTCUSDC"], cp_file)
     cp_mgr._persist_items("BTCUSDC", [])
     cp_mgr._persist_items("BTCUSDC", [61234.5])
     assert cp_mgr.cache.get("BTCUSDC", []) == []
@@ -701,7 +701,7 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     sparse_file = str(tmp_path / "sparse_ro.jsonl")
     with open(sparse_file, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"s": "BTCUSDC", "i": [1000, 10.0]}) + "\n")
-    sparse_ro = cm.CacheSparsePrice(60, ["BTCUSDC"], sparse_file)
+    sparse_ro = cm.CacheSparsePriceManager(60, ["BTCUSDC"], sparse_file)
     sparse_ro.save_state = False
     sparse_ro.maintain_append_persist()
     assert sparse_ro.cache.get("BTCUSDC") == []

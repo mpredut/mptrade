@@ -868,7 +868,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             enrich_microstructure_cvd,
         )
         from intelligence.sentiment.collectors.portfolio_collector import compute_enterprise_portfolio_risk_metrics
-        import cachetrend as ct
+        import cacheprice as cp
 
         now = 1_700_000_000.0
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -985,7 +985,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         fake_prov._pair.return_value = "@107"
         fake_api = MagicMock()
         fake_api.provider_by_name.return_value = fake_prov
-        hl_stream = ct.HyperliquidPriceStream(["HYPEUSDC", "PURRUSDC"], market_api=fake_api)
+        hl_stream = cp.HyperliquidPriceStream(["HYPEUSDC", "PURRUSDC"], market_api=fake_api)
         self.assertIn("@107", hl_stream._candidate_mids_keys("HYPEUSDC"))
         self.assertNotIn("@107", hl_stream._candidate_mids_keys("PURRUSDC"))
 

@@ -3,24 +3,18 @@
 Provides:
 - ``CacheTrendManagerBase(CacheManagerInterface, ABC)``: Level-2 abstract base
   for trend cache managers.
-- ``CacheLongTrendManager(CacheTrendManagerBase)`` (alias ``CacheLongTrend``):
+- ``CacheLongTrendManager(CacheTrendManagerBase)``:
   concrete manager for long-horizon trend snapshots from ``priceanalysis.json``.
-- ``CacheShortTrendManager(CacheTrendManagerBase)`` (alias ``CacheShortTrend``):
+- ``CacheShortTrendManager(CacheTrendManagerBase)``:
   concrete manager for real-time multi-window short trends, O(1) incremental
   prefix-sum dynamic windows, and transactional cross-process snapshot persistence
   (``cache_short_trend.json`` + ``.meta`` + ``.previous`` recovery).
-
-Non-Binance public price streams and pollers (``HyperliquidPriceStream``,
-``KrakenPriceStream``, ``_NonBinanceTrendPoller``, ``_fetch_price_with_deadline``,
-``_start_nonbinance_trend_poller``) live canonically in ``cacheprice.py`` and
-are re-exported here for backward compatibility.
 """
 
 from __future__ import annotations
 
 import bisect
 import builtins
-import concurrent.futures as _futures
 import math
 import os
 import sys
@@ -54,20 +48,9 @@ from cachepaths import (
     cachedb_root_for_file,
     clean_symbol_key,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
-    normalize_venue_name,
     resolve_cachedb_filepath,
-    split_symbol_assets,
 )
-from cacheprice import (
-    HyperliquidPriceStream,
-    KrakenPriceStream,
-    _NB_FETCH_DEADLINE_SEC,
-    _NonBinanceTrendPoller,
-    _VenuePriceStreamBase,
-    _fetch_price_with_deadline,
-    _start_nonbinance_trend_poller,
-)
-from instrument_registry import casefold_get, is_symbol_market_open
+from instrument_registry import casefold_get
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -80,7 +63,6 @@ from state_io import (
 from providers.base import (
     _parse_bool_flag,
     extract_timestamp_s,
-    live_price_fetch_context,
     normalize_side,
     normalize_timestamp_ms,
 )
@@ -222,9 +204,6 @@ class CacheLongTrendManager(CacheTrendManagerBase):
         if has_missing and base_wait > 15.0:
             return 15.0
         return base_wait
-
-
-CacheLongTrend = CacheLongTrendManager
 
 
 class CacheShortTrendManager(CacheTrendManagerBase):
@@ -1733,31 +1712,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         return waited
 
 
-CacheShortTrend = CacheShortTrendManager
-
-
 __all__ = [
     "CM_DYNAMIC_WINDOW_MAX_SEC",
     "CM_DYNAMIC_WINDOW_MIN_SEC",
     "CM_PUBLISHED_TREND_WINDOWS_SEC",
-    "CacheLongTrend",
     "CacheLongTrendManager",
-    "CacheShortTrend",
     "CacheShortTrendManager",
     "CacheTrendManagerBase",
-    "HyperliquidPriceStream",
-    "KrakenPriceStream",
-    "_NB_FETCH_DEADLINE_SEC",
-    "_NonBinanceTrendPoller",
-    "_VenuePriceStreamBase",
-    "_fetch_price_with_deadline",
-    "_start_nonbinance_trend_poller",
 ]
-
-
-def __getattr__(name: str):
-    if name in ("get_short_trend_manager", "get_long_trend_manager"):
-        fn = _cm_attr(name)
-        if fn is not None:
-            return fn
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

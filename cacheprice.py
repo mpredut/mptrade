@@ -1,15 +1,15 @@
 """Price domain cache hierarchy (Level 2 abstract base + Level 3 concrete classes + WS streams).
 
 Provides:
-- ``CachePriceManagerBase(CacheManagerInterface, ABC)`` (aliases ``CachePriceSeriesMixin``,
-  ``_PriceSeriesCacheMixin``): Abstract base class for price-series caches.
-- ``CacheSparsePriceManager(CachePriceManagerBase)`` (alias ``CacheSparsePrice``):
+- ``CachePriceManagerBase(CacheManagerInterface, ABC)``:
+  Abstract base class for price-domain caches.
+- ``CacheSparsePriceManager(CachePriceManagerBase)``:
   Sparse 3-minute price history in append-only JSONL.
-- ``Cache24PriceManager(CachePriceManagerBase)`` (alias ``Cache24Price``):
+- ``Cache24PriceManager(CachePriceManagerBase)``:
   Dense 24-hour rolling price series in per-symbol JSON snapshots.
-- ``Cache365PriceManager(Cache24PriceManager)`` (alias ``Cache365Price``):
+- ``Cache365PriceManager(Cache24PriceManager)``:
   Long-horizon 365-day dense archive in append-only JSONL with bounded memory tail.
-- ``CacheCurrentPriceManager(CachePriceManagerBase)`` (alias ``CacheCurrentPrice``):
+- ``CacheCurrentPriceManager(CachePriceManagerBase)``:
   Real-time per-symbol current price cache (WebSocket-first with HTTP fallback).
 - ``HyperliquidPriceStream``, ``KrakenPriceStream``, ``_NonBinanceTrendPoller``,
   ``_start_nonbinance_trend_poller``: Non-Binance venue price streams and fallback poller.
@@ -149,24 +149,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         return self.symbols
 
 
-class _PriceSeriesCacheMixin(CachePriceManagerBase):
-    """Backward-compatible price-series mixin alias allowing zero-arg test instantiation."""
-
-    cls_name = "PriceSeriesCache"
-
-    def __init__(self, *args, **kwargs):
-        if not args and not kwargs:
-            self.lock = threading.RLock()
-            self.cache = defaultdict(list)
-            self.symbols = []
-            return
-        super().__init__(*args, **kwargs)
-
-
-CachePriceSeriesMixin = CachePriceManagerBase
-
-
-class CacheSparsePriceManager(_PriceSeriesCacheMixin):
+class CacheSparsePriceManager(CachePriceManagerBase):
     """Store sparse three-minute price samples (Level 3) for two years in JSONL."""
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
@@ -183,10 +166,7 @@ class CacheSparsePriceManager(_PriceSeriesCacheMixin):
         )
 
 
-CacheSparsePrice = CacheSparsePriceManager
-
-
-class Cache24PriceManager(_PriceSeriesCacheMixin):
+class Cache24PriceManager(CachePriceManagerBase):
     """Collect maximum-granularity prices (Level 3) over the latest ``KEEP_HOURS``."""
 
     KEEP_HOURS = 24
@@ -339,9 +319,6 @@ class Cache24PriceManager(_PriceSeriesCacheMixin):
 
     def _should_poll(self):
         return False
-
-
-Cache24Price = Cache24PriceManager
 
 
 class Cache365PriceManager(Cache24PriceManager):
@@ -729,9 +706,6 @@ class Cache365PriceManager(Cache24PriceManager):
         return True
 
 
-Cache365Price = Cache365PriceManager
-
-
 class CacheCurrentPriceManager(CachePriceManagerBase):
     """Maintain the latest timestamped price per symbol (Level 3, WebSocket-first with HTTP fallback)."""
 
@@ -1103,9 +1077,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if ws_manager not in self._ws_managers:
             self._ws_managers.append(ws_manager)
         ws_manager.subscribe(self)
-
-
-CacheCurrentPrice = CacheCurrentPriceManager
 
 
 # ── Non-Binance Venue WebSocket Price Streams & Fallback Poller ───────────────
