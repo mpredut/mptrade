@@ -2698,6 +2698,9 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     assert any(isinstance(ev, tuple) and ev[0] == "stop" for ev in bridge_events)
     assert ("disable_writer",) in recorded_syncs
 
+    from binance_api import bapi_ws
+
+    monkeypatch.setattr(bapi_ws, "get_ws_manager", lambda: "fake-ws-mgr")
     cpm_calls = []
     res = cacheprice.attach_default_price_ws_stream(
         cpm_getter=lambda **kw: cpm_calls.append(kw) or "cpm-inst",
@@ -2706,6 +2709,7 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     )
     assert res == "cpm-inst"
     assert len(cpm_calls) == 1 and cpm_calls[0]["sync_ts"] == 0.8 and cpm_calls[0]["start_sync"] is False
+    assert cpm_calls[0]["ws_manager"] == "fake-ws-mgr"
 
 
 def test_cache24pricemanager_external_ohlc_reload_and_merge(tmp_path):
