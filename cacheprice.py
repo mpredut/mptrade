@@ -23,7 +23,6 @@ import bisect
 import builtins
 from collections import defaultdict, deque
 import concurrent.futures as _futures
-import json
 import os
 import threading
 import time
@@ -42,7 +41,6 @@ from botcore import (
     _is_fresh_obs_ts,
     _parse_bool_flag,
     _ts_ms_to_s,
-    clamp_price_to_bbo_mid,
     extract_current_price_item,
     extract_timestamp_ms,
     extract_timestamp_s,
@@ -95,14 +93,13 @@ from instrument_registry import (
     is_symbol_market_open,
 )
 import providers.market_api as _market_api
-from providers.base import live_price_fetch_context
+from providers.base import MarketDataProvider, live_price_fetch_context
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_jsonl,
     canonical_json_key,
     discard_generation_file,
-    encode_json_payload,
     format_jsonl_bucket_line,
     iter_jsonl_retention_lines,
     meta_file_path,
@@ -1729,10 +1726,33 @@ CacheCurrentPriceManager.resolve_cached_price = staticmethod(resolve_cached_symb
 
 
 class _VenuePriceStreamBase(PublicPriceStreamBase):
-    """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
+    """Shared public WebSocket price stream base for non-Binance venues."""
 
     MIN_SAME_PRICE_EMIT_MS = 1000
     _stream_init_hooks: list[Callable[..., None]] = []
+    _VENUE_STREAM_SPECS: dict[str, tuple[str, Callable[..., "_VenuePriceStreamBase"]]] = {}
+
+    @classmethod
+    def register_venue_stream(
+        cls,
+        venue: str,
+        ws_thread_name: str,
+        builder: Callable[..., "_VenuePriceStreamBase"],
+    ) -> None:
+        """Declaratively register a public WebSocket stream builder for ``venue``."""
+        v_key = normalize_venue_name(venue, default="")
+        if v_key:
+            cls._VENUE_STREAM_SPECS[v_key] = (str(ws_thread_name), builder)
+
+    @classmethod
+    def iter_registered_venue_streams(
+        cls,
+    ) -> tuple[tuple[str, str, Callable[..., "_VenuePriceStreamBase"]], ...]:
+        """Return ``(venue_key, ws_thread_name, builder)`` for all registered venue price streams."""
+        return tuple(
+            (v_key, ws_name, builder)
+            for v_key, (ws_name, builder) in cls._VENUE_STREAM_SPECS.items()
+        )
 
     def __init__(self, symbols=None, *, ws_url: str):
         super().__init__(symbols=symbols)
@@ -1859,20 +1879,20 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
 
 
 class HyperliquidPriceStream(_VenuePriceStreamBase):
-    """Real-time Hyperliquid WebSocket price stream (``allMids`` + registered channel extensions)."""
-
-    DEFAULT_WS_URL = "wss://api.hyperliquid.xyz/ws"
-    _KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
+    """Real-time Hyperliquid WebSocket price stream delegating protocol logic to ``HyperliquidProvider``."""
 
     def __init__(
         self,
         symbols=None,
         *,
         market_api=None,
-        ws_url: str = DEFAULT_WS_URL,
+        ws_url: Optional[str] = None,
         **extension_kwargs,
     ):
-        super().__init__(symbols=symbols, ws_url=ws_url)
+        prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
+        resolved_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
+        super().__init__(symbols=symbols, ws_url=resolved_url)
+        self._prov_cls = prov_cls
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
         for hook in getattr(self, "_stream_init_hooks", ()):
@@ -1891,54 +1911,19 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             cached = self._resolved_spot_keys.get(symbol)
         if cached:
             return cached
-        split = split_symbol_assets(symbol)
-        base = split[0] if split else symbol.replace("USDC", "").replace("USD", "")
-        keys: list[str] = []
-        if self.market_api is not None and hasattr(
-            self.market_api, "provider_by_name"
-        ):
-            try:
-                prov = self.market_api.provider_by_name("hyperliquid")
-                if prov is not None and (
-                    not hasattr(prov, "supports_symbol")
-                    or prov.supports_symbol(symbol)
-                ):
-                    spot_pair = None
-                    spot_pair_fn = getattr(prov, "spot_pair", None)
-                    if callable(spot_pair_fn):
-                        cand_pair = spot_pair_fn(symbol)
-                        if isinstance(cand_pair, str):
-                            spot_pair = cand_pair
-                    if not isinstance(spot_pair, str):
-                        pair_fn = getattr(prov, "_pair", None)
-                        cand_pair = (
-                            pair_fn()
-                            if callable(pair_fn)
-                            else getattr(prov, "_spot_pair", None)
-                        )
-                        if isinstance(cand_pair, str):
-                            spot_pair = cand_pair
-                        else:
-                            spot_pair = getattr(prov, "_spot_pair", None)
-                    if isinstance(spot_pair, str) and spot_pair.strip():
-                        keys.append(spot_pair.strip())
-            except Exception:
-                pass
-        known_spot = self._KNOWN_SPOT_PAIRS.get(base.upper())
-        if known_spot and known_spot not in keys:
-            keys.append(known_spot)
-        for fallback in (f"{base}/USDC", symbol, base):
-            if fallback and fallback not in keys:
-                keys.append(fallback)
-        resolved = tuple(keys)
+        prov_cls = self._prov_cls
+        resolved = (
+            prov_cls.resolve_ws_spot_keys(symbol, market_api=self.market_api)
+            if prov_cls is not None
+            else (symbol,)
+        )
         with self._lock:
             self._resolved_spot_keys[symbol] = resolved
         return resolved
 
     def _build_subscribe_payload(self) -> str:
-        return encode_json_payload(
-            {"method": "subscribe", "subscription": {"type": "allMids"}}
-        )
+        prov_cls = self._prov_cls
+        return prov_cls.build_ws_all_mids_subscription() if prov_cls is not None else ""
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
@@ -1951,26 +1936,20 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             if handler is not None:
                 handler(envelope.get("data"), ts_ms=ts_ms)
                 return
-            if channel != "allMids":
-                return
-            data = envelope.get("data")
-            mids = data.get("mids") if isinstance(data, dict) else None
-            if not isinstance(mids, dict):
+            prov_cls = self._prov_cls
+            if prov_cls is None:
                 return
             with self._lock:
                 symbols = self._symbols
-            for s_sym in symbols:
-                px = None
-                for k in self._candidate_mids_keys(s_sym):
-                    raw_val = casefold_get(mids, k)
-                    if not isinstance(raw_val, bool):
-                        px = safe_pos_float(raw_val, default=None)
-                    if px is not None:
-                        break
-                if px is not None:
-                    with self._lock:
-                        self._prices[s_sym] = px
-                    self._notify_subscribers(s_sym, [[ts_ms, px]])
+            prices = prov_cls.extract_ws_all_mids_prices(
+                envelope, symbols, candidate_mids_fn=self._candidate_mids_keys
+            )
+            if prices is None:
+                return
+            for s_sym, px in prices.items():
+                with self._lock:
+                    self._prices[s_sym] = px
+                self._notify_subscribers(s_sym, [[ts_ms, px]])
             for tick_fn in self._tick_listeners:
                 tick_fn(ts_ms)
         except Exception:
@@ -1978,29 +1957,24 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
 
 
 class KrakenPriceStream(_VenuePriceStreamBase):
-    """Real-time Kraken public WebSocket v1 ``ticker`` stream."""
+    """Real-time Kraken public WebSocket stream delegating protocol logic to ``KrakenProvider``."""
 
-    DEFAULT_WS_URL = "wss://ws.kraken.com"
-
-    def __init__(self, symbols=None, *, ws_url: str = DEFAULT_WS_URL):
-        super().__init__(symbols=symbols, ws_url=ws_url)
+    def __init__(self, symbols=None, *, ws_url: Optional[str] = None):
+        prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+        resolved_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
+        super().__init__(symbols=symbols, ws_url=resolved_url)
+        self._prov_cls = prov_cls
         self._ws_pairs: list[str] = []
         self._pair_to_symbol: dict[str, str] = {}
         for s_sym in self._symbols:
             self._register_symbol_pair(s_sym)
 
     def _register_symbol_pair(self, s_sym: str) -> None:
-        split = split_symbol_assets(s_sym)
-        ws_pair = f"{split[0]}/{split[1]}" if split else s_sym
-        if ws_pair not in self._ws_pairs:
-            self._ws_pairs.append(ws_pair)
-        self._pair_to_symbol[ws_pair.upper()] = s_sym
-        self._pair_to_symbol[clean_symbol_key(s_sym)] = s_sym
-        for alias_group in (("BTC", "XBT"), ("DOGE", "XDG")):
-            if split and split[0] in alias_group:
-                for alias in alias_group:
-                    self._pair_to_symbol[f"{alias}/{split[1]}"] = s_sym
-                    self._pair_to_symbol[f"{alias}{split[1]}"] = s_sym
+        prov_cls = self._prov_cls
+        if prov_cls is not None:
+            prov_cls.register_ws_ticker_symbol_pair(
+                s_sym, self._ws_pairs, self._pair_to_symbol
+            )
 
     def add_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
@@ -2033,15 +2007,12 @@ class KrakenPriceStream(_VenuePriceStreamBase):
         return True
 
     def _build_subscribe_payload(self) -> str:
+        prov_cls = self._prov_cls
+        if prov_cls is None:
+            return ""
         with self._lock:
             pairs = list(self._ws_pairs)
-        return encode_json_payload(
-            {
-                "event": "subscribe",
-                "pair": pairs,
-                "subscription": {"name": "ticker"},
-            }
-        )
+        return prov_cls.build_ws_ticker_subscription(pairs)
 
     def _resolve_symbol(self, pair_label: str) -> Optional[str]:
         raw_u = str(pair_label or "").strip().upper()
@@ -2054,41 +2025,40 @@ class KrakenPriceStream(_VenuePriceStreamBase):
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
+            prov_cls = self._prov_cls
+            if prov_cls is None:
+                return
             msg = parse_json_payload(raw) if isinstance(raw, str) else raw
             ts_ms = resolve_now_ms(now_ms)
-            if isinstance(msg, dict):
-                ev = str(msg.get("event") or "").strip().lower()
-                if ev == "heartbeat" or (
-                    ev == "systemstatus"
-                    and str(msg.get("status") or "").strip().lower() == "online"
-                ):
-                    with self._lock:
-                        known_prices = list(self._prices.items())
-                    for s_sym, px in known_prices:
-                        self._notify_subscribers(s_sym, [[ts_ms, px]])
+            kind, s_sym, price = prov_cls.parse_ws_public_ticker_message(
+                msg, resolve_symbol_fn=self._resolve_symbol
+            )
+            if kind == "keepalive":
+                with self._lock:
+                    known_prices = list(self._prices.items())
+                for sym_key, px in known_prices:
+                    self._notify_subscribers(sym_key, [[ts_ms, px]])
                 return
-            if not isinstance(msg, list) or len(msg) < 4:
-                return
-            if msg[-2] != "ticker" or not isinstance(msg[1], dict):
-                return
-            s_sym = self._resolve_symbol(str(msg[-1] or ""))
-            if not s_sym:
-                return
-            ticker = msg[1]
-            c_raw = ticker.get("c")
-            b_raw = ticker.get("b")
-            a_raw = ticker.get("a")
-            c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
-            b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
-            a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
-            price = clamp_price_to_bbo_mid(c_val, b_val, a_val)
-            if price is None:
-                return
-            with self._lock:
-                self._prices[s_sym] = price
-            self._notify_subscribers(s_sym, [[ts_ms, price]])
+            if kind == "tick" and s_sym and price is not None:
+                with self._lock:
+                    self._prices[s_sym] = price
+                self._notify_subscribers(s_sym, [[ts_ms, price]])
         except Exception:
             return
+
+
+_VenuePriceStreamBase.register_venue_stream(
+    "hyperliquid",
+    "HyperliquidPriceWS",
+    lambda syms, cpm=None: HyperliquidPriceStream(
+        syms, market_api=getattr(cpm, "market_api", None)
+    ),
+)
+_VenuePriceStreamBase.register_venue_stream(
+    "kraken",
+    "KrakenPriceWS",
+    lambda syms, cpm=None: KrakenPriceStream(syms),
+)
 
 
 def _fetch_price_with_deadline(
@@ -2206,14 +2176,7 @@ def _start_nonbinance_trend_poller(
     ws_streams = []
     if enable_ws and hasattr(cpm, "on_items_update"):
         for venue_key, ws_name, build_ws in (
-            (
-                "hyperliquid",
-                "HyperliquidPriceWS",
-                lambda syms: HyperliquidPriceStream(
-                    syms, market_api=getattr(cpm, "market_api", None)
-                ),
-            ),
-            ("kraken", "KrakenPriceWS", KrakenPriceStream),
+            _VenuePriceStreamBase.iter_registered_venue_streams()
         ):
             v_syms = [
                 s
@@ -2221,7 +2184,7 @@ def _start_nonbinance_trend_poller(
                 if normalize_venue_name(bindings[s.upper()], default="") == venue_key
             ]
             if v_syms:
-                ws_inst = build_ws(v_syms)
+                ws_inst = build_ws(v_syms, cpm=cpm)
                 if hasattr(cpm, "attach_ws_manager"):
                     cpm.attach_ws_manager(ws_inst)
                 else:

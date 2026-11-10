@@ -3128,6 +3128,71 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     assert not bridge.is_running
 
 
+def test_cache_modules_delegate_venue_ws_protocols_to_providers():
+    """Enforce zero concrete provider imports or wss:// URLs in cache*.py and verify provider WS helpers."""
+    import ast
+    from pathlib import Path
+    import cacheprice as cp
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+
+    repo_root = Path(__file__).resolve().parent.parent
+    concrete_provider_mods = {
+        "providers.binance_provider",
+        "providers.kraken_provider",
+        "providers.hyperliquid_provider",
+        "providers.t212_provider",
+    }
+    for mod_name in (
+        "cacheInterface.py",
+        "cacheaccount.py",
+        "cacheprice.py",
+        "cachetrend.py",
+        "cacheManager.py",
+    ):
+        src = (repo_root / mod_name).read_text(encoding="utf-8")
+        assert "wss://" not in src, f"{mod_name} must not hardcode venue wss:// URLs"
+        tree = ast.parse(src, filename=mod_name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in concrete_provider_mods:
+                raise AssertionError(f"{mod_name} imports concrete provider {node.module}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in concrete_provider_mods:
+                        raise AssertionError(f"{mod_name} imports concrete provider {alias.name}")
+
+    # Declarative venue price stream registry on _VenuePriceStreamBase
+    registered_venues = {
+        venue_key
+        for venue_key, _ws_name, _builder in cp._VenuePriceStreamBase.iter_registered_venue_streams()
+    }
+    assert {"hyperliquid", "kraken"}.issubset(registered_venues)
+
+    # Provider-owned WS protocol builders & parsers
+    assert HyperliquidProvider.build_ws_user_fills_subscriptions(None) == ()
+    hl_sub = json.loads(HyperliquidProvider.build_ws_user_fills_subscriptions("0xabc")[0])
+    assert hl_sub == {"method": "subscribe", "subscription": {"type": "userFills", "user": "0xabc"}}
+    assert json.loads(HyperliquidProvider.build_ws_all_mids_subscription()) == {
+        "method": "subscribe",
+        "subscription": {"type": "allMids"},
+    }
+    assert HyperliquidProvider.extract_ws_all_mids_prices(
+        {"channel": "allMids", "data": {"mids": {"@107": "33.5"}}},
+        ["HYPEUSDC"],
+    ) == {"HYPEUSDC": 33.5}
+
+    assert KrakenProvider.classify_ws_control_event({"event": "heartbeat"}) == ("keepalive", "")
+    assert KrakenProvider.classify_ws_control_event(
+        {"event": "subscriptionStatus", "status": "error", "errorMessage": "bad token"}
+    ) == ("error", "bad token")
+    assert KrakenProvider.parse_ws_public_ticker_message({"event": "heartbeat"}) == (
+        "keepalive",
+        None,
+        None,
+    )
+
+
+
 
 
 

@@ -19,13 +19,15 @@ import os
 import sys
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     _LOCAL_MODULE_LOCK,
     _parse_bool_flag,
+    env_value,
     exact_nonneg_int,
     exact_pos_int,
+    is_live_network_backfill_enabled,
     load_env_stack,
     normalize_side,
     required_bool_env,
@@ -33,8 +35,13 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import CACHE_HYPERLIQUID_TRADE_FILENAME, canonical_base_asset
+from cachepaths import (
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
+    canonical_base_asset,
+    split_symbol_assets,
+)
 from instrument_registry import casefold_get
+from state_io import encode_json_payload
 from .base import (
     MarketDataProvider,
     bool_env,
@@ -143,6 +150,8 @@ class HyperliquidProvider(MarketDataProvider):
     _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
+    PUBLIC_WS_URL = "wss://api.hyperliquid.xyz/ws"
+    KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
 
     #: Served spot token, defaulting to HYPE.
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None, *, client=None):
@@ -376,6 +385,121 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         tok = canonical_base_asset(symbol) or str(symbol or "HYPE").strip().upper()
         return cls(token=tok, client=client).fetch_remote_trades(symbol, start_time_ms)
+
+    @classmethod
+    def resolve_ws_spot_keys(
+        cls, symbol: str, *, market_api=None
+    ) -> tuple[str, ...]:
+        """Resolve ordered Hyperliquid ``allMids`` spot lookup keys (e.g. ``@107``, ``HYPE/USDC``) for ``symbol``."""
+        split = split_symbol_assets(symbol)
+        base = split[0] if split else symbol.replace("USDC", "").replace("USD", "")
+        keys: list[str] = []
+        if market_api is not None and hasattr(market_api, "provider_by_name"):
+            try:
+                prov = market_api.provider_by_name("hyperliquid")
+                if prov is not None and (
+                    not hasattr(prov, "supports_symbol")
+                    or prov.supports_symbol(symbol)
+                ):
+                    spot_pair = None
+                    spot_pair_fn = getattr(prov, "spot_pair", None)
+                    if callable(spot_pair_fn):
+                        cand_pair = spot_pair_fn(symbol)
+                        if isinstance(cand_pair, str):
+                            spot_pair = cand_pair
+                    if not isinstance(spot_pair, str):
+                        pair_fn = getattr(prov, "_pair", None)
+                        cand_pair = (
+                            pair_fn()
+                            if callable(pair_fn)
+                            else getattr(prov, "_spot_pair", None)
+                        )
+                        if isinstance(cand_pair, str):
+                            spot_pair = cand_pair
+                        else:
+                            spot_pair = getattr(prov, "_spot_pair", None)
+                    if isinstance(spot_pair, str) and spot_pair.strip():
+                        keys.append(spot_pair.strip())
+            except Exception:
+                pass
+        known_spot = cls.KNOWN_SPOT_PAIRS.get(base.upper())
+        if known_spot and known_spot not in keys:
+            keys.append(known_spot)
+        for fallback in (f"{base}/USDC", symbol, base):
+            if fallback and fallback not in keys:
+                keys.append(fallback)
+        return tuple(keys)
+
+    @classmethod
+    def build_ws_all_mids_subscription(cls) -> str:
+        """Encode the Hyperliquid public ``allMids`` WebSocket subscription payload."""
+        return encode_json_payload(
+            {"method": "subscribe", "subscription": {"type": "allMids"}}
+        )
+
+    @classmethod
+    def extract_ws_all_mids_prices(
+        cls,
+        envelope: object,
+        symbols: Sequence[str],
+        *,
+        candidate_mids_fn=None,
+    ) -> Optional[dict[str, float]]:
+        """Extract positive mid prices per symbol from a Hyperliquid ``allMids`` WS envelope."""
+        if not isinstance(envelope, dict) or envelope.get("channel") != "allMids":
+            return None
+        data = envelope.get("data")
+        mids = data.get("mids") if isinstance(data, dict) else None
+        if not isinstance(mids, dict):
+            return None
+        key_fn = candidate_mids_fn or cls.resolve_ws_spot_keys
+        out: dict[str, float] = {}
+        for s_sym in symbols or ():
+            px = None
+            for k in key_fn(s_sym):
+                raw_val = casefold_get(mids, k)
+                if not isinstance(raw_val, bool):
+                    px = safe_pos_float(raw_val, default=None)
+                if px is not None:
+                    break
+            if px is not None:
+                out[s_sym] = px
+        return out
+
+    @classmethod
+    def resolve_ws_user_address(
+        cls,
+        user_address: Optional[str] = None,
+        *,
+        resolve_env: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Resolve the Hyperliquid account address for ``userFills`` WebSocket subscriptions."""
+        addr = user_address
+        if addr is None and is_live_network_backfill_enabled(resolve_env):
+            addr = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(
+                _HL_DIR, "HL_ACCOUNT_ADDRESS"
+            )
+        return str(addr or "").strip() or None
+
+    @classmethod
+    def build_ws_user_fills_subscriptions(
+        cls, user_address: Optional[str]
+    ) -> tuple[str, ...]:
+        """Encode the Hyperliquid ``userFills`` WebSocket subscription payload tuple."""
+        addr = str(user_address or "").strip()
+        if not addr:
+            return ()
+        return (
+            encode_json_payload(
+                {
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "userFills",
+                        "user": addr,
+                    },
+                }
+            ),
+        )
 
     @classmethod
     def extract_ws_user_fills(

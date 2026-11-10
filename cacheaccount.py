@@ -33,7 +33,6 @@ from botcore import (
     _parse_bool_flag,
     _ts_ms_to_s,
     clean_order_id,
-    env_value,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -83,7 +82,6 @@ from state_io import (
     atomic_text_writer,
     atomic_write_json,
     discard_generation_file,
-    encode_json_payload,
     meta_file_path,
     parse_json_payload,
     read_json_dict,
@@ -2352,17 +2350,17 @@ def attach_hyperliquid_user_fills_bridge(
     **_unused_kwargs,
 ) -> None:
     """Attach the account-domain ``userFills`` WebSocket bridge onto a Hyperliquid stream instance."""
+    hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
     ws_stream._fills_cache_path = fills_cache_path
     ws_stream._fills_ws_seeded = False
     ws_stream._last_fills_touch_ms = 0
-    if user_address is None and is_live_network_backfill_enabled(resolve_env_user_address):
-        hl_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "hyperliquid"
+    ws_stream._user_address = (
+        hl_prov_cls.resolve_ws_user_address(
+            user_address, resolve_env=resolve_env_user_address
         )
-        user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(
-            hl_dir, "HL_ACCOUNT_ADDRESS"
-        )
-    ws_stream._user_address = str(user_address or "").strip() or None
+        if hl_prov_cls is not None
+        else (str(user_address or "").strip() or None)
+    )
 
     def _resolve_fills_cache_file() -> str:
         return (
@@ -2373,26 +2371,16 @@ def attach_hyperliquid_user_fills_bridge(
 
     def _build_user_fills_subscribe_payloads() -> tuple[str, ...]:
         ws_stream._fills_ws_seeded = False
-        if not ws_stream._user_address:
+        if hl_prov_cls is None:
             return ()
-        return (
-            encode_json_payload(
-                {
-                    "method": "subscribe",
-                    "subscription": {
-                        "type": "userFills",
-                        "user": ws_stream._user_address,
-                    },
-                }
-            ),
-        )
+        return hl_prov_cls.build_ws_user_fills_subscriptions(ws_stream._user_address)
 
     def _handle_user_fills(data: object, *, ts_ms: int) -> None:
-        from providers.hyperliquid_provider import HyperliquidProvider
-
+        if hl_prov_cls is None:
+            return
         with ws_stream._lock:
             symbols = ws_stream._symbols
-        parsed = HyperliquidProvider.extract_ws_user_fills(
+        parsed = hl_prov_cls.extract_ws_user_fills(
             data, symbols, candidate_mids_fn=ws_stream._candidate_mids_keys
         )
         if parsed is None:
@@ -2450,7 +2438,9 @@ def run_kraken_trade_poll_loop(
     stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Run the REST Ledgers polling loop for Kraken trade cache persistence."""
-    from providers.kraken_provider import KrakenProvider
+    kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+    if kr_prov_cls is None:
+        raise RuntimeError("Kraken provider class is not registered")
 
     cache = CacheTradeManager.load_sanitized_trade_snapshot(
         cache_file, venue="kraken"
@@ -2460,7 +2450,7 @@ def run_kraken_trade_poll_loop(
         heartbeat_fn(force=True)
     while not (stop_event is not None and stop_event.is_set()):
         try:
-            by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+            by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
             CacheTradeManager.merge_venue_fills_into_dict(
@@ -2500,13 +2490,16 @@ def run_kraken_trade_ws_loop(
     backoff_init: float,
     backoff_max: float,
     lookback_sec: float,
-    ws_url: str = "wss://ws-auth.kraken.com/",
+    ws_url: Optional[str] = None,
     heartbeat_fn=None,
     stop_event: Optional[threading.Event] = None,
     ws_holder: Optional[list] = None,
 ) -> None:
     """Run the real-time Kraken ``ownTrades`` WebSocket bridge with periodic REST Ledgers reconciliation."""
-    from providers.kraken_provider import KrakenProvider
+    kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+    if kr_prov_cls is None:
+        raise RuntimeError("Kraken provider class is not registered")
+    resolved_ws_url = ws_url or kr_prov_cls.PRIVATE_WS_URL
 
     try:
         import websocket
@@ -2536,7 +2529,7 @@ def run_kraken_trade_ws_loop(
         heartbeat_fn(force=True)
 
     def _merge_rest() -> None:
-        by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+        by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
             client, pairs=pairs, lookback_sec=lookback_sec
         )
         CacheTradeManager.merge_venue_fills_into_dict(
@@ -2559,22 +2552,7 @@ def run_kraken_trade_ws_loop(
 
     def on_open(ws) -> None:
         try:
-            res = client._private("GetWebSocketsToken", fresh=True)
-            token = (
-                ""
-                if not isinstance(res, dict) or isinstance(res.get("token"), bool)
-                else str(res.get("token") or "").strip()
-            )
-            if not token:
-                raise RuntimeError("Kraken GetWebSocketsToken returned no token")
-            ws.send(
-                encode_json_payload(
-                    {
-                        "event": "subscribe",
-                        "subscription": {"name": "ownTrades", "token": token},
-                    }
-                )
-            )
+            ws.send(kr_prov_cls.build_ws_own_trades_subscription(client))
             log("[kraken_cache][ws] subscribed ownTrades")
         except Exception as exc:
             log(f"[kraken_cache][ws] subscribe failed: {exc}")
@@ -2588,44 +2566,35 @@ def run_kraken_trade_ws_loop(
         if data is None:
             return
         now_ms = resolve_now_ms()
-        fills_by_sym = KrakenProvider.extract_ws_own_trades(data, pairs=pairs)
+        fills_by_sym = kr_prov_cls.extract_ws_own_trades(data, pairs=pairs)
         if fills_by_sym is None:
-            if isinstance(data, dict):
-                ev = str(data.get("event") or "").strip().lower()
-                if (
-                    ev == "subscriptionstatus"
-                    and str(data.get("status") or "").strip().lower() == "error"
-                ):
-                    log(
-                        f"[kraken_cache][ws] ownTrades subscription error: {data.get('errorMessage') or data}"
-                    )
+            kind, err_msg = kr_prov_cls.classify_ws_control_event(data)
+            if kind == "error":
+                log(f"[kraken_cache][ws] ownTrades subscription error: {err_msg}")
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                return
+            if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
+                if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
                     try:
-                        ws.close()
-                    except Exception:
-                        pass
-                    return
-                if (
-                    ev in ("heartbeat", "systemstatus", "subscriptionstatus")
-                    and (now_ms - last_flush_ms[0]) >= 15_000
-                ):
-                    if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
-                        try:
-                            _merge_rest()
-                            last_rest_sync_ms[0] = now_ms
-                            log(
-                                f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
-                                f"for {list(cache['items'].keys())}"
-                            )
-                        except Exception as exc:
-                            log(
-                                f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
-                            )
-                    if last_rest_sync_ms[0] > 0:
-                        _touch_fetchtimes(now_ms)
-                        save_json_state(cache_file, cache, indent=1)
-                        last_flush_ms[0] = now_ms
-                    if callable(heartbeat_fn):
-                        heartbeat_fn()
+                        _merge_rest()
+                        last_rest_sync_ms[0] = now_ms
+                        log(
+                            f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
+                            f"for {list(cache['items'].keys())}"
+                        )
+                    except Exception as exc:
+                        log(
+                            f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
+                        )
+                if last_rest_sync_ms[0] > 0:
+                    _touch_fetchtimes(now_ms)
+                    save_json_state(cache_file, cache, indent=1)
+                    last_flush_ms[0] = now_ms
+                if callable(heartbeat_fn):
+                    heartbeat_fn()
             return
         changed = CacheTradeManager.merge_venue_fills_into_dict(
             cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
@@ -2643,7 +2612,10 @@ def run_kraken_trade_ws_loop(
     while not (stop_event is not None and stop_event.is_set()):
         try:
             ws = websocket.WebSocketApp(
-                ws_url, on_open=on_open, on_message=on_message, on_error=on_error
+                resolved_ws_url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
             )
             if isinstance(ws_holder, list) and ws_holder:
                 ws_holder[0] = ws
@@ -2691,11 +2663,14 @@ class _KrakenAccountTradeBridge:
 
     def start(self) -> bool:
         from credentials import CredentialConfigurationError
-        from providers.kraken_provider import KrakenProvider
 
+        kr_prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
+        if kr_prov_cls is None:
+            log("[kraken_cache] skipped (Kraken provider not registered)")
+            return False
         try:
-            cfg = KrakenProvider.resolve_cache_daemon_config()
-            client, profile = KrakenProvider.build_cache_client()
+            cfg = kr_prov_cls.resolve_cache_daemon_config()
+            client, profile = kr_prov_cls.build_cache_client()
         except CredentialConfigurationError as exc:
             log(f"[kraken_cache] skipped (no Kraken cache credentials): {exc}")
             return False

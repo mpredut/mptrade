@@ -15,10 +15,11 @@ gate. Importing this module does not eagerly initialize the Kraken client.
 import os
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from botcore import (
     _parse_bool_flag,
+    clamp_price_to_bbo_mid,
     clean_order_id,
     env_values_map,
     exact_nonneg_int,
@@ -74,6 +75,7 @@ from cachepaths import (
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get, symbols_for
+from state_io import encode_json_payload
 
 _MISSING = object()
 
@@ -162,6 +164,8 @@ class KrakenProvider(MarketDataProvider):
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_MAX_STALE_S = _CACHE_MAX_STALE_S
+    PUBLIC_WS_URL = "wss://ws.kraken.com"
+    PRIVATE_WS_URL = "wss://ws-auth.kraken.com/"
     _fills_match_fn = staticmethod(kraken_pair_matches)
     _fills_normalize_fn = staticmethod(_normalize_kraken_fill)
 
@@ -277,7 +281,7 @@ class KrakenProvider(MarketDataProvider):
             "backoff_max": _req_pos_float("KRAKEN_CACHE_BACKOFF_MAX_S"),
             "mode": mode,
             "lookback_sec": _req_pos_float("KRAKEN_CACHE_LOOKBACK_H") * 3600.0,
-            "ws_url": "wss://ws-auth.kraken.com/",
+            "ws_url": cls.PRIVATE_WS_URL,
             "cache_file": cache_path(CACHE_KRAKEN_TRADE_FILENAME),
         }
 
@@ -701,6 +705,106 @@ class KrakenProvider(MarketDataProvider):
                 n["symbol"] = sym
                 fills_by_sym.setdefault(sym, []).append(n)
         return fills_by_sym
+
+    @classmethod
+    def register_ws_ticker_symbol_pair(
+        cls,
+        symbol: str,
+        ws_pairs: list[str],
+        pair_to_symbol: dict[str, str],
+    ) -> None:
+        """Register Kraken v1 public WebSocket pair labels and legacy XBT/XDG aliases for ``symbol``."""
+        split = split_symbol_assets(symbol)
+        ws_pair = f"{split[0]}/{split[1]}" if split else symbol
+        if ws_pair not in ws_pairs:
+            ws_pairs.append(ws_pair)
+        pair_to_symbol[ws_pair.upper()] = symbol
+        pair_to_symbol[clean_symbol_key(symbol)] = symbol
+        for alias_group in (("BTC", "XBT"), ("DOGE", "XDG")):
+            if split and split[0] in alias_group:
+                for alias in alias_group:
+                    pair_to_symbol[f"{alias}/{split[1]}"] = symbol
+                    pair_to_symbol[f"{alias}{split[1]}"] = symbol
+
+    @classmethod
+    def build_ws_ticker_subscription(cls, pairs: Sequence[str]) -> str:
+        """Encode the Kraken v1 public ``ticker`` WebSocket subscription payload."""
+        return encode_json_payload(
+            {
+                "event": "subscribe",
+                "pair": list(pairs),
+                "subscription": {"name": "ticker"},
+            }
+        )
+
+    @classmethod
+    def parse_ws_public_ticker_message(
+        cls,
+        msg: object,
+        *,
+        resolve_symbol_fn=None,
+    ) -> tuple[str, Optional[str], Optional[float]]:
+        """Parse a Kraken v1 public WS frame into ``('tick', sym, price)``, ``('keepalive', None, None)``, or ``('ignore', None, None)``."""
+        if isinstance(msg, dict):
+            ev = str(msg.get("event") or "").strip().lower()
+            if ev == "heartbeat" or (
+                ev == "systemstatus"
+                and str(msg.get("status") or "").strip().lower() == "online"
+            ):
+                return ("keepalive", None, None)
+            return ("ignore", None, None)
+        if not isinstance(msg, list) or len(msg) < 4:
+            return ("ignore", None, None)
+        if msg[-2] != "ticker" or not isinstance(msg[1], dict):
+            return ("ignore", None, None)
+        raw_label = str(msg[-1] or "")
+        s_sym = resolve_symbol_fn(raw_label) if callable(resolve_symbol_fn) else raw_label
+        if not s_sym:
+            return ("ignore", None, None)
+        ticker = msg[1]
+        c_raw = ticker.get("c")
+        b_raw = ticker.get("b")
+        a_raw = ticker.get("a")
+        c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
+        b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
+        a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
+        price = clamp_price_to_bbo_mid(c_val, b_val, a_val)
+        if price is None:
+            return ("ignore", None, None)
+        return ("tick", s_sym, price)
+
+    @classmethod
+    def build_ws_own_trades_subscription(cls, client) -> str:
+        """Request a fresh Kraken WebSocket token and encode the ``ownTrades`` subscription frame."""
+        res = client._private("GetWebSocketsToken", fresh=True)
+        token = (
+            ""
+            if not isinstance(res, dict) or isinstance(res.get("token"), bool)
+            else str(res.get("token") or "").strip()
+        )
+        if not token:
+            raise RuntimeError("Kraken GetWebSocketsToken returned no token")
+        return encode_json_payload(
+            {
+                "event": "subscribe",
+                "subscription": {"name": "ownTrades", "token": token},
+            }
+        )
+
+    @classmethod
+    def classify_ws_control_event(cls, data: object) -> tuple[str, str]:
+        """Classify non-fill Kraken WS frames into ``('error', msg)``, ``('keepalive', '')``, or ``('ignore', '')``."""
+        if not isinstance(data, dict):
+            return ("ignore", "")
+        ev = str(data.get("event") or "").strip().lower()
+        if (
+            ev == "subscriptionstatus"
+            and str(data.get("status") or "").strip().lower() == "error"
+        ):
+            return ("error", str(data.get("errorMessage") or data))
+        if ev in ("heartbeat", "systemstatus", "subscriptionstatus"):
+            return ("keepalive", "")
+        return ("ignore", "")
 
     @classmethod
     def ledger_to_fills(cls, ledger: object) -> List[dict]:
