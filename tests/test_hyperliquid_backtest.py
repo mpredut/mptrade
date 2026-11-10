@@ -14,7 +14,6 @@ if _HL_DIR not in sys.path:
 spec = importlib.util.spec_from_file_location("hl_backtest_module", os.path.join(_HL_DIR, "backtest.py"))
 hl_backtest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hl_backtest)
-simulate = hl_backtest.simulate
 
 spec_replay = importlib.util.spec_from_file_location("hl_replay_module", os.path.join(_HL_DIR, "replay.py"))
 hl_replay = importlib.util.module_from_spec(spec_replay)
@@ -38,7 +37,7 @@ def test_hyperliquid_simulate_stop_loss_long():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=0, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "long")
+    m = run_replay(ohlc, ts, fund, sig, P, "long")
     assert m["cycles"] == 1
     assert m["open_qty"] == 0.0
     assert m["realized"] < 0  # Stop loss realized loss
@@ -58,7 +57,7 @@ def test_hyperliquid_simulate_stop_loss_short():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=0, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "short")
+    m = run_replay(ohlc, ts, fund, sig, P, "short")
     assert m["cycles"] == 1
     assert m["open_qty"] == 0.0
     assert m["realized"] < 0
@@ -98,7 +97,7 @@ def test_hyperliquid_simulate_take_profit_long():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "long")
+    m = run_replay(ohlc, ts, fund, sig, P, "long")
     assert m["cycles"] == 1
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
@@ -119,7 +118,7 @@ def test_hyperliquid_simulate_take_profit_short():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "short")
+    m = run_replay(ohlc, ts, fund, sig, P, "short")
     assert m["cycles"] == 1
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
@@ -144,7 +143,7 @@ def test_hyperliquid_simulate_dca_execution():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "long")
+    m = run_replay(ohlc, ts, fund, sig, P, "long")
     assert m["cycles"] == 1
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
@@ -166,7 +165,7 @@ def test_hyperliquid_simulate_signal_gate():
     sig = ["down", "down", "up", "up"]
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=0, budget=500.0, fee=0.045, sl=5.0, signal_gate=True)
 
-    m = simulate(ohlc, ts, fund, sig, P, "long")
+    m = run_replay(ohlc, ts, fund, sig, P, "long")
     # By bar 3, order was placed on bar 2 and filled on bar 3
     assert m["open_qty"] > 0.0
 
@@ -183,8 +182,8 @@ def test_hyperliquid_simulate_funding():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.0, drop=2.0, tp=10.0, maxdca=0, budget=500.0, fee=0.045, sl=0.0)
 
-    m_long = simulate(ohlc, ts, fund, sig, P, "long")
-    m_short = simulate(ohlc, ts, fund, sig, P, "short")
+    m_long = run_replay(ohlc, ts, fund, sig, P, "long")
+    m_short = run_replay(ohlc, ts, fund, sig, P, "short")
 
     assert m_long["funding"] < 0.0    # long pays funding
     assert m_short["funding"] > 0.0   # short receives funding
@@ -201,7 +200,7 @@ def test_hyperliquid_standardized_performance_metrics():
     sig = ["__any__"] * len(ohlc)
     P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
 
-    m = simulate(ohlc, ts, fund, sig, P, "long")
+    m = run_replay(ohlc, ts, fund, sig, P, "long")
 
     assert "return_pct" in m
     assert "max_drawdown_pct" in m
