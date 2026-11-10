@@ -1395,10 +1395,14 @@ class Instrument:
                     return res
             except Exception:
                 pass
-        prov = getattr(inst, "provider", None)
-        if prov is None or isinstance(prov, str):
+        mock_children = getattr(inst, "_mock_children", None)
+        if isinstance(mock_children, dict) and "provider" in mock_children and "_provider" not in mock_children:
+            prov = getattr(inst, "provider", None)
+        else:
             prov = getattr(inst, "_provider", None)
-        if prov is None:
+            if prov is None or isinstance(prov, str):
+                prov = getattr(inst, "provider", None)
+        if prov is None or isinstance(prov, str):
             return {}
         from providers.base import MarketDataProvider
 
