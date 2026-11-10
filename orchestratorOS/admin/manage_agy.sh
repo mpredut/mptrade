@@ -84,7 +84,10 @@ do_restart() {
             sleep 1
         done
         sleep 2
-        "$AGY_BIN" remote-control start --name "$INSTANCE_NAME"
+        if ! "$AGY_BIN" remote-control start --name "$INSTANCE_NAME"; then
+            sleep 5
+            is_active || "$AGY_BIN" remote-control start --name "$INSTANCE_NAME" || true
+        fi
         sleep 2
         "$AGY_BIN" remote-control status || true
     fi
@@ -120,7 +123,7 @@ do_watchdog() {
         log "WARNING: Daemon is running but tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
         do_restart
         send_alert "Antigravity remote-control daemon tunnel was found stuck/broken and was automatically restarted as '${INSTANCE_NAME}'."
-    elif [ -t 1 ] || [ "${1:-}" = "--verbose" ]; then
+    elif [ -t 1 ] || [ "${1:-}" = "--verbose" ] || { [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 5 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eiq "error:|warning:|failed"; }; then
         log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
     fi
 }
@@ -183,7 +186,7 @@ do_ui_sync() {
         0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s (cadence >= ${min_interval_sec}s); restarting to surface threads."
             do_restart ;;
         10|11|12|3)
-            if [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 1 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eq "ERROR:|WARNING:"; then
+            if [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 5 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eiq "error:|warning:|failed"; then
                 log "ui-sync: check healthy (rc=$rc, idle_sec=${idle_sec}s)."
             fi ;;
         *)  log "WARNING: ui-sync-check failed (rc=$rc); see ~/agy_store_fix.log" >&2 ;;
