@@ -9279,9 +9279,38 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             + "\n",
             encoding="utf-8",
         )
+        kraken_ws_log = Path(tmp_net) / "Kraken-cache.log"
+        kraken_ws_log.write_text(
+            "\n".join(
+                [
+                    "[11:14:32] [kraken_cache][ws] error: Connection to remote host was lost.",
+                    "[11:14:34] [kraken_cache][ws] subscribed ownTrades",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=24.0)
         assert net_res.error_count == 0
         assert not net_res.persistent_errors
+
+    # 12. ProviderBase.get_trades and BinanceProvider/ReplayProvider/T212Provider.get_orders accept authoritative/publish_cache
+    from providers.market_api import BinanceProvider
+    from providers.replay_provider import ReplayMarketDataProvider
+
+    with patch("providers.market_api._get_allorders") as mock_ao:
+        mock_ao.return_value.get_trade_orders.return_value = [
+            {"side": "BUY", "price": "220.0", "executedQty": "1.0", "time": 1700000000000}
+        ]
+        bp = BinanceProvider()
+        trades = bp.get_trades("TAOUSDC", 3600.0)
+        assert len(trades) == 1
+        assert trades[0]["side"] == "BUY"
+        assert len(bp.get_orders("TAOUSDC", "BUY", 3600.0, authoritative=True, publish_cache=False)) == 1
+
+    rp = ReplayMarketDataProvider({"TAOUSDC": []})
+    assert rp.get_trades("TAOUSDC", 3600.0, authoritative=True) == []
+
 
 
 

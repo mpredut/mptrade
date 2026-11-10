@@ -836,6 +836,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "ui_sync_idle_sec" in cleaned
                                     or "[manage_agy] ERROR:" in cleaned
                                     or "[ws] error: ping/pong timed out" in cleaned
+                                    or "Connection to remote host was lost" in cleaned
                                     or "WS error: " in cleaned
                                     or "Temporary failure in name resolution" in cleaned
                                     or "NameResolutionError" in cleaned

@@ -272,7 +272,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
         cutoff_ms = (self._last_ts.get(sym, 0.0) - since_val) * 1000.0
         return orders[-1]["timestamp"] >= cutoff_ms
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
+    def get_orders(
+        self,
+        symbol: str,
+        side: Optional[str],
+        since_s: float,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []

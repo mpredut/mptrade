@@ -260,7 +260,15 @@ class T212Provider(MarketDataProvider):
             print(f"[T212] balance {asset} open_orders check: {e}")
         return max(0.0, round(total_qty - open_sell_qty, 6))
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
+    def get_orders(
+        self,
+        symbol: str,
+        side: Optional[str],
+        since_s: float,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
         """Return recent fills from SSOT cache_trade_t212.json, falling back to one synthetic average-price buy for active holdings."""
         since_val = safe_pos_float(since_s, default=None)
         if since_val is None:
@@ -268,7 +276,7 @@ class T212Provider(MarketDataProvider):
         if side is not None:
             if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
                 return []
-        rows = self._fills_from_cache(symbol)
+        rows = None if (authoritative or publish_cache) else self._fills_from_cache(symbol)
         if rows is None and (cache_file := self._fills_cache_file()):
             try:
                 cli = self._client()

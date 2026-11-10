@@ -431,6 +431,37 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
             os.utime(os.path.join(root, f), (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
+    # A fresh USER_INPUT after an earlier schedule resets sched_calls so a new timer blocks UI sync
+    fresh_user_ts = time.time() - 60.0
+    fresh_user_iso = datetime.fromtimestamp(fresh_user_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tp.write_text(
+        tp.read_text()
+        + json.dumps(
+            {
+                "step_index": 2,
+                "type": "USER_INPUT",
+                "created_at": fresh_user_iso,
+                "content": "restart timer",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 3,
+                "type": "PLANNER_RESPONSE",
+                "created_at": fresh_user_iso,
+                "tool_calls": [{"name": "schedule", "args": {"CronExpression": "*/20 * * * *", "Prompt": "wake"}}],
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+
 
 
 

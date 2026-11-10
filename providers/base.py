@@ -286,6 +286,17 @@ class MarketDataProvider(ABC):
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
+        if not authoritative and not publish_cache:
+            try:
+                return self.get_orders(
+                    symbol,
+                    None,
+                    since_s,
+                    authoritative=False,
+                    publish_cache=False,
+                )
+            except TypeError:
+                return self.get_orders(symbol, None, since_s)
         return self.get_orders(
             symbol,
             None,

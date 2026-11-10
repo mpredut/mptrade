@@ -635,6 +635,7 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
             step_type = str(rec.get("type") or "")
             content = str(rec.get("content") or "")
             if step_type == "USER_INPUT":
+                sched_calls = 0
                 created_raw = str(rec.get("created_at") or "").strip()
                 if created_raw:
                     try:
@@ -654,6 +655,7 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                     oneshot_until = 0.0
                     cron_active = False
                     sched_task_id = ""
+                    sched_calls = 0
                 else:
                     m_sender = re.search(r"\bsender=(\S+)", content)
                     sender_id = m_sender.group(1).strip() if m_sender else ""
@@ -680,6 +682,7 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                         oneshot_until = 0.0
                         cron_active = False
                         sched_task_id = ""
+                        sched_calls = 0
                 elif name == "schedule":
                     sched_calls += 1
                     created_raw = str(rec.get("created_at") or "").strip()

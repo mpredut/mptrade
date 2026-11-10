@@ -168,7 +168,15 @@ class BinanceProvider(MarketDataProvider):
         # for an absent asset and ``None`` when the API read fails.
         return _get_bapi().get_free_balance(asset)
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
+    def get_orders(
+        self,
+        symbol: str,
+        side: Optional[str],
+        since_s: float,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
         # Preserve get_trade_orders side and age filtering, then normalize shape.
         raw = _get_allorders().get_trade_orders(side, symbol, since_s) or []
         return [normalize_order(o) for o in raw]
@@ -631,13 +639,44 @@ class MarketApi:
         return self._provider_for(asset).free_balance(asset)
 
     def get_orders(
-        self, symbol: str, side: Optional[str], since_s: float, *, provider_name=None,
+        self,
+        symbol: str,
+        side: Optional[str],
+        since_s: float,
+        *,
+        provider_name=None,
+        authoritative: bool = False,
+        publish_cache: bool = False,
     ) -> List[dict]:
-        return self._provider_routed_or_default(symbol, provider_name).get_orders(symbol, side, since_s)
+        prov = self._provider_routed_or_default(symbol, provider_name)
+        if authoritative or publish_cache:
+            return prov.get_orders(
+                symbol,
+                side,
+                since_s,
+                authoritative=authoritative,
+                publish_cache=publish_cache,
+            )
+        return prov.get_orders(symbol, side, since_s)
 
-    def get_trades(self, symbol: str, since_s: float, *,
-                   provider_name=None) -> List[dict]:
-        return self._provider_explicit_or_routed(symbol, provider_name).get_trades(symbol, since_s)
+    def get_trades(
+        self,
+        symbol: str,
+        since_s: float,
+        *,
+        provider_name=None,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
+        prov = self._provider_explicit_or_routed(symbol, provider_name)
+        if authoritative or publish_cache:
+            return prov.get_trades(
+                symbol,
+                since_s,
+                authoritative=authoritative,
+                publish_cache=publish_cache,
+            )
+        return prov.get_trades(symbol, since_s)
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float, *,
                             provider_name=None) -> Optional[float]:
