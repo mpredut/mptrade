@@ -27,11 +27,14 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
-    _is_eq_suffix,
     cache_symbol_variants,
     canonical_base_asset,
     clean_symbol_key,
     compatible_quote_suffixes,
+    filter_candidates_by_asset_class,
+    has_equity_suffix,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -301,7 +304,7 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
     sym_u = symbol.strip().strip("'\"").upper()
     if not sym_u:
         return False
-    if _is_eq_suffix(sym_u):
+    if has_equity_suffix(sym_u):
         return True
     if len(sym_u) > 4 and sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR")):
         return False
@@ -315,7 +318,7 @@ def is_equity_symbol(symbol: object, *, path=None) -> bool:
         if reg is None:
             reg = load_registry(path)
         return any(
-            (spec.provider == "t212" or spec.market_hours == "rth")
+            (is_equity_venue(spec.provider) or spec.market_hours == "rth")
             and (spec.symbol.upper() == sym_u or spec.symbol.upper().split("_", 1)[0] == sym_u)
             for spec in reg.values()
         )
@@ -496,7 +499,7 @@ def discover_tradable_specs(
 
     if scope in ("all", "crypto"):
         for k, item in raw_map.items():
-            if getattr(item, "enabled", True) is not False and _candidate_venue(item) != "t212":
+            if getattr(item, "enabled", True) is not False and not is_equity_venue(_candidate_venue(item)):
                 active_map[k] = item
 
         existing_kraken_syms = _existing_syms("kraken")
@@ -529,7 +532,7 @@ def discover_tradable_specs(
         )
         is_custom_raw_map = not has_ws_conf and bool(raw_map) and set(raw_map.keys()) != default_keys
         for k, item in raw_map.items():
-            if getattr(item, "enabled", True) is not False and _candidate_venue(item) == "t212":
+            if getattr(item, "enabled", True) is not False and is_equity_venue(_candidate_venue(item)):
                 if _candidate_symbol_u(item) in discovered_tickers or is_custom_raw_map or (has_ws_conf and not discovered_tickers):
                     active_map[k] = (
                         item.with_execution_policy(live_enabled=True, order_validity="DAY")
@@ -562,11 +565,11 @@ def resolve_instrument_spec(
     if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(_READONLY_XSTOCK_SUFFIXES):
         return None
     venue_norm = normalize_venue_name(venue) or None
-    if _is_eq_suffix(raw_sym_u) and venue_norm and venue_norm != "t212":
+    if has_equity_suffix(raw_sym_u) and venue_norm and not is_equity_venue(venue_norm):
         return None
     req_is_eq: bool | None = (
         True
-        if (_is_eq_suffix(raw_sym_u) or venue_norm == "t212")
+        if is_equity_venue_or_suffix(raw_sym_u, venue_norm)
         else (
             False
             if (venue_norm is not None or split_symbol_assets(raw_sym_u) is not None)
@@ -576,10 +579,8 @@ def resolve_instrument_spec(
     req_base = canonical_base_asset(symbol)
     req_quotes = compatible_quote_suffixes(raw_sym_u, default_usd=_DEFAULT_USD_QUOTES)
     raw_variants = cache_symbol_variants(raw_sym_u, include_original=True, include_base=False, quotes=req_quotes)
-    if req_is_eq is True:
-        raw_variants = [v for v in raw_variants if _is_eq_suffix(v) or split_symbol_assets(v) is None]
-    elif req_is_eq is False:
-        raw_variants = [v for v in raw_variants if not _is_eq_suffix(v)]
+    if req_is_eq is not None:
+        raw_variants = filter_candidates_by_asset_class(raw_variants, is_equity=req_is_eq)
     variant_norms = {clean_symbol_key(v) for v in raw_variants}
 
     candidates = [
@@ -589,7 +590,7 @@ def resolve_instrument_spec(
         and (not venue_norm or _candidate_venue(item) == venue_norm)
         and (
             req_is_eq is None
-            or (_candidate_venue(item) == "t212" or _is_eq_suffix(_candidate_symbol_u(item))) == req_is_eq
+            or is_equity_venue_or_suffix(_candidate_symbol_u(item), _candidate_venue(item)) == req_is_eq
         )
         and not _candidate_symbol_u(item).endswith(_READONLY_XSTOCK_SUFFIXES)
         and compatible_quote_suffixes(_candidate_symbol_u(item), _str_attr(item, "quote") or None, default_usd=_DEFAULT_USD_QUOTES) == req_quotes

@@ -26,6 +26,7 @@ from botcore import (
     required_int_env,
     resolve_patched_attr,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
@@ -400,18 +401,25 @@ class CacheManagerInterface(ABC):
         self, symbol, now_ms: Optional[int] = None
     ) -> None:
         """Anchor REST cursor, advance ``fetchtime_per_symbol``, and mark account cache dirty."""
-        if now_ms is None:
-            now_ms = int(_now_time() * 1000)
+        eff_now_ms = (
+            safe_nonneg_int(now_ms, default=None)
+            if now_ms is not None
+            else None
+        )
+        if eff_now_ms is None:
+            eff_now_ms = safe_nonneg_int(_now_time() * 1000.0, default=0) or 0
         if symbol not in self._rest_sync_cursor_per_symbol:
             if symbol in self.fetchtime_per_symbol:
-                prior_cursor = int(self.fetchtime_per_symbol[symbol] or 0)
+                prior_cursor = safe_nonneg_int(self.fetchtime_per_symbol[symbol], default=0) or 0
             else:
                 rebuilt = self._rebuild_fetchtimes()
-                prior_cursor = int(rebuilt.get(symbol, self.fallback_time_default) or 0)
-            self._rest_sync_cursor_per_symbol[symbol] = max(0, prior_cursor)
+                prior_cursor = safe_nonneg_int(
+                    rebuilt.get(symbol, self.fallback_time_default), default=0
+                ) or 0
+            self._rest_sync_cursor_per_symbol[symbol] = prior_cursor
         self.fetchtime_per_symbol[symbol] = max(
-            int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
-            int(now_ms),
+            safe_nonneg_int(self.fetchtime_per_symbol.get(symbol, 0), default=0) or 0,
+            eff_now_ms,
         )
         self._mark_account_cache_dirty_locked()
 
@@ -516,10 +524,9 @@ class CacheManagerInterface(ABC):
         )
         cursor_map = (
             {
-                str(symbol): max(0, int(cursor))
+                str(symbol): max(0, cur_i)
                 for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
-                if isinstance(cursor, (int, float))
-                and safe_float(cursor, default=None) is not None
+                if (cur_i := safe_int(cursor, default=None)) is not None
             }
             if sanitize_cursor
             else dict(self._rest_sync_cursor_per_symbol)

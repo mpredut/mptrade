@@ -31,12 +31,15 @@ from botcore import (
     sanitize_identifier,
 )
 from cachepaths import (
-    _is_eq_suffix,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    filter_candidates_by_asset_class,
+    has_equity_suffix,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -88,6 +91,7 @@ from .order_ohlc_utils import (
     extract_order_price,
     extract_order_side,
     extract_orig_qty,
+    format_venue_intent_client_order_id,
     normalize_timestamp_ms,
     resolve_order_actor,
 )
@@ -152,10 +156,7 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     token = (match.group(1).lower() if match else
              hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest())
     v_slug = _slug(venue).lower()
-    normalized_venue = normalize_venue_name(v_slug) or v_slug
-    from .order_ohlc_utils import format_venue_intent_client_order_id
-
-    return format_venue_intent_client_order_id(normalized_venue, token)
+    return format_venue_intent_client_order_id(normalize_venue_name(v_slug) or v_slug, token)
 
 
 _DEFAULT_AUDIT_DIR = os.path.join(
@@ -812,7 +813,7 @@ def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, An
             continue
         if scope_norm in ("equities", "crypto"):
             v_norm = normalize_venue_name(i.get("venue"))
-            is_eq = v_norm == "t212" if v_norm else _is_eq_suffix(i.get("symbol"))
+            is_eq = is_equity_venue(v_norm) if v_norm else has_equity_suffix(i.get("symbol"))
             if is_eq != (scope_norm == "equities"):
                 continue
         out.append(i)
@@ -864,7 +865,7 @@ def _resolve_intent_execution_details(
     )
 
     raw_intent_st = str(i.get("status") or "").strip().upper()
-    is_eq_intent = (venue == "t212") or _is_eq_suffix(symbol)
+    is_eq_intent = is_equity_venue_or_suffix(symbol, venue)
     matched_open = None
     expected_cids: Optional[set[str]] = None
     if isinstance(open_orders, list) and raw_intent_st in ("EXECUTED", "FAILED", "PENDING_EXECUTION"):
@@ -875,7 +876,7 @@ def _resolve_intent_execution_details(
             if oo_venue and venue and oo_venue != venue:
                 continue
             oo_sym = str(oo.get("symbol") or "").strip().upper()
-            oo_is_eq = (oo_venue == "t212") or _is_eq_suffix(oo_sym)
+            oo_is_eq = is_equity_venue_or_suffix(oo_sym, oo_venue)
             if (oo_venue or oo_sym) and (venue or symbol) and oo_is_eq != is_eq_intent:
                 continue
             if oo_sym and symbol and (
@@ -937,11 +938,7 @@ def _resolve_intent_execution_details(
         and symbol
     ):
         raw_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
-        sym_cands = (
-            [c for c in raw_cands if _is_eq_suffix(c) or split_symbol_assets(c) is None]
-            if is_eq_intent
-            else [c for c in raw_cands if not _is_eq_suffix(c)]
-        )
+        sym_cands = filter_candidates_by_asset_class(raw_cands, is_equity=is_eq_intent)
         ro_entry = next(
             (
                 val

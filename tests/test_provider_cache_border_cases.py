@@ -442,3 +442,111 @@ def test_kraken_fetch_remote_trades_case_insensitivity_and_60s_floor_filtering()
         assert kp.fetch_remote_trades("XBTUSD", bad_start, client=cli) == []  # type: ignore[arg-type]
     for bad_lb in (0, -10.0, False, True, float("nan"), float("inf")):
         assert KrakenProvider.fetch_ledger_fills_by_symbol(cli, pairs=["XBTUSD"], lookback_sec=bad_lb) == {}  # type: ignore[arg-type]
+
+
+def test_equity_asset_class_ssot_helpers_and_intent_scope_filtering():
+    """Verify has_equity_suffix, is_equity_venue, filter_candidates_by_asset_class, and _filter_intents_by_scope."""
+    from cachepaths import (
+        filter_candidates_by_asset_class,
+        has_equity_suffix,
+        is_equity_venue,
+        is_equity_venue_or_suffix,
+    )
+    from providers.execution_audit import _filter_intents_by_scope
+
+    for bad_sym in (None, True, False, 123, "", "   ", "BTCUSDC"):
+        assert has_equity_suffix(bad_sym) is False
+    for eq_sym in ("NVDA_US_EQ", " nvda_us_eq ", "AAPL_EQ", "aapl_eq"):
+        assert has_equity_suffix(eq_sym) is True
+
+    assert is_equity_venue("t212") is True
+    assert is_equity_venue("Trading212") is True
+    assert is_equity_venue("212") is True
+    for non_eq_v in (None, True, False, "", "binance", "kraken", "hyperliquid"):
+        assert is_equity_venue(non_eq_v) is False
+
+    assert is_equity_venue_or_suffix("AAPL", "t212") is True
+    assert is_equity_venue_or_suffix("nvda_us_eq", None) is True
+    assert is_equity_venue_or_suffix("BTCUSDC", "binance") is False
+
+    mixed = ["nvda_us_eq", "NVDA_US_EQ", "NVDA", "NVDAUSDC", None, True]
+    assert filter_candidates_by_asset_class(mixed, is_equity=True) == [
+        "nvda_us_eq",
+        "NVDA_US_EQ",
+        "NVDA",
+    ]
+    assert filter_candidates_by_asset_class(mixed, is_equity=False) == [
+        "NVDA",
+        "NVDAUSDC",
+    ]
+    assert filter_candidates_by_asset_class(None, is_equity=True) == []
+    assert filter_candidates_by_asset_class("NVDA_US_EQ", is_equity=True) == []
+
+    # _filter_intents_by_scope must never crash on None/bool/numeric symbols and must match lowercase _us_eq
+    intents = [
+        {"id": "1", "symbol": None},
+        {"id": "2", "symbol": True},
+        {"id": "3", "symbol": 999},
+        {"id": "4", "symbol": " nvda_us_eq "},
+        {"id": "5", "venue": "Trading212", "symbol": "AAPL"},
+        {"id": "6", "venue": "binance", "symbol": "BTCUSDC"},
+    ]
+    eq_only = _filter_intents_by_scope(intents, "equities")
+    assert [i["id"] for i in eq_only] == ["4", "5"]
+    crypto_only = _filter_intents_by_scope(intents, "crypto")
+    assert [i["id"] for i in crypto_only] == ["1", "2", "3", "6"]
+
+
+def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
+    """Verify venue-agnostic dust-protected SELL sizing, client ID venue alias resolution, and OHLC window overflow."""
+    from providers.order_ohlc_utils import (
+        ProviderError,
+        derive_venue_128bit_client_order_id,
+        format_venue_intent_client_order_id,
+        resolve_ohlc_time_window_ms,
+    )
+    from providers.quantity import (
+        dust_protected_partial_sell_qty,
+        dust_protected_sell_balance_cap,
+        venue_adjust_partial_sell_quantity,
+        venue_fee_cap_quantity,
+    )
+
+    # Parameterized dust-protected cap and partial sell adjuster work across arbitrary decimals & thresholds
+    assert dust_protected_sell_balance_cap(
+        1.005, 100.0, qty_decimals=2, min_remainder_notional=6.0
+    ) == pytest.approx(0.94)
+    assert dust_protected_sell_balance_cap(
+        1.0005, 100.0, qty_decimals=3, min_remainder_notional=1.0
+    ) == pytest.approx(0.99)
+    qty_adj, mode = dust_protected_partial_sell_qty(
+        0.97, 1.0, 100.0, qty_decimals=2, min_remainder_notional=6.0, min_notional_usd=10.0
+    )
+    assert qty_adj == pytest.approx(0.94)
+    assert mode == "leave_min_6_remainder"
+
+    # Declarative T212 specs via venue_fee_cap_quantity / venue_adjust_partial_sell_quantity
+    assert venue_fee_cap_quantity("Trading212", "SELL", 100.0, 1.005) == pytest.approx(0.94)
+    v_qty, v_mode = venue_adjust_partial_sell_quantity(
+        "212", "SELL", 0.08, 0.10, 100.0, min_notional_usd=10.0
+    )
+    assert v_qty == pytest.approx(0.10)
+    assert v_mode == "avoid_sub_6_dust"
+
+    # Venue aliases and invalid bool/blank tokens in client_order_id helpers
+    assert derive_venue_128bit_client_order_id("hl", "intent_1").startswith("0x")
+    assert len(derive_venue_128bit_client_order_id("krk", "intent_1")) == 32
+    with pytest.raises(ProviderError):
+        derive_venue_128bit_client_order_id(True, "intent_1")  # type: ignore[arg-type]
+
+    assert format_venue_intent_client_order_id("bin", "a" * 32) == "SD_" + ("a" * 32)
+    assert format_venue_intent_client_order_id("hl", "b" * 32) == "0x" + ("b" * 32)
+    assert format_venue_intent_client_order_id("krk", "c" * 32) == "c" * 32
+    for bad_tok in (None, True, False, "", "   "):
+        assert format_venue_intent_client_order_id("binance", bad_tok) is None  # type: ignore[arg-type]
+
+    # Huge finite lookback_days / lookback_hours that overflow to inf when scaled to ms must raise ValueError, not OverflowError
+    with pytest.raises(ValueError, match="lookback_days"):
+        resolve_ohlc_time_window_ms(lookback_days=1e308)
+    with pytest.raises(ValueError, match="lookback_hours"):
+        resolve_ohlc_time_window_ms(lookback_hours=1e308)

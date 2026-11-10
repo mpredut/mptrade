@@ -12,7 +12,7 @@ from botcore import (
     normalize_side,
     safe_pos_float,
 )
-from cachepaths import normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import is_equity_venue, normalize_venue_name, resolve_cachedb_filepath
 from .base import MarketDataProvider
 from .intent_state import (
     _intent_order_ids,
@@ -605,7 +605,7 @@ def preflight_intent_and_resolve_price(
     inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
     inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
     if not inst or (
-        normalize_venue_name(str(getattr(inst, "provider_name", ""))) != "t212"
+        not is_equity_venue(getattr(inst, "provider_name", ""))
         and ((len(inst_sym_u) > 3 and inst_sym_u.endswith("BTC")) or inst_quote_u == "BTC")
     ):
         if log:

@@ -20,9 +20,9 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
-    _is_eq_suffix,
     canonical_base_asset,
     compatible_quote_suffixes,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
@@ -162,9 +162,11 @@ def _resolve_clamped_intent_notional(
     max_notional_usd: float,
 ) -> float:
     """Resolve and clamp suggested notional USD; explicit non-positive numeric values clamp to min_notional_usd."""
+    min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
+    max_usd = safe_nonneg_float(max_notional_usd, default=min_usd) or min_usd
     pos = extract_intent_notional(data, None)
     if pos is not None:
-        return max(min_notional_usd, min(float(pos), max_notional_usd))
+        return max(min_usd, min(pos, max_usd))
     if isinstance(data, dict):
         for nk in _NOTIONAL_KEYS:
             raw = data.get(nk)
@@ -174,8 +176,8 @@ def _resolve_clamped_intent_notional(
                 raw = _CURRENCY_STRIP_RE.sub("", raw).strip()
             num = safe_float(raw, None)
             if num is not None and num <= 0.0:
-                return float(min_notional_usd)
-    return max(min_notional_usd, float(max_notional_usd))
+                return min_usd
+    return max(min_usd, max_usd)
 
 
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
@@ -218,7 +220,7 @@ def _intent_venue_symbol_side_key(
     s_raw = str(symbol or "").strip().upper()
     v_norm = normalize_venue_name(venue)
     base = canonical_base_asset(s_raw) or s_raw
-    if base and (_is_eq_suffix(s_raw) or v_norm == "t212"):
+    if base and is_equity_venue_or_suffix(s_raw, v_norm):
         base = f"EQ:{base}"
     return (
         v_norm,

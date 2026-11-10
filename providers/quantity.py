@@ -18,7 +18,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
+from cachepaths import _LEGACY_KRAKEN_X_BASES, has_equity_suffix, normalize_venue_name
 from .order_ohlc_utils import (
     extract_order_fee,
     extract_order_price,
@@ -188,7 +188,7 @@ def resolve_assets(
                 stem = stem[:-1]
             if stem:
                 return base_u or stem, quote_u or suffix
-    if symbol_u.endswith(("_US_EQ", "_EQ", "X.T")):
+    if has_equity_suffix(symbol_u) or symbol_u.endswith("X.T"):
         raw_sym = "" if isinstance(symbol, bool) else str(symbol or "").strip()
         eff_base = base_u or (raw_sym if raw_sym.endswith("x.T") else symbol_u)
         return eff_base, quote_u or "USD"
@@ -229,41 +229,63 @@ def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
     return available_f / (1.0 + fee_f)
 
 
-def _floor_2dec(val: float) -> float:
-    return math.floor(val * 100.0 + 1e-9) / 100.0
+def _floor_qty_decimals(val: float, qty_decimals: int) -> float:
+    scale = float(10 ** max(0, qty_decimals))
+    return math.floor(val * scale + 1e-9) / scale
 
 
-def t212_sell_balance_cap(balance: float, price: float) -> float:
-    """Return maximum sellable T212 share quantity after 2-decimal floor and $6 dust protection."""
+def dust_protected_sell_balance_cap(
+    balance: float,
+    price: float,
+    *,
+    qty_decimals: int,
+    min_remainder_notional: float,
+) -> float:
+    """Return maximum sellable quantity after decimal floor and minimum-remainder dust protection."""
     bal_f = safe_nonneg_float(balance, default=0.0) or 0.0
     if bal_f <= 0.0:
         return 0.0
-    q_floor = _floor_2dec(bal_f)
+    q_floor = _floor_qty_decimals(bal_f, qty_decimals)
     px_f = safe_pos_float(price, default=None)
-    if px_f is None:
+    rem_min = safe_pos_float(min_remainder_notional, default=None)
+    if px_f is None or rem_min is None:
         return q_floor
     dust = max(0.0, bal_f - q_floor)
-    if dust > 1e-6 and dust * px_f < 6.0:
-        buf = 6.0 / px_f
-        return max(0.0, _floor_2dec(bal_f - buf)) if bal_f > buf else 0.0
+    if dust > 1e-6 and dust * px_f < rem_min:
+        buf = rem_min / px_f
+        return max(0.0, _floor_qty_decimals(bal_f - buf, qty_decimals)) if bal_f > buf else 0.0
     return q_floor
 
 
-def t212_adjust_partial_sell_qty(
-    requested_qty: float, balance: float, price: float, min_notional_usd: float = 0.0
+def dust_protected_partial_sell_qty(
+    requested_qty: float,
+    balance: float,
+    price: float,
+    *,
+    qty_decimals: int,
+    min_remainder_notional: float,
+    min_notional_usd: float = 0.0,
 ) -> Tuple[float, Optional[str]]:
-    """Adjust a partial T212 SELL quantity if it would leave an unsellable <$6 remainder."""
+    """Adjust a partial SELL quantity if it would leave an unsellable remainder below ``min_remainder_notional``."""
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
     bal_f = safe_pos_float(balance, default=0.0) or 0.0
     px_f = safe_pos_float(price, default=None)
-    if req_f <= 0.0 or bal_f <= 0.0 or px_f is None:
+    rem_min = safe_pos_float(min_remainder_notional, default=None)
+    if req_f <= 0.0 or bal_f <= 0.0 or px_f is None or rem_min is None:
         return req_f, None
-    if 0.0 < (bal_f - req_f) * px_f < 6.0:
-        max_part = _floor_2dec(bal_f - (6.0 / px_f))
+    if 0.0 < (bal_f - req_f) * px_f < rem_min:
+        max_part = _floor_qty_decimals(bal_f - (rem_min / px_f), qty_decimals)
+        min_step = float(10 ** (-max(0, qty_decimals)))
         min_usd = safe_nonneg_float(min_notional_usd, default=0.0) or 0.0
-        if max_part >= 0.01 and round(max_part * px_f, 4) >= min_usd:
-            return max_part, "leave_min_6_remainder"
-        return t212_sell_balance_cap(bal_f, px_f), "avoid_sub_6_dust"
+        rem_tag = f"{rem_min:g}"
+        if max_part >= min_step and round(max_part * px_f, 4) >= min_usd:
+            return max_part, f"leave_min_{rem_tag}_remainder"
+        return (
+            dust_protected_sell_balance_cap(
+                bal_f, px_f, qty_decimals=qty_decimals, min_remainder_notional=rem_min
+            ),
+            f"avoid_sub_{rem_tag}_dust",
+        )
     return req_f, None
 
 
@@ -271,11 +293,8 @@ _VENUE_BUY_SLIPPAGE_FEE_BUFFERS: dict[str, float] = {
     "hyperliquid": 0.95,
     "t212": 0.998,
 }
-_VENUE_SELL_BALANCE_CAPS: dict[str, Any] = {
-    "t212": t212_sell_balance_cap,
-}
-_VENUE_PARTIAL_SELL_ADJUSTERS: dict[str, Any] = {
-    "t212": t212_adjust_partial_sell_qty,
+_VENUE_SELL_DUST_SPECS: dict[str, tuple[int, float]] = {
+    "t212": (2, 6.0),
 }
 
 
@@ -284,15 +303,20 @@ def venue_fee_cap_quantity(
 ) -> float:
     """Apply venue-specific BUY slippage/fee buffers and SELL dust caps via declarative venue tables."""
     venue_l = normalize_venue_name(str(venue or ""))
-    if venue_l not in _VENUE_BUY_SLIPPAGE_FEE_BUFFERS and venue_l not in _VENUE_SELL_BALANCE_CAPS and default_buy_buf == 1.0:
+    if venue_l not in _VENUE_BUY_SLIPPAGE_FEE_BUFFERS and venue_l not in _VENUE_SELL_DUST_SPECS and default_buy_buf == 1.0:
         return available_qty
     avail_f = safe_pos_float(available_qty, default=None)
     if avail_f is None:
         return 0.0
     if normalize_side(side) == "BUY":
         return avail_f * _VENUE_BUY_SLIPPAGE_FEE_BUFFERS.get(venue_l, default_buy_buf)
-    sell_cap_fn = _VENUE_SELL_BALANCE_CAPS.get(venue_l)
-    return sell_cap_fn(avail_f, price) if sell_cap_fn is not None else avail_f
+    dust_spec = _VENUE_SELL_DUST_SPECS.get(venue_l)
+    if dust_spec is not None:
+        qty_dec, rem_min = dust_spec
+        return dust_protected_sell_balance_cap(
+            avail_f, price, qty_decimals=qty_dec, min_remainder_notional=rem_min
+        )
+    return avail_f
 
 
 def venue_adjust_partial_sell_quantity(
@@ -308,10 +332,18 @@ def venue_adjust_partial_sell_quantity(
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
     if normalize_side(side) != "SELL" or req_f <= 0.0:
         return req_f, None
-    adjust_fn = _VENUE_PARTIAL_SELL_ADJUSTERS.get(normalize_venue_name(str(venue or "")))
-    if adjust_fn is None:
+    dust_spec = _VENUE_SELL_DUST_SPECS.get(normalize_venue_name(str(venue or "")))
+    if dust_spec is None:
         return req_f, None
-    return adjust_fn(req_f, balance, price, min_notional_usd=min_notional_usd)
+    qty_dec, rem_min = dust_spec
+    return dust_protected_partial_sell_qty(
+        req_f,
+        balance,
+        price,
+        qty_decimals=qty_dec,
+        min_remainder_notional=rem_min,
+        min_notional_usd=min_notional_usd,
+    )
 
 
 def clamp_notional_to_wallet_balance(
@@ -382,18 +414,21 @@ def clamp_notional_to_wallet_balance(
         adj_qty, adj_mode = venue_adjust_partial_sell_quantity(
             venue_l, side_u, desired_usd / price, bal, price, min_notional_usd=min_usd
         )
-        if adj_mode == "leave_min_6_remainder":
+        dust_spec = _VENUE_SELL_DUST_SPECS.get(venue_l)
+        rem_tag = f"{dust_spec[1]:g}" if dust_spec is not None else "min"
+        venue_tag = venue_l.upper() or "VENUE"
+        if adj_mode and adj_mode.startswith("leave_min_"):
             max_part_usd = round(adj_qty * price, 4)
             return (
                 True,
                 max_part_usd,
-                f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${max_part_usd:.2f} to leave >=$6 remainder",
+                f"Adjusted {venue_tag} SELL notional from ${desired_usd:.2f} to ${max_part_usd:.2f} to leave >=${rem_tag} remainder",
             )
-        if adj_mode == "avoid_sub_6_dust":
+        if adj_mode and adj_mode.startswith("avoid_sub_"):
             return (
                 True,
                 avail_usd,
-                f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${avail_usd:.2f} to avoid <$6 dust",
+                f"Adjusted {venue_tag} SELL notional from ${desired_usd:.2f} to ${avail_usd:.2f} to avoid <${rem_tag} dust",
             )
     return True, desired_usd, "Sufficient wallet balance"
 

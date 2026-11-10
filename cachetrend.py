@@ -36,12 +36,14 @@ from botcore import (
     normalize_epoch_sec,
     normalize_side,
     normalize_timestamp_ms,
+    require_pos_float,
     required_env,
     required_float_env,
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
     split_csv,
@@ -82,7 +84,8 @@ CM_DYNAMIC_WINDOW_MAX_SEC = required_float_env("CM_DYNAMIC_WINDOW_MAX_SEC")
 # and cachedb/24trend/live_<SYMBOL>.json so reader processes (e.g. rtrade) have O(1)
 # access without needing an in-process Cache24 subscription.
 CM_PUBLISHED_TREND_WINDOWS_SEC = [
-    float(part) for part in split_csv(required_env("CM_PUBLISHED_TREND_WINDOWS_SEC"))
+    require_pos_float(part, name="CM_PUBLISHED_TREND_WINDOWS_SEC")
+    for part in split_csv(required_env("CM_PUBLISHED_TREND_WINDOWS_SEC"))
 ]
 
 _ORIG_CACHETREND_ATTRS = {
@@ -1207,8 +1210,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     if ts_ms is not None:
                         fetchtime[sym] = ts_ms
                     elif sym in self.fetchtime_per_symbol:
-                        raw_ft = safe_nonneg_float(self.fetchtime_per_symbol[sym], default=None)
-                        fetchtime[sym] = int(raw_ft) if raw_ft is not None else 0
+                        fetchtime[sym] = safe_nonneg_int(self.fetchtime_per_symbol[sym], default=0) or 0
                 self.fetchtime_per_symbol = dict(fetchtime)
                 self._rest_sync_cursor_per_symbol = dict(fetchtime)
                 counts = {sym: 1 for sym in snapshot_mem}

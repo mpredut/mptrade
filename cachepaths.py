@@ -500,6 +500,7 @@ _VENUE_ALIASES: dict[str, str] = {
     "hyperliquid_spot": "hyperliquid", "hyperliquidspot": "hyperliquid",
     "trading212": "t212", "trading_212": "t212", "212trading": "t212", "212": "t212",
 }
+EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 
 
@@ -507,8 +508,14 @@ def _has_xstock_lowercase_x(token: str) -> bool:
     return len(token) > 2 and token.endswith("x") and token[:-1].isalnum() and token[:-1].isupper()
 
 
-def _is_eq_suffix(sym_u: str) -> bool:
-    return sym_u.endswith(("_EQ", "_US_EQ"))
+def has_equity_suffix(symbol: object) -> bool:
+    """Return True if ``symbol`` is a string ending in ``_EQ`` or ``_US_EQ`` (case-insensitive)."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return False
+    return symbol.strip().upper().endswith(("_EQ", "_US_EQ"))
+
+
+_is_eq_suffix = has_equity_suffix
 
 
 def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
@@ -609,6 +616,16 @@ def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
             return default
     v = venue.strip().lower().replace("-", "_").replace(" ", "_")
     return _VENUE_ALIASES.get(v, v) if v else default
+
+
+def is_equity_venue(venue: object) -> bool:
+    """Return True if ``venue`` resolves to an equities venue (e.g. ``t212``)."""
+    return normalize_venue_name(venue) in EQUITY_VENUES
+
+
+def is_equity_venue_or_suffix(symbol: object = None, venue: object = None) -> bool:
+    """Return True if ``venue`` is an equities venue or ``symbol`` carries an equity suffix."""
+    return is_equity_venue(venue) or has_equity_suffix(symbol)
 
 
 def canonical_base_asset(symbol: object) -> str:
@@ -780,7 +797,7 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
         return None
     raw_u = symbol.strip().upper()
-    safe_sym = raw_u if (_is_eq_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(symbol)
+    safe_sym = raw_u if (has_equity_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(symbol)
     if not safe_sym:
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
@@ -922,6 +939,19 @@ def cache_symbol_variants(
     return variants
 
 
+def filter_candidates_by_asset_class(candidates: object, *, is_equity: bool) -> list[str]:
+    """Filter symbol candidates to match either equity or crypto asset-class conventions."""
+    if candidates is None or isinstance(candidates, (str, bytes, bool)):
+        return []
+    if is_equity:
+        return [
+            c
+            for c in candidates
+            if isinstance(c, str) and (has_equity_suffix(c) or split_symbol_assets(c) is None)
+        ]
+    return [c for c in candidates if isinstance(c, str) and not has_equity_suffix(c)]
+
+
 def compute_venue_nav_breakdown(
     *,
     positions: object = None,
@@ -950,7 +980,7 @@ def compute_venue_nav_breakdown(
         else (live_prices if isinstance(live_prices, dict) else {})
     )
     live_px_map = {
-        raw_k.strip().upper(): float(px)
+        raw_k.strip().upper(): px
         for raw_k, raw_v in live_src.items()
         if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
     }
@@ -981,7 +1011,7 @@ def compute_venue_nav_breakdown(
             return False
         if scope_norm not in ("equities", "crypto"):
             return True
-        is_eq = v_name == "t212" or _is_eq_suffix(sym_u)
+        is_eq = is_equity_venue_or_suffix(sym_u, v_name)
         return is_eq if scope_norm == "equities" else (not is_eq)
 
     grouped_pos: dict[tuple[str, str], list[dict]] = {}
@@ -990,7 +1020,7 @@ def compute_venue_nav_breakdown(
         sym_raw = str(p.get("symbol") or "").strip().upper()
         if not _matches_scope(v_name, sym_raw):
             continue
-        is_eq_p = _is_eq_suffix(sym_raw) or v_name == "t212"
+        is_eq_p = is_equity_venue_or_suffix(sym_raw, v_name)
         base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
         grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
 
@@ -999,10 +1029,10 @@ def compute_venue_nav_breakdown(
             return None
         if sym_u in live_px_map:
             return live_px_map[sym_u]
-        if _is_eq_suffix(sym_u):
+        if has_equity_suffix(sym_u):
             return None
         for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
-            if isinstance(cand, str) and not _is_eq_suffix(cand) and cand in live_px_map:
+            if isinstance(cand, str) and not has_equity_suffix(cand) and cand in live_px_map:
                 return live_px_map[cand]
         return None
 

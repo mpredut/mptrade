@@ -34,10 +34,11 @@ from botcore import (
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, normalize_venue_name
 
 
 class ProviderError(Exception):
@@ -506,7 +507,7 @@ _VENUE_INTENT_TOKEN_FORMATS: dict[str, str] = {
 
 def derive_venue_128bit_client_order_id(venue: str, client_order_id: Any) -> str:
     """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
-    v_key = str(venue or "").strip().lower()
+    v_key = normalize_venue_name(venue)
     spec = _VENUE_128BIT_CLIENT_ID_SPECS.get(v_key)
     if spec is None:
         raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
@@ -541,8 +542,10 @@ def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
 
 def format_venue_intent_client_order_id(venue: str, token: str) -> Optional[str]:
     """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
-    fmt = _VENUE_INTENT_TOKEN_FORMATS.get(str(venue or "").strip().lower())
-    return fmt.format(token=token) if fmt else None
+    if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
+        return None
+    fmt = _VENUE_INTENT_TOKEN_FORMATS.get(normalize_venue_name(venue))
+    return fmt.format(token=token.strip()) if fmt else None
 
 
 def require_clean_order_id(
@@ -680,24 +683,31 @@ def resolve_ohlc_time_window_ms(
     """Validate and resolve ``(now_ms, final_start, final_end, timeout_f)`` for OHLC candle fetches."""
     def _valid_num(val: Any, name: str, *, pos: bool = True, scale_ms: float = 1.0) -> float:
         f = (safe_pos_float if pos else safe_nonneg_float)(val, default=None)
-        if f is None or (pos and int(f * scale_ms) <= 0 and scale_ms >= 1.0 and name != "timeout") or (
+        scaled_i = (
+            (safe_pos_int if pos else safe_nonneg_int)(f * scale_ms, default=None)
+            if f is not None and scale_ms >= 1.0 and name != "timeout"
+            else 1
+        )
+        if f is None or scaled_i is None or (
             strict_numeric_types and not isinstance(val, (int, float))
         ):
             kind = "positive" if pos else "non-negative"
             raise ValueError(f"invalid OHLC window parameters: {name} must be finite and {kind}: {val!r}")
         return f
 
-    now_ms = int(time.time() * 1000)
+    now_ms = safe_pos_int(time.time() * 1000.0, default=1) or 1
     timeout_f = _valid_num(timeout, "timeout")
-    final_end = int(_valid_num(end_ms, "end_ms")) if end_ms is not None else now_ms
+    final_end = safe_pos_int(_valid_num(end_ms, "end_ms"), default=0) if end_ms is not None else now_ms
     if final_end <= 0:
         raise ValueError(f"end_ms must be positive: {end_ms!r}")
     if start_ms is not None:
-        final_start = int(_valid_num(start_ms, "start_ms", pos=False))
+        final_start = safe_nonneg_int(_valid_num(start_ms, "start_ms", pos=False), default=0) or 0
     elif lookback_days is not None:
-        final_start = int(final_end - _valid_num(lookback_days, "lookback_days", scale_ms=86400 * 1000) * 86400 * 1000)
+        span_ms = safe_pos_int(_valid_num(lookback_days, "lookback_days", scale_ms=86400 * 1000) * 86400 * 1000, default=0) or 0
+        final_start = final_end - span_ms
     elif lookback_hours is not None:
-        final_start = int(final_end - _valid_num(lookback_hours, "lookback_hours", scale_ms=3600 * 1000) * 3600 * 1000)
+        span_ms = safe_pos_int(_valid_num(lookback_hours, "lookback_hours", scale_ms=3600 * 1000) * 3600 * 1000, default=0) or 0
+        final_start = final_end - span_ms
     else:
         final_start = final_end - default_lookback_days * 86400 * 1000
     if final_start >= final_end:
