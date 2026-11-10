@@ -40,6 +40,7 @@ from botcore import (
     log,
     required_env,
     required_float_env,
+    resolve_now_ms,
     single_instance,
     split_csv,
     touch_module_heartbeat,
@@ -49,7 +50,6 @@ from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
 from credentials import CredentialConfigurationError, kraken_credentials
 from instrument_registry import symbols_for
 from kraken_client import KrakenClient
-from providers.order_ohlc_utils import clean_order_id
 from state_io import save_json_state
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
@@ -106,12 +106,22 @@ def _fetch_rest_into(client, cache):
     )
 
 
+def _touch_kraken_heartbeat(force: bool = False) -> None:
+    touch_module_heartbeat(
+        "Kraken-cache",
+        interval_sec=30.0,
+        force=force,
+        symbols=list(PAIRS or ()),
+        intervals={"poll": POLL_INTERVAL},
+    )
+
+
 def poll_loop(client):
     """Default V1 loop: fetch Ledgers and write the file every POLL_INTERVAL.
     Exponential backoff on rate-limit/nonce errors avoids repeatedly hammering Kraken."""
     cache = _load_initial_cache(CACHE_FILE)
     backoff = POLL_BACKOFF_INIT
-    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, force=True, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+    _touch_kraken_heartbeat(force=True)
     while True:
         try:
             _fetch_rest_into(client, cache)
@@ -119,11 +129,11 @@ def poll_loop(client):
             log(f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
                 f"for {list(cache['items'].keys())}")
             backoff = POLL_BACKOFF_INIT   # reset after success
-            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+            _touch_kraken_heartbeat()
             time.sleep(POLL_INTERVAL)
         except Exception as e:
             log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {e}")
-            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+            _touch_kraken_heartbeat()
             time.sleep(backoff)
             backoff = min(backoff * 2, POLL_BACKOFF_MAX)
 
@@ -159,11 +169,11 @@ def ws_loop(client):
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
     rest_sync_interval_ms = int(max(30.0, float(POLL_INTERVAL or 30.0)) * 1000)
-    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, force=True, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+    _touch_kraken_heartbeat(force=True)
     try:
         _merge_rest_into(client, cache)      # initial snapshot merged incrementally
         save_json_state(CACHE_FILE, cache, indent=1)
-        now_init_ms = int(time.time() * 1000)
+        now_init_ms = resolve_now_ms()
         last_flush_ms[0] = now_init_ms
         last_rest_sync_ms[0] = now_init_ms
     except Exception as e:
@@ -192,7 +202,7 @@ def ws_loop(client):
             data = json.loads(msg)
         except ValueError:
             return
-        now_ms = int(time.time() * 1000)
+        now_ms = resolve_now_ms()
         # ownTrades: [ [ {txid: {...}}, ... ], "ownTrades", {"sequence": N} ]
         if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
             # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
@@ -220,7 +230,7 @@ def ws_loop(client):
                         _touch_ws_fetchtimes(cache, now_ms)
                         save_json_state(CACHE_FILE, cache, indent=1)
                         last_flush_ms[0] = now_ms
-                    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+                    _touch_kraken_heartbeat()
             return
         changed = False
         for entry in (data[0] if isinstance(data[0], list) else ()):
@@ -246,7 +256,7 @@ def ws_loop(client):
             _touch_ws_fetchtimes(cache, now_ms)
             save_json_state(CACHE_FILE, cache, indent=1)  # immediate fill write for zero lag
             last_flush_ms[0] = now_ms
-            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+            _touch_kraken_heartbeat()
 
     def on_error(ws, err):
         log(f"[kraken_cache][ws] error: {err}")
@@ -259,12 +269,12 @@ def ws_loop(client):
         except Exception as e:
             log(f"[kraken_cache][ws] run_forever: {e}")
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
-        touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+        _touch_kraken_heartbeat()
         time.sleep(5)
         try:
             _merge_rest_into(client, cache)
             save_json_state(CACHE_FILE, cache, indent=1)
-            now_resync_ms = int(time.time() * 1000)
+            now_resync_ms = resolve_now_ms()
             last_flush_ms[0] = now_resync_ms
             last_rest_sync_ms[0] = now_resync_ms
         except Exception as e:

@@ -67,6 +67,7 @@ from providers.base import (
     _parse_bool_flag,
     extract_timestamp_s,
     normalize_side,
+    normalize_timestamp_ms,
 )
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -363,10 +364,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             if not isinstance(raw_ts, bool) and raw_ts
             else snap.get("ts_fast")
         )
-        ts_f = safe_pos_float(ts_val, default=None)
-        if ts_f is None:
-            return None
-        return int(ts_f) if ts_f > 1e11 else int(ts_f * 1000)
+        return normalize_timestamp_ms(ts_val, default=None)
 
     def rebuild_fetchtimes(self):
         last_times = {}
@@ -390,7 +388,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     def _live_trend_file(self, symbol: str) -> str:
         safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
-        return os.path.join(self.trend_dir, f"live_{safe_sym}.json")
+        return os.path.join(self.trend_dir, f"{self.LIVE_FILE_PREFIX}{safe_sym}.{self.LIVE_FILE_EXT}")
 
     def _get_trend_buffer(self, symbol: str):
         buf = self._trend_buffers.get(symbol)

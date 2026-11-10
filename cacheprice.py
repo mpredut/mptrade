@@ -44,6 +44,7 @@ from botcore import (
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_rth_open,
+    resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -1422,7 +1423,7 @@ def resolve_cached_symbol_price(
                     continue
                 for line in reversed(read_tail_lines(jsonl_path, max_bytes=64 * 1024)):
                     try:
-                        rec = _json.loads(line)
+                        rec = json.loads(line)
                     except Exception:
                         continue
                     pt = CachePriceManagerBase.extract_jsonl_series_point(rec, cands_upper)
@@ -1725,7 +1726,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             envelope = json.loads(raw) if isinstance(raw, str) else raw
             if not isinstance(envelope, dict):
                 return
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            ts_ms = resolve_now_ms(now_ms)
             channel = envelope.get("channel")
             if channel == "userFills":
                 self._handle_user_fills(envelope.get("data"), ts_ms=ts_ms)
@@ -1833,7 +1834,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
             msg = json.loads(raw) if isinstance(raw, str) else raw
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            ts_ms = resolve_now_ms(now_ms)
             if isinstance(msg, dict):
                 ev = str(msg.get("event") or "").strip().lower()
                 if ev == "heartbeat" or (

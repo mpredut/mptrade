@@ -23,6 +23,7 @@ from botcore import (
     require_int,
     require_pos_float,
     required_float_env,
+    resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -84,7 +85,7 @@ _writer_state: dict = {}
 
 
 def _now_ms() -> int:
-    return int(time.time() * 1000)
+    return resolve_now_ms()
 
 
 def _proc_stat_fields(stat: str) -> Optional[list[str]]:
@@ -116,7 +117,7 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
 
 
 def _clean_now_ms(now_ms: Optional[int]) -> int:
-    return safe_pos_int(now_ms, default=None) or _now_ms()
+    return resolve_now_ms(now_ms)
 
 
 def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:

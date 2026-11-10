@@ -51,9 +51,11 @@ from cachepaths import (
     CACHE_ASSET_VALUE_FILENAME,
     CACHE_BINANCE_ORDER_FILENAME,
     CACHE_BINANCE_TRADE_FILENAME,
+    CACHE_CURRENT_PRICE_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     CACHE_T212_TRADE_FILENAME,
+    _strip_kraken_asset_suffixes,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
@@ -685,11 +687,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
             if ba is None or qa is None or ba == 0.0 or qa == 0.0:
                 continue
-            raw_base = str(base["asset"]).strip().upper()
-            if raw_base.endswith("X.T") and len(raw_base) > 3:
-                raw_base = raw_base[:-3]
-            elif raw_base.endswith((".F", ".S", ".T")) and len(raw_base) > 2:
-                raw_base = raw_base[:-2]
+            raw_base = _strip_kraken_asset_suffixes(str(base["asset"]).strip().upper())
             quote_ccy = cls._KRAKEN_QUOTE_ASSETS[str(quote["asset"]).strip().upper()]
             raw_symbol = raw_base + quote_ccy
             ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
@@ -801,6 +799,25 @@ class CacheTradeManager(CacheAccountManagerBase):
             if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands)
         ]
 
+    @staticmethod
+    def _load_venue_snapshot_dict(cache_file: str, *, create: bool = False) -> Optional[dict]:
+        """Load a venue trade snapshot ``{'items': {...}, 'fetchtime': {...}}`` (or initialize one when ``create=True``)."""
+        data = read_json_dict_recovering(str(cache_file), default=None)
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("items"), dict)
+            and isinstance(data.get("fetchtime"), dict)
+        ):
+            return data
+        if not create:
+            return None
+        base = data if isinstance(data, dict) else {}
+        if not isinstance(base.get("items"), dict):
+            base["items"] = {}
+        if not isinstance(base.get("fetchtime"), dict):
+            base["fetchtime"] = {}
+        return base
+
     @classmethod
     def read_venue_fills_snapshot(
         cls,
@@ -815,13 +832,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return None
-        data = read_json_dict_recovering(str(cache_file), default=None)
-        if not isinstance(data, dict):
+        data = cls._load_venue_snapshot_dict(cache_file)
+        if data is None:
             return None
-        items = data.get("items")
-        ft = data.get("fetchtime")
-        if not isinstance(items, dict) or not isinstance(ft, dict):
-            return None
+        items = data["items"]
+        ft = data["fetchtime"]
         keys = cls.matching_snapshot_keys(
             items, symbol, match_fn=match_fn, candidate_keys=candidate_keys
         )
@@ -857,15 +872,9 @@ class CacheTradeManager(CacheAccountManagerBase):
             return False
         sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
         try:
-            data = read_json_dict_recovering(str(cache_file), default=None)
-            if not isinstance(data, dict):
-                data = {"items": {}, "fetchtime": {}}
-            items = data.get("items") if isinstance(data.get("items"), dict) else {}
-            ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
-            items[sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
-            ft[sym_key] = int(_now_time() * 1000)
-            data["items"] = items
-            data["fetchtime"] = ft
+            data = cls._load_venue_snapshot_dict(cache_file, create=True)
+            data["items"][sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
+            data["fetchtime"][sym_key] = int(_now_time() * 1000)
             save_json_state(str(cache_file), data)
             return True
         except Exception:
@@ -878,14 +887,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return False
         target_path = str(cache_file)
         try:
-            loaded = read_json_dict_recovering(target_path, default=None)
-            cache_obj = (
-                loaded
-                if isinstance(loaded, dict)
-                and isinstance(loaded.get("items"), dict)
-                and isinstance(loaded.get("fetchtime"), dict)
-                else {"items": {}, "fetchtime": {}}
-            )
+            cache_obj = cls._load_venue_snapshot_dict(target_path, create=True)
             now_ms = int(_now_time() * 1000)
             changed = False
             for sym_raw, new_rows in fills_by_symbol.items():
@@ -991,14 +993,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not isinstance(raw_fills, list):
             return None
         is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
-        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-        cache_obj = (
-            loaded
-            if isinstance(loaded, dict)
-            and isinstance(loaded.get("items"), dict)
-            and isinstance(loaded.get("fetchtime"), dict)
-            else {"items": {}, "fetchtime": {}}
-        )
+        cache_obj = cls._load_venue_snapshot_dict(cache_file, create=True)
         for s_sym in symbols or ():
             spot_coins = {
                 k.upper()
@@ -1036,12 +1031,8 @@ class CacheTradeManager(CacheAccountManagerBase):
     @classmethod
     def touch_hyperliquid_ws_fetchtimes(cls, cache_file: str, symbols, ts_ms: int) -> None:
         """Refresh ``fetchtime`` in ``cache_trade_hyperliquid.json`` while the Hyperliquid WS stream is healthy."""
-        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-        if (
-            isinstance(loaded, dict)
-            and isinstance(loaded.get("fetchtime"), dict)
-            and isinstance(loaded.get("items"), dict)
-        ):
+        loaded = cls._load_venue_snapshot_dict(cache_file)
+        if loaded is not None:
             changed = False
             for s_sym in symbols or ():
                 if s_sym in loaded["fetchtime"] and s_sym in loaded["items"]:
@@ -1729,11 +1720,9 @@ class CacheTradeManager(CacheAccountManagerBase):
                 and self.api_client is not None
                 and callable(getattr(self.api_client, "_private", None))
             ):
-                start_val = safe_nonneg_float(startTime, default=0.0) or 0.0
-                start_sec = (
-                    int(start_val / 1000.0)
-                    if start_val > 10_000_000_000
-                    else (int(start_val) if start_val > 0 else int(_now_time() - 14 * 86400.0))
+                start_sec = int(
+                    normalize_epoch_sec(startTime, default=None)
+                    or (_now_time() - 14 * 86400.0)
                 )
                 snap: dict = {"items": {}, "fetchtime": {}}
                 self.fetch_kraken_ledger_into_snapshot(
@@ -2424,7 +2413,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             if not isinstance(vb_data, dict) or not vb_data:
                 return {}
             live_cp_data = None
-            cp_default_filename = "cache_current_price.json"
+            cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
             try:
                 from cacheprice import CacheCurrentPriceManager as _CCPM
 

@@ -612,8 +612,6 @@ def normalize_cache_base_asset(symbol: object) -> str:
     s = _strip_kraken_asset_suffixes(s)
     if (len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES) or s in {"XBTZ", "XDGZ"}:
         s = s[:-1]
-    if s in {"XXBT", "XXDG"}:
-        return s[1:]
     if s in _LEGACY_KRAKEN_X_BASES:
         return s[1:]
     return s
