@@ -54,7 +54,7 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
                           interval: int, train_size: int, validation_size: int,
                           test_size: int, step_size: int, warmup_bars: int = 0,
                           execution: ExecutionModel | None = None) -> dict:
-    adapter = kraken_replay.make_kraken_replay_adapter(
+    adapter = kraken_replay.make_spot_replay_adapter(
         align_spot_interval_params(params, interval),
         fee_pct=fee_pct,
         bar_minutes=interval,

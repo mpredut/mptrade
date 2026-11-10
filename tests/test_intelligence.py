@@ -2065,7 +2065,6 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
     import intelligence.sentiment.collectors.pretrade_telemetry_collector as pt_mod
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
 
     # 1. collect_pretrade_telemetry handles None values in m24/btc_m24/liq_c and forwards monkeypatched read_json_cached
@@ -2184,7 +2183,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     assert fg_snap is not None
     assert fg_snap.timestamp == pytest.approx(now_ts)
 
-    # 5. SmartStopLossGuard._load_grace_state honors now_ts and microstructure alias keys; WhaleAccumulationTrigger honors alias keys
+    # 5. SmartStopLossGuard._load_grace_state honors now_ts and microstructure alias keys
     ssl_file = tmp_path / "smart_sl_iter56.json"
     ssl_file.write_text(
         json.dumps({"SOLUSDC": {"start_ts": now_ts - 40.0, "initial_loss_pct": 3.2, "lost_threshold_pct": 3.0, "provider": "binance"}}),
@@ -2206,16 +2205,6 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     assert should_exec is False
     assert "grace_active" in reason
     assert meta["grace_elapsed_sec"] == pytest.approx(40.0)
-
-    wat = WhaleAccumulationTrigger()
-    ev = wat.evaluate(
-        "SOLUSDC",
-        150.0,
-        snapshot={"whale_long_pct": 68.0, "taker_buy_sell_ratio": 1.35, "oi_1h_chg_pct": 1.5, "divergence_regime": "accumulation"},
-        now=now_ts,
-    )
-    assert ev is not None
-    assert ev.reason == "whale_aggressive_accumulation"
 
 
 def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision(tmp_path, monkeypatch):
@@ -2601,7 +2590,6 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
     )
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 
     # 1. KalmanTrend / KalmanTrendTrigger normalize millisecond timestamps so 60s steps do not trigger gap reset
@@ -2635,22 +2623,11 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
     sig_b = blc.get_signal("BTC/USDC", window_sec=300.0, now=1700000020000.0)
     assert sig_b["long_liq_usd"] == pytest.approx(150_000.0)
 
-    # 4. LiquidationCapitulationTrigger, WhaleAccumulationTrigger, SmartStopLossGuard, and WhalePositioningSnapshot percent scales
+    # 4. LiquidationCapitulationTrigger, SmartStopLossGuard, and WhalePositioningSnapshot percent scales
     lct = LiquidationCapitulationTrigger(ratio_threshold=80.0, min_notional_usd=100_000.0)
     assert lct.ratio_threshold == pytest.approx(0.80)
     ev_liq = lct.evaluate("BTCUSDC", 90000.0, summary=SimpleNamespace(long_liq_usd=160_000.0, short_liq_usd=20_000.0), now=1700000020.0)
     assert ev_liq is not None and ev_liq.reason == "liquidation_capitulation_burst"
-
-    wat = WhaleAccumulationTrigger(min_top_traders_long_pct=65.0, min_top_traders_short_pct="70%")
-    assert wat.min_top_traders_long_pct == pytest.approx(0.65)
-    assert wat.min_top_traders_short_pct == pytest.approx(0.70)
-    ev_wat = wat.evaluate(
-        "BTCUSDC",
-        90000.0,
-        snapshot={"whale_long_pct": "68%", "taker_buy_sell_ratio": 1.35, "oi_1h_chg_pct": 1.5},
-        now=1700000020.0,
-    )
-    assert ev_wat is not None and ev_wat.reason == "whale_aggressive_accumulation"
 
     wps = WhalePositioningSnapshot.from_dict({"symbol": "BTCUSDC", "whale_long_pct": 35.0})
     assert wps.top_traders_long_pct == pytest.approx(0.35)
@@ -3095,7 +3072,6 @@ def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_times
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.macro.lexicon_ssot import (
         demote_dynamic_acute_terms,
         has_acute_shock_keywords,
@@ -3184,15 +3160,6 @@ def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_times
 
     fcg = FundingCrowdingGuard(crowded_scale=50)
     assert fcg.crowded_scale == pytest.approx(0.50)
-
-    wat = WhaleAccumulationTrigger()
-    ev_wa = wat.evaluate(
-        "BTCUSDC",
-        100.0,
-        snapshot={"whale_long_pct": 65, "taker_buy_sell_ratio": 1.4, "oi_1h_chg_pct": 1.2, "div_regime": "accumulation"},
-        now=1700000000000.0,
-    )
-    assert ev_wa is not None and ev_wa.metadata["regime"] == "accumulation"
 
     # 7. lexicon_ssot normalizes ms timestamps and supports single string / NewsHeadline objects in has_acute_shock_keywords
     lex_path = tmp_path / "macro_lexicon_collect.json"

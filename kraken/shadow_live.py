@@ -269,7 +269,7 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
         rp.prewarm_trend_series(ohlc4, warmup=0, params=cur_params, bar_minutes=interval)
     rows = {}
     for name, params in variants.items():
-        budget = safe_float(params.effective_max_budget(), 0.0)
+        budget = safe_float(params.allocated_budget(), 0.0)
         m = _run_one(
             ohlc4, params, interval, fee_pct,
             include_decision_trace=include_decision_trace,

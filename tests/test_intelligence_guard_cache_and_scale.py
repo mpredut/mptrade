@@ -4110,7 +4110,7 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
     2. SmartStopLossGuard propagates `now` to whale/orderbook collectors and resets clock-skewed future grace entries.
     3. KalmanTrend and MeanReversionTrigger reject NaN/Inf/<=0 prices without poisoning internal state,
        and KalmanTrend resets on backward timestamp jumps (raw_dt < -1.0).
-    4. LiquidationCapitulationTrigger and WhaleAccumulationTrigger forward `now` to collectors.
+    4. LiquidationCapitulationTrigger forwards `now` to collectors.
     5. intelligence.cli recovers corrupt heartbeat and telemetry files from .previous backups.
     """
     import external_order_guard
@@ -4119,7 +4119,6 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
     from intelligence.internal.triggers.kalman_trigger import KalmanTrend
     from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.whale_positioning_collector import (
         WhalePositioningCollector,
@@ -4218,16 +4217,12 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
     assert ev_valid.metadata["rsi"] is not None and math.isfinite(ev_valid.metadata["rsi"])
     assert ev_valid.metadata["percent_b"] is not None and math.isfinite(ev_valid.metadata["percent_b"])
 
-    # 4. LiquidationCapitulationTrigger & WhaleAccumulationTrigger `now` propagation
+    # 4. LiquidationCapitulationTrigger `now` propagation
     liq_col = BybitLiquidationCollector(retention_sec=3600.0)
     liq_col.record_event("BTCUSDT", "LONG", 250_000.0, ts=3000.0)
     liq_trig = LiquidationCapitulationTrigger(collector=liq_col, min_notional_usd=100_000.0, window_sec=300.0)
     ev_liq = liq_trig.evaluate("BTCUSDC", 100.0, now=3050.0)
     assert ev_liq is not None and ev_liq.reason == "liquidation_capitulation_burst"
-
-    whale_trig = WhaleAccumulationTrigger(collector=w_col, min_top_traders_long_pct=0.60, min_taker_buy_ratio=1.05)
-    ev_whale = whale_trig.evaluate("BTCUSDC", 100.0, now=2050.0)
-    assert ev_whale is not None and ev_whale.reason == "whale_aggressive_accumulation"
 
     # 5. intelligence.cli .previous recovery
     (tmp_path / "globaltelemetry_collector.heartbeat").write_text("{corrupt", encoding="utf-8")
@@ -7728,7 +7723,6 @@ def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool
     from active_intents import _intent_row
     from intelligence.cli import inspect_symbol_intelligence, print_intelligence_report
     from intelligence.daemon import IntelligenceTelemetryDaemon
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
     from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
     from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
@@ -7737,17 +7731,6 @@ def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool
     from shadow_signals import KalmanStateTracker
 
     # 1. Triggers sanitize bool/NaN/Inf constructor parameters
-    wat = WhaleAccumulationTrigger(
-        min_top_traders_long_pct=True,
-        min_taker_buy_ratio=float("nan"),
-        min_top_traders_short_pct=float("inf"),
-        min_taker_sell_ratio=-1.0,
-    )
-    assert wat.min_top_traders_long_pct == 0.60
-    assert wat.min_taker_buy_ratio == 1.25
-    assert wat.min_top_traders_short_pct == 0.60
-    assert wat.min_taker_sell_ratio == 0.80
-
     lgt = LinearGradientTrigger(strength_threshold=True)
     assert lgt.strength_threshold == 2.0
     lgt_nan = LinearGradientTrigger(strength_threshold=float("nan"))
@@ -15359,7 +15342,7 @@ def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tm
     dec = svc.evaluate_closes([100.0 + i for i in range(10)], interval_min="5.0", window_seconds="1800.0")
     assert dec.fresh is True and dec.regime == "bull"
 
-    snap_dec = svc.evaluate_snapshot({"gradient_recent": 0.01, "epsilon": 0.001, "n_samples": "15.0", "window_seconds": "900.0"})
+    snap_dec = svc.evaluator.evaluate({"gradient_recent": 0.01, "epsilon": 0.001, "n_samples": "15.0", "window_seconds": "900.0"})
     assert snap_dec.fresh is True and snap_dec.n_samples == 15
 
     ctx = mr.MarketRegimeContext.from_decision(snap_dec, evaluated_at=1000.0)

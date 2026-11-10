@@ -1738,7 +1738,7 @@ def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypat
     assert sig_res["trend"] in ("up", "down", "neutral")
 
     # 3. kraken.shadow_live._eval_block resolves replay module `rp` without NameError
-    fake_param = SimpleNamespace(effective_max_budget=lambda: 1000.0)
+    fake_param = SimpleNamespace(allocated_budget=lambda: 1000.0)
     monkeypatch.setattr(kr_sl, "_variants", lambda interval: {"current": fake_param})
     monkeypatch.setattr(
         kr_sl,

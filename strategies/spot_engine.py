@@ -1274,7 +1274,7 @@ class Strategy(BaseSpotMixin):
             self._cancel_open("buy")
             log("  [STRAT] TREND ENTER cancelled: the signal vanished before the fill")
             return False
-        if up and self.s["spent"] + self.p.trend_topup <= self._effective_max_budget():
+        if up and self.s["spent"] + self.p.trend_topup <= self.p.allocated_budget():
             if self.s["qty"] <= 1e-12:
                 allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
                 if not allowed:
@@ -1536,7 +1536,7 @@ class Strategy(BaseSpotMixin):
         if self._has_open("buy"):
             return False
         return self._execute_flat_reentry(
-            price, entry_px, self._effective_entry_amount(), self._effective_max_budget(),
+            price, entry_px, self.p.effective_entry_amount(), self.p.allocated_budget(),
             regime=regime, tick_time=tick_time,
         )
 
@@ -1740,7 +1740,7 @@ class Strategy(BaseSpotMixin):
             and not in_sl_bounce
             and self.s["last_buy_price"]
             and sr.dca_price_hit(price, self.s["last_buy_price"], effective_dca_drop, self.p.reentry_tolerance_pct)
-            and self.s["spent"] < self._effective_max_budget()
+            and self.s["spent"] < self.p.allocated_budget()
             and not (
                 self.p.dca_trend_brake
                 and self._regime_matches(
@@ -1759,7 +1759,7 @@ class Strategy(BaseSpotMixin):
         if clean_quote is None:
             log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
             return
-        available = min(clean_quote, self._effective_max_budget() - self.s["spent"])
+        available = min(clean_quote, self.p.allocated_budget() - self.s["spent"])
         spend = min(effective_dca_amount, available)
         qty = self._qty_for(spend, entry_px)
         if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
@@ -1828,17 +1828,17 @@ class Strategy(BaseSpotMixin):
         log(f"  === STRATEGIE {self.venue_label.upper()} PORNITA ===")
         log(f"      pereche    : {self.pair}   {exec_banner}")
         log(f"      mod        : {mode}")
-        log(f"      intrare    : {self._effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
-        log(f"      DCA        : {self._base_dca_amount():.0f} {self.ccy} la -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
-        if self._pct_sizing_on():
+        log(f"      intrare    : {self.p.effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
+        log(f"      DCA        : {self.p.effective_dca_amount_base():.0f} {self.ccy} la -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
+        if self.p.pct_sizing_on():
             log(f"      SIZING %   : felie {self.p.alloc_pct}% × total {self.p.total_budget:.0f} "
-                f"= {self._alloc_budget():.0f} {self.ccy} (entry {self.p.entry_pct}%, DCA {self.p.dca_pct}%)")
+                f"= {self.p.allocated_budget():.0f} {self.ccy} (entry {self.p.entry_pct}%, DCA {self.p.dca_pct}%)")
         if self.p.dca_spacing_growth_pct > 0:
             log(f"      DCA growth : +{self.p.dca_spacing_growth_pct}pp after each executed DCA")
         if self.p.dca_vol_scale_k:
             log(f"      DCA vol    : k={self.p.dca_vol_scale_k}, reference={self.p.dca_vol_ref}%, OHLC={self.p.dca_vol_interval}m")
         log(f"      take-profit: +{self.p.takeprofit_pct}%" if self.p.enable_takeprofit else "      take-profit: off")
-        log(f"      PLAFON     : {self._effective_max_budget():.0f} {self.ccy} / ciclu")
+        log(f"      PLAFON     : {self.p.allocated_budget():.0f} {self.ccy} / ciclu")
         if self.fee_note:
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()

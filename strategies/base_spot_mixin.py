@@ -63,9 +63,6 @@ class SpotParamsMixin:
             return self.allocated_budget() * dpct / 100.0
         return safe_nonneg_float(getattr(self, "dca_amount", 0.0), default=0.0) or 0.0
 
-    def effective_max_budget(self) -> float:
-        return self.allocated_budget()
-
 
 def generate_tp_ladder(
     min_pct: float, max_pct: float, steps: int = 10, curve: str = "linear"
@@ -671,24 +668,9 @@ class BaseSpotMixin:
         return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
 
     # -- Percentage & Volatility-Scaled Sizing ---------------------------------
-    def _pct_sizing_on(self) -> bool:
-        return self.p.pct_sizing_on()
-
-    def _alloc_budget(self) -> float:
-        return self.p.allocated_budget()
-
-    def _effective_entry_amount(self) -> float:
-        return self.p.effective_entry_amount()
-
-    def _effective_max_budget(self) -> float:
-        return self.p.effective_max_budget()
-
-    def _base_dca_amount(self) -> float:
-        return self.p.effective_dca_amount_base()
-
     def _effective_dca_amount(self) -> float:
         """Scale base DCA size by volatility when enabled, falling back during warm-up."""
-        base = self._base_dca_amount()
+        base = self.p.effective_dca_amount_base()
         k_val = safe_float(getattr(self.p, "dca_vol_scale_k", 0.0), default=0.0)
         ref_val = safe_pos_float(getattr(self.p, "dca_vol_ref", None), default=None)
         if not k_val or ref_val is None:
@@ -859,10 +841,6 @@ class BaseSpotMixin:
                 return cached, "cache"
         return 0.0, self._vol_default_source
 
-    def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
-        """Callable adapter for PositionExitManager vol_resolver."""
-        return self._vol_1h_ratio()
-
     def _effective_reentry_drop_pct(self) -> tuple[float, str]:
         """Return the effective adaptive or fixed reentry threshold."""
         if not getattr(self.p, "reentry_adaptive", False):
@@ -912,7 +890,7 @@ class BaseSpotMixin:
     # -- Exit Manager, Snapshot & Re-entry Gate --------------------------------
     def _init_exit_manager(self) -> PositionExitManager:
         return build_strategy_exit_manager(
-            self.p, self.s, self._resolve_volatility_tuple,
+            self.p, self.s, lambda _symbol: self._vol_1h_ratio(),
             allow_external_cache=not self.replay_mode, mode=self._exit_manager_mode,
         )
 

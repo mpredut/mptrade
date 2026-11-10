@@ -104,7 +104,7 @@ def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
         raise ValueError("the dataset is too small for the walk-forward schema")
 
     aligned_params = align_spot_interval_params(params, interval)
-    adapter = kraken_replay.make_kraken_replay_adapter(
+    adapter = kraken_replay.make_spot_replay_adapter(
         aligned_params,
         bar_minutes=interval,
         execution=scenario.execution,
@@ -166,7 +166,7 @@ def build_report(
         scenarios[scenario.name] = {
             "assumptions": scenario.as_dict(),
             "aggregate": aggregate_financial_windows(
-                windows, initial_capital=params.effective_max_budget(),
+                windows, initial_capital=params.allocated_budget(),
                 regime_threshold_pct=args.regime_threshold,
             ),
             "windows": windows,
@@ -179,7 +179,7 @@ def build_report(
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "code": _git_state(),
         "strategy_params": dataclasses.asdict(params),
-        "initial_capital_usd": params.effective_max_budget(),
+        "initial_capital_usd": params.allocated_budget(),
         "dataset": {
             "file": _display_path(args.dataset),
             "manifest": _display_path(args.manifest),

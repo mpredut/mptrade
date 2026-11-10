@@ -14,7 +14,6 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
-from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -356,11 +355,6 @@ def _run_once(
     )
 
 
-def make_hyperliquid_spot_replay_adapter(params: Any, fee_pct: float = 0.035, **kwargs):
-    """Return a spot ReplayFunction using strategies.spot_replay (SSOT) compatible with evaluation.py."""
-    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
-
-
 def make_hyperliquid_replay_adapter(
     params: StratParams | dict,
     direction: str = "long",
@@ -379,7 +373,7 @@ def make_hyperliquid_replay_adapter(
     if engine_norm not in ("perp", "spot"):
         raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
     if engine_norm == "spot":
-        return make_hyperliquid_spot_replay_adapter(
+        return make_spot_replay_adapter(
             params=params,
             fee_pct=fee_pct if fee_pct is not None else 0.035,
             bar_minutes=bar_minutes,

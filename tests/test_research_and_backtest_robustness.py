@@ -137,17 +137,12 @@ def test_spot_replay_adapters_ssot():
     import importlib.util
     from pathlib import Path
     from strategies.spot_engine import StratParams
-    from strategies.spot_replay import (
-        make_binance_replay_adapter,
-        make_kraken_replay_adapter,
-        make_spot_replay_adapter,
-    )
+    from strategies.spot_replay import make_spot_replay_adapter
 
     hl_path = Path(__file__).resolve().parents[1] / "hyperliquid" / "replay.py"
     spec = importlib.util.spec_from_file_location("hl_replay_ssot_test", str(hl_path))
     hl_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hl_mod)
-    make_hyperliquid_spot_replay_adapter = hl_mod.make_hyperliquid_spot_replay_adapter
 
     params = StratParams(
         currency="USDC",
@@ -164,13 +159,10 @@ def test_spot_replay_adapters_ssot():
         order_ttl_min=60.0,
     )
     ohlc = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
-    for factory in (
-        make_spot_replay_adapter,
-        make_kraken_replay_adapter,
-        make_binance_replay_adapter,
-        make_hyperliquid_spot_replay_adapter,
+    for adapter in (
+        make_spot_replay_adapter(params, bar_minutes=60.0),
+        hl_mod.make_hyperliquid_replay_adapter(params, bar_minutes=60.0, engine="spot"),
     ):
-        adapter = factory(params, bar_minutes=60.0)
         res = adapter(ohlc, None)
         assert "return_pct" in res
         assert "max_drawdown_pct" in res
@@ -2136,7 +2128,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
@@ -2193,8 +2184,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
     lct = LiquidationCapitulationTrigger(ratio_threshold=75.0)
     assert lct.ratio_threshold == 0.75
-    wat = WhaleAccumulationTrigger(min_top_traders_long_pct=60.0, min_top_traders_short_pct=60.0)
-    assert wat.min_top_traders_long_pct == 0.60 and wat.min_top_traders_short_pct == 0.60
 
     egg = ExtremeGreedGuard(hard_veto_threshold=90)
     fg_greed = FearGreedSnapshot(
@@ -3616,7 +3605,6 @@ def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     from intelligence.internal.state.survival import get_trend_survival_metrics
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
@@ -3661,16 +3649,6 @@ def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_
     assert should_exec is True
     assert "active_crash_cascade" in reason
     assert meta["symbol"] == "BTCUSDC"
-
-    # 4. WhaleAccumulationTrigger handles snapshot without divergence_regime attribute
-    wat = WhaleAccumulationTrigger()
-    ev = wat.evaluate(
-        "BTCUSDC",
-        60000.0,
-        snapshot=SimpleNamespace(top_traders_long_pct=0.70, taker_buy_sell_ratio=1.50, open_interest_1h_change_pct=2.0),  # type: ignore[arg-type]
-        now=1000.0,
-    )
-    assert ev is not None and ev.metadata["regime"] == "neutral"
 
     # 5. TriggerEvent.is_executable and TrendSignificanceGuard normalize short side "B"/"S", and survival rejects NaN allow_network
     te = TriggerEvent(action=TriggerAction.ENTRY, side="B", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)  # type: ignore[arg-type]
@@ -5902,7 +5880,6 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
         clear_smart_stop_loss,
         evaluate_smart_stop_loss,
     )
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.post_stop_reentry_guard import (
@@ -5941,21 +5918,6 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     monkeypatch.setattr(order_guard, "_load_margins", lambda: {"smart_sl_mode": "off"})
     ok_eval, rsn_eval, _ = evaluate_smart_stop_loss("BTCUSDC", 0.035, 0.030, provider="sim")
     assert ok_eval is True and rsn_eval == "smart_sl_disabled"
-
-    # 3. WhaleAccumulationTrigger supports dict snapshots
-    wat = WhaleAccumulationTrigger()
-    ev_buy = wat.evaluate(
-        "BTCUSDC",
-        50000.0,
-        snapshot={
-            "top_traders_long_pct": 0.65,
-            "taker_buy_sell_ratio": 1.35,
-            "open_interest_1h_change_pct": 1.2,
-            "divergence_regime": "accumulation",
-        },  # type: ignore[arg-type]
-        now=1700000000.0,
-    )
-    assert ev_buy is not None and ev_buy.side.value == "BUY"
 
     # 4. HighStakeGuard falls back to price * qty when notional_eur is 0.0 or NaN, and extract_symbol_recent_fills handles numeric/float-str isBuyer
     fills = extract_symbol_recent_fills([

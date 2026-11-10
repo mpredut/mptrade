@@ -339,8 +339,7 @@ from binance_api.market_data import (
 )
 from strategies.spot_replay import (
     StratParams as _ReplayStratParams,
-    make_binance_replay_adapter,
-    make_kraken_replay_adapter,
+    make_spot_replay_adapter,
     run_replay,
 )
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
@@ -435,7 +434,7 @@ def test_binance_adapter_in_evaluate_walk_forward():
         for i in range(60)
     ]
     params = _sample_params()
-    adapter = make_binance_replay_adapter(params, fee_pct=0.10, bar_minutes=60.0)
+    adapter = make_spot_replay_adapter(params, fee_pct=0.10, bar_minutes=60.0)
 
     seg = evaluate_segment(records[:20], adapter, validate_contract=True)
     assert seg["bars"] == 20
@@ -461,13 +460,13 @@ def test_cross_venue_alignment_matrix():
         (101.0, 102.5, 100.0, 102.0),
     ]
 
-    bn_adapter = make_binance_replay_adapter(_sample_params(), fee_pct=0.10, bar_minutes=60.0)
+    bn_adapter = make_spot_replay_adapter(_sample_params(), fee_pct=0.10, bar_minutes=60.0)
     bn_res = bn_adapter(ohlc, ())
     validate_replay_metrics(bn_res)
 
     kr_params = _sample_params()
     kr_params.currency = "USD"
-    kr_adapter = make_kraken_replay_adapter(kr_params, fee_pct=0.25, bar_minutes=60.0)
+    kr_adapter = make_spot_replay_adapter(kr_params, fee_pct=0.25, bar_minutes=60.0)
     kr_res = kr_adapter(ohlc, ())
     validate_replay_metrics(kr_res)
 

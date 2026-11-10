@@ -199,31 +199,6 @@ class TestExternalGuards(unittest.TestCase):
         self.assertFalse(dec.allowed)
         self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
 
-    def test_whale_accumulation_trigger_fires(self):
-        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
-        from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
-
-        trigger = WhaleAccumulationTrigger()
-        # Whales are 68% long, taker buys 1.6x sells, and OI is expanding (+4.2%)
-        snapshot_acc = WhalePositioningSnapshot(
-            symbol="BTCUSDC",
-            top_traders_long_ratio=2.12,
-            top_traders_long_pct=0.68,
-            taker_buy_sell_ratio=1.60,
-            taker_buy_vol_usd=2_000_000.0,
-            taker_sell_vol_usd=1_250_000.0,
-            open_interest_usd=8_500_000_000.0,
-            open_interest_1h_change_pct=+4.2,
-            divergence_regime="accumulation",
-            ts=time.time(),
-        )
-
-        ev = trigger.evaluate("BTCUSDC", price=85000.0, snapshot=snapshot_acc)
-        self.assertIsNotNone(ev)
-        self.assertEqual(ev.action, TriggerAction.ENTRY)
-        self.assertEqual(ev.side, TriggerSide.BUY)
-        self.assertEqual(ev.reason, "whale_aggressive_accumulation")
-
     def test_disk_serialization_round_trip(self):
         import tempfile
         from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector

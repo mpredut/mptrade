@@ -180,7 +180,7 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
                     "cyc": safe_nonneg_int(m.get("cycles"), default=0),
                     "refused": safe_nonneg_int(funding.get("refused_buys"), default=0),
                     "min_cash": min_cash}
-        budget = safe_pos_float(params.effective_max_budget(), 0.0)
+        budget = safe_pos_float(params.allocated_budget(), 0.0)
         p0 = safe_pos_float(ohlc[0][3], 0.0)
         p1 = safe_float(ohlc[-1][3], 0.0)
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,

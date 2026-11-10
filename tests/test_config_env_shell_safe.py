@@ -866,7 +866,6 @@ def test_persistence_survival_and_triggers_hardening():
     from intelligence.internal.state import persistence as pers
     from intelligence.internal.state import survival as surv
     from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 
     # 1. persistence.calculate_mann_kendall and calculate_hurst_exponent handle None/mixed sequences safely
@@ -884,20 +883,7 @@ def test_persistence_survival_and_triggers_hardening():
     regime, ev = gt.evaluate("BTCUSDC", 85000.0, 5.0, 1.0, ts=float("nan"))
     assert regime == "bull" and ev is not None and ev.ts == 0.0
 
-    # 4. WhaleAccumulationTrigger validates price, now, and snapshot fields
-    wt = WhaleAccumulationTrigger()
-    bad_snap = SimpleNamespace(
-        top_traders_long_pct=0.70,
-        taker_buy_sell_ratio=1.5,
-        open_interest_1h_change_pct=2.0,
-        divergence_regime="accumulation",
-    )
-    assert wt.evaluate("BTCUSDC", float("nan"), snapshot=bad_snap) is None
-    assert wt.evaluate("BTCUSDC", 0.0, snapshot=bad_snap) is None
-    ev_w = wt.evaluate("BTCUSDC", 85000.0, snapshot=bad_snap, now=float("nan"))
-    assert ev_w is not None and ev_w.ts > 0.0
-
-    # 5. SentimentContrarianTrigger handles None/malformed historical_values
+    # 4. SentimentContrarianTrigger handles None/malformed historical_values
     st = SentimentContrarianTrigger()
     fg_snap = SimpleNamespace(
         value=15,

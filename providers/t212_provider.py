@@ -104,12 +104,9 @@ class T212Provider(MarketDataProvider):
         # contract remains configurable through T212_ORDER_VALIDITY.
         self._order_validity = order_validity
 
-    def _orders_live(self) -> bool:
-        return self._is_live_order_enabled("T212_LIVE_ORDERS", _T212_DIR)
-
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real T212 order."""
-        return self._orders_live()
+        return self._is_live_order_enabled("T212_LIVE_ORDERS", _T212_DIR)
 
     @property
     def name(self) -> str:
@@ -381,7 +378,7 @@ class T212Provider(MarketDataProvider):
                     force: bool = False, **kwargs):
         order_validity = kwargs.pop("order_validity", None)
         live_override = kwargs.pop("live_enabled", None)
-        live = self._orders_live() if live_override is None else _parse_bool_flag(live_override, False)
+        live = self.execution_enabled() if live_override is None else _parse_bool_flag(live_override, False)
         if not live:
             print(
                 f"[T212][DRY] would place {side} {symbol} qty={qty} @ {price} "
@@ -424,7 +421,7 @@ class T212Provider(MarketDataProvider):
         # Public T212 v0 accepts neither strategy tags nor client IDs, so
         # ExecutionAudit correlates using the venue-returned ID.
         del kind, client_order_id
-        if not self._orders_live():
+        if not self.execution_enabled():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real order is blocked")
         qty = self._round_required_qty(symbol, qty, "submit_order")
         is_market = _parse_bool_flag(market, False) or price is None
@@ -527,7 +524,7 @@ class T212Provider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         clean_oid = self._require_oid(order_id, "cancel_order")
-        if not self._orders_live():
+        if not self.execution_enabled():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:
             if self._client().cancel_order(clean_oid):

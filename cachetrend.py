@@ -1228,9 +1228,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             print(f"[{self.cls_name}] write failure for {self.filename}: {e}")
             return False
 
-    def _write_file(self):
-        return self.save_state_to_file()
-
     def _read_file(self):
         # Read through read_recovering_previous so an interrupted writer commit
         # automatically restores the prior valid generation (.previous).
@@ -1286,7 +1283,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             )
             self._set_mem(symbol, **fields)
             if self.writer:
-                if not self._write_file():
+                if not self.save_state_to_file():
                     if prev_snap is not None:
                         self._mem[symbol] = prev_snap
                     else:
@@ -1306,10 +1303,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             while not self._stop_event.wait(self.FLUSH_INTERVAL_SEC):
                 with self._lock:
                     if self._mem and (self._mem_dirty or self._dirty_live_symbols):
-                        self._write_file()
+                        self.save_state_to_file()
             with self._lock:
                 if self.writer and self._mem and (self._mem_dirty or self._dirty_live_symbols):
-                    self._write_file()
+                    self.save_state_to_file()
 
         self._flush_thread = threading.Thread(
             target=run, name="ShortTrendFlush", daemon=True

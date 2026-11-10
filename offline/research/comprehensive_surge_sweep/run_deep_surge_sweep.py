@@ -417,7 +417,7 @@ def main():
                         help="Explicit per-leg replay fee percentage (not fetched from the venue)")
     args = parser.parse_args()
     base_params = load_base_params(args.config)
-    initial_cash = (base_params.effective_max_budget()
+    initial_cash = (base_params.allocated_budget()
                     if args.initial_cash is None else args.initial_cash)
     if safe_pos_float(initial_cash, default=None) is None:
         parser.error("initial cash must be finite and positive")

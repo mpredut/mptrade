@@ -370,20 +370,20 @@ class PercentageSizingTest(unittest.TestCase):
     def test_percentage_sizing_behaviors(self):
         with self.subTest(msg="default_off_preserves_legacy_amounts_exactly"):
             engine = _strategy(FakeExecutor())
-            self.assertFalse(engine._pct_sizing_on())
-            self.assertEqual(engine._effective_entry_amount(), 650.0)
-            self.assertEqual(engine._base_dca_amount(), 325.0)
-            self.assertEqual(engine._effective_max_budget(), 3900.0)
+            self.assertFalse(engine.p.pct_sizing_on())
+            self.assertEqual(engine.p.effective_entry_amount(), 650.0)
+            self.assertEqual(engine.p.effective_dca_amount_base(), 325.0)
+            self.assertEqual(engine.p.allocated_budget(), 3900.0)
 
         with self.subTest(msg="equivalent_percentages_preserve_hype_proportions"):
             engine = _strategy(
                 FakeExecutor(), total_budget=10_000.0, alloc_pct=39.0,
                 entry_pct=100.0 / 6.0, dca_pct=100.0 / 12.0,
             )
-            self.assertTrue(engine._pct_sizing_on())
-            self.assertAlmostEqual(engine._effective_max_budget(), 3900.0)
-            self.assertAlmostEqual(engine._effective_entry_amount(), 650.0)
-            self.assertAlmostEqual(engine._base_dca_amount(), 325.0)
+            self.assertTrue(engine.p.pct_sizing_on())
+            self.assertAlmostEqual(engine.p.allocated_budget(), 3900.0)
+            self.assertAlmostEqual(engine.p.effective_entry_amount(), 650.0)
+            self.assertAlmostEqual(engine.p.effective_dca_amount_base(), 325.0)
 
         with self.subTest(msg="partial_or_non_finite_percentage_config_fails_closed"):
             invalid = (

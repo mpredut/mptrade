@@ -708,10 +708,6 @@ class CacheManagerInterface(ABC):
 
     # ── JSONL append persistence for append-only caches ──────────────────────
     def _migrate_legacy_json_if_needed(self):
-        """Create a JSONL cache from its legacy full-JSON sibling once."""
-        return self._migrate_legacy_json_generation_locked()
-
-    def _migrate_legacy_json_generation_locked(self):
         """Migrate a legacy ``.json`` cache file into ``.jsonl`` format."""
         if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
             return
@@ -796,10 +792,6 @@ class CacheManagerInterface(ABC):
         restore_previous_generation(self.filename, backup_path=backup_path)
 
     def _load_jsonl(self):
-        """Load JSONL state from disk."""
-        return self._load_jsonl_generation_locked()
-
-    def _load_jsonl_generation_locked(self):
         """Load generic JSONL state and recover ``.previous`` if interrupted."""
         legacy_metadata = {}
         metaf = self.filename + ".meta"

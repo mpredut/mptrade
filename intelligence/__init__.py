@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
     from intelligence.internal.guards.noise_guard import NoiseFloorGuard
@@ -86,7 +85,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     "OrderbookSnapshot": "intelligence.external.collectors.orderbook_depth_collector",
     "OrderbookDepthCollector": "intelligence.external.collectors.orderbook_depth_collector",
     "LiquidationCapitulationTrigger": "intelligence.external.triggers.liquidation_trigger",
-    "WhaleAccumulationTrigger": "intelligence.external.triggers.whale_accumulation_trigger",
     "LiquidationCascadeGuard": "intelligence.external.guards.cascade_guard",
     "FundingCrowdingGuard": "intelligence.external.guards.funding_crowding_guard",
     "WhaleDivergenceGuard": "intelligence.external.guards.whale_divergence_guard",

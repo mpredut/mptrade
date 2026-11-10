@@ -381,7 +381,7 @@ class PercentageSizingReplayTest(unittest.TestCase):
             {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
             for i in range(10)
         ]
-        adapter = rp.make_kraken_replay_adapter(params, fee_pct=0.25, bar_minutes=60)
+        adapter = rp.make_spot_replay_adapter(params, fee_pct=0.25, bar_minutes=60)
         res = evaluate_segment(records, adapter, validate_contract=True)
         self.assertIn("metrics", res)
         self.assertIn("return_pct", res["metrics"])

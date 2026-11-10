@@ -922,7 +922,7 @@ def test_spot_engine_reentry_gate_resolves_bear_regime_and_restores_state_on_blo
         n_samples=24, horizon="long",
     )
     engine._regime_context = lambda: (sideways_decision, [100.0] * 24)
-    engine.s["spent"] = engine._effective_max_budget()
+    engine.s["spent"] = engine.p.allocated_budget()
     engine.step(93.0, timestamp=2060.0)
     assert not submits(executor)
     # Re-entry state must be restored because no ENTRY order was placed!

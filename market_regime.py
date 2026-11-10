@@ -533,9 +533,6 @@ class MarketRegimeService:
         self._cache = OrderedDict()
         self._lock = threading.Lock()
 
-    def evaluate_snapshot(self, snapshot: Optional[Mapping]) -> MarketRegimeDecision:
-        return self.evaluator.evaluate(snapshot)
-
     @staticmethod
     def _annotate(decision, *, horizon, source, fallback_used=False):
         return replace(decision, horizon=horizon.value, source=str(source),
@@ -672,7 +669,7 @@ class MarketRegimeService:
         selected_index = None
         if snapshot is not None:
             decision = self._annotate(
-                self.evaluate_snapshot(snapshot),
+                self.evaluator.evaluate(snapshot),
                 horizon=parsed,
                 source=snapshot_source,
             )

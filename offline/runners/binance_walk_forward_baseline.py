@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from botcore import safe_nonneg_float
 from binance_api.market_data import fetch_ohlc_candles
-from strategies.spot_replay import StratParams, align_spot_interval_params, make_binance_replay_adapter
+from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
 from offline.backtests.datasets import (
     load_dataset,
     save_dataset,
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             records = validate_dataset(raw_records, interval_minutes=interval)
             frozen_path = dataset_dir / f"{symbol}_{interval}m.csv"
             save_dataset(records, frozen_path)
-        adapter = make_binance_replay_adapter(
+        adapter = make_spot_replay_adapter(
             params=align_spot_interval_params(strat_params, interval),
             fee_pct=args.fee,
             bar_minutes=float(interval),

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import sys
 
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
@@ -194,7 +193,7 @@ def _run_once(
 ) -> dict:
     if dca_drop_series is not None or reentry_series is not None:
         params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
-    client = _ReplayClient(float(params.effective_max_budget()))
+    client = _ReplayClient(float(params.allocated_budget()))
     original_notify, original_log = _strat.notify, _strat.log
     _strat.notify = _strat.log = _silent
     try:
@@ -258,7 +257,7 @@ def _run_once(
         turnover_notional = 0.0
         trade_pnls = []
         cycle_net_start = strategy.s["realized_net"]
-        initial_capital = float(params.effective_max_budget() if cash is None else cash)
+        initial_capital = float(params.allocated_budget() if cash is None else cash)
         equity_curve = [initial_capital]
         exposure = []
 
@@ -394,7 +393,7 @@ def _run_once(
 
 
 def make_spot_replay_adapter(
-    params,
+    params: StratParams,
     fee_pct: float = 0.26,
     bar_minutes: float | None = 60.0,
     execution: ExecutionModel | None = None,
@@ -423,21 +422,6 @@ def make_spot_replay_adapter(
         )
 
     return _adapter
-
-
-def make_kraken_replay_adapter(params: StratParams, fee_pct: float = 0.25, **kwargs):
-    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
-    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
-
-
-def make_binance_replay_adapter(params: StratParams, fee_pct: float = 0.10, **kwargs):
-    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
-    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
-
-
-sys.modules.setdefault("kraken.replay", sys.modules[__name__])
-sys.modules.setdefault("binance_api.replay", sys.modules[__name__])
-
 
 
 def align_spot_interval_params(params, bar_minutes: float | int | None):

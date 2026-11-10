@@ -421,7 +421,7 @@ def test_sweep_uses_selected_profile_not_cwd_or_shell(tmp_path, monkeypatch):
     assert next(c["params"] for c in candidates if c["id"] == "CURRENT_CONFIG") == params
     control = next(c["params"] for c in candidates if c["id"] == "BASELINE_SURGE_OFF")
     assert control == replace(params, surge_guard=False, surge_dynamic=False)
-    assert all(c["params"].effective_max_budget() == 1050 for c in candidates)
+    assert all(c["params"].allocated_budget() == 1050 for c in candidates)
 
 
 def test_sweep_threads_cash_and_explicit_fees_through_all_replays(monkeypatch):
@@ -472,7 +472,7 @@ def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeyp
         if fail_control and candidate["category"] == "Baseline":
             raise RuntimeError("Synthetic baseline failure")
         assert list(asset_data) == ["TEST"]
-        assert initial_cash == params.effective_max_budget()
+        assert initial_cash == params.allocated_budget()
         assert fee_pct == 0.4
         return {
             "id": candidate["id"], "category": candidate["category"], "desc": candidate["desc"],
@@ -496,7 +496,7 @@ def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeyp
         report = json.loads(report_path.read_text())
         assert report["schema_version"] == 2
         assert report["strategy_params"]["surge_gain_pct"] == params.surge_gain_pct
-        assert report["initial_cash_per_asset"] == params.effective_max_budget()
+        assert report["initial_cash_per_asset"] == params.allocated_budget()
         assert report["fee_pct_per_leg"] == 0.4
         assert report["total_candidates"] == 2
         assert len(report["limitations"]) == 4

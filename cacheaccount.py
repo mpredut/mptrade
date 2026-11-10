@@ -511,7 +511,7 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def _save_state_to_file_impl(self) -> bool:
         if self.append_persist:
-            return self._save_account_trade_append()
+            return self._save_jsonl_append()
         return super()._save_state_to_file_impl()
 
     def _migrate_legacy_json_if_needed(self):
@@ -550,9 +550,6 @@ class CacheTradeManager(CacheAccountManagerBase):
             raise RuntimeError(f"Cannot migrate legacy cache {legacy}: {exc}") from exc
 
     def _save_jsonl_append(self):
-        return self._save_account_trade_append()
-
-    def _save_account_trade_append(self):
         """Commit Trade data and its manifest under the generation lock."""
         return self._with_generation_lock_bool(
             self._save_account_trade_append_if_current_generation_locked,
@@ -1032,9 +1029,6 @@ class CacheTradeManager(CacheAccountManagerBase):
             return False
 
     def _rotate_keep_latest(self):
-        return self._rotate_account_trade_keep_latest()
-
-    def _rotate_account_trade_keep_latest(self):
         """Publish a compact Trade generation without moving canonical data first."""
         archive = None
         original_state = None
@@ -1376,9 +1370,6 @@ class CacheOrderManager(CacheAccountManagerBase):
             raise account_cache_health.AccountCacheNotReady(reason) from exc
 
     def _save_state_to_file_impl(self) -> bool:
-        return self._save_account_order_snapshot()
-
-    def _save_account_order_snapshot(self):
         """Commit Order snapshot and its manifest under the generation lock."""
         return self._with_generation_lock_bool(
             self._save_account_order_snapshot_generation_locked,
@@ -1720,8 +1711,8 @@ class CacheAssetValueManager(CacheAccountManagerBase):
     def _ensure_account_version(self, required_version: str) -> None:
         self.resync_mem_file()
 
-    def _load_jsonl_generation_locked(self):
-        super()._load_jsonl_generation_locked()
+    def _load_jsonl(self):
+        super()._load_jsonl()
         changed = False
         with self.lock:
             for items in self.cache.values():

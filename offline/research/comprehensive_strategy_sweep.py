@@ -239,7 +239,7 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
         params = align_spot_interval_params(
             dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
-        adapter = kraken_replay.make_kraken_replay_adapter(
+        adapter = kraken_replay.make_spot_replay_adapter(
             params, fee_pct=fee_pct, bar_minutes=interval, execution=ExecutionModel(),
         )
         windows = []
@@ -312,7 +312,7 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
         )
-        s = _summarize_replay(m, params.effective_max_budget())
+        s = _summarize_replay(m, params.allocated_budget())
         results[name] = {
             "cont_net_pct": s["net_pct"],
             "cont_total_pct": s["total_pct"],
@@ -382,7 +382,7 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         params = align_spot_interval_params(
             dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
-        budget = params.effective_max_budget()
+        budget = params.allocated_budget()
 
         # Forward bars
         m_fwd = kraken_replay.run_replay(

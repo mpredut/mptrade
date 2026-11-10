@@ -325,10 +325,6 @@ class T212Client:
             "Accept": "application/json",
         }
 
-    def _headers_for_endpoint(self, endpoint_key: str) -> dict:
-        """Enforce per-endpoint minimum spacing (_order_min_gap) before building headers."""
-        return self._headers(endpoint_key)
-
     # -- Instruments. ----------------------------------------------------------
     def _read_cached_dict_list(self, attr: str, path: str, what: str, *, ttl_mult: float = 1.0) -> list[dict] | None:
         res = self._read_cached(attr, path, what, expect_type=list, ttl_mult=ttl_mult)
@@ -624,7 +620,7 @@ class T212Client:
         """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches."""
         status, body = http_get(
             f"{self.base}/equity/history/orders?limit=50",
-            headers=self._headers_for_endpoint("_hist_cache"),
+            headers=self._headers("_hist_cache"),
         )
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
@@ -714,7 +710,7 @@ class T212Client:
             return None
         status, body = http_get(
             f"{self.base}/equity/orders/{target_oid}",
-            headers=self._headers_for_endpoint("_order_status"),
+            headers=self._headers("_order_status"),
         )
         if status == 404:
             return self.get_historical_order(target_oid)
@@ -818,7 +814,7 @@ class T212Client:
                         setattr(self, attr, (time.monotonic() - s_age, s_val))
                         self._fetch_fail.pop(attr, None)
                     return s_val
-                status, body = http_get(f"{self.base}{path}", headers=self._headers_for_endpoint(attr))
+                status, body = http_get(f"{self.base}{path}", headers=self._headers(attr))
                 if status != 200 or not body:
                     s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, stale_limit)
                     if s_fb_hit and isinstance(s_fb_val, expect_type):

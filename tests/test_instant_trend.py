@@ -574,7 +574,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         now_entry = c24.cache["BTCUSDT"][-1][0] / 1000.0
         dyn60 = writer.get_short_trend_for_window("BTCUSDT", 60, now=now_entry)
         self.assertIsNotNone(dyn60)
-        writer._write_file()
+        writer.save_state_to_file()
 
         live_path = os.path.join(self.tmp, "24trend", "live_BTCUSDT.json")
         self.assertTrue(os.path.exists(live_path))
