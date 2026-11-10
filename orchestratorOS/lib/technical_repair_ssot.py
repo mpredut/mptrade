@@ -644,7 +644,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     traceback_boilerplate_pattern = re.compile(
         r"^(?:The above exception was the direct cause of the following exception:|"
         r"During handling of the above exception, another exception occurred:|"
-        r"File \".*\", line \d+)",
+        r"File \".*\", line (?:NUM|\d+))",
         re.IGNORECASE,
     )
     benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
@@ -695,7 +695,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
-        r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP started|\[STRAT\]\s+state loaded|"
+        r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP(?:\s+KRAKEN)?\s+started|\[STRAT\]\s+state loaded|"
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
         r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
         r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
@@ -706,6 +706,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
     startup_fatal_exc_pattern = re.compile(
         r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
+        r"ValueError:\s+Unknown cache type:|"
         r"\bname '[^']+' is not defined\b|"
         r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
         re.IGNORECASE,
@@ -932,7 +933,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             elif len(guard_interventions) < 50:
                                 guard_sig_to_idx[g_sig] = len(guard_interventions)
                                 guard_interventions.append(cleaned)
-                        elif daemon_recovered_pattern.search(line):
+                        elif daemon_recovered_pattern.search(line) or bot_cycle_recovered_pattern.search(line):
                             for sig_k, st_prev in list(file_sig_stats.items()):
                                 st_prev["unresolved_at_tail"] = False
                                 sample_prev = str(st_prev.get("sample") or "").strip()
@@ -941,21 +942,22 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 ):
                                     error_count = max(0, error_count - int(st_prev.get("count", 0)))
                                     file_sig_stats.pop(sig_k, None)
-                                    c_sig_prev = sig_k or sample_prev
-                                    if c_sig_prev in crit_sig_to_idx:
-                                        del_idx = crit_sig_to_idx[c_sig_prev]
-                                        if 0 <= del_idx < len(critical_events):
-                                            critical_events.pop(del_idx)
-                                        crit_sig_to_idx = {
-                                            (normalize_error_signature(ev) or ev): i
-                                            for i, ev in enumerate(critical_events)
-                                        }
-                                    elif sample_prev in critical_events:
-                                        critical_events.remove(sample_prev)
-                                        crit_sig_to_idx = {
-                                            (normalize_error_signature(ev) or ev): i
-                                            for i, ev in enumerate(critical_events)
-                                        }
+                                    if not any(k[1] == sig_k and v > 0 for k, v in seen_count_by_key.items()):
+                                        c_sig_prev = sig_k or sample_prev
+                                        if c_sig_prev in crit_sig_to_idx:
+                                            del_idx = crit_sig_to_idx[c_sig_prev]
+                                            if 0 <= del_idx < len(critical_events):
+                                                critical_events.pop(del_idx)
+                                            crit_sig_to_idx = {
+                                                (normalize_error_signature(ev) or ev): i
+                                                for i, ev in enumerate(critical_events)
+                                            }
+                                        elif sample_prev in critical_events:
+                                            critical_events.remove(sample_prev)
+                                            crit_sig_to_idx = {
+                                                (normalize_error_signature(ev) or ev): i
+                                                for i, ev in enumerate(critical_events)
+                                            }
                     m_dated = dated_log_fname_re.match(fname)
                     canon_fname = f"{m_dated.group(1)}{m_dated.group(2)}" if m_dated else fname
                     is_dated_fname = m_dated is not None

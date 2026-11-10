@@ -456,7 +456,7 @@ def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_s
     with open(os.path.join(cache_dir, "cache_short_trend.json"), "w", encoding="utf-8") as f:
         json.dump({"TAOUSDC": {"current_price": 255.0, "final_trend": 1, "growth_coefficient": 0.01,
                                "dynamic": {"900": {"slope_full": 0.005, "final_trend": 1}}}}, f)
-    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w", encoding="utf-8") as f:
         json.dump({"items": {"TAOUSDC": [{"side": "SELL", "price": 258.9, "quantity": 8.68, "timestamp": 123}]}}, f)
 
     plan = {
@@ -517,7 +517,7 @@ def test_intent_gateway_inherits_workspace_dir_and_null_plan_fields_are_safe(tem
 
 def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
     workspace, cache_dir, _ = temp_env
-    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "items": {
@@ -1148,7 +1148,7 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
         f.write("TAOUSDC|binance|TAOUSDC|TAO|USDC|1\n")
 
     now_ms = int(time.time() * 1000)
-    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w", encoding="utf-8") as f:
         json.dump({
             "items": {
                 "TAOUSDC": [
@@ -2728,7 +2728,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
         encoding="utf-8",
     )
     now_ms = int(time.time() * 1000)
-    (cache_dir / "cache_order.json").write_text(
+    (cache_dir / "cache_order_binance.json").write_text(
         json.dumps({
             "items": {
                 "TAOUSDC": [
@@ -3080,7 +3080,7 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     # 7. Flat cycle position clears stale trailing_peak and Hyperliquid does not overwrite Binance recent_orders
     cache_dir = tmp_path / "cachedb"
     cache_dir.mkdir(exist_ok=True)
-    (cache_dir / "cache_order.json").write_text(
+    (cache_dir / "cache_order_binance.json").write_text(
         json.dumps({
             "items": {
                 "TAOUSDC": [
@@ -3397,7 +3397,7 @@ def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
             }
         ], f)
 
-    with open(os.path.join(cache_dir, "cache_order.json"), "w") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w") as f:
         json.dump({
             "items": {
                 "BTCUSDC": [
@@ -3476,7 +3476,7 @@ def test_harvest_recent_orders_multi_venue_cache_and_symbol_collision(temp_env):
     from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
 
     _, cache_dir, _ = temp_env
-    with open(os.path.join(cache_dir, "cache_order.json"), "w") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w") as f:
         json.dump(
             {
                 "items": {
@@ -3546,7 +3546,7 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
             )
             + "\n"
         )
-    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_order_binance.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "items": {
@@ -3730,7 +3730,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     )
     orders_dir = tmp_path / "orders"
     orders_dir.mkdir(parents=True, exist_ok=True)
-    (orders_dir / "cache_order.json").write_text(
+    (orders_dir / "cache_order_binance.json").write_text(
         json.dumps({
             "items": {
                 "BTCUSDC": [
@@ -4198,7 +4198,7 @@ def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(t
     assert "active_avg_buy_px" not in ro_map["SOLUSDC"]
 
     # 3. collect_pretrade_telemetry selects the freshest venue fills across all 4 order caches
-    (cache_dir / "cache_order.json").write_text(
+    (cache_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -4426,7 +4426,7 @@ def test_iteration23_execution_audit_cross_venue_recent_orders_isolation(tmp_pat
     cache_dir = tmp_path / "cachedb"
     cache_dir.mkdir(exist_ok=True)
     # Binance has BTCUSDC @ 80000, Kraken has XBTUSD @ 81490
-    (cache_dir / "cache_order.json").write_text(
+    (cache_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -4783,7 +4783,7 @@ def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_deri
         json.dumps({"funding_rate": 0.0001, "open_interest_usd": 100000000.0}),
         encoding="utf-8",
     )
-    (cache_dir / "cache_order.json").write_text(
+    (cache_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -9285,6 +9285,19 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                 [
                     "[11:14:32] [kraken_cache][ws] error: Connection to remote host was lost.",
                     "[11:14:34] [kraken_cache][ws] subscribed ownTrades",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        kraken_trail_log = Path(tmp_net) / "Kraken-trailing.log"
+        kraken_trail_log.write_text(
+            "\n".join(
+                [
+                    "Traceback (most recent call last):",
+                    '  File "/home/predut/mptrade/kraken/trailing_stop.py", line 1709, in <module>',
+                    "SyntaxError: invalid syntax",
+                    "[09:33:30] === TRAILING STOP KRAKEN started — ACTIVE ===",
                 ]
             )
             + "\n",
