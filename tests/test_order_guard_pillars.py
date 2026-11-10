@@ -1682,9 +1682,11 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
 
     monkeypatch.setattr(sp_mod, "_current_value", _fake_current_val)
     ap_mod.main()
-    assert len(audit_records) == 1
-    assert audit_records[0]["full_key"] == "BINANCE_OK.mt.gain"
-    assert audit_records[0]["proposed_new_value"] == 5.0
+    assert len(audit_records) == 2
+    assert audit_records[0]["full_key"] == "BINANCE_BAD.mt.gain"
+    assert audit_records[0]["action"] == "skipped_missing_key"
+    assert audit_records[1]["full_key"] == "BINANCE_OK.mt.gain"
+    assert audit_records[1]["proposed_new_value"] == 5.0
 
     # 3. scheduled_pilot.evaluate_key ignores non-numeric grid annotation tokens cleanly
     monkeypatch.setattr(
