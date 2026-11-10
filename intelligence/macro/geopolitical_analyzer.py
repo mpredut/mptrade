@@ -1,14 +1,23 @@
 """Geopolitical and energy crisis threat analyzer using Google Gemini reasoning."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, Optional
 
+from botcore import _parse_bool_flag, load_dotenv, required_float_env, safe_nonneg_ts
+from cachepaths import cache_path
+from intelligence.macro.calendar_ssot import resolve_global_trading_session
 from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
+from intelligence.macro.lexicon_ssot import (
+    demote_dynamic_acute_terms,
+    filter_valid_severity_keywords,
+    get_active_acute_shock_phrases,
+    has_acute_shock_keywords,
+    record_dynamic_crisis_terms_from_assessment,
+)
 from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot
-from botcore import safe_nonneg_ts
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,
@@ -21,17 +30,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_int,
     split_headlines_digest,
 )
-from intelligence.macro.lexicon_ssot import (
-    demote_dynamic_acute_terms,
-    filter_valid_severity_keywords,
-    get_active_acute_shock_phrases,
-    has_acute_shock_keywords,
-    record_dynamic_crisis_terms_from_assessment,
-)
-from intelligence.macro.calendar_ssot import resolve_global_trading_session
 from intelligence.sentiment.gemini_client import GeminiClient
-from botcore import _parse_bool_flag, load_dotenv, required_float_env
-from cachepaths import cache_path
 
 load_dotenv()
 

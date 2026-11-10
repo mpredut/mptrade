@@ -12,7 +12,7 @@ from botcore import (
     normalize_side,
     safe_pos_float,
 )
-from cachepaths import is_equity_venue, normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import is_equity_venue, resolve_cachedb_filepath
 from .base import MarketDataProvider
 from .intent_state import (
     _intent_order_ids,

@@ -12,7 +12,6 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 """
 from __future__ import annotations
 
-import configparser
 import logging
 import os
 import re

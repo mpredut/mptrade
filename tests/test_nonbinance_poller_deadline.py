@@ -48,24 +48,27 @@ class TestFetchDeadline(unittest.TestCase):
         self.pool.shutdown(wait=True, cancel_futures=True)
 
     def test_normal_fetch_returns_price(self):
+        import cacheprice
         api = _FakeApi(hang=False, price=55.5)
-        p = cm._fetch_price_with_deadline(api, "HYPEUSD", self.pool, deadline_sec=2)
+        p = cacheprice._fetch_price_with_deadline(api, "HYPEUSD", self.pool, deadline_sec=2)
         self.assertEqual(p, 55.5)
 
     def test_explicit_provider_is_forwarded_inside_deadline(self):
+        import cacheprice
         api = _FakeApi(hang=False, price=85.49)
-        p = cm._fetch_price_with_deadline(
+        p = cacheprice._fetch_price_with_deadline(
             api, "HYPEUSD", self.pool, deadline_sec=2,
             provider_name="Kraken")
         self.assertEqual(p, 85.49)
         self.assertEqual(api.provider_names, ["Kraken"])
 
     def test_hung_fetch_raises_timeout_not_blocks(self):
+        import cacheprice
         api = _FakeApi(hang=True)
         self.blocked_api = api
         t0 = time.time()
         with self.assertRaises(futures.TimeoutError):
-            cm._fetch_price_with_deadline(api, "HYPEUSD", self.pool, deadline_sec=1)
+            cacheprice._fetch_price_with_deadline(api, "HYPEUSD", self.pool, deadline_sec=1)
         # The poller wait returns near its deadline without waiting out the worker.
         self.assertLess(
             time.time() - t0,

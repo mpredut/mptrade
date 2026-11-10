@@ -23,7 +23,7 @@ import threading
 import time
 import websockets
 
-from typing import Dict, Optional, Set, Callable
+from typing import Optional, Callable
 
 import instrument_registry as sym
 import utils as u
@@ -42,8 +42,6 @@ from providers.base import (
     WS_PING_INTERVAL,
     WS_PING_TIMEOUT,
     WS_RECV_TIMEOUT,
-    WS_RETRY_INITIAL,
-    WS_RETRY_MAX,
     WS_STOP_TIMEOUT,
 )
 

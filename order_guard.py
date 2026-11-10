@@ -51,7 +51,6 @@ from guard_hierarchy import (
     make_intel_cache_key,
     normalize_bypassed_guards,
     normalize_intel_bypass_with_qlimit2_subs,
-    resolve_qlimit2_sub_bypasses,
 )
 from intelligence.macro_sentiment_ssot import (
     lookup_symbol_cache_items,

@@ -36,7 +36,6 @@ import os
 import sys
 import time
 
-import pricewindow as pw
 from botcore import (
     _parse_bool_flag,
     clean_json_value,

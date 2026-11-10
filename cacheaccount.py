@@ -44,6 +44,7 @@ from botcore import (
     resolve_now_ts,
     safe_nonneg_float,
     safe_pos_float,
+    strict_ascii_int,
 )
 from cacheInterface import (
     CacheManagerInterface,
@@ -52,7 +53,6 @@ from cacheInterface import (
     _monotonic_time,
     _now_time,
     _sleep_time,
-    _strict_int_field,
 )
 import cacheintegrity as _cache_integrity
 from cachepaths import (
@@ -444,11 +444,11 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         return (
             isinstance(trade["symbol"], str)
             and bool(trade["symbol"].strip())
-            and _strict_int_field(trade["id"], min_value=0) is not None
-            and _strict_int_field(trade["orderId"], min_value=1) is not None
+            and strict_ascii_int(trade["id"], min_value=0) is not None
+            and strict_ascii_int(trade["orderId"], min_value=1) is not None
             and safe_pos_float(trade["price"], default=None) is not None
             and safe_pos_float(trade["qty"], default=None) is not None
-            and _strict_int_field(trade["time"], min_value=1) is not None
+            and strict_ascii_int(trade["time"], min_value=1) is not None
             and isinstance(trade["isBuyer"], bool)
         )
 
@@ -1658,14 +1658,14 @@ class CacheOrderManager(CacheAccountManagerBase):
             return False
         legacy_cutoff = trade.get("_legacyCoveredThrough")
         return (
-            _strict_int_field(trade["orderId"], min_value=1) is not None
+            strict_ascii_int(trade["orderId"], min_value=1) is not None
             and safe_pos_float(trade["price"], default=None) is not None
             and safe_pos_float(trade["quantity"], default=None) is not None
-            and _strict_int_field(trade["timestamp"], min_value=1) is not None
+            and strict_ascii_int(trade["timestamp"], min_value=1) is not None
             and str(trade["side"]).upper() in ("BUY", "SELL")
             and (
                 legacy_cutoff is None
-                or _strict_int_field(legacy_cutoff, min_value=1) is not None
+                or strict_ascii_int(legacy_cutoff, min_value=1) is not None
             )
             and (
                 "_fillIds" not in trade

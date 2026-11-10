@@ -2063,6 +2063,8 @@ class TestAtomicWrite(unittest.TestCase):
                 self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
 
         with self.subTest("legacy filename migration and sidecars"):
+            from cachepaths import migrate_legacy_filename_if_needed
+
             mig_dir = tempfile.mkdtemp(dir=self.tmp)
             cases = [
                 ("cache_currentprice.json", "cache_current_price.json"),
@@ -2079,7 +2081,7 @@ class TestAtomicWrite(unittest.TestCase):
                     fh.write('{"migrated": true}\n')
                 with open(old_p + ".meta", "w", encoding="utf-8") as fh:
                     fh.write('{"meta": true}\n')
-                cm.migrate_legacy_filename_if_needed(new_p)
+                migrate_legacy_filename_if_needed(new_p)
                 self.assertTrue(os.path.exists(new_p), f"Expected {new_name} to exist")
                 self.assertTrue(os.path.exists(new_p + ".meta"), f"Expected {new_name}.meta to exist")
                 self.assertFalse(os.path.exists(old_p), f"Expected {old_name} to be moved")

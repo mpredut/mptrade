@@ -1212,10 +1212,11 @@ def test_iter47_lazy_intelligence_imports_monkeypatch_forwarding_and_strict_int_
     telem = ptc.collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
     assert telem.get("Geopolitical Threat Level") == "CRITICAL_PATCHED"
 
-    # 4. _strict_int_field rejects bytes and non-ASCII digits and validate_account_cache_state handles '42.0'
-    assert cacheManager._strict_int_field(b"123", min_value=1) is None
-    assert cacheManager._strict_int_field("१२३", min_value=1) is None
-    assert cacheManager._strict_int_field("123", min_value=1) == 123
+    # 4. strict_ascii_int rejects bytes and non-ASCII digits and validate_account_cache_state handles '42.0'
+    from botcore import strict_ascii_int
+    assert strict_ascii_int(b"123", min_value=1) is None
+    assert strict_ascii_int("१२३", min_value=1) is None
+    assert strict_ascii_int("123", min_value=1) == 123
     with pytest.raises(ValueError):
         cacheintegrity._strict_int_field("१२३")
     assert cacheintegrity._strict_int_field("42.0") == 42

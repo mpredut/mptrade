@@ -36,7 +36,6 @@ from cacheInterface import (
     _CONFIG_ROOT,
     _coerce_symbol_list,
     _monotonic_time,
-    _strict_int_field,
 )
 from cacheaccount import (
     CacheAccountManagerBase,
@@ -50,13 +49,9 @@ from cacheaccount import (
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
     request_stop_account_ws_streams,
-    run_kraken_trade_poll_loop,
-    run_kraken_trade_ws_loop,
     start_account_cache_daemon,
-    start_kraken_account_ws_bridge,
     stop_account_ws_streams,
 )
-from cachepaths import migrate_legacy_filename_if_needed
 from cacheprice import (
     CM_LONG_ARCHIVE_FLUSH_SEC,
     CM_LONG_ARCHIVE_MEMORY_ROWS,
@@ -69,7 +64,6 @@ from cacheprice import (
     CacheSparsePriceManager,
     HyperliquidPriceStream,
     KrakenPriceStream,
-    _fetch_price_with_deadline,
     _start_nonbinance_trend_poller,
     attach_default_price_ws_stream,
     request_stop_price_ws_streams,

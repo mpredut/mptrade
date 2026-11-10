@@ -25,12 +25,10 @@ from botcore import (
     required_float_env,
     required_int_env,
     resolve_patched_attr,
-    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
-    strict_ascii_int,
 )
 import cacheintegrity as _cache_integrity
 from cachepaths import (
@@ -125,11 +123,6 @@ def _sleep_time(seconds: float) -> None:
         sleep_fn(seconds)
     else:
         time.sleep(seconds)
-
-
-def _strict_int_field(val, *, min_value: int = 1) -> Optional[int]:
-    """Validate and coerce an integer field without accepting booleans or fractional floats."""
-    return strict_ascii_int(val, default=None, min_value=min_value)
 
 
 def _norm_symbol_keys(symbol) -> tuple[str, str]:

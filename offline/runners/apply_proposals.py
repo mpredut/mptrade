@@ -27,7 +27,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
-from botcore import _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float, safe_pos_float  # noqa: E402
+from botcore import _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float  # noqa: E402
 
 # Load .env + config.env so the notifications (PHONE_ALERT_URL/NTFY_TOPIC from .env)
 # work — apply runs standalone, not through the fleet (which loads them at startup).
