@@ -1468,13 +1468,14 @@ def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_i
     """[ITER147 #1] kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache."""
     import json
     from kraken import kraken_cachemanager as kcm
+    from providers.order_ohlc_utils import clean_order_id
     # 1. kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache
     for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
-        assert kcm.clean_order_id(bad_id) is None
+        assert clean_order_id(bad_id) is None
         assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
 
-    assert kcm.clean_order_id(777.0) == "777"
-    assert kcm.clean_order_id("777.0") == "777"
+    assert clean_order_id(777.0) == "777"
+    assert clean_order_id("777.0") == "777"
     norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
     assert norm_ok["id"] == "777"
 
