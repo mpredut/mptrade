@@ -1476,7 +1476,7 @@ def _evaluate_mt_reentry(
     _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
     if max_budget and _initial_projected_value > max_budget:
         _restore_reentry_state(symbol, prev_reentry_state)
-        print(f"[{symbol}] budget cap depasit post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
+        print(f"[{symbol}] budget cap exceeded post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
         return True
 
     _reentry_applied_scale = 1.0
@@ -1506,7 +1506,7 @@ def _evaluate_mt_reentry(
     _projected_value = _pos_value + (_buy_qty * current_price)
     if max_budget and _projected_value > max_budget:
         _restore_reentry_state(symbol, prev_reentry_state, save=False)
-        print(f"[{symbol}] budget cap depasit post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
+        print(f"[{symbol}] budget cap exceeded post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
     else:
         _execute_reentry_buy(
             inst, symbol, current_price, _buy_qty, min_qty, sbs,
@@ -1556,13 +1556,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if tp_ref == "average" and active_avg_buy > 0:
         buy_price = active_avg_buy
         if _verbose:
-            print(f"POSITION (referinta=AVG {maxage_trade_s/86400:.0f}z) for {symbol} : {position}")
+            print(f"POSITION (reference=AVG {maxage_trade_s/86400:.0f}d) for {symbol} : {position}")
     elif _verbose:
         print(f"POSITION (reference=the last buy {buy_price}) for {symbol} : {position}")
     if tp_ref == "average" and position["average_sell_price"] > 0:
         sell_price = position["average_sell_price"]
         if _verbose:
-            print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
+            print(f"POSITION (reference SELL=AVG) for {symbol} : {position}")
 
     current_price = safe_pos_float(inst.price(), default=None)
     if current_price is None:

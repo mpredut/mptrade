@@ -250,102 +250,6 @@ def _audit_status_event(record, event: str, status, **fields) -> None:
     )
 
 
-def _process_awaiting_cancel_claim(mkt, r: dict, symbol, provider_name, now: float) -> None:
-    replaced_order_id = str(r.get("replaces_order_id") or "")
-    try:
-        status = mkt.order_status(symbol, replaced_order_id, provider_name=provider_name)
-    except Exception as exc:
-        err_str = str(exc)
-        prev_err = str(r.get("status_error") or "")
-        print(f"[order_retry] replaced-order status unavailable {symbol}/{replaced_order_id}: {exc}")
-        oq.complete_claim(r, "status_error", now, failure_reason=err_str)
-        if prev_err != err_str:
-            _audit_event(
-                r, "replacement_cancel_status_error",
-                replaced_order_id=replaced_order_id,
-                error_type=exc.__class__.__name__, error=err_str,
-            )
-        return
-    venue_status = str(status.venue_status or "").upper()
-    if venue_status in {"CANCELED", "CANCELLED"}:
-        orig_f = safe_pos_float(r.get("replaces_original_qty"), default=None)
-        filled_f = safe_nonneg_float(getattr(status, "filled_qty", 0.0) or 0.0, default=None)
-        replacement_qty = max(0.0, orig_f - filled_f) if (orig_f is not None and filled_f is not None) else -1.0
-        activation = oq.activate_claimed_replacement(r, replacement_qty, now)
-        if activation == "activated":
-            oq.complete_claim(r, "release", now)
-            _audit_event(
-                r, "replacement_cancel_confirmed",
-                replaced_order_id=replaced_order_id, replacement_qty=replacement_qty,
-            )
-        elif activation == "resolved":
-            _audit_event(
-                r, "replacement_not_required",
-                replaced_order_id=replaced_order_id,
-                status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
-            )
-        else:
-            oq.complete_claim(r, "status_error", now, failure_reason="cancel_activation_failed")
-        return
-    if status.terminal:
-        oq.complete_claim(r, "success", now)
-        _audit_event(
-            r, "replacement_not_required",
-            replaced_order_id=replaced_order_id,
-            status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
-        )
-        return
-    oq.complete_claim(r, "release", now)
-
-
-def _process_accepted_claim(mkt, r: dict, symbol, provider_name, now: float) -> tuple[int, int, int]:
-    """Poll status for one accepted claim. Returns (filled_inc, terminal_retried_inc, terminal_failed_inc)."""
-    try:
-        status = mkt.order_status(symbol, str(r.get("order_id")), provider_name=provider_name)
-    except Exception as exc:
-        err_str = str(exc)
-        prev_err = str(r.get("status_error") or "")
-        print(f"[order_retry] status unavailable {symbol}/{r.get('order_id')}: {exc}")
-        oq.complete_claim(r, "status_error", now, failure_reason=err_str)
-        if prev_err != err_str:
-            _audit_event(r, "status_error", error_type=exc.__class__.__name__, error=err_str)
-        return 0, 0, 0
-    transition = oq.advance_claimed_status(r, status, now)
-    if transition.action == "observed":
-        if transition.status_changed:
-            _audit_status_event(r, "order_status", status)
-        return 0, 0, 0
-    if transition.action == "filled":
-        _audit_status_event(r, "order_terminal", status)
-        print(f"[order_retry] FILLED {r.get('side')} {symbol} orderId={r.get('order_id')} qty={status.filled_qty}")
-        return 1, 0, 0
-    if transition.action == "retry_terminal":
-        _audit_status_event(r, "order_terminal_retry", status, remaining_qty=transition.remaining_qty)
-        print(
-            f"[order_retry] {status.venue_status or status.status} {symbol} "
-            f"orderId={r.get('order_id')} filled={status.filled_qty} remainder={transition.remaining_qty}"
-        )
-        return 0, 1, 0
-    if not transition.status_changed:
-        return 0, 0, 0
-    _audit_status_event(r, "order_terminal", status, retry=False)
-    terminal_key = (
-        str(r.get("id") or ""), safe_int(r.get("revision"), 0),
-        str(r.get("order_id") or ""), str(status.venue_status or status.status or ""),
-    )
-    _send_quarantine_alert(
-        _ALERTED_TERMINALS, terminal_key, r,
-        "🛑 order terminal",
-        (
-            f"Order {r.get('order_id')} became "
-            f"{status.venue_status or status.status}; filled={status.filled_qty}, "
-            "the rest is NOT resent automatically after a cancel."
-        ),
-        label="the terminal",
-    )
-    return 0, 0, 1
-
-
 def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: float) -> tuple[str, float, float, str]:
     kwargs["caller_owns_retry"] = True
     kwargs["_retry_requested_price"] = r.get("requested_price")
@@ -470,14 +374,95 @@ def process_once(mkt, now=None):
         symbol = r.get("symbol")
         provider_name = _provider_name(mkt, r)
         if lifecycle == "awaiting_cancel":
-            _process_awaiting_cancel_claim(mkt, r, symbol, provider_name, now)
+            replaced_order_id = str(r.get("replaces_order_id") or "")
+            try:
+                status = mkt.order_status(symbol, replaced_order_id, provider_name=provider_name)
+            except Exception as exc:
+                err_str = str(exc)
+                prev_err = str(r.get("status_error") or "")
+                print(f"[order_retry] replaced-order status unavailable {symbol}/{replaced_order_id}: {exc}")
+                oq.complete_claim(r, "status_error", now, failure_reason=err_str)
+                if prev_err != err_str:
+                    _audit_event(
+                        r, "replacement_cancel_status_error",
+                        replaced_order_id=replaced_order_id,
+                        error_type=exc.__class__.__name__, error=err_str,
+                    )
+                continue
+            venue_status = str(status.venue_status or "").upper()
+            if venue_status in {"CANCELED", "CANCELLED"}:
+                orig_f = safe_pos_float(r.get("replaces_original_qty"), default=None)
+                filled_f = safe_nonneg_float(getattr(status, "filled_qty", 0.0) or 0.0, default=None)
+                replacement_qty = max(0.0, orig_f - filled_f) if (orig_f is not None and filled_f is not None) else -1.0
+                activation = oq.activate_claimed_replacement(r, replacement_qty, now)
+                if activation == "activated":
+                    oq.complete_claim(r, "release", now)
+                    _audit_event(
+                        r, "replacement_cancel_confirmed",
+                        replaced_order_id=replaced_order_id, replacement_qty=replacement_qty,
+                    )
+                elif activation == "resolved":
+                    _audit_event(
+                        r, "replacement_not_required",
+                        replaced_order_id=replaced_order_id,
+                        status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
+                    )
+                else:
+                    oq.complete_claim(r, "status_error", now, failure_reason="cancel_activation_failed")
+            elif status.terminal:
+                oq.complete_claim(r, "success", now)
+                _audit_event(
+                    r, "replacement_not_required",
+                    replaced_order_id=replaced_order_id,
+                    status=status.status, venue_status=venue_status, filled_qty=status.filled_qty,
+                )
+            else:
+                oq.complete_claim(r, "release", now)
             continue
         if lifecycle == "accepted":
             observed += 1
-            f_inc, tr_inc, tf_inc = _process_accepted_claim(mkt, r, symbol, provider_name, now)
-            filled += f_inc
-            terminal_retried += tr_inc
-            terminal_failed += tf_inc
+            try:
+                status = mkt.order_status(symbol, str(r.get("order_id")), provider_name=provider_name)
+            except Exception as exc:
+                err_str = str(exc)
+                prev_err = str(r.get("status_error") or "")
+                print(f"[order_retry] status unavailable {symbol}/{r.get('order_id')}: {exc}")
+                oq.complete_claim(r, "status_error", now, failure_reason=err_str)
+                if prev_err != err_str:
+                    _audit_event(r, "status_error", error_type=exc.__class__.__name__, error=err_str)
+                continue
+            transition = oq.advance_claimed_status(r, status, now)
+            if transition.action == "observed":
+                if transition.status_changed:
+                    _audit_status_event(r, "order_status", status)
+            elif transition.action == "filled":
+                _audit_status_event(r, "order_terminal", status)
+                print(f"[order_retry] FILLED {r.get('side')} {symbol} orderId={r.get('order_id')} qty={status.filled_qty}")
+                filled += 1
+            elif transition.action == "retry_terminal":
+                _audit_status_event(r, "order_terminal_retry", status, remaining_qty=transition.remaining_qty)
+                print(
+                    f"[order_retry] {status.venue_status or status.status} {symbol} "
+                    f"orderId={r.get('order_id')} filled={status.filled_qty} remainder={transition.remaining_qty}"
+                )
+                terminal_retried += 1
+            elif transition.status_changed:
+                _audit_status_event(r, "order_terminal", status, retry=False)
+                terminal_key = (
+                    str(r.get("id") or ""), safe_int(r.get("revision"), 0),
+                    str(r.get("order_id") or ""), str(status.venue_status or status.status or ""),
+                )
+                _send_quarantine_alert(
+                    _ALERTED_TERMINALS, terminal_key, r,
+                    "🛑 order terminal",
+                    (
+                        f"Order {r.get('order_id')} became "
+                        f"{status.venue_status or status.status}; filled={status.filled_qty}, "
+                        "the rest is NOT resent automatically after a cancel."
+                    ),
+                    label="the terminal",
+                )
+                terminal_failed += 1
             continue
 
         kwargs = dict(r.get("place_kwargs") or {})

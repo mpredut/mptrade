@@ -266,10 +266,6 @@ class BotManager:
                         pass
             _close_process_transport(proc)
 
-    async def restart_bot(self, name: str):
-        await self.stop_bot(name)
-        self.restart_backoff[name] = 0
-
     def _ordered_process_names_reversed(self) -> list[str]:
         manifest_names = [
             b["name"]
@@ -411,7 +407,8 @@ class BotManager:
             self._reloading = True
             try:
                 for name in self._ordered_process_names_reversed():
-                    await self.restart_bot(name)
+                    await self.stop_bot(name)
+                    self.restart_backoff[name] = 0
                 # Start core cache writers immediately before releasing _reloading so
                 # trading bots never wake up before account/price cache writers are live.
                 for bot in self._ordered_bots_for_start():

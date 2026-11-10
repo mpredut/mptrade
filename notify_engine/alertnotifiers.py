@@ -1065,12 +1065,6 @@ class AlertNotifier:
         return "\n".join(lines)
 
     @staticmethod
-    def print_to_console(alert):
-        print("\n" + "=" * 70)
-        print(str(alert))
-        print("=" * 70)
-
-    @staticmethod
     def save_to_file(alert, filename="alerts.log"):
         if (
             filename is None
@@ -1185,7 +1179,9 @@ class AlertNotifier:
         alerts = [alert] if not isinstance(alert, list) else alert
         if _parse_bool_flag(enable_console, True):
             for item in alerts:
-                AlertNotifier.print_to_console(item)
+                print("\n" + "=" * 70)
+                print(str(item))
+                print("=" * 70)
         if _parse_bool_flag(enable_file, True):
             for item in alerts:
                 AlertNotifier.save_to_file(item, filename=filename)

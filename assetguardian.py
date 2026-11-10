@@ -1458,48 +1458,6 @@ def _next_check_seconds():
     return CHECK_INTERVAL_SECONDS
 
 
-def _evaluate_buy_drawdown_branch(
-    symbol, current_price, drawdown_percent, maximum_row, buy_mult, vol_mult, p3b_assessment, evaluation
-):
-    first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
-    if drawdown_percent > -first_buy_trigger:
-        _clear_inactive_trend_defer(symbol, "buy", _symbol_campaign(symbol, "buy"))
-        return False
-    print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
-    provider = mkt.provider_by_name("binance")
-    _, quote_asset = resolve_assets(symbol)
-    free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
-    if free_cash is None:
-        print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
-        return False
-    tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)
-    if tier is None:
-        print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
-        return False
-    threshold, allocation = tier
-    evaluation["pending_tier"] = True
-    if _finite_float(campaign.get("initial_cash"), positive=True) is None:
-        print(f"[{symbol}] Invalid campaign initial cash; reset fail-closed.")
-        _save_symbol_campaign(symbol, "buy", {})
-        return False
-    cash_amount, target_cash, prior_spent = _buy_remaining_cash(campaign, threshold, allocation)
-    if cash_amount is None:
-        print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
-        return False
-    if cash_amount <= max(1e-9, target_cash * 0.02):
-        _complete_campaign_tier(symbol, "buy", campaign, threshold)
-        print(f"[{symbol}] BUY tier -{threshold:.2f}% already funded by terminal partials ({prior_spent:.6f} quote); mark complete.")
-        return False
-    print(f"[{symbol}] BUY tier -{threshold:.2f}% allocation={allocation:.3f} cash_remaining={cash_amount:.6f}/{target_cash:.6f} USDC")
-    ready, campaign = _trend_defer_ready(symbol, "buy", "BUY", threshold, campaign)
-    if not ready:
-        return False
-    if _submit_buy_tier(symbol, current_price, cash_amount, tier, campaign):
-        evaluation["pending_tier"] = True
-        return True
-    return False
-
-
 def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Evaluate and possibly submit exactly one asset-specific SELL or BUY."""
     symbol = str(symbol or "").strip().upper()
@@ -1598,9 +1556,42 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             return True
         return False
 
-    return _evaluate_buy_drawdown_branch(
-        symbol, current_price, drawdown_percent, maximum_row, buy_mult, vol_mult, p3b_assessment, evaluation
-    )
+    first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
+    if drawdown_percent > -first_buy_trigger:
+        _clear_inactive_trend_defer(symbol, "buy", _symbol_campaign(symbol, "buy"))
+        return False
+    print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
+    _, quote_asset = resolve_assets(symbol)
+    free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    if free_cash is None:
+        print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
+        return False
+    tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)
+    if tier is None:
+        print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
+        return False
+    threshold, allocation = tier
+    evaluation["pending_tier"] = True
+    if _finite_float(campaign.get("initial_cash"), positive=True) is None:
+        print(f"[{symbol}] Invalid campaign initial cash; reset fail-closed.")
+        _save_symbol_campaign(symbol, "buy", {})
+        return False
+    cash_amount, target_cash, prior_spent = _buy_remaining_cash(campaign, threshold, allocation)
+    if cash_amount is None:
+        print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
+        return False
+    if cash_amount <= max(1e-9, target_cash * 0.02):
+        _complete_campaign_tier(symbol, "buy", campaign, threshold)
+        print(f"[{symbol}] BUY tier -{threshold:.2f}% already funded by terminal partials ({prior_spent:.6f} quote); mark complete.")
+        return False
+    print(f"[{symbol}] BUY tier -{threshold:.2f}% allocation={allocation:.3f} cash_remaining={cash_amount:.6f}/{target_cash:.6f} USDC")
+    ready, campaign = _trend_defer_ready(symbol, "buy", "BUY", threshold, campaign)
+    if not ready:
+        return False
+    if _submit_buy_tier(symbol, current_price, cash_amount, tier, campaign):
+        evaluation["pending_tier"] = True
+        return True
+    return False
 
 
 _STOP_EVENT = threading.Event()

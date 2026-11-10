@@ -106,54 +106,6 @@ class RTradePairStore:
             raise ValueError(f"invalid rtrade tracked intent ID {key!r}")
 
     @classmethod
-    def _validate_state_checkpoint(cls, pair_id: str, record: dict, state: dict) -> None:
-        if not state:
-            raise ValueError(f"empty rtrade checkpoint for {pair_id!r}")
-        if not cls._is_valid_store_str(state.get("phase")):
-            raise ValueError(f"invalid rtrade checkpoint phase for {pair_id!r}")
-        if state["phase"] != record["phase"]:
-            raise ValueError(f"rtrade checkpoint phase mismatch for {pair_id!r}")
-        state_pair_id = state.get("pair_id")
-        if state_pair_id is not None and state_pair_id != pair_id:
-            raise ValueError(f"rtrade checkpoint identity mismatch {pair_id!r}")
-        if not record["terminal"]:
-            if not _REQUIRED_ACTIVE_STATE_KEYS.issubset(state):
-                raise ValueError(f"incomplete active rtrade checkpoint {pair_id!r}")
-            cls._finite_positive(state["qty"], f"checkpoint {pair_id!r} quantity")
-            if str(state["start_side"]).upper() not in {"BUY", "SELL"}:
-                raise ValueError(f"invalid checkpoint start side for {pair_id!r}")
-        if "tickets" in state and not isinstance(state["tickets"], list):
-            raise ValueError(f"invalid rtrade checkpoint tickets for {pair_id!r}")
-        ticket_ids = set()
-        for ticket in state.get("tickets", []):
-            if not isinstance(ticket, dict):
-                raise ValueError(f"invalid rtrade checkpoint ticket for {pair_id!r}")
-            order_id = clean_order_id_str(ticket.get("order_id"))
-            side = str(ticket.get("side") or "").upper()
-            if not order_id or order_id in ticket_ids or side not in {"BUY", "SELL"}:
-                raise ValueError(f"invalid rtrade checkpoint ticket identity for {pair_id!r}")
-            ticket_ids.add(order_id)
-            cls._finite_positive(ticket.get("price"), f"checkpoint ticket {order_id!r} price")
-            cls._finite_positive(ticket.get("qty"), f"checkpoint ticket {order_id!r} quantity")
-            if "active" in ticket and not isinstance(ticket["active"], bool):
-                raise ValueError(f"invalid rtrade checkpoint ticket state for {pair_id!r}")
-            if ticket.get("pair_id") not in (None, pair_id):
-                raise ValueError("rtrade checkpoint ticket belongs to another pair")
-        if "snapshots" in state and not isinstance(state["snapshots"], dict):
-            raise ValueError(f"invalid rtrade checkpoint snapshots for {pair_id!r}")
-        for order_id, snapshot in dict(state.get("snapshots") or {}).items():
-            if (
-                not isinstance(order_id, str)
-                or not clean_order_id_str(order_id)
-                or not isinstance(snapshot, dict)
-                or snapshot.get("status") not in _VALID_SNAPSHOT_STATUSES
-            ):
-                raise ValueError(f"invalid rtrade checkpoint snapshot for {pair_id!r}")
-            for field in ("filled_qty", "cost", "fee"):
-                if safe_nonneg_float(snapshot.get(field, 0.0), default=None) is None:
-                    raise ValueError(f"invalid rtrade checkpoint {field} for {pair_id!r}")
-
-    @classmethod
     def _validate(cls, data):
         if not isinstance(data, dict):
             raise ValueError("invalid rtrade pair store: root must be an object")
@@ -185,7 +137,51 @@ class RTradePairStore:
             if state is not None and not isinstance(state, dict):
                 raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
             if isinstance(state, dict):
-                cls._validate_state_checkpoint(pair_id, record, state)
+                if not state:
+                    raise ValueError(f"empty rtrade checkpoint for {pair_id!r}")
+                if not cls._is_valid_store_str(state.get("phase")):
+                    raise ValueError(f"invalid rtrade checkpoint phase for {pair_id!r}")
+                if state["phase"] != record["phase"]:
+                    raise ValueError(f"rtrade checkpoint phase mismatch for {pair_id!r}")
+                state_pair_id = state.get("pair_id")
+                if state_pair_id is not None and state_pair_id != pair_id:
+                    raise ValueError(f"rtrade checkpoint identity mismatch {pair_id!r}")
+                if not record["terminal"]:
+                    if not _REQUIRED_ACTIVE_STATE_KEYS.issubset(state):
+                        raise ValueError(f"incomplete active rtrade checkpoint {pair_id!r}")
+                    cls._finite_positive(state["qty"], f"checkpoint {pair_id!r} quantity")
+                    if str(state["start_side"]).upper() not in {"BUY", "SELL"}:
+                        raise ValueError(f"invalid checkpoint start side for {pair_id!r}")
+                if "tickets" in state and not isinstance(state["tickets"], list):
+                    raise ValueError(f"invalid rtrade checkpoint tickets for {pair_id!r}")
+                ticket_ids = set()
+                for ticket in state.get("tickets", []):
+                    if not isinstance(ticket, dict):
+                        raise ValueError(f"invalid rtrade checkpoint ticket for {pair_id!r}")
+                    order_id = clean_order_id_str(ticket.get("order_id"))
+                    side = str(ticket.get("side") or "").upper()
+                    if not order_id or order_id in ticket_ids or side not in {"BUY", "SELL"}:
+                        raise ValueError(f"invalid rtrade checkpoint ticket identity for {pair_id!r}")
+                    ticket_ids.add(order_id)
+                    cls._finite_positive(ticket.get("price"), f"checkpoint ticket {order_id!r} price")
+                    cls._finite_positive(ticket.get("qty"), f"checkpoint ticket {order_id!r} quantity")
+                    if "active" in ticket and not isinstance(ticket["active"], bool):
+                        raise ValueError(f"invalid rtrade checkpoint ticket state for {pair_id!r}")
+                    if ticket.get("pair_id") not in (None, pair_id):
+                        raise ValueError("rtrade checkpoint ticket belongs to another pair")
+                if "snapshots" in state and not isinstance(state["snapshots"], dict):
+                    raise ValueError(f"invalid rtrade checkpoint snapshots for {pair_id!r}")
+                for order_id, snapshot in dict(state.get("snapshots") or {}).items():
+                    if (
+                        not isinstance(order_id, str)
+                        or not clean_order_id_str(order_id)
+                        or not isinstance(snapshot, dict)
+                        or snapshot.get("status") not in _VALID_SNAPSHOT_STATUSES
+                    ):
+                        raise ValueError(f"invalid rtrade checkpoint snapshot for {pair_id!r}")
+                    for field in ("filled_qty", "cost", "fee"):
+                        if safe_nonneg_float(snapshot.get(field, 0.0), default=None) is None:
+                            raise ValueError(f"invalid rtrade checkpoint {field} for {pair_id!r}")
             cls._finite_positive(record.get("created_ts"), f"pair {pair_id!r} created_ts")
             cls._finite_positive(record.get("updated_ts"), f"pair {pair_id!r} updated_ts")
             intents = record.get("intents")

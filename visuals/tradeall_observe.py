@@ -691,55 +691,6 @@ def _lookup_symbol_dict(mapping, symbol):
     return lookup_symbol_cache_items(mapping, symbol, allow_base_fallback=False, require_dict=True, unwrap_items=True)
 
 
-def build_analysis_state_text(symbol, active_summary=None):
-    """Combine current live tradeall analysis with its Kalman state and active intents.
-
-    tradeall writes cache_kalman_trend.json directly because cacheManager owns the
-    trend cache file.
-    """
-    entry = _lookup_symbol_dict(read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True), symbol)
-    if not isinstance(entry, dict) or not entry:
-        return None
-    try:
-        sh = _lookup_symbol_dict(read_json_dict(get_kalman_state_path(), default={}, recover_previous=True), symbol)
-        if isinstance(sh, dict) and sh:
-            entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
-    except Exception:
-        pass
-    age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
-
-    pending_info = None
-    exposure_info = None
-    if isinstance(active_summary, dict):
-        notional_root = active_summary.get("pending_notional")
-        by_sym_pending = notional_root.get("by_symbol") if isinstance(notional_root, dict) else None
-        pending_map = _lookup_symbol_dict(by_sym_pending, symbol)
-        if isinstance(pending_map, dict):
-            parts = []
-            buy_val = safe_pos_float(pending_map.get("buy"), default=0.0)
-            sell_val = safe_pos_float(pending_map.get("sell"), default=0.0)
-            if buy_val > 0:
-                parts.append(f"BUY ${buy_val:.2f}")
-            if sell_val > 0:
-                parts.append(f"SELL ${sell_val:.2f}")
-            if parts:
-                pending_info = ", ".join(parts)
-        exposures_root = active_summary.get("net_exposures")
-        by_sym_exp = exposures_root.get("by_symbol") if isinstance(exposures_root, dict) else None
-        exp_map = _lookup_symbol_dict(by_sym_exp, symbol)
-        if isinstance(exp_map, dict):
-            qty_val = safe_float(exp_map.get("qty"), 0.0)
-            if abs(qty_val) > 1e-9:
-                raw_cost = exp_map.get("cost")
-                cost_str = f" (${safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
-                exposure_info = f"{qty_val}{cost_str}"
-
-    return format_state_text(
-        entry, f"ANALYSIS NOW ({age:.0f}s ago)",
-        pending=pending_info, exposure=exposure_info,
-    )
-
-
 def build_backtest_state_text(directory, symbol):
     """Load simulated analysis state written by offline/backtests/tradeall.py."""
     path = os.path.join(directory, "analysis_state.json")
@@ -802,84 +753,6 @@ def render_symbol_charts_live(symbol, chart_specs, *, window_end=None):
         )
 
 
-def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None):
-    """Render either all replayed data or a sliding backtest window.
-
-    With ``window_hours``, anchor the window at the most recent simulated
-    timestamp. Repeated calls while the backtester runs follow its simulated
-    clock, making events appear exactly when replay reaches them.
-    """
-    price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-    trend_events = load_backtest_trend_starts(directory, symbol)
-    order_events = load_backtest_order_events(directory, symbol)
-
-    all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
-    wh_val = safe_pos_float(window_hours, default=0.0)
-    if not all_ts:
-        window_start, window_end = time.time() - DAY_SECONDS, time.time()
-        label = "backtest (full replayed interval)"
-    elif wh_val > 0.0:
-        window_end = max(all_ts)
-        window_start = window_end - wh_val * 3600
-        try:
-            ts_str = datetime.fromtimestamp(window_end).strftime('%Y-%m-%d %H:%M')
-        except (ValueError, OSError, OverflowError):
-            ts_str = "unknown"
-        label = (f"a sliding window of {window_hours}h (simulated clock: "
-                 f"{ts_str})")
-    else:
-        window_start, window_end = min(all_ts), max(all_ts)
-        label = "backtest (full replayed interval)"
-
-    render_chart(symbol, label, window_start, window_end,
-                 price_ts, price_vals, trend_events, order_events, out_path,
-                 shadow_events=_parse_shadow_rows(_read_pipe_log(os.path.join(directory, "tradeall_shadow.log"), 9), symbol))
-
-
-def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
-    """Generate one detailed frame per ``chunk_hours`` instead of one dense chart.
-
-    Each frame contains fewer events, preventing label overlap while covering the
-    complete replayed interval.
-    """
-    out_dir = out_dir or directory
-    price_ts, price_vals = load_backtest_price_samples(directory, symbol)
-    trend_events = load_backtest_trend_starts(directory, symbol)
-    order_events = load_backtest_order_events(directory, symbol)
-
-    all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
-    if not all_ts:
-        print(f"[tradeall_observe] {symbol}: no data for the frames yet")
-        return []
-
-    ch_f = safe_pos_float(chunk_hours, default=24.0)
-    chunk_sec = ch_f * 3600
-    range_start, range_end = min(all_ts), max(all_ts)
-    n_chunks = max(1, int(ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
-
-    paths = []
-    for i in range(n_chunks):
-        c_start = range_start + i * chunk_sec
-        c_end = min(c_start + chunk_sec, range_end)
-        try:
-            start_dt = datetime.fromtimestamp(c_start)
-            end_dt = datetime.fromtimestamp(c_end)
-            start_label = start_dt.strftime('%Y-%m-%d %H:%M')
-            end_label = end_dt.strftime('%Y-%m-%d %H:%M')
-            start_tag = start_dt.strftime('%Y%m%d_%H%M')
-        except (ValueError, OSError, OverflowError):
-            start_label = str(int(c_start))
-            end_label = str(int(c_end))
-            start_tag = str(int(c_start))
-        label = f"{start_label} → {end_label}  (frame {i+1}/{n_chunks})"
-        fname = f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png"
-        path = os.path.join(out_dir, fname)
-        render_chart(symbol, label, c_start, c_end, price_ts, price_vals,
-                     trend_events, order_events, path)
-        paths.append(path)
-    return paths
-
-
 # -- Static, serverless HTML with day/week toggle and auto-refresh. ------------
 
 _BASE_CHART_CSS = """body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin: 16px; }
@@ -897,8 +770,8 @@ def write_html(symbols, live_minutes=60, active_summary=None):
     blocks = [
         f'\n  <div class="chart">\n    <h3>{s}</h3>\n    <div class="chart-wrap">\n'
         f'      <img class="view-live" src="tradeall_live_{s}_live.png" alt="{s} live">\n'
-        f'      <img class="view-day" src="tradeall_live_{s}_ziua.png" alt="{s} day" style="display:none">\n'
-        f'      <img class="view-week" src="tradeall_live_{s}_saptamana.png" alt="{s} week" style="display:none">\n'
+        f'      <img class="view-day" src="tradeall_live_{s}_day.png" alt="{s} day" style="display:none">\n'
+        f'      <img class="view-week" src="tradeall_live_{s}_week.png" alt="{s} week" style="display:none">\n'
         f'      <img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">\n'
         f'    </div>\n  </div>'
         for s in symbols
@@ -952,32 +825,6 @@ setInterval(bust, 2500);
     atomic_write_text(os.path.join(LIVE_OUT_DIR, "tradeall_live.html"), html)
 
 
-def write_backtest_html(directory, symbols):
-    """Write minimal backtest HTML without a day/week toggle."""
-    blocks = "".join(
-        f'<div class="chart"><h3>{s}</h3><div class="chart-wrap">'
-        f'<img src="tradeall_live_{s}.png" alt="{s}">'
-        f'<img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">'
-        f'</div></div>' for s in symbols)
-    html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>tradeall — backtest</title>
-<style>
-{_BASE_CHART_CSS}
-</style></head>
-<body>
-<h2>tradeall — backtest ({os.path.basename(directory)})</h2>
-{blocks}
-<script>
-setInterval(function() {{
-  document.querySelectorAll('img').forEach(function(img) {{
-    img.src = img.src.split('?')[0] + '?t=' + Date.now();
-  }});
-}}, 5000);
-</script>
-</body></html>"""
-    atomic_write_text(os.path.join(directory, "tradeall_live_backtest.html"), html)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1011,8 +858,37 @@ def main():
 
     if args.backtest_dir and args.frame_hours:
         directory = os.path.abspath(args.backtest_dir)
+        ch_f = safe_pos_float(args.frame_hours, default=24.0)
+        chunk_sec = ch_f * 3600
         for symbol in symbols:
-            paths = render_backtest_chunks(symbol, directory, chunk_hours=args.frame_hours)
+            price_ts, price_vals = load_backtest_price_samples(directory, symbol)
+            trend_events = load_backtest_trend_starts(directory, symbol)
+            order_events = load_backtest_order_events(directory, symbol)
+            all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+            if not all_ts:
+                print(f"[tradeall_observe] {symbol}: no data for the frames yet")
+                paths = []
+            else:
+                range_start, range_end = min(all_ts), max(all_ts)
+                n_chunks = max(1, int(ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
+                paths = []
+                for i in range(n_chunks):
+                    c_start = range_start + i * chunk_sec
+                    c_end = min(c_start + chunk_sec, range_end)
+                    try:
+                        start_dt = datetime.fromtimestamp(c_start)
+                        end_dt = datetime.fromtimestamp(c_end)
+                        start_label = start_dt.strftime('%Y-%m-%d %H:%M')
+                        end_label = end_dt.strftime('%Y-%m-%d %H:%M')
+                        start_tag = start_dt.strftime('%Y%m%d_%H%M')
+                    except (ValueError, OSError, OverflowError):
+                        start_label = str(int(c_start))
+                        end_label = str(int(c_end))
+                        start_tag = str(int(c_start))
+                    label = f"{start_label} → {end_label}  (frame {i+1}/{n_chunks})"
+                    path = os.path.join(directory, f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png")
+                    render_chart(symbol, label, c_start, c_end, price_ts, price_vals, trend_events, order_events, path)
+                    paths.append(path)
             print(f"[tradeall_observe] {symbol}: {len(paths)} frames generated in {directory}")
             for p in paths:
                 print(f"    {p}")
@@ -1020,20 +896,63 @@ def main():
 
     if args.backtest_dir:
         directory = os.path.abspath(args.backtest_dir)
-        write_backtest_html(directory, symbols)
+        blocks = "".join(
+            f'<div class="chart"><h3>{s}</h3><div class="chart-wrap">'
+            f'<img src="tradeall_live_{s}.png" alt="{s}">'
+            f'<img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">'
+            f'</div></div>' for s in symbols)
+        bt_html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>tradeall — backtest</title>
+<style>
+{_BASE_CHART_CSS}
+</style></head>
+<body>
+<h2>tradeall — backtest ({os.path.basename(directory)})</h2>
+{blocks}
+<script>
+setInterval(function() {{
+  document.querySelectorAll('img').forEach(function(img) {{
+    img.src = img.src.split('?')[0] + '?t=' + Date.now();
+  }});
+}}, 5000);
+</script>
+</body></html>"""
         html_path = os.path.join(directory, "tradeall_live_backtest.html")
+        atomic_write_text(html_path, bt_html)
         mode = f"a sliding window of {args.window_hours}h" if args.window_hours else "the whole interval"
         print(f"[tradeall_observe] BACKTEST ({mode}): {directory} | symbols: {symbols} | "
               f"rendering every {args.interval}s")
         print(f"[tradeall_observe] open in browser: {html_path}")
         last_memory_trim = 0.0
+        wh_val = safe_pos_float(args.window_hours, default=0.0)
         try:
             while True:
                 for symbol in symbols:
                     try:
-                        render_symbol_chart_backtest(
-                            symbol, directory, os.path.join(directory, f"tradeall_live_{symbol}.png"),
-                            window_hours=args.window_hours)
+                        price_ts, price_vals = load_backtest_price_samples(directory, symbol)
+                        trend_events = load_backtest_trend_starts(directory, symbol)
+                        order_events = load_backtest_order_events(directory, symbol)
+                        all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+                        if not all_ts:
+                            window_start, window_end = time.time() - DAY_SECONDS, time.time()
+                            label = "backtest (full replayed interval)"
+                        elif wh_val > 0.0:
+                            window_end = max(all_ts)
+                            window_start = window_end - wh_val * 3600
+                            try:
+                                ts_str = datetime.fromtimestamp(window_end).strftime('%Y-%m-%d %H:%M')
+                            except (ValueError, OSError, OverflowError):
+                                ts_str = "unknown"
+                            label = f"a sliding window of {args.window_hours}h (simulated clock: {ts_str})"
+                        else:
+                            window_start, window_end = min(all_ts), max(all_ts)
+                            label = "backtest (full replayed interval)"
+                        render_chart(
+                            symbol, label, window_start, window_end,
+                            price_ts, price_vals, trend_events, order_events,
+                            os.path.join(directory, f"tradeall_live_{symbol}.png"),
+                            shadow_events=_parse_shadow_rows(_read_pipe_log(os.path.join(directory, "tradeall_shadow.log"), 9), symbol),
+                        )
                         state_text = build_backtest_state_text(directory, symbol)
                         if state_text:
                             render_state_image(state_text,
@@ -1082,7 +1001,7 @@ def main():
                             (
                                 "last 24h",
                                 DAY_SECONDS,
-                                os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_ziua.png"),
+                                os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_day.png"),
                             )
                         )
                     if due_week:
@@ -1091,13 +1010,49 @@ def main():
                                 "last 7 days",
                                 WEEK_SECONDS,
                                 os.path.join(
-                                    LIVE_OUT_DIR, f"tradeall_live_{symbol}_saptamana.png"
+                                    LIVE_OUT_DIR, f"tradeall_live_{symbol}_week.png"
                                 ),
                             )
                         )
                     render_symbol_charts_live(symbol, chart_specs, window_end=cycle_start)
-                    state_text = build_analysis_state_text(symbol, active_summary=active_summary)
-                    if state_text:
+                    entry = _lookup_symbol_dict(read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True), symbol)
+                    if isinstance(entry, dict) and entry:
+                        try:
+                            sh = _lookup_symbol_dict(read_json_dict(get_kalman_state_path(), default={}, recover_previous=True), symbol)
+                            if isinstance(sh, dict) and sh:
+                                entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
+                        except Exception:
+                            pass
+                        age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
+                        pending_info = None
+                        exposure_info = None
+                        if isinstance(active_summary, dict):
+                            notional_root = active_summary.get("pending_notional")
+                            by_sym_pending = notional_root.get("by_symbol") if isinstance(notional_root, dict) else None
+                            pending_map = _lookup_symbol_dict(by_sym_pending, symbol)
+                            if isinstance(pending_map, dict):
+                                parts = []
+                                buy_val = safe_pos_float(pending_map.get("buy"), default=0.0)
+                                sell_val = safe_pos_float(pending_map.get("sell"), default=0.0)
+                                if buy_val > 0:
+                                    parts.append(f"BUY ${buy_val:.2f}")
+                                if sell_val > 0:
+                                    parts.append(f"SELL ${sell_val:.2f}")
+                                if parts:
+                                    pending_info = ", ".join(parts)
+                            exposures_root = active_summary.get("net_exposures")
+                            by_sym_exp = exposures_root.get("by_symbol") if isinstance(exposures_root, dict) else None
+                            exp_map = _lookup_symbol_dict(by_sym_exp, symbol)
+                            if isinstance(exp_map, dict):
+                                qty_val = safe_float(exp_map.get("qty"), 0.0)
+                                if abs(qty_val) > 1e-9:
+                                    raw_cost = exp_map.get("cost")
+                                    cost_str = f" (${safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
+                                    exposure_info = f"{qty_val}{cost_str}"
+                        state_text = format_state_text(
+                            entry, f"ANALYSIS NOW ({age:.0f}s ago)",
+                            pending=pending_info, exposure=exposure_info,
+                        )
                         render_state_image(state_text,
                                             os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png"))
                 except Exception as e:

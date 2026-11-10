@@ -1413,7 +1413,7 @@ class Strategy(BaseSpotMixin):
 
     def _dispatch_dca_buy(self, price: float, disc: float, *, in_backoff: bool) -> None:
         """Evaluate DCA dip conditions, trend gate, and place BUY order."""
-        prag_dca = self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100) if self.s["last_buy_price"] else None
+        dca_threshold = self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100) if self.s["last_buy_price"] else None
         in_sl_state = bool(
             self.s.get("sl_pending")
             or (self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0))
@@ -1423,8 +1423,8 @@ class Strategy(BaseSpotMixin):
             not in_backoff
             and not in_sl_state
             and self.s["dca_buys"] < self.p.max_dca_buys
-            and prag_dca
-            and (price <= prag_dca or are_close(price, prag_dca, self.p.reentry_tolerance_pct))
+            and dca_threshold
+            and (price <= dca_threshold or are_close(price, dca_threshold, self.p.reentry_tolerance_pct))
             and self.s["spent_cash"] + self.p.dca_amount <= self.p.max_budget
             and not self._has_open("BUY")
         ):

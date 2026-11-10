@@ -584,12 +584,6 @@ class PairCoordinator:
         )
         self.shock = max(0.0, now - self.started_at) <= self.policy.quote_ttl_sec * self.policy.fast_fill_ratio
 
-    def _active_ticket(self, side: str) -> Optional[OrderTicket]:
-        return next(
-            (t for t in reversed(self.tickets) if t.side.upper() == side.upper() and t.active),
-            None,
-        )
-
     def _ensure_anchored_exit(self, exposure_side: str, net_qty: float,
                               entry_avg: float, current: float) -> bool:
         exit_side = "SELL" if exposure_side == "LONG" else "BUY"
@@ -597,7 +591,10 @@ class PairCoordinator:
             exit_side, entry_avg, current,
             self.policy.adjustment_fraction, self.policy.min_edge_fraction, self.policy.price_decimals,
         )
-        ticket = self._active_ticket(exit_side)
+        ticket = next(
+            (t for t in reversed(self.tickets) if t.side.upper() == exit_side and t.active),
+            None,
+        )
         latest_exit = next(
             (c for c in reversed(self.tickets) if c.side.upper() == exit_side and c is not self.stop_ticket),
             None,
@@ -656,66 +653,6 @@ class PairCoordinator:
             self.reason = "exit_place_failed"
             return False
         self._append_unique_ticket(replacement)
-        return True
-
-    def _submit_hard_stop(self, exposure_side: str, net_qty: float,
-                          entry_avg: float, current: float) -> bool:
-        if abs(net_qty) <= 1e-8:
-            return False
-        stop_fraction = self.policy.shock_hard_stop_fraction if self.shock else self.policy.hard_stop_fraction
-        breached = (
-            current <= entry_avg * (1 - stop_fraction)
-            if exposure_side == "LONG" else current >= entry_avg * (1 + stop_fraction)
-        )
-        if not breached:
-            return False
-        loss_fraction = max(
-            0.0, ((entry_avg - current) if exposure_side == "LONG" else (current - entry_avg)) / entry_avg
-        )
-        reason = "fast_fill_hard_stop" if self.shock else "inventory_hard_stop"
-        allow = getattr(self.venue, "market_exit_allowed", None)
-        if callable(allow) and not allow(exposure_side, loss_fraction, reason):
-            self.reason = "market_exit_waiting_for_trend"
-            return False
-        exit_side = "SELL" if exposure_side == "LONG" else "BUY"
-        exit_ticket = self._active_ticket(exit_side)
-        cache_permit = None
-        exit_qty = abs(net_qty)
-        if exit_ticket is not None:
-            cache_permit = self.venue.preflight_order(
-                exit_side, exit_qty, None, market=True, kind=f"rtrade:{reason}:{self.pair_id}"
-            )
-            _snapshot, cancel_reason = self._cancel_and_reconcile(exit_ticket)
-            if cancel_reason is not None:
-                self.reason = "hard_stop_cancel_failed" if cancel_reason == "cancel_failed" else "hard_stop_cancel_ambiguous"
-                return False
-            final_net = self._net_qty()
-            if abs(final_net) <= 1e-8:
-                self.reason, self.phase = reason, "hard_stop"
-                return True
-            final_exit_side = "SELL" if final_net > 0 else "BUY"
-            exit_qty = abs(final_net)
-            if final_exit_side != exit_side or exit_qty > abs(net_qty) + 1e-8:
-                self.reason = "hard_stop_exposure_changed_during_cancel"
-                return False
-        try:
-            market = self.venue.place_market_exit(
-                exit_side, exit_qty, reason=reason, pair_id=self.pair_id,
-                cache_permit=cache_permit, revision=self.hard_stop_revision)
-            stop_exception = False
-        except Exception as exc:  # noqa: BLE001 - Keep residual exposure recoverable.
-            print(f"[rtrade_pair] hard-stop submit failed for {self.pair_id}: {exc}")
-            market, stop_exception = None, True
-        if market is None:
-            if self._is_venue_recovery_pending(_place_failure_reason(self.venue, exit_side), stop_exception):
-                self.phase, self.reason = "hard_stop_recovery", "hard_stop_recovery_pending"
-            else:
-                self.reason = "hard_stop_place_failed"
-            return False
-        self._append_unique_ticket(market)
-        self.stop_ticket = market
-        self.hard_stop_reason = reason
-        self.phase = "stopping"
         return True
 
     def _retry_terminal_hard_stop(self, net_qty: float) -> bool:
@@ -867,14 +804,63 @@ class PairCoordinator:
                 self.reason = "current_price_unavailable"
                 return self.outcome()
             self.reason = None
-            if self._submit_hard_stop(exposure_side, net, entry_avg, current):
-                return self.outcome()
-            if self.reason in {
-                "hard_stop_cancel_failed", "hard_stop_cancel_ambiguous",
-                "hard_stop_exposure_changed_during_cancel", "hard_stop_place_failed",
-                "hard_stop_recovery_pending",
-            }:
-                return self.outcome()
+            stop_fraction = self.policy.shock_hard_stop_fraction if self.shock else self.policy.hard_stop_fraction
+            breached = (
+                current <= entry_avg * (1 - stop_fraction)
+                if exposure_side == "LONG" else current >= entry_avg * (1 + stop_fraction)
+            )
+            if abs(net) > 1e-8 and breached:
+                loss_fraction = max(
+                    0.0, ((entry_avg - current) if exposure_side == "LONG" else (current - entry_avg)) / entry_avg
+                )
+                hs_reason = "fast_fill_hard_stop" if self.shock else "inventory_hard_stop"
+                allow = getattr(self.venue, "market_exit_allowed", None)
+                if callable(allow) and not allow(exposure_side, loss_fraction, hs_reason):
+                    self.reason = "market_exit_waiting_for_trend"
+                else:
+                    exit_side = "SELL" if exposure_side == "LONG" else "BUY"
+                    exit_ticket = next(
+                        (t for t in reversed(self.tickets) if t.side.upper() == exit_side and t.active),
+                        None,
+                    )
+                    cache_permit = None
+                    exit_qty = abs(net)
+                    if exit_ticket is not None:
+                        cache_permit = self.venue.preflight_order(
+                            exit_side, exit_qty, None, market=True, kind=f"rtrade:{hs_reason}:{self.pair_id}"
+                        )
+                        _snapshot, cancel_reason = self._cancel_and_reconcile(exit_ticket)
+                        if cancel_reason is not None:
+                            self.reason = "hard_stop_cancel_failed" if cancel_reason == "cancel_failed" else "hard_stop_cancel_ambiguous"
+                            return self.outcome()
+                        final_net = self._net_qty()
+                        if abs(final_net) <= 1e-8:
+                            self.reason, self.phase = hs_reason, "hard_stop"
+                            return self.outcome()
+                        final_exit_side = "SELL" if final_net > 0 else "BUY"
+                        exit_qty = abs(final_net)
+                        if final_exit_side != exit_side or exit_qty > abs(net) + 1e-8:
+                            self.reason = "hard_stop_exposure_changed_during_cancel"
+                            return self.outcome()
+                    try:
+                        market = self.venue.place_market_exit(
+                            exit_side, exit_qty, reason=hs_reason, pair_id=self.pair_id,
+                            cache_permit=cache_permit, revision=self.hard_stop_revision)
+                        stop_exception = False
+                    except Exception as exc:  # noqa: BLE001 - Keep residual exposure recoverable.
+                        print(f"[rtrade_pair] hard-stop submit failed for {self.pair_id}: {exc}")
+                        market, stop_exception = None, True
+                    if market is None:
+                        if self._is_venue_recovery_pending(_place_failure_reason(self.venue, exit_side), stop_exception):
+                            self.phase, self.reason = "hard_stop_recovery", "hard_stop_recovery_pending"
+                        else:
+                            self.reason = "hard_stop_place_failed"
+                        return self.outcome()
+                    self._append_unique_ticket(market)
+                    self.stop_ticket = market
+                    self.hard_stop_reason = hs_reason
+                    self.phase = "stopping"
+                    return self.outcome()
             self._ensure_anchored_exit(exposure_side, net, entry_avg, current)
             return self.outcome()
 

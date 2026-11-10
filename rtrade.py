@@ -253,14 +253,6 @@ class _LivePairVenue:
     def _limit_kind(cls, revision):
         return cls._kind_for_revision("limit", revision, label="limit")
 
-    @classmethod
-    def _limit_revision(cls, kind):
-        return PairCoordinator._intent_revision(kind, "limit")
-
-    @classmethod
-    def _hard_stop_revision_from_kind(cls, kind):
-        return PairCoordinator._intent_revision(kind, "hard_stop")
-
     def _persist_callback(self, pair_id, side, kind, requested_qty):
         if self.pair_store is None:
             return lambda _pending: None
@@ -290,9 +282,9 @@ class _LivePairVenue:
                 f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no available reference price"
             )
         kind = pending.get("kind")
-        rev = self._limit_revision(kind)
+        rev = PairCoordinator._intent_revision(kind, "limit")
         if rev is None:
-            rev = self._hard_stop_revision_from_kind(kind) or 0
+            rev = PairCoordinator._intent_revision(kind, "hard_stop") or 0
         return PairOrderTicket(
             order_id=str(order_id),
             side=str(pending["side"]).upper(),
@@ -502,8 +494,8 @@ class _LivePairVenue:
         for stored in dict(record.get("intents") or {}).values():
             pending = self._canonical_intent(record, stored)
             side, kind = pending["side"], pending["kind"]
-            limit_revision = self._limit_revision(kind)
-            stop_revision = self._hard_stop_revision_from_kind(kind)
+            limit_revision = PairCoordinator._intent_revision(kind, "limit")
+            stop_revision = PairCoordinator._intent_revision(kind, "hard_stop")
             if limit_revision is not None:
                 limit_revisions[side] = max(limit_revisions[side], limit_revision)
             if stop_revision is not None:

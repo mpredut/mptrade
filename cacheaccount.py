@@ -1873,20 +1873,16 @@ class CacheOrderManager(CacheAccountManagerBase):
         except Exception as e:
             print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
 
-    def _read_order_snapshot_strict(self, metadata, *, path=None):
-        """Read and validate an Order snapshot against its durable manifest."""
-        return _cache_integrity.read_order_snapshot_strict(
-            path or self.filename,
-            metadata,
-            is_valid_item_fn=self._is_valid_item,
-            reader_reason=self._account_reader_reason(),
-        )
-
     def _read_order_snapshot_recovering_previous_locked(self, metadata):
         """Read an Order snapshot against ``metadata``, restoring ``.previous`` if needed."""
-        return self._read_snapshot_recovering_previous_locked(
-            self._read_order_snapshot_strict, metadata
-        )
+        def _read_strict(meta, *, path=None):
+            return _cache_integrity.read_order_snapshot_strict(
+                path or self.filename,
+                meta,
+                is_valid_item_fn=self._is_valid_item,
+                reader_reason=self._account_reader_reason(),
+            )
+        return self._read_snapshot_recovering_previous_locked(_read_strict, metadata)
 
     def _ensure_account_version(self, required_version: str) -> None:
         with self._generation_lock():
@@ -2165,50 +2161,6 @@ class CacheAssetValueManager(CacheAccountManagerBase):
                 last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
         return last_times
 
-    def _resolve_venue_balances_usd(self, binance_total_val: float) -> dict[str, float]:
-        try:
-            cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
-            vb_data = None
-            for cand in (
-                os.path.join(cache_root, "state", "venue_balances_state.json"),
-                os.path.join(cache_root, "venue_balances_state.json"),
-            ):
-                if os.path.isfile(cand):
-                    vb_data = read_json_dict(cand, default=None)
-                    if isinstance(vb_data, dict) and vb_data:
-                        break
-            if not isinstance(vb_data, dict) or not vb_data:
-                return {}
-            live_cp_data = None
-            cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
-            for cp_cand in (
-                os.path.join(cache_root, "prices", cp_default_filename),
-                os.path.join(cache_root, cp_default_filename),
-            ):
-                if os.path.isfile(cp_cand):
-                    live_cp_data = read_json_dict(cp_cand, default=None)
-                    if isinstance(live_cp_data, dict) and live_cp_data:
-                        break
-            nav = compute_venue_nav_breakdown(
-                venue_balances_state=vb_data,
-                live_prices=live_cp_data,
-                exclude_venues=("binance",),
-            )
-            other_venues = (
-                nav.get("venues_usd")
-                if isinstance(nav.get("venues_usd"), dict)
-                else {}
-            )
-            if not other_venues:
-                return {}
-            venues_usd: dict[str, float] = {"binance": round(binance_total_val, 2)}
-            for venue in sorted(other_venues):
-                if other_venues[venue] > 0:
-                    venues_usd[venue] = round(other_venues[venue], 2)
-            return venues_usd if len(venues_usd) > 1 else {}
-        except Exception:
-            return {}
-
     def get_remote_items(self, symbol, startTime):
         try:
             total_usdc = self.api_client.get_total_assets_value_usdc(
@@ -2233,7 +2185,48 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             "datetime_local": datetime.now().isoformat(timespec="seconds"),
             "total_value_usdc": round(total_val, 8),
         }
-        venues_usd = self._resolve_venue_balances_usd(total_val)
+        venues_usd: dict[str, float] = {}
+        try:
+            cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
+            vb_data = None
+            for cand in (
+                os.path.join(cache_root, "state", "venue_balances_state.json"),
+                os.path.join(cache_root, "venue_balances_state.json"),
+            ):
+                if os.path.isfile(cand):
+                    vb_data = read_json_dict(cand, default=None)
+                    if isinstance(vb_data, dict) and vb_data:
+                        break
+            if isinstance(vb_data, dict) and vb_data:
+                live_cp_data = None
+                cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
+                for cp_cand in (
+                    os.path.join(cache_root, "prices", cp_default_filename),
+                    os.path.join(cache_root, cp_default_filename),
+                ):
+                    if os.path.isfile(cp_cand):
+                        live_cp_data = read_json_dict(cp_cand, default=None)
+                        if isinstance(live_cp_data, dict) and live_cp_data:
+                            break
+                nav = compute_venue_nav_breakdown(
+                    venue_balances_state=vb_data,
+                    live_prices=live_cp_data,
+                    exclude_venues=("binance",),
+                )
+                other_venues = (
+                    nav.get("venues_usd")
+                    if isinstance(nav.get("venues_usd"), dict)
+                    else {}
+                )
+                if other_venues:
+                    cand_venues: dict[str, float] = {"binance": round(total_val, 2)}
+                    for venue in sorted(other_venues):
+                        if other_venues[venue] > 0:
+                            cand_venues[venue] = round(other_venues[venue], 2)
+                    if len(cand_venues) > 1:
+                        venues_usd = cand_venues
+        except Exception:
+            venues_usd = {}
         if venues_usd:
             snapshot["venues_usd"] = venues_usd
             snapshot["portfolio_total_usd"] = round(sum(venues_usd.values()), 2)

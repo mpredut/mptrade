@@ -34,8 +34,8 @@ def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
     return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
 
-def _extract_price_sequence(prices: Sequence[float]) -> Optional[Sequence[float]]:
-    """Normalize 1D price sequences or 2D (ts, price) sequences into a 1D price sequence."""
+def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60.0) -> Optional[float]:
+    """Estimate one-sigma hourly volatility percentage from scaled log returns."""
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None
     if np is not None and isinstance(prices, np.ndarray):
@@ -48,53 +48,49 @@ def _extract_price_sequence(prices: Sequence[float]) -> Optional[Sequence[float]
                 valid_ts = np.isfinite(ts_col) & (ts_col > 0)
                 if np.all(valid_ts) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
                     order = np.argsort(ts_col, kind="mergesort")
-                    return arr2[order, 1]
-                return arr2[:, 1]
+                    prices = arr2[order, 1]
+                else:
+                    prices = arr2[:, 1]
             except (TypeError, ValueError):
                 return None
-        return prices
-    try:
-        first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
-        if isinstance(first_item, (list, tuple)):
-            pts_with_ts = []
-            pts_only = []
-            all_have_ts = True
-            for item in prices:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    tf = safe_pos_float(item[0], default=None)
-                    pf = safe_pos_float(item[1], default=None)
-                    if pf is not None:
-                        pts_only.append(pf)
-                        if tf is not None:
-                            pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
-                        else:
-                            all_have_ts = False
-                elif isinstance(item, (list, tuple)) and len(item) == 1:
-                    all_have_ts = False
-                    pf = safe_pos_float(item[0], default=None)
-                    if pf is not None:
-                        pts_only.append(pf)
+    else:
+        try:
+            first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
+            if isinstance(first_item, (list, tuple)):
+                pts_with_ts = []
+                pts_only = []
+                all_have_ts = True
+                for item in prices:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2:
+                        tf = safe_pos_float(item[0], default=None)
+                        pf = safe_pos_float(item[1], default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                            if tf is not None:
+                                pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                            else:
+                                all_have_ts = False
+                    elif isinstance(item, (list, tuple)) and len(item) == 1:
+                        all_have_ts = False
+                        pf = safe_pos_float(item[0], default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                    else:
+                        all_have_ts = False
+                        pf = safe_pos_float(item, default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
+                    if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
+                        pts_with_ts.sort(key=lambda x: x[0])
+                    if all_have_ts or len(pts_with_ts) == len(pts_only):
+                        prices = [p for _, p in pts_with_ts]
+                    else:
+                        prices = pts_only
                 else:
-                    all_have_ts = False
-                    pf = safe_pos_float(item, default=None)
-                    if pf is not None:
-                        pts_only.append(pf)
-            if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
-                if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
-                    pts_with_ts.sort(key=lambda x: x[0])
-                if all_have_ts or len(pts_with_ts) == len(pts_only):
-                    return [p for _, p in pts_with_ts]
-            return pts_only
-    except TypeError:
-        return None
-    return prices
-
-
-def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60.0) -> Optional[float]:
-    """Estimate one-sigma hourly volatility percentage from scaled log returns."""
-    prices = _extract_price_sequence(prices)  # type: ignore[assignment]
-    if prices is None or isinstance(prices, (bool, str, bytes)):
-        return None
+                    prices = pts_only
+        except TypeError:
+            return None
     sr_f = safe_pos_float(sample_rate_sec, default=None)
     if sr_f is None:
         return None

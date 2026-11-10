@@ -84,11 +84,6 @@ class PriceGeometrySnapshot:
             return 0.0
         return (pp - cp) / pp if pp > cp else 0.0
 
-    def discount_drop_ratio(self, reference_price: float) -> float:
-        """Calculate price discount ratio below reference sale: (reference - current) / reference."""
-        cp, rp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(reference_price)
-        return (rp - cp) / rp if (cp is not None and rp is not None) else 0.0
-
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
         cp, tp, th = (
@@ -100,18 +95,6 @@ class PriceGeometrySnapshot:
             return False
         tol = self._finite_nonneg_float(tol_pct) or 0.0
         return self.bounce_ratio(tp) >= th or (tol > 0 and are_close(cp, tp * (1.0 + th), tol))
-
-    def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if price has pulled back from peak honoring fuzzy tolerance."""
-        cp, pp, th = (
-            self._finite_pos_float(getattr(self, "current_price", None)),
-            self._finite_pos_float(peak_price),
-            self._finite_pos_float(threshold),
-        )
-        if cp is None or pp is None or th is None:
-            return False
-        tol = self._finite_nonneg_float(tol_pct) or 0.0
-        return self.pullback_ratio(pp) >= th or (tol > 0 and are_close(cp, pp * (1.0 - th), tol))
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
@@ -253,7 +236,8 @@ class ReentrySnapshot(PriceGeometrySnapshot):
 
     @property
     def sale_drop_ratio(self) -> float:
-        return self.discount_drop_ratio(self.last_sell_price) if self._finite_pos_float(self.last_sell_price) is not None else 0.0
+        cp, rp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(self.last_sell_price)
+        return (rp - cp) / rp if (cp is not None and rp is not None) else 0.0
 
     @property
     def sale_drop_pct(self) -> float:
@@ -1042,7 +1026,19 @@ class PositionExitManager:
         if self.config.reentry_hybrid_enabled and (snapshot.trend_up or self.config.reentry_peak_relative):
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = snapshot.pullback_ratio(peak)
-            if not snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct):
+            cp, pp, th = (
+                snapshot._finite_pos_float(getattr(snapshot, "current_price", None)),
+                snapshot._finite_pos_float(peak),
+                snapshot._finite_pos_float(pullback_required),
+            )
+            tol = snapshot._finite_nonneg_float(self.config.reentry_tolerance_pct) or 0.0
+            pulled_back = (
+                cp is not None
+                and pp is not None
+                and th is not None
+                and (pullback_ratio >= th or (tol > 0 and are_close(cp, pp * (1.0 - th), tol)))
+            )
+            if not pulled_back:
                 target_px = peak * (1.0 - pullback_required)
                 return self._reentry_wait(
                     f"bull_reentry_pullback_waiting (price={current_price:.4f} > {target_px:.4f}, pullback={pullback_ratio*100:.2f}% < {pullback_required*100:.2f}%)",
