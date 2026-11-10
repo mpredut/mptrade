@@ -274,10 +274,7 @@ class KrakenProvider(MarketDataProvider):
             raise
 
     # -- Public market data without keys. --------------------------------------
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        cached = self.get_ssot_cached_price(symbol)
-        if cached is not None:
-            return cached
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
         try:
             return self._client().last_price(symbol)
         except Exception as e:  # noqa: BLE001
@@ -306,16 +303,11 @@ class KrakenProvider(MarketDataProvider):
             self._minqty[norm_sym] = mn   # Cache only a successful lookup.
         return mn
 
-    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        """Return ascending public OHLC closes as timestamp/price mappings."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
+    def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+        """Fetch ascending public OHLC closes from Kraken as timestamp/price mappings."""
         lookback_f = safe_pos_float(lookback_h, default=None)
         if lookback_f is None:
             return None
-        cached_hist = self.get_ssot_price_history(symbol, lookback_f)
-        if cached_hist is not None:
-            return cached_hist
         try:
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.

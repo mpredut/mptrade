@@ -3000,12 +3000,12 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
     assert rows[0]["price"] == 120.5
     assert rows[0]["qty"] == 2.0
 
-    # 5. T212Provider consults SSOT price and 24h history caches first when enabled
+    # 5. T212Provider consults SSOT price and 24h history caches first via MarketDataProvider Template Method
     tp = T212Provider(client=fake_t212_client, live_enabled=False)
-    with patch.object(tp, "get_ssot_cached_price", return_value=135.25) as mock_ssot_px:
+    with patch.object(tp, "_cached_current_price", return_value=135.25) as mock_ssot_px:
         assert tp.get_current_price("NVDA_US_EQ") == 135.25
         mock_ssot_px.assert_called_once_with("NVDA_US_EQ")
-    with patch.object(tp, "get_ssot_price_history", return_value=[(1700000000.0, 130.0), (1700000060.0, 135.25)]) as mock_ssot_hist:
+    with patch.object(tp, "_cached_price_history", return_value=[(1700000000.0, 130.0), (1700000060.0, 135.25)]) as mock_ssot_hist:
         hist = tp.get_price_history("NVDA_US_EQ", 1.0)
         assert hist == [(1700000000.0, 130.0), (1700000060.0, 135.25)]
         mock_ssot_hist.assert_called_once_with("NVDA_US_EQ", 1.0)

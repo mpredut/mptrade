@@ -432,40 +432,14 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, attr, None)
         return reader(*args, **kwargs) if callable(reader) else default
 
-    def _call_trend_opt(self, attr: str, symbol: str, max_age_sec: float) -> tuple[bool, Any]:
-        reader = getattr(self._executor, attr, None)
-        if not callable(reader):
-            return False, None
-        try:
-            return True, reader(symbol, max_age_sec=max_age_sec)
-        except TypeError:
-            return True, reader(symbol)
-
     def open_orders(self, symbol: str):
         return self._call_opt("open_orders", symbol, default=[])
 
     def get_orders(self, symbol: str, side: Optional[str] = None, lookback: Optional[float] = None):
         return self._call_opt("get_orders", symbol, side, lookback, default=[])
 
-    def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0):
-        return self._call_trend_opt("trend_snapshot", symbol, max_age_sec)[1]
-
-    def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
-        ok, raw = self._call_trend_opt("trend", symbol, max_age_sec)
-        return safe_float(raw, default=0.0) if ok else 0.0
-
-    def trend_direction(self, symbol: str, max_age_sec: float = 15.0) -> Optional[str]:
-        ok, raw = self._call_trend_opt("trend_direction", symbol, max_age_sec)
-        return raw if ok else MarketDataProvider.trend_direction(self, symbol, max_age_sec=max_age_sec)
-
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         return self._call_opt("position_cost_basis", symbol, held_qty, since_s)
-
-    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
-        return self._call_opt("get_ssot_cached_price", symbol, max_age_sec=max_age_sec)
-
-    def get_ssot_price_history(self, symbol: str, lookback_hours: float, max_latest_age_sec: float = 120.0) -> Optional[list[dict]]:
-        return self._call_opt("get_ssot_price_history", symbol, lookback_hours, max_latest_age_sec=max_latest_age_sec)
 
     def _pair_precision_attr(self, symbol: str, attr: str, default: Any = None) -> Any:
         return MarketDataProvider._pair_precision_attr(self, symbol, attr, default)

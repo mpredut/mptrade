@@ -667,8 +667,8 @@ class T212ClientTransportTest(unittest.TestCase):
 
             def _fake_refresh(*, max_age_sec=None):
                 refresh_calls.append(max_age_sec)
-                from providers.base import MarketDataProvider
-                MarketDataProvider.merge_ssot_fills_cache(
+                from cacheaccount import CacheTradeManager
+                CacheTradeManager.merge_venue_fills_snapshot(
                     trade_cache_file,
                     {
                         "SPCX_US_EQ": [

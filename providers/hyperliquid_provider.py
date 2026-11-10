@@ -265,11 +265,7 @@ class HyperliquidProvider(MarketDataProvider):
         self.validate_symbol(symbol)
         return (f"{self._token}USDC", self._token)
 
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        self.validate_symbol(symbol)
-        cached = self.get_ssot_cached_price(symbol)
-        if cached is not None:
-            return cached
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -280,21 +276,13 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] get_current_price({symbol}) failed: {e}")
             return None
 
-    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        """Return ascending granular spot closes over the last ``lookback_h`` hours."""
-        self.validate_symbol(symbol)
-        lookback_f = safe_nonneg_float(lookback_h, default=None)
-        if lookback_f is None:
-            return None
-        cached_hist = self.get_ssot_price_history(symbol, lookback_f)
-        if cached_hist is not None:
-            return cached_hist
+    def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+        """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
             return None
         try:
-            lookback_h = lookback_f
             interval = "1m" if lookback_h <= 24 else "15m"
             end = int(time.time() * 1000)
             start = end - int(lookback_h * 3600 * 1000)
@@ -347,8 +335,8 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] free_balance({asset}) failed: {e}")
             return None
 
-    def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
-        """Authoritatively fetch Hyperliquid user_fills for this spot pair, publishing to SSOT cache only when requested."""
+    def _fills_from_api(self, symbol: str) -> List[dict]:
+        """Authoritatively fetch Hyperliquid user_fills for this spot pair."""
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -361,15 +349,10 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"get_orders({symbol}): user_fills returned None")
         if not isinstance(fills, list):
             raise ProviderError(f"get_orders({symbol}): user_fills returned unexpected type {type(fills).__name__}")
-        spot_fills = [
+        return [
             f for f in fills
             if isinstance(f, dict) and f.get("coin") == pair
         ]
-        if publish_cache:
-            cache_file = self._fills_cache_file()
-            if cache_file:
-                self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
-        return spot_fills
 
     @classmethod
     def fetch_remote_trades_with_client(
@@ -380,19 +363,6 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         tok = canonical_base_asset(symbol) or str(symbol or "HYPE").strip().upper()
         return cls(token=tok, client=client).fetch_remote_trades(symbol, start_time_ms)
-
-    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
-        """Fetch Hyperliquid spot fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        rows = super().fetch_remote_trades(symbol, start_time_ms)
-        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
-        out: List[dict] = []
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            ts = extract_timestamp_ms(r, default=0) or 0
-            if ts >= start_ms:
-                out.append(dict(r))
-        return out
 
     @classmethod
     def extract_ws_user_fills(

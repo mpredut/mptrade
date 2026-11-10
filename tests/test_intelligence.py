@@ -1102,33 +1102,28 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
     from providers.base import PairPrecision
     from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
 
-    # 1. AuditedStrategyExecutor fallback to pair_precision for round_quantity/round_price/min_order_qty and trend_snapshot(max_age_sec)
+    # 1. AuditedStrategyExecutor fallback to pair_precision for round_quantity/round_price/min_order_qty and CacheShortTrendManager direction/slope
+    from cachetrend import CacheShortTrendManager
+
     class _MinimalExec:
         name = "test_exec"
 
         def pair_precision(self, symbol: str):
             return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.05)
 
-        def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0):
-            return {
-                "symbol": symbol,
-                "max_age_sec": max_age_sec,
-                "growth_coefficient": 120.0,
-                "gradient_recent": 120.0,
-                "slope_small": 0.05,
-                "final_trend": 120.0,
-            }
-
-        def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
-            return float(max_age_sec)
-
     audited = AuditedStrategyExecutor(_MinimalExec(), ExecutionAudit(str(tmp_path)))
     assert audited.round_quantity("BTCUSDC", 1.23456) == 1.234
     assert audited.round_price("BTCUSDC", 99.987) == 99.99
     assert audited.min_order_qty("BTCUSDC") == 0.05
-    assert audited.trend_snapshot("BTCUSDC", max_age_sec=42.0)["max_age_sec"] == 42.0
-    assert audited.trend("BTCUSDC", max_age_sec=42.0) == 42.0
-    assert audited.trend_direction("BTCUSDC", max_age_sec=42.0) == "up"
+    sample_snap = {
+        "symbol": "BTCUSDC",
+        "growth_coefficient": 120.0,
+        "gradient_recent": 120.0,
+        "slope_small": 0.05,
+        "final_trend": 120.0,
+    }
+    assert CacheShortTrendManager.extract_direction(sample_snap) == "up"
+    assert CacheShortTrendManager.extract_slope(sample_snap, "BTCUSDC") != 0.0
 
     # 2. CachedHttpJsonCollector respects monkeypatching intelligence.macro.daemon_ssot.fetch_public_json
     class _DummyCollector(daemon_ssot.CachedHttpJsonCollector):
@@ -4813,7 +4808,9 @@ def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_
     assert st_t212.cost == pytest.approx(260.0)
     assert st_t212.orig_qty == pytest.approx(2.0)
 
-    # 4. MarketDataProvider.normalize_orderbook_payload & _parse_ssot_price_point fall back past explicit None keys
+    # 4. MarketDataProvider.normalize_orderbook_payload & CachePriceManagerBase.parse_ssot_price_point fall back past explicit None keys
+    from cacheprice import CachePriceManagerBase
+
     ob = MarketDataProvider.normalize_orderbook_payload(
         {
             "bids": [{"px": None, "price": 100.0, "sz": None, "qty": 1.5}],
@@ -4821,7 +4818,7 @@ def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_
         }
     )
     assert ob == {"bids": [(100.0, 1.5)], "asks": [(101.0, 2.0)]}
-    pt = MarketDataProvider._parse_ssot_price_point({"timestamp": 1700000000, "price": None, "px": 42.5})
+    pt = CachePriceManagerBase.parse_ssot_price_point({"timestamp": 1700000000, "price": None, "px": 42.5})
     assert pt == (1700000000000, 42.5)
 
 

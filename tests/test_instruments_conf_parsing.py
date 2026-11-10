@@ -535,17 +535,26 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     hist = hl_prov.get_price_history("HYPEUSDC", 2.0)
     assert hist is not None and len(hist) == 12
 
-    # Trend slope delegation through StrategyExecutor and AuditedStrategyExecutor
-    hl_exec = AuditedStrategyExecutor(hl_prov, venue="hyperliquid")
-    kr_exec = AuditedStrategyExecutor(kr_prov, venue="kraken")
-    assert hl_exec.trend("HYPEUSDC") == pytest.approx(0.42)
-    assert kr_exec.trend("HYPEUSD") == pytest.approx(-0.18)
-    assert kr_exec.trend("ADAUSD") == pytest.approx(0.11)
+    # Short-trend slope resolution lives canonically in CacheShortTrendManager (decoupled from providers)
+    from cachetrend import CacheShortTrendManager
+
+    hl_snap = CacheShortTrendManager.resolve_ssot_snapshot(
+        hl_prov._ssot_symbol_candidates("HYPEUSDC"), custom_path=str(trend_cache)
+    )
+    kr_hype_snap = CacheShortTrendManager.resolve_ssot_snapshot(
+        kr_prov._ssot_symbol_candidates("HYPEUSD"), custom_path=str(trend_cache)
+    )
+    kr_ada_snap = CacheShortTrendManager.resolve_ssot_snapshot(
+        kr_prov._ssot_symbol_candidates("ADAUSD"), custom_path=str(trend_cache)
+    )
+    assert CacheShortTrendManager.extract_slope(hl_snap, "HYPEUSDC") == pytest.approx(0.42)
+    assert CacheShortTrendManager.extract_slope(kr_hype_snap, "HYPEUSD") == pytest.approx(-0.18)
+    assert CacheShortTrendManager.extract_slope(kr_ada_snap, "ADAUSD") == pytest.approx(0.11)
 
     # Inside live_price_fetch_context (used by cacheManager & cachetrend pollers), SSOT cache is bypassed
     with live_price_fetch_context():
-        assert hl_prov.get_ssot_cached_price("HYPEUSDC") is None
-        assert kr_prov.get_ssot_cached_price("HYPEUSD") is None
+        assert hl_prov._cached_current_price("HYPEUSDC") is None
+        assert kr_prov._cached_current_price("HYPEUSD") is None
 
     # Telemetry collectors resolve venues via SSOT registry
     assert venue_for_symbol("HYPEUSDC") == "hyperliquid"
@@ -558,7 +567,8 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert _has_hyperliquid_instrument("ADAUSD") is False
 
     # SSOT orderbook payload normalization and collector reference price coupling
-    from providers.base import MarketDataProvider, resolve_ssot_price_from_cache
+    from cacheprice import CachePriceManagerBase, resolve_ssot_price_from_cache
+    from providers.base import MarketDataProvider
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
     assert resolve_ssot_price_from_cache("HYPEUSDC", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(41.25)
@@ -593,10 +603,10 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     hl_prov.invalidate_ssot_fills_cache("HYPEUSDC", str(hl_fills_cache))
     assert hl_prov._fills_from_cache("HYPEUSDC") is None
 
-    # _parse_ssot_price_point must never treat timestamp element [0] as price when [1] is None/0
-    assert MarketDataProvider._parse_ssot_price_point([1700000000000, None], fallback_ts=1700000000000) is None
-    assert MarketDataProvider._parse_ssot_price_point([1700000000000, 0.0], fallback_ts=1700000000000) is None
-    assert MarketDataProvider._parse_ssot_price_point([[1700000000000, 42.5]], fallback_ts=1700000000000) == (1700000000000, 42.5)
+    # parse_ssot_price_point must never treat timestamp element [0] as price when [1] is None/0
+    assert CachePriceManagerBase.parse_ssot_price_point([1700000000000, None], fallback_ts=1700000000000) is None
+    assert CachePriceManagerBase.parse_ssot_price_point([1700000000000, 0.0], fallback_ts=1700000000000) is None
+    assert CachePriceManagerBase.parse_ssot_price_point([[1700000000000, 42.5]], fallback_ts=1700000000000) == (1700000000000, 42.5)
 
     # _ssot_symbol_candidates rejects bool and maps Kraken XXBTZUSD -> BTCUSD / XBTUSD
     assert kr_prov._ssot_symbol_candidates(True) == ()  # type: ignore[arg-type]

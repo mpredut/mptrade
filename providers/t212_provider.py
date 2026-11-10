@@ -179,12 +179,7 @@ class T212Provider(MarketDataProvider):
             return None
 
     # -- Market data. ----------------------------------------------------------
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
-        cached_px = self.get_ssot_cached_price(symbol)
-        if cached_px is not None:
-            return cached_px
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
         p = self._position(symbol)
         if p:
             px = safe_pos_float(p.get("currentPrice"), default=None)
@@ -198,14 +193,6 @@ class T212Provider(MarketDataProvider):
         except Exception as e:
             print(f"[T212] get_current_price fallback {symbol}: {e}")
         return None
-
-    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
-        lookback_f = safe_pos_float(lookback_h, default=None)
-        if lookback_f is None:
-            return None
-        return self.get_ssot_price_history(symbol, lookback_f)
 
     @staticmethod
     def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
@@ -388,7 +375,9 @@ class T212Provider(MarketDataProvider):
             if isinstance(items, list) and items:
                 by_sym = self.normalize_history_items(items)
                 if publish_cache and cache_file and by_sym:
-                    self.merge_ssot_fills_cache(cache_file, by_sym)
+                    from cacheaccount import CacheTradeManager
+
+                    CacheTradeManager.merge_venue_fills_snapshot(cache_file, by_sym)
                 sym_u = symbol.strip().upper()
                 matched: List[dict] = []
                 for k, rows in by_sym.items():

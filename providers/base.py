@@ -80,12 +80,36 @@ from .strategy_executor import (  # noqa: E402, F401
 class MarketDataProvider(ABC):
     """Shared market-data, account, order, and policy-hook interface."""
 
-    @abstractmethod
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
+        """Venue-specific live quote hook invoked on SSOT cache miss."""
+        return None
+
+    def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+        """Venue-specific historical price series hook invoked on SSOT cache miss."""
+        return None
+
     def get_current_price(self, symbol: str) -> Optional[float]:
-        ...
+        """Return fresh current price for ``symbol`` (SSOT cache first when enabled, then venue transport)."""
+        self.validate_symbol(symbol)
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
+        cached = self._cached_current_price(symbol)
+        if cached is not None:
+            return cached
+        return self._fetch_current_price(symbol)
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        return None
+        """Return ascending historical prices over ``lookback_h`` hours (SSOT 24h cache first, then venue transport)."""
+        self.validate_symbol(symbol)
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
+        lookback_f = safe_nonneg_float(lookback_h, default=None)
+        if lookback_f is None:
+            return None
+        cached_hist = self._cached_price_history(symbol, lookback_f)
+        if cached_hist is not None:
+            return cached_hist
+        return self._fetch_price_history(symbol, lookback_f)
 
     @abstractmethod
     def supports_symbol(self, symbol: str) -> bool:
@@ -95,32 +119,29 @@ class MarketDataProvider(ABC):
     _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
+    _USES_SSOT_MARKET_CACHE: bool = True
     _REQUIRES_CACHE_PERMIT: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
     _SUPPORTS_BUSINESS_MINIMUM: bool = False
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
-        "binance": ("providers.market_api", "BinanceProvider"),
-        "kraken": ("providers.kraken_provider", "KrakenProvider"),
+        "binance": ("providers.binance_provider", "BinanceProvider"),
         "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
+        "kraken": ("providers.kraken_provider", "KrakenProvider"),
         "t212": ("providers.t212_provider", "T212Provider"),
     }
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
-    _ssot_short_trend_reader: Any = None
 
     @classmethod
     def bind_ssot_cache_readers(
         cls,
         *,
         current_price_reader: Any = None,
-        short_trend_reader: Any = None,
     ) -> None:
-        """Bind read-only SSOT memory cache getters for current price and short trend."""
+        """Bind read-only SSOT memory cache getter for current price."""
         if current_price_reader is not None:
             cls._ssot_current_price_reader = current_price_reader
-        if short_trend_reader is not None:
-            cls._ssot_short_trend_reader = short_trend_reader
 
     def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
         """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
@@ -262,7 +283,7 @@ class MarketDataProvider(ABC):
             )
 
     def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
-        """Fetch and normalize remote fills for ``symbol`` without mutating disk caches."""
+        """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         self.validate_symbol(symbol)
         api_fn = getattr(self, "_fills_from_api", None)
         if not callable(api_fn):
@@ -271,7 +292,16 @@ class MarketDataProvider(ABC):
             rows = api_fn(symbol, publish_cache=False)
         except TypeError:
             rows = api_fn(symbol)
-        return list(rows) if isinstance(rows, list) else []
+        if not isinstance(rows, list):
+            return []
+        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
+        if start_ms <= 0:
+            return [dict(r) if isinstance(r, dict) else r for r in rows]
+        return [
+            dict(r)
+            for r in rows
+            if isinstance(r, dict) and (extract_timestamp_ms(r, default=0) or 0) >= start_ms
+        ]
 
     def refresh_ssot_fills_cache(self, symbol: str, fills: Optional[List[dict]] = None) -> List[dict]:
         """Authoritatively fetch (if ``fills`` not provided) and explicitly publish ``symbol`` fills to the SSOT trade cache."""
@@ -707,15 +737,9 @@ class MarketDataProvider(ABC):
             return True
         return is_shared_disk_cache_enabled()
 
-    @staticmethod
-    def _parse_ssot_price_point(entry: Any, fallback_ts: Optional[float] = None) -> Optional[tuple[int, float]]:
-        from cacheprice import CachePriceManagerBase
-
-        return CachePriceManagerBase.parse_ssot_price_point(entry, fallback_ts=fallback_ts)
-
-    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+    def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        if not self._allow_ssot_price_cache():
+        if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
             return None
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
@@ -732,14 +756,14 @@ class MarketDataProvider(ABC):
             reader_fn=self._ssot_current_price_reader,
         )
 
-    def get_ssot_price_history(
+    def _cached_price_history(
         self,
         symbol: str,
         lookback_hours: float,
         max_latest_age_sec: float = 120.0,
     ) -> Optional[list[dict]]:
         """Read 24h tick history from Cache24PriceManager when fresh and covering ``lookback_hours``."""
-        if not self._allow_ssot_price_cache():
+        if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
             return None
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
@@ -751,38 +775,6 @@ class MarketDataProvider(ABC):
             lookback_hours,
             max_latest_age_sec=max_latest_age_sec,
             custom_dir=getattr(self, "_ssot_24price_cache_dir", None),
-        )
-
-    def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0) -> Optional[dict]:
-        """Return a fresh short-trend snapshot for ``symbol`` from CacheShortTrendManager / cache_short_trend.json."""
-        if not self._allow_ssot_price_cache():
-            return None
-        candidates = self._ssot_symbol_candidates(symbol)
-        if not candidates:
-            return None
-        from cachetrend import CacheShortTrendManager
-
-        return CacheShortTrendManager.resolve_ssot_snapshot(
-            candidates,
-            max_age_sec=max_age_sec,
-            custom_path=getattr(self, "_ssot_trend_cache_path", None),
-            reader_fn=self._ssot_short_trend_reader,
-        )
-
-    def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
-        """Return instant-trend slope (>0 up, <0 down, 0.0 neutral/unknown) from cacheManager SSOT."""
-        from cachetrend import CacheShortTrendManager
-
-        return CacheShortTrendManager.extract_slope(
-            self.trend_snapshot(symbol, max_age_sec=max_age_sec), symbol
-        )
-
-    def trend_direction(self, symbol: str, max_age_sec: float = 15.0) -> Optional[str]:
-        """Return short-trend direction ('up', 'down', or 'flat') from cacheManager SSOT, or None if unavailable."""
-        from cachetrend import CacheShortTrendManager
-
-        return CacheShortTrendManager.extract_direction(
-            self.trend_snapshot(symbol, max_age_sec=max_age_sec)
         )
 
     @staticmethod
@@ -835,16 +827,6 @@ class MarketDataProvider(ABC):
         asks.sort(key=lambda x: x[0])
         return {"bids": bids, "asks": asks}
 
-    def _matching_ssot_cache_keys(self, mapping: dict, symbol: str, match_fn: Any = None) -> list[str]:
-        from cacheaccount import CacheTradeManager
-
-        return CacheTradeManager.matching_snapshot_keys(
-            mapping,
-            symbol,
-            match_fn=match_fn,
-            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
-        )
-
     def read_ssot_fills_cache(
         self,
         symbol: str,
@@ -874,13 +856,6 @@ class MarketDataProvider(ABC):
 
         return CacheTradeManager.write_venue_fills_snapshot(symbol, cache_file, fills)
 
-    @staticmethod
-    def merge_ssot_fills_cache(cache_file: str, fills_by_symbol: dict) -> bool:
-        """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`) deduplicating by `orderId`."""
-        from cacheaccount import CacheTradeManager
-
-        return CacheTradeManager.merge_venue_fills_snapshot(cache_file, fills_by_symbol)
-
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None
     ) -> None:
@@ -895,26 +870,6 @@ class MarketDataProvider(ABC):
             match_fn=match_fn,
             candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
         )
-
-
-def resolve_ssot_price_from_cache(
-    symbol: str,
-    cache_dir: Optional[str] = None,
-    max_age_sec: float = 60.0,
-    *,
-    quote_isolated: bool = True,
-    now_ts: Optional[float] = None,
-) -> Optional[float]:
-    """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
-    from cacheprice import resolve_ssot_price_from_cache as _resolve_ssot_price_from_cache
-
-    return _resolve_ssot_price_from_cache(
-        symbol,
-        cache_dir=cache_dir,
-        max_age_sec=max_age_sec,
-        quote_isolated=quote_isolated,
-        now_ts=now_ts,
-    )
 
 
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,

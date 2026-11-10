@@ -303,9 +303,9 @@ class KrakenTrailing(TrailingAdapterBase):
 
     def price(self, pair: str):
         try:
-            cached = self.executor.get_ssot_cached_price(pair)
-            if cached is not None:
-                return cached
+            px = self.executor.get_current_price(pair)
+            if px is not None and px > 0:
+                return px
         except Exception:
             pass
         return self.client.last_price(pair)

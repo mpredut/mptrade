@@ -626,7 +626,6 @@ CacheTrendManagerBase.bind_service_getters(
 if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     MarketDataProvider.bind_ssot_cache_readers(
         current_price_reader=lambda: CacheFactory._instances.get("CurrentPrice"),
-        short_trend_reader=lambda: CacheFactory._instances.get("ShortTrend"),
     )
 
 

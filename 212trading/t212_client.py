@@ -40,7 +40,6 @@ from botcore import (
 )
 from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
-from providers.base import MarketDataProvider
 from providers.t212_provider import T212Provider
 from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict
 
@@ -432,7 +431,9 @@ class T212Client:
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
-        MarketDataProvider.merge_ssot_fills_cache(target_path, by_symbol)
+        from cacheaccount import CacheTradeManager
+
+        CacheTradeManager.merge_venue_fills_snapshot(target_path, by_symbol)
 
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.
