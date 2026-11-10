@@ -997,11 +997,6 @@ def _emit_orchestrator_intent(payload: dict[str, Any], *, default: Any = None) -
 class AlertNotifier:
 
     @staticmethod
-    def check_alert(condition, message, alert_interval=60, symbol="TRADE"):
-        check_alert(condition, message, alert_interval, symbol)
-
-    
-    @staticmethod
     def format_human_readable_time(value, fmt: str = "%m-%d %H:%M:%S") -> str:
         if value is None or isinstance(value, bool):
             return "N/A"

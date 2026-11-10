@@ -1588,22 +1588,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert candles[0]["timestamp"] == 1700000000
     assert candles[0]["close"] == 102.0
 
-    # 3. binance_api.bapi_trades.get_my_trades_simple preserves multiple unkeyed partial fills
-    from binance_api import bapi_allorders, bapi_trades
-    monkeypatch.setattr(bapi_trades.sym, "validate_ordertype", lambda *a, **k: True)
-    monkeypatch.setattr(bapi_trades.sym, "validate_symbols", lambda *a, **k: True)
-    monkeypatch.setattr(
-        bapi_allorders,
-        "paginate_my_trades",
-        lambda *a, **k: [
-            {"symbol": "BTCUSDC", "isBuyer": True, "qty": "0.1", "price": "50000", "time": 1000},
-            {"symbol": "BTCUSDC", "isBuyer": True, "qty": "0.2", "price": "50100", "time": 2000},
-            "not_a_dict",
-        ],
-    )
-    fills = bapi_trades.get_my_trades_simple("BUY", "BTCUSDC", backdays=1)
-    assert len(fills) == 2
-
     # 4. AutonomousIntentGateway handles null history and integer intent_id without crashing
     from orchestratorTrade.autonomous_intent_gateway import append_intent_history
     intent_obj = {"intent_id": 12345, "history": None}
@@ -1761,7 +1745,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
     # 9. Volatility, KalmanTrigger, SmartStopLossGuard, NewsFeedCollector, and GeopoliticalThreatAnalyzer resilience
     from intelligence.internal.state.volatility import (
-        RollingVolatilityTracker,
         calculate_volatility_1h,
         vol_pct_to_ratio,
         vol_ratio_to_pct,
@@ -1777,8 +1760,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert vol_pct_to_ratio(None) == 0.0
     assert vol_ratio_to_pct(True) == 0.0
     assert vol_ratio_to_pct("0.025") == 2.5
-    rvt = RollingVolatilityTracker(window_size="5")
-    assert rvt.window_size == 20
 
     from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
     kt = KalmanTrend()
@@ -2965,7 +2946,6 @@ def test_root_modules_batch4_hardening():
 def test_batch5_hardening():
     import importlib.util
     import numpy as np
-    from binance_api import binanceWSeventsFake
     from intelligence.internal.state import survival
     from notify_engine import server as notify_server
     import priceAnalysis
@@ -2992,21 +2972,6 @@ def test_batch5_hardening():
     assert notify_server._category_for_title_and_source(12345, True) == "TRADES"  # type: ignore[arg-type]
     assert notify_server._resolve_provider_label(123, None) == "123"  # type: ignore[arg-type]
     assert notify_server._resolve_provider_label(True, "kraken_bot") == "Kraken"  # type: ignore[arg-type]
-
-    # 3. binanceWSeventsFake string delta, non-dict execution report, and trades_cache cap
-    binanceWSeventsFake.balances_cache.clear()
-    binanceWSeventsFake.orders_cache.clear()
-    binanceWSeventsFake.trades_cache.clear()
-    binanceWSeventsFake.handle_balance_update("USDC", "12.5", 1700000000000)
-    assert binanceWSeventsFake.balances_cache["USDC"] == 12.5
-    binanceWSeventsFake.handle_execution_report("not_a_dict")
-    binanceWSeventsFake.handle_execution_report(
-        {"s": "BTCUSDC", "i": 99, "X": "FILLED", "x": "TRADE", "S": "BUY", "p": "bad", "q": "1.0", "z": "1.0", "L": "65000.5", "l": "0.5"}
-    )
-    assert binanceWSeventsFake.orders_cache[99]["price"] == 0.0
-    assert binanceWSeventsFake.trades_cache[-1]["price"] == 65000.5
-    binanceWSeventsFake.handle_account_position(["not_a_dict", {"a": "BTC", "f": "1.25", "l": "bad"}])
-    assert binanceWSeventsFake.balances_cache["BTC"] == 1.25
 
     # 4. detect_long_term_trend with non-iterable/str/bool/mixed elements in both priceAnalysis and hyperliquid.price_analysis
     assert hl_pa.detect_long_term_trend("12345", "12345") is None
@@ -4014,7 +3979,6 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
     pc = PriceChecker(cache_stub)
     assert pc._is_dynamic_symbol(" btc ") is True
     assert pc.check_all_symbols() == []
-    assert pc.get_status()["symbols_count"] == 0
 
     # 3. CacheAllPriceFetcherManager strips symbols in remove_symbol/get_latest_price/get_price_history and accepts float/str integer limits
     pf = object.__new__(CacheAllPriceFetcherManager)
@@ -5699,12 +5663,9 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
         spot_user_state=lambda addr: {"balances": [{"coin": "HYPE", "total": "12.5"}]},
     )
     assert hl_inst.sz_decimals(" HYPE ") == 2
-    assert hl_inst.max_leverage(" HYPE ") == 5
-    assert hl_inst.coin_listed(" HYPE ") is True
     assert hl_inst.mid(" HYPE ") == pytest.approx(25.5)
     assert hl_inst.spot_mid(" @107 ") == pytest.approx(25.4)
     assert len(hl_inst.open_orders_strict(" HYPE ")) == 1
-    assert hl_inst.spot_balance_strict(" HYPE ") == pytest.approx(12.5)
     hl_inst.exchange = SimpleNamespace(
         cancel=lambda coin, oid: {"status": "ok", "response": {"data": {"statuses": ["success"]}}}
         if (coin == "HYPE" and oid == 12345)
@@ -6300,8 +6261,6 @@ def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
     assert dummy_hl.funding_rate("  HYPE  ") == 0.000125
     assert dummy_hl.funding_rate("SOL") is None
     assert dummy_hl.funding_rate(True) is None  # type: ignore[arg-type]
-    assert dummy_hl.position_full("  HYPE  ") == {"coin": "HYPE", "szi": "10.0", "entryPx": "25.0"}
-    assert dummy_hl.position_full(False) is None  # type: ignore[arg-type]
 
     # 2. hyperliquid.strategy.StratParams.from_dict and _parse_bool_flag accept "1.0" and "0.0"
     assert hl_strat._parse_bool_flag("1.0") is True

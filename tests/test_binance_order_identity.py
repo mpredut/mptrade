@@ -371,10 +371,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             mock_resolve.assert_called_once_with("BTCUSDC", "9001")
 
             mock_resolve.reset_mock()
-            bapi.cancel_recent_orders("BUY", "BTCUSDC", max_age_seconds=60)
-            mock_resolve.assert_called_once_with("BTCUSDC", "9001")
-
-            mock_resolve.reset_mock()
             bp.cancel_opposite_orders("BUY", "BTCUSDC", requested_price=85000.0)
             mock_resolve.assert_called_once_with("BTCUSDC", "9001")
 

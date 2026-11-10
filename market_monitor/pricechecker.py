@@ -453,14 +453,6 @@ class PriceChecker:
             self._thread.join(timeout=5)
         print("[Checker] Monitoring stopped")
 
-    def get_status(self) -> dict:
-        return {
-            "running": self._running,
-            "config": self.config,
-            "symbols_count": len(self._monitored_symbols()),
-            "last_alerts": dict(self._last_alert_time)
-        }
-
 
 def start_price_alert_checker(cachePriceAll, alert_callback=None, check_interval_seconds=60, config=None, state_file: Optional[str] = None):
     checker = PriceChecker(cachePriceAll, alert_callback=alert_callback, config=config, state_file=state_file)

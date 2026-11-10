@@ -438,7 +438,10 @@ class TestPerCoin(Base):
             import instrument_registry as ic
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
-            expected_trails = ic.trail_pct_map()
+            expected_trails = {
+                spec.symbol: spec.number("trailing.pct")
+                for spec in ic.select_instruments("binance", "trailing").values()
+            }
             for sym in ("BTCUSDC", "TAOUSDC", "ARBUSDC"):
                 self.assertEqual(self._orig_trail_pct[sym], expected_trails[sym])
             with self.assertRaises(KeyError):

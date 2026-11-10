@@ -368,11 +368,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         snap = self.get_snapshot(symbol)
         return [snap] if snap is not None else []
 
-    # Extreme window durations derived from the sorted list.
-    @property
-    def window_small_sec(self):
-        return self.window_seconds[0]
-
     @property
     def window_big_sec(self):
         return self.window_seconds[-1]
@@ -1231,13 +1226,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
         return dict(res)
 
-    def is_trend_up_for_slice(
-        self, symbol: str, start_ts: float, end_ts: float
-    ) -> bool:
-        """Evaluate upward-trend condition on a fixed historical interval [start_ts, end_ts]."""
-        res = self.get_trend_for_slice(symbol, start_ts, end_ts)
-        return self._eval_upward_formula(res)
-
     @staticmethod
     def _eval_upward_formula(data) -> bool:
         """Single canonical upward-trend formula (SSOT) aligned with should_wait (GT_S):
@@ -1301,11 +1289,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             symbol, window_seconds=window_seconds, now=now
         )
         return self._eval_upward_formula(snap)
-
-    def is_trend_up_for_window(self, symbol, window_seconds, now=None):
-        """Evaluate upward-trend condition over a configurable window in seconds."""
-        dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
-        return self._eval_upward_formula(dyn)
 
     # ── Transactional cross-process JSON store (via CacheManagerInterface) ────
     def save_state_to_file(self):
@@ -1539,32 +1522,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self.read_only = False
         self.save_state = True
         self._start_flush_loop()
-
-    def get_snapshot_resilient(
-        self,
-        symbol,
-        max_age_sec=None,
-        cache24_managers=None,
-        current_price_mgr=None,
-    ):
-        """Read resiliently with lazy failover.
-
-        Use authoritative memory while calculating, otherwise use a fresh shared file.
-        If the file is stale, start local calculation once, become writer, and use memory.
-        """
-        if self._computing:
-            return self.get_snapshot(symbol)
-        if self.is_snapshot_fresh(symbol, max_age_sec):
-            return self.get_snapshot(symbol)
-        # A stale file triggers autonomous local calculation and writer failover.
-        builtins.print(
-            f"[{self.cls_name}][WARN] stale file -> "
-            f"local-computation failover ({symbol})"
-        )
-        self.prime_from_file()
-        self.start_computation(cache24_managers, current_price_mgr)
-        self.become_writer()
-        return self.get_snapshot(symbol)
 
     def get_all_snapshots(self):
         with self._lock:

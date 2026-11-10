@@ -5741,14 +5741,6 @@ def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_m
     bapi.cancel_expired_orders("BUY", "BTCUSDC", True)
     assert canceled_ids == []
 
-    bapi.cancel_recent_orders("BUY", "BTCUSDC", float("nan"))
-    bapi.cancel_recent_orders("BUY", "BTCUSDC", True)
-    assert canceled_ids == []
-
-    # Valid recent window (10s) cancels order 501 (age ~5s) but NOT future-dated order 502 (age -60s)
-    bapi.cancel_recent_orders("BUY", "BTCUSDC", 10.0)
-    assert canceled_ids == [501]
-
     # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
     captured_bypasses = []
     orig_margins = dict(order_guard._load_margins())
@@ -7502,8 +7494,6 @@ def test_iteration49_hyperliquid_client_market_data_price_analysis_strategy_and_
     assert dummy.withdrawable() == 0.0
     with pytest.raises(hlc.HLError):
         dummy.position_strict("HYPE")
-    with pytest.raises(hlc.HLError):
-        dummy.spot_balance_strict("HYPE")
 
     # 2. hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds
     rows = [
@@ -8474,16 +8464,6 @@ def test_iteration59_base_vwap_audit_kraken_and_hl_client_safety(tmp_path):
     hl.info.spot_meta.return_value = {"tokens": []}
     with pytest.raises(HLError):
         hl.sz_decimals("HYPE")
-    with pytest.raises(HLError):
-        hl.max_leverage("HYPE")
-
-    hl.address = "0x123"
-    hl.info.user_state.return_value = {
-        "marginSummary": {"accountValue": float("nan"), "totalMarginUsed": True},
-        "withdrawable": "inf",
-    }
-    ms = hl.margin_summary()
-    assert ms == {"accountValue": 0.0, "totalMarginUsed": 0.0, "withdrawable": 0.0}
 
     hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
     hl.exchange = MagicMock()
@@ -10259,8 +10239,6 @@ def test_iteration92_hyperliquid_client_market_data_strategy_and_xstock_watch_sa
     hl.info = type("I", (), {"spot_meta": lambda self: {}})()
     with pytest.raises(hl_client_mod.HLError, match="Missing size precision"):
         hl.sz_decimals("HYPE")
-    with pytest.raises(hl_client_mod.HLError, match="Missing leverage"):
-        hl.max_leverage("HYPE")
     hl._meta_cache = {"HYPE": {"szDecimals": 2, "maxLeverage": 5}}
     assert hl.spot_order("@107", "SELL", 1.0, 20.0) == (False, None, "invalid non-boolean is_buy")
     assert hl.spot_order("  ", True, 1.0, 20.0) == (False, None, "invalid pair")
@@ -10426,23 +10404,11 @@ def test_iteration94_t212_client_bot_kraken_client_and_price_analysis_safety(mon
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # 1. T212Client.search_instruments empty ticker_substr & case-insensitive name_patterns, plus get_order_status / cancel_order
+    # 1. T212Client get_order_status / cancel_order
     t212_client_mod = importlib.import_module("212trading.t212_client")
     cli = t212_client_mod.T212Client(
         "k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0
     )
-    monkeypatch.setattr(
-        cli,
-        "list_instruments",
-        lambda: [
-            {"ticker": "AAPL_US_EQ", "name": "Apple Inc", "shortName": "AAPL"},
-            {"ticker": "SPCX_US_EQ", "name": "SpaceX Corp", "shortName": "SPCX"},
-        ],
-    )
-    # Empty ticker_substr must not match every instrument; uppercase name_patterns must match
-    hits = cli.search_instruments("", ("SpaceX",))
-    assert hits == [{"ticker": "SPCX_US_EQ", "name": "SpaceX Corp", "shortName": "SPCX"}]
-    assert cli.search_instruments("", ()) is None
     assert cli.get_order_status("") is None
     assert cli.get_order_status(True) is None
     assert cli.cancel_order("  ") is False
@@ -12025,15 +11991,8 @@ def test_iteration115_venue_clients_placeorder_and_strategy_state_safety(tmp_pat
     with pytest.raises(HLError):
         hl.position_strict("HYPE")
     hl.info = SimpleNamespace(
-        spot_user_state=lambda _a: {"balances": [{"coin": "HYPE", "total": "bad"}]},
-        user_funding_history=lambda _a, _s: ["not-a-dict", {"time": 1}],
         candles_snapshot=lambda *_a: ["not-a-dict", {"t": 1}],
     )
-    with pytest.raises(HLError):
-        hl.spot_balance_strict("HYPE")
-    assert hl.funding_history(True) == []
-    assert hl.funding_history(-1) == []
-    assert hl.funding_history(1000) == [{"time": 1}]
     assert hl.candles("", "1h", 10) == []
     assert hl.candles("HYPE", "", 10) == []
     assert hl.candles("HYPE", "1h", 10) == [{"t": 1}]
@@ -13226,23 +13185,11 @@ def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
 
 
 def test_iteration129_wsevents_fake_and_backtest_execution_evaluation_safety():
-    """Verify Iteration 129 binanceWSeventsFake cache bounds/asset hygiene, ExecutionModel side/ratio validation, format_performance_summary non-finite metrics, and evaluation CLI parsers."""
+    """Verify Iteration 129 ExecutionModel side/ratio validation, format_performance_summary non-finite metrics, and evaluation CLI parsers."""
     import argparse
-    from binance_api import binanceWSeventsFake as wsf
     from offline.backtests.evaluation import parse_dataset_specs, parse_intervals
     from offline.backtests.execution import ExecutionModel, split_order_fill
     from offline.backtests.metrics import format_performance_summary
-
-    # 1. binanceWSeventsFake ignores boolean order_id and blank/boolean assets
-    wsf.orders_cache.clear()
-    wsf.balances_cache.clear()
-    wsf.handle_execution_report({"s": "BTCUSDC", "i": True, "X": "NEW"})
-    assert True not in wsf.orders_cache
-    wsf.handle_balance_update("   ", 10.0, 1000)
-    wsf.handle_balance_update(True, 10.0, 1000)
-    assert wsf.balances_cache == {}
-    wsf.handle_account_position([{"a": "  ", "f": 5}, {"a": True, "f": 5}, {"a": " BTC ", "f": "1.5", "l": "0.5"}])
-    assert wsf.balances_cache == {"BTC": 2.0}
 
     # 2. ExecutionModel.limit_touched / market_price and split_order_fill
     em = ExecutionModel()
@@ -15774,23 +15721,6 @@ def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp
     props = cfg._read_properties_file(str(prop_file))
     assert props["QUOTED_HASH"] == "abc#def"
     assert props["TRADE_ENABLED"] is False
-
-    # 3. symbols: get_quantity_precision rejects bool symbol and bool stepSize
-    assert sym.get_quantity_precision(True) == 8
-    assert sym.get_quantity_precision("") == 8
-
-    class _DummySymClient:
-        @staticmethod
-        def get_symbol_info(symbol):
-            return {
-                "filters": [
-                    {"filterType": "LOT_SIZE", "stepSize": True},
-                    {"filterType": "LOT_SIZE", "stepSize": "0.001"},
-                ]
-            }
-
-    monkeypatch.setattr(sym, "_get_client", lambda: _DummySymClient())
-    assert sym.get_quantity_precision("BTCUSDC") == 3
 
     # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
     class _DummyProv:

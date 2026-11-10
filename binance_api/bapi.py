@@ -295,29 +295,6 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     print(f"Cancelled {count} orders")
 
 
-def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=None):
-    order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol)
-    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
-    if max_age_val is None:
-        return
-    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-    if not open_orders:
-        return
-    current_time = float(time.time())
-    print(f"Available open orders {len(open_orders)}. Checking for recent {order_type} orders to cancel... ")
-    count = 0
-    for order_id, order_details in open_orders.items():
-        order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-        if order_time > 0 and -5.0 <= current_time - order_time <= max_age_val:
-            if _cancel_and_resolve(symbol, order_id):
-                print(f"Cancelled {order_type} order with ID: {order_id} (recent order).")
-                count += 1
-            else:
-                print(f"Failed to cancel {order_type} order with ID: {order_id}. Needs cancel because recent order.")
-    print(f"Cancelled {count} recent orders.")
-
-
 # ---------------- Portfolio value query API ----------------
 
 ASSET_VALUE_CACHE_TTL_SECONDS = 120

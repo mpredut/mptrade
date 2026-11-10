@@ -7,7 +7,6 @@ the file explicitly; long-running processes adopt configuration at restart.
 import configparser
 from dataclasses import dataclass, replace
 import glob
-import math
 import os
 from pathlib import Path
 import re
@@ -383,10 +382,6 @@ def binance_symbols(path=None):
     return symbols
 
 
-def trail_pct_map(path=None):
-    return {spec.symbol: spec.number("trailing.pct") for spec in select_instruments("binance", "trailing", path=path).values()}
-
-
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
     """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS / instruments.conf), excluding read-only xStocks."""
     kv = parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
@@ -665,10 +660,6 @@ def __getattr__(name: str):
     return _resolve_dynamic_symbol_attr(name)
 
 
-def _get_client():
-    return None
-
-
 def _resolve_cur_symbols() -> list:
     self_mod = sys.modules.get(__name__)
     sym_mod = sys.modules.get("symbols")
@@ -725,22 +716,6 @@ def validate_params(order_type, symbol, price=1, qty=1):
     if safe_pos_float(qty, default=None) is None:
         raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
     validate_symbols(symbol)
-
-
-def get_quantity_precision(symbol):
-    if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-        return 8
-    try:
-        info = _get_client().get_symbol_info(symbol.strip().upper())
-        if isinstance(info, dict) and isinstance(info.get("filters"), list):
-            for f in info["filters"]:
-                if isinstance(f, dict) and f.get("filterType") == "LOT_SIZE":
-                    step_size = safe_pos_float(f.get("stepSize"), default=None)
-                    if step_size is not None:
-                        return max(0, int(round(-math.log10(step_size), 0)))
-    except Exception as e:
-        print(f"Error getting quantity precision: {e}")
-    return 8
 
 
 register_module_aliases(__name__, "instruments_config", "symbols")

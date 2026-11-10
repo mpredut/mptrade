@@ -596,11 +596,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(agg[0]["time"], 1_700_000_005_000)
         self.assertEqual(agg[0]["timestamp"], 1_700_000_005_000)
 
-        # 4. bapi_trades.get_my_trades_simple preserves distinct partial fill ids under same orderId
-        with mock.patch.object(bapi_all, "paginate_my_trades", return_value=raw_fills):
-            deduped = bapi_tr.get_my_trades_simple("BUY", SYMBOL, backdays=1)
-        self.assertEqual(len(deduped), 2)
-
         # 5. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders emit both timestamp/time and qty/quantity
         now_ms = int(time.time() * 1000)
         import threading
@@ -636,7 +631,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(tr_orders_res[0]["quantity"], 2.5)
         self.assertFalse(tr_orders_res[0]["isBuyer"])
 
-        # 6. bapi.cancel_expired_orders and cancel_recent_orders handle millisecond timestamps properly
+        # 6. bapi.cancel_expired_orders handles millisecond timestamps properly
         expired_ms = int((time.time() - 7200) * 1000)
         fresh_ms = int((time.time() - 60) * 1000)
         open_orders_map = {
@@ -649,9 +644,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         ):
             bapi_mod.cancel_expired_orders("BUY", SYMBOL, 3600)
             mock_cancel.assert_called_once_with(SYMBOL, 1)
-            mock_cancel.reset_mock()
-            bapi_mod.cancel_recent_orders("BUY", SYMBOL, 3600)
-            mock_cancel.assert_called_once_with(SYMBOL, 2)
 
         # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
         from providers.base import extract_timestamp_s
@@ -836,18 +828,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 po.order_candidate_price("BUY", 100.0, True),
                 100.0,
             )
-
-        # 17. symbols.get_quantity_precision returns positive decimal places for sub-unit stepSize
-        fake_sym_client = MagicMock()
-        fake_sym_client.get_symbol_info.return_value = {
-            "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.00100000"}]
-        }
-        with mock.patch.object(sym_mod, "_get_client", return_value=fake_sym_client):
-            self.assertEqual(sym_mod.get_quantity_precision(SYMBOL), 3)
-            fake_sym_client.get_symbol_info.return_value = {
-                "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.0"}]
-            }
-            self.assertEqual(sym_mod.get_quantity_precision(SYMBOL), 8)
 
         # 18. _convert_to_usdc supports inverse USDCUSDT quote and stablecoin peg fallback
         with mock.patch.object(bapi_mod, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):

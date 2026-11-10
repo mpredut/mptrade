@@ -164,29 +164,6 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
     fig.savefig(os.path.join(out_dir, f"plot_{symbol}.png"))
 
 
-
-def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
-    """
-    Calculate the weighted moving average, giving newer values greater weight.
-    """
-    if prices is None or isinstance(prices, (bool, str, bytes)):
-        return np.array([], dtype=float)
-    p = np.asarray(prices, dtype=float)
-    n = len(p)
-    win_i = safe_pos_int(window, default=None)
-    if n == 0 or win_i is None:
-        return np.zeros_like(p, dtype=float)
-    w = min(win_i, n)
-    wma = np.zeros(n, dtype=float)
-    if w > 1:
-        idx = np.arange(1, w, dtype=float)
-        wma[:w - 1] = np.cumsum(p[:w - 1] * idx) / (0.5 * idx * (idx + 1.0))
-    weights = np.arange(1, w + 1, dtype=float)
-    weight_sum = 0.5 * w * (w + 1.0)
-    wma[w - 1:] = np.convolve(p, weights[::-1], mode="valid") / weight_sum
-    return wma
-
-
 _ORIG_PRICE_LST_FOR = priceLstFor
 _OHLC_BACKFILL_MEMO: dict[str, Tuple[float, List[Tuple[float, float]]]] = {}
 _OHLC_BACKFILL_TTL_SEC = 1800.0

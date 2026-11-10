@@ -1093,20 +1093,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return fb
         return span / (len(samples) - 1)
 
-    def get_update_frequency(self, symbol: str) -> float:
-        cutoff = _now_time() - self.FREQ_WINDOW_SEC
-        with self.lock:
-            dq = self._timestamps_deque_locked(symbol)
-            if dq:
-                while dq and dq[0] < cutoff:
-                    dq.popleft()
-                samples = list(dq)
-            else:
-                samples = []
-        if len(samples) < 2:
-            return 0.0
-        return len(samples) / self.FREQ_WINDOW_SEC
-
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         max_age = safe_pos_float(max_age_sec, default=None)
         if max_age is None:

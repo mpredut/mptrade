@@ -361,9 +361,8 @@ def test_market_monitor_and_pricewindow_hardening():
 
 
 def test_cooldown_and_internal_state_hardening(tmp_path):
-    import numpy as np
     from lock.cooldown import Cooldown
-    from intelligence.internal.state.volatility import RollingVolatilityTracker, adaptive_thresholds
+    from intelligence.internal.state.volatility import adaptive_thresholds
     from intelligence.internal.state.persistence import classify_hurst_regime
     from intelligence.internal.state.survival import hybrid_T
 
@@ -373,14 +372,6 @@ def test_cooldown_and_internal_state_hardening(tmp_path):
     assert cd.reserve("SOLUSDC", ttl=60)[0] is True
     assert cd.last_age("ETHUSDC") is None
     cd.update("ETHUSDC", order_id=1)
-
-    tracker = RollingVolatilityTracker(window_size=25)
-    for i in range(22):
-        tracker.add_price(100.0 + i * 0.1, sample_rate_sec=60.0)
-    assert tracker.add_price(float("nan"), sample_rate_sec=60.0) is None
-    assert tracker.add_price(True, sample_rate_sec=60.0) is None
-    vol = tracker.add_price(103.0, sample_rate_sec=60.0)
-    assert vol is not None and np.isfinite(vol)
 
     assert adaptive_thresholds(float("nan")) == (None, None)
     assert adaptive_thresholds(True) == (None, None)

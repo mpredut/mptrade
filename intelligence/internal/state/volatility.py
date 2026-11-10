@@ -1,7 +1,6 @@
 """Realized volatility estimation from series of prices."""
 from __future__ import annotations
 
-from collections import deque
 import math
 import os
 from typing import Optional, Sequence, Tuple
@@ -203,55 +202,6 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
             _vol_memo_cache.clear()
         _vol_memo_cache[cache_key] = res
     return res
-
-
-class RollingVolatilityTracker:
-    """O(1) incremental realized volatility tracker using Welford's algorithm over a sliding window."""
-
-    def __init__(self, window_size: int = 100) -> None:
-        wf = safe_pos_float(window_size, default=None)
-        ws = max(20, int(wf)) if wf is not None else 100
-        self.window_size = ws
-        self._prices: deque[float] = deque(maxlen=ws + 1)
-        self._rets: deque[float] = deque(maxlen=ws)
-        self._count = 0
-        self._mean = 0.0
-        self._m2 = 0.0
-
-    def add_price(self, price: float, sample_rate_sec: float) -> Optional[float]:
-        """Add a price tick and return updated 1h volatility in O(1)."""
-        price = safe_pos_float(price, default=None)
-        if price is None:
-            return None
-        if len(self._prices) > 0:
-            prev = self._prices[-1]
-            if prev > 0:
-                ret = math.log(price / prev)
-                if len(self._rets) == self.window_size:
-                    old_ret = self._rets[0]
-                    self._count -= 1
-                    delta = old_ret - self._mean
-                    self._mean -= delta / self._count if self._count > 0 else 0.0
-                    delta2 = old_ret - self._mean
-                    self._m2 -= delta * delta2
-                    self._m2 = max(0.0, self._m2)
-
-                self._rets.append(ret)
-                self._count += 1
-                delta = ret - self._mean
-                self._mean += delta / self._count
-                delta2 = ret - self._mean
-                self._m2 += delta * delta2
-
-        self._prices.append(price)
-
-        sr_f = safe_pos_float(sample_rate_sec, default=None)
-        if self._count < 20 or sr_f is None:
-            return None
-
-        variance = self._m2 / self._count
-        std = math.sqrt(variance)
-        return _std_to_vol1h_pct(std, sr_f)
 
 
 def adaptive_thresholds(

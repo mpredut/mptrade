@@ -847,10 +847,6 @@ class PriceWindow:
         cache24.subscribe_price(self)
         self._subscribed_to_cache24 = True
 
-    def unsubscribe_from_cache24(self, cache24) -> None:
-        cache24.unsubscribe_price(self)
-        self._subscribed_to_cache24 = False
-
     def process_price(self, price):
         price_f = safe_float(price, default=None)
         if price_f is None:

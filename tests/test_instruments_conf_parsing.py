@@ -153,19 +153,18 @@ class TestInstrumentsSingleSource(unittest.TestCase):
             for item in registry.select_instruments("binance", "trailing").values()
         }
         self.assertEqual(set(expected), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
-        self.assertEqual(ic.trail_pct_map(), expected)
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
         self.assertEqual(set(ic.symbols_for("binance", "tradeall_fire")), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
 
     def test_arb_is_trend_tracked_and_traded(self):
         self.assertIn("ARBUSDC", ic.binance_symbols())
-        self.assertIn("ARBUSDC", ic.trail_pct_map())
+        self.assertIn("ARBUSDC", set(ic.symbols_for("binance", "trailing")))
         self.assertIn("ARBUSDC", set(ic.symbols_for("binance", "tradeall_fire")))
 
     def test_trail_and_trade_are_subsets_of_symbols(self):
         syms = set(ic.binance_symbols())
-        self.assertLessEqual(set(ic.trail_pct_map()), syms)
+        self.assertLessEqual(set(ic.symbols_for("binance", "trailing")), syms)
         self.assertLessEqual(set(ic.symbols_for("binance", "tradeall_fire")), syms)
 
     def test_missing_registry_fails_loud(self):
@@ -216,7 +215,6 @@ def test_current_execution_policy_is_preserved(tmp_path):
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
     assert set(trails) == {"BTCUSDC", "TAOUSDC", "ARBUSDC"}
-    assert trails == ic.trail_pct_map()
     assert all(5.0 <= pct <= 50.0 for pct in trails.values())
     rebuys = {item.symbol: item.rebuy_mode() for item in
               registry.select_instruments("binance", "trailing").values()}

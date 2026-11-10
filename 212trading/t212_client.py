@@ -341,34 +341,6 @@ class T212Client:
             "_instr_cache", "/equity/metadata/instruments", "instruments metadata", ttl_mult=50.0,
         )
 
-    def search_instruments(self, ticker_substr: str, name_patterns: tuple[str, ...]) -> list[dict] | None:
-        """Search by ticker substring or name/shortName pattern."""
-        t_q = str(ticker_substr or "").strip().upper() if not isinstance(ticker_substr, bool) else ""
-        clean_patterns = tuple(
-            str(p).strip().lower()
-            for p in (name_patterns or ())
-            if not isinstance(p, bool) and str(p or "").strip()
-        )
-        if not t_q and not clean_patterns:
-            return None
-        instruments = self.list_instruments()
-        if instruments is None:
-            return None
-        hits = []
-        for ins in instruments:
-            if not isinstance(ins, dict):
-                continue
-            ticker = str(ins.get("ticker", ""))
-            name   = str(ins.get("name", "")).lower()
-            short  = str(ins.get("shortName", "")).lower()
-            if (
-                (t_q and t_q in ticker.upper())
-                or any(p in name  for p in clean_patterns)
-                or any(p in short for p in clean_patterns)
-            ):
-                hits.append(ins)
-        return hits or None
-
     # -- Orders. ---------------------------------------------------------------
     def _place_order(self, endpoint: str, payload: dict) -> tuple[int, dict]:
         """Send an order without retrying non-idempotent placement endpoints."""

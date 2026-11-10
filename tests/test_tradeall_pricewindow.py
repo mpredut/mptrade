@@ -69,6 +69,9 @@ finally:
     if getattr(cm, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
         from binance_api import bapi_allorders as _real_bapi_allorders
         cm.apiorders = _real_bapi_allorders
+        import cacheaccount as _ca_mod
+        if getattr(_ca_mod, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
+            _ca_mod.apiorders = _real_bapi_allorders
 
 mock_bapi = _mock_bapi
 
@@ -608,11 +611,10 @@ class TestCacheCurrentPriceFrequency(unittest.TestCase):
         self.mgr._update_timestamps.clear()
 
     def test_current_price_frequency_and_sample_rate(self):
-        with self.subTest("empty state uses fallback and zero frequency"):
+        with self.subTest("empty state uses fallback"):
             self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=0.8), 0.8)
-            self.assertEqual(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
 
-        with self.subTest("updates produce sample rate and frequency"):
+        with self.subTest("updates produce sample rate"):
             t0 = time.time()
             self.mgr.on_items_update("BTCUSDT", [[int(t0 * 1000), 60000.0]])
             time.sleep(0.15)
@@ -622,7 +624,6 @@ class TestCacheCurrentPriceFrequency(unittest.TestCase):
             self.assertGreater(rate, 0.0)
             self.assertLess(rate, 9.9)
             self.assertLessEqual(rate, elapsed + 0.5)
-            self.assertGreater(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
 
         with self.subTest("old timestamps trimmed"):
             self.mgr._update_timestamps.clear()
@@ -763,8 +764,7 @@ class TestPriceWindowCache24Wiring(unittest.TestCase):
         with self.subTest(msg="unsubscribe_stops_updates"):
             entries = _synthetic_entries(10)
             pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
-            pw.unsubscribe_from_cache24(mgr)
-            self.assertFalse(pw._subscribed_to_cache24)
+            mgr.unsubscribe_price(pw)
             n_before = len(pw.prices)
             mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 55555.0)
             self.assertEqual(len(pw.prices), n_before)
@@ -897,6 +897,10 @@ class TestTrendCoordinator(unittest.TestCase):
         # The manager owns the windows + calc + cross-process cache
         self.mgr = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "trend.json"))
         self.mgr.start_computation({"BTCUSDT": self.cache24}, self.cpm)
+        self._orig_kalman_ref = ta._kalman_ref
+
+    def tearDown(self):
+        ta._kalman_ref = self._orig_kalman_ref
 
     def _make_coord(self):
         return ta.TrendCoordinator(

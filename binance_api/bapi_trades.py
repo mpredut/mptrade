@@ -223,29 +223,6 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         return []
 
 
-def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
-    order_type, backdays, limit = _validate_trade_query_args(
-        order_type, symbol, backdays, default_days=3, limit=limit
-    )
-
-    try:
-        # Paginate the entire window with ``fromId`` so days containing more than 1,000
-        # fills are not truncated.
-        start_time = int(time.time() * 1000) - (backdays + 1) * 24 * 60 * 60 * 1000
-        all_trades = _filter_trades_by_side(
-            apiorders.paginate_my_trades(api.client, symbol, start_time, limit),
-            order_type,
-        )
-
-        # Deduplicate by individual fill ID (falling back to orderId only when id is absent)
-        # so multi-fill orders do not lose earlier partial fills.
-        return _dedup_trades_by_fill_id(all_trades)
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return []
-
-
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
     order_type = _normalize_side(order_type)

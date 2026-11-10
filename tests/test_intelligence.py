@@ -1572,16 +1572,11 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
 
     with pytest.raises(HLError, match="Invalid numeric position state"):
         hl.position_strict("HYPE")
-    with pytest.raises(HLError, match="Invalid numeric spot balance"):
-        hl.spot_balance_strict("HYPE")
 
     info._szi = None
     info._entry = None
     info._spot_tot = None
     assert hl.position_strict("HYPE/USDC") == (0.0, 0.0)
-    assert hl.spot_balance_strict("HYPE/USDC") == 0.0
-    assert hl.max_leverage("HYPE/USDC") == 5
-    assert hl.coin_listed("HYPE/USDC") is True
     assert len(hl.open_orders_strict("HYPE/USDC")) == 1
     assert hl.funding_rate("HYPE/USDC") == pytest.approx(0.00012)
 

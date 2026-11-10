@@ -384,24 +384,6 @@ class TestBoundedPlotIndices(unittest.TestCase):
             self.assertEqual(pa._bounded_plot_indices(0, max_points=5_000).size, 0)
 
     def test_wma_and_legacy_trend_edge_cases(self):
-        with self.subTest(msg="weighted_moving_average_clamps_window"):
-            self.assertEqual(pa.weighted_moving_average(np.array([]), 5).size, 0)
-            self.assertEqual(pa.weighted_moving_average(None, 5).size, 0)
-            np.testing.assert_array_equal(pa.weighted_moving_average(np.array([10.0, 20.0]), 0), np.array([0.0, 0.0]))
-            np.testing.assert_array_equal(pa.weighted_moving_average(np.array([10.0, 20.0]), True), np.array([0.0, 0.0]))
-            wma = pa.weighted_moving_average(np.array([10.0, 20.0]), 10)
-            self.assertAlmostEqual(float(wma[-1]), (10.0 + 40.0) / 3.0)
-            series = np.array([10.0, 20.0, 30.0, 25.0, 35.0])
-            wma3 = pa.weighted_moving_average(series, 3)
-            expected = np.array([
-                10.0,
-                (10.0 * 1 + 20.0 * 2) / 3.0,
-                (10.0 * 1 + 20.0 * 2 + 30.0 * 3) / 6.0,
-                (20.0 * 1 + 30.0 * 2 + 25.0 * 3) / 6.0,
-                (30.0 * 1 + 25.0 * 2 + 35.0 * 3) / 6.0,
-            ])
-            np.testing.assert_allclose(wma3, expected, rtol=1e-12)
-
         with self.subTest(msg="getTrendLongTerm_fixed_handles_post_cutoff_single_point_and_coarse_delta"):
             now_s = time.time()
             sparse = [[now_s - 40 * 86400, 100.0], [now_s - 60, 105.0]]

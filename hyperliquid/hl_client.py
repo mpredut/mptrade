@@ -284,26 +284,6 @@ class HLClient:
                         return adec_i
         raise HLError(f"Missing size precision metadata for {coin}")
 
-    def max_leverage(self, coin: str) -> int:
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-            raise HLError(f"Missing leverage metadata for {coin}")
-        meta = self._meta_for_coin(self._coin_candidates(coin))
-        lev_i = _exact_int_in_range(meta.get("maxLeverage") if isinstance(meta, dict) else None, 1)
-        if lev_i is not None:
-            return lev_i
-        raise HLError(f"Missing leverage metadata for {coin}")
-
-    def coin_listed(self, coin: str) -> bool:
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-            return False
-        cand_coins = self._coin_candidates(coin)
-        if self._meta_for_coin(cand_coins) is not None:
-            return True
-        coin_to_asset = getattr(self.info, "coin_to_asset", None)
-        if isinstance(coin_to_asset, dict):
-            return any(casefold_get(coin_to_asset, cand) is not None for cand in cand_coins)
-        return False
-
     def _mid_for_key(self, key: str, label: str) -> float | None:
         if isinstance(key, bool) or not isinstance(key, str) or not key.strip():
             return None
@@ -439,33 +419,6 @@ class HLClient:
         """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
         return self._mid_for_key(pair, "spot_mid")
 
-    def spot_balance_strict(self, token: str) -> float:
-        """Return spot balance while propagating API errors; see position_strict."""
-        if not self.address:
-            raise HLError("HL_ACCOUNT_ADDRESS missing")
-        if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
-            return 0.0
-        token = token.strip()
-        base_token = self._strip_spot_quote_suffix(token)
-        token_cfs = (
-            {token.casefold(), base_token.casefold()}
-            if base_token.upper() != "USDC" or token.upper() == "USDC"
-            else {token.casefold()}
-        )
-        st = self.info.spot_user_state(self.address)
-        if not isinstance(st, dict):
-            raise HLError(f"Invalid spot_user_state payload: {type(st).__name__}")
-        for b in (st.get("balances") or []):
-            if isinstance(b, dict) and str(b.get("coin") or "").casefold() in token_cfs:
-                raw_tot = b.get("total")
-                if isinstance(raw_tot, bool):
-                    raise HLError(f"Invalid boolean spot balance for {token}")
-                tot = safe_nonneg_float(0.0 if raw_tot is None else raw_tot, default=None)
-                if tot is None:
-                    raise HLError(f"Invalid numeric spot balance for {token}")
-                return tot
-        return 0.0
-
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
@@ -487,45 +440,6 @@ class HLClient:
         except Exception as e:  # noqa: BLE001
             log(f"  ! funding_rate({coin.strip()}) failed: {e}")
         return None
-
-    def position_full(self, coin: str) -> dict | None:
-        """Return the complete perpetual position including szi, entryPx, liquidationPx, and PnL."""
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-            return None
-        try:
-            return self._find_position_dict(coin)
-        except Exception as e:  # noqa: BLE001
-            log(f"  ! position_full failed: {e}")
-        return None
-
-    def margin_summary(self) -> dict:
-        """Return perpetual account value, used margin, and withdrawable balance."""
-        try:
-            st = self._user_state()
-            ms = st.get("marginSummary", {}) if isinstance(st, dict) else {}
-            if not isinstance(ms, dict):
-                ms = {}
-            return {
-                "accountValue": safe_float(ms.get("accountValue"), 0.0),
-                "totalMarginUsed": safe_float(ms.get("totalMarginUsed"), 0.0),
-                "withdrawable": safe_float(st.get("withdrawable") if isinstance(st, dict) else 0.0, 0.0),
-            }
-        except Exception:  # noqa: BLE001
-            return {}
-
-    def funding_history(self, start_ms: int) -> list[dict]:
-        """Return actual funding payments received or paid since start_ms."""
-        if not self.address:
-            return []
-        start_f = safe_nonneg_float(start_ms, default=None)
-        if start_f is None:
-            return []
-        try:
-            res = self.info.user_funding_history(self.address, int(start_f))
-            return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
-        except Exception as e:  # noqa: BLE001
-            log(f"  ! funding_history failed: {e}")
-            return []
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
         """Return OHLCV candles for trend indicators."""
