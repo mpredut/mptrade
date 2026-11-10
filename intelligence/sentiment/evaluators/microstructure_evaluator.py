@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,11 +39,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
-from state_io import (
-    read_json_file,
-    resolve_cachedb_filepath,
-    save_json_state,
-)
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 

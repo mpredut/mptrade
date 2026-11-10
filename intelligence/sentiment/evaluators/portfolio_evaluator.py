@@ -48,7 +48,7 @@ from providers.order_ohlc_utils import (
     format_actor_tag,
     resolve_order_origin,
 )
-from providers.execution_audit import extract_intent_order_type, extract_intent_side
+from providers.intent_state import extract_intent_order_type, extract_intent_side
 
 
 def set_pos_anchor(

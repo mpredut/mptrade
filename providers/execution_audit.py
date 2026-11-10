@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
@@ -25,7 +24,6 @@ from botcore import (
     exact_pos_int,
     float_env,
     lru_dict_put,
-    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,

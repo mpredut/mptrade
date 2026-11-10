@@ -67,7 +67,7 @@ from providers.order_ohlc_utils import (
     normalize_open_order,
     resolve_order_origin,
 )
-from providers.execution_audit import collect_known_ai_order_ids, intent_venue_client_order_ids
+from providers.intent_state import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,

@@ -91,9 +91,11 @@ from instrument_registry import casefold_get
 from providers.base import extract_timestamp_s, resolve_ssot_price_from_cache
 from providers.execution_audit import (
     build_last_cycle_execution_status,
+    summarize_recent_ai_intents,
+)
+from providers.intent_state import (
     collect_known_ai_order_ids,
     extract_intent_notional,
-    summarize_recent_ai_intents,
 )
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,

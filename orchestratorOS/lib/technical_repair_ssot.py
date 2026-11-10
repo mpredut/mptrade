@@ -1638,7 +1638,7 @@ def submit_supervisor_trading_decisions(
     is_rth_open_fn: Any,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
-    from providers.execution_audit import normalize_trading_decisions
+    from providers.intent_state import normalize_trading_decisions
 
     if not getattr(spec, "can_trade", False):
         return [], {}, [], None, False
