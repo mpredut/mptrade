@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
 import os
 import json
 import logging
@@ -13,6 +14,7 @@ from collections import defaultdict
 from typing import Dict, Any, List
 
 from botcore import (
+    check_cooldown_gate,
     load_env_stack,
     obj_attr,
     required_env,
@@ -37,6 +39,7 @@ from notify_engine.alertnotifiers import (
     is_fake_alert_text,
     pass_common_gate,
     pop_due_bulk_batch,
+    sanitize_single_line,
     strip_owner_tags,
 )
 from notify_engine.mailer import (
@@ -253,6 +256,24 @@ class NotificationServer:
             self._send_email(title, body)
         return None
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _gated_dispatch_scope(*, orig_email: tuple[str, str] | None = None, skip_email: bool | None = None):
+        prev_active = getattr(_GATED_DISPATCH_TLS, "active", False)
+        prev_orig = getattr(_GATED_DISPATCH_TLS, "orig_email", None)
+        prev_skip = getattr(_GATED_DISPATCH_TLS, "skip_email", False)
+        _GATED_DISPATCH_TLS.active = True
+        if orig_email is not None:
+            _GATED_DISPATCH_TLS.orig_email = orig_email
+        if skip_email is not None:
+            _GATED_DISPATCH_TLS.skip_email = skip_email
+        try:
+            yield
+        finally:
+            _GATED_DISPATCH_TLS.active = prev_active
+            _GATED_DISPATCH_TLS.orig_email = prev_orig
+            _GATED_DISPATCH_TLS.skip_email = prev_skip
+
     def _gate_and_send_ntfy(
         self,
         title: str,
@@ -267,15 +288,8 @@ class NotificationServer:
         if gated is None:
             return self._ntfy_gate_accepted()
         out_title, out_body, out_prio, out_topic = gated
-        prev = getattr(_GATED_DISPATCH_TLS, "active", False)
-        prev_orig = getattr(_GATED_DISPATCH_TLS, "orig_email", None)
-        _GATED_DISPATCH_TLS.active = True
-        _GATED_DISPATCH_TLS.orig_email = (title, body)
-        try:
+        with self._gated_dispatch_scope(orig_email=(title, body)):
             return self._send_ntfy(out_title, out_body, out_prio, out_topic)
-        finally:
-            _GATED_DISPATCH_TLS.active = prev
-            _GATED_DISPATCH_TLS.orig_email = prev_orig
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
         """Consumer: flush and synthesize the next due per-topic batch once the central gate opens."""
@@ -285,16 +299,9 @@ class NotificationServer:
             bulk_title, bulk_body, bulk_prio, bulk_topic = batch
             if not bulk_topic:
                 bulk_topic = self._default_error_topic()
-            prev = getattr(_GATED_DISPATCH_TLS, "active", False)
-            prev_skip_email = getattr(_GATED_DISPATCH_TLS, "skip_email", False)
-            _GATED_DISPATCH_TLS.active = True
-            _GATED_DISPATCH_TLS.skip_email = True
-            try:
+            with self._gated_dispatch_scope(skip_email=True):
                 if self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic):
                     flushed = True
-            finally:
-                _GATED_DISPATCH_TLS.active = prev
-                _GATED_DISPATCH_TLS.skip_email = prev_skip_email
         email_batch = pop_due_bulk_batch("email", now=now, force=force)
         if email_batch:
             email_subj, email_body, _, _ = email_batch
@@ -344,10 +351,9 @@ class NotificationServer:
         url = format_ntfy_url(topic_str)
         if not url:
             return True
-        clean_priority = re.sub(r"[\r\n]+", " ", "" if isinstance(priority, bool) else str(priority or "default")).strip() or "default"
         headers = {
-            "Title": AlertNotifier.utf8_header(title or "Alert") or "Alert",
-            "Priority": clean_priority
+            "Title": AlertNotifier.utf8_header(title, "Alert") or "Alert",
+            "Priority": sanitize_single_line(priority, "default"),
         }
         if self.ntfy_token:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
@@ -691,16 +697,10 @@ class NotificationServer:
             return
         for rule in self.rules:
             if rule["regex_obj"].search(line):
-                # Enforce Cooldown
                 rule_key = f"{bot_name}_{rule['name']}"
                 now = time.time()
-                last_time = safe_nonneg_float(self.cooldowns.get(rule_key, 0), 0.0)
-                if last_time > now:
-                    last_time = 0.0
-                cd_min = safe_nonneg_float(rule.get("cooldown_minutes", 0), 0.0)
-                cooldown_sec = cd_min * 60.0
-                
-                if now - last_time >= cooldown_sec:
+                cooldown_sec = safe_nonneg_float(rule.get("cooldown_minutes", 0), 0.0) * 60.0
+                if check_cooldown_gate(self.cooldowns, rule_key, now, cooldown_sec, max_entries=200):
                     topic_cat = rule.get("topic_category", "ERROR").upper()
                     topic = self._resolve_topic(topic_cat)
                     if topic_cat == "PRICE" or bot_name.lower() in ("price_watcher", "price_watcher.py"):
@@ -718,10 +718,6 @@ class NotificationServer:
                         "source": bot_name or "orchestrator",
                         "symbol": "SYSTEM",
                     }
-                    if len(self.cooldowns) >= 200:
-                        oldest_key = min(self.cooldowns, key=self.cooldowns.get)
-                        self.cooldowns.pop(oldest_key, None)
-                    self.cooldowns[rule_key] = now
                     self._gate_and_send_ntfy(
                         full_title,
                         line.strip(),

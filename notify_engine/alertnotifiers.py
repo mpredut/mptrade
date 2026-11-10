@@ -22,6 +22,7 @@ from botcore import (
     exact_pos_int,
     float_env,
     int_env,
+    is_cache_fresh,
     is_live_network_backfill_enabled,
     normalize_epoch_sec,
     obj_attr,
@@ -88,6 +89,14 @@ _GATE_SUPPRESSED_REASONS = (
     "duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped",
 )
 _GATE_ACCEPTED_REASONS = ("buffered_for_bulk", *_GATE_SUPPRESSED_REASONS)
+
+
+def sanitize_single_line(val: Any, default: str = "") -> str:
+    """Coerce ``val`` to a single-line stripped string (rejecting booleans/None) or return ``default``."""
+    if isinstance(val, bool) or val is None:
+        return default
+    cleaned = re.sub(r"[\r\n]+", " ", str(val)).strip()
+    return cleaned if cleaned else default
 
 
 def strip_owner_tags(text: Any) -> str:
@@ -502,22 +511,25 @@ _KNOWN_NOTIFY_VENUES = frozenset({"binance", "kraken", "hyperliquid", "t212", "b
 _BULK_TITLE_STOPWORDS = frozenset({
     "a", "an", "and", "are", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with",
 })
+_TOPIC_CATEGORY_SPECS = (
+    ("deadman", "DEADMAN", 3),
+    ("error", "ERROR", 3),
+    ("guard", "GUARD", 2),
+    ("trade", "TRADES", 2),
+    ("server", "SERVER", 1),
+    ("macro", "MACRO", 1),
+    ("price", "PRICE", 0),
+)
 
 
 def _topic_category_label(topic: str) -> str:
     tl = str(topic or "").lower()
-    for key, label in (
-        ("deadman", "DEADMAN"),
-        ("error", "ERROR"),
-        ("guard", "GUARD"),
-        ("trade", "TRADES"),
-        ("macro", "MACRO"),
-        ("price", "PRICE"),
-        ("server", "SERVER"),
-    ):
-        if key in tl:
-            return label
-    return ""
+    return next((label for key, label, _ in _TOPIC_CATEGORY_SPECS if key in tl), "")
+
+
+def _topic_tier(topic: str) -> int:
+    tl = str(topic or "").lower()
+    return next((tier for key, _, tier in _TOPIC_CATEGORY_SPECS if key in tl), 0)
 
 
 def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
@@ -634,17 +646,6 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         (str(it.get("priority") or "default") for it in items),
         key=lambda p: _PRIO_RANK.get(p, 1),
     )
-    # Choose the highest-priority topic (error/deadman > guard/trades > server/macro > other)
-    def _topic_tier(t: str) -> int:
-        tl = t.lower()
-        if "error" in tl or "deadman" in tl:
-            return 3
-        if "guard" in tl or "trade" in tl:
-            return 2
-        if "server" in tl or "macro" in tl:
-            return 1
-        return 0
-
     best_topic = str(items[0].get("topic") or "")
     best_tier = _topic_tier(best_topic)
     for it in items[1:]:
@@ -858,12 +859,12 @@ def pass_common_gate(
         last_gate_ts = channel_state["last_gate_ts"]
         last_topic_ts = safe_float(topic_last.get(t_key, 0.0), 0.0)
         new_rank = _PRIO_RANK.get(str(priority or "default"), 1)
-        central_gate_closed = gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec
-        topic_window_closed = topic_bulk_sec > 0 and last_topic_ts > 0 and (now_ts - last_topic_ts) < topic_bulk_sec
+        central_gate_closed = is_cache_fresh(last_gate_ts, now_ts, gate_sec)
+        topic_window_closed = is_cache_fresh(last_topic_ts, now_ts, topic_bulk_sec)
         has_due_other_topic = any(
             (other_tk := _canonical_topic_key(it.get("topic"))) != t_key
             and _PRIO_RANK.get(str(it.get("priority") or "default"), 1) >= new_rank
-            and (topic_bulk_sec <= 0 or (now_ts - safe_float(topic_last.get(other_tk, 0.0), 0.0)) >= topic_bulk_sec)
+            and not is_cache_fresh(topic_last.get(other_tk, 0.0), now_ts, topic_bulk_sec)
             for it in pending_bulk
         )
 
@@ -921,17 +922,15 @@ def pop_due_bulk_batch(
         if not pending_bulk:
             return None
         last_gate_ts = channel_state["last_gate_ts"]
-        if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
+        if is_cache_fresh(last_gate_ts, now_ts, gate_sec, force_refresh=force):
             return None
 
         topic_last: dict[str, float] = channel_state["topic_last_ts"]
         due_topics: list[str] = []
         for it in pending_bulk:
             tk = _canonical_topic_key(it.get("topic"))
-            if tk not in due_topics:
-                last_t_ts = safe_float(topic_last.get(tk, 0.0), 0.0)
-                if force or topic_bulk_sec <= 0 or last_t_ts <= 0 or (now_ts - last_t_ts) >= topic_bulk_sec:
-                    due_topics.append(tk)
+            if tk not in due_topics and not is_cache_fresh(topic_last.get(tk, 0.0), now_ts, topic_bulk_sec, force_refresh=force):
+                due_topics.append(tk)
         if not due_topics:
             return None
 
@@ -1028,16 +1027,27 @@ class AlertNotifier:
         return isinstance(alert, dict) and alert.get("type") == "new_coin_discovered"
 
     @staticmethod
-    def utf8_header(value: str) -> str:
+    def utf8_header(value: Any, default: str = "") -> str:
         """Encode an HTTP header while preserving non-ASCII symbols.
 
         Headers are Latin-1, while ntfy decodes this value as UTF-8, so pass UTF-8 bytes
         through Latin-1 to preserve the original symbol.
         """
-        if value is None or isinstance(value, bool):
-            return ""
-        cleaned = re.sub(r"[\r\n]+", " ", str(value)).strip()
-        return cleaned.encode("utf-8").decode("latin-1", "ignore")
+        cleaned = sanitize_single_line(value, default)
+        return cleaned.encode("utf-8").decode("latin-1", "ignore") if cleaned else ""
+
+    @staticmethod
+    def _extract_price_alert_fields(alert: Any) -> tuple[str, str, float, float, float, str, Any]:
+        ref_time_val = obj_attr(alert, "reference_time") or obj_attr(alert, "timestamp")
+        return (
+            obj_attr(alert, "symbol", "N/A"),
+            obj_attr(alert, "alert_type", ""),
+            safe_float(obj_attr(alert, "percent_change", 0.0), 0.0),
+            safe_float(obj_attr(alert, "current_price", 0.0), 0.0),
+            safe_float(obj_attr(alert, "reference_price", 0.0), 0.0),
+            AlertNotifier.format_human_readable_time(ref_time_val),
+            obj_attr(alert, "url"),
+        )
 
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
@@ -1093,16 +1103,10 @@ class AlertNotifier:
                 lines.append(AlertNotifier.format_new_coin_message(alert))
                 continue
 
-            alert_type = obj_attr(alert, "alert_type", "")
-            symbol = obj_attr(alert, "symbol", "N/A")
-            pct_change = safe_float(obj_attr(alert, "percent_change", 0.0), 0.0)
-            current_price = safe_float(obj_attr(alert, "current_price", 0.0), 0.0)
-            ref_price = safe_float(obj_attr(alert, "reference_price", 0.0), 0.0)
-            ref_time_val = obj_attr(alert, "reference_time") or obj_attr(alert, "timestamp")
-            url = obj_attr(alert, "url")
-
+            symbol, alert_type, pct_change, current_price, ref_price, reference_time, url = (
+                AlertNotifier._extract_price_alert_fields(alert)
+            )
             direction = "U" if alert_type == "up" else "D"
-            reference_time = AlertNotifier.format_human_readable_time(ref_time_val)
 
             lines.append(
                 f"{symbol}: {direction} {pct_change:+.2f}% "
@@ -1152,19 +1156,15 @@ class AlertNotifier:
                         body = alert.get("body") or alert.get("name") or str(alert)
                         f.write(f"[{now_iso}] {alert.get('symbol', 'N/A')}: {body}\n")
                 else:
-                    ref_ts = obj_attr(alert, "reference_time") or obj_attr(alert, "timestamp")
-                    reference_time = AlertNotifier.format_human_readable_time(ref_ts)
-                    sym = obj_attr(alert, "symbol", "N/A")
-                    atype = obj_attr(alert, "alert_type", "")
-                    pchg = safe_float(obj_attr(alert, "percent_change", 0.0), 0.0)
-                    cprice = safe_float(obj_attr(alert, "current_price", 0.0), 0.0)
-                    rprice = safe_float(obj_attr(alert, "reference_price", 0.0), 0.0)
+                    sym, atype, pchg, cprice, rprice, reference_time, url = (
+                        AlertNotifier._extract_price_alert_fields(alert)
+                    )
                     f.write(
                         f"[{now_iso}] {sym} - {atype} - {pchg:+.2f}%\n"
                         f"  Price: ${cprice:.4f}\n"
                         f"  Reference: ${rprice:.4f} (at {reference_time})\n"
                     )
-                    if url := obj_attr(alert, "url"):
+                    if url:
                         f.write(f"  Link: {url}\n")
                 f.write("-" * 50 + "\n")
             return True

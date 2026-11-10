@@ -1524,8 +1524,7 @@ def send_supervisor_ntfy_http(
     if not url:
         return False
     safe_title = (
-        (AlertNotifier.utf8_header(title or "Alert") if AlertNotifier is not None else "")
-        or str(title or "Alert").replace("\r", " ").replace("\n", " ").strip().encode("utf-8").decode("latin-1", "ignore")
+        (AlertNotifier.utf8_header(title, "Alert") if AlertNotifier is not None else "")
         or "Alert"
     )
     headers = {"Title": safe_title, "Priority": priority, "Tags": "rotating_light,robot" if is_any_error else "shield,robot"}

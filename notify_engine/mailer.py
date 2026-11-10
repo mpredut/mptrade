@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import smtplib
 import sys
 from email.mime.text import MIMEText
@@ -38,6 +37,7 @@ from notify_engine.alertnotifiers import (
     _canonical_topic_key,
     _external_notifications_disabled,
     pass_common_gate,
+    sanitize_single_line,
 )
 
 # Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
@@ -114,8 +114,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     cfg = _config()
     if cfg is None:
         return False
-    subj_str = "" if isinstance(subject, bool) else str(subject or "")
-    subject = re.sub(r"[\r\n]+", " ", subj_str).strip() or "Alert"
+    subject = sanitize_single_line(subject, "Alert")
     body = "" if isinstance(body, bool) else str(body or "")
     if isinstance(dedup, str) and not dedup.strip():
         dedup_flag = False
@@ -131,10 +130,10 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
             return reason in _GATE_ACCEPTED_REASONS
         if out_payload:
             subject, body, _, _ = out_payload
-            subject = re.sub(r"[\r\n]+", " ", "" if isinstance(subject, bool) else str(subject or "")).strip() or "Alert"
+            subject = sanitize_single_line(subject, "Alert")
     msg = MIMEText(body, "plain", "utf-8")
-    msg["From"] = re.sub(r"[\r\n]+", " ", str(cfg["username"])).strip()
-    msg["To"] = re.sub(r"[\r\n]+", " ", str(cfg["to"])).strip()
+    msg["From"] = sanitize_single_line(cfg["username"])
+    msg["To"] = sanitize_single_line(cfg["to"])
     msg["Subject"] = subject
     try:
         _smtp_send(msg, cfg)
