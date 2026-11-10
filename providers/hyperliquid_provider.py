@@ -86,15 +86,6 @@ def _hl_client_module():
             sys.path[:] = saved_path
 
 
-def _mainnet_setting() -> bool:
-    try:
-        return required_bool_env("HL_MAINNET")
-    except ValueError as exc:
-        raise ProviderError(
-            "HL_MAINNET is mandatory and must be exactly true or false"
-        ) from exc
-
-
 def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
     """Return whether a symbol is an exact alias of the configured USDC pair."""
     if not symbol or not token or isinstance(symbol, bool) or isinstance(token, bool):
@@ -133,15 +124,6 @@ def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
     )
 
 
-def _is_transient_hl_server_error(exc: BaseException) -> bool:
-    """Return True when exc represents a transient HTTP 5xx/429 error from Hyperliquid Info."""
-    args = getattr(exc, "args", ())
-    if args and type(args[0]) is int and args[0] in (429, 500, 502, 503, 504):
-        return True
-    msg = str(exc)
-    return any(f"({code}," in msg or f"status_code={code}" in msg for code in (429, 500, 502, 503, 504))
-
-
 def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
     """Invoke a read-only Hyperliquid Info callable with bounded retry on transient 5xx/429."""
     last_exc = None
@@ -150,7 +132,13 @@ def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
             return fn(*args)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            if not _is_transient_hl_server_error(exc) or attempt + 1 >= attempts:
+            exc_args = getattr(exc, "args", ())
+            msg = str(exc)
+            is_transient = (
+                bool(exc_args and type(exc_args[0]) is int and exc_args[0] in (429, 500, 502, 503, 504))
+                or any(f"({code}," in msg or f"status_code={code}" in msg for code in (429, 500, 502, 503, 504))
+            )
+            if not is_transient or attempt + 1 >= attempts:
                 raise
             time.sleep(backoff_s * (attempt + 1))
     if last_exc is not None:
@@ -228,10 +216,16 @@ class HyperliquidProvider(MarketDataProvider):
     def _new_client(self, secret_key=None):
         """Build one consistently configured SDK client for reads or signing."""
         HLClient = _hl_client_module().HLClient
+        try:
+            mainnet = required_bool_env("HL_MAINNET")
+        except ValueError as exc:
+            raise ProviderError(
+                "HL_MAINNET is mandatory and must be exactly true or false"
+            ) from exc
         return HLClient(
             secret_key=secret_key,
             account_address=os.environ.get("HL_ACCOUNT_ADDRESS"),
-            mainnet=_mainnet_setting(),
+            mainnet=mainnet,
         )
 
     def _hl(self):

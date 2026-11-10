@@ -603,27 +603,24 @@ def load_symbol_price_series(
     )
 
 
-def _btc_24h_cache_filenames() -> Tuple[str, ...]:
-    _ensure_cacheprice_classes_bound()
-    return tuple(
-        dict.fromkeys(
-            fn
-            for s in ("BTCUSDC", "BTCUSDT")
-            for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s),)
-            for fn in (*legacy_filenames_for(base_fn), base_fn)
-        )
-    )
-
-
 def resolve_cached_btc_24h_change_pct(
     cache_dir: str,
     *,
     current_price_items: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series if available."""
-    if not cache_dir or not any(
+    if not cache_dir:
+        return None
+    _ensure_cacheprice_classes_bound()
+    btc_24h_files = dict.fromkeys(
+        fn
+        for s in ("BTCUSDC", "BTCUSDT")
+        for base_fn in (Cache24PriceManager.disk_filename_for_symbol(s),)
+        for fn in (*legacy_filenames_for(base_fn), base_fn)
+    )
+    if not any(
         os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
-        for fn in _btc_24h_cache_filenames()
+        for fn in btc_24h_files
     ):
         return None
     btc_pts, _ = load_symbol_price_series(

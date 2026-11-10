@@ -979,16 +979,6 @@ def _webhook_json_default(obj: Any) -> Any:
     return str(obj)
 
 
-def _serialize_webhook_alert(a: Any) -> Any:
-    if hasattr(a, "to_dict"):
-        d = a.to_dict()
-        d.setdefault("type", "price_alert")
-        return d
-    if isinstance(a, dict):
-        return a
-    return str(a)
-
-
 def _emit_orchestrator_intent(payload: dict[str, Any], *, default: Any = None) -> bool:
     sys.stdout.write(json.dumps(payload, default=default) + "\n")
     sys.stdout.flush()
@@ -1215,7 +1205,12 @@ class AlertNotifier:
                 {
                     "__orchestrator_intent__": "ntfy_webhook",
                     "webhook_url": webhook_url,
-                    "alerts": [_serialize_webhook_alert(a) for a in alerts],
+                    "alerts": [
+                        {**{"type": "price_alert"}, **a.to_dict()}
+                        if hasattr(a, "to_dict")
+                        else (a if isinstance(a, dict) else str(a))
+                        for a in alerts
+                    ],
                 },
                 default=_webhook_json_default,
             )

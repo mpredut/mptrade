@@ -321,22 +321,22 @@ def load_trend_starts(symbol, days_back):
     return _parse_trend_start_rows(_read_daily_pipe_rows(DECISIONS_PREFIX, 7, days_back), symbol)
 
 
-def _is_tradeall_order(caller: str, motivation: str) -> bool:
-    if caller == "tradeall.py":
-        return True
-    if caller == "market_api.py" and motivation:
-        return any(motivation.startswith(prefix) for prefix in (
-            "trend_", "kalman_", "consistent_", "force_", "test_", "surge_",
-            "small_window_", "accel_", "slope<=", "slope>=",
-        ))
-    return False
-
-
 def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
     events = []
     for row in rows:
         ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
-        if sym_ != symbol or (filter_caller and not _is_tradeall_order(caller, motivation)):
+        is_ta_order = caller == "tradeall.py" or (
+            caller == "market_api.py"
+            and bool(motivation)
+            and any(
+                motivation.startswith(prefix)
+                for prefix in (
+                    "trend_", "kalman_", "consistent_", "force_", "test_", "surge_",
+                    "small_window_", "accel_", "slope<=", "slope>=",
+                )
+            )
+        )
+        if sym_ != symbol or (filter_caller and not is_ta_order):
             continue
         t_val = safe_pos_float(ts, default=None)
         p_val = safe_pos_float(price, default=None)

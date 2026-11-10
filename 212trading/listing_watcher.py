@@ -78,15 +78,6 @@ def verify_instrument_isin(
     return True
 
 
-def in_market_window() -> bool:
-    """Return True during approximate US market hours, 09:00-16:30 ET on weekdays."""
-    n = datetime.now(ET)
-    if n.weekday() >= 5:
-        return False
-    minutes = n.hour * 60 + n.minute
-    return 9 * 60 <= minutes <= 16 * 60 + 30
-
-
 def _wait(stop: "threading.Event | None", seconds: float) -> None:
     """Sleep interruptibly when a stop event exists, otherwise sleep normally."""
     if stop is not None:
@@ -109,9 +100,11 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
     eff_interval = max(1.0, safe_float(interval, default=60.0))
     log(f"    [{label}] waiting for the launch... (poll {eff_interval:g}s)")
     while not (stop is not None and stop.is_set()):
-        if market_hours_only and not in_market_window():
-            _wait(stop, min(eff_interval * 5, 600))
-            continue
+        if market_hours_only:
+            n = datetime.now(ET)
+            if n.weekday() >= 5 or not (9 * 60 <= n.hour * 60 + n.minute <= 16 * 60 + 30):
+                _wait(stop, min(eff_interval * 5, 600))
+                continue
         m = check_market(yahoo_symbol)
         # 'launched' means prior real-volume trading, even if the market is closed now.
         if m and m.get("launched"):

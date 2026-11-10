@@ -79,15 +79,6 @@ def romanian_score(text: str) -> int:
     return sum(1 for word in words if word in RO_WORDS)
 
 
-def doc_is_runtime_text(source: str) -> bool:
-    """True when the module docstring is reused as runtime text, e.g. passed to argparse.
-
-    Translating such a docstring changes user-visible CLI output, so it is not a
-    prose-only edit.
-    """
-    return "__doc__" in source
-
-
 def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
     """Return (hits, doc_is_runtime) for one file; a hit is (line, kind, score, text)."""
     source = read_text_file(path, default=None)
@@ -121,7 +112,7 @@ def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
                 hits.append((getattr(node, "lineno", 0), "docstring", score,
                              " ".join(doc.split())))
 
-    return sorted(hits), doc_is_runtime_text(source)
+    return sorted(hits), "__doc__" in source
 
 
 def iter_python_files(targets: Iterable[str]) -> Iterable[str]:

@@ -1614,10 +1614,6 @@ class CacheTradeManager(CacheAccountManagerBase):
     def compact_jsonl(self):
         if not self.append_persist:
             return False
-        return self._compact_account_trade_jsonl()
-
-    def _compact_account_trade_jsonl(self):
-        """Rewrite Trade data and its manifest as one cross-process generation."""
         return self._with_generation_lock_bool(
             self._compact_account_trade_jsonl_generation_locked,
             "Trade generation",

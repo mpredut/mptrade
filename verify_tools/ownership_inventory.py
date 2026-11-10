@@ -104,18 +104,6 @@ def _running(pattern: str | None, commands: list[str] | None) -> bool | None:
         return any(marker in command for command in commands)
 
 
-def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, str]:
-    resolved_base, resolved_quote = resolve_assets(
-        symbol, base=base or None, quote=quote or None)
-    if not resolved_quote and not base and not quote:
-        sb, sq = split_symbol_assets(symbol) or ("", "")
-        if sb:
-            resolved_base = sb
-        if sq:
-            resolved_quote = sq
-    return resolved_base, resolved_quote or ""
-
-
 def _python_symbols(root: Path) -> tuple[list[str], str]:
     """Read configured Binance symbols and rtrade symbol from `instruments.conf`."""
     syms: list[str] = []
@@ -149,7 +137,15 @@ def _record(
     source: str, commands: list[str] | None, base: str = "", quote: str = "",
     configured: bool | None = None,
 ) -> Owner:
-    base, quote = _split_symbol(symbol, base, quote)
+    resolved_base, resolved_quote = resolve_assets(
+        symbol, base=base or None, quote=quote or None)
+    if not resolved_quote and not base and not quote:
+        sb, sq = split_symbol_assets(symbol) or ("", "")
+        if sb:
+            resolved_base = sb
+        if sq:
+            resolved_quote = sq
+    base, quote = resolved_base, resolved_quote or ""
     return Owner(
         owner_id=owner_id,
         venue=venue,

@@ -54,21 +54,16 @@ from state_io import save_json_state
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
-
-def _resolve_kraken_cache_pairs() -> list[str]:
-    """Combine enabled Kraken instruments from instruments.conf with optional KRAKEN_CACHE_PAIRS."""
-    pairs: list[str] = []
-    for sym in [*symbols_for("kraken"), *split_csv(os.environ.get("KRAKEN_CACHE_PAIRS"), upper=True)]:
-        s = str(sym or "").strip().upper()
-        if s and s not in pairs:
-            pairs.append(s)
-    if not pairs:
-        raise RuntimeError("No Kraken cache pairs configured in instruments.conf or KRAKEN_CACHE_PAIRS")
-    return pairs
-
-
 # ── mandatory configuration ──────────────────────────────────────────────────
-PAIRS = _resolve_kraken_cache_pairs()
+PAIRS = list(
+    dict.fromkeys(
+        s
+        for sym in [*symbols_for("kraken"), *split_csv(os.environ.get("KRAKEN_CACHE_PAIRS"), upper=True)]
+        if (s := str(sym or "").strip().upper())
+    )
+)
+if not PAIRS:
+    raise RuntimeError("No Kraken cache pairs configured in instruments.conf or KRAKEN_CACHE_PAIRS")
 POLL_INTERVAL = required_float_env("KRAKEN_CACHE_POLL_S")   # Ledgers is expensive and all Kraken processes
                                                                      # share the account counter: 5s hits rate limits;
                                                                      # 30s suffices for the guard; use WS below 5s

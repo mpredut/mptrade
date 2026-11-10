@@ -252,15 +252,6 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     return found if found is not None else float(STEP_WOLS_POWER)
 
 
-def _active_estimator() -> str:
-    est = str(SHORT_TREND_ESTIMATOR or "").strip().lower()
-    if est in _SHORT_TREND_ESTIMATORS:
-        return est
-    raise ValueError(
-        f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
-    )
-
-
 def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:
     """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) directly on raw prices.
 
@@ -942,8 +933,13 @@ class PriceWindow:
         if eff_power is None:
             eff_power = step_wols_power_for_symbol(self.symbol)
         noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", default=TREND_NOISE_GATE_K))
+        est = str(SHORT_TREND_ESTIMATOR or "").strip().lower()
+        if est not in _SHORT_TREND_ESTIMATORS:
+            raise ValueError(
+                f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
+            )
         key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-               _active_estimator(), eff_power, noise_gate_k)
+               est, eff_power, noise_gate_k)
         if self._cached_eval_key != key or self._cached_eval_val is None:
             self._cached_eval_val = self._trend_buf.eval_slice(
                 blen - n,

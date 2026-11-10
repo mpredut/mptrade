@@ -499,7 +499,12 @@ class CacheManagerInterface(ABC):
             else dict(counts)
         )
         cursor_map = (
-            self._sanitized_rest_sync_cursor_locked()
+            {
+                str(symbol): max(0, int(cursor))
+                for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+                if isinstance(cursor, (int, float))
+                and safe_float(cursor, default=None) is not None
+            }
             if sanitize_cursor
             else dict(self._rest_sync_cursor_per_symbol)
         )
@@ -558,14 +563,6 @@ class CacheManagerInterface(ABC):
                 f"generation for {self.filename}: {rollback_error}"
             ),
         )
-
-    def _sanitized_rest_sync_cursor_locked(self) -> dict[str, int]:
-        return {
-            str(symbol): max(0, int(cursor))
-            for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
-            if isinstance(cursor, (int, float))
-            and safe_float(cursor, default=None) is not None
-        }
 
     def save_state_to_file_if_enabled(self):
         """Persist enabled writers and return whether the commit succeeded."""
