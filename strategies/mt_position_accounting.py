@@ -207,18 +207,6 @@ def _as_instrument(x):
     return inst_cls(name=sym_s, symbol=sym_s, provider=facade.provider_name_for(sym_s), base=u.base_asset(sym_s))
 
 
-def get_available_qty(symbol, api=None):
-    """Return free base quantity, preserving ``None`` when balance is unavailable."""
-    facade = _mt_attr("mkt", mkt)
-    api = api or facade
-    try:
-        value = _mt_attr("_as_instrument", _as_instrument)(symbol).free() if api is facade else api.free_balance(u.base_asset(symbol))
-        return safe_nonneg_float(value, default=None)
-    except Exception as e:
-        print(f"get_available_qty {symbol}: {e}")
-    return None
-
-
 def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
     """Return True if an order refusal reason indicates un-sellable dust."""
     if not reason:

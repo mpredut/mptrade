@@ -65,7 +65,6 @@ from strategies.mt_position_accounting import (
     _summarize_orders,
     _update_mt_reentry_state,
     _validate_scaled_buy_qty,
-    get_available_qty,
     get_relevant_trade,
 )
 from strategies.position_exit_manager import (

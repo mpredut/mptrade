@@ -76,12 +76,11 @@ class MarketApiLifecycleTest(unittest.TestCase):
         self.assertTrue(status.terminal)
         self.assertTrue(status.fully_filled)
         self.assertTrue(status.has_fill)
-        self.assertFalse(status.partially_filled)
 
         partial_cancel = OrderStatus("canceled", 0.5, 5.0, 0.01)
         self.assertTrue(partial_cancel.terminal)
         self.assertFalse(partial_cancel.fully_filled)
-        self.assertTrue(partial_cancel.partially_filled)
+        self.assertTrue(partial_cancel.has_fill)
 
         normalized = OrderStatus("open", "0.5", "5", "0.01")
         self.assertEqual(normalized.filled_qty, 0.5)

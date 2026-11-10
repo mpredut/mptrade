@@ -2438,12 +2438,6 @@ def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, mo
     mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
     assert "t100" in mt._notified_trade_ids
 
-    # 4. monitortrades.get_available_qty rejects bools, negative numbers, and non-finite strings
-    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: True)) is None
-    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: -1.5)) is None
-    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: "bad")) is None
-    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: "1.25")) == 1.25
-
     # 5. monitortrades._place_guarded and _log_tp_hold_state / _log_sl_hold_state tolerate malformed numeric strings
     placed_calls = []
     dummy_inst = SimpleNamespace(symbol="BTCUSDC", place=lambda *a, **kw: placed_calls.append((a, kw)) or {"orderId": "1"})
@@ -5385,26 +5379,26 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
     core._finish_pending(st_entry, fake_res, 105.0, "BTCUSDC")
     assert any("remaining position still protected under peak 105.0000" in m for m in logs)
 
-    # 3. log._DailyFileHandler switches immediately when configure(log_folder=...) changes folder on same day
+    # 3. log._DailyFileHandler switches immediately when _log_folder changes on same day
     old_folder = log_mod._log_folder
     dir_a = tmp_path / "logs_a"
     dir_b = tmp_path / "logs_b"
     try:
-        log_mod.configure(log_folder=str(dir_a))
+        log_mod._log_folder = str(dir_a)
         log_mod._patched_print("hello", "world", sep="::")
         log_mod._handler._flush()
         files_a = list(dir_a.glob("*.log"))
         assert len(files_a) == 1
         assert "hello::world" in files_a[0].read_text(encoding="utf-8")
 
-        log_mod.configure(log_folder=str(dir_b))
+        log_mod._log_folder = str(dir_b)
         log_mod._patched_print("switched", "folder", sep="--")
         log_mod._handler._flush()
         files_b = list(dir_b.glob("*.log"))
         assert len(files_b) == 1
         assert "switched--folder" in files_b[0].read_text(encoding="utf-8")
     finally:
-        log_mod.configure(log_folder=old_folder)
+        log_mod._log_folder = old_folder
 
     # 4. PriceWindow.get_short_trend with mutated sample_rate_sec=None and WindowAnalyzer.check_price_change with invalid threshold
     pw_inst = pw.PriceWindow("BTCUSDC", 10, sample_rate_sec=1.0, window_seconds=10)

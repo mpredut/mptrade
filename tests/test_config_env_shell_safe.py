@@ -1291,19 +1291,8 @@ def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
 
 
 def test_log_configure_and_verify_tools_hardening():
-    import pytest
-    import log as log_mod
     from verify_tools.gen_alert_thresholds import thresholds_from_prices
     from verify_tools import portfolio_snapshot as ps
-
-    with pytest.raises(ValueError):
-        log_mod.configure(max_size=True)
-    with pytest.raises(ValueError):
-        log_mod.configure(check_every=True)
-    with pytest.raises(ValueError):
-        log_mod.configure(min_free_percent=float("nan"))
-    with pytest.raises(ValueError):
-        log_mod.configure(min_free_percent=True)
 
     assert thresholds_from_prices([], window=20, pct=85) is None
     assert thresholds_from_prices([100.0, 200.0], window=True, pct=85) is None

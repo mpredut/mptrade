@@ -151,10 +151,6 @@ class OrderStatus:
     def has_fill(self) -> bool:
         return self.filled_qty > 0
 
-    @property
-    def partially_filled(self) -> bool:
-        return self.has_fill and not self.fully_filled
-
 
 @dataclass(frozen=True)
 class PairPrecision:

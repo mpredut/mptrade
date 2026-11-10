@@ -123,9 +123,6 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         record_id = oq.enqueue(
             "BTCUSDC", "BUY", 4.0, {}, requested_price=100.0,
             failure_reason="profit_guard", now=1000.0)
-        oq.mark_failure(
-            record_id, "profit_guard", now=1000.0,
-            submission_state="refused")
 
         class ScalingMkt:
             def __init__(self):
@@ -236,7 +233,6 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
             "BTCUSDC", "BUY", 4.0, {"client_order_id": "OR_timeout_test_0"},
             requested_price=100.0, provider_name="Binance", now=1000.0,
             attempts=1, last_attempt_ts=1000.0, failure_reason="submit_ambiguous")
-        oq.mark_failure(record_id, "submit_ambiguous", now=1000.0, submission_state="unknown")
 
         self.assertEqual(oq.get(record_id)["qty"], 4.0)
 

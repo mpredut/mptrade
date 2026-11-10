@@ -35,8 +35,11 @@ class OrderRetryStoreTest(unittest.TestCase):
         record_id = oq.enqueue(
             "BTCUSDC", "BUY", 2.0, {}, requested_price=100.0,
             now=1000.0, kind="terminal-remainder")
-        self.assertTrue(oq.mark_accepted(
-            record_id, {"orderId": 91, "status": "NEW"}, now=1001.0))
+        self.assertTrue(oq.complete_claim(
+            oq.claim([record_id], now=1001.0)[0],
+            "accepted",
+            order={"orderId": 91, "status": "NEW"},
+            now=1001.0))
         claimed = oq.claim([record_id], now=terminal_at)[0]
         transition = oq.advance_claimed_status(
             claimed,
@@ -225,9 +228,9 @@ class OrderRetryStoreTest(unittest.TestCase):
 
         with self.subTest(msg="same_side_refreshes_not_duplicates"):
             self._reset_env()
-            a = oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0)
-            oq.mark_failure(
-                a, "profit_guard", now=1000.0, submission_state="refused")
+            a = oq.enqueue(
+                "BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
+                failure_reason="profit_guard", now=1000.0)
             b = oq.enqueue("BTCUSDC", "SELL", 2.0, {}, requested_price=63100.0, now=1001.0)
             self.assertEqual(a, b)
             items = oq.load_all()
@@ -242,7 +245,11 @@ class OrderRetryStoreTest(unittest.TestCase):
             self._reset_env()
             first = oq.enqueue(
                 "BTCUSDC", "SELL", 1.0, {}, requested_price=100.0, now=1000.0)
-            oq.mark_accepted(first, {"orderId": 7, "status": "NEW"}, now=1001.0)
+            oq.complete_claim(
+                oq.claim([first], now=1001.0)[0],
+                "accepted",
+                order={"orderId": 7, "status": "NEW"},
+                now=1001.0)
 
             second = oq.enqueue(
                 "BTCUSDC", "SELL", 2.0, {}, requested_price=101.0, now=1002.0)
@@ -290,9 +297,9 @@ class OrderRetryStoreTest(unittest.TestCase):
 
         with self.subTest(msg="collapses_ladder_any_distance"):
             self._reset_env()
-            first = oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0)
-            oq.mark_failure(
-                first, "profit_guard", now=1000.0, submission_state="refused")
+            oq.enqueue(
+                "BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
+                failure_reason="profit_guard", now=1000.0)
             oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=70000.0, now=1001.0)
             self.assertEqual(len(oq.load_all()), 1)
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=62000.0, now=1002.0)
@@ -666,41 +673,26 @@ class OrderRetryStoreTest(unittest.TestCase):
         self._reset_env()
         with self.subTest(msg="exact_record_resolution_does_not_remove_newer_revision"):
             rid = oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
-                             now=1000.0)
+                             failure_reason="profit_guard", now=1000.0)
             first = oq.get(rid)
             first_cid = first["place_kwargs"]["client_order_id"]
-            oq.mark_failure(
-                rid, "profit_guard", now=1000.0, submission_state="refused")
             oq.enqueue("BTCUSDC", "BUY", 2.0, {}, requested_price=99.0,
                        now=1001.0)
 
             self.assertNotEqual(oq.get(rid)["place_kwargs"]["client_order_id"], first_cid)
             self.assertEqual(oq.get(rid)["qty"], 2.0)
 
-        with self.subTest(msg="mark_failure_preserves_pre_submit_client_id"):
-            self._reset_env()
-            rid = oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
-                             failure_reason="submit_pending", now=1000.0)
-            client_id = oq.get(rid)["place_kwargs"]["client_order_id"]
-
-            self.assertTrue(oq.mark_failure(
-                rid, "response_without_order_id", now=1001.0,
-                client_order_id=client_id))
-            rec = oq.get(rid)
-            self.assertEqual(rec["place_kwargs"]["client_order_id"], client_id)
-            self.assertEqual(rec["last_failure_reason"], "response_without_order_id")
-
-        with self.subTest(msg="mark_accepted_keeps_exact_record_until_terminal"):
+        with self.subTest(msg="complete_claim_accepted_keeps_exact_record_until_terminal"):
             self._reset_env()
             rid = oq.enqueue(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 provider_name="Binance", intent_id="strategy-cycle-entry",
                 kind="ENTRY", now=1000.0)
-            client_id = oq.get(rid)["place_kwargs"]["client_order_id"]
+            claimed = oq.claim([rid], now=1050.0)[0]
 
-            self.assertTrue(oq.mark_accepted(
-                rid, {"orderId": 123, "status": "NEW"}, now=1100.0,
-                client_order_id=client_id))
+            self.assertTrue(oq.complete_claim(
+                claimed, "accepted", order={"orderId": 123, "status": "NEW"},
+                now=1100.0))
 
             rec = oq.get(rid)
             self.assertEqual(rec["lifecycle"], "accepted")
@@ -711,16 +703,6 @@ class OrderRetryStoreTest(unittest.TestCase):
             self.assertFalse(oq.is_expired(rec, now=1000.0 + 100 * 86400))
             self.assertFalse(oq.is_due(rec, now=1399.0))
             self.assertTrue(oq.is_due(rec, now=1400.0))
-
-        with self.subTest(msg="mark_accepted_rejects_wrong_revision_client_id"):
-            self._reset_env()
-            rid = oq.enqueue(
-                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-
-            self.assertFalse(oq.mark_accepted(
-                rid, {"orderId": 123}, now=1100.0,
-                client_order_id="different"))
-            self.assertEqual(oq.get(rid)["lifecycle"], "submit_pending")
 
         with self.subTest(msg="order_id_parser_handles_provider_shapes"):
             self.assertEqual(oq.extract_order_id({"orderId": 1}), "1")
@@ -849,8 +831,11 @@ class OrderRetryStoreTest(unittest.TestCase):
     def _accepted_claim(self, *, qty=1.0, now=1000.0):
         rid = oq.enqueue(
             "BTCUSDC", "BUY", qty, {}, requested_price=100.0, now=now)
-        oq.mark_accepted(
-            rid, {"orderId": 77, "status": "NEW"}, now=now + 100.0)
+        oq.complete_claim(
+            oq.claim([rid], now=now + 100.0)[0],
+            "accepted",
+            order={"orderId": 77, "status": "NEW"},
+            now=now + 100.0)
         return oq.claim([rid], now=now + 400.0)[0]
 
     def test_advance_claimed_status_behaviors(self):

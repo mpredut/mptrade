@@ -12,12 +12,10 @@ from time import monotonic as _monotonic
 
 from botcore import (
     _parse_bool_flag,
-    exact_pos_int,
     load_dotenv,
     lru_dict_put,
     required_float_env,
     required_int_env,
-    safe_nonneg_float,
 )
 
 
@@ -85,46 +83,6 @@ _log_folder       = os.path.normpath(os.path.abspath(_DEFAULT_LOG_FOLDER))
 _max_size         = _DEFAULT_MAX_SIZE
 _check_every      = _DEFAULT_CHECK_EVERY
 _min_free_percent = _DEFAULT_MIN_FREE_PERCENT
-
-
-def configure(
-    *,
-    log_folder:       str   | None = None,
-    max_size:         int   | None = None,
-    check_every:      int   | None = None,
-    min_free_percent: float | None = None,
-) -> None:
-    """Reconfigure the logger at runtime (all parameters are optional)."""
-    global _log_folder, _max_size, _check_every, _min_free_percent
-
-    with _config_lock:
-        if log_folder is not None:
-            if (
-                isinstance(log_folder, bool)
-                or not isinstance(log_folder, (str, os.PathLike))
-                or not str(os.fspath(log_folder)).strip()
-            ):
-                raise ValueError("log_folder must be a non-empty path")
-            resolved = os.path.normpath(os.path.abspath(str(os.fspath(log_folder)).strip()))
-            os.makedirs(resolved, exist_ok=True)
-            _log_folder = resolved
-        if max_size is not None:
-            ms = exact_pos_int(max_size, default=None)
-            if ms is None:
-                raise ValueError("max_size must be > 0")
-            _max_size = ms
-        if check_every is not None:
-            ce = exact_pos_int(check_every, default=None)
-            if ce is None:
-                raise ValueError("check_every must be > 0")
-            _check_every = ce
-        if min_free_percent is not None:
-            mf = safe_nonneg_float(min_free_percent, default=None)
-            if mf is None or mf > 100.0:
-                raise ValueError("min_free_percent must be between 0 and 100")
-            _min_free_percent = mf
-
-
 _suppress_default_folder_writes: bool = False
 
 

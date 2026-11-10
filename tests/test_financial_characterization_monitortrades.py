@@ -553,11 +553,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             )
             self.assertFalse(placed)
 
-    def test_unavailable_balance_remains_distinct_from_real_zero(self):
-        self.assertIsNone(
-            mt.get_available_qty(SYMBOL, api=UnavailableBalanceApi()),
-        )
-
     def test_regression_loss_exit_must_reach_provider_through_real_guard_pipeline(self):
         """The strategy's loss exit is ineffective if profit guard blocks the SELL."""
         real_now = time.time()

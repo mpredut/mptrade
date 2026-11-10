@@ -4760,7 +4760,12 @@ def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_
         place_kwargs={"kind": "assetguardian_tier"},
     )
     assert rec_id is not None
-    assert order_retry.mark_accepted(rec_id, {"orderId": "101", "origQty": "10.0"}, now=1000.0) is True
+    assert order_retry.complete_claim(
+        order_retry.claim([rec_id], now=1000.0)[0],
+        "accepted",
+        order={"orderId": "101", "origQty": "10.0"},
+        now=1000.0,
+    ) is True
     assert order_retry.get_accepted_order_ids_for_owner("taousdc", "assetguardian") == ["101"]
 
     claimed_r0 = order_retry.claim([rec_id], now=1020.0)[0]

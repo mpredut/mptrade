@@ -836,9 +836,6 @@ class ProcessOnceTest(unittest.TestCase):
             record_id = oq.enqueue(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 failure_reason="profit_guard", now=1000.0)
-            oq.mark_failure(
-                record_id, "profit_guard", now=1000.0,
-                submission_state="refused")
             claimed = oq.claim([record_id], now=1400.0)[0]
             dispatched = oq.begin_claimed_submit(claimed, now=1400.0)
 
@@ -963,9 +960,6 @@ class ProcessOnceTest(unittest.TestCase):
                 record_id = oq.enqueue(
                     "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                     failure_reason="profit_guard", now=1000.0)
-                oq.mark_failure(
-                    record_id, "profit_guard", now=1000.0,
-                    submission_state="refused")
                 original_discard = oq.discard_expired
 
                 def refresh_before_cleanup(snapshots, now):
@@ -1138,7 +1132,9 @@ class ProcessOnceTest(unittest.TestCase):
             oq.rewrite([])
             rid = oq.enqueue(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-            oq.mark_accepted(rid, {"orderId": 41, "status": "NEW"}, now=1100.0)
+            oq.complete_claim(
+                oq.claim([rid], now=1100.0)[0], "accepted",
+                order={"orderId": 41, "status": "NEW"}, now=1100.0)
             mkt = FakeMkt(price=100.0)
             mkt.status = OrderStatus(
                 "open", 0.4, 39.5, 0.02, "PARTIALLY_FILLED")
@@ -1157,7 +1153,9 @@ class ProcessOnceTest(unittest.TestCase):
             rid = oq.enqueue(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
             first_cid = oq.get(rid)["place_kwargs"]["client_order_id"]
-            oq.mark_accepted(rid, {"orderId": 42, "status": "NEW"}, now=1100.0)
+            oq.complete_claim(
+                oq.claim([rid], now=1100.0)[0], "accepted",
+                order={"orderId": 42, "status": "NEW"}, now=1100.0)
             mkt = FakeMkt(price=99.0)
             mkt.status = OrderStatus("expired", 0.4, 39.5, 0.02, "EXPIRED")
 
@@ -1181,8 +1179,9 @@ class ProcessOnceTest(unittest.TestCase):
             oq.rewrite([])
             rejected_id = oq.enqueue(
                 "BTCUSDC", "SELL", 2.0, {}, requested_price=100.0, now=1000.0)
-            oq.mark_accepted(
-                rejected_id, {"orderId": 50, "status": "NEW"}, now=1100.0)
+            oq.complete_claim(
+                oq.claim([rejected_id], now=1100.0)[0], "accepted",
+                order={"orderId": 50, "status": "NEW"}, now=1100.0)
             mkt = FakeMkt(price=101.0)
             mkt.status = OrderStatus("canceled", 0.0, 0.0, 0.0, "REJECTED")
 
@@ -1194,8 +1193,9 @@ class ProcessOnceTest(unittest.TestCase):
             oq.rewrite([])
             canceled_id = oq.enqueue(
                 "BTCUSDC", "SELL", 2.0, {}, requested_price=100.0, now=2000.0)
-            oq.mark_accepted(
-                canceled_id, {"orderId": 51, "status": "NEW"}, now=2100.0)
+            oq.complete_claim(
+                oq.claim([canceled_id], now=2100.0)[0], "accepted",
+                order={"orderId": 51, "status": "NEW"}, now=2100.0)
             mkt.status = OrderStatus("canceled", 0.5, 50.0, 0.02, "CANCELED")
             alerts = []
             original_notify = worker.alert.notify
@@ -1214,7 +1214,9 @@ class ProcessOnceTest(unittest.TestCase):
             oq.rewrite([])
             rid = oq.enqueue(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-            oq.mark_accepted(rid, {"orderId": 60}, now=1100.0)
+            oq.complete_claim(
+                oq.claim([rid], now=1100.0)[0], "accepted",
+                order={"orderId": 60}, now=1100.0)
 
             class BrokenStatusMkt(FakeMkt):
                 def order_status(self, symbol, order_id, provider_name=None):

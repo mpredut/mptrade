@@ -8982,7 +8982,7 @@ def test_iteration70_t212_replay_bot_kraken_watch_and_trailing_core_safety(tmp_p
 
 def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety(tmp_path):
     """Verify Iteration 71 hardening across cacheintegrity, rtrade_pair_store,
-    order_rollback, shadow_signals, utils, and log.configure."""
+    order_rollback, shadow_signals, and utils."""
     import pytest
     from types import SimpleNamespace
     import cacheintegrity
@@ -8990,7 +8990,6 @@ def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety
     from order_rollback import extract_order_restore_params
     from shadow_signals import KalmanStateTracker
     import utils
-    import log
 
     # 1. cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot
     with pytest.raises(ValueError):
@@ -9043,12 +9042,6 @@ def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety
     # 5. utils.gaussian_weights_from_idx handles OverflowError and clamps huge T
     t_arr, w_arr = utils.gaussian_weights_from_idx(10**400, 0)
     assert len(t_arr) == 0 and len(w_arr) == 0
-
-    # 6. log.configure rejects fractional max_size and check_every
-    with pytest.raises(ValueError):
-        log.configure(max_size=1024.5)
-    with pytest.raises(ValueError):
-        log.configure(check_every=10.5)
 
 
 def test_iteration72_offline_research_and_runners_safety():
@@ -15410,7 +15403,6 @@ def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp
 def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_path, monkeypatch):
     import priceAnalysis as pa
     from notify_engine import alertnotifiers as an
-    import log
 
     # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
     ts = [float(i * 3600) for i in range(1, 100)]
@@ -15435,14 +15427,6 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     # 3. alertnotifiers: _parse_bool_flag default preservation
     assert an._parse_bool_flag("invalid_token", default=True) is True
     assert an._parse_bool_flag("false", default=True) is False
-
-    # 4. log: configure rejects empty/boolean log_folder
-    with pytest.raises(ValueError):
-        log.configure(log_folder="")
-    with pytest.raises(ValueError):
-        log.configure(log_folder="   ")
-    with pytest.raises(ValueError):
-        log.configure(log_folder=True)
 
 
 def test_iteration164_providers_base_market_api_kraken_and_t212_hygiene(tmp_path, monkeypatch):

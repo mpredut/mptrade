@@ -221,7 +221,12 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
                 self.assertEqual(oq.infer_record_owner(rec), "tradeall")
 
                 # Simulate legacy OR_ client_order_id with kalman_primary_up kind
-                oq.mark_accepted(rid, {"orderId": 10574289378, "status": "NEW"}, now=1010.0)
+                oq.complete_claim(
+                    oq.claim([rid], now=1010.0)[0],
+                    "accepted",
+                    order={"orderId": 10574289378, "status": "NEW"},
+                    now=1010.0,
+                )
                 owner_map = oq.get_accepted_order_owner_map()
                 self.assertEqual(owner_map.get("10574289378"), "tradeall")
                 self.assertEqual(
@@ -254,7 +259,12 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
                     requested_price=82125.73, ref_price=82207.94,
                     kind="kalman_primary_up", provider_name="binance", now=1030.0,
                 )
-                oq.mark_accepted(rid2, {"orderId": 10574512957, "status": "NEW"}, now=1031.0)
+                oq.complete_claim(
+                    oq.claim([rid2], now=1031.0)[0],
+                    "accepted",
+                    order={"orderId": 10574512957, "status": "NEW"},
+                    now=1031.0,
+                )
                 self.assertTrue(oq.resolve_accepted_order("BTCUSDC", 10574512957))
                 self.assertEqual(oq.load_all(), [oq.get(rep_id)])
 
@@ -269,14 +279,11 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             with patch.object(oq, "QUEUE_FILE", qfile), \
                  patch.object(oq, "LOCK_FILE", lfile), \
                  patch.object(oq, "RETRY_DEDUP", False):
-                first = oq.enqueue(
+                oq.enqueue(
                     "BTCUSDC", "BUY", 0.00066, {},
                     requested_price=81733.6, ref_price=81815.42,
-                    failure_reason="trend_deferred",
+                    failure_reason="profit_guard",
                     kind="kalman_primary_up", provider_name="binance", now=1000.0,
-                )
-                oq.mark_failure(
-                    first, "profit_guard", now=1010.0, submission_state="refused"
                 )
                 second = oq.enqueue(
                     "BTCUSDC", "BUY", 0.00064, {},

@@ -966,40 +966,6 @@ def get(record_id):
     return None
 
 
-def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None, submission_state=None):
-    """Annotate an already persisted pre-submit record without changing its ID."""
-    if not record_id or isinstance(record_id, bool):
-        return False
-    if submission_state not in {None, "refused", "unknown"}:
-        raise ValueError(f"invalid submission state: {submission_state!r}")
-    now = resolve_now_ts(now)
-    changed = False
-    with _locked_queue() as existing:
-        for rec in existing:
-            if rec.get("id") != record_id:
-                continue
-            if client_order_id is not None and _record_client_order_id(rec) != client_order_id:
-                continue
-            previous = rec.get("last_failure_reason")
-            reason = str(failure_reason) if failure_reason is not None else None
-            prev_attempts = max(0, exact_int(rec.get("attempts"), 0))
-            _shift_ttl_after_deferral(
-                rec, previous, reason, prev_attempts,
-                safe_pos_float(rec.get("last_attempt_ts"), default=None), now,
-            )
-            rec["last_failure_reason"] = reason
-            if submission_state is not None:
-                rec["submission_state"] = submission_state
-                _set_safe_to_discard(rec, submission_state == "refused")
-            elif not is_non_failure_deferral(reason):
-                _set_safe_to_discard(rec, False)
-            changed = True
-            break
-        if changed:
-            _write_nolock(existing)
-    return changed
-
-
 def _append_order_history(rec, *, observed_at, status=None):
     """Retain a bounded audit trail when one logical intent has several orders."""
     order_id = rec.get("order_id")
@@ -1047,25 +1013,6 @@ def _apply_accepted(rec, order, now, provider_name=None):
         rec["submit_status"] = str(order.get("status"))
     _append_order_history(rec, observed_at=now)
     return True
-
-
-def mark_accepted(record_id, order, *, now=None, client_order_id=None, provider_name=None):
-    """Move one exact pre-submit revision to durable accepted tracking."""
-    if not record_id or isinstance(record_id, bool):
-        return False
-    now = resolve_now_ts(now)
-    changed = False
-    with _locked_queue() as existing:
-        for rec in existing:
-            if rec.get("id") != record_id:
-                continue
-            if client_order_id is not None and _record_client_order_id(rec) != client_order_id:
-                continue
-            changed = _apply_accepted(rec, order, now, provider_name=provider_name)
-            break
-        if changed:
-            _write_nolock(existing)
-    return changed
 
 
 def claim(ids, now=None, lease_sec=None):

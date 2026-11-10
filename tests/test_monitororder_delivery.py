@@ -506,7 +506,12 @@ class TestOrderRetryTTL:
                 "TAOUSDC", "BUY", 1.0,
                 requested_price=250.0, ref_price=250.0, now=1000.0,
             )
-            assert oq.mark_accepted(rid, {"orderId": 888, "status": "NEW"}, now=1001.0)
+            assert oq.complete_claim(
+                oq.claim([rid], now=1001.0)[0],
+                "accepted",
+                order={"orderId": 888, "status": "NEW"},
+                now=1001.0,
+            )
             claimed = oq.claim([rid], now=1400.0)[0]
             assert oq.resolve_accepted_order("TAOUSDC", 888) is True
             transition = oq.advance_claimed_status(
