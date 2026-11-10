@@ -127,32 +127,6 @@ def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
     return comm, start_time, ticks, rss_pages
 
 
-def _processes():
-    result = {}
-    page_size = os.sysconf("SC_PAGE_SIZE")
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            comm, start_time, ticks, rss_pages = _parse_proc_stat(
-                read_text_file(entry / "stat")
-            )
-            key = f"{entry.name}:{start_time}"
-            rss_mb = rss_pages * page_size / 1024 / 1024
-            command = read_bytes_file(entry / "cmdline").replace(b"\0", b" ").decode(
-                errors="replace").strip()
-            if not command:
-                command = comm
-            result[key] = {
-                "pid": int(entry.name), "ticks": ticks, "rss_mb": rss_mb,
-                "command": command[:180],
-            }
-        except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError,
-                OSError, ValueError):
-            continue
-    return result
-
-
 def _usage(previous, current, previous_total, current_total, cpu_count):
     if not isinstance(previous, dict) or not isinstance(current, dict):
         return None
@@ -182,7 +156,20 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         now = time.time()
     if total_ticks is None:
         total_ticks = sum(int(v) for v in read_text_file("/proc/stat").splitlines()[0].split()[1:])
-    processes = _processes() if processes is None else processes
+    if processes is None:
+        processes = {}
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                comm, start_time, ticks, rss_pages = _parse_proc_stat(read_text_file(entry / "stat"))
+                key = f"{entry.name}:{start_time}"
+                rss_mb = rss_pages * page_size / 1024 / 1024
+                command = read_bytes_file(entry / "cmdline").replace(b"\0", b" ").decode(errors="replace").strip() or comm
+                processes[key] = {"pid": int(entry.name), "ticks": ticks, "rss_mb": rss_mb, "command": command[:180]}
+            except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, OSError, ValueError):
+                continue
     cpu_count = (os.cpu_count() or 1) if cpu_count is None else safe_pos_int(cpu_count, default=1)
     state = wc.load_state(STATE_FILE)
     if not isinstance(state, dict):

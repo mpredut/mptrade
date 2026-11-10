@@ -918,27 +918,6 @@ class Instrument:
             )
         return None
 
-    def _acquire_cache_permit(self, ctx: _PlaceContext) -> None:
-        ctx.permit_requested_price = None if ctx.is_market else ctx.orig_price
-        if ctx.requires_permit and ctx.cache_permit is None:
-            if not callable(ctx.preflight_order):
-                raise SubmissionRefused("account_cache_not_fresh")
-            ctx.cache_permit = ctx.preflight_order(
-                self.symbol,
-                ctx.side_u,
-                ctx.qty,
-                ctx.price,
-                market=ctx.is_market,
-                kind=ctx.order_kind,
-            )
-            if ctx.cache_permit is None:
-                raise SubmissionRefused("account_cache_not_fresh")
-            ctx.permit_requested_price = None if ctx.is_market else ctx.price
-            validate_order_state = getattr(self._provider, "validate_order_state", None)
-            if not callable(validate_order_state):
-                raise SubmissionRefused("account_cache_not_fresh")
-            validate_order_state(ctx.guarded_order_state)
-
     def _revalidate_market_dispatch(self, ctx: _PlaceContext) -> Optional[str]:
         final_profit_check = not ctx.bypass_profit_guard and ctx.is_market
         if not (ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied)):
@@ -1323,7 +1302,25 @@ class Instrument:
                 ctx.reason = refusal
                 return None
 
-            self._acquire_cache_permit(ctx)
+            ctx.permit_requested_price = None if ctx.is_market else ctx.orig_price
+            if ctx.requires_permit and ctx.cache_permit is None:
+                if not callable(ctx.preflight_order):
+                    raise SubmissionRefused("account_cache_not_fresh")
+                ctx.cache_permit = ctx.preflight_order(
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.qty,
+                    ctx.price,
+                    market=ctx.is_market,
+                    kind=ctx.order_kind,
+                )
+                if ctx.cache_permit is None:
+                    raise SubmissionRefused("account_cache_not_fresh")
+                ctx.permit_requested_price = None if ctx.is_market else ctx.price
+                validate_order_state = getattr(self._provider, "validate_order_state", None)
+                if not callable(validate_order_state):
+                    raise SubmissionRefused("account_cache_not_fresh")
+                validate_order_state(ctx.guarded_order_state)
 
             # Stage 5: Pre-dispatch Market Revalidation & Venue Submission.
             if refusal := self._revalidate_market_dispatch(ctx):

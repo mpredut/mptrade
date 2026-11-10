@@ -980,28 +980,6 @@ def _append_order_history(rec, *, observed_at, status=None):
     rec["order_history"] = history[-20:]
 
 
-def _apply_accepted(rec, order, now, provider_name=None):
-    order_id = extract_order_id(order)
-    if order_id is None:
-        return False
-    venue_qty = extract_orig_qty(order)
-    if venue_qty is not None:
-        _set_record_qty(rec, venue_qty)
-    _set_safe_to_discard(rec, False)
-    rec["order_id"] = order_id
-    rec["lifecycle"] = "accepted"
-    rec["accepted_ts"] = float(now)
-    rec["last_status_ts"] = 0.0
-    rec["last_failure_reason"] = None
-    rec["submission_state"] = "accepted"
-    if provider_name is not None:
-        rec["provider_name"] = str(provider_name)
-    if isinstance(order, dict) and order.get("status") is not None:
-        rec["submit_status"] = str(order.get("status"))
-    _append_order_history(rec, observed_at=now)
-    return True
-
-
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
     if ids is None or isinstance(ids, (str, bytes, bool)):
@@ -1082,7 +1060,20 @@ def complete_claim(
                 venue_qty = extract_orig_qty(order) or safe_pos_float(claimed.get("qty"), default=None)
                 if venue_qty is not None:
                     _set_record_qty(rec, venue_qty)
-                if not _apply_accepted(rec, order, now, provider_name=provider_name):
+                order_id = extract_order_id(order)
+                if order_id is not None:
+                    rec["order_id"] = order_id
+                    rec["lifecycle"] = "accepted"
+                    rec["accepted_ts"] = float(now)
+                    rec["last_status_ts"] = 0.0
+                    rec["last_failure_reason"] = None
+                    rec["submission_state"] = "accepted"
+                    if provider_name is not None:
+                        rec["provider_name"] = str(provider_name)
+                    if isinstance(order, dict) and order.get("status") is not None:
+                        rec["submit_status"] = str(order.get("status"))
+                    _append_order_history(rec, observed_at=now)
+                else:
                     rec["last_failure_reason"] = "response_without_order_id"
                     rec["attempts"] = max(
                         max(0, exact_int(rec.get("attempts"), 0)),

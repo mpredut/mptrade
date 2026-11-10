@@ -206,31 +206,6 @@ def _parse_kv_map(raw: str) -> Dict[str, str]:
     }
 
 
-def _parse_crontab_executor_interval_sec(crontab_path: Optional[str] = None) -> Optional[float]:
-    """Extract ``auto_cryptotrade_executor`` schedule cadence in seconds from crontab (e.g. ``*/6`` -> 360s, ``*/10`` -> 600s)."""
-    target = crontab_path or os.environ.get("MPTRADE_CRONTAB_PATH") or DEFAULT_CRONTAB_PATH
-    try:
-        mtime = os.path.getmtime(target) if os.path.exists(target) else -1.0
-    except OSError:
-        mtime = -1.0
-    if mtime >= 0.0 and _CRONTAB_CACHE.get("path") == target and _CRONTAB_CACHE.get("mtime") == mtime:
-        return _CRONTAB_CACHE.get("interval_sec")
-    resolved: Optional[float] = None
-    if mtime >= 0.0:
-        for raw_line in read_text_lines(target):
-            line = (raw_line or "").strip()
-            if not line or line.startswith("#") or "auto_cryptotrade_executor" not in line:
-                continue
-            m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+", line)
-            if m:
-                mins = safe_pos_float(m.group(1), 0.0)
-                if mins > 0.0:
-                    resolved = mins * 60.0
-                    break
-    _CRONTAB_CACHE.update(path=target, mtime=mtime, interval_sec=resolved)
-    return resolved
-
-
 def resolve_crypto_executor_interval_sec(
     config_path: Optional[str] = None,
     crontab_path: Optional[str] = None,
@@ -244,7 +219,27 @@ def resolve_crypto_executor_interval_sec(
         return max(30.0, env_min * 60.0)
 
     cfg_sec = safe_pos_float(_cfg_float("intervals", "crypto_executor_interval_sec", 360.0, config_path=config_path), 360.0)
-    cron_sec = _parse_crontab_executor_interval_sec(crontab_path=crontab_path)
+    target = crontab_path or os.environ.get("MPTRADE_CRONTAB_PATH") or DEFAULT_CRONTAB_PATH
+    try:
+        mtime = os.path.getmtime(target) if os.path.exists(target) else -1.0
+    except OSError:
+        mtime = -1.0
+    if mtime >= 0.0 and _CRONTAB_CACHE.get("path") == target and _CRONTAB_CACHE.get("mtime") == mtime:
+        cron_sec = _CRONTAB_CACHE.get("interval_sec")
+    else:
+        cron_sec = None
+        if mtime >= 0.0:
+            for raw_line in read_text_lines(target):
+                line = (raw_line or "").strip()
+                if not line or line.startswith("#") or "auto_cryptotrade_executor" not in line:
+                    continue
+                m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+", line)
+                if m:
+                    mins = safe_pos_float(m.group(1), 0.0)
+                    if mins > 0.0:
+                        cron_sec = mins * 60.0
+                        break
+        _CRONTAB_CACHE.update(path=target, mtime=mtime, interval_sec=cron_sec)
     if cron_sec is not None and cron_sec > 0.0:
         if crontab_path is not None or os.environ.get("MPTRADE_CRONTAB_PATH") or (cfg_sec == 360.0 and cron_sec != 360.0):
             return max(30.0, cron_sec)

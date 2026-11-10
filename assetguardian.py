@@ -137,32 +137,24 @@ def _build_dynamic_buy_tiers(thresholds=None, initial_allocation=None):
     return tuple(zip(ordered, _progressive_tier_allocations(len(ordered), initial_allocation, mode="convex")))
 
 
-def _build_dynamic_sell_tiers(thresholds=None, initial_allocation=None):
-    """Derive SELL growth thresholds and progressive allocations dynamically from config bounds."""
-    if thresholds is None:
-        count = max(2, round(1.0 / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
-        core_count = max(2, round((1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
-        first_thr = float(
-            math.ceil(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT))
-        )
-        breakout_step = first_thr + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
-        computed = [round(first_thr, 4)]
-        for idx in range(1, count):
-            step = RECOVERY_RESET_PERCENT if idx < core_count else breakout_step
-            computed.append(round(computed[-1] + step, 4))
-        ordered = tuple(computed)
-    else:
-        ordered = tuple(sorted(float(t) for t in thresholds))
-    if initial_allocation is None:
-        mean_alloc = 1.0 / len(ordered)
-        initial_allocation = round(
-            mean_alloc * (1.0 - ((len(ordered) - 1) / 2.0) * PORTFOLIO_SELL_MAX_DISCOUNT), 6
-        )
-    return tuple(zip(ordered, _progressive_tier_allocations(len(ordered), initial_allocation, mode="linear")))
-
-
 BUY_TIERS = _build_dynamic_buy_tiers()
-SELL_TIERS = _build_dynamic_sell_tiers()
+_SELL_COUNT = max(2, round(1.0 / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
+_SELL_CORE_COUNT = max(2, round((1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
+_SELL_FIRST_THR = float(
+    math.ceil(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT))
+)
+_SELL_BREAKOUT_STEP = _SELL_FIRST_THR + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
+_SELL_COMPUTED = [round(_SELL_FIRST_THR, 4)]
+for _sell_idx in range(1, _SELL_COUNT):
+    _sell_step = RECOVERY_RESET_PERCENT if _sell_idx < _SELL_CORE_COUNT else _SELL_BREAKOUT_STEP
+    _SELL_COMPUTED.append(round(_SELL_COMPUTED[-1] + _sell_step, 4))
+_SELL_ORDERED = tuple(_SELL_COMPUTED)
+_SELL_INIT_ALLOC = round(
+    (1.0 / len(_SELL_ORDERED)) * (1.0 - ((len(_SELL_ORDERED) - 1) / 2.0) * PORTFOLIO_SELL_MAX_DISCOUNT), 6
+)
+SELL_TIERS = tuple(
+    zip(_SELL_ORDERED, _progressive_tier_allocations(len(_SELL_ORDERED), _SELL_INIT_ALLOC, mode="linear"))
+)
 GUARDED_BUY_THRESHOLD = min((t for t, _ in BUY_TIERS), default=None)
 TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = TRACKED_SYMBOLS[0] if TRACKED_SYMBOLS else "BTCUSDC"

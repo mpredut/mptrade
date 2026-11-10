@@ -439,31 +439,6 @@ class Strategy(BaseSpotMixin):
         self.s["pending_intent"] = None
         self._save()
 
-    def _reconcile_pending_submit(self) -> None:
-        pending = self.s.get("pending_intent")
-        if not pending or self.dry_run:
-            return
-        submit_error = pending.get("submit_error") or pending.get("refusal_reason")
-        if not clean_order_id(pending.get("order_id")) and self._insufficient_funds_error(submit_error):
-            self.s["ledger_reconcile_required"] = True
-            if not _parse_bool_flag(pending.get("market"), False):
-                self._record_placement_backoff(
-                    str(pending.get("side") or "buy"), str(pending.get("kind") or "ENTRY"), submit_error
-                )
-            self._persist_pending_intent(None)
-            log(f"  ! [STRAT] released stale insufficient-funds pending intent ({pending.get('side')} {pending.get('kind')})")
-            return
-        try:
-            result = self._order_lifecycle.reconcile(pending, persist=self._persist_pending_intent)
-        except (ProviderError, RuntimeError, ValueError) as exc:
-            log(f"  ! [STRAT] unreconciled pending intent ({exc}) — not resending")
-            return
-        if result.order_known:
-            self._adopt_pending_order(result.intent)
-            log(f"  [STRAT] recovered intent {result.intent['side']} txid={result.intent['order_id']}")
-        elif result.outcome in {"absent", "retryable"}:
-            log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
-
     # -- Helpers ---------------------------------------------------------------
     def _dust_safe_qty(self, qty: float) -> float:
         """Leave one volume tick to tolerate a venue's rounded balance."""
@@ -714,7 +689,28 @@ class Strategy(BaseSpotMixin):
 
     # -- Reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> None:
-        self._reconcile_pending_submit()
+        pending = self.s.get("pending_intent")
+        if pending and not self.dry_run:
+            submit_error = pending.get("submit_error") or pending.get("refusal_reason")
+            if not clean_order_id(pending.get("order_id")) and self._insufficient_funds_error(submit_error):
+                self.s["ledger_reconcile_required"] = True
+                if not _parse_bool_flag(pending.get("market"), False):
+                    self._record_placement_backoff(
+                        str(pending.get("side") or "buy"), str(pending.get("kind") or "ENTRY"), submit_error
+                    )
+                self._persist_pending_intent(None)
+                log(f"  ! [STRAT] released stale insufficient-funds pending intent ({pending.get('side')} {pending.get('kind')})")
+            else:
+                try:
+                    result = self._order_lifecycle.reconcile(pending, persist=self._persist_pending_intent)
+                except (ProviderError, RuntimeError, ValueError) as exc:
+                    log(f"  ! [STRAT] unreconciled pending intent ({exc}) — not resending")
+                else:
+                    if result.order_known:
+                        self._adopt_pending_order(result.intent)
+                        log(f"  [STRAT] recovered intent {result.intent['side']} txid={result.intent['order_id']}")
+                    elif result.outcome in {"absent", "retryable"}:
+                        log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
         if not self.s.get("pending_exit"):
             exit_order = next((o for o in self.s["orders"] if o["side"] == "sell" and o.get("market")), None)
             if exit_order:

@@ -1317,29 +1317,6 @@ class TradingBot:
                 return True
         return False
 
-    def _step_active_coordinators(self, venue, pair_store, active: list, now: float) -> list:
-        survivors, checkpoints = [], []
-        for coordinator in active:
-            outcome = coordinator.step(now=now)
-            export_state = getattr(coordinator, "export_state", None)
-            if callable(export_state):
-                checkpoints.append((coordinator.pair_id, export_state(), outcome.terminal))
-            if outcome.terminal:
-                self._clear_venue_blocked_pair(venue, coordinator.pair_id)
-                print(
-                    f"[{self.symbol}] pair={outcome.pair_id} "
-                    f"phase={outcome.phase} shock={outcome.shock} "
-                    f"latency={outcome.fill_latency_sec} "
-                    f"buy={outcome.buy_qty:.6f} sell={outcome.sell_qty:.6f} "
-                    f"net={outcome.net_qty:.6f} "
-                    f"cashflow={outcome.gross_pnl:.2f} "
-                    f"fees={outcome.fees:.2f} reason={outcome.reason}"
-                )
-            else:
-                survivors.append(coordinator)
-        pair_store.checkpoint_many(checkpoints)
-        return survivors
-
     def _run_coordinator_forever(self):
         pair_store = getattr(self, "pair_store", None) or RTradePairStore()
         venue = _LivePairVenue(self.symbol, pair_store=pair_store)
@@ -1446,7 +1423,27 @@ class TradingBot:
                         last_active_summary_log = now
                         print(f"[{self.symbol}] health: active rounds={len(active)} heartbeat touched.")
 
-                active = self._step_active_coordinators(venue, pair_store, active, now)
+                survivors, checkpoints = [], []
+                for coordinator in active:
+                    outcome = coordinator.step(now=now)
+                    export_state = getattr(coordinator, "export_state", None)
+                    if callable(export_state):
+                        checkpoints.append((coordinator.pair_id, export_state(), outcome.terminal))
+                    if outcome.terminal:
+                        self._clear_venue_blocked_pair(venue, coordinator.pair_id)
+                        print(
+                            f"[{self.symbol}] pair={outcome.pair_id} "
+                            f"phase={outcome.phase} shock={outcome.shock} "
+                            f"latency={outcome.fill_latency_sec} "
+                            f"buy={outcome.buy_qty:.6f} sell={outcome.sell_qty:.6f} "
+                            f"net={outcome.net_qty:.6f} "
+                            f"cashflow={outcome.gross_pnl:.2f} "
+                            f"fees={outcome.fees:.2f} reason={outcome.reason}"
+                        )
+                    else:
+                        survivors.append(coordinator)
+                pair_store.checkpoint_many(checkpoints)
+                active = survivors
 
                 can_start = (
                     not recovery_blocked

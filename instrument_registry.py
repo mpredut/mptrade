@@ -660,20 +660,6 @@ def __getattr__(name: str):
     return _resolve_dynamic_symbol_attr(name)
 
 
-def _resolve_cur_symbols() -> list:
-    self_mod = sys.modules.get(__name__)
-    sym_mod = sys.modules.get("symbols")
-    if sym_mod is not None and sym_mod is not self_mod and hasattr(sym_mod, "symbols"):
-        val = getattr(sym_mod, "symbols", None)
-        if isinstance(val, (list, tuple, set)):
-            return list(val)
-    if self_mod is not None and "symbols" in self_mod.__dict__:
-        val = self_mod.__dict__["symbols"]
-        if isinstance(val, (list, tuple, set)):
-            return list(val)
-    return symbols_for("binance")
-
-
 def _normalize_ordertype(order_type):
     if isinstance(order_type, str):
         return normalize_side(order_type) or order_type.strip().upper()
@@ -687,7 +673,19 @@ def validate_ordertype(order_type):
 
 
 def validate_symbols(symbol):
-    cur_symbols = _resolve_cur_symbols()
+    self_mod = sys.modules.get(__name__)
+    sym_mod = sys.modules.get("symbols")
+    cur_symbols = None
+    if sym_mod is not None and sym_mod is not self_mod and hasattr(sym_mod, "symbols"):
+        val = getattr(sym_mod, "symbols", None)
+        if isinstance(val, (list, tuple, set)):
+            cur_symbols = list(val)
+    if cur_symbols is None and self_mod is not None and "symbols" in self_mod.__dict__:
+        val = self_mod.__dict__["symbols"]
+        if isinstance(val, (list, tuple, set)):
+            cur_symbols = list(val)
+    if cur_symbols is None:
+        cur_symbols = symbols_for("binance")
     norm_sym = symbol
     if isinstance(symbol, str):
         s = symbol.strip().upper()

@@ -57,31 +57,6 @@ class MeanReversionTrigger:
         self.bb_buf: deque[float] = deque(maxlen=self.bb_period)
         self.current_sign: int = 0  # +1 oversold (buy), -1 overbought (sell), 0 neutral
 
-    def _calc_rsi(self, price: float) -> float | None:
-        if self.prev_price is None:
-            self.prev_price = price
-            return None
-            
-        change = price - self.prev_price
-        self.prev_price = price
-        gain = max(change, 0.0)
-        loss = max(-change, 0.0)
-
-        if self.avg_gain is None:
-            self._seed_gains.append((gain, loss))
-            if len(self._seed_gains) < self.rsi_period:
-                return None
-            self.avg_gain = statistics.fmean(g for g, _ in self._seed_gains)
-            self.avg_loss = statistics.fmean(l for _, l in self._seed_gains)
-        else:
-            self.avg_gain = (self.avg_gain * (self.rsi_period - 1) + gain) / self.rsi_period
-            self.avg_loss = (self.avg_loss * (self.rsi_period - 1) + loss) / self.rsi_period
-
-        if self.avg_loss == 0.0:
-            return 50.0 if self.avg_gain == 0.0 else 100.0
-        rs = self.avg_gain / self.avg_loss
-        return 100.0 - 100.0 / (1.0 + rs)
-
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
         ts_clean = normalize_epoch_sec(timestamp, default=0.0, allow_zero=True) or 0.0
@@ -104,7 +79,28 @@ class MeanReversionTrigger:
                 },
             )
         price = price_f
-        rsi = self._calc_rsi(price)
+        if self.prev_price is None:
+            self.prev_price = price
+            rsi = None
+        else:
+            change = price - self.prev_price
+            self.prev_price = price
+            gain = max(change, 0.0)
+            loss = max(-change, 0.0)
+            if self.avg_gain is None:
+                self._seed_gains.append((gain, loss))
+                if len(self._seed_gains) >= self.rsi_period:
+                    self.avg_gain = statistics.fmean(g for g, _ in self._seed_gains)
+                    self.avg_loss = statistics.fmean(l for _, l in self._seed_gains)
+            else:
+                self.avg_gain = (self.avg_gain * (self.rsi_period - 1) + gain) / self.rsi_period
+                self.avg_loss = (self.avg_loss * (self.rsi_period - 1) + loss) / self.rsi_period
+            if self.avg_gain is None:
+                rsi = None
+            elif self.avg_loss == 0.0:
+                rsi = 50.0 if self.avg_gain == 0.0 else 100.0
+            else:
+                rsi = 100.0 - 100.0 / (1.0 + self.avg_gain / self.avg_loss)
         self.bb_buf.append(price)
         if len(self.bb_buf) < self.bb_period:
             pb = None

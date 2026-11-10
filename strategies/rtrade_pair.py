@@ -537,10 +537,6 @@ class PairCoordinator:
             snap = self.venue.order_status(ticket.order_id)
             self.snapshots[ticket.order_id] = snap
             ticket.active = snap.status == "open"
-        self._compact_zero_fill_history()
-
-    def _compact_zero_fill_history(self) -> None:
-        """Remove terminal orders that contributed no inventory or P&L."""
         latest_limit_ticket = {}
         for ticket in reversed(self.tickets):
             if ticket is not self.stop_ticket:

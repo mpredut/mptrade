@@ -1514,38 +1514,33 @@ class CacheTradeManager(CacheAccountManagerBase):
             return
         self._persist_items(symbol, self._coerce_item_list(new_items))
 
-    def _persist_snapshot_items(self, symbol, new_items):
-        """Merge and deduplicate JSON snapshot trade items (`append_persist=False`) by ``id``/``orderId``."""
-        if not new_items:
-            return
-        new_items = self._coerce_item_list(new_items)
-        with self.lock:
-            bucket = self.cache.setdefault(symbol, [])
-            by_key: dict[str, dict] = {}
-            for item in bucket:
-                if isinstance(item, dict):
-                    k = str(item.get("id") or item.get("orderId") or len(by_key))
-                    by_key[k] = item
-            changed = False
-            for item in new_items:
-                if not self._is_valid_snapshot_item(item):
-                    continue
-                k = str(item.get("id") or item.get("orderId") or len(by_key))
-                if by_key.get(k) != item:
-                    by_key[k] = dict(item)
-                    changed = True
-            if changed:
-                merged = sorted(
-                    by_key.values(),
-                    key=lambda r: (extract_timestamp_ms(r, default=0) or 0, str(r.get("id") or r.get("orderId") or "")),
-                )
-                self.cache[symbol] = merged
-                self._advance_symbol_fetchtime_locked(symbol)
-
     def _persist_items(self, symbol, new_items):
         """Append immutable fills once and reject conflicting duplicate IDs (or merge JSON snapshot fills when `append_persist=False`)."""
         if not self.append_persist:
-            self._persist_snapshot_items(symbol, new_items)
+            if not new_items:
+                return
+            new_items = self._coerce_item_list(new_items)
+            with self.lock:
+                bucket = self.cache.setdefault(symbol, [])
+                by_key: dict[str, dict] = {}
+                for item in bucket:
+                    if isinstance(item, dict):
+                        k = str(item.get("id") or item.get("orderId") or len(by_key))
+                        by_key[k] = item
+                changed = False
+                for item in new_items:
+                    if not self._is_valid_snapshot_item(item):
+                        continue
+                    k = str(item.get("id") or item.get("orderId") or len(by_key))
+                    if by_key.get(k) != item:
+                        by_key[k] = dict(item)
+                        changed = True
+                if changed:
+                    self.cache[symbol] = sorted(
+                        by_key.values(),
+                        key=lambda r: (extract_timestamp_ms(r, default=0) or 0, str(r.get("id") or r.get("orderId") or "")),
+                    )
+                    self._advance_symbol_fetchtime_locked(symbol)
             return
         if not new_items:
             return

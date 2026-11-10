@@ -207,31 +207,6 @@ def _reconciliation_capabilities(mkt, symbol, provider_name):
     return result if type(getattr(result, "lookup_by_client_order_id", None)) is bool else None
 
 
-def _not_found_reliability_status(mkt, record, now, provider_name):
-    """Return whether venue absence is recent enough, and the specific failure reason."""
-    capabilities = _reconciliation_capabilities(mkt, record.get("symbol"), provider_name)
-    if capabilities is None or not capabilities.lookup_by_client_order_id:
-        return False, "lookup_unavailable"
-    venue_horizon = safe_pos_float(getattr(capabilities, "not_found_reliable_for_seconds", None), default=None)
-    configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
-    if venue_horizon is None or configured_horizon is None:
-        return False, "missing_reconciliation_horizon"
-    observed_at = safe_float(now, default=None)
-    created_at = safe_float(record.get("created_ts") or 0.0, default=None)
-    last_attempt_at = safe_float(record.get("last_attempt_ts") or 0.0, default=None)
-    if observed_at is None or created_at is None or last_attempt_at is None:
-        return False, "invalid_reference_timestamp"
-    reference_at = max(created_at, last_attempt_at)
-    if reference_at <= 0:
-        return False, "invalid_reference_timestamp"
-    age = observed_at - reference_at
-    if age < 0:
-        return False, "future_reference_timestamp"
-    if age > min(venue_horizon, configured_horizon):
-        return False, "not_found_outside_reliable_horizon"
-    return True, None
-
-
 def _audit_event(record, event, **fields):
     place_kwargs = record.get("place_kwargs") if isinstance(record.get("place_kwargs"), dict) else {}
     payload = {
@@ -517,7 +492,27 @@ def process_once(mkt, now=None):
                 _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name)
                 continue
             if reconciliation_state == _RECONCILE_NOT_FOUND:
-                absence_reliable, not_found_reason = _not_found_reliability_status(mkt, r, now, provider_name)
+                capabilities = _reconciliation_capabilities(mkt, symbol, provider_name)
+                if capabilities is None or not capabilities.lookup_by_client_order_id:
+                    absence_reliable, not_found_reason = False, "lookup_unavailable"
+                else:
+                    venue_horizon = safe_pos_float(getattr(capabilities, "not_found_reliable_for_seconds", None), default=None)
+                    configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
+                    observed_at = safe_float(now, default=None)
+                    created_at = safe_float(r.get("created_ts") or 0.0, default=None)
+                    last_attempt_at = safe_float(r.get("last_attempt_ts") or 0.0, default=None)
+                    if venue_horizon is None or configured_horizon is None:
+                        absence_reliable, not_found_reason = False, "missing_reconciliation_horizon"
+                    elif observed_at is None or created_at is None or last_attempt_at is None or max(created_at, last_attempt_at) <= 0:
+                        absence_reliable, not_found_reason = False, "invalid_reference_timestamp"
+                    else:
+                        age = observed_at - max(created_at, last_attempt_at)
+                        if age < 0:
+                            absence_reliable, not_found_reason = False, "future_reference_timestamp"
+                        elif age > min(venue_horizon, configured_horizon):
+                            absence_reliable, not_found_reason = False, "not_found_outside_reliable_horizon"
+                        else:
+                            absence_reliable, not_found_reason = True, None
             else:
                 absence_reliable, not_found_reason = False, "lookup_unavailable"
             if not absence_reliable:

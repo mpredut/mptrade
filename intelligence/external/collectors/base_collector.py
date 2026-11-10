@@ -244,34 +244,29 @@ class TelemetryCollectorFactory:
         cls._registry[str(collector_id)] = collector_cls
 
     @classmethod
-    def _ensure_default_collectors_registered(cls) -> None:
-        if cls._defaults_loaded:
-            return
-        cls._defaults_loaded = True
-        for mod_name in (
-            "intelligence.external.collectors.orderbook_depth_collector",
-            "intelligence.external.collectors.derivatives_telemetry_collector",
-            "intelligence.external.collectors.whale_positioning_collector",
-            "intelligence.external.collectors.bybit_liquidations_collector",
-            "intelligence.macro.news_feed_collector",
-            "intelligence.sentiment.collectors.microstructure_collector",
-            "intelligence.sentiment.collectors.fear_greed_collector",
-            "intelligence.sentiment.collectors.market_breadth_collector",
-            "intelligence.sentiment.collectors.portfolio_collector",
-            "intelligence.sentiment.collectors.macro_telemetry_collector",
-            "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-        ):
-            try:
-                __import__(mod_name)
-            except Exception:
-                pass
-
-    @classmethod
     def create(cls, collector_id: str, *, start_sync: bool = False, **kwargs: Any) -> Any:
         key = str(collector_id)
         collector_cls = cls._registry.get(key)
         if collector_cls is None:
-            cls._ensure_default_collectors_registered()
+            if not cls._defaults_loaded:
+                cls._defaults_loaded = True
+                for mod_name in (
+                    "intelligence.external.collectors.orderbook_depth_collector",
+                    "intelligence.external.collectors.derivatives_telemetry_collector",
+                    "intelligence.external.collectors.whale_positioning_collector",
+                    "intelligence.external.collectors.bybit_liquidations_collector",
+                    "intelligence.macro.news_feed_collector",
+                    "intelligence.sentiment.collectors.microstructure_collector",
+                    "intelligence.sentiment.collectors.fear_greed_collector",
+                    "intelligence.sentiment.collectors.market_breadth_collector",
+                    "intelligence.sentiment.collectors.portfolio_collector",
+                    "intelligence.sentiment.collectors.macro_telemetry_collector",
+                    "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+                ):
+                    try:
+                        __import__(mod_name)
+                    except Exception:
+                        pass
             collector_cls = cls._registry.get(key)
         if collector_cls is None:
             raise KeyError(f"Unknown telemetry collector id: {key}")

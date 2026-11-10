@@ -502,15 +502,13 @@ _VENUE_INTENT_TOKEN_FORMATS: dict[str, str] = {
 }
 
 
-def _derive_128bit_client_order_id(
-    client_order_id: Any,
-    *,
-    venue_label: str,
-    domain_prefix: bytes,
-    exact_re: re.Pattern[str],
-    hex_prefix: str = "",
-) -> str:
-    """Map one durable client ID to a venue's 128-bit hex clientOrderId form."""
+def derive_venue_128bit_client_order_id(venue: str, client_order_id: Any) -> str:
+    """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
+    v_key = str(venue or "").strip().lower()
+    spec = _VENUE_128BIT_CLIENT_ID_SPECS.get(v_key)
+    if spec is None:
+        raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
+    venue_label, domain_prefix, exact_re, hex_prefix = spec
     if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
         raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
     raw = clean_order_id(client_order_id) or ""
@@ -523,22 +521,6 @@ def _derive_128bit_client_order_id(
     if exact_re.fullmatch(raw):
         return raw.lower()
     return hex_prefix + hashlib.sha256(domain_prefix + encoded).hexdigest()[:32]
-
-
-def derive_venue_128bit_client_order_id(venue: str, client_order_id: Any) -> str:
-    """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
-    v_key = str(venue or "").strip().lower()
-    spec = _VENUE_128BIT_CLIENT_ID_SPECS.get(v_key)
-    if spec is None:
-        raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
-    venue_label, domain_prefix, exact_re, hex_prefix = spec
-    return _derive_128bit_client_order_id(
-        client_order_id,
-        venue_label=venue_label,
-        domain_prefix=domain_prefix,
-        exact_re=exact_re,
-        hex_prefix=hex_prefix,
-    )
 
 
 def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:

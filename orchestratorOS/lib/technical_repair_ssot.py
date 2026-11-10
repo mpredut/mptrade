@@ -118,7 +118,7 @@ ACTION_SYNONYM_MAP: Dict[str, str] = {
 }
 
 FLEET_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "fleet", "flota", "all", "all_bots", "all_processes", "orchestrator", "python_orchestrator", "python_orchestrator.service",
+    "fleet", "all", "all_bots", "all_processes", "orchestrator", "python_orchestrator", "python_orchestrator.service",
 })
 VPN_TARGET_ALIASES: FrozenSet[str] = frozenset({
     "vpn", "wgpia0", "pia", "pia.service", "piavpn", "piavpn.service", "pia-vpn", "pia-vpn.service", "wireguard", "tun0",
@@ -127,7 +127,7 @@ DNS_TARGET_ALIASES: FrozenSet[str] = frozenset({
     "dns", "resolved", "systemd-resolved", "systemd-resolved.service", "resolv.conf", "pin-dns",
 })
 SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "system", "host", "machine", "linux", "os", "server", "kernel", "intreg_sistemul", "full_system",
+    "system", "host", "machine", "linux", "os", "server", "kernel", "full_system",
 })
 
 

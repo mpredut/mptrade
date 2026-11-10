@@ -805,30 +805,6 @@ class MarketRegimeService:
             raise ValueError("invalid closed-candle timestamp")
         return val_f
 
-    @classmethod
-    def _series_timing(cls, series: ClosedPriceSeries):
-        """Return newest close time and whether all supplied bars are continuous."""
-        timestamps = tuple(series.timestamps or ())
-        observed_at = series.last_closed_at
-        if not timestamps:
-            if observed_at is not None:
-                observed_at = cls._timestamp_seconds(observed_at)
-            return observed_at, None
-
-        normalized = tuple(cls._timestamp_seconds(value) for value in timestamps)
-        if len(normalized) != len(series.closes):
-            return normalized[-1], False
-        expected = int(series.interval_min) * 60.0
-        tolerance = max(1.0, expected * 0.02)
-        continuous = all(
-            abs((right - left) - expected) <= tolerance
-            for left, right in zip(normalized, normalized[1:])
-        )
-        if observed_at is not None:
-            declared = cls._timestamp_seconds(observed_at)
-            continuous = continuous and abs(declared - normalized[-1]) <= tolerance
-        return normalized[-1], continuous
-
     @staticmethod
     def _window_sample_count(interval_min: int, window_seconds: float) -> int:
         return max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
@@ -869,10 +845,29 @@ class MarketRegimeService:
             if not timestamps or len(timestamps) == len(closes):
                 closes = closes[-needed:]
                 timestamps = timestamps[-needed:]
-            consumed = ClosedPriceSeries(closes, interval_min, series.last_closed_at, timestamps)
-            observed_at, continuous = self._series_timing(consumed)
+            if not timestamps:
+                observed_at = (
+                    self._timestamp_seconds(series.last_closed_at)
+                    if series.last_closed_at is not None
+                    else None
+                )
+            else:
+                normalized = tuple(self._timestamp_seconds(v) for v in timestamps)
+                observed_at = normalized[-1]
+                if len(normalized) != len(closes):
+                    continuous = False
+                else:
+                    expected = int(interval_min) * 60.0
+                    tolerance = max(1.0, expected * 0.02)
+                    continuous = all(
+                        abs((right - left) - expected) <= tolerance
+                        for left, right in zip(normalized, normalized[1:])
+                    )
+                    if series.last_closed_at is not None:
+                        declared = self._timestamp_seconds(series.last_closed_at)
+                        continuous = continuous and abs(declared - observed_at) <= tolerance
             decision = self.evaluate_closes(
-                consumed.closes, interval_min=interval_min, window_seconds=window_seconds,
+                closes, interval_min=interval_min, window_seconds=window_seconds,
             )
         except Exception as exc:  # Unavailable data remains explicit unknown.
             decision = self.evaluator.unknown(f"source_error:{exc.__class__.__name__}")

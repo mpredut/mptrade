@@ -2071,7 +2071,7 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert n_bot["venue"] == "fleet"
     assert n_bot["matched_process"]["clean_pattern"] == "hyperliquid/hl_bot.py"
 
-    n_fleet = normalize_repair_action({"action": "RESTART_BOT", "symbol": "flota", "reason": "all wedged"}, str(tmp_path))
+    n_fleet = normalize_repair_action({"action": "RESTART_BOT", "symbol": "all_bots", "reason": "all wedged"}, str(tmp_path))
     assert n_fleet["action"] == "RESTART_FLEET"
     assert n_fleet["venue"] == "fleet"
 
@@ -2082,7 +2082,7 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     n_dns = normalize_repair_action({"action": "FIX_DNS", "target": "systemd-resolved"}, str(tmp_path))
     assert n_dns["action"] == "PIN_DNS"
 
-    n_sys = normalize_repair_action({"action": "RESTART_BOT", "symbol": "intreg_sistemul"}, str(tmp_path))
+    n_sys = normalize_repair_action({"action": "RESTART_BOT", "symbol": "full_system"}, str(tmp_path))
     assert n_sys["action"] == "REBOOT_SYSTEM"
     assert n_sys["venue"] == "system"
 

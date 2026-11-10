@@ -426,29 +426,6 @@ def _harvest_kraken_xstocks_impl(
     return xst_summary
 
 
-def _load_venue_trailing_maps_impl(
-    cache_dir: str, workspace_dir: str, read_json_fn: Any = None,
-) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
-    _rj = _resolve_read_json_cached(read_json_fn)
-    trailing_map: Dict[str, Dict[str, Any]] = {}
-    trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
-    for trail_venue, raw_trail, default_quote in (
-        ("binance", _rj(resolve_venue_trailing_state_path("binance", cache_dir=cache_dir)), ""),
-        ("kraken", _rj(resolve_venue_trailing_state_path("kraken", workspace_dir=workspace_dir)), "USD"),
-    ):
-        if not isinstance(raw_trail, dict):
-            continue
-        for k_asset, k_st in raw_trail.items():
-            if not (k_up := str(k_asset).strip().upper()):
-                continue
-            k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
-            norm_st = k_st if isinstance(k_st, dict) and k_st.get("peak") is not None else ({"peak": k_pk} if (k_pk := safe_pos_float(k_st, default=0.0) or 0.0) > 0 else None)
-            if norm_st is not None:
-                trailing_map.setdefault(k_key, norm_st)
-                trailing_by_venue[trail_venue].setdefault(k_key, norm_st)
-    return trailing_map, trailing_by_venue
-
-
 def _attach_trailing_peak_to_position(
     pos_entry: Dict[str, Any],
     v_norm: str,
@@ -1610,7 +1587,24 @@ class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
         read_json_fn: Any = None,
         **kwargs: Any,
     ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
-        return _load_venue_trailing_maps_impl(cachedb_dir, workspace_dir, read_json_fn=read_json_fn)
+        _rj = _resolve_read_json_cached(read_json_fn)
+        trailing_map: Dict[str, Dict[str, Any]] = {}
+        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
+        for trail_venue, raw_trail, default_quote in (
+            ("binance", _rj(resolve_venue_trailing_state_path("binance", cache_dir=cachedb_dir)), ""),
+            ("kraken", _rj(resolve_venue_trailing_state_path("kraken", workspace_dir=workspace_dir)), "USD"),
+        ):
+            if not isinstance(raw_trail, dict):
+                continue
+            for k_asset, k_st in raw_trail.items():
+                if not (k_up := str(k_asset).strip().upper()):
+                    continue
+                k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
+                norm_st = k_st if isinstance(k_st, dict) and k_st.get("peak") is not None else ({"peak": k_pk} if (k_pk := safe_pos_float(k_st, default=0.0) or 0.0) > 0 else None)
+                if norm_st is not None:
+                    trailing_map.setdefault(k_key, norm_st)
+                    trailing_by_venue[trail_venue].setdefault(k_key, norm_st)
+        return trailing_map, trailing_by_venue
 
 
 class VenueCyclesCollector(PortfolioCacheCollectorBase):

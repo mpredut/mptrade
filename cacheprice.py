@@ -1316,33 +1316,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ws_manager.subscribe(self)
 
 
-def _extract_latest_series_price(raw_payload: object, cands: list[str]) -> Optional[float]:
-    if not isinstance(raw_payload, dict):
-        return None
-    raw_items = raw_payload.get("items")
-    rows = None
-    if isinstance(raw_items, list):
-        rows = raw_items
-    elif isinstance(raw_items, dict):
-        for cand in cands:
-            cand_rows = casefold_get(raw_items, cand)
-            if isinstance(cand_rows, list) and cand_rows:
-                rows = cand_rows
-                break
-        if rows is None and len(raw_items) == 1:
-            only_val = next(iter(raw_items.values()))
-            if isinstance(only_val, list):
-                rows = only_val
-    if not isinstance(rows, list) or not rows:
-        return None
-    for row in reversed(rows):
-        if isinstance(row, (list, tuple)) and len(row) >= 2:
-            px_f = safe_pos_float(row[1], default=None)
-            if px_f is not None:
-                return px_f
-    return None
-
-
 def resolve_cached_symbol_price(
     symbol: str,
     *,
@@ -1421,9 +1394,28 @@ def resolve_cached_symbol_price(
         for cand in series_cands:
             p24_path = os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(cand))
             if os.path.exists(p24_path) or os.path.exists(p24_path + ".previous"):
-                px_f = _extract_latest_series_price(read_json_dict_recovering(p24_path), series_cands)
-                if px_f is not None:
-                    return px_f
+                raw_p24 = read_json_dict_recovering(p24_path)
+                if isinstance(raw_p24, dict):
+                    raw_items = raw_p24.get("items")
+                    rows = None
+                    if isinstance(raw_items, list):
+                        rows = raw_items
+                    elif isinstance(raw_items, dict):
+                        for sc in series_cands:
+                            cand_rows = casefold_get(raw_items, sc)
+                            if isinstance(cand_rows, list) and cand_rows:
+                                rows = cand_rows
+                                break
+                        if rows is None and len(raw_items) == 1:
+                            only_val = next(iter(raw_items.values()))
+                            if isinstance(only_val, list):
+                                rows = only_val
+                    if isinstance(rows, list):
+                        for row in reversed(rows):
+                            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                                px_f = safe_pos_float(row[1], default=None)
+                                if px_f is not None:
+                                    return px_f
             for jsonl_fn in (
                 CacheSparsePriceManager.disk_filename_for_symbol(cand),
                 Cache365PriceManager.disk_filename_for_symbol(cand),
