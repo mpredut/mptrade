@@ -5774,8 +5774,9 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     assert cpm.get_sample_rate(" btcusdc ", fallback=None) == 1.0
     assert cpm.get_sample_rate(" btcusdc ", fallback=True) == 1.0
     assert cpm.shutdown(timeout=True) is True
-    assert cm.safe_pos_int("1700000000000.0", default=0) == 1700000000000
-    assert cm.safe_pos_int("-5", default=0) == 0
+    from botcore import safe_pos_int
+    assert safe_pos_int("1700000000000.0", default=0) == 1700000000000
+    assert safe_pos_int("-5", default=0) == 0
 
     # 6. BybitLiquidationCollector._sleep and capitulation_ratio with baseline_sec < window_sec
     sig = ls_mod.BybitLiquidationCollector(symbols=["BTCUSDT"])
