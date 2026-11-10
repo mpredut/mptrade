@@ -59,27 +59,9 @@ esac
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
-pia() {
-    if [ "$(id -un)" = "$TRADING_USER" ]; then
-        timeout "$CLI_TIMEOUT" piactl "$@" 2>/dev/null | tr -d '\r'
-    else
-        timeout "$CLI_TIMEOUT" runuser -u "$TRADING_USER" -- piactl "$@" 2>/dev/null | tr -d '\r'
-    fi
-}
-
 # ===== PROBES =============================================================
 net_raw_ok() { curl --fail -s -m "$PROBE_TIMEOUT" -o /dev/null https://1.1.1.1 2>/dev/null; }
 daemon_responsive() { [ -n "$(pia get connectionstate)" ]; }
-
-vpn_healthy() {
-    [ "$(pia get connectionstate)" = "Connected" ] || return 1
-    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
-    if command -v resolvectl >/dev/null 2>&1; then
-        timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com >/dev/null 2>&1 || return 1
-    fi
-    curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
-        --fail --silent https://api.binance.com/api/v3/time >/dev/null 2>&1 || return 1
-}
 
 wait_healthy() {
     local waited=0
@@ -88,17 +70,6 @@ wait_healthy() {
         vpn_healthy && return 0
     done
     return 1
-}
-
-pia_service_settling() {
-    local st since now age
-    st=$(systemctl show -p ActiveState --value pia.service 2>/dev/null)
-    [ "$st" = "activating" ] && return 0
-    [ "$st" = "active" ] || return 1
-    since=$(systemctl show -p ActiveEnterTimestampMonotonic --value pia.service 2>/dev/null)
-    now=$(awk '{printf "%d", $1*1000000}' /proc/uptime)
-    age=$(( (now - ${since:-0}) / 1000000 ))
-    [ "$age" -lt "$CONNECT_SETTLE" ]
 }
 
 resolved_cpu_percent() {
@@ -396,8 +367,8 @@ Check the fleet: systemctl is-active python_orchestrator.service ."
     exit 0
 fi
 
-if [ "$FORCE" = 0 ] && daemon_responsive && pia_service_settling; then
-    log "VPN not healthy yet, but pia.service is still connecting — deferring to its own retry"
+if [ "$FORCE" = 0 ] && check_resolved_cpu && daemon_responsive && pia_supervisor_owning_tunnel; then
+    log "VPN not healthy yet, but pia.service + pia-daemon are active and responsive — deferring to pia_supervisor.sh"
     exit 0
 fi
 

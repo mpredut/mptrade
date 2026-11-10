@@ -58,6 +58,19 @@ is_tunnel_stuck() {
     return 1
 }
 
+_MANAGE_AGY_LOCKED=0
+acquire_lock() {
+    local wait_s="${1:-20}"
+    [ "$_MANAGE_AGY_LOCKED" = "1" ] && return 0
+    exec 200>"$LOCK_FILE"
+    if [ "$wait_s" -le 0 ]; then
+        flock -n 200 || return 1
+    else
+        flock -w "$wait_s" 200 || return 1
+    fi
+    _MANAGE_AGY_LOCKED=1
+}
+
 do_restart() {
     log "Cycling daemon (stop -> start --name '${INSTANCE_NAME}')..."
     if grep -q "antigravity-cli-daemon.service" /proc/self/cgroup 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
@@ -67,6 +80,8 @@ do_restart() {
             export PATH=\"\$HOME/.local/bin:\$PATH\"
             export XDG_RUNTIME_DIR=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}\"
             [ -S \"\${XDG_RUNTIME_DIR}/bus\" ] && export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
+            exec 200>'$LOCK_FILE'
+            flock -w 20 200 || true
             sleep 3
             '$AGY_BIN' remote-control stop || true
             for _ in {1..10}; do
@@ -78,6 +93,7 @@ do_restart() {
         "
         log "Transient restart service queued ($job_unit)."
     else
+        acquire_lock 20 || true
         "$AGY_BIN" remote-control stop || true
         for _ in {1..10}; do
             systemctl --user is-active --quiet antigravity-cli-daemon 2>/dev/null || break
@@ -94,8 +110,7 @@ do_restart() {
 }
 
 do_watchdog() {
-    exec 200>"$LOCK_FILE"
-    flock -n 200 || exit 0
+    acquire_lock 0 || exit 0
 
     if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl --user show -p ActiveState --value antigravity-cli-daemon 2>/dev/null || true)" = "activating" ]; then
         exit 0
@@ -163,8 +178,7 @@ do_status() {
 }
 
 do_ui_sync() {
-    exec 200>"$LOCK_FILE"
-    flock -w 10 200 || exit 0
+    acquire_lock 10 || exit 0
     local python_bin="${PYTHON_BIN:-$ROOT/.venv/bin/python3}" ssot_vals idle_sec="" min_interval_sec="" rc=0
     [ -x "$python_bin" ] || python_bin="$ROOT/myenv/bin/python"
     [ -x "$python_bin" ] || python_bin="/usr/bin/python3"

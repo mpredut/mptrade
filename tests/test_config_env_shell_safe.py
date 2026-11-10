@@ -1392,6 +1392,7 @@ def test_backup_sync_common_modular_primitives(tmp_path):
         os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"),
+        os.path.join(ROOT, "orchestratorOS", "livecheck", "wait_for_vpn.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "deadman_switch.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "ntfy_check.sh"),
         os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh"),
@@ -1451,6 +1452,88 @@ def test_backup_sync_common_modular_primitives(tmp_path):
     )
     assert "tests/test_config_env_shell_safe.py" in targets
     assert len(targets) <= 5
+
+
+def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
+    import time
+
+    with open(os.path.join(ROOT, "config.env"), encoding="utf-8") as fh:
+        cfg_text = fh.read()
+    assert "\nPIA_RESTORE_INTERVAL=600\n" in cfg_text
+    assert "\nAGY_VPN_WAIT_MAX_SEC=8\n" in cfg_text
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state_file = tmp_path / "pia_supervisor.state"
+
+    def write_stub(name: str, body: str) -> None:
+        p = fake_bin / name
+        p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
+        p.chmod(0o755)
+
+    # 1. pia() strips CR and preserves piactl exit codes; supervisor heartbeat SSOT detects fresh vs stale
+    write_stub("piactl", 'if [ "${1:-}" = "failcmd" ]; then exit 7; fi; printf "Connected\\r\\n"')
+    write_stub("systemctl", 'if [ "${1:-}" = "show" ] && [ "${3:-}" = "ActiveState" ]; then echo active; exit 0; fi; echo 0')
+    ssot_cmd = (
+        f'export PATH="{fake_bin}:$PATH" PIA_SUPERVISOR_STATE_FILE="{state_file}" CONNECT_SETTLE=0; '
+        f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh")}"; '
+        f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh")}"; '
+        f'[ "$(pia get connectionstate)" = "Connected" ] && '
+        f'! pia failcmd && '
+        f'pia_write_supervisor_state healthy && '
+        f'pia_supervisor_owning_tunnel && '
+        f'printf "SUPERVISOR_TS=1\\nSUPERVISOR_PID=1\\nSUPERVISOR_MODE=healthy\\n" > "{state_file}" && '
+        f'! pia_supervisor_owning_tunnel && echo SSOT_OK'
+    )
+    res = subprocess.run(["/bin/bash", "-c", ssot_cmd], cwd=ROOT, capture_output=True, text=True, timeout=15)
+    assert res.returncode == 0 and "SSOT_OK" in res.stdout, res.stderr
+
+    wait_script = os.path.join(ROOT, "orchestratorOS", "livecheck", "wait_for_vpn.sh")
+    write_stub("systemctl", "exit 0")
+
+    # 2. Fast-path when VPN route is already UP (< 1.5s)
+    write_stub("piactl", 'echo Connected')
+    write_stub("ip", 'if [ "${1:-}" = "link" ]; then echo "3: wgpia0: <POINTOPOINT,NOARP,UP,LOWER_UP>"; else echo "1.1.1.1 dev wgpia0 src 10.0.0.2"; fi')
+    t0 = time.monotonic()
+    r_up = subprocess.run(
+        ["/bin/bash", wait_script],
+        cwd=ROOT,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin", "AGY_VPN_WAIT_MAX_SEC": "8"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert r_up.returncode == 0 and (time.monotonic() - t0) < 1.5
+
+    # 3. Fast-path when PIA is intentionally Disconnected (ISP fallback) and default route is up
+    write_stub("piactl", 'echo Disconnected')
+    write_stub("ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
+    t0 = time.monotonic()
+    r_isp = subprocess.run(
+        ["/bin/bash", wait_script],
+        cwd=ROOT,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin", "AGY_VPN_WAIT_MAX_SEC": "8"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert r_isp.returncode == 0 and (time.monotonic() - t0) < 1.5
+
+    # 4. Bounded wall-clock wait when PIA is stuck in Connecting — exits 0 after AGY_VPN_WAIT_MAX_SEC
+    write_stub("piactl", 'echo Connecting')
+    write_stub("ip", 'if [ "${1:-}" = "route" ]; then echo "1.1.1.1 via 192.168.0.1 dev ens18"; else exit 1; fi')
+    t0 = time.monotonic()
+    r_cap = subprocess.run(
+        ["/bin/bash", wait_script],
+        cwd=ROOT,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin", "AGY_VPN_WAIT_MAX_SEC": "2"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    elapsed = time.monotonic() - t0
+    assert r_cap.returncode == 0 and 1.5 <= elapsed < 4.5
+
 
 
 

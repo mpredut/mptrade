@@ -17,7 +17,7 @@ source "$ROOT/orchestratorOS/lib/pia_common.sh"
 HEALTH_INTERVAL="${PIA_HEALTH_INTERVAL:-30}"
 FAILURE_LIMIT="${PIA_FAILURE_LIMIT:-3}"
 PREWARM_INTERVAL="${PIA_PREWARM_INTERVAL:-300}"
-RESTORE_INTERVAL="${PIA_RESTORE_INTERVAL:-300}"
+RESTORE_INTERVAL="${PIA_RESTORE_INTERVAL:-600}"
 BACKOFF_MIN_SEC="${PIA_BACKOFF_MIN_SEC:-${PIA_FALLBACK_COOLDOWN_SEC:-60}}"
 BACKOFF_MAX_SEC="${PIA_BACKOFF_MAX_SEC:-7200}"
 
@@ -25,6 +25,7 @@ failures=0
 last_prewarm=0
 last_restore_attempt=0
 current_cooldown_sec="$BACKOFF_MIN_SEC"
+current_restore_interval="$RESTORE_INTERVAL"
 
 REG_DED_DE=""
 REG_DED_BE=""
@@ -32,36 +33,6 @@ REG_DYN_DE="de-frankfurt"
 
 send_ntfy() { send_os_ntfy "$1" "$2" "${3:-default}" & }
 isp_healthy() { curl -4 -s -m 5 -o /dev/null https://api.binance.com/api/v3/time 2>/dev/null; }
-pia() { timeout "$CLI_TIMEOUT" piactl "$@"; }
-
-vpn_healthy() {
-    [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
-    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
-    # Verify kernel policy routing sends normal application traffic via the VPN interface.
-    ip route get 1.1.1.1 2>/dev/null | grep -q "dev $VPN_IF" || return 1
-
-    local binance_ip=""
-    if command -v resolvectl >/dev/null 2>&1; then
-        binance_ip=$(timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
-    else
-        binance_ip=$(timeout 4 getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
-    fi
-    [ -n "$binance_ip" ] || return 1
-
-    curl -4 --interface "$VPN_IF" \
-        --resolve "api.binance.com:443:$binance_ip" \
-        --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
-        --fail --silent --show-error https://api.binance.com/api/v3/time \
-        >/dev/null 2>&1 || return 1
-}
-
-dip_endpoint_reachable() {
-    local region="$1" dip_ip http_code
-    dip_ip=$(printf '%s' "$region" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)
-    [ -n "$dip_ip" ] || return 0
-    http_code=$(curl -4 -k -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 4 "https://${dip_ip}:1337/" 2>/dev/null || true)
-    [ -n "$http_code" ] && [ "$http_code" != "000" ]
-}
 
 prewarm_dns() {
     local now; now=$(date +%s)
@@ -81,12 +52,13 @@ discover_regions() {
 }
 
 connect_to_region() {
-    local target_region="$1" desc="$2" current_reg
+    local target_region="$1" desc="$2" max_attempts="${3:-12}" current_reg
     current_reg=$(pia get region 2>/dev/null | tr -d '\r')
     if [ "$current_reg" = "$target_region" ] && vpn_healthy; then
         echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
         return 0
     fi
+    pia_write_supervisor_state "connecting"
     echo "Attempting connection to $desc ($target_region)..."
     pia set region "$target_region" >/dev/null 2>&1 || return 1
     pia set requestportforward true >/dev/null 2>&1 || true
@@ -99,18 +71,25 @@ connect_to_region() {
     fi
 
     local conn_ok=0
-    for attempt in $(seq 1 12); do
+    for attempt in $(seq 1 "$max_attempts"); do
         sleep 5
+        pia_write_supervisor_state "connecting"
         local state vpnip
         state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
         vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
         if [ "$state" = "Connected" ] && echo "$vpnip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             conn_ok=1; break
         fi
-        echo "Waiting for IP assignment on $target_region ($attempt/12)... state=${state:-unknown} vpnip=${vpnip:-unknown}"
+        echo "Waiting for IP assignment on $target_region ($attempt/$max_attempts)... state=${state:-unknown} vpnip=${vpnip:-unknown}"
         if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
             echo "Region $target_region returned vpnip=Unknown after $attempt attempts."
             break
+        fi
+        if [ -z "$vpnip" ] || [ "$vpnip" = "Unknown" ]; then
+            if [ "$attempt" -ge 4 ] && { [ "$state" = "Reconnecting" ] || [ "$state" = "Disconnected" ]; }; then
+                echo "Region $target_region stalled in state=$state with vpnip=${vpnip:-Unknown} after $attempt attempts."
+                break
+            fi
         fi
     done
 
@@ -132,6 +111,7 @@ try_fallback_switch() {  # $1=region $2=desc $3=fail_title $4=fail_body $5=ok_ti
         send_ntfy "$ok_title" "Successfully connected to $desc ($reg, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
         failures=0
         current_cooldown_sec="$BACKOFF_MIN_SEC"
+        current_restore_interval="$RESTORE_INTERVAL"
         last_restore_attempt=$(date +%s)
         return 0
     fi
@@ -164,6 +144,7 @@ establish_vpn_tunnel() {
 
 enter_isp_cooldown() {
     local reason="$1"
+    pia_write_supervisor_state "isp_cooldown"
     echo "CRITICAL: PIA VPN unavailable ($reason). Disconnecting tunnel to release direct Romanian ISP traffic..."
     pia disconnect >/dev/null 2>&1 || true
     sleep 2
@@ -179,7 +160,7 @@ enter_isp_cooldown() {
     local elapsed=0
     echo "Entering Romanian ISP cooldown mode for ${current_cooldown_sec}s..."
     while [ "$elapsed" -lt "$current_cooldown_sec" ]; do
-        sleep 30; elapsed=$((elapsed + 30)); prewarm_dns
+        sleep 30; elapsed=$((elapsed + 30)); pia_write_supervisor_state "isp_cooldown"; prewarm_dns
     done
     echo "Cooldown period (${current_cooldown_sec}s) elapsed. Attempting recovery reconnect..."
     send_ntfy "PIA VPN: Attempting Reconnect" \
@@ -222,6 +203,9 @@ fi
 [ -n "$PIA_PASS" ] || { echo "error: PIA_PASS missing in $ROOT/.env" >&2; exit 1; }
 [ -n "$PIA_DIP_TOKEN_FRANKFURT" ] || { echo "error: PIA_DIP_TOKEN_FRANKFURT missing in $ROOT/.env" >&2; exit 1; }
 
+trap 'rm -f "$PIA_SUPERVISOR_STATE_FILE"' EXIT
+pia_write_supervisor_state "starting"
+
 UPLINK_IF="${PIA_UPLINK_IF:-ens18}"
 UPLINK_MTU="${PIA_UPLINK_MTU:-1280}"
 ip link set dev "$UPLINK_IF" mtu "$UPLINK_MTU" 2>/dev/null \
@@ -250,8 +234,10 @@ while ! establish_vpn_tunnel; do
 done
 
 current_cooldown_sec="$BACKOFF_MIN_SEC"
+current_restore_interval="$RESTORE_INTERVAL"
 failures=0
 last_restore_attempt=$(date +%s)
+pia_write_supervisor_state "healthy"
 
 echo "VPN connected with region $(pia get region 2>/dev/null | tr -d '\r'):"
 pia get vpnip
@@ -272,25 +258,31 @@ while true; do
         fi
         failures=0
         current_cooldown_sec="$BACKOFF_MIN_SEC"
+        pia_write_supervisor_state "healthy"
         echo "PIA healthy (tun0 + DNS + HTTPS)"
 
         discover_regions
         current_reg=$(pia get region 2>/dev/null | tr -d '\r')
-        if [ -n "$REG_DED_DE" ] && [ "$current_reg" != "$REG_DED_DE" ]; then
+        if [ -n "$REG_DED_DE" ] && [ "$current_reg" = "$REG_DED_DE" ]; then
+            current_restore_interval="$RESTORE_INTERVAL"
+        elif [ -n "$REG_DED_DE" ] && [ "$current_reg" != "$REG_DED_DE" ]; then
             now=$(date +%s)
-            if [ $((now - last_restore_attempt)) -ge "$RESTORE_INTERVAL" ]; then
+            if [ $((now - last_restore_attempt)) -ge "$current_restore_interval" ]; then
                 last_restore_attempt=$now
                 prev_reg="$current_reg"
                 if ! dip_endpoint_reachable "$REG_DED_DE"; then
-                    echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Primary Frankfurt DIP ($REG_DED_DE) endpoint :1337 still unreachable; deferring failback."
+                    echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Primary Frankfurt DIP ($REG_DED_DE) endpoint :1337 still unreachable; deferring failback (${current_restore_interval}s)."
                     continue
                 fi
                 echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Attempting automatic failback to Primary Frankfurt DIP ($REG_DED_DE)..."
-                if connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP"; then
+                if connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP" 5; then
+                    current_restore_interval="$RESTORE_INTERVAL"
                     echo "Successfully restored connection to Primary Frankfurt DIP ($REG_DED_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
                     send_ntfy "PIA VPN: Restored to Primary DIP" "Successfully restored connection to Frankfurt Dedicated IP ($REG_DED_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                 else
-                    echo "Primary Frankfurt DIP restoration attempt failed. Re-connecting to fallback region ($prev_reg)..."
+                    current_restore_interval=$((current_restore_interval * 2))
+                    [ "$current_restore_interval" -gt "$BACKOFF_MAX_SEC" ] && current_restore_interval="$BACKOFF_MAX_SEC"
+                    echo "Primary Frankfurt DIP restoration attempt failed (next failback check in ${current_restore_interval}s). Re-connecting to fallback region ($prev_reg)..."
                     connect_to_region "$prev_reg" "Fallback Region ($prev_reg)" || echo "Warning: Immediate return to fallback region failed, relying on supervisor fallback ladder."
                 fi
             fi
@@ -299,6 +291,7 @@ while true; do
     fi
 
     failures=$((failures + 1))
+    pia_write_supervisor_state "failover"
     state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
     echo "PIA unhealthy: probe $failures/$FAILURE_LIMIT (state=${state:-unknown})"
 

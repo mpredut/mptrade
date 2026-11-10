@@ -106,10 +106,12 @@ When all VPN regions fail, the supervisor enters a direct Romanian ISP cooldown:
 
 ### Automatic Failback to Primary Dedicated IP
 If the supervisor falls back to a lower rung (Belgium Dedicated IP or Dynamic Frankfurt), it automatically probes and restores the connection back to the **Primary Frankfurt Dedicated IP** (`dedicated-de-frankfurt-*`):
-- Runs every **`PIA_RESTORE_INTERVAL`** (default: **300 seconds / 5 minutes**).
-- Tests reconnection to Primary Dedicated IP. If successful, verifies health, sends NTFY alert, and resumes primary operation so Binance whitelisted API trading continues uninterrupted.
+- Runs every **`PIA_RESTORE_INTERVAL`** (default: **600 seconds / 10 minutes**, with exponential backoff up to 2 hours if a live switch attempt still fails).
+- First probes the Frankfurt Dedicated IP endpoint (`:1337`) without disconnecting the active fallback tunnel; if unreachable, failback is deferred with zero tunnel disruption.
+- When reachable, tests reconnection to Primary Dedicated IP. If successful, verifies health, sends NTFY alert, and resumes primary operation so Binance whitelisted API trading continues uninterrupted.
 - If Primary DIP is still unavailable, it immediately returns to the fallback region and waits another interval.
 - Manual diagnostics (`./orchestratorOS/livecheck/pia_supervisor.sh --check`) display whether the active tunnel is `PRIMARY` or `FALLBACK`.
+- All VPN scripts (`pia_supervisor.sh`, `vpn_watchdog.sh`, `wait_for_vpn.sh`) share `orchestratorOS/lib/pia_common.sh` as their single source of truth for `piactl` calls, routing/health probes, and supervisor ownership state (`/run/pia_supervisor.state`), so `vpn_watchdog.sh` defers normal region failover/ISP cooldown to `pia_supervisor.sh` and only escalates when `pia-daemon` or `systemd-resolved` is wedged or `pia.service` is down/stale.
 
 **`python_orchestrator.service` has `Requires=pia.service`.** Because `pia_supervisor.sh` remains active
 and manages cooldown internally rather than crashing, `pia.service` stays healthy, preventing systemd

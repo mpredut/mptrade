@@ -15,7 +15,7 @@ This directory contains the systemd services, administration tools, and deployme
 5. **`crontab.prod.txt`**: Unprivileged trading user cron jobs (such as log pruning, deadman switch, backups, resource watchdog, PROD $\rightarrow$ DEV sync via `sync_cache_to.sh dev`, scheduled DEV backtests via `run_backtest_cycle.sh remote`, and `manage_agy.sh` watchdog/update).
 6. **`antigravity-cli-daemon.service` & `agy-bot`**:
    - `antigravity-cli-daemon.service`: Systemd user-session daemon template for remote AI agent control via `agy remote-control serve`.
-   - `antigravity-cli-daemon.service.d/override.conf`: Ensures the VPN tunnel (`wait_for_vpn.sh`) is up before starting the daemon.
+   - `antigravity-cli-daemon.service.d/override.conf`: Bounded settle gate (`wait_for_vpn.sh`, max `AGY_VPN_WAIT_MAX_SEC=8s`) that prefers binding WebChannel after `wgpia0` routing settles during boot/reconnect without requiring VPN when operating on fallback or direct ISP.
    - `antigravity-cli-daemon.service.d/store-fix.conf`: Runs `orchestratorOS/admin/agy_store_fix.py pre/post` around daemon start to keep the Web UI conversation summary store synchronized.
    - `agy-bot`: Wrapper script installed to `~/.local/bin/agy-bot` that isolates headless bot/supervisor LLM invocations in `~/agy_bot_home` so automated prompts never overwrite the human Web UI summary store.
 7. **Network & System Tuning**:
