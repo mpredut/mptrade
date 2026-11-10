@@ -76,6 +76,14 @@ _SERVER_MARKERS = (
     "SERVER STATUS", "SERVER DOWN", "DEADMAN",
 )
 _PRICE_ALERT_SOURCES = ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
+_PRICE_WATCHER_BOTS = ("price_watcher", "price_watcher.py", "price_alert")
+_INTERNAL_LOG_MARKERS = (
+    "Failed to send ntfy alert",
+    "Email delivery failed",
+    "[Notifier] File exception",
+    "Error flushing notification queue",
+    "ntfy daily limit reached",
+)
 _PROVIDER_LABELS = {
     "kraken": "Kraken",
     "hyperliquid": "Hyperliquid",
@@ -96,6 +104,11 @@ def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
         return default
     s = str(val).strip() if strip else str(val)
     return s if s else default
+
+
+def _prefix_delayed(val: Any, default: str = "Alert") -> str:
+    s = _clean_str(val, default, strip=True)
+    return s if s.startswith("[DELAYED]") else f"[DELAYED] {s}"
 
 
 def _ensure_env_loaded() -> None:
@@ -475,7 +488,7 @@ class NotificationServer:
         is_price = (
             topic == price_topic
             or cat == "PRICE"
-            or bot_name.lower() in ("price_watcher", "price_watcher.py", "price_alert")
+            or bot_name.lower() in _PRICE_WATCHER_BOTS
             or source.lower() in ("price_alert", *_PRICE_ALERT_SOURCES)
             or any(m in cleaned_title for m in ("▲", "▼"))
         )
@@ -648,18 +661,7 @@ class NotificationServer:
                 return
 
         # 3. Check Intelligent Rules (Regex)
-        if is_fake_alert_text(line):
-            return
-        if any(
-            internal in line
-            for internal in (
-                "Failed to send ntfy alert",
-                "Email delivery failed",
-                "[Notifier] File exception",
-                "Error flushing notification queue",
-                "ntfy daily limit reached",
-            )
-        ):
+        if is_fake_alert_text(line) or any(m in line for m in _INTERNAL_LOG_MARKERS):
             return
         for rule in self.rules:
             if rule["regex_obj"].search(line):
@@ -669,7 +671,7 @@ class NotificationServer:
                 if check_cooldown_gate(self.cooldowns, rule_key, now, cooldown_sec, max_entries=200):
                     topic_cat = rule.get("topic_category", "ERROR").upper()
                     topic = self._resolve_topic(topic_cat)
-                    if topic_cat == "PRICE" or bot_name.lower() in ("price_watcher", "price_watcher.py"):
+                    if topic_cat == "PRICE" or bot_name.lower() in _PRICE_WATCHER_BOTS:
                         full_title = rule["name"]
                     elif topic_cat == "TRADES":
                         provider = _resolve_provider_label(bot_name)
@@ -731,9 +733,7 @@ class NotificationServer:
                         success = False
                         if intent == "ntfy_webhook":
                             if "title" in payload:
-                                title = _clean_str(payload.get("title"))
-                                if not title.startswith("[DELAYED]"):
-                                    title = f"[DELAYED] {title}"
+                                title = _prefix_delayed(payload.get("title"))
                                 msg = _clean_str(payload.get("message"))
                                 prio = _clean_str(payload.get("priority"), "default", strip=True)
                                 top = _clean_str(payload.get("topic"), strip=True) or self._default_error_topic()
@@ -750,9 +750,7 @@ class NotificationServer:
                             else:
                                 success = True
                         elif intent == "email":
-                            subj = _clean_str(payload.get("subject"))
-                            if not subj.startswith("[DELAYED]"):
-                                subj = f"[DELAYED] {subj}"
+                            subj = _prefix_delayed(payload.get("subject"))
                             emsg = _clean_str(payload.get("message"))
                             success = await asyncio.to_thread(
                                 self._send_email, subj, emsg, True,

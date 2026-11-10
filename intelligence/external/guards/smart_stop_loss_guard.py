@@ -162,9 +162,7 @@ def _is_simulated_provider(provider: Optional[str]) -> bool:
 
 
 def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
-    t_upper = title.upper()
-    b_upper = body.upper()
-    if "(REPLAY)" in t_upper or "(REPLAY)" in b_upper or "(BACKTEST)" in t_upper or "(SIM)" in t_upper:
+    if any(m in f"{title}\n{body}".upper() for m in ("(REPLAY)", "(BACKTEST)", "(SIM)")):
         return
     if _parse_bool_flag(os.environ.get("REPLAY_MODE")) or _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
         return

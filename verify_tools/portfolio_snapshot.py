@@ -30,6 +30,7 @@ with contextlib.redirect_stdout(io.StringIO()):
         _external_notifications_disabled,
         format_ntfy_url,
         pass_common_gate,
+        sanitize_single_line,
     )
     from botcore import (  # noqa: E402
         _parse_bool_flag,
@@ -145,7 +146,7 @@ def _ntfy(title: str, body: str) -> None:
     url = format_ntfy_url(topic)
     if not url:
         return
-    clean_title = str(title or "Alert").strip() or "Alert"
+    clean_title = sanitize_single_line(title, "Alert")
     body_str = "" if isinstance(body, bool) else str(body or "")
     if is_live_network_backfill_enabled():
         allowed, _, _, out_payload = pass_common_gate(

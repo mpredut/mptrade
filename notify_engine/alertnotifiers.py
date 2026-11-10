@@ -1300,6 +1300,9 @@ def _dispatch_order_event_notification(
     source: Optional[str] = None,
     order_type: Optional[str] = None,
     allow_ai_executor: bool = True,
+    trade_tag: Optional[str] = None,
+    notional_usd: Optional[float] = None,
+    thesis: Optional[str] = None,
     title: Optional[str] = None,
     body: Optional[str] = None,
     notify_fn: Optional[Any] = None,
@@ -1312,17 +1315,26 @@ def _dispatch_order_event_notification(
         return False
     px_f = safe_pos_float(price, default=0.0) or 0.0
     qty_f = safe_pos_float(quantity, default=0.0) or 0.0
-    notional_f = px_f * qty_f
+    notional_f = safe_pos_float(notional_usd, default=None)
+    if notional_f is None:
+        notional_f = px_f * qty_f
     side_s = str(side or "").strip().upper() or "ORDER"
     ord_type_s = str(order_type or "MARKET").strip().upper()
     venue_s = str(venue or source or "venue").strip()
     qty_s = format_notify_qty(qty_f)
     px_s = format_notify_price(px_f, comma=True)
-    owner_tag, owner_body = format_owner_tags(owner_norm)
-    eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}{owner_tag}"
+    tag_s = str(trade_tag).strip() if trade_tag and not isinstance(trade_tag, bool) else ""
+    if tag_s:
+        tag_prefix = f"{tag_s} "
+        owner_tag, owner_body = "", ""
+    else:
+        tag_prefix = ""
+        owner_tag, owner_body = format_owner_tags(owner_norm)
+    thesis_sfx = f"\nThesis: {thesis}" if thesis is not None and not isinstance(thesis, bool) else ""
+    eff_title = title or f"{default_icon} {tag_prefix}{default_verb} {side_s} {sym_s} ${notional_f:.0f}{owner_tag}"
     eff_body = body or (
         f"Venue: {venue_s} · Qty: {qty_s} @ ${px_s} ({ord_type_s} · ${notional_f:,.0f})\n"
-        f"Order ID: {order_id}{owner_body}"
+        f"Order ID: {order_id}{owner_body}{thesis_sfx}"
     )
     if callable(notify_fn):
         if include_price:

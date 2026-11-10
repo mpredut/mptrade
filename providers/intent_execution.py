@@ -253,16 +253,7 @@ def execute_enforce_intent_order(
                     "[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
                     ord_lbl, inst.symbol, order_res,
                 )
-            act_verb = "PLACED LIMIT" if is_limit else "EXECUTED"
-            icon = "📝" if is_limit else "🎉"
-            title = f"{icon} {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
             order_id_str = extract_order_id(order_res, default="N/A")
-            body = (
-                f"Venue: {inst.provider_name} · Qty: {format_notify_qty(target_qty)} @ ${format_notify_price(price, comma=True)} "
-                f"({'LIMIT' if is_limit else 'MARKET'} · ${effective_usd:,.0f})\n"
-                f"Order ID: {order_id_str}\n"
-                f"Thesis: {thesis}"
-            )
             intent["execution_payload"] = order_res
             extra_limit: dict[str, Any] = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
             if order_id_str and order_id_str != "N/A":
@@ -282,35 +273,22 @@ def execute_enforce_intent_order(
                 try:
                     from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
 
-                    notify_kwargs: dict[str, Any] = {
-                        "venue": inst.provider_name,
-                        "owner": "ai_executor",
-                        "source": None,
-                        "title": title,
-                        "body": body,
-                        "notify_fn": dispatch_notify_fn,
-                        "include_price": False,
-                    }
-                    if is_limit:
-                        notify_order_placed(
-                            inst.symbol,
-                            decision,
-                            order_id_str,
-                            price,
-                            target_qty,
-                            order_type="LIMIT",
-                            allow_ai_executor=True,
-                            **notify_kwargs,
-                        )
-                    else:
-                        notify_order_executed(
-                            inst.symbol,
-                            decision,
-                            order_id_str,
-                            price,
-                            target_qty,
-                            **notify_kwargs,
-                        )
+                    notify_helper = notify_order_placed if is_limit else notify_order_executed
+                    notify_helper(
+                        inst.symbol,
+                        decision,
+                        order_id_str,
+                        price,
+                        target_qty,
+                        venue=inst.provider_name,
+                        owner="ai_executor",
+                        source=None,
+                        trade_tag=trade_tag,
+                        notional_usd=effective_usd,
+                        thesis=thesis,
+                        notify_fn=dispatch_notify_fn,
+                        include_price=False,
+                    )
                 except Exception as notify_exc:
                     if log:
                         log.debug("Notification failed after order execution: %s", notify_exc)
