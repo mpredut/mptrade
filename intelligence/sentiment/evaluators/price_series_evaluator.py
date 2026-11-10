@@ -1592,37 +1592,6 @@ def strip_off_rth_flat_poller_tail(rows: list, symbol: str, *, is_market_open_fn
     return rows
 
 
-def merge_equity_ohlc24_into_raw_series(raw_ser: list, ohlc24_pts: list) -> list:
-    """Merge 24h OHLC volume-bearing bars into raw equity 24h series when non-diverged."""
-    ohlc_bars = [
-        r
-        for r in sort_ts_rows(ohlc24_pts or [])
-        if isinstance(r, (list, tuple)) and len(r) >= 3 and safe_nonneg_float(r[2], default=None) is not None
-    ]
-    if (
-        sum(1 for r in ohlc_bars if (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0) >= 4
-        and (ohlc_0 := _parse_ts_px_row(ohlc_bars[0])) is not None
-        and (ohlc_last := _parse_ts_px_row(ohlc_bars[-1])) is not None
-        and (ser_last := _parse_ts_px_row(raw_ser[-1])) is not None
-        and not _prices_diverged(ohlc_last[1], ser_last[1])
-    ):
-        by_bar_ts = {}
-        for r_s in raw_ser:
-            if (pt_s := _parse_ts_px_row(r_s)) is not None:
-                if (
-                    (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and safe_nonneg_float(r_s[2], default=None) is not None)
-                    or pt_s[0] < ohlc_0[0]
-                    or pt_s[0] > ohlc_last[0]
-                    or (pt_s[0] >= ohlc_last[0] - 15 * 60 * 1000 and not _prices_diverged(pt_s[1], ohlc_last[1]))
-                ):
-                    by_bar_ts[pt_s[0]] = r_s
-        for r_o in ohlc_bars:
-            if (pt_o := _parse_ts_px_row(r_o)) is not None:
-                by_bar_ts[pt_o[0]] = r_o
-        return [by_bar_ts[k] for k in sorted(by_bar_ts)]
-    return raw_ser
-
-
 def collapse_watcher_equity_series(w_rows: list, is_eq_w: bool) -> Tuple[list, list, Optional[float]]:
     """Collapse flat runs in `cache_watcher_all_price` for equities and extract 7d points and 24h cutoff."""
     w_rows = sort_ts_rows(w_rows or [])
@@ -2033,41 +2002,6 @@ def evaluate_post_rth_24h_override(
     return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
 
 
-def prune_stale_equity_short_metrics(
-    entry: Optional[Dict[str, Any]],
-    m24: Dict[str, Any],
-    matched_series_24h: list,
-    now_ts: float,
-    *,
-    is_eq_sym: bool,
-    post_rth_series_replaced: bool = False,
-) -> None:
-    """Prune stale 90s/3.7m/15m slopes and range metrics when equity RTH bars are stale."""
-    if not is_eq_sym or not isinstance(entry, dict):
-        return
-    if not post_rth_series_replaced and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
-        for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
-            entry.pop(k_stale_90, None)
-    if not post_rth_series_replaced and (
-        not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct"))
-        or (
-            matched_series_24h
-            and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
-            and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
-        )
-    ):
-        for k_stale_s in (
-            "slope_90s",
-            "growth_90s",
-            "trend_90s",
-            "slope_3_7m",
-            "growth_3_7m",
-            "trend_3_7m",
-            "gradient_recent_fast",
-        ):
-            entry.pop(k_stale_s, None)
-
-
 class TelemetryEvaluatorInterface(ABC):
     """Pure abstract base contract (Level 1) for stateless quantitative telemetry evaluators.
 
@@ -2367,7 +2301,33 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         return strip_off_rth_flat_poller_tail(rows, symbol, is_market_open_fn=is_market_open_fn)
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
-        return merge_equity_ohlc24_into_raw_series(raw_ser, ohlc24_pts)
+        ohlc_bars = [
+            r
+            for r in sort_ts_rows(ohlc24_pts or [])
+            if isinstance(r, (list, tuple)) and len(r) >= 3 and safe_nonneg_float(r[2], default=None) is not None
+        ]
+        if (
+            sum(1 for r in ohlc_bars if (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0) >= 4
+            and (ohlc_0 := _parse_ts_px_row(ohlc_bars[0])) is not None
+            and (ohlc_last := _parse_ts_px_row(ohlc_bars[-1])) is not None
+            and (ser_last := _parse_ts_px_row(raw_ser[-1])) is not None
+            and not _prices_diverged(ohlc_last[1], ser_last[1])
+        ):
+            by_bar_ts = {}
+            for r_s in raw_ser:
+                if (pt_s := _parse_ts_px_row(r_s)) is not None:
+                    if (
+                        (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and safe_nonneg_float(r_s[2], default=None) is not None)
+                        or pt_s[0] < ohlc_0[0]
+                        or pt_s[0] > ohlc_last[0]
+                        or (pt_s[0] >= ohlc_last[0] - 15 * 60 * 1000 and not _prices_diverged(pt_s[1], ohlc_last[1]))
+                    ):
+                        by_bar_ts[pt_s[0]] = r_s
+            for r_o in ohlc_bars:
+                if (pt_o := _parse_ts_px_row(r_o)) is not None:
+                    by_bar_ts[pt_o[0]] = r_o
+            return [by_bar_ts[k] for k in sorted(by_bar_ts)]
+        return raw_ser
 
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
@@ -2401,14 +2361,29 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         *,
         post_rth_series_replaced: bool = False,
     ) -> None:
-        prune_stale_equity_short_metrics(
-            entry,
-            m24,
-            matched_series_24h,
-            now_ts,
-            is_eq_sym=True,
-            post_rth_series_replaced=post_rth_series_replaced,
-        )
+        if not isinstance(entry, dict):
+            return
+        if not post_rth_series_replaced and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
+            for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+                entry.pop(k_stale_90, None)
+        if not post_rth_series_replaced and (
+            not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct"))
+            or (
+                matched_series_24h
+                and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
+                and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+            )
+        ):
+            for k_stale_s in (
+                "slope_90s",
+                "growth_90s",
+                "trend_90s",
+                "slope_3_7m",
+                "growth_3_7m",
+                "trend_3_7m",
+                "gradient_recent_fast",
+            ):
+                entry.pop(k_stale_s, None)
 
 
 _CRYPTO_24X7_POLICY = Crypto24x7SessionPolicy()

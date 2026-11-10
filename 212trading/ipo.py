@@ -77,33 +77,6 @@ from credentials import t212_credentials
 
 
 # ---------------------------------------------------------------------------
-# Start trading through the strategy or a single order
-# ---------------------------------------------------------------------------
-def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
-                  order_price, order_qty, order_budget_ron, order_validity,
-                  order_dry, desktop) -> int:
-    if strat_enabled:
-        log(f"  Starting STRATEGY on {t212_ticker} ({'PAPER' if strat_dry else '⚠ REAL'})")
-        Strategy(client, t212_ticker, StratParams.from_env(),
-                 dry_run=strat_dry, desktop=desktop).run()
-        return 0
-
-    px_f = safe_pos_float(order_price, default=None)
-    if px_f is not None:
-        qty = resolve_quantity(px_f, order_qty, order_budget_ron)
-        qty_f = safe_pos_float(qty, default=None)
-        if qty_f is None:
-            log("  ! invalid qty/budget — the order was NOT SENT")
-            return 1
-        ok = place_order_with_retry(client, t212_ticker, qty_f, px_f,
-                                    order_validity, order_dry, desktop=desktop)
-        return 0 if ok else 1
-
-    log("  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.")
-    return 1
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -263,9 +236,22 @@ def main() -> int:
         return 1
 
     try:
-        return start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
-                             order_price, order_qty, order_budget_ron, order_validity,
-                             order_dry, args.desktop)
+        if strat_enabled:
+            log(f"  Starting STRATEGY on {t212_ticker} ({'PAPER' if strat_dry else '⚠ REAL'})")
+            Strategy(client, t212_ticker, StratParams.from_env(),
+                     dry_run=strat_dry, desktop=args.desktop).run()
+            return 0
+        px_f = safe_pos_float(order_price, default=None)
+        if px_f is not None:
+            qty_f = safe_pos_float(resolve_quantity(px_f, order_qty, order_budget_ron), default=None)
+            if qty_f is None:
+                log("  ! invalid qty/budget — the order was NOT SENT")
+                return 1
+            ok = place_order_with_retry(client, t212_ticker, qty_f, px_f,
+                                        order_validity, order_dry, desktop=args.desktop)
+            return 0 if ok else 1
+        log("  ! neither STRAT_ENABLED nor ORDER_PRICE — nothing to trade.")
+        return 1
     except KeyboardInterrupt:
         log("Stopped manually.")
         return 130

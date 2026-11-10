@@ -1604,42 +1604,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         except Exception:
             return None
 
-    def _should_wait_on_snap(
-        self,
-        snap,
-        side: str,
-        *,
-        fast: bool = False,
-        use_noise_gate: bool = True,
-        allow_zero_eps: bool = False,
-    ) -> bool:
-        if not isinstance(snap, dict):
-            return False
-        if fast:
-            raw_g = snap.get("gradient_recent_fast")
-            if raw_g is None:
-                raw_g = snap.get("gradient_recent")
-            if raw_g is None:
-                raw_g = snap.get("growth_coefficient", 0.0)
-        else:
-            raw_g = snap.get("growth_coefficient")
-            if raw_g is None:
-                raw_g = snap.get("gradient_recent", 0.0)
-        g = safe_float(raw_g if raw_g is not None else 0.0, default=None)
-        if g is None:
-            return False
-        if use_noise_gate:
-            raw_eps = snap.get("epsilon") if allow_zero_eps else None
-            eps_zero = safe_nonneg_float(raw_eps, default=None) if allow_zero_eps else None
-            eps = eps_zero if eps_zero is not None else self._epsilon(snap)
-            if abs(g) <= eps:
-                return True
-        if side == "BUY":
-            return g < 0
-        if side == "SELL":
-            return g > 0
-        return False
-
     def should_wait(
         self,
         side,
@@ -1666,13 +1630,27 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         snap, is_dyn = self._resolve_snapshot_for_window(
             symbol, window_seconds=window_seconds, now=now
         )
-        return self._should_wait_on_snap(
-            snap,
-            side,
-            fast=(False if is_dyn else fast),
-            use_noise_gate=use_noise_gate,
-            allow_zero_eps=is_dyn,
-        )
+        if not isinstance(snap, dict):
+            return False
+        if not is_dyn and fast:
+            raw_g = snap.get("gradient_recent_fast")
+            if raw_g is None:
+                raw_g = snap.get("gradient_recent")
+            if raw_g is None:
+                raw_g = snap.get("growth_coefficient", 0.0)
+        else:
+            raw_g = snap.get("growth_coefficient")
+            if raw_g is None:
+                raw_g = snap.get("gradient_recent", 0.0)
+        g = safe_float(raw_g if raw_g is not None else 0.0, default=None)
+        if g is None:
+            return False
+        if use_noise_gate:
+            eps_zero = safe_nonneg_float(snap.get("epsilon"), default=None) if is_dyn else None
+            eps = eps_zero if eps_zero is not None else self._epsilon(snap)
+            if abs(g) <= eps:
+                return True
+        return g < 0 if side == "BUY" else g > 0
 
 
 __all__ = [

@@ -1598,39 +1598,6 @@ def _evaluate_pretrade_sibling_cross_venue_arb(
             break
 
 
-def _format_pretrade_dynamic_slopes(
-    telemetry: Dict[str, Any],
-    t_entry: Dict[str, Any],
-    has_st_tinfo: bool,
-) -> None:
-    if not (has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))):
-        return
-    _fmt_s = lambda v: "+0.00000" if abs(v) < 5e-8 else (f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}")
-    s90_v = safe_float(t_entry.get("slope_90s"), default=None)
-    s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
-    slope_parts = [
-        f"{s_lbl}={_fmt_s(s_val)}"
-        for s_lbl, s_key in (
-            ("90s", "slope_90s"),
-            ("3.7m", "slope_3_7m"),
-            ("15m", "slope_15m"),
-            ("2.5h", "slope_2_5h"),
-        )
-        if (s_val := safe_float(t_entry.get(s_key), default=None)) is not None
-    ]
-    telemetry["Dynamic Multi-Window Slopes"] = (
-        f"{s90_pfx}"
-        f"3.7m={_fmt_s(safe_float(t_entry.get('slope_3_7m'), 0.0))}, "
-        f"15m={_fmt_s(safe_float(t_entry.get('slope_15m'), 0.0))}, "
-        f"2.5h={_fmt_s(safe_float(t_entry.get('slope_2_5h'), 0.0))}"
-        if (
-            not slope_parts
-            or ("slope_15m" in t_entry and ("slope_3_7m" in t_entry or "slope_2_5h" not in t_entry))
-        )
-        else ", ".join(slope_parts)
-    )
-
-
 def _collect_and_format_pretrade_recent_fills(
     cachedb_dir: str,
     symbol: str,
@@ -2070,7 +2037,33 @@ class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):
     cls_name = "PretradeDynamicSlopesFormatStage"
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
-        _format_pretrade_dynamic_slopes(ctx.telemetry, ctx.t_entry, ctx.has_st_tinfo)
+        t_entry = ctx.t_entry
+        if not (ctx.has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))):
+            return
+        _fmt_s = lambda v: "+0.00000" if abs(v) < 5e-8 else (f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}")
+        s90_v = safe_float(t_entry.get("slope_90s"), default=None)
+        s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
+        slope_parts = [
+            f"{s_lbl}={_fmt_s(s_val)}"
+            for s_lbl, s_key in (
+                ("90s", "slope_90s"),
+                ("3.7m", "slope_3_7m"),
+                ("15m", "slope_15m"),
+                ("2.5h", "slope_2_5h"),
+            )
+            if (s_val := safe_float(t_entry.get(s_key), default=None)) is not None
+        ]
+        ctx.telemetry["Dynamic Multi-Window Slopes"] = (
+            f"{s90_pfx}"
+            f"3.7m={_fmt_s(safe_float(t_entry.get('slope_3_7m'), 0.0))}, "
+            f"15m={_fmt_s(safe_float(t_entry.get('slope_15m'), 0.0))}, "
+            f"2.5h={_fmt_s(safe_float(t_entry.get('slope_2_5h'), 0.0))}"
+            if (
+                not slope_parts
+                or ("slope_15m" in t_entry and ("slope_3_7m" in t_entry or "slope_2_5h" not in t_entry))
+            )
+            else ", ".join(slope_parts)
+        )
 
 
 class QuantitativeSeriesAndMicrostructureStage(PretradePillarCollectorBase):

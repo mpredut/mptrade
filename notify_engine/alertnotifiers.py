@@ -286,37 +286,6 @@ _REDUNDANT_BULK_LINE_RE = re.compile(
 )
 
 
-def _strip_log_tails_and_compact(body: str, max_chars: int = 900) -> str:
-    """Strip verbose 'Last logs:' tails, redundant metadata headers, and return a clean summary."""
-    cleaned = re.sub(r"(?is)\n*\s*last logs:.*", "", str(body or "")).strip()
-    raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-    if not raw_lines:
-        return ""
-    lines: list[str] = []
-    prefix_tag = ""
-    for idx, ln in enumerate(raw_lines):
-        if idx == 0:
-            m = _REDUNDANT_BULK_LINE_RE.match(ln)
-            if m:
-                inner = (m.group(1) or m.group(2) or "").strip()
-                risk_only = (m.group(3) or "").strip()
-                if inner:
-                    prefix_tag = f"[{inner}]"
-                elif risk_only:
-                    prefix_tag = f"[Risk: {risk_only}]"
-                continue
-        lines.append(ln)
-    if not lines:
-        return prefix_tag or raw_lines[0]
-    summary = " | ".join(lines[:4])
-    if prefix_tag:
-        summary = f"{prefix_tag} {summary}"
-    if len(summary) > max_chars:
-        cut = summary[:max_chars].rsplit(" ", 1)[0]
-        summary = (cut if len(cut) >= max_chars // 2 else summary[:max_chars]) + "..."
-    return summary
-
-
 def _normalize_text_for_similarity(text: str) -> str:
     """Normalize volatile numbers, timestamps, PIDs, hex IDs, prices, and percentages."""
     s = re.sub(r"(?is)\n*\s*last logs:.*", "", str(text or "")).strip()
@@ -326,42 +295,6 @@ def _normalize_text_for_similarity(text: str) -> str:
     s = re.sub(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps)?", "<N>", s)
     s = re.sub(r"\s+", " ", s).strip().lower()
     return s
-
-
-def _similarity_signature(
-    title: str,
-    body: str = "",
-    topic: str = "",
-    alerts: Optional[list[Any]] = None,
-) -> str:
-    """Compute a structural similarity signature for common-gate deduplication."""
-    norm_title = _normalize_text_for_similarity(title)
-    bare_title = re.sub(r"^\[[^\]]+\]\s*", "", norm_title).strip()
-    is_generic_title = bare_title in (
-        "", "alert", "os alert", "trade alert", "price alert",
-        "critical errors", "alerts (<n>)",
-    )
-    alerts_list = alerts or []
-    is_pure_trade = (
-        any(m in strip_owner_tags(str(title or "")).upper() for m in _TRADE_MARKERS)
-        and not _is_guard_alert(alerts_list)
-        and not _is_error_or_ops_alert(alerts_list)
-    )
-    first_line = ""
-    for ln in str(body or "").splitlines():
-        if ln.strip():
-            first_line = ln.strip()
-            break
-    norm_body_head = _normalize_text_for_similarity(first_line)[:120]
-    if is_pure_trade:
-        raw_t = re.sub(r"\s+", " ", str(title or "")).strip().lower()
-        raw_b = re.sub(r"\s+", " ", first_line).strip().lower()[:120]
-        sig_raw = f"sim|{topic}|{raw_t}|{raw_b}"
-    elif is_generic_title:
-        sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
-    else:
-        sig_raw = f"sim|{topic}|{norm_title}"
-    return hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
 
 
 _PRIO_RANK = {"urgent": 3, "high": 2, "default": 1, "low": 0}
@@ -454,39 +387,6 @@ def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
     lg = safe_float(raw_ch.get("last_gate_ts", 0.0), 0.0)
     raw_ch["last_gate_ts"] = 0.0 if (lg < 0.0 or lg > now_ts) else lg
     return raw_ch
-
-
-def _enqueue_bounded_bulk(
-    pending_bulk: list[dict],
-    new_item: dict,
-    topic_max: int,
-    queue_max: int,
-    last_map: Optional[dict[str, float]] = None,
-) -> tuple[bool, str]:
-    """Bounded producer enqueue: cap per-topic and total queue sizes, dropping lower/equal priority overflow."""
-    t_key = _canonical_topic_key(new_item.get("topic"))
-    new_rank = _PRIO_RANK.get(str(new_item.get("priority") or "default"), 1)
-
-    def _evict_lowest_if_full(indices, limit: int, drop_reason: str) -> Optional[str]:
-        if len(indices) < limit:
-            return None
-        victim_idx = min(indices, key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1))
-        if new_rank <= _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1):
-            return drop_reason
-        evicted = pending_bulk.pop(victim_idx)
-        if isinstance(last_map, dict) and isinstance(evicted, dict):
-            last_map.pop(str(evicted.get("fingerprint") or ""), None)
-            last_map.pop(str(evicted.get("sim_key") or ""), None)
-        return None
-
-    topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
-    if reason := _evict_lowest_if_full(topic_indices, topic_max, "topic_queue_full_dropped"):
-        return False, reason
-    if reason := _evict_lowest_if_full(range(len(pending_bulk)), queue_max, "queue_full_dropped"):
-        return False, reason
-
-    pending_bulk.append(new_item)
-    return True, "buffered_for_bulk"
 
 
 def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -> bool:
@@ -660,7 +560,32 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         cnt = exact_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
         repeat_tag = f" (×{cnt})" if cnt > 1 else ""
-        compact_body = _strip_log_tails_and_compact(str(it.get("body") or ""))
+        cleaned = re.sub(r"(?is)\n*\s*last logs:.*", "", str(it.get("body") or "")).strip()
+        raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+        if not raw_lines:
+            compact_body = ""
+        else:
+            lines: list[str] = []
+            prefix_tag = ""
+            for l_idx, ln in enumerate(raw_lines):
+                if l_idx == 0 and (m := _REDUNDANT_BULK_LINE_RE.match(ln)):
+                    inner = (m.group(1) or m.group(2) or "").strip()
+                    risk_only = (m.group(3) or "").strip()
+                    if inner:
+                        prefix_tag = f"[{inner}]"
+                    elif risk_only:
+                        prefix_tag = f"[Risk: {risk_only}]"
+                    continue
+                lines.append(ln)
+            if not lines:
+                compact_body = prefix_tag or raw_lines[0]
+            else:
+                compact_body = " | ".join(lines[:4])
+                if prefix_tag:
+                    compact_body = f"{prefix_tag} {compact_body}"
+                if len(compact_body) > 900:
+                    cut = compact_body[:900].rsplit(" ", 1)[0]
+                    compact_body = (cut if len(cut) >= 450 else compact_body[:900]) + "..."
         if compact_body and compact_body.lower() != t.lower():
             body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
         else:
@@ -795,7 +720,28 @@ def pass_common_gate(
     ]
     t_key = _canonical_topic_key(topic)
     fingerprint = _delivery_fingerprint(alerts_list)
-    sim_key = _similarity_signature(title, body, topic, alerts_list)
+    norm_title = _normalize_text_for_similarity(title)
+    bare_title = re.sub(r"^\[[^\]]+\]\s*", "", norm_title).strip()
+    is_generic_title = bare_title in (
+        "", "alert", "os alert", "trade alert", "price alert",
+        "critical errors", "alerts (<n>)",
+    )
+    is_pure_trade = (
+        any(m in strip_owner_tags(str(title or "")).upper() for m in _TRADE_MARKERS)
+        and not _is_guard_alert(alerts_list)
+        and not _is_error_or_ops_alert(alerts_list)
+    )
+    first_line = next((ln.strip() for ln in str(body or "").splitlines() if ln.strip()), "")
+    norm_body_head = _normalize_text_for_similarity(first_line)[:120]
+    if is_pure_trade:
+        raw_t = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+        raw_b = re.sub(r"\s+", " ", first_line).strip().lower()[:120]
+        sig_raw = f"sim|{topic}|{raw_t}|{raw_b}"
+    elif is_generic_title:
+        sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
+    else:
+        sig_raw = f"sim|{topic}|{norm_title}"
+    sim_key = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
     gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
     topic_bulk_sec = _topic_bulk_seconds()
     sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
@@ -863,14 +809,29 @@ def pass_common_gate(
         )
 
         if central_gate_closed or topic_window_closed or has_due_other_topic:
-            enqueued, q_reason = _enqueue_bounded_bulk(
-                pending_bulk,
-                new_item,
-                max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10)),
-                _queue_max_items(),
-                last_map,
+            topic_max = max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10))
+            queue_max = _queue_max_items()
+
+            def _evict_lowest_if_full(indices, limit: int, drop_reason: str) -> Optional[str]:
+                if len(indices) < limit:
+                    return None
+                victim_idx = min(indices, key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1))
+                if new_rank <= _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1):
+                    return drop_reason
+                evicted = pending_bulk.pop(victim_idx)
+                if isinstance(evicted, dict):
+                    last_map.pop(str(evicted.get("fingerprint") or ""), None)
+                    last_map.pop(str(evicted.get("sim_key") or ""), None)
+                return None
+
+            topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
+            q_reason = (
+                _evict_lowest_if_full(topic_indices, topic_max, "topic_queue_full_dropped")
+                or _evict_lowest_if_full(range(len(pending_bulk)), queue_max, "queue_full_dropped")
             )
-            if enqueued:
+            if q_reason is None:
+                pending_bulk.append(new_item)
+                q_reason = "buffered_for_bulk"
                 last_map[fingerprint] = now_ts
                 last_map[sim_key] = now_ts
             _save_delivery_state(path, state)

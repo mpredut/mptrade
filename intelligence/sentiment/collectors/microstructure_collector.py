@@ -1106,27 +1106,6 @@ def upgrade_tpo_vp_from_ohlc(
         pass
 
 
-def fetch_and_normalize_equity_yahoo_chart(
-    sym: str,
-    workspace_dir: str,
-    raw_series_24h: list,
-    now_ts: float,
-    *,
-    eq_rth_open: bool = False,
-    memo_chart: Optional[Tuple[float, Any]] = None,
-    memo_chart_fresh: bool = False,
-) -> Tuple[List[List[Any]], List[List[Any]], List[List[Any]], bool, bool, float, int]:
-    """Fetch 5d/5m Yahoo chart bars (with memoization) and return normalized 5d/24h series and freshness flags."""
-    if memo_chart_fresh and memo_chart is not None:
-        chart_res = memo_chart[1]
-    else:
-        _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
-        chart_res = _chart(canonical_base_asset(sym) or sym, rng="5d", interval="5m")
-        if is_live_network_backfill_enabled():
-            _EQ_YAHOO_CHART_MEMO[sym] = (now_ts, chart_res)
-    return normalize_yahoo_5d_chart_bars(chart_res, raw_series_24h, now_ts, eq_rth_open=eq_rth_open)
-
-
 def _persist_refreshed_equity_chart_cache(
     cache_dir: str,
     sym: str,
@@ -1917,15 +1896,14 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
             if not os.path.exists(os.path.join(ws_dir, "212trading", "market_data.py")):
                 ws_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         raw_s24 = list(raw_series_24h or [])
-        res = fetch_and_normalize_equity_yahoo_chart(
-            symbol,
-            ws_dir,
-            raw_s24,
-            eff_now,
-            eq_rth_open=eq_rth_open,
-            memo_chart=memo_chart,
-            memo_chart_fresh=memo_chart_fresh,
-        )
+        if memo_chart_fresh and memo_chart is not None:
+            chart_res = memo_chart[1]
+        else:
+            _chart = load_local_module(os.path.join(ws_dir, "212trading"), "market_data")._chart
+            chart_res = _chart(canonical_base_asset(symbol) or symbol, rng="5d", interval="5m")
+            if is_live_network_backfill_enabled():
+                _EQ_YAHOO_CHART_MEMO[symbol] = (eff_now, chart_res)
+        res = normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
         if persist and (res[0] or res[2]):
             _persist_refreshed_equity_chart_cache(
                 cachedb_dir,

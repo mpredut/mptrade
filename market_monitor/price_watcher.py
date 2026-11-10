@@ -43,43 +43,34 @@ TIME_INTERVAL_CLEANUP = 6 * 60 * 60  # 6 hours in seconds
 ENABLED_SOURCES = ["coinmarketcap", "coingecko", "binance", "dexscreener"]
 
 
-def print_notification_channels_status():
-    print("ENV CONFIGURATION:")
-    if PRICE_WEBHOOK_URL:
-        print(f"   ✅ Phone webhook: ENABLED -> {PRICE_WEBHOOK_URL[:40]}...")
-    else:
-        print("   ❌ Phone webhook: DISABLED (NTFY_TOPIC_PRICE is missing)")
+print("ENV CONFIGURATION:")
+if PRICE_WEBHOOK_URL:
+    print(f"   ✅ Phone webhook: ENABLED -> {PRICE_WEBHOOK_URL[:40]}...")
+else:
+    print("   ❌ Phone webhook: DISABLED (NTFY_TOPIC_PRICE is missing)")
 
-    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    tg_chat = os.environ.get("TELEGRAM_CHAT_ID")
-    if tg_token and tg_chat:
-        print(f"   ✅ Telegram: ENABLED -> Chat ID: {tg_chat}")
-    else:
-        missing = []
-        if not tg_token:
-            missing.append("TELEGRAM_BOT_TOKEN")
-        if not tg_chat:
-            missing.append("TELEGRAM_CHAT_ID")
-        print(f"   ❌ Telegram: DISABLED (missing: {', '.join(missing)})")
+_tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+_tg_chat = os.environ.get("TELEGRAM_CHAT_ID")
+if _tg_token and _tg_chat:
+    print(f"   ✅ Telegram: ENABLED -> Chat ID: {_tg_chat}")
+else:
+    _missing_tg = [k for k, v in (("TELEGRAM_BOT_TOKEN", _tg_token), ("TELEGRAM_CHAT_ID", _tg_chat)) if not v]
+    print(f"   ❌ Telegram: DISABLED (missing: {', '.join(_missing_tg)})")
 
-    email_user = os.environ.get("SMTP_USERNAME")
-    email_pass = os.environ.get("SMTP_PASSWORD")
-    alert_to_email = os.environ.get("ALERT_TO_EMAIL")
-    if email_user and email_pass and alert_to_email:
-        print(f"   ✅ Email: ENABLED -> Sender: {email_user}")
-    else:
-        missing = []
-        if not email_user:
-            missing.append("SMTP_USERNAME")
-        if not email_pass:
-            missing.append("SMTP_PASSWORD")
-        if not alert_to_email:
-            missing.append("ALERT_TO_EMAIL")
-        print(f"   ❌ Email: DISABLED (missing: {', '.join(missing)})")
-
-
-
-print_notification_channels_status()
+_email_user = os.environ.get("SMTP_USERNAME")
+_email_pass = os.environ.get("SMTP_PASSWORD")
+_alert_to_email = os.environ.get("ALERT_TO_EMAIL")
+if _email_user and _email_pass and _alert_to_email:
+    print(f"   ✅ Email: ENABLED -> Sender: {_email_user}")
+else:
+    _missing_em = [
+        k for k, v in (
+            ("SMTP_USERNAME", _email_user),
+            ("SMTP_PASSWORD", _email_pass),
+            ("ALERT_TO_EMAIL", _alert_to_email),
+        ) if not v
+    ]
+    print(f"   ❌ Email: DISABLED (missing: {', '.join(_missing_em)})")
 
 
 def new_coin_alerts_handler(alerts):
@@ -127,29 +118,6 @@ def new_coin_alerts_handler(alerts):
         enable_phone_webhook=True,
         webhook_url=PRICE_WEBHOOK_URL
     )
-
-def print_new_coin_status(cachePriceAll, new_coins_checker):
-    print("\n" + "=" * 70)
-    print("📊 STATUS REPORT")
-    print("=" * 70)
-
-    if hasattr(cachePriceAll, 'original_symbols'):
-        symbols_count = len(cachePriceAll.original_symbols)
-        print(f"\n💰 Tracked price symbols: {symbols_count}")
-        print(f"   First 10: {cachePriceAll.original_symbols[:10]}")
-
-    if new_coins_checker:
-        summary = new_coins_checker.get_summary()
-        if isinstance(summary, dict):
-            print(f"\n🆕 New coins discovered total: {summary.get('total_new_coins', 0)}")
-            sources_map = summary.get('sources')
-            if isinstance(sources_map, dict):
-                for source, data in sources_map.items():
-                    cnt = data.get('count', 0) if isinstance(data, dict) else 0
-                    print(f"   {source}: {cnt} coins")
-            all_syms = summary.get('all_symbols')
-            if isinstance(all_syms, list) and all_syms:
-                print(f"   New symbols: {all_syms[:10]}")
 
 
 def periodic_cleanup(cachePriceAll, new_coins_checker):
@@ -216,7 +184,24 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     else:
         print("ℹ️ No new coins with price were found on CoinMarketCap")
 
-    print_new_coin_status(cachePriceAll, new_coins_checker)
+    print("\n" + "=" * 70)
+    print("📊 STATUS REPORT")
+    print("=" * 70)
+    if hasattr(cachePriceAll, 'original_symbols'):
+        print(f"\n💰 Tracked price symbols: {len(cachePriceAll.original_symbols)}")
+        print(f"   First 10: {cachePriceAll.original_symbols[:10]}")
+    if new_coins_checker:
+        summary = new_coins_checker.get_summary()
+        if isinstance(summary, dict):
+            print(f"\n🆕 New coins discovered total: {summary.get('total_new_coins', 0)}")
+            sources_map = summary.get('sources')
+            if isinstance(sources_map, dict):
+                for source, data in sources_map.items():
+                    cnt = data.get('count', 0) if isinstance(data, dict) else 0
+                    print(f"   {source}: {cnt} coins")
+            all_syms = summary.get('all_symbols')
+            if isinstance(all_syms, list) and all_syms:
+                print(f"   New symbols: {all_syms[:10]}")
     print(new_coins_checker.get_report())
 
     return new_coins_checker

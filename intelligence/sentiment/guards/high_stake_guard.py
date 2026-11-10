@@ -67,31 +67,6 @@ def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     )
 
 
-def evaluate_unavailable_telemetry_decision(
-    guard_name: str,
-    reason: str = "telemetry_unavailable",
-    *,
-    fallback_action: str,
-    notional_eur: float,
-    extra_metadata: Optional[Dict[str, Any]] = None,
-) -> GuardDecision:
-    """Convert unavailable or expired pre-trade telemetry into a GuardDecision respecting configured fallback_action."""
-    safe_notional = safe_nonneg_float(notional_eur, 0.0)
-    fb_norm = str(fallback_action or "allow").strip().lower()
-    base_reason = str(reason or "telemetry_unavailable").strip()
-    meta: Dict[str, Any] = {
-        **(extra_metadata if isinstance(extra_metadata, dict) else {}),
-        "notional_eur": safe_notional,
-        "evaluated_notional_eur": safe_notional,
-        "telemetry_unavailable_reason": base_reason,
-    }
-    if fb_norm in ("veto", "block"):
-        return GuardDecision.veto(guard_name, f"{base_reason}_fail_closed", **meta)
-    if fb_norm == "downscale":
-        return GuardDecision.downscale(guard_name, scale=0.5, reason=f"{base_reason}_downscaled", **meta)
-    return GuardDecision.allow(guard_name, f"{base_reason}_fallback_allowed", **meta)
-
-
 def evaluate_llm_guard_response(
     guard_name: str,
     action_label: str,
@@ -433,7 +408,7 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
         )
         snap_meta = resolved_snapshot.to_guard_metadata()
         if not resolved_snapshot.is_available:
-            unavail_reason = resolved_snapshot.unavailable_reason or "telemetry_unavailable"
+            unavail_reason = str(resolved_snapshot.unavailable_reason or "telemetry_unavailable").strip()
             (logger_inst or logger).warning(
                 "Pre-trade telemetry unavailable for %s €%.2f (%s). Fallback: %s",
                 symbol,
@@ -441,13 +416,20 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                 unavail_reason,
                 self.fallback_action,
             )
-            dec = evaluate_unavailable_telemetry_decision(
-                self.GUARD_NAME,
-                unavail_reason,
-                fallback_action=self.fallback_action,
-                notional_eur=notional,
-                extra_metadata=snap_meta,
-            )
+            safe_notional = safe_nonneg_float(notional, 0.0)
+            fb_norm = str(self.fallback_action or "allow").strip().lower()
+            meta: Dict[str, Any] = {
+                **(snap_meta if isinstance(snap_meta, dict) else {}),
+                "notional_eur": safe_notional,
+                "evaluated_notional_eur": safe_notional,
+                "telemetry_unavailable_reason": unavail_reason,
+            }
+            if fb_norm in ("veto", "block"):
+                dec = GuardDecision.veto(self.GUARD_NAME, f"{unavail_reason}_fail_closed", **meta)
+            elif fb_norm == "downscale":
+                dec = GuardDecision.downscale(self.GUARD_NAME, scale=0.5, reason=f"{unavail_reason}_downscaled", **meta)
+            else:
+                dec = GuardDecision.allow(self.GUARD_NAME, f"{unavail_reason}_fallback_allowed", **meta)
             if on_decision is not None:
                 on_decision(dec)
             return self._wrap_shadow_decision(dec, notional, None) if self.mode == "shadow" else dec

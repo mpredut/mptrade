@@ -106,22 +106,6 @@ def extract_rebuy_anchors(rb: object, fallback_price: object) -> tuple[float, fl
     return low_anchor, sell_price
 
 
-def resolve_rebuy_bypass_guards(price: object, sell_price: object) -> set[str]:
-    """Return guard bypass set for trailing re-buy based on entry price vs sell price.
-
-    When re-entering below the trailing stop sell price (0 < price < sell_price),
-    bypass all guards ({"all"}) to lock in the lower re-entry price without guard
-    vetoes or quantity downscaling. When re-entering at or above sell_price (or when
-    sell_price is unknown), bypass only {"math_reference"} so intelligence and
-    microstructure guards are consulted.
-    """
-    price_f = safe_pos_float(price, default=None)
-    sell_f = safe_pos_float(sell_price, default=None)
-    if price_f is not None and sell_f is not None and price_f < sell_f:
-        return {"all"}
-    return {"math_reference"}
-
-
 def build_trailing_order_intent(
     order_lifecycle,
     retry_counts: dict,
@@ -947,7 +931,9 @@ class TrailingAdapterBase:
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         price_ref = price if is_kraken else safe_nonneg_float(price, 0.0)
         anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_ref)
-        bypass_guards = resolve_rebuy_bypass_guards(price_ref, sell_price_val)
+        px_f = safe_pos_float(price_ref, default=None)
+        sell_f = safe_pos_float(sell_price_val, default=None)
+        bypass_guards = {"all"} if (px_f is not None and sell_f is not None and px_f < sell_f) else {"math_reference"}
         if is_kraken:
             order_price = price * 1.005
             if "all" in bypass_guards and sell_price_val > 0 and order_price >= sell_price_val:

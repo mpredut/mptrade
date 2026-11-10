@@ -1324,40 +1324,36 @@ class CacheTradeManager(CacheAccountManagerBase):
     def _load_jsonl(self):
         """Load Trade JSONL under the generation lock."""
         with self._generation_lock():
-            return self._load_jsonl_generation_locked()
+            metadata = self._load_versioned_account_meta(optional=True)
+            if metadata is not None:
+                cache, counts = self._read_trade_snapshot_recovering_previous_locked(
+                    metadata
+                )
+                with self.lock:
+                    self.cache = cache
+                    self._remember_loaded_trade_manifest_locked(metadata, counts)
+                return
 
-    def _load_jsonl_generation_locked(self):
-        """Load Trade JSONL after acquiring the generation lock."""
-        metadata = self._load_versioned_account_meta(optional=True)
-        if metadata is not None:
-            cache, counts = self._read_trade_snapshot_recovering_previous_locked(
-                metadata
-            )
+            legacy_metadata = {}
+            metaf = meta_file_path(self.filename)
+            if os.path.exists(metaf):
+                try:
+                    legacy_metadata = read_json_dict(metaf)
+                except (OSError, ValueError, TypeError):
+                    legacy_metadata = {}
+
             with self.lock:
-                self.cache = cache
-                self._remember_loaded_trade_manifest_locked(metadata, counts)
-            return
-
-        legacy_metadata = {}
-        metaf = meta_file_path(self.filename)
-        if os.path.exists(metaf):
-            try:
-                legacy_metadata = read_json_dict(metaf)
-            except (OSError, ValueError, TypeError):
-                legacy_metadata = {}
-
-        with self.lock:
-            self.cache = _cache_integrity.read_legacy_trade_jsonl_strict(
-                self.filename,
-                legacy_metadata,
-                is_valid_item_fn=self._is_valid_item,
-                reader_reason=self._account_reader_reason(),
-            )
-            self._legacy_jsonl_needs_rewrite = True
-            self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-            self._hydrate_fetchtimes_from_mapping_locked(
-                legacy_metadata, preserve_if_missing=True
-            )
+                self.cache = _cache_integrity.read_legacy_trade_jsonl_strict(
+                    self.filename,
+                    legacy_metadata,
+                    is_valid_item_fn=self._is_valid_item,
+                    reader_reason=self._account_reader_reason(),
+                )
+                self._legacy_jsonl_needs_rewrite = True
+                self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
+                self._hydrate_fetchtimes_from_mapping_locked(
+                    legacy_metadata, preserve_if_missing=True
+                )
 
     def compact_jsonl(self):
         if not self.append_persist:

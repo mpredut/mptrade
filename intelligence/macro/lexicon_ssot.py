@@ -1137,23 +1137,6 @@ def build_equity_tickers_rss_url() -> str:
     return template.format(tickers=",".join(dedup_tickers)) if "{tickers}" in template else template
 
 
-def get_equity_entity_keywords() -> Tuple[str, ...]:
-    """Return configured equity company/ticker keywords plus active tracked equity base symbols."""
-    cfg_kws = list(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
-    try:
-        from cachepaths import canonical_base_asset
-        from instrument_registry import is_equity_symbol, tracked_price_instruments
-
-        for sym in tracked_price_instruments()[0]:
-            if is_equity_symbol(sym):
-                base = canonical_base_asset(sym).lower()
-                if base and base not in cfg_kws:
-                    cfg_kws.append(base)
-    except Exception:
-        pass
-    return tuple(dict.fromkeys(k for k in cfg_kws if k))
-
-
 def has_tracked_equity_entity(title: Any) -> bool:
     """Return True if ``title`` explicitly mentions any tracked equity ticker or company keyword."""
     if not isinstance(title, str) or not title.strip():
@@ -1161,7 +1144,19 @@ def has_tracked_equity_entity(title: Any) -> bool:
     words = set(re.findall(r"[a-z0-9]{2,}", _strip_headline_publisher_suffix(title).lower()))
     if not words:
         return False
-    return bool(words & set(get_equity_entity_keywords()))
+    cfg_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
+    try:
+        from cachepaths import canonical_base_asset
+        from instrument_registry import is_equity_symbol, tracked_price_instruments
+
+        for sym in tracked_price_instruments()[0]:
+            if is_equity_symbol(sym):
+                base = canonical_base_asset(sym).lower()
+                if base:
+                    cfg_kws.add(base)
+    except Exception:
+        pass
+    return bool(words & {k for k in cfg_kws if k})
 
 
 def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:

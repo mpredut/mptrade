@@ -372,39 +372,6 @@ class Instrument:
             revoke_guard_bypass(ctx.bypassed_guards, "G_QLIMIT1")
             ctx.bypass_quantity_policy = False
 
-    @staticmethod
-    def _build_place_retry_and_market_config(ctx: _PlaceContext) -> None:
-        ctx.retry_kwargs = {
-            **ctx.kwargs,
-            "bypass_guards": sorted(list(ctx.bypassed_guards)),
-            "wait_for_trend": ctx.wait_for_trend,
-            "smart": ctx.smart,
-        }
-        if ctx.caller_applied_scale < 1.0:
-            ctx.retry_kwargs["applied_scale"] = ctx.caller_applied_scale
-        for rk, rv in (
-            ("profit_margin", ctx.profit_margin),
-            ("reference_mode", ctx.profit_reference_mode),
-            ("module", ctx.caller_module),
-            ("medium_trend_action", ctx.medium_trend_action_cfg),
-            ("medium_trend_scale", ctx.medium_trend_scale_cfg),
-        ):
-            if rv is not None:
-                ctx.retry_kwargs[rk] = rv
-        if ctx.allow_math_reference_sell:
-            ctx.retry_kwargs["allow_math_reference_sell"] = ctx.allow_math_reference_sell
-
-        ctx.is_market = resolve_market_flag(**ctx.kwargs)
-        caller_enforce_biz_min = ctx.kwargs.pop("enforce_business_minimum", None)
-        if caller_enforce_biz_min is not None:
-            ctx.enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
-            ctx.retry_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
-        else:
-            ctx.enforce_business_minimum = not (
-                (ctx.bypass_profit_guard and ctx.side_u == "SELL" and ctx.is_market)
-                or (ctx.caller_module == "assetguardian" and ctx.side_u == "SELL")
-            )
-
     def _init_and_gate_pre_pipeline(
         self,
         side: str,
@@ -512,7 +479,36 @@ class Instrument:
         ctx.applied_scale = ctx.caller_applied_scale
         ctx.is_monitor_replace = "monitor_order_replace" in str(order_kind or "")
         ctx.profit_margin = safe_float(caller_profit_margin, default=None)
-        self._build_place_retry_and_market_config(ctx)
+        ctx.retry_kwargs = {
+            **ctx.kwargs,
+            "bypass_guards": sorted(list(ctx.bypassed_guards)),
+            "wait_for_trend": ctx.wait_for_trend,
+            "smart": ctx.smart,
+        }
+        if ctx.caller_applied_scale < 1.0:
+            ctx.retry_kwargs["applied_scale"] = ctx.caller_applied_scale
+        for rk, rv in (
+            ("profit_margin", ctx.profit_margin),
+            ("reference_mode", ctx.profit_reference_mode),
+            ("module", ctx.caller_module),
+            ("medium_trend_action", ctx.medium_trend_action_cfg),
+            ("medium_trend_scale", ctx.medium_trend_scale_cfg),
+        ):
+            if rv is not None:
+                ctx.retry_kwargs[rk] = rv
+        if ctx.allow_math_reference_sell:
+            ctx.retry_kwargs["allow_math_reference_sell"] = ctx.allow_math_reference_sell
+
+        ctx.is_market = resolve_market_flag(**ctx.kwargs)
+        caller_enforce_biz_min = ctx.kwargs.pop("enforce_business_minimum", None)
+        if caller_enforce_biz_min is not None:
+            ctx.enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
+            ctx.retry_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
+        else:
+            ctx.enforce_business_minimum = not (
+                (ctx.bypass_profit_guard and ctx.side_u == "SELL" and ctx.is_market)
+                or (ctx.caller_module == "assetguardian" and ctx.side_u == "SELL")
+            )
         return ctx, None
 
     def _prepare_preflight_and_smart_price(self, ctx: _PlaceContext) -> None:
@@ -729,41 +725,6 @@ class Instrument:
                 **cm_kwargs,
             ):
                 return "profit_guard"
-        return None
-
-    def _evaluate_post_sizing_profit_guard(self, ctx: _PlaceContext) -> Optional[str]:
-        if ctx.bypass_profit_guard or ctx.qty <= 0:
-            return None
-        guard_price = ctx.quantity_price if ctx.is_market else ctx.price
-        pg_kwargs = self._build_profit_guard_kwargs(
-            ctx.profit_window_ref,
-            ctx.regime_context,
-            ctx.qty,
-            ctx.bypassed_guards,
-            ctx.profit_reference_mode,
-            ctx.caller_module,
-        )
-        if not order_guard.profit_guard(
-            self._provider,
-            self.symbol,
-            ctx.side_u,
-            guard_price,
-            ctx.profit_margin,
-            **pg_kwargs,
-        ):
-            return "profit_guard"
-        if not ctx.is_monitor_replace:
-            ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
-                ctx.qty,
-                guard_price,
-                ctx.is_market,
-                ctx.enforce_business_minimum,
-                ctx.regime_context,
-                ctx.applied_scale,
-                side_u=ctx.side_u,
-            )
-            if refusal:
-                return refusal
         return None
 
     def _check_short_trend_gate(self, ctx: _PlaceContext) -> Optional[str]:
@@ -1287,9 +1248,39 @@ class Instrument:
                 return None
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
-            if refusal := self._evaluate_post_sizing_profit_guard(ctx):
-                ctx.reason = refusal
-                return None
+            if not ctx.bypass_profit_guard and ctx.qty > 0:
+                guard_price = ctx.quantity_price if ctx.is_market else ctx.price
+                pg_kwargs = self._build_profit_guard_kwargs(
+                    ctx.profit_window_ref,
+                    ctx.regime_context,
+                    ctx.qty,
+                    ctx.bypassed_guards,
+                    ctx.profit_reference_mode,
+                    ctx.caller_module,
+                )
+                if not order_guard.profit_guard(
+                    self._provider,
+                    self.symbol,
+                    ctx.side_u,
+                    guard_price,
+                    ctx.profit_margin,
+                    **pg_kwargs,
+                ):
+                    ctx.reason = "profit_guard"
+                    return None
+                if not ctx.is_monitor_replace:
+                    ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
+                        ctx.qty,
+                        guard_price,
+                        ctx.is_market,
+                        ctx.enforce_business_minimum,
+                        ctx.regime_context,
+                        ctx.applied_scale,
+                        side_u=ctx.side_u,
+                    )
+                    if refusal:
+                        ctx.reason = refusal
+                        return None
 
             if _is_aborted(ctx.abort_if):
                 ctx.reason = "aborted_by_caller"

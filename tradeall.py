@@ -494,18 +494,15 @@ class TrendState:
             time_since_last_confirmation = self._now_sec() - lct
             if time_since_last_confirmation > self.expiration_trend_time:
                 print(f"Trend expired: {self.state}. Time since last confirmation: {time_since_last_confirmation} seconds")
-                self.end_trend()
+                self.old_state = self.state
+                self.end_time = self.last_confirmation_time
+                print(f"Trend ended: {self.state} at {u.timeToHMS(self.end_time)} after {self.confirm_count} confirmations.")
+                self.old_confirm_count = self.confirm_count
+                self.state = 'HOLD'
+                self.confirm_count = 0
                 self.expired = True
                 return self.expired
         return False #self.expired
-
-    def end_trend(self):
-        self.old_state = self.state
-        self.end_time = self.last_confirmation_time
-        print(f"Trend ended: {self.state} at {u.timeToHMS(self.end_time)} after {self.confirm_count} confirmations.")
-        self.old_confirm_count = self.confirm_count
-        self.state = 'HOLD'
-        self.confirm_count = 0
 
     def _confirm_count_for(self, target_state):
         if self.check_trend_expiration():
