@@ -16,8 +16,10 @@ CACHE_LONG_TREND_FILENAME = "cache_long_trend.json"
 CACHE_KALMAN_TREND_FILENAME = "cache_kalman_trend.json"
 CACHE_T_TREND_FILENAME = "cache_T_trend.json"
 PRICE_ANALYSIS_FILENAME = "priceanalysis.json"
-CACHE_ORDER_FILENAME = "cache_order.json"
-CACHE_TRADE_FILENAME = "cache_trade.jsonl"
+CACHE_ORDER_FILENAME = "cache_order_binance.json"
+CACHE_TRADE_FILENAME = "cache_trade_binance.jsonl"
+CACHE_BINANCE_ORDER_FILENAME = CACHE_ORDER_FILENAME
+CACHE_BINANCE_TRADE_FILENAME = CACHE_TRADE_FILENAME
 CACHE_ASSET_VALUE_FILENAME = "cache_asset_value.jsonl"
 CACHE_KRAKEN_TRADE_FILENAME = "cache_trade_kraken.json"
 CACHE_HYPERLIQUID_TRADE_FILENAME = "cache_trade_hyperliquid.json"
@@ -57,6 +59,8 @@ EXACT_LEGACY_FILENAMES = {
     CACHE_CURRENT_PRICE_FILENAME: ("cache_currentprice.json",),
     CACHE_SHORT_TREND_FILENAME: ("cache_instant_trend.json",),
     CACHE_LONG_TREND_FILENAME: ("cache_price_long_trend.json",),
+    CACHE_ORDER_FILENAME: ("cache_order.json",),
+    CACHE_TRADE_FILENAME: ("cache_trade.jsonl",),
     "rtrade_pairs_state.json": ("rtrade_pairs.json",),
     "autonomous_trade_intents_state.json": ("autonomous_trade_intents.json",),
 }
@@ -171,7 +175,7 @@ def _exists_with_prev(path: str) -> bool:
 
 
 def _move_sidecars(src: str, dst: str, *, include_archives: bool = False) -> None:
-    for sfx in (".previous", ".meta"):
+    for sfx in (".previous", ".meta", ".generation.lock"):
         if os.path.exists(src + sfx) and not os.path.exists(dst + sfx):
             os.replace(src + sfx, dst + sfx)
     if include_archives:
@@ -340,12 +344,18 @@ def organize_cachedb_subdomains(
             if os.path.isdir(trend24_p):
                 _clean_stale_staging_in_dir(trend24_p)
     scan_dirs: list[tuple[str, set[str]]] = [(base, top_level_subs)]
-    sys_dir = os.path.join(base, "system")
-    if os.path.isdir(sys_dir):
-        scan_dirs.append((sys_dir, {"heartbeat"}))
+    for sub_k, sub_skips in (
+        ("system", {"heartbeat"}),
+        ("orders", set()),
+        ("prices", set()),
+        ("trends", {"24trend"}),
+        ("state", set()),
+        ("bots", set()),
+    ):
+        sub_p = os.path.join(base, sub_k)
+        if os.path.isdir(sub_p):
+            scan_dirs.append((sub_p, sub_skips))
     legacy_bots_dir = os.path.join(base, "bots")
-    if os.path.isdir(legacy_bots_dir):
-        scan_dirs.append((legacy_bots_dir, set()))
     for scan_dir, skip_names in scan_dirs:
         for entry in sorted(os.listdir(scan_dir)):
             if entry in skip_names:
@@ -355,14 +365,14 @@ def organize_cachedb_subdomains(
             if not sub:
                 continue
             dst_dir = os.path.join(base, *sub.split("/"))
-            if os.path.abspath(scan_dir) == os.path.abspath(dst_dir):
-                continue
             target_entry = entry
             for new_exact, old_exacts in EXACT_LEGACY_FILENAMES.items():
                 for old_ex in old_exacts:
                     if entry == old_ex or entry.startswith(old_ex + "."):
                         target_entry = new_exact + entry[len(old_ex):]
                         break
+            if os.path.abspath(scan_dir) == os.path.abspath(dst_dir) and target_entry == entry:
+                continue
             dst = os.path.join(dst_dir, target_entry)
             try:
                 if os.path.isdir(src) and not os.path.islink(src):

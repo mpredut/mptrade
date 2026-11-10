@@ -354,6 +354,8 @@ class TestCachepaths(unittest.TestCase):
             "sentiment_eval.json": "macro",
             "geopolitical_eval.json": "macro",
             "cache_order.json": "orders",
+            "cache_order_binance.json": "orders",
+            "cache_trade_binance.jsonl": "orders",
             "cache_orders_kraken.json": "orders",
             "cache_trades_hyperliquid.json": "orders",
             "cache_asset_value_t212.json": "orders",
@@ -392,6 +394,9 @@ class TestCachepaths(unittest.TestCase):
             (root / "rtrade_BTCUSDC.heartbeat").write_text("123", encoding="utf-8")
             (root / "system").mkdir(exist_ok=True)
             (root / "system" / "macro_analyzer.heartbeat").write_text("456", encoding="utf-8")
+            (root / "orders").mkdir(exist_ok=True)
+            (root / "orders" / "cache_order.json").write_text("{}", encoding="utf-8")
+            (root / "orders" / "cache_trade.jsonl").write_text("", encoding="utf-8")
             stale_dir = root / ".cache_24_price_BTCUSDC.json.previous.abcd123"
             stale_dir.mkdir()
             (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
@@ -404,6 +409,10 @@ class TestCachepaths(unittest.TestCase):
             self.assertEqual(moved["trends"], ["cache_short_trend.json"])
             self.assertEqual(moved["macro"], ["fear_greed_index.json"])
             self.assertEqual(
+                sorted(moved["orders"]),
+                ["cache_order_binance.json", "cache_trade_binance.jsonl"],
+            )
+            self.assertEqual(
                 sorted(moved["system/heartbeat"]),
                 ["macro_analyzer.heartbeat", "rtrade_BTCUSDC.heartbeat"],
             )
@@ -411,6 +420,10 @@ class TestCachepaths(unittest.TestCase):
             self.assertTrue((root / "prices" / "cache_current_price.json").exists())
             self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
             self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
+            self.assertTrue((root / "orders" / "cache_order_binance.json").exists())
+            self.assertTrue((root / "orders" / "cache_trade_binance.jsonl").exists())
+            self.assertFalse((root / "orders" / "cache_order.json").exists())
+            self.assertFalse((root / "orders" / "cache_trade.jsonl").exists())
             self.assertTrue((root / "system" / "heartbeat" / "rtrade_BTCUSDC.heartbeat").exists())
             self.assertTrue((root / "system" / "heartbeat" / "macro_analyzer.heartbeat").exists())
             self.assertFalse((root / "system" / "macro_analyzer.heartbeat").exists())

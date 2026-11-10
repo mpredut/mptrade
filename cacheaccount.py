@@ -435,6 +435,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return v_norm
         base_f = os.path.basename(str(filename or "")).lower()
         for cand_v, cand_f in (
+            ("binance", CACHE_TRADE_FILENAME),
             ("kraken", CACHE_KRAKEN_TRADE_FILENAME),
             ("hyperliquid", CACHE_HYPERLIQUID_TRADE_FILENAME),
             ("t212", CACHE_T212_TRADE_FILENAME),
@@ -623,10 +624,8 @@ class CacheTradeManager(CacheAccountManagerBase):
             return self._migrate_legacy_json_generation_locked()
 
     def _migrate_legacy_json_generation_locked(self):
-        if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
-            return
-        legacy = self.filename[:-1]
-        if not os.path.exists(legacy):
+        legacy = self._resolve_legacy_json_for_jsonl_locked()
+        if not legacy:
             return
         try:
             payload = read_json_dict(legacy)
@@ -1355,6 +1354,13 @@ class CacheOrderManager(CacheAccountManagerBase):
 
     _is_order_account_cache = True
     DEFAULT_FILENAME = CACHE_ORDER_FILENAME
+    VENUE_FILENAMES: dict[str, str] = {"binance": CACHE_ORDER_FILENAME}
+
+    @classmethod
+    def disk_filename(cls, venue: str = "binance") -> str:
+        """Return the canonical on-disk Order cache filename for ``venue``."""
+        v_key = normalize_venue_name(venue, default="binance") or "binance"
+        return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:

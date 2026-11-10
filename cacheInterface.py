@@ -31,6 +31,7 @@ from botcore import (
 )
 import cacheintegrity as _cache_integrity
 from cachepaths import (
+    EXACT_LEGACY_FILENAMES,
     clean_symbol_key,
     migrate_legacy_filename_if_needed,
 )
@@ -683,12 +684,24 @@ class CacheManagerInterface(ABC):
             self.save_state_to_file_if_enabled()
 
     # ── JSONL append persistence for append-only caches ──────────────────────
+    def _resolve_legacy_json_for_jsonl_locked(self) -> Optional[str]:
+        if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
+            return None
+        legacy = self.filename[:-1]
+        if os.path.exists(legacy):
+            return legacy
+        dirname, basename = os.path.split(self.filename)
+        for leg_jsonl in EXACT_LEGACY_FILENAMES.get(basename, ()):
+            if leg_jsonl.endswith(".jsonl"):
+                cand_json = os.path.join(dirname, leg_jsonl[:-1])
+                if os.path.exists(cand_json):
+                    return cand_json
+        return None
+
     def _migrate_legacy_json_if_needed(self):
         """Migrate a legacy ``.json`` cache file into ``.jsonl`` format."""
-        if os.path.exists(self.filename) or not self.filename.endswith(".jsonl"):
-            return
-        legacy = self.filename[:-1]
-        if not os.path.exists(legacy):
+        legacy = self._resolve_legacy_json_for_jsonl_locked()
+        if not legacy:
             return
         try:
             payload = read_json_dict(legacy)

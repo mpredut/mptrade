@@ -353,8 +353,8 @@ def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_d
     assert CacheShortTrendManager.disk_filename_for_symbol() == "cache_short_trend.json"
     assert CacheShortTrendManager.live_window_relpath_for_symbol("BTCUSDC").replace("\\", "/") == "24trend/live_BTCUSDC.json"
     assert CacheLongTrendManager.disk_filename_for_symbol() == "cache_long_trend.json"
-    assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade.jsonl"
-    assert CacheOrderManager.disk_filename_for_symbol() == "cache_order.json"
+    assert CacheTradeManager.disk_filename_for_symbol() == "cache_trade_binance.jsonl"
+    assert CacheOrderManager.disk_filename_for_symbol() == "cache_order_binance.json"
     assert CacheAssetValueManager.disk_filename_for_symbol() == "cache_asset_value.jsonl"
     assert CachePriceManagerBase.extract_jsonl_series_point({"s": "BTCUSDC", "i": [1700000000000, 95000.5]}, {"BTCUSDC"}) == [
         1700000000000,
@@ -708,7 +708,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     assert CacheTradeManager.venue_for_symbol("HYPEUSDC") == "hyperliquid"
 
     for expected_venue, expected_fname, expected_fmt in (
-        ("binance", "cache_trade.jsonl", "jsonl"),
+        ("binance", "cache_trade_binance.jsonl", "jsonl"),
         ("kraken", "cache_trade_kraken.json", "json"),
         ("hyperliquid", "cache_trade_hyperliquid.json", "json"),
         ("t212", "cache_trade_t212.json", "json"),

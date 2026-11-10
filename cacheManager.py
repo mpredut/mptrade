@@ -243,13 +243,24 @@ class CacheFactory:
     _instances = {}
     _sync_started = set()
     _CONFIG = {}
+    _ALIASES = {
+        "BinanceTrade": "Trade",
+        "BinanceOrder": "Order",
+    }
     _teardown_hooks: dict = {}
+
+    @classmethod
+    def _canonical_name(cls, name: str) -> str:
+        if isinstance(name, str):
+            return cls._ALIASES.get(name, name)
+        return name
 
     @classmethod
     def register_teardown_hook(cls, name: str, callback) -> None:
         """Register an optional teardown callback invoked when ``name`` is removed or shut down."""
         if not isinstance(name, str) or not name.strip() or not callable(callback):
             return
+        name = cls._canonical_name(name)
         with cls._lock:
             hooks = cls._teardown_hooks.setdefault(name, [])
             if callback not in hooks:
@@ -304,6 +315,7 @@ class CacheFactory:
 
     @classmethod
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
+        name = cls._canonical_name(name)
         start_sync = _parse_bool_flag(start_sync, default=True)
         if isinstance(symbols, str):
             symbols = _coerce_symbol_list(symbols)
@@ -488,6 +500,7 @@ class CacheFactory:
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
         global _current_price_instance, _short_trend_instance
+        name = cls._canonical_name(name)
         with cls._lock:
             if name == "ShortTrend":
                 inst = _short_trend_instance

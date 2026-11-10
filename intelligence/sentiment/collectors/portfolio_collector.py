@@ -14,6 +14,7 @@ from botcore import (
     safe_nonneg_float,
 )
 from cachepaths import (
+    EXACT_LEGACY_FILENAMES,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
@@ -1043,6 +1044,11 @@ def _load_symbol_best_recent_fills_impl(
         if (is_eq_sym and cache_venue != "t212") or (is_crypto_pair and cache_venue == "t212"):
             continue
         ord_data = _rj(os.path.join(cachedb_dir, ord_file))
+        if not (isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict)):
+            for legacy_ord_file in EXACT_LEGACY_FILENAMES.get(ord_file, ()):
+                ord_data = _rj(os.path.join(cachedb_dir, legacy_ord_file))
+                if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict):
+                    break
         o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
         matched_cand = next((cand for cand in scoped_variants if casefold_get(o_items, cand)), None)
         orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
@@ -1332,6 +1338,11 @@ def _harvest_recent_orders_and_enrich_positions_impl(
     audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for order_cache_name, cache_venue in _resolve_order_cache_files():
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
+        if not (isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict)):
+            for legacy_ord_file in EXACT_LEGACY_FILENAMES.get(order_cache_name, ()):
+                orders_data = _rj(os.path.join(cache_dir, legacy_ord_file))
+                if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
+                    break
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             v_ai_intents = _venue_intents(cache_venue)
             v_audit_map = (

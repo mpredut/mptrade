@@ -19,7 +19,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from botcore import is_live_network_backfill_enabled, safe_float
-from cachepaths import cache_path
+from cachepaths import CACHE_ORDER_FILENAME, cache_path
 from providers.base import (
     extract_order_id,
     extract_order_price,
@@ -65,7 +65,12 @@ def inspect_fleet(json_output: bool = False):
     balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
-    raw_orders = ssh_cat(cache_path("orders/cache_order.json")) or ssh_cat(cache_path("cache_order.json"))
+    raw_orders = (
+        ssh_cat(cache_path(f"orders/{CACHE_ORDER_FILENAME}"))
+        or ssh_cat(cache_path(CACHE_ORDER_FILENAME))
+        or ssh_cat(cache_path("orders/cache_order.json"))
+        or ssh_cat(cache_path("cache_order.json"))
+    )
     orders_data = raw_orders if isinstance(raw_orders, dict) else {}
 
     # 1. Balances & Positions
