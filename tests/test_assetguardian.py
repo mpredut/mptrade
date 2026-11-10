@@ -1407,3 +1407,249 @@ class AssetGuardianTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_assetguardian__read_p3b_sentiment_recovers_from_previous_when_primary_is_iter13_s1(tmp_path):
+    """[ITER13 #1] AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,."""
+    import pytest
+    import json
+    import time
+    import assetguardian as ag
+    now_ts = time.time()
+    # 1. AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,
+    #    and _p3b_threshold_multipliers honors GLLM2 bypass.
+    p3b_file = tmp_path / "sentiment_eval.json"
+    p3b_prev = tmp_path / "sentiment_eval.json.previous"
+    p3b_file.write_text("{corrupted_json", encoding="utf-8")
+    p3b_prev.write_text(
+        json.dumps(
+            {
+                "recommended_action": "DEFENSIVE",
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 0.90,
+                "ts": now_ts - 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovered = ag._read_p3b_sentiment(path=str(p3b_file), now_ts=now_ts)
+    assert isinstance(recovered, dict)
+    assert recovered["recommended_action"] == "DEFENSIVE"
+    assert recovered["confidence"] == pytest.approx(0.90)
+
+    # When GLLM2 is bypassed via bypass_guards, _p3b_threshold_multipliers returns neutral (1.0, 1.0, None)
+    sell_m, buy_m, eff_assess = ag._p3b_threshold_multipliers(
+        assessment=recovered, bypass_guards={"GLLM2"}
+    )
+    assert sell_m == pytest.approx(1.0)
+    assert buy_m == pytest.approx(1.0)
+    assert eff_assess is None
+
+    # Without GLLM2 bypass, defensive assessment compresses sell_mult (< 1.0) and expands buy_mult (> 1.0)
+    sell_m2, buy_m2, eff_assess2 = ag._p3b_threshold_multipliers(
+        assessment=recovered, bypass_guards=set()
+    )
+    assert sell_m2 < 1.0
+    assert buy_m2 > 1.0
+    assert eff_assess2 is recovered
+
+def test_resolve_caller_module_short_codes_and_client_order_id_prefix_fallback_iter20_s1():
+    """[ITER20 #1] resolve_caller_module short codes and client_order_id -> prefix fallback."""
+    import order_guard
+    # 1. resolve_caller_module short codes and client_order_id -> prefix fallback
+    assert order_guard.resolve_caller_module("AG") == "assetguardian"
+    assert order_guard.resolve_caller_module("MT") == "monitortrades"
+    assert order_guard.resolve_caller_module("TA") == "tradeall"
+    assert order_guard.resolve_caller_module("RT") == "rtrade"
+    assert order_guard.resolve_caller_module("asset_guardian") == "assetguardian"
+    assert (
+        order_guard.resolve_caller_module(
+            None,
+            client_order_id="OR_12345_0",
+            prefix="TA_OR",
+        )
+        == "tradeall"
+    )
+
+def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_filled_on_iter21_s1(tmp_path, monkeypatch):
+    """[ITER21 #1] assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill."""
+    import pytest
+    import assetguardian as ag
+    # 1. assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill
+    state_file = tmp_path / "ag_state.json"
+    monkeypatch.setattr(ag, "STATE", ag.AssetGuardianState(str(state_file), fail_closed=False))
+    monkeypatch.setattr(ag, "_p3b_threshold_multipliers", lambda *a, **k: (1.0, 1.0, None))
+    completed_earlier = [t for t, _ in ag.SELL_TIERS[:-1]]
+    last_thr, last_alloc = ag.SELL_TIERS[-1]
+    tier_target = 10.0 * last_alloc
+    partial_fill = tier_target * 0.6
+    rem_expected = tier_target - partial_fill
+    total_filled = (10.0 - tier_target) + partial_fill
+    ag._save_symbol_campaign(
+        "TAOUSDC",
+        "sell",
+        {
+            "trough_price": 100.0,
+            "trough_ts": 1000.0,
+            "initial_qty": 10.0,
+            "created_at": 1000.0,
+            "completed_tiers": completed_earlier,
+            "filled_qty_by_tier": {ag._tier_key(last_thr): partial_fill},
+            "total_filled_qty": total_filled,
+            "attempts_by_tier": {},
+            "terminal_orders": [],
+        },
+    )
+
+    class DummyProvider:
+        name = "binance"
+        def open_orders(self, symbol):
+            return []
+
+    tier_res, _, growth = ag._sell_campaign_tier(
+        "TAOUSDC",
+        current_price=100.0 * (1.0 + last_thr / 100.0 + 0.05),
+        minimum_row={"price": 100.0, "timestamp": 1000.0},
+        free_qty=rem_expected,
+        provider=DummyProvider(),
+    )
+    assert tier_res is not None
+    thr_out, alloc_out, rem_qty = tier_res
+    assert thr_out == pytest.approx(last_thr)
+    assert alloc_out == pytest.approx(last_alloc)
+    # Must return the remaining 40% of tier_target, NOT 0.0 (min(rem_expected, tier_target) - partial_fill)!
+    assert rem_qty == pytest.approx(rem_expected)
+
+def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_with_venue_bypass_guards_iter23_s1(tmp_path, monkeypatch):
+    """[ITER23 #1] assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards & check_external_order_guards & check_llm_order_guards honor intelligence_guards_mode='off'."""
+    import json
+    import time
+    import pytest
+    import order_guard
+    import assetguardian as ag
+    from external_order_guard import check_external_order_guards
+    from llm_order_guard import check_llm_order_guards
+    from qlimit_order_guard import resolve_cached_gaussian_horizon
+    # 1. assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "binance_bypass_guards": {"GLLM2"}},
+    )
+    defensive_assessment = {
+        "recommended_action": "DEFENSIVE",
+        "market_bias": "BEARISH",
+        "risk_level": "HIGH",
+        "confidence": 0.9,
+        "ts": time.time(),
+    }
+    sell_mult, buy_mult, eff_a = ag._p3b_threshold_multipliers(
+        assessment=defensive_assessment,
+        bypass_guards={"G_PROF"},
+    )
+    assert sell_mult == pytest.approx(1.0)
+    assert buy_mult == pytest.approx(1.0)
+    assert eff_a is None
+
+
+    # 2. check_external_order_guards & check_llm_order_guards honor intelligence_guards_mode='off'
+    off_margins = {**orig_margins, "intelligence_guards_mode": "off"}
+    assert check_external_order_guards("BTCUSDC", "BUY", 85000.0, margins=off_margins) == (
+        True,
+        "intelligence_guards_off",
+        1.0,
+    )
+    assert check_llm_order_guards("binance", "BTCUSDC", "BUY", 85000.0, margins=off_margins) == (
+        True,
+        "intelligence_guards_off",
+        1.0,
+    )
+
+    # resolve_cached_gaussian_horizon rejects non-finite / negative values
+    t_cache = tmp_path / "t_cache.json"
+    t_cache.write_text(
+        json.dumps({"BTCUSDC": {"p90_d": -5.0, "median_d": float("nan"), "T": float("inf")}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("intelligence.internal.state.survival.T_CACHE_FILE", str(t_cache))
+    assert resolve_cached_gaussian_horizon("BTCUSDC") == (None, None, None)
+
+def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_corrupted_prior_spent_fee_iter63_s4(monkeypatch):
+    """[ITER63 #4] assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee."""
+    import pytest
+    import assetguardian
+    # 4. assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee
+    rem, target, prior = assetguardian._buy_remaining_cash(
+        {"initial_cash": 1000.0, "spent_quote_by_tier": {"5": -500.0}},
+        5.0,
+        0.2,
+    )
+    assert prior == 0.0
+    assert rem == pytest.approx(target)
+
+    saved = {}
+    monkeypatch.setattr(assetguardian, "_save_symbol_campaign", lambda sym, kind, st: saved.update(st))
+    from types import SimpleNamespace
+    updated = assetguardian._record_terminal_buy(
+        "BTCUSDC",
+        {
+            "initial_cash": 1000.0,
+            "pending": {"threshold": 5.0, "allocation": 0.2, "order_id": "1", "client_order_id": "c1"},
+            "spent_quote_by_tier": {"5": -100.0},
+            "total_spent_quote": -200.0,
+        },
+        SimpleNamespace(status="canceled", filled_qty=1.0, cost=50.0, fee=-20.0),
+    )
+    assert updated["spent_quote_by_tier"]["5"] == pytest.approx(50.0)
+    assert updated["total_spent_quote"] == pytest.approx(50.0)
+
+def test_assetguardian_boolean_flags__safe_tier_attempt_and__reuse_unaccepted_attempt_iter157_s4(monkeypatch, tmp_path):
+    """[ITER157 #4] assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt."""
+    import assetguardian as ag
+    from providers.strategy_executor import OrderStatus
+    # 4. assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt
+    st = ag.AssetGuardianState(path=str(tmp_path / "ag.json"), fail_closed="false")
+    assert st.fail_closed is False
+    st_nan = ag.AssetGuardianState(path=str(tmp_path / "ag2.json"), fail_closed=float("nan"))
+    assert st_nan.fail_closed is True
+
+    assert ag._safe_tier_attempt({"3": "2.0"}, "3") == 3
+    assert ag._safe_tier_attempt({"3": True}, "3") == 1
+
+    saved_states = []
+    monkeypatch.setattr(ag, "_save_symbol_campaign", lambda sym, kind, s: saved_states.append(dict(s)))
+    res_bool = ag._reuse_unaccepted_attempt(
+        "BTCUSDC",
+        "buy",
+        {"attempts_by_tier": {"3": 2}},
+        {"threshold": 3.0, "attempt": True},
+    )
+    assert res_bool["attempts_by_tier"]["3"] == 2
+    assert saved_states == []
+
+    res_float_str = ag._reuse_unaccepted_attempt(
+        "BTCUSDC",
+        "buy",
+        {"attempts_by_tier": "corrupt"},
+        {"threshold": 3.0, "attempt": "2.0"},
+    )
+    assert res_float_str["attempts_by_tier"] == {"3": 1}
+
+    # _record_terminal_buy tolerates corrupted non-dict spent_quote_by_tier / non-list terminal_orders
+    term_state = ag._record_terminal_buy(
+        "BTCUSDC",
+        {
+            "pending": {"threshold": 3.0, "allocation": 0.25, "order_id": "11", "client_order_id": "cid-11"},
+            "spent_quote_by_tier": "corrupt",
+            "terminal_orders": "corrupt",
+            "initial_cash": 1000.0,
+        },
+        OrderStatus("closed", 0.01, 50.0, 0.05),
+    )
+    assert term_state["spent_quote_by_tier"] == {"3": 50.05}
+    assert isinstance(term_state["terminal_orders"], list) and len(term_state["terminal_orders"]) == 1

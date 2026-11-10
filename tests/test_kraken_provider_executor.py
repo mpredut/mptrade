@@ -693,3 +693,889 @@ class PublicCacheTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_aggregate_fills_by_order_id_window_reference_krakenprovider_get_orders_hyperliquidprovider_get_orders_with_nan_iter26_s4():
+    """[ITER26 #4] aggregate_fills_by_order_id, window_reference, KrakenProvider.get_orders, HyperliquidProvider.get_orders with NaN."""
+    from types import SimpleNamespace
+    import order_guard
+    from providers.base import aggregate_fills_by_order_id
+    from providers.kraken_provider import KrakenProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    # 4. aggregate_fills_by_order_id, window_reference, KrakenProvider.get_orders, HyperliquidProvider.get_orders with NaN
+    rows = [{"orderId": "1", "side": "SELL", "price": 100.0, "qty": 1.0, "timestamp": 1_700_000_000_000}]
+    assert aggregate_fills_by_order_id(rows, cutoff_ms=float("nan")) == []
+
+    called_get_orders = []
+    dummy_prov = SimpleNamespace(
+        name="kraken",
+        get_orders=lambda sym, side, win: (called_get_orders.append(win), rows)[-1],
+    )
+    assert order_guard.window_reference(dummy_prov, "TAOUSD", "BUY", float("nan")) is None
+    assert called_get_orders == []
+
+    kp = KrakenProvider()
+    assert kp.get_orders("TAOUSD", "BUY", float("nan")) == []
+    assert kp.get_orders("TAOUSD", "BUY", -10.0) == []
+
+    hp = HyperliquidProvider()
+    assert hp.get_orders("HYPEUSDC", "BUY", float("nan")) == []
+    assert hp.get_orders("HYPEUSDC", "BUY", -5.0) == []
+
+def test_krakenprovider_min_order_qty_free_balance_preflight_order_cancel_order_by_id_pair_precision_iter40_s3():
+    """[ITER40 #3] KrakenProvider min_order_qty, free_balance, preflight_order, cancel_order_by_id, pair_precision."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.kraken_provider import KrakenProvider
+    # 3. KrakenProvider min_order_qty, free_balance, preflight_order, cancel_order_by_id, pair_precision
+    kp = KrakenProvider(client=SimpleNamespace(
+        pair_info=lambda sym: {"ordermin": True, "pair_decimals": True, "lot_decimals": 2, "base": "HYPE"},
+        balance=lambda: {"HYPE": True},
+        cancel_order=lambda oid: {"count": True},
+    ))
+    assert kp.min_order_qty("HYPEUSD") == 0.0
+    assert kp.free_balance("HYPE") is None
+    with pytest.raises(ProviderError):
+        kp.preflight_order("HYPEUSD", "SELL", True, price=20.0)
+    with pytest.raises(ProviderError):
+        kp.cancel_order("HYPEUSD", "OID1")
+    with pytest.raises(ProviderError):
+        kp.pair_precision("HYPEUSD")
+
+def test_kraken_client__read_ttl_last_price_price_decimals_add_order_ohlc_closes_with_timestamps_iter48_s1(monkeypatch):
+    """[ITER48 #1] kraken_client: _read_ttl, last_price, price_decimals, add_order, ohlc_closes_with_timestamps."""
+    import sys
+    import pytest
+    orig_sys_path = list(sys.path)
+    try:
+        from kraken import kraken_client as kc
+        from kraken import kraken_cachemanager as kcm
+        from kraken import kraken_xstock_watch as kxw
+    finally:
+        sys.path[:] = orig_sys_path
+    # 1. kraken_client: _read_ttl, last_price, price_decimals, add_order, ohlc_closes_with_timestamps
+    assert kc._read_ttl("OHLC", {"interval": float("nan")}) == 30.0
+    assert kc._read_ttl("OHLC", {"interval": True}) == 30.0
+    cli = kc.KrakenClient.public()
+    monkeypatch.setattr(cli, "ticker", lambda _pair: {"c": [float("nan"), "1.0"]})
+    assert cli.last_price("HYPEUSD") is None
+    monkeypatch.setattr(cli, "ticker", lambda _pair: {"c": [True, "1.0"]})
+    assert cli.last_price("HYPEUSD") is None
+    monkeypatch.setattr(cli, "pair_info", lambda _pair: {"pair_decimals": True})
+    assert cli.price_decimals("HYPEUSD") == 2
+    with pytest.raises(ValueError):
+        cli.add_order("HYPEUSD", "buy", True, 20.0)
+    with pytest.raises(ValueError):
+        cli.add_order("HYPEUSD", "buy", 1.0, float("nan"), ordertype="limit")
+    with pytest.raises(ValueError):
+        cli.ohlc_closes_with_timestamps("HYPEUSD", True)
+
+def test_kraken_cachemanager__ledger_to_fills_rejects_nan_bool_zero_amounts_and_iter48_s2():
+    """[ITER48 #2] kraken_cachemanager: _ledger_to_fills rejects NaN/bool/zero amounts and fees."""
+    import sys
+    orig_sys_path = list(sys.path)
+    try:
+        from kraken import kraken_client as kc
+        from kraken import kraken_cachemanager as kcm
+        from kraken import kraken_xstock_watch as kxw
+    finally:
+        sys.path[:] = orig_sys_path
+    # 2. kraken_cachemanager: _ledger_to_fills rejects NaN/bool/zero amounts and fees
+    bad_ledger = {
+        "L1": {"refid": "R1", "type": "trade", "asset": "HYPE", "amount": float("nan"), "time": 1700000000},
+        "L2": {"refid": "R1", "type": "trade", "asset": "ZUSD", "amount": "-100.0", "time": 1700000000},
+        "L3": {"refid": "R2", "type": "trade", "asset": "HYPE", "amount": True, "time": 1700000000},
+        "L4": {"refid": "R2", "type": "trade", "asset": "ZUSD", "amount": "-100.0", "time": 1700000000},
+        "L5": {"refid": "R3", "type": "trade", "asset": "HYPE", "amount": "2.0", "fee": True, "time": 1700000000},
+        "L6": {"refid": "R3", "type": "trade", "asset": "ZUSD", "amount": "-40.0", "fee": float("nan"), "time": 1700000000},
+    }
+    fills = kcm._ledger_to_fills(bad_ledger)
+    assert len(fills) == 1
+    assert fills[0]["id"] == "R3"
+    assert fills[0]["price"] == 20.0
+    assert "fee" not in fills[0]
+
+def test_kraken_xstock_watch__bot_alive_rejects_boolean_true_pid_systemd_and_iter48_s3():
+    """[ITER48 #3] kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1."""
+    import sys
+    orig_sys_path = list(sys.path)
+    try:
+        from kraken import kraken_client as kc
+        from kraken import kraken_cachemanager as kcm
+        from kraken import kraken_xstock_watch as kxw
+    finally:
+        sys.path[:] = orig_sys_path
+    # 3. kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1
+    assert kxw._bot_alive(True) is False
+    assert kxw._bot_alive(1) is False
+    assert kxw._bot_alive(-1) is False
+    assert kxw._bot_alive(0) is False
+
+def test_krakenprovider_get_price_history_open_orders_order_status_iter51_s5(monkeypatch):
+    """[ITER51 #5] KrakenProvider: get_price_history, open_orders, order_status."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    from providers.kraken_provider import KrakenProvider
+    # 5. KrakenProvider: get_price_history, open_orders, order_status
+    kp = KrakenProvider()
+    fake_kcli = SimpleNamespace(
+        _public=lambda ep, params: {"XXBTZUSD": [[1700000000, "1", "1", "1", "nan"], [True, "1", "1", "1", "50000"]]},
+        open_orders=lambda: {
+            "O1": {"descr": {"pair": "XBTUSD", "type": "buy", "price": True}, "vol": "1.0", "vol_exec": "0.0"}
+        },
+        query_orders=lambda oid: {
+            oid: {"status": "closed", "vol_exec": "nan", "cost": "100.0", "fee": "0.1", "vol": "1.0"}
+        },
+    )
+    monkeypatch.setattr(kp, "_client", lambda: fake_kcli)
+    assert kp.get_price_history("BTCUSD", True) is None
+    assert kp.get_price_history("BTCUSD", float("nan")) is None
+    with pytest.raises(ProviderError):
+        kp.open_orders("BTCUSD")
+    with pytest.raises(ProviderError):
+        kp.order_status("BTCUSD", "O1")
+
+def test_kraken_market_data_fetch_ohlc_candles_rejects_bool_nan_inf_interval_iter52_s2():
+    """[ITER52 #2] kraken/market_data: fetch_ohlc_candles rejects bool/NaN/Inf/<=0 interval and timeout."""
+    import pytest
+    from kraken import market_data as k_md
+    # 2. kraken/market_data: fetch_ohlc_candles rejects bool/NaN/Inf/<=0 interval and timeout
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", True)
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", 60, timeout=True)
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", float("nan"))
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", 0)
+
+def test_kraken_kraken_bot__cmd_balance_ignores_bool_nan_inf_balances_iter52_s4(monkeypatch):
+    """[ITER52 #4] kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing."""
+    from types import SimpleNamespace
+    from kraken import kraken_bot as k_bot
+    # 4. kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing
+    logged_lines = []
+    monkeypatch.setattr(k_bot, "log", lambda msg: logged_lines.append(msg))
+    fake_kcli = SimpleNamespace(
+        balance=lambda: {"ZUSD": "100.5", "BAD_BOOL": True, "BAD_NAN": "nan", "BAD_INF": "inf", "ZERO": "0"}
+    )
+    assert k_bot._cmd_balance(fake_kcli) == 0
+    assert any("ZUSD" in ln for ln in logged_lines)
+    assert not any("BAD_" in ln for ln in logged_lines)
+
+def test_kraken_kraken_xstock_watch_check_levels_ignores_bool_nan_inf_alloc_price_iter52_s5():
+    """[ITER52 #5] kraken/kraken_xstock_watch.check_levels ignores bool/NaN/Inf alloc_price, tp_pct, sl_pct, price."""
+    from types import SimpleNamespace
+    from kraken import kraken_xstock_watch as k_xw
+    # 5. kraken/kraken_xstock_watch.check_levels ignores bool/NaN/Inf alloc_price, tp_pct, sl_pct, price
+    xw_st = {"allocated": {"asset": "SPCX", "qty": True}, "pair": "SPCXUSD", "alerted_tp": False, "alerted_sl": False}
+    k_xw.check_levels(
+        SimpleNamespace(last_price=lambda _p: 150.0),
+        xw_st,
+        alloc_price=float("nan"),
+        tp_pct=10.0,
+        sl_pct=10.0,
+        yahoo_sym="",
+        desktop=False,
+    )
+    assert xw_st["alerted_tp"] is False
+
+def test_kraken_shadow_live__load_history_filters_out_bool_nan_inf_iter52_s6(monkeypatch, tmp_path):
+    """[ITER52 #6] kraken/shadow_live._load_history filters out bool/NaN/Inf/non-positive bars."""
+    import json
+    from kraken import shadow_live as k_sl
+    # 6. kraken/shadow_live._load_history filters out bool/NaN/Inf/non-positive bars
+    monkeypatch.setattr(k_sl, "LOG_DIR", str(tmp_path))
+    hist_file = tmp_path / "HYPEUSD_240m.ohlc.json"
+    hist_file.write_text(
+        json.dumps([
+            [1700000000, 20.0, 21.0, 19.5, 20.5],
+            [True, 20.0, 21.0, 19.5, 20.5],
+            [1700014400, -1.0, 21.0, 19.5, 20.5],
+        ]),
+        encoding="utf-8",
+    )
+    loaded_bars = k_sl._load_history("HYPEUSD", 240)
+    assert loaded_bars == [(1700000000, 20.0, 21.0, 19.5, 20.5)]
+
+def test_krakenprovider_pair_precision_rejects_nan_non_positive_ordermin_iter58_s4():
+    """[ITER58 #4] KrakenProvider.pair_precision rejects NaN/non-positive ordermin."""
+    import pytest
+    from unittest.mock import MagicMock
+    from providers.kraken_provider import KrakenProvider
+    from providers.strategy_executor import ProviderError
+    # 4. KrakenProvider.pair_precision rejects NaN/non-positive ordermin
+    kp = KrakenProvider(client=MagicMock())
+    kp._cli.pair_info.return_value = {"pair_decimals": 2, "lot_decimals": 4, "ordermin": float("nan"), "base": "HYPE"}
+    with pytest.raises(ProviderError):
+        kp.pair_precision("HYPEUSD")
+
+def test_krakenclient_ohlc_closes_with_timestamps_rejects_inf_nan_interval_cleanly_with_iter59_s4():
+    """[ITER59 #4] KrakenClient.ohlc_closes_with_timestamps rejects inf/nan interval cleanly with ValueError."""
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    # 4. KrakenClient.ohlc_closes_with_timestamps rejects inf/nan interval cleanly with ValueError
+    kc = KrakenClient.__new__(KrakenClient)
+    with pytest.raises(ValueError, match="positive integer"):
+        kc.ohlc_closes_with_timestamps("XBTUSD", float("inf"))
+
+def test_kraken_xstock_watch__load_state_merges_partial_json_onto_default_keys_iter60_s3(tmp_path, monkeypatch):
+    """[ITER60 #3] kraken_xstock_watch._load_state merges partial JSON onto default keys without KeyError."""
+    import json
+    # 3. kraken_xstock_watch._load_state merges partial JSON onto default keys without KeyError
+    from kraken import kraken_xstock_watch as xw
+    state_file = tmp_path / "xstock_partial.json"
+    state_file.write_text(json.dumps({"known_assets": "corrupt"}), encoding="utf-8")
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(state_file))
+    loaded = xw._load_state()
+    assert loaded["known_assets"] == {}
+    assert loaded["alerted_pair"] is False
+    assert loaded["alerted_tp"] is False
+
+def test_krakenclient__parse_rejects_non_dict_json_payloads_cleanly_iter68_s1():
+    """[ITER68 #1] KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError."""
+    import os
+    import sys
+    import pytest
+    from kraken.kraken_client import KrakenClient, KrakenError
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    if hl_dir not in sys.path:
+        sys.path.insert(0, hl_dir)
+    # 1. KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError
+    with pytest.raises(KrakenError):
+        KrakenClient._parse(200, b"[1, 2, 3]")
+    kc = KrakenClient("k", "c2VjcmV0")
+    with pytest.raises(ValueError):
+        kc.add_order("XBTUSD", "buy", None, 50000.0)
+    with pytest.raises(ValueError):
+        kc.add_order("XBTUSD", "buy", 0.1, "not-a-price", ordertype="limit")
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", 15.5)
+
+def test_kraken_market_data_pair_precision_handles_float_strings_and_overflowerror_iter68_s2():
+    """[ITER68 #2] kraken.market_data.pair_precision handles float strings and OverflowError."""
+    import os
+    import sys
+    from kraken.market_data import pair_precision
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    if hl_dir not in sys.path:
+        sys.path.insert(0, hl_dir)
+    # 2. kraken.market_data.pair_precision handles float strings and OverflowError
+    assert pair_precision({"pair_decimals": "2.0", "lot_decimals": "4.0", "ordermin": "0.01"}) == (2, 4, 0.01)
+    assert pair_precision({"pair_decimals": 10**400, "lot_decimals": 10**400, "ordermin": 10**400}) == (2, 8, 0.0)
+
+def test__ledger_to_fills_tolerates_non_dict_ledger_or_non_dict_iter68_s3():
+    """[ITER68 #3] _ledger_to_fills tolerates non-dict ledger or non-dict entries."""
+    import os
+    import sys
+    from kraken.kraken_cachemanager import _ledger_to_fills
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    if hl_dir not in sys.path:
+        sys.path.insert(0, hl_dir)
+    # 3. _ledger_to_fills tolerates non-dict ledger or non-dict entries
+    assert _ledger_to_fills(None) == []
+    assert _ledger_to_fills({"L1": "not-a-dict"}) == []
+
+def test_kraken_xstock_watch_check_pairs_tolerates_non_dict_entries_and_missing_iter70_s3():
+    """[ITER70 #3] kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict."""
+    import importlib.util
+    import os
+    import sys
+    from types import SimpleNamespace
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    kraken_dir = os.path.join(repo_root, "kraken")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    k_watch = _load_mod("_k_watch_70", os.path.join(kraken_dir, "kraken_xstock_watch.py"), kraken_dir)
+    # 3. kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict
+    k_watch.notify = lambda **kw: None
+    dummy_k = SimpleNamespace(
+        asset_pairs=lambda: {"BAD": "not-a-dict", "SPCXXUSD": {"wsname": "SPCXx/USD", "base": "SPCXx"}},
+        last_price=lambda k: 50.0,
+    )
+    st_watch = {}
+    k_watch.check_pairs(dummy_k, st_watch, "SPCX", desktop=False, quote="USD")
+    assert st_watch.get("pair") == "SPCXXUSD"
+    assert st_watch.get("alerted_pair") is True
+
+def test_kraken_t212_continuous_grid_load_handles_float_timestamps_and_iter74_s4(tmp_path):
+    """[ITER74 #4] kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC."""
+    from offline.research.kraken_continuous_grid import grid as k_grid
+    from offline.research.t212_continuous_grid import grid as t_grid
+    # 4. kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC
+    k_csv = tmp_path / "XXBTZUSD.csv"
+    k_csv.write_text("timestamp,open,high,low,close,volume\n1000.0,100,105,95,102,1\n1060.0,0,105,95,102,1\n", encoding="utf-8")
+    assert len(k_grid.load(str(k_csv))) == 1
+
+    t_csv = tmp_path / "VUSA_EQ_1h.csv"
+    t_lines = ["timestamp,open,high,low,close,volume"] + [
+        f"{2000 + i * 60}.0,50,55,48,52,1" for i in range(35)
+    ] + ["5000.0,50,nan,48,52,1"]
+    t_csv.write_text("\n".join(t_lines) + "\n", encoding="utf-8")
+    orig_t_dir = t_grid.DATA
+    try:
+        t_grid.DATA = str(tmp_path)
+        t_grid._LOAD_CACHE.pop(("VUSA_EQ", "1h"), None)
+        assert len(t_grid.load("VUSA_EQ", "1h")) == 35
+    finally:
+        t_grid.DATA = orig_t_dir
+
+def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_iter87_s1():
+    """[ITER87 #1] KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order & HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order."""
+    import pytest
+    from providers.strategy_executor import ProviderError, SubmissionRefused
+    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider, _cloid_for_client_order_id
+    # 1. KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
+    with pytest.raises(ProviderError, match="client_order_id"):
+        _kraken_client_order_id(True)
+    kp = KrakenProvider()
+    for bad_side in ("", None, "HOLD", "bad", True):
+        assert kp.place_order("HYPEUSD", bad_side, 25.0, 1.0) is None
+        with pytest.raises(SubmissionRefused, match="invalid side"):
+            kp.submit_order("HYPEUSD", bad_side, 1.0, price=25.0)
+
+
+    # 2. HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
+    with pytest.raises(ProviderError, match="client_order_id"):
+        _cloid_for_client_order_id(False)
+    hp = HyperliquidProvider(live_enabled=True)
+    for bad_side in ("", None, "HOLD", "bad", True):
+        assert hp.place_order("HYPEUSDC", bad_side, 25.0, 1.0) is None
+        with pytest.raises(SubmissionRefused, match="invalid side"):
+            hp.submit_order("HYPEUSDC", bad_side, 1.0, price=25.0)
+
+def test_krakenclient_add_order_validates_side_ordertype_and_mandatory_limit_iter90_s1():
+    """[ITER90 #1] KrakenClient.add_order validates side, ordertype, and mandatory limit price."""
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    # 1. KrakenClient.add_order validates side, ordertype, and mandatory limit price
+    kc = KrakenClient("key", "c2VjcmV0")
+    with pytest.raises(ValueError, match="invalid Kraken order side"):
+        kc.add_order("HYPEUSD", "HOLD", 1.0, price=25.0)
+    with pytest.raises(ValueError, match="invalid Kraken ordertype"):
+        kc.add_order("HYPEUSD", "buy", 1.0, price=25.0, ordertype="stop")
+    with pytest.raises(ValueError, match="invalid Kraken limit price"):
+        kc.add_order("HYPEUSD", "buy", 1.0, price=None, ordertype="limit")
+
+def test_kraken_cachemanager__normalize_does_not_fabricate_sell_when_trade_iter90_s2():
+    """[ITER90 #2] kraken_cachemanager._normalize does not fabricate SELL when trade side is missing."""
+    import kraken.kraken_cachemanager as kcm
+    # 2. kraken_cachemanager._normalize does not fabricate SELL when trade side is missing
+    norm = kcm._normalize("T1", {"pair": "HYPEUSD", "price": "25.0", "vol": "1.0", "time": 1700000000})
+    assert norm["side"] is None
+    assert norm["isBuyer"] is None
+
+def test_kraken_market_data_fetch_ohlc_candles_check_pair_listing_pair_precision_iter91_s1():
+    """[ITER91 #1] kraken.market_data.fetch_ohlc_candles, check_pair_listing, pair_precision."""
+    import pytest
+    import kraken.market_data as kmd
+    # 1. kraken.market_data.fetch_ohlc_candles, check_pair_listing, pair_precision
+    with pytest.raises(ValueError, match="invalid pair"):
+        kmd.fetch_ohlc_candles("", 5)
+    with pytest.raises(ValueError, match="invalid pair"):
+        kmd.fetch_ohlc_candles(True, 5)
+
+    class _DummyKrakenClient:
+        def pair_info(self, pair):
+            return {"status": None, "pair_decimals": 3.5, "lot_decimals": -2, "ordermin": "0.1"}
+
+    info, unlisted = kmd.check_pair_listing(_DummyKrakenClient(), "HYPEUSD")
+    assert info is not None and unlisted is False
+    p_dec, v_dec, omin = kmd.pair_precision(info)
+    assert (p_dec, v_dec, omin) == (2, 8, 0.1)
+
+def test_kraken_kraken_xstock_watch_check_pairs_skips_non_tradable_status_iter92_s4():
+    """[ITER92 #4] kraken.kraken_xstock_watch.check_pairs skips non-tradable status."""
+    import importlib
+    import importlib.util
+    # 4. kraken.kraken_xstock_watch.check_pairs skips non-tradable status
+    xw = importlib.import_module("kraken.kraken_xstock_watch")
+    st_xw = xw._default_state()
+    fake_k = type(
+        "FK",
+        (),
+        {
+            "asset_pairs": lambda self: {
+                "SPCXXUSD": {"wsname": "SPCXx/USD", "base": "SPCXX", "status": "cancel_only"}
+            },
+            "last_price": lambda self, p: 200.0,
+        },
+    )()
+    xw.check_pairs(fake_k, st_xw, "SPCX", False, quote="USD")
+    assert st_xw["pair"] is None
+    assert st_xw["alerted_pair"] is False
+
+def test_krakenclient_validation_on_pair_txid_and_price_decimals_non_iter94_s3(monkeypatch):
+    """[ITER94 #3] KrakenClient validation on pair, txid, and price_decimals non-integer rejection."""
+    import pytest
+    # 3. KrakenClient validation on pair, txid, and price_decimals non-integer rejection
+    from kraken.kraken_client import KrakenClient
+
+    kc = KrakenClient("k", "s")
+    assert kc.pair_info("") is None
+    assert kc.pair_info(True) is None
+    assert kc.ticker("  ") is None
+    monkeypatch.setattr(kc, "pair_info", lambda _p: {"pair_decimals": 3.5})
+    assert kc.price_decimals("XXBTZUSD") == 2
+    with pytest.raises(ValueError, match="invalid Kraken pair"):
+        kc.add_order("  ", "buy", 1.0, price=100.0)
+    with pytest.raises(ValueError, match="invalid Kraken txid"):
+        kc.cancel_order("")
+    with pytest.raises(ValueError, match="invalid Kraken txid"):
+        kc.query_orders(True)
+
+def test_krakenprovider__kraken_pair_matches_free_balance_normalization_negative_fee_rejection_non_iter95_s2():
+    """[ITER95 #2] KrakenProvider _kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series."""
+    import pytest
+    from providers.kraken_provider import KrakenProvider, _kraken_pair_matches
+    from providers.strategy_executor import ProviderError
+    # 2. KrakenProvider _kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
+    assert _kraken_pair_matches("", "---") is False
+    assert _kraken_pair_matches(True, "BTCUSD") is False
+    kp = KrakenProvider(
+        client=type(
+            "KC",
+            (),
+            {
+                "balance": lambda self: {"XXBT": "1.25"},
+                "query_orders": lambda self, oid: {
+                    oid: {"status": "closed", "vol_exec": "1.0", "cost": "100.0", "fee": "-0.5", "vol": "1.0"}
+                },
+            },
+        )()
+    )
+    assert kp.free_balance("") is None
+    assert kp.free_balance(True) is None
+    assert kp.free_balance(" btc ") == pytest.approx(1.25)
+    assert kp.free_balance("xbt") == pytest.approx(1.25)
+    with pytest.raises(ProviderError, match="invalid fill values"):
+        kp.order_status("XXBTZUSD", "OID-1")
+    with pytest.raises(ProviderError, match="invalid interval_min"):
+        kp.ohlc_series("XXBTZUSD", 60.5)
+
+def test_krakenprovider_iter111_s1():
+    """[ITER111 #1] KrakenProvider."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    import providers.kraken_provider as kp
+    # 1. KrakenProvider
+    assert kp._kraken_pair_key(True) == ""
+    assert kp._kraken_pair_key(None) == ""
+    norm = kp._normalize_kraken_fill({"side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000, "ordertxid": True})
+    assert "orderId" not in norm
+
+    k_prov = kp.KrakenProvider.__new__(kp.KrakenProvider)
+    k_prov.preflight_order("XXBTZUSD", True, 1.0)
+    with pytest.raises(ProviderError):
+        k_prov.order_status("XXBTZUSD", True)
+    with pytest.raises(ProviderError):
+        k_prov.order_status("XXBTZUSD", "   ")
+    with pytest.raises(ProviderError):
+        k_prov.cancel_order("XXBTZUSD", True)
+    with pytest.raises(ProviderError):
+        k_prov.cancel_order("XXBTZUSD", "")
+
+    k_prov._client = lambda: SimpleNamespace(
+        pair_info=lambda _s: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": 0.01, "base": "   "}
+    )
+    with pytest.raises(ProviderError):
+        k_prov.pair_precision("XXBTZUSD")
+
+def test_krakenclient_ohlc_closes_with_timestamps_and_kraken_market_data_iter115_s2():
+    """[ITER115 #2] KrakenClient.ohlc_closes_with_timestamps and kraken.market_data."""
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    import kraken.market_data as kmd
+    # 2. KrakenClient.ohlc_closes_with_timestamps and kraken.market_data
+    kc = KrakenClient(api_key="", api_secret="")
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("   ", 60)
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", 60.0)
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", "60.0")
+    with pytest.raises(ValueError):
+        kmd.fetch_ohlc_candles("XBTUSD", 60.0)
+    assert kmd.pair_precision({"pair_decimals": 999, "lot_decimals": 999, "ordermin": "0.1"}) == (2, 8, 0.1)
+
+def test_kraken_cachemanager__normalize__load_initial_cache_and__ledger_to_fills_iter115_s3(tmp_path):
+    """[ITER115 #3] kraken_cachemanager._normalize, _load_initial_cache, and _ledger_to_fills."""
+    import kraken.kraken_cachemanager as kcm
+    # 3. kraken_cachemanager._normalize, _load_initial_cache, and _ledger_to_fills
+    norm = kcm._normalize("tx1", {"pair": "XBTUSD", "ordertxid": True, "order_id": "OID-1", "price": "100", "vol": "1", "time": 1700000000})
+    assert norm["orderId"] == "OID-1"
+    cache_file = tmp_path / "kraken_trades.json"
+    cache_file.write_text('{"items":{"XBTUSD":[{"id":true,"time":100},{"id":"   ","time":100},{"id":"t1","time":0},{"id":" t2 ","time":1700000000000}]},"fetchtime":{"XBTUSD":100}}')
+    loaded = kcm._load_initial_cache(str(cache_file))
+    assert [r["id"] for r in loaded["items"]["XBTUSD"]] == ["t2"]
+    fills = kcm._ledger_to_fills({
+        "l1": {"refid": True, "asset": "XXBT", "type": "trade", "amount": "1", "time": 1700000000},
+        "l2": {"refid": True, "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
+        "l3": {"refid": " R1 ", "asset": "XXBT", "type": " TRADE ", "amount": "0.5", "time": 1700000000},
+        "l4": {"refid": "R1", "asset": "ZUSD", "type": "TRADE", "amount": "-50", "time": 1700000000},
+    })
+    assert len(fills) == 1 and fills[0]["orderId"] == "R1"
+
+def test_krakenclient_pair_info_ticker_and_add_order_validate_false_iter116_s1(monkeypatch):
+    """[ITER116 #1] KrakenClient.pair_info, ticker, and add_order validate='false'."""
+    from kraken.kraken_client import KrakenClient
+    # 1. KrakenClient.pair_info, ticker, and add_order validate="false"
+    kc = KrakenClient(api_key="k", api_secret="c2VjcmV0")
+    assert kc.pair_info(123) is None
+    assert kc.ticker(123) is None
+    captured_data = {}
+    monkeypatch.setattr(kc, "_private", lambda ep, data=None: captured_data.update(data or {}) or {"txid": ["T1"]})
+    monkeypatch.setattr(kc, "price_decimals", lambda _p: 2)
+    kc.add_order("XBTUSD", "buy", 1.0, price=100.0, ordertype="limit", validate="false")
+    assert "validate" not in captured_data
+    captured_data.clear()
+    kc.add_order("XBTUSD", "buy", 1.0, price=100.0, ordertype="limit", validate="true")
+    assert captured_data.get("validate") == "true"
+
+def test_kraken_cachemanager__match_configured_pair__normalize_and__ledger_to_fills_iter116_s2():
+    """[ITER116 #2] kraken_cachemanager._match_configured_pair, _normalize, and _ledger_to_fills."""
+    import kraken.kraken_cachemanager as kcm
+    # 2. kraken_cachemanager._match_configured_pair, _normalize, and _ledger_to_fills
+    assert kcm._match_configured_pair(True) is None
+    assert kcm._match_configured_pair(123) is None
+    assert kcm._normalize(None, {"pair": "XBTUSD"}) == {}
+    assert kcm._normalize(True, {"pair": "XBTUSD"}) == {}
+    assert kcm._normalize("tx1", "not-a-dict") == {}
+    assert kcm._normalize(" tx1 ", {"pair": True})["symbol"] is None
+    assert kcm._ledger_to_fills({
+        "l1": {"refid": "R1", "asset": True, "type": "trade", "amount": "1", "time": 1700000000},
+        "l2": {"refid": "R1", "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
+    }) == []
+
+def test_kraken_market_data_fetch_ohlc_candles_rejects_float_interval_with_invalid_iter117_s1():
+    """[ITER117 #1] kraken.market_data.fetch_ohlc_candles rejects float interval with 'invalid interval'."""
+    import pytest
+    import kraken.market_data as k_md
+    # 1. kraken.market_data.fetch_ohlc_candles rejects float interval with "invalid interval"
+    with pytest.raises(ValueError, match="invalid interval"):
+        k_md.fetch_ohlc_candles("XXBTZUSD", 1.5)
+
+def test_marketapi_krakenprovider_and_t212provider_reject_nan_inf_non_iter122_s3():
+    """[ITER122 #3] MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id."""
+    import pytest
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+    from providers.market_api import api
+    from providers.strategy_executor import ProviderError
+    # 3. MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id
+    for bad_id in (float("nan"), float("inf"), "nan", "INF", "null", 12.5, {"bad": 1}):
+        with pytest.raises(ProviderError):
+            api.order_status("BTCUSDC", bad_id, provider_name="binance")
+        with pytest.raises(ProviderError):
+            api.cancel_order("BTCUSDC", bad_id, provider_name="binance")
+    kp = KrakenProvider()
+    tp = T212Provider()
+    for bad_str in ("nan", "inf", "none", "null"):
+        with pytest.raises(ProviderError):
+            kp.order_status("HYPEUSD", bad_str)
+        with pytest.raises(ProviderError):
+            kp.cancel_order("HYPEUSD", bad_str)
+        with pytest.raises(ProviderError):
+            tp.order_status("AAPL_US_EQ", bad_str)
+        with pytest.raises(ProviderError):
+            tp.cancel_order("AAPL_US_EQ", bad_str)
+
+def test_krakenclient_cancel_order_and_query_orders_reject_sentinel_strings_nan_iter135_s1():
+    """[ITER135 #1] KrakenClient.cancel_order and query_orders reject sentinel strings ('nan', 'null') and containers/floats."""
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    # 1. KrakenClient.cancel_order and query_orders reject sentinel strings ("nan", "null") and containers/floats
+    kc = KrakenClient("k", "c2VjcmV0")
+    for bad_txid in ("nan", "null", "none", "inf", float("nan"), ["OX123"], {"a": 1}, True, None):
+        with pytest.raises(ValueError, match="invalid Kraken txid"):
+            kc.cancel_order(bad_txid)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="invalid Kraken txid"):
+            kc.query_orders(bad_txid)  # type: ignore[arg-type]
+
+def test_kraken_cachemanager__normalize_rejects_sentinel_txid_and_normalizes_integer_iter135_s2():
+    """[ITER135 #2] kraken_cachemanager._normalize rejects sentinel txid and normalizes integer float ordertxid."""
+    from kraken import kraken_cachemanager as kcm
+    # 2. kraken_cachemanager._normalize rejects sentinel txid and normalizes integer float ordertxid
+    assert kcm._normalize("nan", {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    assert kcm._normalize(["T1"], {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    norm = kcm._normalize(
+        " TX-100 ",
+        {"type": "buy", "price": "10", "vol": "1", "time": 1700000000, "ordertxid": "nan", "id": 999.0},
+    )
+    assert norm["id"] == "TX-100"
+    assert norm["orderId"] == "999"
+
+def test_kraken_cachemanager__load_initial_cache_filters_out_sentinel_container_fill_ids_iter135_s3(tmp_path):
+    """[ITER135 #3] kraken_cachemanager._load_initial_cache filters out sentinel/container fill IDs."""
+    import json
+    from kraken import kraken_cachemanager as kcm
+    # 3. kraken_cachemanager._load_initial_cache filters out sentinel/container fill IDs
+    cache_file = str(tmp_path / "cache_trade_kraken.json")
+    with open(cache_file, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"id": "nan", "time": 1700000000000},
+                        {"id": ["bad"], "time": 1700000000000},
+                        {"id": " VALID-1 ", "time": 1700000005000.0},
+                    ]
+                },
+                "fetchtime": {"HYPEUSD": 1700000005000},
+            },
+            fh,
+        )
+    loaded = kcm._load_initial_cache(cache_file)
+    assert [r["id"] for r in loaded["items"]["HYPEUSD"]] == ["VALID-1"]
+
+def test_kraken_cachemanager__ledger_to_fills_ignores_entries_with_sentinel_container_refid_iter135_s4():
+    """[ITER135 #4] kraken_cachemanager._ledger_to_fills ignores entries with sentinel/container refid."""
+    from kraken import kraken_cachemanager as kcm
+    # 4. kraken_cachemanager._ledger_to_fills ignores entries with sentinel/container refid
+    fills = kcm._ledger_to_fills(
+        {
+            "L1": {"refid": "nan", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000000.0},
+            "L2": {"refid": "nan", "asset": "ZUSD", "amount": "-100.0", "type": "trade", "time": 1700000000.0},
+            "L3": {"refid": "REF-OK", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000000.0},
+            "L4": {"refid": "REF-OK", "asset": "ZUSD", "amount": "-100.0", "type": "trade", "time": 1700000000.0},
+        }
+    )
+    assert [f["id"] for f in fills] == ["REF-OK"]
+
+def test__kraken_client_order_id__normalize_kraken_fill_and_krakenprovider_order_status_whitespace_handling_iter141_s2():
+    """[ITER141 #2] _kraken_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling."""
+    import pytest
+    from types import SimpleNamespace
+    from providers.hyperliquid_provider import _cloid_for_client_order_id
+    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id, _normalize_kraken_fill
+    from providers.strategy_executor import ProviderError
+    # 2. _kraken_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
+    for bad_cid in ("nan", "null", "none", "inf", ["abc"], {"a": 1}, True, None, ""):
+        with pytest.raises(ProviderError):
+            _kraken_client_order_id(bad_cid)  # type: ignore[arg-type]
+        with pytest.raises(ProviderError):
+            _cloid_for_client_order_id(bad_cid)  # type: ignore[arg-type]
+
+    nf_bad = _normalize_kraken_fill({"ordertxid": "nan", "price": 20.0, "qty": 1.0, "side": "BUY", "timestamp": 1000})
+    assert "orderId" not in nf_bad
+    nf_good = _normalize_kraken_fill({"ordertxid": 444.0, "price": 20.0, "qty": 1.0, "side": "BUY", "timestamp": 1000})
+    assert nf_good["orderId"] == "444"
+
+    k_cli = SimpleNamespace(
+        query_orders=lambda txid: {txid.strip(): {"status": "closed", "vol_exec": "2.0", "cost": "40.0", "fee": "0.1", "vol": "2.0"}},
+    )
+    kp = KrakenProvider(client=k_cli)
+    st = kp.order_status("HYPEUSD", "  OUN337-ABC  ")
+    assert st.status == "closed"
+    assert st.filled_qty == pytest.approx(2.0)
+
+def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_watch__load_state_iter146_s2(tmp_path, monkeypatch):
+    """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive & 212trading/price_alert.py _parse_armed_flag."""
+    import importlib.util
+    import json
+    import os
+    from kraken import kraken_xstock_watch as xw
+    # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_spec = importlib.util.spec_from_file_location("hl_strat_t146", os.path.join(root, "hyperliquid", "strategy.py"))
+    hl_mod = importlib.util.module_from_spec(hl_spec)
+    assert hl_spec and hl_spec.loader
+    sys.modules["hl_strat_t146"] = hl_mod
+    try:
+        hl_spec.loader.exec_module(hl_mod)
+    finally:
+        sys.modules.pop("hl_strat_t146", None)
+
+    for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
+        assert hl_mod.clean_order_id(bad_oid) is None
+    assert hl_mod.clean_order_id(555.0) == "555"
+    assert hl_mod.clean_order_id("555.0") == "555"
+
+    sanitized_hl = hl_mod._sanitize_state(
+        {
+            "orders": [
+                {"oid": "nan", "role": "open", "px": 20.0, "sz": 1.0},
+                {"oid": 0, "role": "open", "px": 20.0, "sz": 1.0},
+                {"oid": 555.0, "role": "open", "px": 20.0, "sz": 1.0, "dca_counted": "false"},
+            ]
+        }
+    )
+    assert len(sanitized_hl["orders"]) == 1
+    assert sanitized_hl["orders"][0]["oid"] == 555
+    assert sanitized_hl["orders"][0]["dca_counted"] is False
+
+
+    # 3. kraken_xstock_watch._load_state & _bot_alive
+    st_file = tmp_path / "xstock_state.json"
+    st_file.write_text(
+        json.dumps(
+            {
+                "known_assets": {"SPCX": "10.5", "BAD": "nan", "ZERO": 0},
+                "allocated": "invalid_not_dict",
+                "pair": "nan",
+                "alerted_pair": "false",
+                "alerted_tp": "0",
+                "alerted_tp2": "no",
+                "alerted_sl": "nan",
+                "alerted_need_price": "false",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(st_file))
+    loaded_xw = xw._load_state()
+    assert loaded_xw["known_assets"] == {"SPCX": 10.5}
+    assert loaded_xw["allocated"] is None
+    assert loaded_xw["pair"] is None
+    assert loaded_xw["alerted_pair"] is False
+    assert loaded_xw["alerted_tp"] is False
+    assert loaded_xw["alerted_tp2"] is False
+    assert loaded_xw["alerted_sl"] is False
+    assert loaded_xw["alerted_need_price"] is False
+    assert xw._parse_bool_flag(float("nan")) is False
+    assert xw._bot_alive("1234.5") is False
+    assert xw._bot_alive(float("nan")) is False
+    assert xw._bot_alive(["1234"]) is False
+
+
+    # 4. 212trading/price_alert.py _parse_armed_flag
+    pa_spec = importlib.util.spec_from_file_location("t212_pa_t146", os.path.join(root, "212trading", "price_alert.py"))
+    pa_mod = importlib.util.module_from_spec(pa_spec)
+    assert pa_spec and pa_spec.loader
+    pa_spec.loader.exec_module(pa_mod)
+    assert pa_mod._parse_armed_flag("0.0") is False
+    assert pa_mod._parse_armed_flag("false") is False
+    assert pa_mod._parse_armed_flag("null") is False
+    assert pa_mod._parse_armed_flag(float("nan"), default=True) is True
+    assert pa_mod._parse_armed_flag("true") is True
+
+def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_iter147_s1(tmp_path):
+    """[ITER147 #1] kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache."""
+    import json
+    from kraken import kraken_cachemanager as kcm
+    # 1. kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache
+    for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
+        assert kcm.clean_order_id(bad_id) is None
+        assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
+
+    assert kcm.clean_order_id(777.0) == "777"
+    assert kcm.clean_order_id("777.0") == "777"
+    norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
+    assert norm_ok["id"] == "777"
+
+    cache_file = tmp_path / "cache_trade_kraken.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"id": "0", "time": 1700000000000, "isBuyer": "false"},
+                        {"id": "888.0", "time": 1700000001000, "isBuyer": "false"},
+                    ]
+                },
+                "fetchtime": {"HYPEUSD": 1700000001000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded_cache = kcm._load_initial_cache(str(cache_file))
+    assert len(loaded_cache["items"]["HYPEUSD"]) == 1
+    assert loaded_cache["items"]["HYPEUSD"][0]["id"] == "888"
+    assert loaded_cache["items"]["HYPEUSD"][0]["isBuyer"] is False
+
+def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter147_s2(tmp_path):
+    """[ITER147 #2] kraken/shadow_live._get_anchor handles integral float strings and non-finite default_ts."""
+    import os
+    from kraken import shadow_live as ksl
+    # 2. kraken/shadow_live._get_anchor handles integral float strings and non-finite default_ts
+    orig_log_dir = ksl.LOG_DIR
+    ksl.LOG_DIR = str(tmp_path / "shadow_logs")
+    try:
+        os.makedirs(ksl.LOG_DIR, exist_ok=True)
+        anchor_p = ksl._anchor_path("HYPEUSD", 240)
+        with open(anchor_p, "w", encoding="utf-8") as fh:
+            fh.write("1700000000.0\n")
+        assert ksl._get_anchor("HYPEUSD", 240, 1600000000) == 1700000000
+        assert ksl._get_anchor("ADAUSD", 240, float("nan")) == 0  # type: ignore[arg-type]
+    finally:
+        ksl.LOG_DIR = orig_log_dir
+
+def test_krakenprovider__clean_kraken_order_id_kraken_strategy_dry_run_iter152_s2():
+    """[ITER152 #2] KrakenProvider _clean_kraken_order_id & kraken_strategy_dry_run."""
+    import pytest
+    from providers.kraken_provider import KrakenProvider, _clean_kraken_order_id, _parse_bool_flag as krk_bool, kraken_strategy_dry_run
+    from providers.strategy_executor import ProviderError
+    # 2. KrakenProvider _clean_kraken_order_id & kraken_strategy_dry_run
+    assert krk_bool("false", True) is False
+    assert kraken_strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
+    assert kraken_strategy_dry_run(False, float("nan")) is True  # type: ignore[arg-type]
+    for bad_oid in ("", "0", "0.0", "nan", "null", "none", "inf", True, 123, ["O-1"], None):
+        with pytest.raises(ProviderError):
+            _clean_kraken_order_id(bad_oid, "order_status")
+    assert _clean_kraken_order_id(" O-KRK-123 ", "order_status") == "O-KRK-123"
+
+    krk = KrakenProvider()
+    with pytest.raises(ProviderError):
+        krk.order_status("HYPEUSD", "0")
+    with pytest.raises(ProviderError):
+        krk.cancel_order("HYPEUSD", "0")
+
+def test_krakenprovider__fills_from_api_none_and_cancel_order_with_count_iter164_s3():
+    """[ITER164 #3] KrakenProvider: _fills_from_api(None) and cancel_order with count='1.0'."""
+    from types import SimpleNamespace
+    from providers.kraken_provider import KrakenProvider
+    # 3. KrakenProvider: _fills_from_api(None) and cancel_order with count="1.0"
+    kp = KrakenProvider(client=SimpleNamespace(cancel_order=lambda oid: {"count": "1.0"}))
+    assert kp._fills_from_api(None) == []
+    assert kp._fills_from_api(True) == []
+    kp.cancel_order("HYPEUSD", "OQCLML-BW3P3-BUCMWZ")
+
+def test_krakenprovider_open_orders_side_aliases_preflight_order_ask_alias_and_iter169_s3(monkeypatch):
+    """[ITER169 #3] KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force."""
+    import pytest
+    from providers import kraken_provider as krp
+    from providers.strategy_executor import PairPrecision, ProviderError
+    # 3. KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force
+    class _FakeKrakenClient:
+        def open_orders(self):
+            return {
+                "OID1": {
+                    "descr": {"pair": "HYPEUSD", "type": " b ", "price": "20.0"},
+                    "vol": "1.5",
+                    "vol_exec": "0.5",
+                }
+            }
+
+        def add_order(self, symbol, side, qty, price, **kw):
+            return {"txid": ["OID2"], "ordertype": kw.get("ordertype"), "validate": kw.get("validate")}
+
+    kr = krp.KrakenProvider(client=_FakeKrakenClient())
+    monkeypatch.setattr(kr, "execution_enabled", lambda: False)
+    monkeypatch.setattr(kr, "round_quantity", lambda sym, q: float(q))
+    monkeypatch.setattr(
+        kr,
+        "pair_precision",
+        lambda sym: PairPrecision(price_decimals=2, volume_decimals=2, order_min=0.1, base_asset="HYPE"),
+    )
+    monkeypatch.setattr(kr, "free_balance", lambda asset: 0.5)
+    oo = kr.open_orders("HYPEUSD")
+    assert len(oo) == 1 and oo[0]["side"] == "BUY"
+    with pytest.raises(ProviderError, match="insufficient funds SELL"):
+        kr.preflight_order("HYPEUSD", "ASK", 2.0)
+    res_kr = kr.place_order("HYPEUSD", "BID", 20.0, 1.0, True)
+    assert res_kr["ordertype"] == "market" and res_kr["validate"] is True

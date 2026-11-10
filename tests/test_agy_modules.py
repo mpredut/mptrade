@@ -827,13 +827,123 @@ class TestMirrorTopicThreadToUi:
         assert len(hist) == 5
         assert any("SELL(LIMIT@221.4):TAOUSDC@0.91" in h["summary"] for h in hist)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch):
+    """[ITER57 #1] summary_store.safe_nonneg_int and topics.safe_int."""
+    import pytest
+    from orchestratorOS.agy.summary_store import get_thread_step_count, safe_nonneg_int
+    from orchestratorOS.agy.topics import prepare_topic_session, safe_int
+    # 1. summary_store.safe_nonneg_int and topics.safe_int
+    assert safe_nonneg_int(True) == 0
+    assert safe_nonneg_int(float("nan")) == 0
+    assert safe_nonneg_int(float("inf")) == 0
+    assert safe_nonneg_int("-5") == 0
+    assert safe_nonneg_int("12.0") == 12
+    monkeypatch.setattr("orchestratorOS.agy.summary_store.read_summary_row", lambda base, cid: {"step_count": True, "status": "IDLE"})
+    assert get_thread_step_count("cid1", "/tmp") == (False, 0, "IDLE")
 
+    assert safe_int(True, 7) == 7
+    assert safe_int(float("nan"), 7) == 7
+    assert safe_int("15.0", 0) == 15
+    with pytest.raises(ValueError):
+        prepare_topic_session("auto_cryptotrade_executor", compact_steps=float("nan"))
 
+def test_protobuf_dec_varint_rejects_overly_long_varints_and_parse_fields_iter80_s1():
+    """[ITER80 #1] protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0."""
+    import pytest
+    from orchestratorOS.agy import protobuf
+    # 1. protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0
+    with pytest.raises(ValueError, match="varint too long"):
+        protobuf.dec_varint(b"\x80" * 11, 0)
+    with pytest.raises(ValueError, match="invalid field tag 0"):
+        protobuf.parse_fields(b"\x00\x01")
+    assert protobuf.summary_annotation_title(b"\x80\x80") == ""
 
+def test_summary_store_parse_db_timestamp_preserves_negative_positive_timezone_offsets_without_iter80_s2():
+    """[ITER80 #2] summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits."""
+    from datetime import datetime, timezone
+    from orchestratorOS.agy import summary_store
+    # 2. summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits
+    dt_neg = summary_store.parse_db_timestamp("2026-10-26T14:30:00.12-05:00")
+    assert dt_neg == datetime(2026, 10, 26, 19, 30, 0, 120000, tzinfo=timezone.utc)
+    dt_pos = summary_store.parse_db_timestamp("2026-10-26T14:30:00.5+02:00")
+    assert dt_pos == datetime(2026, 10, 26, 12, 30, 0, 500000, tzinfo=timezone.utc)
 
+def test_protobuf_summary_ui_visible_self_heals_corrupted_raw_bytes_and_iter81_s1():
+    """[ITER81 #1] protobuf.summary_ui_visible self-heals corrupted raw bytes and preserves title."""
+    from orchestratorOS.agy import protobuf
+    # 1. protobuf.summary_ui_visible self-heals corrupted raw bytes and preserves title
+    repaired = protobuf.summary_ui_visible(b"\x80\x80", title="Recovered Thread", reset_running=True)
+    assert protobuf.summary_annotation_title(repaired) == "Recovered Thread"
+    assert protobuf.list_entry_cids(b"\x80\x80") == set()
+    assert protobuf.drop_entries(b"\x80\x80", {"abc"}) == (b"\x80\x80", 0)
+    assert protobuf.replace_summary_entry(b"\x80\x80", "abc", b"") == (b"\x80\x80", False)
 
+def test_agy_store_fix_rejects_non_finite_idle_sec_and_handles_missing_iter81_s2(monkeypatch):
+    """[ITER81 #2] agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully."""
+    import pytest
+    from orchestratorOS.admin import agy_store_fix
+    # 2. agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully
+    with pytest.raises(ValueError):
+        agy_store_fix.mode_ui_sync_check(float("nan"))
+    with pytest.raises(ValueError):
+        agy_store_fix.mode_ui_sync_check(float("inf"))
+    monkeypatch.setattr(agy_store_fix, "PB", "/nonexistent/path/agyhub_summaries_proto.pb")
+    monkeypatch.setattr(agy_store_fix, "DB", "/nonexistent/path/conversation_summaries.db")
+    assert agy_store_fix.daemon_known_cids() == set()
+    assert agy_store_fix.summary_row_cids() == set()
 
+def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_iter82_s1():
+    """[ITER82 #1] topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences."""
+    from orchestratorOS.agy import topics
+    # 1. topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences
+    hybrid = "Analysis:\n```python\nprint('hello')\n```\nFinal decision:\n{\"decision\": \"ALLOW\", \"confidence\": 0.9}"
+    assert topics.extract_json_object(hybrid) == {"decision": "ALLOW", "confidence": 0.9}
+    multi_fence = "```json\n{\"decision\": \"VETO\"}\n```\n```text\n{not_json}\n```"
+    assert topics.extract_json_object(multi_fence) == {"decision": "VETO"}
 
+def test_orchestratoros_agy_topics_summary_store_ui_mirror_iter105_s1(tmp_path):
+    """[ITER105 #1] orchestratorOS.agy.topics & summary_store & ui_mirror."""
+    import json
+    from orchestratorOS.agy import topics, summary_store, ui_mirror
+    # 1. orchestratorOS.agy.topics & summary_store & ui_mirror
+    assert topics.canonical_topic_key(True) == ""
+    assert topics.canonical_topic_key("  auto_trade_executor  ") == "auto_cryptotrade_executor"
+    assert topics.format_topic_turn_header("macro_geopolitical", True) is not None
+    assert topics.extract_json_object(True) is None
+    assert topics.condense_decision(True) == ""
+    assert summary_store.get_thread_step_count(True, str(tmp_path)) == (False, 0, "")
+    assert ui_mirror.sync_topic_thread_from_ui(True, bot_cli_base=str(tmp_path), ui_cli_base=str(tmp_path)) is False
+    assert ui_mirror.mirror_topic_thread_to_ui(True, "Title", bot_cli_base=str(tmp_path), ui_cli_base=str(tmp_path)) is False
 
+    reg_file = tmp_path / "topics.json"
+    reg_file.write_text(
+        json.dumps({
+            "macro_geopolitical": {"conversation_id": True, "title": True},
+            "macro_sentiment": {"conversation_id": "  cid-123  ", "title": True},
+        }),
+        encoding="utf-8",
+    )
+    assert topics.get_active_topic_cids(str(reg_file)) == {"cid-123"}
+    titles = topics.get_topic_canonical_titles(str(reg_file))
+    assert "cid-123" in titles and "True" not in titles
+
+def test_prune_llm_threads_is_automated_thread_handles_non_string_title_preview_safely_iter120_s4():
+    """[ITER120 #4] prune_llm_threads.is_automated_thread handles non-string title/preview safely."""
+    from orchestratorOS.admin import prune_llm_threads
+    # 4. prune_llm_threads.is_automated_thread handles non-string title/preview safely
+    assert prune_llm_threads.is_automated_thread(None, True) is False
+    assert prune_llm_threads.is_automated_thread("morning reconciliation", None) is True
+
+def test_prune_llm_threads__parse_bool_flag_and_missing_db_path_with_string_flags_iter127_s1(tmp_path):
+    """[ITER127 #1] prune_llm_threads._parse_bool_flag and missing db_path with string flags."""
+    from orchestratorOS.admin.prune_llm_threads import _parse_bool_flag, prune_old_cli_threads
+    # 1. prune_llm_threads._parse_bool_flag and missing db_path with string flags
+    assert _parse_bool_flag("false", True) is False
+    assert _parse_bool_flag("0", True) is False
+    assert _parse_bool_flag("true", False) is True
+    assert prune_old_cli_threads(cli_base=str(tmp_path), dry_run="false", all_threads_in_project="false", exclude_cids="cid1, cid2") == (0, 0)

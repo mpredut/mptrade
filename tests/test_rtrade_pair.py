@@ -1355,3 +1355,755 @@ class RTradePairStoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test__livepairvenue__submit_limit_intent_honours_rtrade_bypass_profit_guard_on_buy_sell_iter7_s2(monkeypatch):
+    """[ITER7 #2] _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL."""
+    from unittest.mock import MagicMock
+    import rtrade
+    # 2. _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL
+    monkeypatch.setattr(rtrade, "RTRADE_BYPASS_PROFIT_GUARD", True)
+    placed_calls = []
+    monkeypatch.setattr(
+        rtrade.mkt,
+        "place",
+        lambda symbol, side, price, qty, **kw: placed_calls.append((symbol, side, price, qty, kw)) or {"orderId": "99"},
+    )
+    venue = rtrade._LivePairVenue("SOLUSDC")
+    monkeypatch.setattr(venue, "_persist_callback", lambda *a, **k: (lambda x: None))
+    monkeypatch.setattr(venue, "_ticket_from_pending", lambda intent, pair_id: intent)
+    monkeypatch.setattr(
+        venue.order_lifecycle,
+        "submit",
+        lambda intent, persist, submit: MagicMock(intent=submit()),
+    )
+
+    venue._submit_limit_intent("BUY", 100.0, 1.0, "pair1", attempt=1, revision=0)
+    assert len(placed_calls) == 1
+    assert placed_calls[-1][4]["bypass_guards"] == {"G_PROF", "GLLM1"}
+    assert placed_calls[-1][4]["allow_math_reference_sell"] is False
+
+    venue._submit_limit_intent("SELL", 105.0, 1.0, "pair1", attempt=1, revision=0)
+    assert len(placed_calls) == 2
+    assert placed_calls[-1][4]["bypass_guards"] == {"G_PROF", "GLLM1"}
+    assert placed_calls[-1][4]["allow_math_reference_sell"] is True
+
+def test_rtrade__whale_flow_blocks_side_and__effective_adjustment_fraction_honor_gi_whale_bypass_iter14_s2(monkeypatch):
+    """[ITER14 #2] rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass."""
+    import pytest
+    import time
+    import rtrade
+    import external_order_guard
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
+    # 2. rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass
+    collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    collector.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="TAOUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.66,
+            taker_buy_sell_ratio=0.70,
+            taker_buy_vol_usd=70_000.0,
+            taker_sell_vol_usd=100_000.0,
+            open_interest_usd=50_000_000.0,
+            open_interest_1h_change_pct=0.0,
+            divergence_regime="neutral",
+            ts=time.time(),
+        )
+    )
+    monkeypatch.setattr(external_order_guard, "_whale_collector", collector)
+
+    # Enforced by default -> blocks BUY and widens adjustment
+    blocked_default, _ = rtrade._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert blocked_default is True
+    assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.006)
+
+    # Bypassed via GI_WHALE -> does not block and keeps base adjustment
+    blocked_bypassed, reason_bypassed = rtrade._whale_flow_blocks_side(
+        "TAOUSDC", "BUY", bypass_guards={"GI_WHALE"}
+    )
+    assert blocked_bypassed is False
+    assert reason_bypassed == "gi_whale_bypassed_or_off"
+    assert rtrade._effective_adjustment_fraction(
+        "TAOUSDC", 0.004, bypass_guards={"GI_WHALE"}
+    ) == pytest.approx(0.004)
+
+def test_rtrade_also_honors_whale_guard_mode_shadow_off_in_order_guard_iter14_s3(monkeypatch):
+    """[ITER14 #3] rtrade also honors whale_guard_mode = shadow / off in order_guard.conf."""
+    import pytest
+    import order_guard
+    import rtrade
+    # 3. rtrade also honors whale_guard_mode = shadow / off in order_guard.conf
+    base_m = dict(order_guard._load_margins())
+    base_m["whale_guard_mode"] = "shadow"
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: base_m)
+    blocked_shadow, reason_shadow = rtrade._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert blocked_shadow is False
+    assert reason_shadow == "gi_whale_bypassed_or_off"
+    assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.004)
+
+def test_krakenprovider__fills_from_cache_rejects_nan_and_future_timestamps_accepts_iter22_s3(tmp_path, monkeypatch):
+    """[ITER22 #3] KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds."""
+    import json
+    import time
+    from unittest.mock import MagicMock
+    import order_guard
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    from providers.kraken_provider import KrakenProvider
+    import rtrade
+    pg_bypasses = []
+    class FakeKrakenProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-22", "qty": qty}
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "kraken_bypass_guards": {"GLLM3"}, "binance_bypass_guards": {"GI_WHALE"}},
+    )
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = FakeKrakenProvider()
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        params={"bypass_guards": "GI_OBOOK"},
+        api=fake_api,
+    )
+    res = inst.place(
+        "BUY", 100.0, 1.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"G_PROF"},
+    )
+    assert res is not None
+    assert len(pg_bypasses) == 1
+    assert {"g_prof", "gi_obook", "gllm3"}.issubset(pg_bypasses[0])
+    assert rtrade._is_gi_whale_enforced(bypass_guards={"G_PROF"}) is False
+    # 3. KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds
+    kp = KrakenProvider()
+    cache_path = tmp_path / "cache_trade_kraken.json"
+    monkeypatch.setattr("providers.kraken_provider._KRAKEN_CACHE_FILE", str(cache_path))
+    now_curr = time.time()
+    # Future timestamp -> rejected
+    cache_path.write_text(
+        json.dumps({
+            "items": {"TAOUSD": [{"price": 400.0, "vol": 1.0, "type": "buy", "time": now_curr}]},
+            "fetchtime": {"TAOUSD": (now_curr + 3600.0) * 1000.0},
+        }),
+        encoding="utf-8",
+    )
+    assert kp._fills_from_cache("TAOUSD") is None
+    # Seconds timestamp -> normalized to ms and accepted
+    cache_path.write_text(
+        json.dumps({
+            "items": {"TAOUSD": [{"price": 400.0, "vol": 1.0, "type": "buy", "time": now_curr}]},
+            "fetchtime": {"TAOUSD": now_curr - 5.0},
+        }),
+        encoding="utf-8",
+    )
+    fills_ok = kp._fills_from_cache("TAOUSD")
+    assert isinstance(fills_ok, list) and len(fills_ok) == 1
+
+def test_collect_pretrade_telemetry_handles_non_numeric_slopes_and_empty_macro_iter22_s4(tmp_path, monkeypatch):
+    """[ITER22 #4] collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts."""
+    import json
+    from unittest.mock import MagicMock
+    import order_guard
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    import rtrade
+    pg_bypasses = []
+    class FakeKrakenProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-22", "qty": qty}
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "kraken_bypass_guards": {"GLLM3"}, "binance_bypass_guards": {"GI_WHALE"}},
+    )
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = FakeKrakenProvider()
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        params={"bypass_guards": "GI_OBOOK"},
+        api=fake_api,
+    )
+    res = inst.place(
+        "BUY", 100.0, 1.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"G_PROF"},
+    )
+    assert res is not None
+    assert len(pg_bypasses) == 1
+    assert {"g_prof", "gi_obook", "gllm3"}.issubset(pg_bypasses[0])
+    assert rtrade._is_gi_whale_enforced(bypass_guards={"G_PROF"}) is False
+    # 4. collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts
+    (tmp_path / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"TAOUSDC": {"dynamic": {"222": {"slope_full": None}, "900": {"slope_full": "bad"}}}}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sentiment_eval.json").write_text(json.dumps({}), encoding="utf-8")
+    telem = collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(tmp_path))
+    assert telem.get("Dynamic Multi-Window Slopes") == "3.7m=+0.00000, 15m=+0.00000, 2.5h=+0.00000"
+    assert "Macro Sentiment Bias" not in telem
+
+def test_spot_engine_set_simulated_time__evaluate_reentry_gate_ledger_reconciliation_and_peak_tracking_iter46_s1(tmp_path):
+    """[ITER46 #1] spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking & rtrade_pair: PairPolicy, quote_prices, anchored_exit_price, and clock/step NaN/bool rejection & spot_replay: _validate_replay and align_spot_interval_params NaN/bool protection."""
+    from types import SimpleNamespace
+    import math
+    import pytest
+    from providers.strategy_executor import PairPrecision
+    from strategies import spot_engine as se
+    from strategies import rtrade_pair as rp
+    from strategies import spot_replay as srep
+    # 1. spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking
+    fake_client = SimpleNamespace(
+        pair_precision=lambda _pair: PairPrecision(2, 4, 0.001, "BTC"),
+        free_balance=lambda _asset: float("nan"),
+        order_status=lambda _pair, _txid: SimpleNamespace(
+            status="open", filled_qty=True, cost=100.0, fee=0.0
+        ),
+    )
+    params = se.StratParams(
+        currency="USDC",
+        entry_amount=100.0,
+        entry_discount_pct=0.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=15.0,
+        stop_loss_pct=10.0,
+        surge_guard=True,
+        slow_grind_guard=True,
+    )
+    strat = se.Strategy(
+        fake_client,
+        "BTCUSDC",
+        params,
+        dry_run=True,
+        initial_state=se._new_state(),
+        replay_mode=True,
+        state_dir=str(tmp_path),
+    )
+    strat.set_simulated_time(1234.5)
+    assert strat._now() == 1234.5
+    strat.set_simulated_time(True)
+    assert strat._simulated_ts is None
+    strat.set_simulated_time(float("nan"))
+    assert strat._simulated_ts is None
+
+    # Corrupted NaN/bool in reentry state does not poison post_sell_peak / post_sell_trough / sl_low
+    strat.s["last_sell_price"] = 100.0
+    strat.s["post_sell_peak"] = float("nan")
+    strat.s["post_sell_trough"] = True
+    strat.s["last_exit_kind"] = "STOP"
+    strat.s["sl_low"] = float("nan")
+    strat._evaluate_reentry_gate(98.0, None, 1000.0)
+    assert math.isfinite(strat.s["post_sell_peak"]) and strat.s["post_sell_peak"] == 100.0
+    assert math.isfinite(strat.s["post_sell_trough"]) and strat.s["post_sell_trough"] == 98.0
+    assert math.isfinite(strat.s["sl_low"]) and strat.s["sl_low"] == 98.0
+
+    # Corrupted NaN in surge_peak / slow_grind_peak does not poison peak tracking
+    strat.s["surge_peak"] = float("nan")
+    strat.s["slow_grind_peak"] = float("nan")
+    strat._check_advanced_profit_guards(105.0, 100.0, 1.0, closes=[100.0] * 25, tick_time=1000.0)
+    assert strat.s["surge_peak"] == 105.0
+    assert strat.s["slow_grind_peak"] == 105.0
+
+    # Ledger reconciliation with NaN/bool balance fails closed without clearing ledger_reconcile_required
+    strat.dry_run = False
+    strat.s["qty"] = 1.0
+    strat.s["cost"] = 100.0
+    strat.s["spent"] = 100.0
+    strat.s["ledger_reconcile_required"] = True
+    strat.step(100.0, timestamp=1000.0)
+    assert strat.s["ledger_reconcile_required"] is True
+    assert strat.s["qty"] == 1.0
+
+
+    # 2. rtrade_pair: PairPolicy, quote_prices, anchored_exit_price, and clock/step NaN/bool rejection
+    with pytest.raises(ValueError):
+        rp.PairPolicy(adjustment_fraction=0.01, price_decimals=True)
+    with pytest.raises(ValueError):
+        rp.quote_prices(100.0, True)
+    with pytest.raises(ValueError):
+        rp.anchored_exit_price("SELL", 100.0, 101.0, 0.01, float("nan"))
+
+
+    # 3. spot_replay: _validate_replay and align_spot_interval_params NaN/bool protection
+    with pytest.raises(ValueError):
+        srep.run_replay([(100, 101, 99, 100)], params, bar_minutes=True)
+    with pytest.raises(ValueError):
+        srep.run_replay([(100, 101, 99, 100)], params, bar_minutes=float("nan"))
+    assert srep.align_spot_interval_params(params, True) is params
+    assert srep.align_spot_interval_params(params, float("nan")) is params
+
+def test_rtradepairstore_guards_terminal_retention_accepted_order_id_and_checkpoint_state_iter62_s2(tmp_path):
+    """[ITER62 #2] RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state."""
+    import pytest
+    from rtrade_pair_store import RTradePairStore
+    # 2. RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state
+    store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"), terminal_retention=True)
+    assert store.terminal_retention == 200
+    with pytest.raises(ValueError, match="invalid rtrade accepted order_id"):
+        store.accepted("p1", "BUY", True)
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint"):
+        store.checkpoint("p1", None)
+
+def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_iter64_s4():
+    """[ITER64 #4] OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions."""
+    import pytest
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+    # 4. OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions
+    with pytest.raises(ValueError, match="ticket rtrade invalid"):
+        OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
+
+    class _RaiseCancelVenue:
+        def current_price(self):
+            return 100.0
+        def preflight_order(self, *a, **kw):
+            return None
+        def place_limit(self, side, price, qty, pair_id, **kw):
+            return OrderTicket(order_id=f"id-{side}", side=side, price=price, qty=qty, pair_id=pair_id)
+        def place_market_exit(self, *a, **kw):
+            return None
+        def order_status(self, order_id):
+            return OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0)
+        def cancel(self, order_id):
+            raise RuntimeError("network error on cancel")
+
+    coord = PairCoordinator(_RaiseCancelVenue(), 1.0, PairPolicy(adjustment_fraction=0.01, quote_ttl_sec=10.0), clock=lambda: 100.0)
+    coord.start(100.0)
+    outcome = coord.step(now=120.0)
+    assert outcome.reason == "quote_cancel_pending"
+    assert not outcome.terminal
+
+def test_rtradepairstore_rejects_boolean_ids_and_non_finite_quantities_iter71_s2(tmp_path):
+    """[ITER71 #2] RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent."""
+    import pytest
+    from rtrade_pair_store import RTradePairStore
+    # 2. RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent
+    with pytest.raises(ValueError):
+        RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
+            "side": "BUY", "kind": "limit", "client_order_id": True, "qty": 1.0,
+        })
+    with pytest.raises(ValueError):
+        RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
+            "side": "BUY", "kind": "limit", "client_order_id": "c1", "qty": 1.0, "order_id": True,
+        })
+    store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"))
+    store.intent("p1", "BUY", 100.0, 1.0, "c0", symbol="BTCUSDC", start_side="BUY")
+    with pytest.raises(ValueError):
+        store.persist_intent("p1", "BUY", "limit", {"client_order_id": "c1", "qty": float("nan")})
+
+def test__should_notify_order_launched_treats_boolean_owner_as_true_not_suppressed_iter124_s2():
+    """[ITER124 #2] _should_notify_order_launched treats boolean owner as True (not suppressed)."""
+    import monitororder as mo
+    # 2. _should_notify_order_launched treats boolean owner as True (not suppressed)
+    assert mo._should_notify_order_launched(True) is True
+    assert mo._should_notify_order_launched("rtrade") is False
+    assert mo._should_notify_order_launched("ai_executor") is False
+    assert mo._should_notify_order_launched("tradeall") is True
+
+def test_orderticket_string_active_false_and_paircoordinator_from_state_validation_iter127_s3():
+    """[ITER127 #3] OrderTicket string active='false' and PairCoordinator.from_state validation."""
+    import pytest
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    # 3. OrderTicket string active="false" and PairCoordinator.from_state validation
+    t_inactive = OrderTicket(order_id="oid-1", side="BUY", price=100.0, qty=1.0, active="false")
+    assert t_inactive.active is False
+
+    pol = PairPolicy(adjustment_fraction=0.01)
+    dummy_venue = type("V", (), {"current_price": lambda self: 100.0})()
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint pair_id"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "  ", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []},
+        )
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint phase"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "   ", "tickets": []},
+        )
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint phase"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": True, "tickets": []},
+        )
+    pc = PairCoordinator.from_state(
+        dummy_venue,
+        pol,
+        {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "shock": "false", "tickets": []},
+    )
+    assert pc.shock is False
+    pc_idle = PairCoordinator(dummy_venue, 1.0, pol)
+    with pytest.raises(ValueError, match="invalid rtrade pair_id"):
+        pc_idle.start(mid=100.0, pair_id="   ")
+
+def test_rtrade_pair_orderticket_and_paircoordinator_from_state_hygiene_iter144_s3():
+    """[ITER144 #3] rtrade_pair OrderTicket and PairCoordinator.from_state hygiene."""
+    import pytest
+    from types import SimpleNamespace
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    # 3. rtrade_pair OrderTicket and PairCoordinator.from_state hygiene
+    for bad_oid in ("nan", "null", "none", "0", 0, -5, ["123"], {"id": 1}, True, None, ""):
+        with pytest.raises(ValueError):
+            OrderTicket(order_id=bad_oid, side="BUY", price=100.0, qty=1.0)  # type: ignore[arg-type]
+
+    t_good = OrderTicket(order_id=777.0, side="BUY", price=100.0, qty=1.0, active=float("nan"))  # type: ignore[arg-type]
+    assert t_good.order_id == "777"
+    assert t_good.active is False
+
+    fake_venue = SimpleNamespace()
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            fake_venue,
+            PairPolicy(0.01),
+            {"pair_id": "nan", "qty": 1.0, "start_side": "BUY", "phase": "quoted", "tickets": []},
+        )
+    coord = PairCoordinator.from_state(
+        fake_venue,
+        PairPolicy(0.01),
+        {
+            "pair_id": "p-1",
+            "qty": 1.0,
+            "start_side": "BUY",
+            "phase": "stopping",
+            "shock": "false",
+            "stop_order_id": 777.0,
+            "tickets": [{"order_id": 777.0, "side": "SELL", "price": 99.0, "qty": 1.0, "active": "true"}],
+            "snapshots": {"777.0": {"status": "open", "filled_qty": 0.0, "cost": 0.0, "fee": 0.0}},
+        },
+    )
+    assert coord.shock is False
+    assert coord.stop_ticket is not None
+    assert coord.stop_ticket.order_id == "777"
+    assert "777" in coord.snapshots
+
+def test_active_intents_clean_order_id__parse_bool_flag__first__intent_row__walk_iter149_s1(tmp_path):
+    """[ITER149 #1] active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk."""
+    import json
+    import active_intents as ai
+    # 1. active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk
+    for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
+        assert ai.clean_order_id(bad) is None
+    assert ai.clean_order_id(777.0) == "777"
+    assert ai.clean_order_id("777.0") == "777"
+    assert ai._parse_bool_flag("false", True) is False
+    assert ai._parse_bool_flag("true", False) is True
+    assert ai._parse_bool_flag(float("nan"), True) is True
+
+    rtrade_path = tmp_path / "cachedb/rtrade_pairs_state.json"
+    rtrade_path.parent.mkdir(parents=True, exist_ok=True)
+    rtrade_path.write_text(
+        json.dumps(
+            {
+                "pairs": {
+                    "term-str": {
+                        "symbol": "BTCUSDC",
+                        "terminal": "true",
+                        "tickets": [{"order_id": "100", "side": "BUY", "price": 60000.0, "qty": 0.1, "active": True}],
+                    },
+                    "active-pair": {
+                        "symbol": "ETHUSDC",
+                        "terminal": "false",
+                        "tickets": [
+                            {"order_id": "101", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": "false"},
+                            {"order_id": "0", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": True},
+                            {"order_id": 102.0, "side": "SELL", "price": 3100.0, "qty": 0.1, "active": "true"},
+                        ],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    idx = ai.build_active_intent_index(str(tmp_path))
+    assert [it["intent_id"] for it in idx["intents"]] == ["102"]
+    assert idx["intents"][0]["order_id"] == "102"
+
+def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_qty_true_iter149_s3(tmp_path):
+    """[ITER149 #3] RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal='false'."""
+    import pytest
+    from rtrade_pair_store import RTradePairStore
+    # 3. RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal="false"
+    store_file = tmp_path / "rtrade_store.json"
+    store = RTradePairStore(path=str(store_file), terminal_retention="50.0")
+    assert store.terminal_retention == 50
+
+    with pytest.raises(ValueError):
+        store.intent("pair-bool", "BUY", 60000.0, True, "CID-1", symbol="BTCUSDC")
+    with pytest.raises(ValueError):
+        store.intent("pair-bad", "BUY", 60000.0, 0.1, "nan", symbol="BTCUSDC")
+
+    store.intent("pair-1", "BUY", 60000.0, 0.1, "CID-RT-1", symbol="BTCUSDC", start_side="BUY")
+    with pytest.raises(ValueError):
+        store.accepted("pair-1", "BUY", "0")
+    store.accepted("pair-1", "BUY", 999.0)
+    active_rows = store.active("BTCUSDC")
+    assert len(active_rows) == 1
+    assert active_rows[0]["intents"]["limit:BUY"]["order_id"] == "999"
+
+    store.checkpoint(
+        "pair-1",
+        {
+            "pair_id": "pair-1",
+            "qty": 0.1,
+            "start_side": "BUY",
+            "phase": "quoting",
+            "tickets": [{"order_id": "999", "side": "BUY", "price": 60000.0, "qty": 0.1, "active": True}],
+        },
+        terminal="false",
+    )
+    assert len(store.active("BTCUSDC")) == 1
+
+def test_strategy__sanitize_spot_state_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
+    """[ITER155 #2] Strategy._sanitize_spot_state & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
+    import pytest
+    from providers.strategy_executor import PairPrecision
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    from strategies.spot_engine import StratParams, Strategy
+    from strategies.spot_replay import run_replay
+    # 2. Strategy._sanitize_spot_state & Strategy init boolean flags
+    sanitized = Strategy._sanitize_spot_state({
+        "orders": ["not_a_dict", {"txid": "0", "side": "buy", "market": "false"}],
+        "placement_backoffs": ["not_a_dict"],
+        "sl_bounce_state": None,
+    })
+    assert len(sanitized["orders"]) == 1
+    assert sanitized["orders"][0]["txid"] is None
+    assert sanitized["orders"][0]["market"] is False
+    assert sanitized["placement_backoffs"] == {}
+    assert sanitized["sl_bounce_state"] == {}
+
+    params = StratParams(
+        currency="USDC",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=2,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+    )
+
+    class DummyClient:
+        def pair_precision(self, pair):
+            return PairPrecision(2, 4, 0.001, "BTC")
+
+        def free_balance(self, asset):
+            return 1000.0
+
+    strat = Strategy(
+        DummyClient(),  # type: ignore[arg-type]
+        "BTCUSDC",
+        params,
+        dry_run="false",  # type: ignore[arg-type]
+        observe_only="false",  # type: ignore[arg-type]
+        replay_mode="false",  # type: ignore[arg-type]
+        desktop="false",  # type: ignore[arg-type]
+        initial_state=sanitized,
+        state_dir=str(tmp_path),
+    )
+    assert strat.dry_run is False
+    assert strat.observe_only is False
+    assert strat.replay_mode is False
+    assert strat.desktop is False
+
+
+    # 3. spot_replay.run_replay with include_decision_trace="false" and intrabar_high="false"
+    res = run_replay(
+        [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)],
+        params,
+        bar_minutes=60.0,
+        include_decision_trace="false",  # type: ignore[arg-type]
+        intrabar_high="false",  # type: ignore[arg-type]
+    )
+    assert "decision_trace" not in res
+
+
+    # 4. rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation
+    t_b = OrderTicket(order_id="1001.0", side="b", price=10.0, qty=1.0, pair_id="2001.0")
+    assert t_b.order_id == "1001"
+    assert t_b.side == "BUY"
+    assert t_b.pair_id == "2001"
+    with pytest.raises(ValueError):
+        OrderTicket(order_id="1001", side="BUY", price=10.0, qty=1.0, pair_id="0")
+
+    policy = PairPolicy(adjustment_fraction=0.01)
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            DummyClient(),
+            policy,
+            {
+                "pair_id": "0",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+            },
+        )
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            DummyClient(),
+            policy,
+            {
+                "pair_id": "valid-pair",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+                "snapshots": {"0": {"status": "open", "filled_qty": 0.0, "cost": 0.0, "fee": 0.0}},
+            },
+        )
+
+def test_rtrade__touch_rtrade_heartbeat_and__livepairvenue_hygiene_iter158_s5(monkeypatch, tmp_path):
+    """[ITER158 #5] rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene."""
+    import pytest
+    import math
+    import rtrade as rt
+    # 5. rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene
+    hb_path = tmp_path / "rtrade.heartbeat"
+    monkeypatch.setattr(rt, "_RTRADE_HEARTBEAT_PATH", str(hb_path))
+    monkeypatch.setattr(rt, "_rtrade_heartbeat_last", 100.0)
+    rt._touch_rtrade_heartbeat(force="false", now=105.0)
+    assert rt._rtrade_heartbeat_last == 100.0
+    rt._touch_rtrade_heartbeat(force=float("nan"), now=float("nan"))
+    assert math.isfinite(rt._rtrade_heartbeat_last)
+
+    venue = object.__new__(rt._LivePairVenue)
+    venue.symbol = "TAOUSDC"
+    venue._recovery_blocked_pairs = set()
+    venue.recovery_blocked = False
+    venue.pair_store = None
+    venue._set_pair_recovery_blocked("p1", blocked="false")
+    assert venue.pair_recovery_blocked("p1") is False
+    assert venue._ticket_from_pending({"order_id": "0", "side": "BUY", "requested_qty": 1.0, "requested_price": 100.0}, "p1") is None
+    t_ok = venue._ticket_from_pending({"order_id": "555.0", "side": "BUY", "requested_qty": 1.0, "requested_price": 100.0, "kind": "limit"}, "p1")
+    assert t_ok is not None and t_ok.order_id == "555"
+
+    canon = venue._canonical_intent(
+        {"pair_id": "p1", "symbol": "TAOUSDC", "start_side": "BUY", "created_ts": 1000.0},
+        {"client_order_id": "cid-1", "qty": 1.0, "price": 100.0, "attempt": "2.0", "lookup_misses": "3.0"},
+    )
+    assert canon["attempt"] == 2 and canon["lookup_misses"] == 3
+
+    with pytest.raises(ValueError):
+        venue.merge_checkpoint_intents({"pair_id": "p1", "intents": {}}, {"limit_revisions": {"BUY": True}})
+    with pytest.raises(ValueError):
+        venue.merge_checkpoint_intents({"pair_id": "p1", "intents": {}}, {"hard_stop_revision": True})
+    merged = venue.merge_checkpoint_intents(
+        {"pair_id": "p1", "intents": {}},
+        {"limit_revisions": {"BUY": "2.0"}, "hard_stop_revision": "1.0"},
+    )
+    assert merged["limit_revisions"]["BUY"] == 2
+    assert merged["hard_stop_revision"] == 1

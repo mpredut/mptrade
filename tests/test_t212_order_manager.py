@@ -290,3 +290,70 @@ class TestT212OrderManager(unittest.TestCase):
             assert second != third
             assert "account_one" in first
             assert "account_two" in second
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_bapi_ws_health_normalizes_whitespace_padded_manager_names_and_class_iter131_s3():
+    """[ITER131 #3] bapi_ws_health normalizes whitespace-padded manager names and class objects."""
+    from binance_api import bapi_ws_bridge as bapi_ws_health
+    # 3. bapi_ws_health normalizes whitespace-padded manager names and class objects
+    bapi_ws_health.mark_ws_available(True)
+    bapi_ws_health.mark_ws_event_received()
+    bapi_ws_health.mark_ws_unhealthy()
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is True
+    bapi_ws_health.mark_ws_event_received()
+    bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderManager ")
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
+
+def test_binance_cache_health_require_int_accepts_integer_floats_and_normalize_class_name_handles_iter133_s5():
+    """[ITER133 #5] binance_cache_health.require_int accepts integer floats and normalize_class_name handles class objects."""
+    import binance_cache_health as bch
+    # 5. binance_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
+    assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
+    assert bch.require_int(0.0, "generation", min_value=0) == 0
+    class CacheOrderManager:
+        pass
+    assert bch.normalize_class_name(CacheOrderManager) == "CacheOrderManager"
+
+def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_iter153_s1(tmp_path, monkeypatch):
+    """[ITER153 #1] 212trading/order_manager: waiting with sentinel order_id='0' returns False, not True."""
+    import json
+    import os
+    from types import SimpleNamespace
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    def _load_mod(name, rel):
+        from botcore import load_local_module
+        p = os.path.join(root, rel)
+        return load_local_module(
+            os.path.dirname(p),
+            os.path.splitext(os.path.basename(p))[0],
+            module_key=name,
+            reload=True,
+        )
+    om = _load_mod("t212_order_manager_it153", "212trading/order_manager.py")
+    # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True
+    monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))
+    monkeypatch.setattr(om, "get_price_usd", lambda sym: 100.0)
+    marker_file = tmp_path / "marker_NVDA_US_EQ.json"
+    marker_file.write_text(json.dumps({
+        "version": 2,
+        "ticker": "NVDA_US_EQ",
+        "qty": 1.0,
+        "limit_price": 100.0,
+        "lifecycle": "submit_pending",
+        "order_id": "0",
+        "lookup_misses": 0,
+        "next_retry_at": 9999999999.0,
+    }), encoding="utf-8")
+    dummy_client = SimpleNamespace(
+        list_active_orders=lambda: [],
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 0.0}],
+        get_order_status=lambda oid: (_ for _ in ()).throw(AssertionError(f"should not poll sentinel oid {oid}")),
+    )
+    res_wait = om.place_order_with_retry(
+        dummy_client, "NVDA_US_EQ", 1.0, 100.0, "DAY", dry_run=False, write_marker=True
+    )
+    assert res_wait is False

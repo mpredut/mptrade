@@ -9253,5 +9253,489 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
     anoms2 = harvest_log_anomalies_from_dirs([str(log_dir2)], 24.0)
     assert anoms2.error_count == 0
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_resolve_cached_gaussian_horizon_recovers_from_previous_generation_file_iter8_s3(tmp_path, monkeypatch):
+    """[ITER8 #3] resolve_cached_gaussian_horizon recovers from .previous generation file."""
+    import json
+    import intelligence.internal.state.survival as survival_mod
+    from qlimit_order_guard import resolve_cached_gaussian_horizon
+    # 3. resolve_cached_gaussian_horizon recovers from .previous generation file
+    t_cache = tmp_path / "trend_T_cache.json"
+    t_prev = tmp_path / "trend_T_cache.json.previous"
+    t_cache.write_text("{corrupt_json", encoding="utf-8")
+    t_prev.write_text(json.dumps({"TAOUSDC": {"T": 10.0, "p90_d": 8.5, "median_d": 4.0}}), encoding="utf-8")
+    monkeypatch.setattr(survival_mod, "T_CACHE_FILE", str(t_cache))
+    p90_d, med_d, gauss_h = resolve_cached_gaussian_horizon("TAOUSD")
+    assert p90_d == 8.5
+    assert med_d == 4.0
+    assert gauss_h == 14.0
+
+def test_weibullexhaustionguard_with_policy_block_from_order_guard_conf__discrete_policy_sets_iter12_s1():
+    """[ITER12 #1] WeibullExhaustionGuard with policy='block' (from order_guard.conf _DISCRETE_POLICY_SETS) vetoes exhausted trend."""
+    import pytest
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    # 1. WeibullExhaustionGuard with policy="block" (from order_guard.conf _DISCRETE_POLICY_SETS) vetoes exhausted trend
+    wg_block = WeibullExhaustionGuard(default_p90_days=7.0, policy="block", exhausted_scale=0.25)
+    dec_block = wg_block.check(
+        "BTCUSDC",
+        "BUY",
+        trend_duration_seconds=10.0 * 86400.0,
+        trend_direction="bull",
+    )
+    assert dec_block.allowed is False
+    assert dec_block.suggested_scale == pytest.approx(0.0)
+    assert "trend_exhausted" in dec_block.reason
+
+def test_compositemarketintelligence_evaluate_guards_passes_inferred_trend_direction_from_gradient_iter13_s3(monkeypatch):
+    """[ITER13 #3] CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient."""
+    import pytest
+    from intelligence.composite import CompositeMarketIntelligence
+    # 3. CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient
+    #    to WeibullExhaustionGuard.check so counter-trend SELL in mature bull trend (gradient > 0) is not downscaled
+    cmi = CompositeMarketIntelligence()
+    monkeypatch.setattr(
+        "intelligence.composite.get_trend_survival_metrics",
+        lambda *_a, **_kw: {"p90_days": 5.0, "median_days": 3.0, "gaussian_horizon_days": 2.0},
+    )
+    # SELL with positive gradient (bull trend) at 10 days (> p90=5d) is counter-trend exit -> allowed at 1.0 scale
+    dec_sell_bull = cmi.evaluate_guards(
+        "BTCUSDC",
+        "SELL",
+        100.0,
+        gradient=0.05,
+        epsilon=0.001,
+        trend_duration_seconds=10.0 * 86400.0,
+    )
+    assert dec_sell_bull.allowed is True
+    assert dec_sell_bull.suggested_scale == pytest.approx(1.0)
+
+    # BUY with positive gradient (bull trend) at 10 days (> p90=5d) is trend-chasing -> downscaled
+    dec_buy_bull = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        gradient=0.05,
+        epsilon=0.001,
+        trend_duration_seconds=10.0 * 86400.0,
+    )
+    assert dec_buy_bull.allowed is True
+    assert dec_buy_bull.suggested_scale < 1.0
+
+def test_volatility_py_usdcusdt_preserved_ron_gbp_stripped_items_iter16_s1(tmp_path):
+    """[ITER16 #1] volatility.py: USDCUSDT preserved, RON/GBP stripped, {'items': {...}} + .previous recovery."""
+    import json
+    import pytest
+    from intelligence.internal.state import volatility as vol_mod
+    # 1. volatility.py: USDCUSDT preserved, RON/GBP stripped, {"items": {...}} + .previous recovery
+    assert vol_mod._vol_symbol_variants("USDCUSDT") == ("USDCUSDT",)
+    assert "BTC" in vol_mod._vol_symbol_variants("BTCRON")
+    assert "ETH" in vol_mod._vol_symbol_variants("ETHGBP")
+
+    st_path = tmp_path / "cache_short_trend.json"
+    st_prev = tmp_path / "cache_short_trend.json.previous"
+    st_path.write_text("{corrupt", encoding="utf-8")
+    st_prev.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSD": {"vol_1h_pct": 2.35},
+                    "USDCUSDT": {"vol_1h_pct": 1.05},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert vol_mod.resolve_cached_volatility_1h("TAOUSDC", state_path=str(st_path)) == pytest.approx(0.0235)
+    assert vol_mod.resolve_cached_volatility_1h("USDCUSDT", state_path=str(st_path)) == pytest.approx(0.0105)
+
+def test_calculate_mann_kendall_and_calculate_hurst_exponent_filter_nan_inf_without_crashing_iter17_s4():
+    """[ITER17 #4] calculate_mann_kendall and calculate_hurst_exponent filter NaN/Inf without crashing."""
+    import math
+    from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall
+    # 4. calculate_mann_kendall and calculate_hurst_exponent filter NaN/Inf without crashing
+    mk_s, mk_z, mk_p = calculate_mann_kendall([100.0, float("nan"), 101.0, 102.0, float("inf"), 103.0, 104.0, 105.0, 106.0, 107.0])
+    assert mk_s > 0
+    assert mk_p < 0.05
+    hurst_series = [100.0 + i * 0.5 for i in range(70)]
+    hurst_series[10] = float("nan")
+    h_val = calculate_hurst_exponent(hurst_series)
+    assert h_val is not None and math.isfinite(h_val)
+
+def test_parabolicsurgeguard_clock_skew_nan_future_history_resilience_iter19_s1():
+    """[ITER19 #1] ParabolicSurgeGuard clock-skew & NaN/future history resilience."""
+    import pytest
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    # 1. ParabolicSurgeGuard clock-skew & NaN/future history resilience
+    p_guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5, window_seconds=3600.0)
+    p_guard._states["BTCUSDC"] = {
+        "peak": 120.0,
+        "surge_active": False,
+        "surge_start_px": 100.0,
+        "ts": 99999.0,
+        "disarmed_peak_ts": 99999.0,  # future disarmed timestamp from prior run
+    }
+    hist = [
+        (1000.0, 100.0),
+        (1200.0, float("nan")),
+        (1500.0, 106.0),  # +6% surge at t=1500
+        (9000.0, 150.0),  # future point beyond now=1500 -> must be ignored
+    ]
+    dec_surge = p_guard.check(
+        "BTCUSDC",
+        "BUY",
+        current_price=106.0,
+        price_history=hist,
+        volatility_1h_pct=float("inf"),
+        now=1500.0,
+    )
+    assert dec_surge.allowed is False
+    assert "parabolic_surge_active" in dec_surge.reason
+    assert dec_surge.metadata["peak"] == pytest.approx(106.0)
+
+def test_kalmantrend_meanreversiontrigger_nan_inf_backward_ts_protection_iter19_s3():
+    """[ITER19 #3] KalmanTrend & MeanReversionTrigger NaN/Inf/backward-ts protection."""
+    import pytest
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    # 3. KalmanTrend & MeanReversionTrigger NaN/Inf/backward-ts protection
+    import math
+    kf = KalmanTrend()
+    kf.update(1000.0, 100.0, 0.05)
+    kf_nan = kf.update(1010.0, float("nan"), float("nan"))
+    assert math.isfinite(kf._x0) and math.isfinite(kf._x1)
+    assert kf_nan["vel"] == 0.0
+    # Backward timestamp jump resets state cleanly instead of using dt=0.05s
+    kf_back = kf.update(500.0, 110.0, 0.05)
+    assert kf.last_ts == pytest.approx(500.0)
+    assert kf_back["vel"] == pytest.approx(0.0)
+
+    mrt = MeanReversionTrigger(mode="both", rsi_period=3, bb_period=3)
+    mrt.update("BTCUSDC", 1000.0, 100.0)
+    ev_nan = mrt.update("BTCUSDC", 1010.0, float("nan"))
+    assert ev_nan.metadata["rsi"] is None
+    assert len(mrt.bb_buf) == 1
+    mrt.update("BTCUSDC", 1020.0, 101.0)
+    mrt.update("BTCUSDC", 1030.0, 102.0)
+    ev_valid = mrt.update("BTCUSDC", 1040.0, 103.0)
+    assert ev_valid.metadata["rsi"] is not None and math.isfinite(ev_valid.metadata["rsi"])
+    assert ev_valid.metadata["percent_b"] is not None and math.isfinite(ev_valid.metadata["percent_b"])
+
+def test_parabolicsurgeguard_symbol_normalization_bool_string_resilience_iter31_s1():
+    """[ITER31 #1] ParabolicSurgeGuard symbol normalization & bool/string resilience."""
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    # 1. ParabolicSurgeGuard symbol normalization & bool/string resilience
+    pg = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
+    # Bool price in history (True -> 1.0 if unguarded) must be ignored
+    hist_with_bool = [(1000.0, True), (1010.0, 100.0), (1020.0, 101.0)]
+    dec_pg = pg.check("btc/usdc", "BUY", 101.0, price_history=hist_with_bool, volatility_1h_pct="2.0", now=1020.0)
+    assert dec_pg.allowed is True
+    assert "BTCUSDC" in pg._states
+
+def test_compositemarketintelligence_prioritizes_executable_triggers_with_highest_strength_and_iter83_s1():
+    """[ITER83 #1] CompositeMarketIntelligence prioritizes executable triggers with highest strength and keeps SELL effective_scale at 1.0."""
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    # 1. CompositeMarketIntelligence prioritizes executable triggers with highest strength and keeps SELL effective_scale at 1.0
+    comp = CompositeMarketIntelligence()
+    non_exec = TriggerEvent(
+        source="Kalman",
+        symbol="BTCUSDC",
+        side=TriggerSide.HOLD,
+        action=TriggerAction.NEUTRAL,
+        strength=0.95,
+        price=65000.0,
+        ts=1000.0,
+        reason="idle",
+    )
+    exec_sell = TriggerEvent(
+        source="Gradient",
+        symbol="BTCUSDC",
+        side=TriggerSide.SELL,
+        action=TriggerAction.EXIT,
+        strength=0.80,
+        price=65000.0,
+        ts=1000.0,
+        reason="exit_signal",
+    )
+    comp._get_kalman("BTCUSDC").evaluate = lambda *a, **k: (None, non_exec)
+    comp._get_gradient("BTCUSDC").evaluate = lambda *a, **k: (None, exec_sell)
+    comp.evaluate_guards = lambda *a, **k: GuardDecision.downscale("MockGuard", scale=0.4, reason="downscale_test")
+
+    eval_res = comp.evaluate("BTCUSDC", 65000.0, ts=1000.0, gradient=-1.5, epsilon=0.5, sample_rate_sec=False)
+    assert eval_res.active_trigger == exec_sell
+    assert eval_res.can_execute is True
+    assert eval_res.effective_scale == 1.0
+
+def test_weibullexhaustionguard_bool_empty_unknown_trend_direction_must_not_bypass_iter101_s1():
+    """[ITER101 #1] WeibullExhaustionGuard: bool/empty/unknown trend_direction must not bypass exhaustion check as 'flat'."""
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    # 1. WeibullExhaustionGuard: bool/empty/unknown trend_direction must not bypass exhaustion check as 'flat'
+    wg = WeibullExhaustionGuard(default_p90_days=5.0, policy="veto")
+    dec_bool_dir = wg.check("BTCUSDC", " b ", trend_duration_seconds=10 * 86400.0, trend_direction=True)
+    assert dec_bool_dir.allowed is False and "trend_exhausted" in dec_bool_dir.reason
+    dec_empty_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="  ")
+    assert dec_empty_dir.allowed is False and "trend_exhausted" in dec_empty_dir.reason
+    dec_unk_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="unknown")
+    assert dec_unk_dir.allowed is False and "trend_exhausted" in dec_unk_dir.reason
+    dec_flat_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="flat")
+    assert dec_flat_dir.allowed is True and "trend_direction_favorable" in dec_flat_dir.reason
+    assert wg.check("BTCUSDC", True, trend_duration_seconds=10 * 86400.0).allowed is True
+
+def test_compositemarketintelligence_bypass_guards_all_bypasses_code_none_guards_noise_iter102_s1():
+    """[ITER102 #1] CompositeMarketIntelligence: bypass_guards={'all'} bypasses code=None guards (noise, parabolic, cascade)."""
+    import pytest
+    from intelligence.composite import CompositeMarketIntelligence
+    # 1. CompositeMarketIntelligence: bypass_guards={"all"} bypasses code=None guards (noise, parabolic, cascade)
+    cmi = CompositeMarketIntelligence()
+    # Without bypass: gradient=0.01 <= epsilon=1.0 -> NoiseFloorGuard defers
+    dec_noise = cmi.evaluate_guards("BTCUSDC", " b ", 100.0, gradient=0.01, epsilon=1.0)
+    assert dec_noise.allowed is False and dec_noise.guard_name == "NoiseFloorGuard"
+    # With bypass_guards={"all"}: NoiseFloorGuard and ParabolicSurgeGuard are bypassed
+    dec_bypass_all = cmi.evaluate_guards(
+        "BTCUSDC", " b ", 120.0,
+        gradient=0.01, epsilon=1.0,
+        price_history=[(1000.0, 100.0), (1500.0, 120.0)],
+        now=1500.0,
+        bypass_guards={"all"},
+    )
+    assert dec_bypass_all.allowed is True and dec_bypass_all.reason == "all_guards_cleared"
+
+    # evaluate() forwards bypass_guards and handles zero suggested_scale as non-executable
+    eval_bypassed = cmi.evaluate(
+        "BTCUSDC", 120.0,
+        ts=1500.0,
+        gradient=5.0, epsilon=1.0,
+        price_history=[(1000.0, 100.0), (1500.0, 120.0)],
+        bypass_guards={"all"},
+    )
+    assert eval_bypassed.can_execute is True
+    assert eval_bypassed.effective_scale == pytest.approx(1.0)
+
+def test_survival_non_str_symbol_and_episodes_length_mismatch_iter102_s3():
+    """[ITER102 #3] survival: non-str symbol and episodes length mismatch / bool args."""
+    from intelligence.internal.state import survival
+    # 3. survival: non-str symbol and episodes length mismatch / bool args
+    assert survival.normalize_cache_base_asset(True) == ""
+    assert survival._lookup_t_cache_entry({"BTCUSDC": {"T": 10}}, True) is None
+    est_bad = survival.estimate_T(True, prior_T=12.0)
+    assert est_bad["T"] == 12 and est_bad["n"] == 0
+    assert survival.episodes(None, [1.0, 1.0], 24) == []
+    assert survival.episodes([1000.0, 2000.0, 3000.0], [1.0, 1.0, 1.0, 1.0], 24, noise_tolerance=True, min_confirm=2) != []
+
+def test_volatility_negative_values_and_non_str_symbol_path_iter102_s4():
+    """[ITER102 #4] volatility: negative values and non-str symbol/path."""
+    from intelligence.internal.state import volatility
+    # 4. volatility: negative values and non-str symbol/path
+    assert volatility.vol_pct_to_ratio(-2.5) == 0.0
+    assert volatility.vol_ratio_to_pct(-0.025) == 0.0
+    assert volatility._vol_symbol_variants(True) == ()
+    assert volatility._extract_vol_ratio_from_file(True, "BTCUSDC") is None
+    assert volatility._extract_vol_ratio_from_file("some_path.json", True) is None
+
+def test_survival_verdict_accepts_string_keys_as_persisted_in_iter98_s3():
+    """[ITER98 #3] survival.verdict: accepts string keys (as persisted in p_cont) and rejects invalid mid/cont."""
+    from intelligence.internal.state.survival import verdict
+    # 3. survival.verdict: accepts string keys (as persisted in p_cont) and rejects invalid mid/cont
+    assert verdict(None, 7.0) == "insufficient_data"
+    assert verdict({"1": 0.8, "2": 0.8, "8": 0.79, "10": 0.78}, 5.0).startswith("VALIDATED")
+    assert verdict({"1": 0.8, "10": 0.5}, float("nan")) == "insufficient_data"
+
+def test_kalman_trigger_pos_float_env_strips_inline_comments_and_requires_triggerevent_iter122_s4(monkeypatch):
+    """[ITER122 #4] kalman_trigger.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action."""
+    from intelligence.internal.triggers.trigger_event import TriggerEvent
+    from intelligence.internal.triggers import kalman_trigger as kt
+    # 4. kalman_trigger.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
+    monkeypatch.setenv("TEST_KALMAN_ENV", "0.0025 # comment")
+    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
+    monkeypatch.setenv("TEST_KALMAN_ENV", "-1.0")
+    assert kt.pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
+
+    ev = TriggerEvent(action="entry", side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev.is_executable() is True
+    ev_bad = TriggerEvent(action=True, side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev_bad.is_executable() is False
+
+def test_trendsignificanceguard_normalizes_lowercase_trigger_action_and_side_iter125_s1():
+    """[ITER125 #1] TrendSignificanceGuard normalizes lowercase trigger action and side."""
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.trigger_event import TriggerEvent
+    # 1. TrendSignificanceGuard normalizes lowercase trigger action and side
+    ts_guard = TrendSignificanceGuard(max_p_value=0.05)
+    t_low = TriggerEvent(
+        symbol="BTCUSDC",
+        side="buy",
+        action="entry",
+        source="kalman",
+        price=100.0,
+        strength=0.8,
+        confidence=0.8,
+        reason="test",
+    )
+    dec_ts = ts_guard.evaluate(t_low, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0])
+    assert dec_ts.allowed is False
+    assert "trend_direction_inverted" in dec_ts.reason
+
+def test_trendsignificanceguard_handles_both_enum_members_and_lowercase_strings_iter126_s1():
+    """[ITER126 #1] TrendSignificanceGuard handles both Enum members and lowercase strings."""
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    # 1. TrendSignificanceGuard handles both Enum members and lowercase strings
+    ts_guard = TrendSignificanceGuard(max_p_value=0.05)
+    t_enum = TriggerEvent(
+        symbol="BTCUSDC",
+        side=TriggerSide.BUY,
+        action=TriggerAction.ENTRY,
+        source="kalman",
+        price=100.0,
+        strength=0.8,
+        confidence=0.8,
+        reason="test",
+    )
+    dec_enum = ts_guard.evaluate(t_enum, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0])
+    assert dec_enum.allowed is False
+    assert "trend_direction_inverted" in dec_enum.reason
+
+def test_compositemarketintelligence_evaluate_guards_honours_both_g_qlimit2_and_legacy_component_iter126_s2():
+    """[ITER126 #2] CompositeMarketIntelligence.evaluate_guards honours both G_QLIMIT2 and legacy component names."""
+    from intelligence.composite import CompositeMarketIntelligence
+    # 2. CompositeMarketIntelligence.evaluate_guards honours both G_QLIMIT2 and legacy component names
+    comp = CompositeMarketIntelligence(parabolic_surge_pct=2.0)
+    hist_surge = [(1000.0, 100.0), (1600.0, 110.0)]
+    dec_blocked = comp.evaluate_guards("BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0)
+    assert dec_blocked.allowed is False
+    dec_byp_code = comp.evaluate_guards(
+        "BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0, bypass_guards="G_QLIMIT2"
+    )
+    assert dec_byp_code.allowed is True
+    dec_byp_legacy = comp.evaluate_guards(
+        "BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0, bypass_guards="parabolic_guard"
+    )
+    assert dec_byp_legacy.allowed is True
+
+def test_get_trend_survival_metrics_does_not_call_estimate_t_when_allow_network_false_iter126_s4(monkeypatch):
+    """[ITER126 #4] get_trend_survival_metrics does not call estimate_T when allow_network='false'."""
+    from intelligence.internal.state import survival as surv_mod
+    # 4. get_trend_survival_metrics does not call estimate_T when allow_network="false"
+    called_est = []
+    monkeypatch.setattr(surv_mod, "_lookup_t_cache_entry", lambda d, s: None)
+    monkeypatch.setattr(surv_mod, "estimate_T", lambda s: called_est.append(s) or {})
+    res_surv = surv_mod.get_trend_survival_metrics("BTCUSDC", 3600.0, allow_network="false")
+    assert called_est == []
+    assert res_surv["symbol"] == "BTCUSDC"
+
+def test_weibullexhaustionguard_supports_bid_ask_long_short_side_aliases_iter174_s2():
+    """[ITER174 #2] WeibullExhaustionGuard supports BID/ASK/LONG/SHORT side aliases and uptrend/bearish trend_direction."""
+    import pytest
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    # 2. WeibullExhaustionGuard supports BID/ASK/LONG/SHORT side aliases and uptrend/bearish trend_direction
+    wg = WeibullExhaustionGuard(default_p90_days=1.0, policy="downscale")
+    dec_bid = wg.check("BTCUSDC", "BID", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="uptrend")
+    assert dec_bid.allowed is True and dec_bid.suggested_scale < 1.0
+    dec_ask = wg.check("BTCUSDC", "ASK", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="bearish")
+    assert dec_ask.allowed is True and dec_ask.suggested_scale < 1.0
+    dec_fav = wg.check("BTCUSDC", "BID", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="bearish")
+    assert dec_fav.allowed is True and dec_fav.suggested_scale == pytest.approx(1.0) and "trend_direction_favorable" in dec_fav.reason
+
+def test_theme_compositemarketintelligence_evaluate_guards_does_not_pass_gaussian_horizon_days_when_iter177_s1(monkeypatch):
+    """[ITER177 #1] Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed."""
+    import pytest
+    import intelligence.composite as comp_mod
+    from intelligence.composite import CompositeMarketIntelligence
+    # 1. Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed
+    monkeypatch.setattr(
+        comp_mod,
+        "get_trend_survival_metrics",
+        lambda sym, dur: {"p90_days": 5.0, "median_days": 2.5, "gaussian_horizon_days": 20.0},
+    )
+    cmi = CompositeMarketIntelligence(exhaustion_policy="downscale", exhaustion_scale=0.25)
+    # When G_QLIMIT1 is active, limit_p90 = max(5.0, 20.0) = 20.0 -> 10 days is NOT exhausted
+    dec_active = cmi.evaluate_guards("BTCUSDC", "BUY", 100.0, trend_duration_seconds=10 * 86400.0)
+    assert dec_active.suggested_scale == pytest.approx(1.0)
+    # When G_QLIMIT1 is bypassed, limit_p90 = 5.0 -> 10 days IS exhausted by G_QLIMIT2 Weibull
+    dec_bypassed = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        trend_duration_seconds=10 * 86400.0,
+        bypass_guards={"G_QLIMIT1"},
+    )
+    assert dec_bypassed.suggested_scale == pytest.approx(0.25)
+
+def test_triggerevent_is_executable_accepts_bid_ask_long_short_side_iter177_s2():
+    """[ITER177 #2] TriggerEvent.is_executable accepts BID/ASK/LONG/SHORT side aliases."""
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
+    # 2. TriggerEvent.is_executable accepts BID/ASK/LONG/SHORT side aliases
+    ev_bid = TriggerEvent(action=TriggerAction.ENTRY, side="BID", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    ev_ask = TriggerEvent(action=TriggerAction.EXIT, side="ASK", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev_bid.is_executable() is True
+    assert ev_ask.is_executable() is True
+
+def test_guarddecision_downscale_normalizes_percentage_scale_scale_iter177_s3():
+    """[ITER177 #3] GuardDecision.downscale normalizes percentage scale (1.0 < scale <= 100.0)."""
+    import pytest
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    # 3. GuardDecision.downscale normalizes percentage scale (1.0 < scale <= 100.0)
+    dec_pct = GuardDecision.downscale("TestGuard", scale=35.0, reason="pct_scale")
+    assert dec_pct.allowed is True and dec_pct.suggested_scale == pytest.approx(0.35)
+
+def test_trendsignificanceguard_evaluate_accepts_dict_trigger_and_bid_short_iter177_s4():
+    """[ITER177 #4] TrendSignificanceGuard.evaluate accepts dict trigger and BID/SHORT side aliases."""
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    # 4. TrendSignificanceGuard.evaluate accepts dict trigger and BID/SHORT side aliases
+    tsg = TrendSignificanceGuard(max_p_value=0.05)
+    dec_inv = tsg.evaluate({"action": "ENTRY", "side": "BID"}, [100.0 - i for i in range(12)])
+    assert dec_inv.allowed is False and "trend_direction_inverted" in dec_inv.reason
+
+def test_resolve_hierarchical_guard_mode_cascades_intelligence_guards_mode_pillar_master_guard_key_iter183_s1():
+    """[ITER183 #1] resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key."""
+    from intelligence.internal.guards.guard_decision import resolve_hierarchical_guard_mode
+    # 1. resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key
+    assert resolve_hierarchical_guard_mode({}, "smart_sl_mode", "external_guard_mode") == "enforce"
+    assert (
+        resolve_hierarchical_guard_mode(
+            {"intelligence_guards_mode": "off", "external_guard_mode": "enforce", "smart_sl_mode": "enforce"},
+            "smart_sl_mode",
+            "external_guard_mode",
+        )
+        == "off"
+    )
+    assert (
+        resolve_hierarchical_guard_mode(
+            {"intelligence_guards_mode": "enforce", "external_guard_mode": "shadow", "smart_sl_mode": "enforce"},
+            "smart_sl_mode",
+            "external_guard_mode",
+        )
+        == "shadow"
+    )
+
+def test_triggerevent_directional_builds_entry_buy_for_bull_and_iter183_s2():
+    """[ITER183 #2] TriggerEvent.directional builds ENTRY/BUY for bull and EXIT/SELL for bear."""
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    # 2. TriggerEvent.directional builds ENTRY/BUY for bull and EXIT/SELL for bear
+    bull_ev = TriggerEvent.directional(
+        True,
+        source="test_trigger",
+        symbol="BTCUSDC",
+        price=70000.0,
+        strength=2.5,
+        ts=1000.0,
+        reason_bull="up_break",
+        reason_bear="down_break",
+    )
+    bear_ev = TriggerEvent.directional(
+        False,
+        source="test_trigger",
+        symbol="BTCUSDC",
+        price=69000.0,
+        strength=2.5,
+        ts=1001.0,
+        reason_bull="up_break",
+        reason_bear="down_break",
+    )
+    assert bull_ev.action == TriggerAction.ENTRY and bull_ev.side == TriggerSide.BUY and bull_ev.reason == "up_break"
+    assert bear_ev.action == TriggerAction.EXIT and bear_ev.side == TriggerSide.SELL and bear_ev.reason == "down_break"

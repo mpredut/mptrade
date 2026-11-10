@@ -2050,3 +2050,384 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_monitortrades__resolve_exit_and__handle_position_recovery_clear__sl_episode_state_iter5_s4(monkeypatch):
+    """[ITER5 #4] monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE."""
+    import monitortrades
+    # 4. monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE
+    monkeypatch.setattr(monitortrades, "_save_mt_state", lambda: None)
+    monkeypatch.setattr(monitortrades, "_clear_smart_sl_exit", lambda *a, **k: None)
+    monitortrades._SL_EPISODE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    monitortrades._SL_BOUNCE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    monitortrades._TP_RIDE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    monitortrades._resolve_exit("TESTUSDC", inst=None, kind="STOP", clear_pending=True)
+    assert "TESTUSDC" not in monitortrades._SL_EPISODE_STATE
+    assert "TESTUSDC" not in monitortrades._SL_BOUNCE_STATE
+    assert "TESTUSDC" not in monitortrades._TP_RIDE_STATE
+
+def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_and_checks_go1_iter10_s3(monkeypatch):
+    """[ITER10 #3] monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard."""
+    import order_guard
+    from types import SimpleNamespace
+    import monitortrades as mt
+    # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
+    qdec_kwargs = []
+
+    class _MTPolicyProv:
+        name = "binance"
+
+        @staticmethod
+        def free_balance(_asset):
+            return 1000.0
+
+        @staticmethod
+        def get_orders(_sym, _side, _since):
+            return []
+
+        @staticmethod
+        def quantity_decision(_sym, _side, _px, req_qty, **kw):
+            qdec_kwargs.append(dict(kw))
+            return SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
+
+    mt_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        provider_name="binance",
+        provider=_MTPolicyProv(),
+        _provider=_MTPolicyProv(),
+        params={"bypass_guards": "G_QLIMIT2"},
+    )
+    dl_calls = []
+    monkeypatch.setattr(
+        order_guard,
+        "daily_limit_guard",
+        lambda _p, _s, _side, **kw: dl_calls.append(kw.get("bypass_guards")) or (False, "daily_limit"),
+    )
+    assert mt._can_pass_buy_quantity_policy(mt_inst, "BTCUSDC", 100.0, 1.0, min_qty=0.1) is False
+    assert qdec_kwargs and qdec_kwargs[-1].get("cancelorders") is True
+    assert dl_calls and "g_qlimit2" in dl_calls[-1]
+
+def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_iter14_s1(monkeypatch):
+    """[ITER14 #1] monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass."""
+    from types import SimpleNamespace
+    import monitortrades as mt
+    import order_guard
+    from providers.quantity import QuantityDecision
+    # 1. monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass
+    captured_apply_policy = []
+
+    def _fake_q_dec(symbol, side, price, req_qty, **kw):
+        captured_apply_policy.append(kw.get("apply_policy"))
+        return QuantityDecision(
+            requested_qty=req_qty,
+            balance_cap=req_qty,
+            policy_cap=req_qty,
+            fee_cap=req_qty,
+            final_qty=req_qty if not kw.get("apply_policy") else 0.0,
+            refuse_reason="qty_zero_after_policy" if kw.get("apply_policy") else None,
+            balance_asset="USDC",
+        )
+
+    fake_prov = SimpleNamespace(
+        name="binance",
+        free_balance=lambda _a: 1000.0,
+        quantity_decision=_fake_q_dec,
+        order_filter_refusal=lambda *_a, **_kw: None,
+        get_orders=lambda *_a, **_kw: [],
+    )
+    fake_inst = SimpleNamespace(
+        symbol="TAOUSDC",
+        base="TAO",
+        quote="USDC",
+        provider=fake_prov,
+        provider_name="binance",
+        params={"bypass_guards": {"G_QLIMIT1", "GO1"}},
+    )
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        order_guard,
+        "check_intelligence_guards",
+        lambda *_a, **_kw: (True, "ok", 1.0),
+    )
+
+    ok_reentry = mt._can_pass_buy_quantity_policy(fake_inst, "TAOUSDC", 200.0, 1.0, min_qty=0.01)
+    assert ok_reentry is True
+    assert captured_apply_policy == [False]
+
+def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_iter22_s2(tmp_path, monkeypatch):
+    """[ITER22 #2] monitortrades._load_mt_state re-anchors clock-skewed future timestamps and rejects NaN."""
+    import json
+    import pytest
+    from unittest.mock import MagicMock
+    import order_guard
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    import rtrade
+    import monitortrades as mt
+    pg_bypasses = []
+    class FakeKrakenProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-22", "qty": qty}
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "kraken_bypass_guards": {"GLLM3"}, "binance_bypass_guards": {"GI_WHALE"}},
+    )
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = FakeKrakenProvider()
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        params={"bypass_guards": "GI_OBOOK"},
+        api=fake_api,
+    )
+    res = inst.place(
+        "BUY", 100.0, 1.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"G_PROF"},
+    )
+    assert res is not None
+    assert len(pg_bypasses) == 1
+    assert {"g_prof", "gi_obook", "gllm3"}.issubset(pg_bypasses[0])
+    assert rtrade._is_gi_whale_enforced(bypass_guards={"G_PROF"}) is False
+    # 2. monitortrades._load_mt_state re-anchors clock-skewed future timestamps and rejects NaN
+    mt_state_file = tmp_path / "mt_state.json"
+    now_s = 10_000.0
+    mt_state_file.write_text(
+        json.dumps({
+            "sl_bounce_state": {
+                "BTCUSDC": {"started_at": now_s + 5000.0, "buy_price": 100.0},
+            },
+            "tp_ride_state": {
+                "ETHUSDC": {"started_at": now_s - 50.0, "last_peak_time": now_s + 9000.0, "buy_price": 200.0},
+            },
+            "pending_stop_exit": {
+                "SOLUSDC": {"time": now_s + 3000.0, "kind": "SL"},
+            },
+            "hard_tp_last": {
+                "ADAUSDC": now_s + 7000.0,
+                "XRPUSDC": now_s - 100.0,
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
+    mt._SL_BOUNCE_STATE.clear()
+    mt._TP_RIDE_STATE.clear()
+    mt._PENDING_STOP_EXIT.clear()
+    mt._hard_tp_last.clear()
+    mt._load_mt_state(now_curr=now_s)
+    assert mt._SL_BOUNCE_STATE["BTCUSDC"]["started_at"] == pytest.approx(now_s)
+    assert mt._TP_RIDE_STATE["ETHUSDC"]["last_peak_time"] == pytest.approx(now_s)
+    assert mt._PENDING_STOP_EXIT["SOLUSDC"]["time"] == pytest.approx(now_s)
+    assert "ADAUSDC" not in mt._hard_tp_last
+    assert mt._hard_tp_last["XRPUSDC"] == pytest.approx(now_s - 100.0)
+
+def test_monitortrades__compute_spot_position__place_guarded_iter32_s4():
+    """[ITER32 #4] monitortrades._compute_spot_position & _place_guarded."""
+    from types import SimpleNamespace
+    import monitortrades as mt
+    # 4. monitortrades._compute_spot_position & _place_guarded
+    owned, active_avg, _ = mt._compute_spot_position(
+        buy_orders=[
+            {"qty": 2.0, "price": 100.0, "timestamp": 1000},
+            {"qty": 5.0, "price": 0.0, "timestamp": 2000},
+            {"qty": float("nan"), "price": 100.0, "timestamp": 3000},
+        ],
+        sell_orders=[],
+    )
+    assert owned == 2.0 and active_avg == 100.0
+
+    placed = []
+    fake_inst = SimpleNamespace(symbol="BTCUSDC", place=lambda *a, **kw: placed.append((a, kw)) or {"id": "1"})
+    assert mt._place_guarded(fake_inst, "BUY", 85000.0, True, 0.001) is False
+    assert mt._place_guarded(fake_inst, "BUY", True, 0.01, 0.001) is False
+    assert len(placed) == 0
+
+def test_replaytrendsource_and_dynamicreplaytrendsource_reject_bool_invalid_window_seconds_and_iter73_s1():
+    """[ITER73 #1] ReplayTrendSource and DynamicReplayTrendSource reject bool/invalid window_seconds and OverflowError."""
+    from offline.research.monitortrades_backtest import replay_trend_source as rts
+    # 1. ReplayTrendSource and DynamicReplayTrendSource reject bool/invalid window_seconds and OverflowError
+    src = rts.ReplayTrendSource(["BTCUSDC"], window_seconds=True)
+    assert src.window_seconds == rts.DEFAULT_WINDOW_SECONDS
+    src.advance("BTCUSDC", 10**400, 100.0)
+    assert src.is_trend_up("BTCUSDC") is False
+
+    dsrc = rts.DynamicReplayTrendSource(["BTCUSDC"], max_timeout_sec=True)
+    assert dsrc.max_timeout_sec == rts.SMALL_TIMEOUT_RANGE_SEC[1]
+    dsrc.advance("BTCUSDC", 1000.0, 100.0)
+    dsrc.advance("BTCUSDC", 1005.0, 101.0)
+    dsrc.advance("BTCUSDC", 1010.0, 102.0)
+    assert dsrc._slice("BTCUSDC", True) == []
+    assert dsrc.should_wait("BTCUSDC", None, 60.0) is False
+
+def test_run_replay_backtest_prewarm_trend_series_handles_non_finite_bool_trend_window_seconds_iter73_s2():
+    """[ITER73 #2] run_replay_backtest.prewarm_trend_series handles non-finite/bool trend_window_seconds."""
+    from offline.research.monitortrades_backtest import run_replay_backtest as rrb
+    # 2. run_replay_backtest.prewarm_trend_series handles non-finite/bool trend_window_seconds
+    tape = rrb.prewarm_trend_series("BTCUSDC", [(1000.0, 100.0), (1005.0, 101.0)], trend_window_seconds=float("nan"))
+    assert len(tape) == 2
+
+def test_scheduled_pilot__norm_params_key_distinguishes_bool_from_float_and_handles_iter73_s3():
+    """[ITER73 #3] scheduled_pilot._norm_params_key distinguishes bool from float and handles NaN deterministically."""
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    # 3. scheduled_pilot._norm_params_key distinguishes bool from float and handles NaN deterministically
+    k_bool = sp._norm_params_key({"a": True})
+    k_float = sp._norm_params_key({"a": 1.0})
+    assert k_bool != k_float
+    k_nan1 = sp._norm_params_key({"a": float("nan")})
+    k_nan2 = sp._norm_params_key({"a": float("nan")})
+    assert k_nan1 == k_nan2
+
+def test_infer_record_owner_ignores_boolean_parent_owner_kind_and__format_record_context_handles_iter123_s4():
+    """[ITER123 #4] infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs."""
+    import order_retry as oq
+    import order_retry_worker as orw
+    # 4. infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs
+    assert oq.infer_record_owner({"parent_owner": True, "kind": "STOP", "place_kwargs": 123}) == "monitortrades"
+    ctx_str = orw._format_record_context({"side": "BUY", "symbol": "BTCUSDC", "qty": 0.1, "place_kwargs": 123, "id": "rec-1"})
+    assert "ID: rec-1" in ctx_str
+
+def test_monitortrades__extract_trade_uid_normalizes_integer_floats_and_rejects_nan_iter124_s4():
+    """[ITER124 #4] monitortrades._extract_trade_uid normalizes integer floats and rejects NaN/'nan'/'null'."""
+    import monitortrades as mt
+    # 4. monitortrades._extract_trade_uid normalizes integer floats and rejects NaN/"nan"/"null"
+    assert mt._extract_trade_uid({"id": 555666.0}) == "555666"
+    assert mt._extract_trade_uid({"id": float("nan"), "tradeId": "nan", "a": "777888"}) == "777888"
+    assert mt._extract_trade_uid({"id": "null", "tradeId": 12.5}) == ""
+
+def test_resolve_caller_module_ignores_boolean_module_prefix_client_order_id_and_resolves_iter125_s2():
+    """[ITER125 #2] resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage."""
+    import order_guard as og
+    # 2. resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage
+    assert og.resolve_caller_module(True, client_order_id="TA_main_123") == "tradeall"
+    assert og.resolve_caller_module(None, prefix=True, client_order_id="MT_stop_1") == "monitortrades"
+    assert og.normalize_venue_name(True, default="") == ""
+
+def test__series_cache_key_prewarm_trend_series_with_none_bool_nan_trend_window_seconds_iter142_s3():
+    """[ITER142 #3] _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds."""
+    from offline.research.monitortrades_backtest.run_replay_backtest import DEFAULT_WINDOW_SECONDS, _series_cache_key, prewarm_trend_series
+    # 3. _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds
+    sample_series = [(1000.0, 100.0), (1010.0, 101.0), (1020.0, 102.0)]
+    k_none = _series_cache_key("BTCUSDC", sample_series, None)
+    k_bool = _series_cache_key("BTCUSDC", sample_series, True)
+    k_nan = _series_cache_key("BTCUSDC", sample_series, float("nan"))
+    assert k_none[-1] == DEFAULT_WINDOW_SECONDS
+    assert k_bool[-1] == DEFAULT_WINDOW_SECONDS
+    assert k_nan[-1] == DEFAULT_WINDOW_SECONDS
+    tape = prewarm_trend_series("BTCUSDC", sample_series, trend_window_seconds=None)
+    assert len(tape) == 3
+
+def test_scheduled_pilot__edge__safe_f_iter148_s2():
+    """[ITER148 #2] scheduled_pilot._edge & _safe_f."""
+    from offline.research.monitortrades_backtest.scheduled_pilot import _edge, safe_float as sp_safe_f
+    # 2. scheduled_pilot._edge & _safe_f
+    assert _edge({"net": 15.0, "buy_hold": 5.0}) == 10.0
+    assert _edge({"net": None, "buy_hold": True}) == 0.0
+    assert _edge("not_a_dict") == 0.0
+    assert sp_safe_f(float("nan"), None) is None
+
+def test_monitortrades__extract_trade_uid_rejects_and_normalizes_iter158_s1():
+    """[ITER158 #1] monitortrades._extract_trade_uid rejects '0' and normalizes .0."""
+    import monitortrades as mt
+    # 1. monitortrades._extract_trade_uid rejects "0" and normalizes .0
+    assert mt._extract_trade_uid({"id": "0", "tradeId": 0, "a": "777.0"}) == "777"
+    assert mt._extract_trade_uid({"id": "0", "tradeId": "nan"}) == ""
+
+def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter158_s2(monkeypatch, tmp_path):
+    """[ITER158 #2] monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries."""
+    import json
+    import monitortrades as mt
+    # 2. monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries
+    mt_state_file = tmp_path / "mt_state.json"
+    mt_state_file.write_text(json.dumps({
+        "sl_bounce_state": "corrupt",
+        "reentry_state": ["not-a-dict"],
+        "last_exit_kind": {"btcusdc": "STOP"},
+        "hard_tp_last": {"btcusdc": 1000.0},
+    }))
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
+    mt._LAST_EXIT_KIND.clear()
+    mt._hard_tp_last.clear()
+    mt._load_mt_state(now_curr=True)
+    assert mt._LAST_EXIT_KIND.get("BTCUSDC") == "STOP"
+
+def test_monitortrades__can_pass_buy_quantity_policy_rejects_nan_final_qty_iter158_s3():
+    """[ITER158 #3] monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty."""
+    import monitortrades as mt
+    # 3. monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty
+    class _NanDecision:
+        final_qty = float("nan")
+        refuse_reason = "nan_qty"
+        balance_asset = "USDC"
+
+    class _NanProvider:
+        name = "binance"
+
+        def quantity_decision(self, *a, **kw):
+            return _NanDecision()
+
+        def free_balance(self, asset):
+            return 100.0
+
+    class _NanInst:
+        provider = _NanProvider()
+        base = "BTC"
+        quote = "USDC"
+        params = {}
+
+    assert mt._can_pass_buy_quantity_policy(_NanInst(), "BTCUSDC", 60000.0, 0.01) is False

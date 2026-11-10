@@ -349,3 +349,96 @@ class ExecutionCalibrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_executionaudit_record_strips_nan_inf_fields_strict_json_iter43_s3(tmp_path):
+    """[ITER43 #3] ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock."""
+    import json
+    from types import SimpleNamespace
+    import pytest
+    from providers.execution_audit import ExecutionAudit, AuditedStrategyExecutor
+    from providers.strategy_executor import ProviderError
+    # 3. ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock
+    audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: float("nan"))
+    ok = audit.record(
+        "submit_requested",
+        intent_id="id-1",
+        venue="binance",
+        symbol="BTCUSDC",
+        price=float("nan"),
+        reference_price=float("inf"),
+        qty=1.25,
+    )
+    assert ok is True
+    files = list(tmp_path.glob("execution_audit_*.jsonl"))
+    assert len(files) == 1
+    row = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert row["qty"] == 1.25
+    assert "price" not in row
+    assert "reference_price" not in row
+
+    aud_exec = AuditedStrategyExecutor(
+        SimpleNamespace(
+            name="binance",
+            order_by_client_id=lambda s, cid: {"orderId": 1},
+        ),
+        audit=audit,
+    )
+    with pytest.raises(ProviderError):
+        aud_exec.order_by_client_id("BTCUSDC", True)
+    aud_exec._remember("BTCUSDC", True, "intent-bool")
+    assert ("BTCUSDC", "True") not in aud_exec._intent_by_order
+
+def test_executionaudit_handles_out_of_range_clock_timestamps_and_iter59_s3(tmp_path):
+    """[ITER59 #3] ExecutionAudit handles out-of-range clock timestamps and set/frozenset fields."""
+    from providers.execution_audit import ExecutionAudit
+    # 3. ExecutionAudit handles out-of-range clock timestamps and set/frozenset fields
+    audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: 1e30)
+    assert audit.record(
+        "submit",
+        intent_id="id-1",
+        venue="binance",
+        symbol="BTCUSDC",
+        tags={"a", "b"},
+        nested={"nan_val": float("nan"), "ok": 1},
+    ) is True
+
+def test_execution_audit__parse_cache_max_parses_float_strings_iter84_s3(monkeypatch):
+    """[ITER84 #3] execution_audit._parse_cache_max parses float strings."""
+    from providers import execution_audit
+    # 3. execution_audit._parse_cache_max parses float strings
+    monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "2500.0 # inline comment")
+    assert execution_audit._parse_cache_max() == 2500
+
+def test_providers_execution_audit_intent_client_order_id_rejects_none_bool_empty_iter106_s2():
+    """[ITER106 #2] providers.execution_audit: intent_client_order_id rejects None / bool / empty."""
+    from providers import execution_audit as ea
+    # 2. providers.execution_audit: intent_client_order_id rejects None / bool / empty
+    assert ea.intent_client_order_id("kraken", None) is None
+    assert ea.intent_client_order_id("kraken", True) is None
+    assert ea.intent_client_order_id("kraken", "   ") is None
+
+def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id__clean_order_id_arg_iter151_s3():
+    """[ITER151 #3] execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg."""
+    import pytest
+    from providers.execution_audit import _parse_bool_flag as ea_parse_bool
+    from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
+    from providers.strategy_executor import ProviderError
+    # 3. execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg
+    assert ea_parse_bool("false", True) is False
+    assert ea_parse_bool(float("nan"), False) is False
+    assert ma_parse_bool("false", True) is False
+    assert ma_parse_bool("true", False) is True
+
+    assert require_int_order_id("12345.0", "ctx") == 12345
+    assert require_int_order_id(12345.0, "ctx") == 12345
+    for bad_oid in (0, -1, "0", "-5", "nan", "null", True, ["1"], None):
+        with pytest.raises(ProviderError):
+            require_int_order_id(bad_oid, "ctx")
+        with pytest.raises(ProviderError):
+            MarketApi._clean_order_id_arg(bad_oid, "Binance")
+    assert MarketApi._clean_order_id_arg("98765.0", "Binance") == "98765"

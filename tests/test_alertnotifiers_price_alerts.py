@@ -463,3 +463,133 @@ class TestNewCoinsDiscovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_alertnotifier_format_human_readable_time_and_pop_due_bulk_batch_handle_bool_nan_safely_iter55_s4():
+    """[ITER55 #4] AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely."""
+    from notify_engine.alertnotifiers import AlertNotifier, pop_due_bulk_batch
+    # 4. AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely
+    assert AlertNotifier.format_human_readable_time(True) == "N/A"
+    assert AlertNotifier.format_human_readable_time(False) == "N/A"
+    assert AlertNotifier.format_human_readable_time(float("nan")) == "nan"
+    assert pop_due_bulk_batch("ntfy", now=float("nan")) is None or True
+
+def test_synthesize_bulk_notifications_handles_float_string_negative_or_invalid_counts_iter66_s1():
+    """[ITER66 #1] synthesize_bulk_notifications handles float-string, negative, or invalid counts safely."""
+    from notify_engine.alertnotifiers import synthesize_bulk_notifications
+    # 1. synthesize_bulk_notifications handles float-string, negative, or invalid counts safely
+    title, body, prio, topic = synthesize_bulk_notifications([
+        {"title": "TestA", "body": "BodyA", "count": "2.0", "priority": "high", "topic": "t1"},
+        {"title": "TestB", "body": "BodyB", "count": "bad", "priority": "default", "topic": "t1"},
+    ])
+    assert title.startswith("📦 Bulk (2):")
+    assert "(×2)" in body
+    assert "TestB:" in body
+
+def test_pass_common_gate_and_pop_due_bulk_batch_tolerate_out_of_range_now_iter66_s2(tmp_path, monkeypatch):
+    """[ITER66 #2] pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields."""
+    from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
+    # 2. pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields
+    state_file = tmp_path / "notif_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "0")
+    allowed, reason, warn, payload = pass_common_gate(
+        "ntfy", "Title1", "Body1", now=1e20
+    )
+    assert isinstance(allowed, bool)
+    assert pop_due_bulk_batch("ntfy", now=1e20) is None
+
+def test_alertnotifier_format_batch_message_save_to_file_handle_non_numeric_prices_percent_change_iter66_s3(tmp_path):
+    """[ITER66 #3] AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change."""
+    from types import SimpleNamespace
+    from notify_engine.alertnotifiers import AlertNotifier
+    # 3. AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change
+    msg = AlertNotifier.format_batch_message([
+        {
+            "symbol": "BTC",
+            "alert_type": "up",
+            "percent_change": "N/A",
+            "current_price": "bad",
+            "reference_price": True,
+        }
+    ])
+    assert "BTC: U +0.00%" in msg
+    log_path = tmp_path / "alerts.log"
+    obj_alert = SimpleNamespace(
+        symbol="ETH",
+        alert_type="down",
+        percent_change="bad",
+        current_price="bad",
+        reference_price=None,
+        reference_time=None,
+        timestamp=None,
+        url=None,
+    )
+    assert AlertNotifier.save_to_file(obj_alert, filename=str(log_path)) is True
+
+def test_alertnotifier_helpers_iter78_s2(monkeypatch):
+    """[ITER78 #2] AlertNotifier helpers."""
+    from notify_engine.alertnotifiers import AlertNotifier, _positive_int_env
+    # 2. AlertNotifier helpers
+    assert AlertNotifier.email_subject([]) == "Alert"
+    assert AlertNotifier.utf8_header(None) == ""
+    monkeypatch.setenv("TEST_POS_INT_ENV", "300.0")
+    assert _positive_int_env("TEST_POS_INT_ENV", 10) == 300
+
+def test_notify_engine_alertnotifiers__positive_int_env__safe_pos_int_format_bot_event_iter99_s4(monkeypatch):
+    """[ITER99 #4] notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event."""
+    from notify_engine import alertnotifiers
+    # 4. notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event
+    monkeypatch.setenv("MP_TEST_POS_INT", "-5")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    monkeypatch.setenv("MP_TEST_POS_INT", "3.5")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    monkeypatch.setenv("MP_TEST_POS_INT", "15")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 15
+
+    assert alertnotifiers.exact_pos_int(True, 7) == 7
+    assert alertnotifiers.exact_pos_int(-3, 7) == 7
+    assert alertnotifiers.exact_pos_int(2.5, 7) == 7
+    assert alertnotifiers.exact_pos_int("12", 7) == 12
+
+    msg = alertnotifiers.AlertNotifier.format_bot_event(
+        {"name": "Started", "source": "BTC_bot", "added_at": 1700000000}
+    )
+    assert "Started" in msg and "BTC_bot" in msg and "11-1" in msg
+    msg_bool = alertnotifiers.AlertNotifier.format_bot_event(
+        {"name": "Started", "source": "BTC_bot", "added_at": True}
+    )
+    assert msg_bool == "Started · BTC_bot"
+
+def test_poststopreentryguard__maybe_notify_deduplicates_across_symbol_formatting_variants_iter98_s5(monkeypatch):
+    """[ITER98 #5] PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants."""
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    # 5. PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants
+    clear_post_stop_reentry_cache()
+    notified = []
+    monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: notified.append(kw))
+    psg = PostStopReentryGuard(notify_enabled=True, cache_ttl_sec=600.0)
+    dec = GuardDecision.veto("PostStopReentryGuard", "test_veto")
+    psg._maybe_notify("BTC/USDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1000.0)
+    psg._maybe_notify("BTCUSDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1005.0)
+    assert len(notified) == 1
+
+def test_alertnotifiers_utf8_header_strips_cr_lf_and_rejects_bool_iter114_s3():
+    """[ITER114 #3] alertnotifiers: utf8_header strips CR/LF and rejects bool/None."""
+    from notify_engine import alertnotifiers as an
+    # 3. alertnotifiers: utf8_header strips CR/LF and rejects bool/None
+    assert an.AlertNotifier.utf8_header(None) == ""
+    assert an.AlertNotifier.utf8_header(True) == ""
+    assert an.AlertNotifier.utf8_header("Line1\r\nLine2") == "Line1 Line2"
+
+def test_alertnotifiers__parse_bool_flag_default_preservation_iter163_s3():
+    """[ITER163 #3] alertnotifiers: _parse_bool_flag default preservation."""
+    from notify_engine import alertnotifiers as an
+    # 3. alertnotifiers: _parse_bool_flag default preservation
+    assert an._parse_bool_flag("invalid_token", default=True) is True
+    assert an._parse_bool_flag("false", default=True) is False

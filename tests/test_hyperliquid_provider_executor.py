@@ -842,3 +842,1418 @@ class HyperliquidDatasetTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_hyperliquidprovider_preflight_order_order_status_cancel_order_reject_nan_bool_iter40_s4(monkeypatch):
+    """[ITER40 #4] HyperliquidProvider preflight_order, order_status, cancel_order reject NaN/bool."""
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.hyperliquid_provider import HyperliquidProvider
+    # 4. HyperliquidProvider preflight_order, order_status, cancel_order reject NaN/bool
+    hp = HyperliquidProvider()
+    monkeypatch.setattr(hp, "free_balance", lambda asset: 1000.0)
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", float("nan"), price=20.0)
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", 1.0, price=float("nan"))
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", True, price=20.0)
+    with pytest.raises(ProviderError):
+        hp.order_status("HYPEUSDC", True)
+    with pytest.raises(ProviderError):
+        hp.cancel_order("HYPEUSDC", True)
+
+def test_hl_client__round_px_mid_spot_mid_position_strict_spot_balance_strict_iter49_s1():
+    """[ITER49 #1] hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hl_md
+        import signals as hl_pa
+        import strategy as hl_strat
+        import replay as hl_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 1. hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict
+    with pytest.raises(ValueError):
+        hlc._round_px(True, 2)
+    with pytest.raises(ValueError):
+        hlc._round_px(20.0, True)
+
+    dummy = object.__new__(hlc.HLClient)
+    dummy.address = "0x1234"
+    dummy.info = SimpleNamespace(
+        all_mids=lambda: {"HYPE": float("nan"), "BTC": True, "ETH": "2500.5"},
+        user_state=lambda _addr: {
+            "assetPositions": [{"position": {"coin": "HYPE", "szi": float("nan"), "entryPx": 20.0}}],
+            "withdrawable": True,
+        },
+        spot_user_state=lambda _addr: {
+            "balances": [{"coin": "HYPE", "total": True}]
+        },
+    )
+    assert dummy.mid("HYPE") is None
+    assert dummy.mid("BTC") is None
+    assert dummy.mid("ETH") == 2500.5
+    with pytest.raises(hlc.HLError):
+        dummy.position_strict("HYPE")
+
+def test_hyperliquid_market_data_normalize_closed_candles_rejects_bool_and_invalid_ohlc_iter49_s2():
+    """[ITER49 #2] hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hl_md
+        import signals as hl_pa
+        import strategy as hl_strat
+        import replay as hl_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 2. hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds
+    rows = [
+        {"t": True, "T": 2000, "o": 10, "h": 12, "l": 9, "c": 11},
+        {"t": 1000, "T": 2000, "o": 10, "h": 8, "l": 9, "c": 11},   # h < l
+        {"t": 1000, "T": 2000, "o": 10, "h": 12, "l": 9, "c": 11},  # valid
+    ]
+    norm = hl_md.normalize_closed_candles(rows, now_ms=5000, drop_incomplete=True)
+    assert len(norm) == 1
+    assert norm[0]["close"] == 11.0
+
+def test_hyperliquid_price_analysis_detect_long_term_trend_ignores_nan_bool_points_iter49_s3():
+    """[ITER49 #3] hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hl_md
+        import signals as hl_pa
+        import strategy as hl_strat
+        import replay as hl_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 3. hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points
+    assert hl_pa.detect_long_term_trend([1000.0, 2000.0, 3000.0], [float("nan"), float("nan"), float("nan")]) is None
+    assert hl_pa.detect_long_term_trend([True, False], [10.0, 11.0]) is None
+
+def test_hyperliquid_strategy_replay_step_ignores_nan_bool_price_iter49_s4():
+    """[ITER49 #4] hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hl_md
+        import signals as hl_pa
+        import strategy as hl_strat
+        import replay as hl_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate
+    st_inst = hl_strat.Strategy(
+        client=None, coin="HYPE", params=hl_strat.StratParams(direction="long"), dry_run=True, replay_mode=True
+    )
+    st_inst.step(float("nan"))
+    st_inst.step(True)
+    assert st_inst.s["orders"] == []
+
+    assert hl_rep.funding_at([(1000, float("nan"))], 1000) == 0.0
+    assert hl_rep.funding_at([(1000, True)], 1000) == 0.0
+    assert hl_rep.funding_at([(1000, 0.0001)], True) == 0.0
+
+def test_hyperliquidprovider_free_balance_get_price_history_ohlc_series_order_status_iter51_s4(monkeypatch):
+    """[ITER51 #4] HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    from providers.hyperliquid_provider import HyperliquidProvider
+    # 4. HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status
+    hlp = HyperliquidProvider()
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef1234567890abcdef12345678")
+    fake_hl = SimpleNamespace(
+        info=SimpleNamespace(
+            spot_user_state=lambda addr: {
+                "balances": [{"coin": "USDC", "total": "nan", "hold": "0.0"}]
+            },
+            candles_snapshot=lambda pair, interval, start, end: [
+                {"t": 1700000000000, "c": "nan"},
+                {"t": True, "c": "25.0"},
+                {"t": 1700000060000, "c": "25.5"},
+            ],
+            query_order_by_oid=lambda addr, oid: {
+                "status": "order",
+                "order": {"status": "open", "order": {"origSz": "nan", "sz": "1.0"}},
+            },
+            user_fills=lambda addr: [],
+        ),
+        candles=lambda pair, interval, lookback_h: [
+            {"c": "nan", "T": 1700000000000},
+            {"c": True, "T": 1700000060000},
+            {"c": "25.5", "T": 1700000120000},
+            {"c": "26.0", "T": 1700000180000},
+        ],
+    )
+    monkeypatch.setattr(hlp, "_hl", lambda: fake_hl)
+    monkeypatch.setattr(hlp, "_pair", lambda: "@107")
+    assert hlp.free_balance("USDC") is None
+    assert hlp.get_price_history("HYPEUSDC", True) is None
+    assert hlp.get_price_history("HYPEUSDC", float("nan")) is None
+    hist = hlp.get_price_history("HYPEUSDC", 1.0)
+    assert hist == [{"timestamp": 1700000060000, "price": 25.5}]
+    with pytest.raises(ProviderError):
+        hlp.ohlc_series("HYPEUSDC", True)
+    series = hlp.ohlc_series("HYPEUSDC", 15)
+    assert series.closes == (25.5,)
+    with pytest.raises(ProviderError):
+        hlp.order_status("HYPEUSDC", "101")
+
+def test_hyperliquidprovider_submit_order_market_rejects_nan_mid_price_iter58_s5(monkeypatch):
+    """[ITER58 #5] HyperliquidProvider.submit_order market rejects NaN mid price."""
+    import pytest
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.strategy_executor import ProviderError
+    # 5. HyperliquidProvider.submit_order market rejects NaN mid price
+    hp = HyperliquidProvider(token="HYPE", live_enabled=True)
+    monkeypatch.setattr(hp, "_pair", lambda: "@107")
+    monkeypatch.setattr(hp, "get_current_price", lambda s: float("nan"))
+    with pytest.raises(ProviderError, match="price unavailable"):
+        hp.submit_order("HYPEUSDC", "BUY", 1.0, price=None, market=True)
+
+def test_hlclient_metadata_and_order_placement_reject_boolean_nan_iter59_s5():
+    """[ITER59 #5] HLClient metadata and order placement reject boolean/NaN/non-positive inputs."""
+    import os
+    import sys
+    import pytest
+    from unittest.mock import MagicMock
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "hl_client")}
+    try:
+        for k in ("common", "hl_client"):
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hl_mod
+        HLClient = hl_mod.HLClient
+        HLError = hl_mod.HLError
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 5. HLClient metadata and order placement reject boolean/NaN/non-positive inputs
+    hl = HLClient.__new__(HLClient)
+    hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": True, "maxLeverage": False}}
+    hl.info = MagicMock()
+    hl.info.spot_meta.return_value = {"tokens": []}
+    with pytest.raises(HLError):
+        hl.sz_decimals("HYPE")
+
+    hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
+    hl.exchange = MagicMock()
+    ok, oid, msg = hl.place_limit("HYPE", True, float("nan"), 20.0)
+    assert ok is False and oid is None
+    ok2, oid2, msg2 = hl.spot_order("@107", True, 0.00001, 20.0, sz_decimals=2)
+    assert ok2 is False and oid2 is None
+    hl.exchange.order.assert_not_called()
+
+def test_hl_strategy_normalizes_uppercase_long_to_sign_and_iter60_s1():
+    """[ITER60 #1] HL Strategy normalizes uppercase 'LONG' to sign=+1 and rejects invalid direction."""
+    import os
+    import sys
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
+    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
+    try:
+        for k in hl_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat_mod
+        import signals as hl_pa_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_hl.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 1. HL Strategy normalizes uppercase "LONG" to sign=+1 and rejects invalid direction
+    p_long = hl_strat_mod.StratParams(direction="LONG")
+    st_long = hl_strat_mod.Strategy(
+        None, "HYPE", p_long, dry_run=True, replay_mode=True,
+        initial_state={"qty": None, "cost": "nan", "orders": [None, {"role": "open", "px": True, "sz": 1.0}]},
+    )
+    assert st_long.sign == 1
+    assert st_long.open_side == "buy"
+    assert st_long.s["qty"] == 0.0
+    assert st_long.s["cost"] == 0.0
+    assert st_long.s["orders"] == []
+
+    with pytest.raises(ValueError, match="Invalid Strategy direction"):
+        hl_strat_mod.Strategy(None, "HYPE", hl_strat_mod.StratParams(direction="sideways"), dry_run=True, replay_mode=True)
+
+def test_hl_price_analysis_detect_long_term_trend_rejects_step_hours_preventing_infinite_loop_iter60_s2():
+    """[ITER60 #2] HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
+    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
+    try:
+        for k in hl_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat_mod
+        import signals as hl_pa_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_hl.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 2. HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps
+    assert hl_pa_mod.detect_long_term_trend([1000, 2000, 3000], [10.0, 11.0, 12.0], window_hours=1, step_hours=0) is None
+    ts_unsorted = [float(i * 3600) for i in range(1, 60)][::-1]
+    px_unsorted = [10.0 + 0.5 * i for i in range(1, 60)][::-1]
+    res = hl_pa_mod.detect_long_term_trend(ts_unsorted, px_unsorted, window_hours=12, step_hours=4, min_consecutive_blocks=3)
+    assert res is not None and res["direction"] == "up"
+
+def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60_s4(monkeypatch):
+    """[ITER60 #4] T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0."""
+    import os
+    import sys
+    import pytest
+    import json
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
+    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
+    try:
+        for k in hl_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat_mod
+        import signals as hl_pa_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_hl.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    t212_mod_names = ("ipo_common", "t212_client")
+    saved_t212 = {k: sys.modules.get(k) for k in t212_mod_names}
+    try:
+        for k in t212_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_t212.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    cli = t212_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    payload = {
+        "items": [
+            {"order": {"id": "77", "status": "FILLED"}, "fill": {"quantity": 2.0, "price": 50.0}},
+            {"order": {"id": "77", "status": "FILLED"}, "fill": {"quantity": 2.0, "price": 0.0}},
+        ]
+    }
+    monkeypatch.setattr(t212_mod, "http_get", lambda url, headers=None: (200, json.dumps(payload).encode("utf-8")))
+    hist = cli.get_historical_order("77")
+    assert hist["filledQuantity"] == pytest.approx(4.0)
+    assert hist["fillPrice"] == pytest.approx(50.0)
+
+def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
+    """[ITER68 #4] _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    if hl_dir not in sys.path:
+        sys.path.insert(0, hl_dir)
+    from hl_client import _round_px, HLClient
+    # 4. _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters
+    with pytest.raises(ValueError):
+        _round_px(25.0, float("inf"))
+    dummy_hl = SimpleNamespace(exchange=object(), info=SimpleNamespace(candles_snapshot=lambda *a: [{"ok": 1}]))
+    assert HLClient.cancel(dummy_hl, "HYPE", None) is False
+    assert HLClient.cancel(dummy_hl, "HYPE", True) is False
+    assert HLClient.candles(dummy_hl, "HYPE", lookback_hours=True) == []
+    assert HLClient.candles(dummy_hl, "HYPE", lookback_hours=-5) == []
+
+def test_hyperliquid_market_data_normalize_closed_candles_float_string_timestamps_fetch_ohlc_candles_interval_iter69_s1():
+    """[ITER69 #1] hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks."""
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
+            sys.modules.pop(m, None)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    hl_md = _load_mod("_hl_market_data_69", os.path.join(hl_dir, "market_data.py"), hl_dir)
+    # 1. hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks
+    rows = [{"t": "1700000000000.0", "T": "1700003599000.0", "o": "10", "h": "12", "l": "9", "c": "11"}]
+    norm = hl_md.normalize_closed_candles(rows, now_ms=1700005000000)
+    assert len(norm) == 1 and norm[0]["timestamp"] == 1700000000
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=15.5)
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=60, lookback_hours=True)
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=60, lookback_hours=-1)
+
+def test_hyperliquid_signals__file_signal_catches_overflowerror_on_huge_ts_iter69_s2(tmp_path):
+    """[ITER69 #2] hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence."""
+    import importlib.util
+    import json
+    import os
+    import sys
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
+            sys.modules.pop(m, None)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    hl_sig = _load_mod("_hl_signals_69", os.path.join(hl_dir, "signals.py"), hl_dir)
+    # 2. hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence
+    sig_file = tmp_path / "signal.json"
+    sig_file.write_text(json.dumps({"trend": "up", "confidence": 10**400, "ts": 10**400}), encoding="utf-8")
+    os.environ.setdefault("SIGNAL_MAX_AGE_MIN", "60")
+    res_sig = hl_sig._file_signal(str(sig_file))
+    assert res_sig["trend"] == "neutral"
+
+def test_hyperliquid_strategy_stratparams_from_dict_strategy__place_validation_iter69_s3():
+    """[ITER69 #3] hyperliquid.strategy.StratParams.from_dict & Strategy._place validation."""
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
+            sys.modules.pop(m, None)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    hl_strat = _load_mod("_hl_strategy_69", os.path.join(hl_dir, "strategy.py"), hl_dir)
+    # 3. hyperliquid.strategy.StratParams.from_dict & Strategy._place validation
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"entry": True})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"entry": float("nan")})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"maxdca": 2.5})
+    sp = hl_strat.StratParams.from_dict({"maxdca": "10.0"})
+    assert sp.max_dca_buys == 10
+    s_inst = hl_strat.Strategy(client=None, coin="HYPE", params=sp, dry_run=True, replay_mode=True)
+    s_inst._place("open", 1.0, -5.0, "ENTRY", 50.0)
+    assert s_inst.s["orders"] == []
+
+def test_fetch_hyperliquid_candles_resolve_spot_pair_validate_continuity_iter72_s5():
+    """[ITER72 #5] fetch_hyperliquid_candles.resolve_spot_pair & validate_continuity."""
+    import pytest
+    from offline.runners import fetch_hyperliquid_candles as fhc
+    # 5. fetch_hyperliquid_candles.resolve_spot_pair & validate_continuity
+    with pytest.raises(ValueError):
+        fhc.resolve_spot_pair("HYPE", "USDC", "not-a-dict")
+    meta = {
+        "tokens": ["bad-item", {"name": "HYPE", "index": 1}, {"name": "USDC", "index": 0}],
+        "universe": ["bad-item", {"tokens": [1, 0], "name": "@107"}],
+    }
+    assert fhc.resolve_spot_pair("hype", "usdc", meta) == "@107"
+    with pytest.raises(ValueError):
+        fhc.validate_continuity([], 0)
+
+def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
+    import importlib
+    import sys
+    from offline.runners import hyperliquid_walk_forward_baseline as hl_wf
+    from offline.runners import t212_walk_forward_baseline as t212_wf
+    from offline.runners import fetch_hyperliquid_candles as fhc
+
+    while str(hl_wf.HL_DIR) in sys.path:
+        sys.path.remove(str(hl_wf.HL_DIR))
+    while str(t212_wf.T212_DIR) in sys.path:
+        sys.path.remove(str(t212_wf.T212_DIR))
+    importlib.reload(hl_wf)
+    importlib.reload(t212_wf)
+    importlib.reload(fhc)
+    assert str(hl_wf.HL_DIR) not in sys.path
+    assert str(t212_wf.T212_DIR) not in sys.path
+    assert str(fhc.HL_DIR) not in sys.path
+
+def test_hlclient_spot_order_place_limit_reject_non_bool_is_buy_and_iter92_s1(monkeypatch):
+    """[ITER92 #1] HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals."""
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+    def _load_hl_mod(mod_name: str, filename: str):
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+        spec.loader.exec_module(mod)
+        return mod
+    saved_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
+    try:
+        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
+        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
+        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
+    finally:
+        sys.path[:] = saved_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 1. HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals
+    hl = object.__new__(hl_client_mod.HLClient)
+    hl.exchange = object()
+    hl._meta_cache = {"HYPE": {"szDecimals": 2.5, "maxLeverage": 3.5}}
+    hl.info = type("I", (), {"spot_meta": lambda self: {}})()
+    with pytest.raises(hl_client_mod.HLError, match="Missing size precision"):
+        hl.sz_decimals("HYPE")
+    hl._meta_cache = {"HYPE": {"szDecimals": 2, "maxLeverage": 5}}
+    assert hl.spot_order("@107", "SELL", 1.0, 20.0) == (False, None, "invalid non-boolean is_buy")
+    assert hl.spot_order("  ", True, 1.0, 20.0) == (False, None, "invalid pair")
+    assert hl.place_limit("HYPE", "SELL", 1.0, 20.0) == (False, None, "invalid non-boolean is_buy or reduce_only")
+    assert hl.place_limit("", True, 1.0, 20.0) == (False, None, "invalid coin")
+
+def test_hyperliquid_market_data_validation_iter92_s2(monkeypatch):
+    """[ITER92 #2] hyperliquid.market_data validation."""
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+    def _load_hl_mod(mod_name: str, filename: str):
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+        spec.loader.exec_module(mod)
+        return mod
+    saved_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
+    try:
+        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
+        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
+        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
+    finally:
+        sys.path[:] = saved_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 2. hyperliquid.market_data validation
+    assert hl_md_mod.normalize_closed_candles(None, now_ms=1000) == []
+    with pytest.raises(ValueError, match="invalid coin"):
+        hl_md_mod.fetch_ohlc_candles("  ", 60)
+    with pytest.raises(ValueError, match="invalid coin"):
+        hl_md_mod.fetch_ohlc_candles(True, 60)
+    assert hl_md_mod.fetch_funding_history("", 1000) == []
+    assert hl_md_mod.fetch_funding_history("HYPE", -1) == []
+
+def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_loss_avoids_iter92_s3(monkeypatch):
+    """[ITER92 #3] hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure."""
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+    def _load_hl_mod(mod_name: str, filename: str):
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+        spec.loader.exec_module(mod)
+        return mod
+    saved_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
+    try:
+        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
+        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
+        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
+    finally:
+        sys.path[:] = saved_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 3. hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure
+    with pytest.raises(ValueError, match="invalid numeric boolean"):
+        hl_strat_mod.StratParams.from_dict({"enable_takeprofit": 2})
+
+    class _CloseFailCancelClient:
+        exchange = None
+        placed = 0
+
+        def sz_decimals(self, _coin):
+            return 2
+
+        def cancel(self, _coin, _oid):
+            return False
+
+        def place_limit(self, _coin, _is_buy, _sz, _px, reduce_only=False):
+            self.placed += 1
+            return True, f"SL-{self.placed}", "ok"
+
+    cli = _CloseFailCancelClient()
+    strat = hl_strat_mod.Strategy(
+        client=cli,
+        coin="HYPE",
+        params=hl_strat_mod.StratParams(direction="long", stop_loss_pct=5.0),
+        dry_run=False,
+        replay_mode=False,
+        initial_state={"qty": 1.0, "cost": 100.0, "spent": 100.0, "orders": [{"oid": "TP-1", "role": "close", "px": 105.0, "sz": 1.0}]},
+    )
+    strat._save = lambda: None
+    assert strat._check_stop_loss(94.0) is True
+    assert cli.placed == 0
+    assert [o["oid"] for o in strat.s["orders"]] == ["TP-1"]
+
+def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_owned_iter93_s3(monkeypatch):
+    """[ITER93 #3] hyperliquid.replay validation & 212trading.strategy ladder validation & owned parsing."""
+    import pytest
+    import importlib
+    import importlib.util
+    import sys
+    # 3. hyperliquid.replay validation
+    import os
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    if "strategy" in sys.modules:
+        monkeypatch.setitem(sys.modules, "strategy", sys.modules["strategy"])
+    else:
+        monkeypatch.delitem(sys.modules, "strategy", raising=False)
+    spec_hl_r = importlib.util.spec_from_file_location(
+        "hl_replay_iter93", os.path.join(root_dir, "hyperliquid", "replay.py")
+    )
+    hl_replay = importlib.util.module_from_spec(spec_hl_r)
+    monkeypatch.setitem(sys.modules, "hl_replay_iter93", hl_replay)
+    spec_hl_r.loader.exec_module(hl_replay)
+    with pytest.raises(ValueError, match="Unsupported Hyperliquid replay engine"):
+        hl_replay.make_hyperliquid_replay_adapter({}, engine="futures")
+    with pytest.raises(ValueError, match="fee_pct"):
+        hl_replay.run_replay([(100.0, 101.0, 99.0, 100.0, 1000)], fee_pct=-0.1)
+
+
+    # 4. 212trading.strategy ladder validation & owned parsing
+    spec_t212 = importlib.util.spec_from_file_location(
+        "t212_strategy_iter93", os.path.join(root_dir, "212trading", "strategy.py")
+    )
+    t212_strat = importlib.util.module_from_spec(spec_t212)
+    monkeypatch.setitem(sys.modules, "t212_strategy_iter93", t212_strat)
+    spec_t212.loader.exec_module(t212_strat)
+
+    with pytest.raises(ValueError, match="generate_tp_ladder requires max_pct >= min_pct"):
+        t212_strat.generate_tp_ladder(steps=3, min_pct=5.0, max_pct=2.0)
+    with pytest.raises(ValueError, match="unsupported generate_tp_ladder curve"):
+        t212_strat.generate_tp_ladder(steps=3, min_pct=1.0, max_pct=5.0, curve="cubic")
+
+    with pytest.raises(ValueError, match="fractions exceed 100%"):
+        t212_strat.StratParams.from_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "2.0:60,5.0:60"})
+
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
+        t212_strat.StratParams.from_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "0.0:50"})
+
+def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_hours_iter94_s4(monkeypatch):
+    """[ITER94 #4] priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection."""
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 4. priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection
+    import priceAnalysis as pa
+
+    ts_flat = [1000.0 + i * 3600.0 for i in range(60)]
+    px_flat = [100.0 for _ in range(60)]
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=0) is None
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=-4) is None
+
+    # Unsorted timestamps should still detect valid uptrend and blocks copy must not mutate cache
+    px_up = [100.0 + i * 1.5 for i in range(60)]
+    res1 = pa.detect_long_term_trend(list(reversed(ts_flat)), list(reversed(px_up)), window_hours=24, step_hours=8)
+    assert res1 is not None and res1["direction"] == "up"
+    res1["blocks"].clear()
+    res2 = pa.detect_long_term_trend(ts_flat, px_up, window_hours=24, step_hours=8)
+    assert res2 is not None and len(res2["blocks"]) >= 3
+
+    spec_hl_pa = importlib.util.spec_from_file_location(
+        "hl_pa_iter94", os.path.join(root_dir, "hyperliquid", "signals.py")
+    )
+    hl_pa = importlib.util.module_from_spec(spec_hl_pa)
+    monkeypatch.setitem(sys.modules, "hl_pa_iter94", hl_pa)
+    spec_hl_pa.loader.exec_module(hl_pa)
+    assert hl_pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
+
+def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_iter95_s3():
+    """[ITER95 #3] HyperliquidProvider token/live_enabled/order_id/ohlc_series validation."""
+    import pytest
+    from providers.hyperliquid_provider import HyperliquidProvider, _spot_symbol_alias
+    from providers.strategy_executor import ProviderError
+    # 3. HyperliquidProvider token/live_enabled/order_id/ohlc_series validation
+    assert _spot_symbol_alias(True, "HYPE") is False
+    with pytest.raises(ValueError, match="invalid Hyperliquid token"):
+        HyperliquidProvider(token=True)
+    hl_p = HyperliquidProvider(token=" hype ", live_enabled="false")
+    assert hl_p._token == "HYPE"
+    assert hl_p.execution_enabled() is False
+    assert hl_p.free_balance("") is None
+    assert hl_p.free_balance(True) is None
+    with pytest.raises(ProviderError, match="invalid interval_min"):
+        hl_p.ohlc_series("HYPEUSDC", 15.5)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        hl_p.order_status("HYPEUSDC", 123.7)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        hl_p.cancel_order("HYPEUSDC", 123.7)
+
+def test_hyperliquidprovider_iter111_s2():
+    """[ITER111 #2] HyperliquidProvider."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    import providers.hyperliquid_provider as hlp
+    # 2. HyperliquidProvider
+    hl_prov = hlp.HyperliquidProvider.__new__(hlp.HyperliquidProvider)
+    hl_prov._token = "PURR"
+    hl_prov._symbol = "PURR"
+    hl_prov.validate_symbol = lambda _s: None
+    hl_prov.preflight_order("PURR", True, 1.0)
+    hl_prov._hl = lambda: SimpleNamespace(sz_decimals=lambda _t: True)
+    with pytest.raises(ProviderError):
+        hl_prov.pair_precision("PURR")
+    hl_prov._hl = lambda: SimpleNamespace(sz_decimals=lambda _t: -1)
+    with pytest.raises(ProviderError):
+        hl_prov.pair_precision("PURR")
+
+def test_hlclient_strict_position_spot_balance_market_data_guards_iter115_s4():
+    """[ITER115 #4] HLClient strict position/spot_balance & market_data guards."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hlmd
+        import strategy as hl_strat
+        HLClient, HLError = hlc.HLClient, hlc.HLError
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. HLClient strict position/spot_balance & market_data guards
+    hl = HLClient.__new__(HLClient)
+    hl.address = "0x123"
+    hl.exchange = None
+    hl._user_state = lambda: {"assetPositions": [{"position": {"coin": "HYPE", "szi": "bad", "entryPx": "10"}}]}
+    with pytest.raises(HLError):
+        hl.position_strict("HYPE")
+    hl.info = SimpleNamespace(
+        candles_snapshot=lambda *_a: ["not-a-dict", {"t": 1}],
+    )
+    assert hl.candles("", "1h", 10) == []
+    assert hl.candles("HYPE", "", 10) == []
+    assert hl.candles("HYPE", "1h", 10) == [{"t": 1}]
+    assert hlmd.normalize_closed_candles("not-a-list", now_ms=1000) == []
+    assert hlmd.normalize_closed_candles([{"t": 1, "T": 2, "o": 1, "h": 2, "l": 1, "c": 1.5}], now_ms=True) == []
+    with pytest.raises(ValueError):
+        hlmd.fetch_ohlc_candles("HYPE", 60.0)
+    assert hlmd.fetch_funding_history("HYPE", 1000, timeout=0) == []
+
+def test_hl_and_t212_strategy_state_sanitization_iter115_s5():
+    """[ITER115 #5] HL and T212 strategy state sanitization."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hlmd
+        import strategy as hl_strat
+        HLClient, HLError = hlc.HLClient, hlc.HLError
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 5. HL and T212 strategy state sanitization
+    hl_clean = hl_strat._sanitize_state({
+        "orders": [
+            {"role": "open", "px": 10.0, "sz": 1.0},  # missing oid
+            {"role": "open", "oid": True, "px": 10.0, "sz": 1.0},  # bool oid
+            {"role": "open", "oid": "123", "px": 10.0, "sz": 1.0},
+        ]
+    })
+    assert len(hl_clean["orders"]) == 1 and hl_clean["orders"][0]["oid"] == "123"
+
+    t212_clean = t212_strat._sanitize_t212_state({
+        "pending_submit": {"side": "INVALID", "qty": 1.0, "limit": 10.0, "intent_id": "id1"},
+        "orders": [
+            {"side": "BUY", "qty": 1.0, "limit": 10.0},  # missing id
+            {"id": "o1", "side": "INVALID", "qty": 1.0, "limit": 10.0},
+            {"id": " o2 ", "side": " buy ", "qty": "2.5", "limit": "15.0"},
+        ],
+    })
+    assert t212_clean["pending_submit"] is None
+    assert len(t212_clean["orders"]) == 1
+    assert t212_clean["orders"][0]["id"] == "o2"
+    assert t212_clean["orders"][0]["side"] == "BUY"
+
+def test_hlclient_spot_order_is_market_tif_validation_iter116_s3():
+    """[ITER116 #3] HLClient.spot_order is_market & tif validation."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        HLClient = hlc.HLClient
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        T212Client = t212c.T212Client
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 3. HLClient.spot_order is_market & tif validation
+    hl = HLClient.__new__(HLClient)
+    hl.exchange = SimpleNamespace(order=lambda *a, **kw: {"status": "ok"})
+    assert hl.spot_order("@107", True, 1.0, 10.0, is_market="false")[0] is False
+    assert hl.spot_order("@107", True, 1.0, 10.0, tif=True)[0] is False
+    assert hl.spot_order("@107", True, 1.0, 10.0, tif="   ")[0] is False
+
+def test_t212client___init___place_market_order_extended_hours_false_and_get_historical_order_currency_iter116_s4(monkeypatch):
+    """[ITER116 #4] T212Client.__init__, place_market_order extended_hours='false', and get_historical_order currency=True."""
+    import os
+    import sys
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        HLClient = hlc.HLClient
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        T212Client = t212c.T212Client
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. T212Client.__init__, place_market_order extended_hours="false", and get_historical_order currency=True
+    with pytest.raises(ValueError):
+        T212Client(api_key="", env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    with pytest.raises(ValueError):
+        T212Client(api_key=True, env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    with pytest.raises(ValueError):
+        T212Client(api_key="key", api_secret=True, env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    tc = T212Client(api_key="key", env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    sent_payload = {}
+    monkeypatch.setattr(tc, "_place_order", lambda ep, payload: sent_payload.update(payload) or (200, {"id": 1}))
+    tc.place_market_order("AAPL_US_EQ", 1.0, extended_hours="false")
+    assert sent_payload["extendedHours"] is False
+    monkeypatch.setattr(
+        t212c,
+        "http_get",
+        lambda *_a, **_kw: (
+            200,
+            b'{"items":[{"order":{"id":"O1"},"fill":{"quantity":1,"price":10,"walletImpact":{"taxes":[{"quantity":0.1,"currency":true}]}}}]}',
+        ),
+    )
+    hist = tc.get_historical_order("O1")
+    assert "_feeCurrencies" not in hist
+
+def test_hl_stratparams_from_dict_rejects_direction_false_and_out_iter118_s1():
+    """[ITER118 #1] HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True."""
+    import os
+    import sys
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat
+        import replay as hl_replay
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 1. HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"direction": False})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"sz_decimals": -1})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"sz_decimals": 25})
+    assert hl_strat.StratParams.from_dict({"currency": True}).currency == "USDC"
+
+def test_hl_strategy__apply_close_preserves_avg_cost_and_updates_iter118_s2(monkeypatch):
+    """[ITER118 #2] HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close."""
+    import os
+    import sys
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat
+        import replay as hl_replay
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 2. HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close
+    monkeypatch.setattr(hl_strat, "notify", lambda *a, **kw: None)
+    st_hl = hl_strat.Strategy(
+        client=None,
+        coin="HYPE",
+        params=hl_strat.StratParams(sz_decimals=99),
+        dry_run=True,
+        replay_mode=True,
+    )
+    assert st_hl.sz_dec == 18
+    st_hl.s["qty"] = 10.0
+    st_hl.s["cost"] = 100.0
+    st_hl.s["spent"] = 100.0
+    st_hl._apply_close(10.0, 12.0, 4.0, real_qty=6.0, real_avg=0.0)
+    assert st_hl.s["qty"] == 6.0
+    assert st_hl.s["cost"] == 60.0
+    assert st_hl.s["spent"] == 60.0
+
+def test_hl_replay_validates_ohlc_envelope_and_accepts_tuple_iter118_s3():
+    """[ITER118 #3] HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)."""
+    import os
+    import sys
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat
+        import replay as hl_replay
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 3. HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)
+    res_5t = hl_replay.run_replay([(100.0, 101.0, 99.0, 100.0, 1000)])
+    assert res_5t["initial_capital"] == 500.0
+    with pytest.raises(ValueError, match="has non-finite or invalid prices"):
+        hl_replay.run_replay([(105.0, 101.0, 99.0, 100.0)])
+
+def test_t212_strategy__reconcile_real_falls_back_to_order_limit_iter118_s4(monkeypatch):
+    """[ITER118 #4] T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat
+        import replay as hl_replay
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0
+    monkeypatch.setattr(t212_strat, "notify", lambda *a, **kw: None)
+    dummy_client = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "TEST_US_EQ", "quantity": 1.01, "averagePrice": 99.0}],
+        list_active_orders=lambda: [],
+    )
+    t_params = t212_strat.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=1.0, dca_amount=10.0,
+        dca_drop_pct=2.0, check_minutes=5.0, takeprofit_pct=2.0, max_budget=1000.0,
+        max_dca_buys=5, validity="GOOD_TILL_CANCEL", enable_takeprofit=True,
+        order_ttl_min=60.0, stop_loss_pct=5.0,
+    )
+    t_eng = t212_strat.Strategy(
+        dummy_client,
+        "TEST_US_EQ",
+        t_params,
+        dry_run=False,
+        initial_state={
+            "qty": 1.0,
+            "cost_usd": 100.0,
+            "spent_cash": 100.0,
+            "entry_price": 100.0,
+            "last_buy_price": 100.0,
+            "orders": [{"id": "B1", "side": "BUY", "qty": 0.01, "limit": 95.0, "kind": "DCA"}],
+        },
+        fx_to_usd=1.0,
+        clock=lambda: 1000.0,
+    )
+    t_eng._save = lambda: None
+    t_eng._tracked_order_status = lambda _o, _c: None
+    assert t_eng._reconcile_real(96.0) is True
+    assert t_eng.s["last_buy_price"] == 95.0
+
+def test_hyperliquid_backtest_precompute_signal_validates_signal_source_and_normalizes_iter119_s4():
+    """[ITER119 #4] hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace."""
+    import os
+    import sys
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay", "backtest")
+    saved_mods = {k: sys.modules.get(k) for k in hl_mods}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import backtest as hl_bt
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 4. hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace
+    assert hl_bt.precompute_signal([100.0, 101.0], [1, 2], " OFF ", 2, 4, 0.01, 24, 8) == ["__any__", "__any__"]
+    with pytest.raises(ValueError):
+        hl_bt.precompute_signal([100.0, 101.0], [1, 2], "invalid_source", 2, 4, 0.01, 24, 8)
+    with pytest.raises(ValueError):
+        hl_bt.precompute_signal([100.0, 101.0], [1, 2], True, 2, 4, 0.01, 24, 8)
+
+def test_canonical_venue_and__detect_venue_handle_bool_provider_objects_and_iter134_s3():
+    """[ITER134 #3] canonical_venue and _detect_venue handle bool, provider objects, and empty/whitespace strings."""
+    from types import SimpleNamespace
+    from offline.runners.walk_forward import canonical_venue
+    from offline.runners.walk_forward_compare import _detect_venue
+    # 3. canonical_venue and _detect_venue handle bool, provider objects, and empty/whitespace strings
+    assert canonical_venue(True) is None  # type: ignore[arg-type]
+    assert canonical_venue("   ") is None
+    assert canonical_venue(SimpleNamespace(name=" Trading212 ")) == "t212"  # type: ignore[arg-type]
+    assert _detect_venue({"venue": "   ", "purpose": "Binance walk-forward"}, cli_venue="  ") == "binance"
+    assert _detect_venue({"venue": True, "purpose": "Hyperliquid"}, cli_venue=False) == "hyperliquid"  # type: ignore[arg-type]
+
+def test_intent_client_order_id_and_auditedstrategyexecutor_reject_sentinel_strings_and_containers_iter141_s1(tmp_path):
+    """[ITER141 #1] intent_client_order_id and AuditedStrategyExecutor reject sentinel strings and containers."""
+    from types import SimpleNamespace
+    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, intent_client_order_id
+    # 1. intent_client_order_id and AuditedStrategyExecutor reject sentinel strings and containers
+    for bad_intent in ("nan", "null", "none", "inf", ["abc"], {"id": 1}, True, None, ""):
+        assert intent_client_order_id("binance", bad_intent) is None  # type: ignore[arg-type]
+        assert intent_client_order_id("kraken", bad_intent) is None  # type: ignore[arg-type]
+        assert intent_client_order_id("hyperliquid", bad_intent) is None  # type: ignore[arg-type]
+
+    from providers.execution_audit import clean_order_id_str
+    assert clean_order_id_str("nan") == ""
+    assert clean_order_id_str(["123"]) == ""
+    assert clean_order_id_str(12345.0) == "12345"
+
+    seen_submits = []
+    fake_exec = SimpleNamespace(
+        name="Binance",
+        submit_order=lambda sym, side, qty, px, **kw: seen_submits.append(kw.get("client_order_id")) or "98765",
+    )
+    audited = AuditedStrategyExecutor(fake_exec, audit=ExecutionAudit(directory=str(tmp_path)))
+    oid = audited.submit_order_with_intent(
+        "binance-BTCUSDC-entry-0123456789abcdef0123456789abcdef",
+        "BTCUSDC",
+        "BUY",
+        1.0,
+        50000.0,
+        client_order_id="nan",
+    )
+    assert oid == "98765"
+    assert seen_submits == ["SD_0123456789abcdef0123456789abcdef"]
+
+def test_hyperliquidprovider_open_orders_skips_entries_with_missing_zero_sentinel_iter141_s3():
+    """[ITER141 #3] HyperliquidProvider.open_orders skips entries with missing/zero/sentinel orderId."""
+    from types import SimpleNamespace
+    from providers.hyperliquid_provider import HyperliquidProvider
+    # 3. HyperliquidProvider.open_orders skips entries with missing/zero/sentinel orderId
+    hl = HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl._spot_pair = "@107"
+    hl._client = SimpleNamespace(
+        open_orders=lambda pair: [
+            {"oid": "nan", "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+            {"oid": 0, "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+            {"oid": 888.0, "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+        ]
+    )
+    hl_open = hl.open_orders("HYPEUSDC")
+    assert len(hl_open) == 1
+    assert hl_open[0]["orderId"] == "888"
+
+def test_hyperliquid_signals__file_signal_guards_directory_bool_empty_paths_iter147_s3(tmp_path):
+    """[ITER147 #3] hyperliquid/signals._file_signal guards directory/bool/empty paths."""
+    import importlib.util
+    import os
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 3. hyperliquid/signals._file_signal guards directory/bool/empty paths
+    hl_sig_spec = importlib.util.spec_from_file_location("hl_sig_t147", os.path.join(root, "hyperliquid", "signals.py"))
+    hl_sig_mod = importlib.util.module_from_spec(hl_sig_spec)
+    assert hl_sig_spec and hl_sig_spec.loader
+    sys.modules["hl_sig_t147"] = hl_sig_mod
+    try:
+        hl_sig_spec.loader.exec_module(hl_sig_mod)
+    finally:
+        sys.modules.pop("hl_sig_t147", None)
+
+    assert hl_sig_mod._file_signal("")["source"] == "file(missing)"
+    assert hl_sig_mod._file_signal(True)["source"] == "file(missing)"  # type: ignore[arg-type]
+    assert hl_sig_mod._file_signal(str(tmp_path))["source"] == "file(missing)"
+
+def test_hyperliquidprovider_execution_enabled_rejects_nan_false_containers_iter152_s1():
+    """[ITER152 #1] HyperliquidProvider execution_enabled rejects NaN / 'false' / containers."""
+    from providers.hyperliquid_provider import HyperliquidProvider, _parse_bool_flag as hl_bool
+    # 1. HyperliquidProvider execution_enabled rejects NaN / "false" / containers
+    assert hl_bool("false", True) is False
+    assert hl_bool(float("nan"), False) is False
+    assert HyperliquidProvider(live_enabled="false").execution_enabled() is False  # type: ignore[arg-type]
+    assert HyperliquidProvider(live_enabled=float("nan")).execution_enabled() is False  # type: ignore[arg-type]
+    assert HyperliquidProvider(live_enabled="true").execution_enabled() is True  # type: ignore[arg-type]
+
+def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_timestamps_iter153_s2(monkeypatch):
+    """[ITER153 #2] hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps."""
+    import os
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    def _load_mod(name, rel):
+        from botcore import load_local_module
+        p = os.path.join(root, rel)
+        return load_local_module(
+            os.path.dirname(p),
+            os.path.splitext(os.path.basename(p))[0],
+            module_key=name,
+            reload=True,
+        )
+    hl_sl = _load_mod("hl_shadow_longterm_it153", "hyperliquid/shadow_longterm.py")
+    # 2. hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps
+    class DummyPubClient:
+        def candles(self, token, interval, lookback_hours=0):
+            return [
+                {"t": 1700000000000, "o": "10", "h": "12", "l": "9", "c": "11"},
+                {"t": 1700000000000, "o": "10", "h": "13", "l": "9", "c": "12"},
+                {"t": 1700014400000, "o": "12", "h": "14", "l": "11", "c": "13"},
+            ]
+
+    import hl_client as hlc_mod
+    monkeypatch.setattr(hlc_mod.HLClient, "public", staticmethod(lambda: DummyPubClient()))
+    rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
+    assert len(rows) == 1
+    assert rows[0] == (1700000000, 10.0, 13.0, 9.0, 12.0)
+
+def test_hyperliquid_archive_delta_neutral_funding_scan_py_rank__spot_tokens_safety_iter153_s3():
+    """[ITER153 #3] hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety."""
+    import os
+    from types import SimpleNamespace
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    def _load_mod(name, rel):
+        from botcore import load_local_module
+        p = os.path.join(root, rel)
+        return load_local_module(
+            os.path.dirname(p),
+            os.path.splitext(os.path.basename(p))[0],
+            module_key=name,
+            reload=True,
+        )
+    f_scan = _load_mod("hl_funding_scan_it153", "archive/hyperliquid/delta_neutral/funding_scan.py")
+    # 3. hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety
+    ranked = f_scan.rank(
+        [None, {"name": "BAD_BOOL"}, {"name": "NAN_F"}, {"name": "HYPE"}],
+        [
+            None,
+            {"funding": True, "dayNtlVlm": 50_000_000, "markPx": 20, "openInterest": 1000},
+            {"funding": "nan", "dayNtlVlm": 50_000_000, "markPx": 20, "openInterest": 1000},
+            {"funding": "0.0005", "dayNtlVlm": "25000000", "markPx": "25.0", "openInterest": "10000"},
+        ],
+        min_vol_usd=float("nan"),
+        top=True,
+    )
+    assert len(ranked) == 1 and ranked[0]["coin"] == "HYPE"
+    bad_spot_client = SimpleNamespace(info=SimpleNamespace(spot_meta=lambda: {"tokens": [None], "universe": [None]}))
+    assert f_scan._spot_tokens(bad_spot_client) == set()
+
+def test_hyperliquid_archive_delta_neutral_delta_neutral_py_state_path_for__load_sanitization_iter153_s4(tmp_path, monkeypatch):
+    """[ITER153 #4] hyperliquid/archive/delta_neutral/delta_neutral.py state_path_for & _load sanitization."""
+    import json
+    import os
+    from types import SimpleNamespace
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    def _load_mod(name, rel):
+        from botcore import load_local_module
+        p = os.path.join(root, rel)
+        return load_local_module(
+            os.path.dirname(p),
+            os.path.splitext(os.path.basename(p))[0],
+            module_key=name,
+            reload=True,
+        )
+    dn_mod = _load_mod("hl_delta_neutral_it153", "archive/hyperliquid/delta_neutral/delta_neutral.py")
+    # 4. hyperliquid/archive/delta_neutral/delta_neutral.py state_path_for & _load sanitization
+    assert dn_mod.state_path_for("").endswith(".state_dn_UNKNOWN.json")
+    assert dn_mod.state_path_for(True).endswith(".state_dn_UNKNOWN.json")  # type: ignore[arg-type]
+    params = dn_mod.DNParams(
+        coin="HYPE", spot_pair="@107", spot_token="HYPE", notional=100.0,
+        entry_funding_hr=0.0001, exit_funding_hr=0.0, funding_window_h=4.0,
+        min_hold_h=1.0, rebalance_pct=5.0, check_minutes=5.0, sz_decimals=2,
+        liq_alert_pct=15.0, auto_protect=True, reduce_pct=25.0, perp_leverage=2,
+        allow_scale_up=False, fee_pct=0.05,
+    )
+    corrupt_state = tmp_path / ".state_dn_HYPE.json"
+    corrupt_state.write_text(json.dumps({
+        "status": "invalid_status",
+        "target_sz": "nan",
+        "fees_paid": True,
+        "liq_alerted": "false",
+        "orphan_count": -5,
+        "opened_ts": "nan",
+        "funding_hist": ["bad", [True, 0.01], [1700000000.0, "nan"], [1700000000.0, 0.0002]],
+    }), encoding="utf-8")
+    monkeypatch.setattr(dn_mod, "state_path_for", lambda c: str(corrupt_state))
+    dn = dn_mod.DeltaNeutral(client=SimpleNamespace(), params=params, dry_run=True)
+    assert dn.s["status"] == "flat"
+    assert dn.s["target_sz"] == 0.0
+    assert dn.s["fees_paid"] == 0.0
+    assert dn.s["liq_alerted"] is False
+    assert dn.s["orphan_count"] == 0
+    assert dn.s["opened_ts"] is None
+    assert dn.s["funding_hist"] == [[1700000000.0, 0.0002]]
+
+def test_simulate_sys_modules_market_data_polluted_by_hyperliquid_market_data_iter154_s1(monkeypatch):
+    """[ITER154 #1] Simulate sys.modules['market_data'] polluted by hyperliquid/market_data.py."""
+    import importlib.util
+    import os
+    import sys
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    def _load_mod(name, rel):
+        p = os.path.join(root, rel)
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[name] = m
+        spec.loader.exec_module(m)
+        return m
+    # 1. Simulate sys.modules["market_data"] polluted by hyperliquid/market_data.py
+    hl_md = _load_mod("hl_market_data_polluter", "hyperliquid/market_data.py")
+    monkeypatch.setitem(sys.modules, "market_data", hl_md)
+    om_mod = _load_mod("t212_om_it154", "212trading/order_manager.py")
+    assert callable(getattr(om_mod, "get_usd_ron", None))
+
+def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_iter169_s2(monkeypatch):
+    """[ITER169 #2] HyperliquidProvider underscore alias and LONG/ASK side normalization."""
+    import pytest
+    from providers import hyperliquid_provider as hlp
+    from providers.strategy_executor import ProviderError
+    # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
+    hl = hlp.HyperliquidProvider(token="HYPE", live_enabled=False)
+    assert hl.supports_symbol("HYPE_USDC") is True
+    monkeypatch.setattr(hl, "free_balance", lambda asset: 10.0)
+    with pytest.raises(ProviderError, match="insufficient USDC"):
+        hl.preflight_order("HYPE_USDC", "LONG", 2.0, price=25.0)

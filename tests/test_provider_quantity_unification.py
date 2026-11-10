@@ -510,3 +510,588 @@ class QuantityDecisionTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_resolve_assets_strips_separators_while_preserving_unknown_suffixes_iter5_s3():
+    """[ITER5 #3] resolve_assets strips separators while preserving unknown suffixes."""
+    from providers.quantity import resolve_assets
+    # 3. resolve_assets strips separators while preserving unknown suffixes
+    assert resolve_assets("HYPE/USDC") == ("HYPE", "USDC")
+    assert resolve_assets("HYPE-USDC", base="HYPE") == ("HYPE", "USDC")
+    assert resolve_assets("TAOUSDT") == ("TAO", "USDT")
+    assert resolve_assets("TAOBRL") == ("TAOBRL", None)
+
+def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27_s4():
+    """[ITER27 #4] decide_quantity with NaN/bool policy_cap and NaN suggested_scale."""
+    from types import SimpleNamespace
+    from providers.quantity import decide_quantity
+    # 4. decide_quantity with NaN/bool policy_cap and NaN suggested_scale
+    class DummyQtyProvider:
+        def spent_asset(self, side, base, quote):
+            return quote if side == "BUY" else base
+        def free_balance(self, asset):
+            return 1000.0
+        def balance_cap_quantity(self, side, price, free):
+            return free / price
+        def policy_cap_quantity(self, *a, **k):
+            return float("nan")
+        def fee_cap_quantity(self, *a, **k):
+            return 10.0
+        def round_amount(self, sym, qty):
+            return round(qty, 4)
+
+    q_nan = decide_quantity(DummyQtyProvider(), "TAOUSD", "BUY", 100.0, 2.0, apply_policy=True)
+    assert q_nan.refuse_reason == "policy_unavailable"
+    assert q_nan.final_qty == 0.0
+
+    class DummyQtyProviderOk(DummyQtyProvider):
+        def policy_cap_quantity(self, *a, **k):
+            return 5.0
+
+    q_scale_nan = decide_quantity(
+        DummyQtyProviderOk(),
+        "TAOUSD",
+        "BUY",
+        100.0,
+        2.0,
+        apply_policy=True,
+        regime_context=SimpleNamespace(suggested_scale=float("nan")),
+    )
+    assert q_scale_nan.refuse_reason is None
+    assert q_scale_nan.final_qty == 2.0
+    assert q_scale_nan.scale_applied is False
+
+def test_candle_interval_rejects_bool_iter29_s1():
+    """[ITER29 #1] candle_interval rejects bool."""
+    import pytest
+    from providers.strategy_executor import candle_interval, ProviderError
+    # 1. candle_interval rejects bool
+    with pytest.raises(ProviderError):
+        candle_interval(True)
+    with pytest.raises(ProviderError):
+        candle_interval(False)
+    assert candle_interval(1) == "1m"
+
+def test_compute_weight_capped_qty_must_accept_required_qty_float_inf_auto_quantity_iter35_s1():
+    """[ITER35 #1] compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)."""
+    import math
+    import order_guard as og
+    # 1. compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)
+    capped_inf = og.compute_weight_capped_qty(
+        weight=0.5,
+        price=100.0,
+        required_qty=float("inf"),
+        available_qty=10.0,
+        traded_24h_value=0.0,
+    )
+    assert math.isclose(capped_inf, 5.0)
+
+    # required_qty=NaN or bool must still return 0.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, True, 10.0, 0.0) == 0.0
+
+def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
+    """[ITER35 #2] fee_cap_quantity NaN/bool safety."""
+    import math
+    from providers.quantity import fee_cap_quantity
+    # 2. fee_cap_quantity NaN/bool safety
+    assert fee_cap_quantity(True, 0.001) == 0.0
+    assert fee_cap_quantity(float("nan"), 0.001) == 0.0
+    assert math.isclose(fee_cap_quantity(10.0, True), 10.0)
+    assert math.isclose(fee_cap_quantity(10.0, float("nan")), 10.0)
+
+def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_last_opposite_fill_iter38_s4():
+    """[ITER38 #4] MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill."""
+    import pytest
+    from providers.base import MarketDataProvider, PairPrecision
+    # 4. MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill
+    class _DummyProv(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.01)
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return [
+                {"timestamp": 1000, "price": 50000.0, "qty": 1.0},
+                {"timestamp": 2000, "price": 0.0, "qty": 1.0},
+                "malformed",
+            ]
+
+    dp = _DummyProv()
+    assert dp.round_quantity("BTCUSDC", True) == 0.0
+    assert dp.round_quantity("BTCUSDC", float("nan")) == 0.0
+    assert dp.round_price("BTCUSDC", True) == 0.0
+    assert dp.round_price("BTCUSDC", float("nan")) == 0.0
+    assert dp.order_filter_refusal("BTCUSDC", "BUY", 100.0, True) == "qty_zero_or_negative"
+    assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(50000.0)
+
+def test_submissionoutcome_rejects_boolean_order_id_iter39_s2():
+    """[ITER39 #2] SubmissionOutcome rejects boolean order_id."""
+    import pytest
+    from providers.strategy_executor import SubmissionOutcome
+    # 2. SubmissionOutcome rejects boolean order_id
+    with pytest.raises(ValueError):
+        SubmissionOutcome("accepted", order_id=True)
+
+def test_decide_quantity_ignores_boolean_negative_round_fn_return_values_iter39_s4():
+    """[ITER39 #4] decide_quantity ignores boolean/negative round_fn return values."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.quantity import decide_quantity
+    # 4. decide_quantity ignores boolean/negative round_fn return values
+    prov_q = SimpleNamespace(
+        name="dummy",
+        free_balance=lambda asset: 1000.0,
+        policy_cap_quantity=lambda sym, side, px, req, avail, **kw: avail,
+        fee_cap_quantity=lambda sym, side, px, avail: avail,
+        round_amount=lambda sym, q: True,
+        order_filter_refusal=lambda *a, **kw: None,
+    )
+    qd = decide_quantity(prov_q, "BTCUSDC", "BUY", 100.0, 2.5, scale=0.5)
+    assert qd.final_qty == pytest.approx(1.25)
+
+def test_replaymarketdataprovider_and_simclock_reject_bool_nan_inputs_iter43_s4():
+    """[ITER43 #4] ReplayMarketDataProvider and SimClock reject bool/NaN inputs."""
+    import pytest
+    from providers.replay_provider import ReplayMarketDataProvider, SimClock
+    # 4. ReplayMarketDataProvider and SimClock reject bool/NaN inputs
+    with pytest.raises(ValueError):
+        SimClock(True)
+    with pytest.raises(ValueError):
+        SimClock(float("nan"))
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (1060.0, 51000.0)]})
+    assert rp.advance("BTCUSDC", True) is None
+    assert rp.advance("BTCUSDC", 1) == 50000.0
+    rp.place_order("BTCUSDC", "BUY", 50000.0, 0.1)
+    assert rp.get_orders("BTCUSDC", "BUY", float("nan")) == []
+    assert rp.get_orders("BTCUSDC", "BUY", True) == []
+    assert rp.has_orders_since("BTCUSDC", float("nan")) is False
+    assert rp.get_price_history("BTCUSDC", float("nan")) == []
+
+def test_aggregate_fills_by_order_id_does_not_dilute_vwap_when_a_partial_iter59_s1():
+    """[ITER59 #1] aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0."""
+    import pytest
+    from providers.base import aggregate_fills_by_order_id
+    # 1. aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0
+    fills = [
+        {"orderId": "ord-1", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": 1000},
+        {"orderId": "ord-1", "side": "BUY", "price": 0.0, "qty": 2.0, "timestamp": 2000},
+    ]
+    agg = aggregate_fills_by_order_id(fills)
+    assert len(agg) == 1
+    assert agg[0]["price"] == pytest.approx(100.0)
+    assert agg[0]["qty"] == pytest.approx(4.0)
+
+def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs_to_iter59_s2():
+    """[ITER59 #2] MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals."""
+    from providers.base import MarketDataProvider, PairPrecision
+    # 2. MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals
+    class _DummyProvider(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 1.0
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=50, volume_decimals=50)
+
+    dp = _DummyProvider()
+    assert dp.round_quantity("BTCUSDC", -1.5) == 0.0
+    assert dp.round_price("BTCUSDC", -10.0) == 0.0
+    assert dp.round_quantity("BTCUSDC", 1.23456) > 0.0
+
+def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric_iter61_s3(tmp_path):
+    """[ITER61 #3] ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0."""
+    import json
+    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+    # 3. ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0
+    jsonl_file = tmp_path / "prices.jsonl"
+    jsonl_file.write_text(
+        json.dumps({"s": "BTCUSDC", "i": [-1000, 50000.0]}) + "\n"
+        + json.dumps({"s": "BTCUSDC", "i": [2000, 51000.0]}) + "\n",
+        encoding="utf-8",
+    )
+    series = load_price_series(str(jsonl_file), "BTCUSDC")
+    assert series == [(2.0, 51000.0)]
+    rp = ReplayMarketDataProvider({"BTCUSDC": series})
+    rp.advance("BTCUSDC")
+    assert rp.place_order("BTCUSDC", "BUY", "not-a-price", 1.0) is None
+    assert rp.place_order("BTCUSDC", "BUY", 51000.0, None) is None
+
+def test_decide_quantity_must_never_downscale_sell_orders_even_when_iter85_s1():
+    """[ITER85 #1] decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)."""
+    from providers.quantity import decide_quantity
+    # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
+    class _DummyProvider:
+        def free_balance(self, _asset):
+            return 10.0
+
+        def policy_cap_quantity(self, *_a, **_k):
+            return 10.0
+
+        def fee_cap_quantity(self, _sym, _side, _px, bal_cap):
+            return bal_cap
+
+    prov = _DummyProvider()
+    sell_dec = decide_quantity(prov, "BTCUSDC", "SELL", 65000.0, 2.0, scale=0.5)
+    assert sell_dec.final_qty == 2.0
+    assert sell_dec.scale_applied is False
+    assert sell_dec.applied_scale == 1.0
+
+    buy_dec = decide_quantity(prov, "BTCUSDC", "BUY", 10.0, 1.0, scale=0.5)
+    assert buy_dec.final_qty == 0.5
+    assert buy_dec.scale_applied is True
+    assert buy_dec.applied_scale == 0.5
+
+def test_providers_base_bool_env_strips_inline_comments_quotes_and_iter85_s2(monkeypatch):
+    """[ITER85 #2] providers.base.bool_env strips inline comments/quotes and supports 1/yes/on and default fallback."""
+    from providers.base import bool_env
+    # 2. providers.base.bool_env strips inline comments/quotes and supports 1/yes/on and default fallback
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "1 # inline comment")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=False) is True
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "'false'")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=True) is False
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "invalid_token")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=True) is True
+
+def test_pairprecision_rejects_non_finite_decimals_non_numeric_order_min_iter86_s1():
+    """[ITER86 #1] PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError."""
+    import pytest
+    from providers.strategy_executor import PairPrecision
+    # 1. PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError
+    with pytest.raises(ValueError, match="invalid price_decimals"):
+        PairPrecision(price_decimals=float("inf"), volume_decimals=2, order_min=0.01)
+    with pytest.raises(ValueError, match="invalid order_min"):
+        PairPrecision(price_decimals=2, volume_decimals=2, order_min="not_a_float")
+    with pytest.raises(ValueError, match="invalid base_asset"):
+        PairPrecision(price_decimals=2, volume_decimals=2, order_min=0.01, base_asset=True)
+
+def test_extract_order_side_string_isbuyer_false_vs_true_iter96_s1():
+    """[ITER96 #1] extract_order_side string isBuyer ('false'/'0' vs 'true'/'1')."""
+    from providers.order_ohlc_utils import extract_order_side
+    # 1. extract_order_side string isBuyer ("false"/"0" vs "true"/"1")
+    assert extract_order_side({"isBuyer": "false"}) == "SELL"
+    assert extract_order_side({"isBuyer": "0"}) == "SELL"
+    assert extract_order_side({"isBuyer": "true"}) == "BUY"
+    assert extract_order_side({"isBuyer": "1"}) == "BUY"
+
+def test_aggregate_fills_by_order_id_none_invalid_rows_and_bool_invalid_side_iter96_s2():
+    """[ITER96 #2] aggregate_fills_by_order_id None/invalid rows and bool/invalid side."""
+    from providers.base import aggregate_fills_by_order_id
+    # 2. aggregate_fills_by_order_id None/invalid rows and bool/invalid side
+    assert aggregate_fills_by_order_id(None) == []
+    assert aggregate_fills_by_order_id([{"orderId": "1", "side": "BUY", "price": 100.0, "qty": 1.0}], side=True) == []
+    assert aggregate_fills_by_order_id([{"orderId": "1", "side": "BUY", "price": 100.0, "qty": 1.0}], side="INVALID") == []
+
+def test_providers_strategy_executor_bool_rejection_in_submissionrefused_submissionoutcome_orderstatus_iter105_s3():
+    """[ITER105 #3] providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus."""
+    import pytest
+    from providers.strategy_executor import OrderStatus, SubmissionOutcome, SubmissionRefused
+    # 3. providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus
+    with pytest.raises(ValueError):
+        SubmissionRefused(True)
+    with pytest.raises(ValueError):
+        SubmissionOutcome("refused", reason=True)
+    with pytest.raises(ValueError):
+        OrderStatus("open", 0.0, 0.0, 0.0, venue_status=True)
+
+def test_providers_quantity_remaining_average_cost_balance_cap_quantity_decide_quantity_iter106_s1():
+    """[ITER106 #1] providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity."""
+    import pytest
+    from types import SimpleNamespace
+    from providers import quantity as pq
+    # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
+    assert pq.remaining_average_cost(True, 1.0) is None
+    assert pq.remaining_average_cost([{"id": True, "timestamp": 100.0, "side": "BUY", "qty": 1.0, "price": 100.0, "base_fee": 0.0, "quote_fee": 0.0}], 1.0) is None
+    avg_cost = pq.remaining_average_cost(
+        [{"id": "1", "timestamp": 100.0, "side": " b ", "qty": 1.0, "price": 100.0, "base_fee": 0.0, "quote_fee": 0.0}],
+        1.0,
+    )
+    assert avg_cost == pytest.approx(100.0)
+    assert pq.balance_cap_quantity(lambda _a: "bad_bal", "BTCUSDC", "BUY", 50000.0) == (None, "USDC")
+
+    dummy_provider = SimpleNamespace(
+        free_balance=lambda _a: 1000.0,
+        policy_cap_quantity=lambda _sym, side, _px, req, _bal, **kw: req if side == "BUY" else 0.0,
+        fee_cap_quantity=lambda _sym, _side, _px, bal: bal,
+    )
+    dec_zero_scale = pq.decide_quantity(
+        dummy_provider, "BTCUSDC", " b ", 100.0, 2.0, scale=0.0
+    )
+    assert dec_zero_scale.final_qty == 0.0
+    assert dec_zero_scale.scale_applied is True
+    assert dec_zero_scale.applied_scale == 0.0
+    assert dec_zero_scale.refuse_reason == "qty_zero_after_policy"
+
+def test_binanceorderrules_from_symbol_info_rejects_non_iterable_filters_and_non_iter108_s1():
+    """[ITER108 #1] BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote."""
+    import pytest
+    from providers.quantity import BinanceFilterError, BinanceOrderRules
+    # 1. BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote
+    with pytest.raises(BinanceFilterError):
+        BinanceOrderRules.from_symbol_info({"filters": True})
+    with pytest.raises(BinanceFilterError):
+        BinanceOrderRules.from_symbol_info(
+            {
+                "baseAsset": 123,
+                "quoteAsset": "USDC",
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+                ],
+            }
+        )
+
+def test_botcore_providers_env_value_bool_env_extract_order_id_extract_order_fee_aggregate_fills_by_order_id_iter109_s1(tmp_path):
+    """[ITER109 #1] botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id."""
+    import botcore
+    from providers import base as pbase
+    from providers import order_ohlc_utils as oou
+    # 1. botcore/providers: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
+    assert botcore.env_value(True, "KEY") is None
+    assert botcore.env_value(str(tmp_path), True) is None
+    assert pbase.bool_env(True, default=True) is True
+    assert pbase.bool_env("", default=False) is False
+    assert pbase.extract_order_id({"orderId": {}}) is None
+    assert pbase.extract_order_id({"orderId": set()}) is None
+    assert pbase.extract_order_id(object()) is None
+
+    fee_res = oou.extract_order_fee(
+        {"commission": "0.1", "commissionAsset": [1, 2]},
+        base_asset=True,
+        quote_asset=True,
+        fill_price=100.0,
+    )
+    assert fee_res is not None
+    assert fee_res["fee_asset"] == ""
+    assert pbase.aggregate_fills_by_order_id(12345) == []
+
+def test_providers_replay_provider_load_price_series_rejects_non_str_path_or_iter109_s3(tmp_path):
+    """[ITER109 #3] providers.replay_provider: load_price_series rejects non-str path or symbol."""
+    from providers import replay_provider as rprov
+    # 3. providers.replay_provider: load_price_series rejects non-str path or symbol
+    assert rprov.load_price_series(True, "BTCUSDC") == []
+    assert rprov.load_price_series(str(tmp_path), True) == []
+
+def test_extract_order_id_rejects_nan_inf_none_null_non_integer_iter122_s1():
+    """[ITER122 #1] extract_order_id rejects 'nan', 'inf', 'none', 'null', non-integer floats, and normalizes integer floats."""
+    from providers.base import extract_order_id
+    # 1. extract_order_id rejects "nan", "inf", "none", "null", non-integer floats, and normalizes integer floats
+    assert extract_order_id({"orderId": "nan"}) is None
+    assert extract_order_id({"orderId": "INF"}) is None
+    assert extract_order_id({"orderId": "null"}) is None
+    assert extract_order_id({"orderId": 123.5}) is None
+    assert extract_order_id({"orderId": 12345.0}) == "12345"
+
+def test_require_int_order_id_preserves_bit_integer_precision_iter122_s2():
+    """[ITER122 #2] require_int_order_id preserves 64-bit integer precision (> 2**53)."""
+    import pytest
+    from providers.strategy_executor import ProviderError
+    # 2. require_int_order_id preserves 64-bit integer precision (> 2**53)
+    from providers.order_ohlc_utils import require_int_order_id
+
+    big_oid = 9007199254740993  # 2**53 + 1
+    assert require_int_order_id(big_oid, "order_status") == big_oid
+    assert require_int_order_id(str(big_oid), "order_status") == big_oid
+    with pytest.raises(ProviderError):
+        require_int_order_id(123.5, "order_status")
+    with pytest.raises(ProviderError):
+        require_int_order_id("nan", "order_status")
+
+def test_submissionoutcome_normalizes_integer_float_order_id_and_rejects_nan_iter123_s1():
+    """[ITER123 #1] SubmissionOutcome normalizes integer float order_id and rejects NaN/'nan'/'null'/non-integer floats."""
+    import pytest
+    from providers.strategy_executor import SubmissionOutcome
+    # 1. SubmissionOutcome normalizes integer float order_id and rejects NaN/"nan"/"null"/non-integer floats
+    outcome = SubmissionOutcome("accepted", order_id=98765.0)
+    assert outcome.order_id == "98765"
+    for bad_oid in (float("nan"), float("inf"), 12.5, "nan", "null", "none", {"id": 1}):
+        with pytest.raises(ValueError):
+            SubmissionOutcome("accepted", order_id=bad_oid)
+
+def test_replaymarketdataprovider_sanitizes_fee_pct_and_non_finite_cur_px_in_iter127_s2():
+    """[ITER127 #2] ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order."""
+    from providers.replay_provider import ReplayMarketDataProvider
+    # 2. ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, float("nan"))]}, fee_pct=True)
+    assert rp._fee_pct == 0.1
+    rp.advance("BTCUSDC")
+    ord_res = rp.place_order("BTCUSDC", "BUY", 100.0, 1.0)
+    assert ord_res is not None
+    assert rp.position("BTCUSDC") == (1.0, 100.0)
+
+def test_replay_provider_load_price_series_directory_safety_and_supports_symbol_unhashable_safety_iter151_s4(tmp_path):
+    """[ITER151 #4] replay_provider: load_price_series directory safety and supports_symbol unhashable safety."""
+    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+    # 4. replay_provider: load_price_series directory safety and supports_symbol unhashable safety
+    assert load_price_series(str(tmp_path), "BTCUSDC") == []
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1700000000.0, 60000.0)]})
+    assert rp.supports_symbol("BTCUSDC") is True
+    assert rp.supports_symbol(["BTCUSDC"]) is False  # type: ignore[arg-type]
+    assert rp.supports_symbol(True) is False  # type: ignore[arg-type]
+
+def test_providers_quantity_py_remaining_average_cost_fill_id_normalization_sentinel_iter154_s2():
+    """[ITER154 #2] providers/quantity.py: remaining_average_cost fill ID normalization & sentinel rejection."""
+    from providers.quantity import remaining_average_cost
+    # 2. providers/quantity.py: remaining_average_cost fill ID normalization & sentinel rejection
+    # Duplicate id=1001.0 vs "1001" is detected and rejected (returns None)
+    assert remaining_average_cost(
+        [
+            {"id": 1001.0, "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000, "base_fee": 0.0, "quote_fee": 0.0},
+            {"id": "1001", "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 2000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        4.0,
+    ) is None
+    # Sentinel id="0" is rejected (returns None)
+    assert remaining_average_cost(
+        [
+            {"id": "0", "side": "BUY", "price": 20.0, "qty": 2.0, "timestamp": 2000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        2.0,
+    ) is None
+    # Valid id=1001.0 succeeds
+    assert remaining_average_cost(
+        [
+            {"id": 1001.0, "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        2.0,
+    ) == 10.0
+
+def test_providers_quantity_py_decide_quantity_string_boolean_parsing_iter154_s3():
+    """[ITER154 #3] providers/quantity.py: decide_quantity string boolean parsing."""
+    from providers.quantity import decide_quantity
+    # 3. providers/quantity.py: decide_quantity string boolean parsing
+    captured = {}
+
+    class DummyProvider:
+        def free_balance(self, asset):
+            return 1000.0
+
+        def policy_cap_quantity(self, *args, **kwargs):
+            captured["policy_called"] = True
+            return 1.0
+
+        def fee_cap_quantity(self, symbol, side, price, balance_cap):
+            return balance_cap
+
+        def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
+            captured["market"] = market
+            captured["enforce_business_minimum"] = enforce_business_minimum
+            return None
+
+    dec = decide_quantity(
+        DummyProvider(),
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        2.0,
+        apply_policy="false",  # type: ignore[arg-type]
+        market="false",  # type: ignore[arg-type]
+        enforce_business_minimum="false",  # type: ignore[arg-type]
+    )
+    assert dec.final_qty == 2.0
+    assert "policy_called" not in captured
+    assert captured["market"] is False
+    assert captured["enforce_business_minimum"] is False
+
+def test_providers_base_py_extract_order_id_aggregate_fills_by_order_id_normalization_sentinel_rejection_iter154_s5():
+    """[ITER154 #5] providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection."""
+    from providers.base import aggregate_fills_by_order_id, extract_order_id
+    # 5. providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection
+    assert extract_order_id({"orderId": "12345.0"}) == "12345"
+    agg = aggregate_fills_by_order_id([
+        {"orderId": 555.0, "side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000},
+        {"orderId": "555", "side": "BUY", "price": 200.0, "qty": 1.0, "timestamp": 2000},
+        {"orderId": "0", "side": "BUY", "price": 300.0, "qty": 1.0, "timestamp": 3000},
+        {"orderId": "0", "side": "BUY", "price": 400.0, "qty": 1.0, "timestamp": 4000},
+    ])
+    assert len(agg) == 3
+    assert agg[0]["price"] == 150.0 and agg[0]["qty"] == 2.0
+
+def test_botcore_providers_env_value_quoted_value_with_trailing_comment_iter164_s1(tmp_path):
+    """[ITER164 #1] botcore/providers: env_value quoted value with trailing comment, bool_env default='false', extract_order_fee(require_explicit_asset='false')."""
+    import botcore
+    from providers import base as pbase
+    from providers import order_ohlc_utils as oou
+    # 1. botcore/providers: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
+    (tmp_path / ".env").write_text('QUOTED_KEY="my_secret#1" # trailing comment\nFLAG_KEY="true" # comment\n', encoding="utf-8")
+    assert botcore.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
+    assert pbase.bool_env("FLAG_KEY", folder=str(tmp_path), default="false") is True
+    assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default="false") is False
+    assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default=float("nan")) is False
+    fee_res = oou.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="false")
+    assert fee_res is not None and fee_res["fee_asset"] == "USDC"
+    assert oou.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="true") is None
+
+def test_providers_quantity_resolve_assets_with_usdt_fdusd_gbp_and_iter168_s2():
+    """[ITER168 #2] providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag."""
+    from providers import quantity as qty_mod
+    # 2. providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag
+    assert qty_mod.resolve_assets("BTCUSDT") == ("BTC", "USDT")
+    assert qty_mod.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
+    assert qty_mod.resolve_assets("SOLGBP") == ("SOL", "GBP")
+    assert qty_mod.resolve_assets("BTCXYZ") == ("BTCXYZ", None)
+    assert qty_mod._parse_bool_flag(2, default=False) is True
+    assert qty_mod._parse_bool_flag("y", default=False) is True
+    assert qty_mod._parse_bool_flag("n", default=True) is False
+    assert qty_mod.clean_order_id_str(frozenset({"1"})) == ""
+
+def test_providers_base_boolean_and_side_extraction_iter169_s1():
+    """[ITER169 #1] providers.base boolean and side extraction."""
+    from providers import base as pbase
+    from providers import order_ohlc_utils as oou
+    # 1. providers.base boolean and side extraction
+    assert pbase._parse_bool_flag("", default=True) is True
+    assert pbase._parse_bool_flag("y", default=False) is True
+    assert pbase._parse_bool_flag("n", default=True) is False
+    assert oou.extract_order_side({"type": "A"}) == "SELL"
+    assert oou.extract_order_side({"isBuyer": "y"}) == "BUY"
+    assert oou.extract_order_side({"isBuyer": "n"}) == "SELL"
+
+def test_submissionoutcome_and_orderstatus_normalization_iter170_s3():
+    """[ITER170 #3] SubmissionOutcome and OrderStatus normalization."""
+    import pytest
+    from providers import strategy_executor as sexec
+    # 3. SubmissionOutcome and OrderStatus normalization
+    so = sexec.SubmissionOutcome(" ACCEPTED ", order_id=42, reason=" ok ")
+    assert so.state == "accepted" and so.order_id == "42" and so.reason == "ok"
+
+    st = sexec.OrderStatus(" CANCELLED ", "1.5", "150.0", "0.15", venue_status=" user_canceled ")
+    assert st.status == "canceled"
+    assert st.filled_qty == pytest.approx(1.5)
+    assert st.venue_status == "USER_CANCELED"
+    with pytest.raises(ValueError):
+        sexec.OrderStatus("open", None, 0.0, 0.0)
+
+def test_clean_order_id_strictly_validates_positive_integers_integer_floats_and_iter185_s3():
+    """[ITER185 #3] clean_order_id strictly validates positive integers, integer floats, and valid numeric strings."""
+    from providers.order_ohlc_utils import clean_order_id
+    # 3. clean_order_id strictly validates positive integers, integer floats, and valid numeric strings
+    assert clean_order_id(12345) == "12345"
+    assert clean_order_id(12345.0) == "12345"
+    assert clean_order_id(0) is None
+    assert clean_order_id(-1) is None
+    assert clean_order_id(123.45) is None
+    assert clean_order_id(float("nan")) is None
+    assert clean_order_id(float("inf")) is None
+    assert clean_order_id(True) is None
+    assert clean_order_id(False) is None
+    assert clean_order_id({"id": 1}) is None
+    assert clean_order_id([1]) is None

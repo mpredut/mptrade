@@ -2411,23 +2411,525 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
         "Friday's big stock stories: What’s likely to move the market in the next trading session"
     ) is True
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_sentimentadvisor_geopoliticalthreatanalyzer_recover_previous_file_when_primary_is_iter9_s3(tmp_path):
+    """[ITER9 #3] SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt."""
+    import json
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt
+    sa_file = tmp_path / "sentiment_eval.json"
+    sa_prev = tmp_path / "sentiment_eval.json.previous"
+    sa_file.write_text("{corrupt", encoding="utf-8")
+    sa_prev.write_text(
+        json.dumps({"market_bias": "BEARISH", "risk_level": "HIGH", "confidence": 0.9, "summary": "ok", "key_risks": [], "recommended_action": "DEFENSIVE", "ts": 1234.0}),
+        encoding="utf-8",
+    )
+    sa = SentimentAdvisor(cache_file=str(sa_file))
+    assert sa._cached_assessment is not None
+    assert sa._cached_assessment.market_bias == "BEARISH"
+
+    geo_file = tmp_path / "geopolitical_eval.json"
+    geo_prev = tmp_path / "geopolitical_eval.json.previous"
+    geo_file.write_text("{corrupt", encoding="utf-8")
+    geo_prev.write_text(
+        json.dumps({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered", "recommended_brake": "DOWNSCALE_50", "headlines_analyzed": 5, "ts": 5678.0}),
+        encoding="utf-8",
+    )
+    geo = GeopoliticalThreatAnalyzer(state_file=str(geo_file))
+    assert geo._cached_assessment is not None
+    assert geo._cached_assessment.threat_level == "ELEVATED"
+
+def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__last_eval_ts_is_iter13_s4(tmp_path, monkeypatch):
+    """[ITER13 #4] SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)."""
+    import time
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    now_ts = time.time()
+    # 4. SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)
+    sa = SentimentAdvisor(cache_ttl_sec=3600.0, cache_file=str(tmp_path / "sa_eval.json"))
+    sa._cached_assessment = SentimentAdvisorAssessment(
+        market_bias="BULLISH",
+        risk_level="LOW",
+        confidence=0.8,
+        summary="cached",
+        key_risks=[],
+        recommended_action="ACCUMULATE",
+        ts=now_ts + 5000.0,
+    )
+    sa._last_eval_ts = now_ts + 5000.0
+    called_sa = {"count": 0}
+    monkeypatch.setattr(
+        sa.gemini_client,
+        "query_json",
+        lambda *_a, **_kw: (
+            called_sa.__setitem__("count", called_sa["count"] + 1)
+            or {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.5,
+                "summary": "refreshed after clock skew",
+                "key_risks": [],
+                "recommended_action": "HOLD",
+            }
+        ),
+    )
+    refreshed_sa = sa.review(now_ts=now_ts)
+    assert called_sa["count"] == 1
+    assert refreshed_sa.summary == "refreshed after clock skew"
+
+    ga = GeopoliticalThreatAnalyzer(cache_ttl_sec=3600.0, state_file=str(tmp_path / "ga_eval.json"))
+    ga._cached_assessment = GeopoliticalThreatAssessment(
+        threat_level="CRITICAL_SHOCK",
+        risk_score=0.95,
+        summary="future cached shock",
+        recommended_brake="VETO_ALL",
+        headlines_analyzed=3,
+        ts=now_ts + 5000.0,
+    )
+    ga._last_eval_ts = now_ts + 5000.0
+    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
+    snap = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Routine market update",
+                source="test",
+                pub_date="now",
+                url="http://example.com",
+                matched_keywords=(),
+                is_high_severity=False,
+            ),
+        ),
+        total_fetched=1,
+        high_severity_count=0,
+        has_critical_shock_keywords=False,
+        ts=now_ts,
+    )
+    refreshed_ga = ga.assess(snap, now_ts=now_ts)
+    assert refreshed_ga.threat_level == "NORMAL"
+
+def test_geopoliticalthreatanalyzer_sentimentadvisor_and_newsfeedcollector_sanitize_non_finite_bool_iter17_s5(tmp_path):
+    """[ITER17 #5] GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous."""
+    import json
+    import time
+    import pytest
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    # 5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous
+    geo_path = tmp_path / "geopolitical_eval.json"
+    geo_prev = tmp_path / "geopolitical_eval.json.previous"
+    geo_path.write_text("{corrupt", encoding="utf-8")
+    geo_prev.write_text(
+        json.dumps(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": True,  # bool should fallback to 0.1
+                "summary": "recovered",
+                "recommended_brake": "DOWNSCALE_50",
+                "headlines_analyzed": 3,
+                "ts": -50.0,  # negative ts should clamp to 0.0
+            }
+        ),
+        encoding="utf-8",
+    )
+    geo_analyzer = GeopoliticalThreatAnalyzer(state_file=str(geo_path), cache_ttl_sec=3600.0, fallback_retry_ttl_sec=300.0)
+    assert geo_analyzer._cached_assessment is not None
+    assert geo_analyzer._cached_assessment.threat_level == "ELEVATED"
+    assert geo_analyzer._cached_assessment.risk_score == pytest.approx(0.1)
+    assert geo_analyzer._cached_assessment.ts == pytest.approx(0.0)
+
+    sent_path = tmp_path / "sentiment_eval.json"
+    sent_prev = tmp_path / "sentiment_eval.json.previous"
+    sent_path.write_text("{corrupt", encoding="utf-8")
+    sent_prev.write_text(
+        json.dumps(
+            {
+                "market_bias": "CAUTION",
+                "risk_level": "HIGH",
+                "confidence": 999.0,  # out of [0, 100] range -> fallback to 0.5
+                "summary": "recovered sentiment",
+                "key_risks": ["macro"],
+                "recommended_action": "DEFENSIVE",
+                "ts": 1000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_adv = SentimentAdvisor(cache_file=str(sent_path))
+    assert sent_adv._cached_assessment is not None
+    assert sent_adv._cached_assessment.market_bias == "CAUTION"
+    assert sent_adv._cached_assessment.confidence == pytest.approx(0.5)
+
+    news_path = tmp_path / "news_feed_collect.json"
+    news_prev = tmp_path / "news_feed_collect.json.previous"
+    news_path.write_text("{corrupt", encoding="utf-8")
+    now_wall = time.time()
+    news_prev.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Major pipeline escalation",
+                    "source": "Reuters",
+                    "pub_date": "now",
+                    "url": "https://example.com/1",
+                    "matched_keywords": ["escalation"],
+                    "is_high_severity": True,
+                    "first_seen_ts": now_wall - 60.0,
+                },
+                {
+                    "title": "Future clock-skew headline",
+                    "source": "Reuters",
+                    "pub_date": "future",
+                    "url": "https://example.com/2",
+                    "matched_keywords": ["war"],
+                    "is_high_severity": True,
+                    "first_seen_ts": now_wall + 3600.0,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    news_col = NewsFeedCollector(history_file=str(news_path))
+    snap = news_col.get_pool_snapshot(now_ts=now_wall)
+    assert len(snap.headlines) == 1
+    assert snap.headlines[0].title == "Major pipeline escalation"
+
+def test_macroanalyzer_assess_market_advisor_null_json_fields_iter26_s3(tmp_path):
+    """[ITER26 #3] MacroAnalyzer.assess_market_advisor null JSON fields."""
+    import json
+    from types import SimpleNamespace
+    from intelligence.macro_analyzer import MacroAnalyzer
+    # 3. MacroAnalyzer.assess_market_advisor null JSON fields
+    (tmp_path / "fear_greed_collect.json").write_text(
+        json.dumps({
+            "value": None,
+            "classification": None,
+            "ts": None,
+            "historical_values": [None, 45],
+            "trend_7d_change": None,
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "market_breadth_collect.json").write_text(
+        json.dumps({
+            "advance_ratio": None,
+            "advancing_count": None,
+            "declining_count": None,
+            "total_count": None,
+            "median_change_pct": None,
+            "mean_change_pct": None,
+            "dispersion_std": None,
+            "regime": None,
+            "top_gainers": [["BTC", None]],
+            "top_losers": [["ETH", None]],
+            "ts": None,
+        }),
+        encoding="utf-8",
+    )
+    captured_fg = []
+    captured_mb = []
+    macro = MacroAnalyzer(symbols=["BTCUSDC"], cache_dir=str(tmp_path))
+    macro.gemini_advisor = SimpleNamespace(
+        review=lambda fear_greed=None, breadth=None, **kw: (
+            captured_fg.append(fear_greed),
+            captured_mb.append(breadth),
+            SimpleNamespace(is_fallback=False, market_bias="NEUTRAL", risk_level="LOW", recommended_action="HOLD", summary="ok", ts=1_700_000_000.0),
+        )[-1]
+    )
+    assert macro.assess_market_advisor(force=True, now=1_700_000_000.0) is True
+    assert len(captured_fg) == 1 and captured_fg[0].value == 50 and captured_fg[0].classification == "Neutral"
+    assert len(captured_mb) == 1 and captured_mb[0].advance_ratio == 0.5 and captured_mb[0].regime == "NEUTRAL"
+
+def test_newsfeedcollector__aggregate_prunes_corrupted_nan_entries_safely_iter54_s2(tmp_path):
+    """[ITER54 #2] NewsFeedCollector._aggregate prunes corrupted/NaN entries safely."""
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+    # 2. NewsFeedCollector._aggregate prunes corrupted/NaN entries safely
+    nfc = NewsFeedCollector(history_file=str(tmp_path / "news_feed_collect.json"))
+    h = NewsHeadline(
+        title="Breaking macro test headline",
+        source="Test",
+        pub_date="",
+        url="",
+        matched_keywords=("war",),
+        is_high_severity=True,
+    )
+    nfc._aggregated_pool["corrupted"] = (float("nan"), h)
+    snap = NewsFeedSnapshot(
+        headlines=(h,),
+        total_fetched=1,
+        high_severity_count=1,
+        has_critical_shock_keywords=False,
+        ts=1700000000.0,
+    )
+    agg = nfc._aggregate(snap, 1700000000.0)
+    assert agg.total_fetched == 1
+    assert "corrupted" not in nfc._aggregated_pool
+
+def test_llm_order_guard_side_normalization_bool_rejection_and_clean_scale_iter100_s4():
+    """[ITER100 #4] llm_order_guard side normalization, bool rejection, and clean_scale."""
+    import pytest
+    import llm_order_guard
+    # 4. llm_order_guard side normalization, bool rejection, and clean_scale
+    assert llm_order_guard.clean_scale(True) == 1.0
+    assert llm_order_guard.clean_scale(float("nan")) == 1.0
+    assert llm_order_guard.clean_scale(-0.5) == 1.0
+    assert llm_order_guard.clean_scale(0.5) == pytest.approx(0.5)
+    assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", True) == (True, "not_buy_side", 1.0)
+    assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", " s ") == (True, "not_buy_side", 1.0)
+    assert llm_order_guard.check_geopolitical_order_guards(
+        "BTCUSDC", " b ", margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+    assert llm_order_guard.check_llm_order_guards("binance", "BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert llm_order_guard.check_llm_order_guards(
+        "binance", "BTCUSDC", " s ", 100.0, margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+
+def test_geopoliticalthreatanalyzer__load_from_disk_with_bool_summary_threat_level_headlines_digest_iter104_s1(tmp_path):
+    """[ITER104 #1] GeopoliticalThreatAnalyzer _load_from_disk with bool summary / threat_level / headlines_digest."""
+    import json
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    # 1. GeopoliticalThreatAnalyzer _load_from_disk with bool summary / threat_level / headlines_digest
+    state_file = tmp_path / "geo_state.json"
+    state_file.write_text(
+        json.dumps({
+            "threat_level": True,
+            "recommended_brake": True,
+            "summary": True,
+            "headlines_digest": True,
+            "risk_score": 0.4,
+            "headlines_analyzed": 2,
+            "ts": 1000.0,
+            "is_fallback": False,
+        }),
+        encoding="utf-8",
+    )
+    gta = GeopoliticalThreatAnalyzer(state_file=str(state_file))
+    assert gta._cached_assessment is not None
+    assert gta._cached_assessment.threat_level == "NORMAL"
+    assert gta._cached_assessment.recommended_brake == "NONE"
+    assert gta._cached_assessment.summary == ""
+    assert gta._last_headlines_digest == ""
+
+def test_newsfeedcollector__normalize_title__load_history_get_pool_snapshot_and_parse_rss_xml_iter104_s2(tmp_path):
+    """[ITER104 #2] NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml."""
+    import json
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
+    # 2. NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml
+    hist_file = tmp_path / "news_hist.json"
+    import time
+    now_ts = time.time()
+    hist_file.write_text(
+        json.dumps([
+            {"title": True, "source": "Test", "first_seen_ts": now_ts},
+            {"title": "  Breaking War Escalation  ", "source": True, "pub_date": True, "url": True, "matched_keywords": [True, "war"], "is_high_severity": True, "first_seen_ts": now_ts},
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(hist_file))
+    assert nfc._normalize_title(True) == ""
+    assert nfc.parse_rss_xml(True) is None
+    snap = nfc.get_pool_snapshot(now_ts=now_ts)
+    assert snap.total_fetched == 1
+    assert snap.headlines[0].title == "Breaking War Escalation"
+    assert snap.headlines[0].source == ""
+    assert snap.headlines[0].matched_keywords == ("war",)
+
+    # Synthetic headline with non-str title in pool does not raise AttributeError
+    nfc._aggregated_pool["bad_title"] = (now_ts, NewsHeadline(title=None, source="", pub_date="", url="", matched_keywords=(), is_high_severity=True))
+    snap2 = nfc.get_pool_snapshot(now_ts=now_ts)
+    assert snap2.total_fetched == 2
+
+def test_newsfeedcollector__load_history_parses_string_false_for_is_high_severity_as_iter123_s2(tmp_path):
+    """[ITER123 #2] NewsFeedCollector._load_history parses string 'false' for is_high_severity as False."""
+    import json
+    import time
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    # 2. NewsFeedCollector._load_history parses string "false" for is_high_severity as False
+    nf_path = tmp_path / "news_feed_collect.json"
+    nf_path.write_text(
+        json.dumps([
+            {
+                "title": "Routine market update",
+                "source": "Test",
+                "pub_date": "",
+                "url": "",
+                "matched_keywords": [],
+                "is_high_severity": "false",
+                "first_seen_ts": time.time(),
+            }
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(nf_path))
+    snap = nfc.get_pool_snapshot()
+    assert snap.total_fetched == 1 and snap.high_severity_count == 0
+
+def test_geopoliticalshockguard_ignores_boolean_summary_threat_level_iter125_s4():
+    """[ITER125 #4] GeopoliticalShockGuard ignores boolean summary/threat_level."""
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    # 4. GeopoliticalShockGuard ignores boolean summary/threat_level
+    geo_guard = GeopoliticalShockGuard()
+    fake_assess = type("A", (), {"threat_level": "CRITICAL_SHOCK", "recommended_brake": True, "summary": True, "risk_score": True})()
+    dec_geo = geo_guard.check("BTCUSDC", "BUY", fake_assess)
+    assert dec_geo.allowed is False
+    assert "geopolitical_shock" in dec_geo.reason
+
+def test_geopoliticalshockguard_accepts_dict_assessment_iter175_s2():
+    """[ITER175 #2] GeopoliticalShockGuard accepts dict assessment."""
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    # 2. GeopoliticalShockGuard accepts dict assessment
+    g_dec = GeopoliticalShockGuard().check(
+        "BTCUSDC",
+        "BUY",
+        assessment={"threat_level": "CRITICAL_SHOCK", "risk_score": 0.95, "summary": "Test shock"},
+    )
+    assert g_dec.allowed is False and "veto_critical_geopolitical_shock" in g_dec.reason
+
+def test_geopoliticalthreatanalyzer_assess_accepts_dict_news_snapshot_and_dict_headlines_iter175_s3(tmp_path):
+    """[ITER175 #3] GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines & SentimentAdvisor.review accepts dict fear_greed and dict breadth."""
+    import pytest
+    from types import SimpleNamespace
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    # 3. GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines
+    captured_prompts = []
+    fake_gemini = SimpleNamespace(
+        query_json=lambda prompt, **kw: (
+            captured_prompts.append(prompt)
+            or {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.65,
+                "summary": "Elevated tension",
+                "recommended_brake": "DOWNSCALE_50",
+            }
+        )
+    )
+    geo_analyzer = GeopoliticalThreatAnalyzer(
+        gemini_client=fake_gemini,
+        state_file=str(tmp_path / "geo_eval.json"),
+    )
+    geo_res = geo_analyzer.assess(
+        {
+            "headlines": [{"title": "Major airstrike near oil hub", "source": "Reuters", "is_high_severity": True}],
+            "has_critical_shock_keywords": True,
+        },
+        force_refresh=True,
+    )
+    assert geo_res.threat_level == "ELEVATED" and geo_res.risk_score == pytest.approx(0.65)
+    assert any("Major airstrike near oil hub (Reuters)" in p for p in captured_prompts)
 
 
+    # 4. SentimentAdvisor.review accepts dict fear_greed and dict breadth
+    sa_prompts = []
+    sa_gemini = SimpleNamespace(
+        query_json=lambda prompt, **kw: (
+            sa_prompts.append(prompt)
+            or {
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 0.8,
+                "summary": "Bearish breadth",
+                "key_risks": ["liquidity"],
+                "recommended_action": "DEFENSIVE",
+            }
+        )
+    )
+    sa = SentimentAdvisor(gemini_client=sa_gemini, cache_file=str(tmp_path / "sa_eval.json"))
+    sa_res = sa.review(
+        fear_greed={"value": 18, "classification": "Extreme Fear", "trend_7d_change": -12},
+        breadth={"advance_ratio": 0.22, "median_change_pct": -3.4, "regime": "BEARISH"},
+        force_refresh=True,
+    )
+    assert sa_res is not None and sa_res.market_bias == "BEARISH"
+    assert any("18/100 (Extreme Fear)" in p and "22.0% advancing" in p for p in sa_prompts)
 
+def test_compositemarketintelligence_evaluate_populates_metrics_from_dict_snapshots_iter176_s4():
+    """[ITER176 #4] CompositeMarketIntelligence.evaluate populates metrics from dict snapshots."""
+    from intelligence.composite import CompositeMarketIntelligence
+    # 4. CompositeMarketIntelligence.evaluate populates metrics from dict snapshots
+    cmi = CompositeMarketIntelligence()
+    res = cmi.evaluate(
+        "BTCUSDC",
+        100.0,
+        fear_greed_snapshot={"value": 15, "classification": "Extreme Fear"},
+        market_breadth_snapshot={"advance_ratio": 0.5, "median_change_pct": 0.0, "regime": "NEUTRAL"},
+        geopolitical_assessment={"threat_level": "NORMAL"},
+    )
+    assert res.metrics["fear_greed"] == 15
+    assert res.metrics["market_regime"] == "NEUTRAL"
+    assert res.metrics["geopolitical_threat"] == "NORMAL"
 
+def test_intelligencetelemetrydaemon_handles_dict_snapshots_none_bool__last___ts_iter179_s1(tmp_path):
+    """[ITER179 #1] IntelligenceTelemetryDaemon handles dict snapshots & None/bool _last_*_ts without raising."""
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    # 1. IntelligenceTelemetryDaemon handles dict snapshots & None/bool _last_*_ts without raising
+    daemon = IntelligenceTelemetryDaemon(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_macro=False, skip_external=False)
+    daemon.orderbook_collector.fetch = lambda sym, allow_network=True: {"mid_price": 95000.0}
+    daemon.derivatives_collector.fetch = lambda sym, allow_network=True: {"funding_rate": 0.0001}
+    daemon.whale_collector.fetch = lambda sym, allow_network=True: {"divergence_regime": "ACCUMULATION"}
+    daemon.news_collector.fetch = lambda **kw: {"headlines": []}
+    daemon.geopolitical_analyzer.assess = lambda snap, **kw: {"threat_level": "NORMAL", "risk_score": 0.1, "headlines_analyzed": 3}
+    daemon._last_orderbook_ts["BTCUSDC"] = None
+    daemon._last_derivatives_ts["BTCUSDC"] = True
+    daemon._last_whale_ts["BTCUSDC"] = float("nan")
+    daemon._last_macro_ts = None
+    daemon._last_thread_prune_ts = 1000.0
+    daemon._last_stdout_hb_ts = None
+    res = daemon.run_cycle(force=False, now=1005.0)
+    assert res["orderbook_updated"] == 1
+    assert res["derivatives_updated"] == 1
+    assert res["whale_updated"] == 1
+    assert res["macro_updated"] is True
 
+def test_feargreedcollector_marketbreadthcollector_newsfeedcollector_accept_now_ts_and_tolerate_none_iter180_s3(tmp_path):
+    """[ITER180 #3] FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts."""
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    # 3. FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts
+    fg = FearGreedCollector(cache_ttl_sec=60.0)
+    fg._cached_snapshot = FearGreedSnapshot(50, "Neutral", 1000.0, (50,), 0, False, False)
+    fg._last_fetch_ts = 1000.0
+    assert fg.fetch(force_refresh=False, now_ts=1020.0) == fg._cached_snapshot
 
+    mb = MarketBreadthCollector(cache_ttl_sec=60.0)
+    mb._cached_snapshot = "cached_mb"
+    mb._last_fetch_ts = 1000.0
+    assert mb.fetch(force_refresh=False, now_ts=1020.0) == "cached_mb"
 
+    nf = NewsFeedCollector(cache_ttl_sec=60.0, history_file=str(tmp_path / "news.json"))
+    agg_snap = nf._aggregate({"headlines": [{"title": "Major war escalation reported", "is_high_severity": True}]}, now=1000.0)
+    nf._cached_snapshot = agg_snap
+    nf._last_fetch_ts = 1000.0
+    assert nf.fetch(force_refresh=False, now_ts=1020.0) == agg_snap
+    assert agg_snap.high_severity_count == 1
 
+def test_extract_high_severity_headlines_and_digest_supports_both_dicts_and_objects_iter182_s3():
+    """[ITER182 #3] extract_high_severity_headlines_and_digest supports both dicts and objects."""
+    from types import SimpleNamespace
+    from intelligence.macro_sentiment_ssot import (
+        extract_high_severity_headlines_and_digest,
+    )
+    # 3. extract_high_severity_headlines_and_digest supports both dicts and objects
+    snap = SimpleNamespace(
+        headlines=[
+            SimpleNamespace(title="Breaking War", is_high_severity=True),
+            SimpleNamespace(title="Minor Update", is_high_severity=False),
+            {"title": "Oil Shock", "is_high_severity": "true"},
+        ]
+    )
+    high_sev, digest = extract_high_severity_headlines_and_digest(snap)
+    assert len(high_sev) == 2
+    assert digest == "Breaking War || Oil Shock"
 
-
-
-
-
-
-
-
-
-
+def test_fetch_public_json_is_centralized_in_botcore_and_re_exported_iter184_s1():
+    """[ITER184 #1] fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot."""
+    import botcore
+    import intelligence.macro_sentiment_ssot as ssot
+    # 1. fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot
+    assert ssot.fetch_public_json is botcore.fetch_public_json

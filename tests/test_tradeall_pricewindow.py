@@ -1183,4 +1183,237 @@ class TestLogicSmall(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
+
+def test_order_retry_enqueue_sanitizes_nan_bool_requested_price_ref_price_and_iter44_s3(monkeypatch, tmp_path):
+    """[ITER44 #3] order_retry: enqueue sanitizes NaN/bool requested_price & ref_price, and is_expired/is_due reject bool now."""
+    import order_retry
+    # 3. order_retry: enqueue sanitizes NaN/bool requested_price & ref_price, and is_expired/is_due reject bool now
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(tmp_path / "q.jsonl"))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(tmp_path / "q.lock"))
+    rid = order_retry.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.25,
+        requested_price=float("nan"),
+        ref_price=True,
+        failure_reason="profit_guard",
+        now=1700000000.0,
+    )
+    assert rid is not None
+    loaded = order_retry.get(rid)
+    assert loaded["requested_price"] is None
+    assert loaded["ref_price"] is None
+    assert order_retry.is_expired(loaded, now=True) is True
+    assert order_retry.is_due(loaded, now=True) is False
+    assert order_retry.resolve_accepted_order("BTCUSDC", True) is False
+    assert order_retry.get_accepted_order_ids_for_owner(True, "tradeall") == []
+
+def test_pricewindow_windowanalyzer_iter54_s4():
+    """[ITER54 #4] PriceWindow & WindowAnalyzer."""
+    from pricewindow import PriceWindow, WindowAnalyzer
+    # 4. PriceWindow & WindowAnalyzer
+    pw = PriceWindow("BTCUSDC", window_size=True, sample_rate_sec=float("nan"), window_seconds=True)
+    assert pw.window_size == 10
+    assert pw.window_seconds is None
+    for p in (100.0, 101.0, 102.0, 103.0):
+        pw.process_price(p)
+    eps_default = pw.get_noise_epsilon(1.0)
+    assert pw.get_noise_epsilon(float("nan")) == eps_default
+    assert pw.get_noise_epsilon(True) == eps_default
+
+    wa = WindowAnalyzer(pw)
+    assert wa.check_price_change(float("nan")) == (0, 0)
+    assert wa.check_price_change(True) == (0, 0)
+
+def test_pricewindow_symbol_clamps_to_while_bool_nan_inf_iter55_s1():
+    """[ITER55 #1] PriceWindow(symbol, 0) clamps to 1, while bool/NaN/Inf fall back to 10."""
+    from pricewindow import PriceWindow
+    # 1. PriceWindow(symbol, 0) clamps to 1, while bool/NaN/Inf fall back to 10
+    assert PriceWindow("BTCUSDC", 0).window_size == 1
+    assert PriceWindow("BTCUSDC", -5).window_size == 1
+    assert PriceWindow("BTCUSDC", True).window_size == 10
+    assert PriceWindow("BTCUSDC", float("nan")).window_size == 10
+
+def test_tradeall_observe_format_state_text_does_not_treat_bool_as_trend_iter55_s2(tmp_path):
+    """[ITER55 #2] tradeall_observe: format_state_text does not treat bool as 1/0 trend, and backtest loaders reject NaN/Inf."""
+    from visuals.tradeall_observe import _parse_shadow_rows, format_state_text, load_backtest_order_events, load_backtest_price_samples, load_backtest_trend_starts
+    # 2. tradeall_observe: format_state_text does not treat bool as 1/0 trend, and backtest loaders reject NaN/Inf
+    txt = format_state_text({"final_trend": True, "trend_fast": False, "kalman_trend": True}, "HDR")
+    assert "trend:     ?" in txt
+    assert "fast:      ?" in txt
+    assert "kalman:    ?" in txt
+
+    shadow_rows = [
+        ["nan", "BTCUSDC", "kalman", "trend_start", "1", "0", "95000.0", "0.1", "0.02"],
+        ["1700000000", "BTCUSDC", "kalman", "trend_start", "1", "0", "nan", "0.1", "0.02"],
+        ["1700000000", "BTCUSDC", "kalman", "trend_start", "1", "0", "95000.0", "0.1", "0.02"],
+    ]
+    parsed_sh = _parse_shadow_rows(shadow_rows, "BTCUSDC")
+    assert len(parsed_sh) == 1
+    assert parsed_sh[0]["ts"] == 1700000000.0
+
+    (tmp_path / "tradeall_price_samples.log").write_text("nan|BTCUSDC|95000\n1700000000|BTCUSDC|nan\n1700000000|BTCUSDC|95000\n")
+    assert load_backtest_price_samples(str(tmp_path), "BTCUSDC") == ([1700000000.0], [95000.0])
+
+    (tmp_path / "tradeall_decisions.log").write_text("nan|BTCUSDC|trend_start|UP|HOLD|95000|1\n1700000000|BTCUSDC|trend_start|UP|HOLD|95000|1\n")
+    assert len(load_backtest_trend_starts(str(tmp_path), "BTCUSDC")) == 1
+
+    (tmp_path / "order_outcomes.log").write_text("nan|BTCUSDC|BUY|95000|0.1|accepted||tradeall.py|trend_buy\n1700000000|BTCUSDC|BUY|95000|0.1|accepted||tradeall.py|trend_buy\n")
+    assert len(load_backtest_order_events(str(tmp_path), "BTCUSDC")) == 1
+
+def test_pricetrendanalyzer_calculate_gradient_handles_empty_prices_iter63_s3():
+    """[ITER63 #3] PriceTrendAnalyzer.calculate_gradient handles empty prices;."""
+    from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
+    # 3. PriceTrendAnalyzer.calculate_gradient handles empty prices;
+    #    instant_trend_from_prices handles bool/inf/tiny sample_rate_sec
+    assert PriceTrendAnalyzer([]).calculate_gradient() == ([], 0)
+    assert len(PriceTrendAnalyzer([10.0, 12.0, 14.0]).calculate_gradient()[0]) == 3
+    for bad_sr in (True, float("inf"), float("nan"), 1e-309, -1.0):
+        t, gc, sf, gr = instant_trend_from_prices([10.0, 11.0, 12.0], bad_sr)
+        assert t == 1 and sf > 0
+
+def test_visuals_tradeall_observe__log_dates_and_build_backtest_state_text_iter77_s2(tmp_path):
+    """[ITER77 #2] visuals.tradeall_observe _log_dates and build_backtest_state_text."""
+    import json
+    from visuals import tradeall_observe
+    # 2. visuals.tradeall_observe _log_dates and build_backtest_state_text
+    assert tradeall_observe._log_dates(False) == []
+    assert tradeall_observe._log_dates(-3) == []
+    assert tradeall_observe._log_dates(float("nan")) == []
+    assert len(tradeall_observe._log_dates(2)) == 2
+
+    state_file = tmp_path / "analysis_state.json"
+    state_file.write_text(json.dumps({"BTCUSDC": {"ts": 1e20, "price": 50000.0}}), encoding="utf-8")
+    state_txt = tradeall_observe.build_backtest_state_text(str(tmp_path), "BTCUSDC")
+    assert state_txt is not None and "SIMULATED ANALYSIS (unknown)" in state_txt
+
+def test_pricewindow_input_validation_and_synchronized_normalization_when_window_size_iter78_s3():
+    """[ITER78 #3] PriceWindow input validation and synchronized normalization when window_size >= max_index."""
+    import pytest
+    from offline.simulations.sim import PriceWindow
+    # 3. PriceWindow input validation and synchronized normalization when window_size >= max_index
+    with pytest.raises(ValueError):
+        PriceWindow(True)
+    with pytest.raises(ValueError):
+        PriceWindow(5, max_index=0)
+    with pytest.raises(ValueError):
+        PriceWindow(5, epsilon=-0.1)
+
+    pw = PriceWindow(window_size=5, max_index=3)
+    for px in [10.0, 20.0, 5.0, 30.0, 15.0, 25.0]:
+        pw.process_price(px)
+    min_px, min_pos = pw.get_min()
+    max_px, max_pos = pw.get_max()
+    assert min_px == 5.0 and min_pos == 1
+    assert max_px == 30.0 and max_pos == 2
+
+def test_fleethealthmonitor_parses_float_hb_stale_s_and_rejects_invalid_loop_iter80_s3(tmp_path):
+    """[ITER80 #3] FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals."""
+    import pytest
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+    # 3. FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals
+    procs_file = tmp_path / "procs.conf"
+    procs_file.write_text(
+        "tradeall.py|$ROOT|python tradeall.py|tradeall|logs/tradeall.log|180.5|bot\n",
+        encoding="utf-8",
+    )
+    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
+    mon = FleetHealthMonitor(workspace_dir=str(tmp_path))
+    parsed = parse_procs_manifest(mon.workspace_dir)
+    assert len(parsed) == 1
+    assert parsed[0]["hb_stale_s"] == 180.5
+
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=False)
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=0)
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=float("nan"))
+
+def test_os_resources_watchdog__parse_proc_stat_raises_valueerror_on_truncated_stat_lines_iter82_s3():
+    """[ITER82 #3] os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts."""
+    import pytest
+    from orchestratorOS.livecheck import os_resources_watchdog
+    # 3. os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts
+    with pytest.raises(ValueError, match="malformed /proc/stat line"):
+        os_resources_watchdog._parse_proc_stat("123 (python) S 1 2 3")
+    assert os_resources_watchdog._managed_script(None) is None
+    assert os_resources_watchdog._managed_script({"command": "python tradeall.py", "pid": False}) is None
+
+def test_backtestbroker_normalizes_lowercase_whitespace_order_type_and_sanitizes_nan_iter134_s2(tmp_path):
+    """[ITER134 #2] BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec."""
+    import pytest
+    from offline.backtests.tradeall import BacktestBroker
+    # 2. BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec
+    broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate_max_wait_sec=float("nan"))
+    assert broker.trend_gate_max_wait_sec == pytest.approx(3600.0)
+    assert broker.place_order_smart("invalid_side", "BTCUSDC", 50000.0, 0.1) is None
+    res_buy = broker.place_order_smart(" buy ", "BTCUSDC", 50000.0, 0.1)
+    assert res_buy is not None
+    assert broker.n_buy == 1
+    assert broker.n_sell == 0
+
+def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clean_iter158_s4(monkeypatch):
+    """[ITER158 #4] tradeall.track_and_place_order deduplicates .0 IDs, ignores '0', and stores clean orderId."""
+    import tradeall as ta
+    # 4. tradeall.track_and_place_order deduplicates .0 IDs, ignores "0", and stores clean orderId
+    cancelled_oids = []
+    monkeypatch.setattr(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDC"})
+    monkeypatch.setitem(ta.KALMAN_MODES, "BTCUSDC", "off")
+    monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: cancelled_oids.append((sym, oid)))
+    monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: None)
+    monkeypatch.setattr(ta, "_fire_order", lambda sym, act, px, reason, **kw: {"orderId": 444.0})
+    import order_retry
+    monkeypatch.setattr(order_retry, "get_accepted_order_ids_for_owner", lambda sym, owner: ["333", "0"])
+    monkeypatch.setattr(order_retry, "resolve_accepted_order", lambda sym, oid: None)
+    tracked = ["333.0", "0", "nan"]
+    out_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 60000.0, 60100.0, order_ids=tracked)
+    assert cancelled_oids == [("BTCUSDC", "333")]
+    assert out_ids == ["444"]
+
+def test_pricetrendanalyzer_linear_regression_trend_and_instant_trend_from_prices_edge_cases_iter166_s1():
+    """[ITER166 #1] PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases."""
+    import pricewindow as pw
+    # 1. PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases
+    empty_pta = pw.PriceTrendAnalyzer([])
+    assert empty_pta.linear_regression_trend() == (None, None, None)
+    pta = pw.PriceTrendAnalyzer([100.0, 101.0, 103.0])
+    trend_line, slp, rv = pta.linear_regression_trend()
+    assert len(trend_line) == 3 and slp > 0
+    assert pw.instant_trend_from_prices([100.0, None], 0.8) == (0, 0.0, 0.0, 0.0)
+    assert pw.instant_trend_from_prices((x for x in [100.0, 102.0, 104.0]), 0.8)[0] == 1
+
+def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_log_return_std_iter166_s2():
+    """[ITER166 #2] IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check."""
+    import pricewindow as pw
+    # 2. IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check
+    buf = pw.IncrementalTrendBuffer()
+    for idx in range(25):
+        buf.append(100.0 + idx, 1700000000000 + idx * 1000)
+    buf.trim_front(True)
+    assert len(buf.prices) == 25
+    ft, gc, sf, gr, eps = buf.eval_slice(0, 24, eps_k=-5.0)
+    assert ft == 1 and eps >= 0.0
+    assert buf.log_return_std(-5, 20) is None
+    assert buf.log_return_std(0, 100) is None
+    assert buf.log_return_std(0, 24) is not None
+
+def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_check_price_change_iter166_s3():
+    """[ITER166 #3] PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold."""
+    import pytest
+    from types import SimpleNamespace
+    import pricewindow as pw
+    # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold
+    fake_c24 = SimpleNamespace(
+        get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],
+        subscribe_price=lambda sub: None,
+    )
+    win = pw.PriceWindow.from_cache24("BTCUSDC", "60.0", fake_c24)
+    assert win.window_seconds == pytest.approx(60.0)
+    wa = pw.WindowAnalyzer(win)
+    slope, pos = wa.check_price_change("1.0")
+    assert slope != 0 and pos == 0

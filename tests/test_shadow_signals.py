@@ -521,3 +521,43 @@ class ShadowLiveTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_sanitize_pipe_field_strips_cr_lf_pipe_and_kalmanstatetracker_current_trend_iter62_s3():
+    """[ITER62 #3] sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts."""
+    from shadow_signals import KalmanStateTracker
+    # 3. sanitize_pipe_field strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
+    from botcore import sanitize_pipe_field
+    assert sanitize_pipe_field("a|b\rc\nd") == "a/b c d"
+    tracker = KalmanStateTracker(state_path=None, now_fn=lambda: 1000.0)
+    tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 5000.0}
+    assert tracker.current_trend("BTCUSDC") == (None, 1e18)
+    tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 1005.0}
+    assert tracker.current_trend("BTCUSDC") == (1, 0.0)
+
+def test_kalmanstatetracker_current_trend_rejects_non_integer_kalman_trend_like_and_iter71_s4():
+    """[ITER71 #4] KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError."""
+    from types import SimpleNamespace
+    from shadow_signals import KalmanStateTracker
+    # 4. KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError
+    tracker = KalmanStateTracker(state_path=None, journal=SimpleNamespace(log_transition=lambda *a: None))
+    tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": 1.9}
+    tracker._now = lambda: 1005.0
+    assert tracker.current_trend("BTCUSDC") == (None, 1e18)
+    tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": -1.0}
+    assert tracker.current_trend("BTCUSDC") == (-1, 5.0)
+    res_upd = tracker.update("BTCUSDC", 10**400, 100.0, 10**400, [], 10**400)
+    assert res_upd["kalman_trend"] == 0
+
+def test_shadow_runtime_require_shadow_interval_rejects_float_or_non_positive_expected_iter121_s4():
+    """[ITER121 #4] shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval."""
+    import pytest
+    import botcore as sr
+    # 4. shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval
+    with pytest.raises(ValueError):
+        sr.require_shadow_interval(60.0, 60, "test")
+    with pytest.raises(ValueError):
+        sr.require_shadow_interval(0, 0, "test")

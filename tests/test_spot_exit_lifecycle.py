@@ -1137,6 +1137,378 @@ def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, mo
     bapi_mod.cancel_expired_orders("BUY", "BTCUSDC", 10.0)
     assert any("Cancelled 1 orders" in line for line in out_buf)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_strategy__order_from_pending_honors_submitted_qty_and_scales_amount_proportionally_iter10_s4():
+    """[ITER10 #4] Strategy._order_from_pending honors submitted_qty and scales amount proportionally."""
+    import pytest
+    from types import SimpleNamespace
+    from strategies.spot_engine import Strategy
+    # 4. Strategy._order_from_pending honors submitted_qty and scales amount proportionally
+    dummy_strat = SimpleNamespace(_now=lambda: 1700000000.0)
+    order_rec = Strategy._order_from_pending(
+        dummy_strat,
+        {
+            "order_id": "tx-123",
+            "side": "BUY",
+            "requested_qty": 2.0,
+            "submitted_qty": 1.0,
+            "requested_price": 100.0,
+            "amount": 200.0,
+            "kind": "B0",
+            "market": False,
+            "intent_id": "id-1",
+            "created_at": 1700000000.0,
+        },
+    )
+    assert order_rec["vol"] == pytest.approx(1.0)
+    assert order_rec["amount"] == pytest.approx(100.0)
 
+def test_spot_rules_nan_hardening_iter26_s1():
+    """[ITER26 #1] spot_rules NaN hardening."""
+    from strategies import spot_rules
+    # 1. spot_rules NaN hardening
+    trig_sg, reason_sg = spot_rules.check_slow_grind_exhaustion(
+        current_price=120.0,
+        avg_cost=100.0,
+        entry_ts=float("nan"),
+        current_ts=1_700_000_000.0,
+        min_days=7.0,
+        min_gain_pct=15.0,
+        recent_peak=130.0,
+        shadow_prices=[(1_700_000_000.0, 130.0)],
+        flash_window_sec=900.0,
+        flash_drop_pct=1.5,
+        structural_drop_pct=2.5,
+    )
+    assert trig_sg is False and reason_sg == ""
+
+    trig_ps, reason_ps = spot_rules.check_parabolic_surge_exhaustion(
+        current_price=95.0,
+        avg_cost=100.0,
+        surge_peak=125.0,
+        surge_gain_pct=18.0,
+        exit_pullback_pct=5.0,
+        surge_active=True,
+        min_profit_pct=float("nan"),
+    )
+    assert trig_ps is False and reason_ps == ""
+
+    trig_fp, gain_fp, drop_fp = spot_rules.check_fast_profit_reversal(
+        current_price=115.0,
+        avg_cost=100.0,
+        base_tp_pct=5.0,
+        mult=2.0,
+        shadow_prices=[(1000.0, float("nan")), (1005.0, 120.0)],
+        window_sec=300.0,
+        drop_pct=3.0,
+        current_time=1010.0,
+    )
+    assert trig_fp is True
+    assert drop_fp > 3.0
+
+def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
+    """[ITER26 #2] Strategy._placement_backoff_remaining clamping & NaN safety."""
+    from types import SimpleNamespace
+    from strategies.spot_engine import Strategy, _PLACEMENT_BACKOFF_CAP_SEC
+    # 2. Strategy._placement_backoff_remaining clamping & NaN safety
+    dummy_strat = SimpleNamespace(
+        s={
+            "placement_backoffs": {
+                "buy:DCA": {"until": 1_700_000_000.0 + 999999.0},
+                "sell:TP": {"until": float("nan")},
+            }
+        },
+        _now=lambda: 1_700_000_000.0,
+        _placement_backoff_key=Strategy._placement_backoff_key,
+    )
+    rem_dca = Strategy._placement_backoff_remaining(dummy_strat, "BUY", "DCA")
+    assert rem_dca == _PLACEMENT_BACKOFF_CAP_SEC
+    rem_tp = Strategy._placement_backoff_remaining(dummy_strat, "SELL", "TP")
+    assert rem_tp == 0.0
+
+def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1():
+    """[ITER45 #1] spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices."""
+    import pytest
+    from strategies import spot_rules as sr
+    # 1. spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices
+    assert sr.hit_stop(100.0, 0.0, 5.0) is False
+    assert sr.hit_stop(100.0, False, 5.0) is False
+    assert sr.hit_stop(100.0, True, 5.0) is False
+    assert sr.hit_stop(100.0, float("nan"), 5.0) is False
+    assert sr.hit_stop(100.0, 94.0, 5.0) is True
+
+    assert sr.dca_price_hit(0.0, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(False, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(True, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(float("nan"), 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(95.0, 100.0, 5.0, 0.05) is True
+
+    assert sr.are_close(1.0, True, 0.05) is False
+    assert sr.are_close(100.0, 100.0, float("nan")) is False
+    assert sr.progressive_dca_drop_pct(float("nan"), True, float("nan")) == 0.0
+    assert sr.parabolic_surge_profit_floor_pct(float("nan"), True, float("nan")) == pytest.approx(20.2)
+
+def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_iter64_s3():
+    """[ITER64 #3] spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion."""
+    import pytest
+    from strategies import spot_rules as sr
+    # 3. spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion
+    trig, gain, drop = sr.check_fast_profit_reversal(
+        current_price=110.0,
+        avg_cost=100.0,
+        base_tp_pct=4.0,
+        mult=2.0,
+        shadow_prices=[("bad", 115.0), (1000.0, "115.0"), ("not-a-tuple",)],
+        window_sec=60.0,
+        drop_pct=2.0,
+        current_time=1010.0,
+    )
+    assert trig is True and gain == pytest.approx(10.0)
+    surge_trig, _ = sr.check_parabolic_surge_exhaustion(
+        current_price="125.0",
+        avg_cost="100.0",
+        surge_peak="135.0",
+        surge_gain_pct="24.0",
+        exit_pullback_pct="3.2",
+        surge_move_pct=None,
+    )
+    assert surge_trig is True
+
+def test_spot_rules_entry_price_tp_price_check_parabolic_surge_exhaustion_and_check_fast_profit_reversal_iter84_s1():
+    """[ITER84 #1] spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal."""
+    from strategies import spot_rules
+    # 1. spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal
+    assert spot_rules.entry_price("100.0", "5.0") == 95.0
+    assert spot_rules.entry_price(float("nan"), 5.0) == 0.0
+    assert spot_rules.tp_price("100.0", "5.0") == 105.0
+    assert spot_rules.tp_price(False, 5.0) == 0.0
+
+    # Disabled surge_gain_pct <= 0 must not trigger via window_move_pct
+    triggered, _ = spot_rules.check_parabolic_surge_exhaustion(
+        current_price=105.0,
+        avg_cost=100.0,
+        surge_peak=110.0,
+        surge_gain_pct=0.0,
+        exit_pullback_pct=3.0,
+        window_move_pct=30.0,
+        surge_move_pct=25.0,
+    )
+    assert triggered is False
+
+    # Future timestamps in shadow_prices must not inflate local_peak in check_fast_profit_reversal
+    rev_trig, _, _ = spot_rules.check_fast_profit_reversal(
+        current_price=110.0,
+        avg_cost=100.0,
+        base_tp_pct=5.0,
+        mult=2.0,
+        shadow_prices=[(990.0, 110.5), (9999.0, 200.0)],
+        window_sec=60.0,
+        drop_pct=5.0,
+        current_time=1000.0,
+    )
+    assert rev_trig is False
+
+def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_series_iter93_s1():
+    """[ITER93 #1] strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used."""
+    import pytest
+    # 1. strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used
+    from offline.backtests.execution import ExecutionModel
+    from strategies.spot_engine import StratParams as SpotStratParams
+    from strategies.spot_replay import run_replay
+
+    orig_params = SpotStratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.2,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        reentry_drop_pct=1.0,
+    )
+    ohlc = [
+        (100.0, 101.0, 99.0, 100.0, 1000),
+        (100.0, 102.0, 95.0, 98.0, 1060),
+    ]
+    run_replay(
+        ohlc,
+        orig_params,
+        bar_minutes=float(orig_params.trend_interval),
+        execution=ExecutionModel(intrabar_policy="worst_case"),
+        dca_drop_series=[3.5, 4.5],
+        reentry_series=[2.5, 3.5],
+    )
+    # Caller's params must not be mutated in-place by dynamic series!
+    assert orig_params.dca_drop_pct == pytest.approx(2.0)
+    assert orig_params.reentry_drop_pct == pytest.approx(1.0)
+
+    with pytest.raises(ValueError, match="non-finite or invalid prices"):
+        run_replay(
+            [(100.0, 98.0, 99.0, 100.0, 1000)],
+            orig_params,
+            bar_minutes=float(orig_params.trend_interval),
+        )
+
+def test_strategies_spot_engine__parse_tranches_rejects_booleans_iter93_s2():
+    """[ITER93 #2] strategies.spot_engine._parse_tranches rejects booleans."""
+    import pytest
+    # 2. strategies.spot_engine._parse_tranches rejects booleans
+    from strategies.spot_engine import _parse_tranches
+
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_TRANCHES"):
+        _parse_tranches(True)
+
+def test_spot_rules_string_false_boolean_flag_handling_iter112_s5():
+    """[ITER112 #5] spot_rules string 'false' boolean flag handling."""
+    import strategies.spot_rules as sr
+    # 5. spot_rules string 'false' boolean flag handling
+    assert sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
+
+def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_run_replay_iter112_s6():
+    """[ITER112 #6] spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash."""
+    from types import SimpleNamespace
+    import strategies.spot_replay as srep
+    # 6. spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash
+    dummy_params = SimpleNamespace(trend_interval=60, tp_trail_vol_interval=60, dca_vol_interval=60, regime_min_samples=20)
+    assert srep.align_spot_interval_params(dummy_params, 0.5) is dummy_params
+
+def test_spot_engine_state_path_for_handles_bool_punctuation_only_and_path_iter119_s1(tmp_path):
+    """[ITER119 #1] spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir."""
+    import os
+    import strategies.spot_engine as se
+    # 1. spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir
+    assert se.state_path_for(True).endswith(".state_unknown.json")
+    assert se.state_path_for("---", tmp_path) == os.path.join(str(tmp_path), ".state_unknown.json")
+
+def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
+    """[ITER119 #2] spot_engine._apply_fill handles order with amount=None by falling back to vol * price."""
+    from types import SimpleNamespace
+    import strategies.spot_engine as se
+    from providers.strategy_executor import PairPrecision
+    # 2. spot_engine._apply_fill handles order with amount=None by falling back to vol * price
+    dummy_exec = SimpleNamespace(pair_precision=lambda _p: PairPrecision(2, 4, 0.01, "HYPE"))
+    params = se.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=1.0, dca_amount=50.0,
+        dca_drop_pct=2.0, check_minutes=1.0, takeprofit_pct=2.0, max_budget=500.0,
+        max_dca_buys=5, enable_takeprofit=True, order_ttl_min=60.0,
+    )
+    strat = se.Strategy(dummy_exec, "HYPEUSD", params, dry_run=True, replay_mode=True, initial_state=se._new_state())
+    strat._apply_fill({"txid": "T1", "side": "buy", "amount": None, "kind": "ENTRY"}, 2.0, 25.0, fee=0.0)
+    assert strat.s["spent"] == 50.0
+
+def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
+    """[ITER144 #1] spot_rules._parse_bool_flag rejects NaN and containers."""
+    from strategies import spot_rules as sr
+    # 1. spot_rules._parse_bool_flag rejects NaN and containers
+    assert sr._parse_bool_flag(float("nan")) is False
+    assert sr._parse_bool_flag(["true"]) is False
+    assert sr._parse_bool_flag("0") is False
+    assert sr._parse_bool_flag("true") is True
+    assert sr._parse_bool_flag(1) is True
+
+def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_spot_state_iter144_s2():
+    """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_spot_state."""
+    from types import SimpleNamespace
+    from strategies.spot_engine import StratParams, Strategy, clean_order_id, _parse_bool_flag
+    # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_spot_state
+    assert _parse_bool_flag("false") is False
+    assert _parse_bool_flag("0") is False
+    assert _parse_bool_flag(float("nan")) is False
+    assert clean_order_id(12345.0) == "12345"
+    assert clean_order_id("nan") is None
+    assert clean_order_id("0") is None
+    assert clean_order_id(["1"]) is None
+
+    fake_client = SimpleNamespace(
+        pair_precision=lambda pair: SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.01)
+    )
+    params = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=5,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=4,
+        enable_takeprofit=True,
+        order_ttl_min=60,
+    )
+    dirty_state = {
+        "qty": 2.0,
+        "cost": "nan",
+        "trend_mode": "false",
+        "ledger_reconcile_required": "0",
+        "surge_active": "no",
+        "slow_grind_active": float("nan"),
+        "orders": [
+            {
+                "txid": 98765.0,
+                "side": "buy",
+                "vol": 1.0,
+                "price": 100.0,
+                "market": "false",
+                "cancel_requested": "0",
+                "intent_id": "nan",
+            }
+        ],
+        "pending_intent": {
+            "order_id": 54321.0,
+            "side": "BUY",
+            "requested_qty": 1.0,
+            "requested_price": 100.0,
+            "market": "false",
+            "intent_id": "null",
+        },
+        "pending_exit": {"kind": "TP", "soft_floor": "false"},
+    }
+    strat = Strategy(fake_client, "HYPEUSD", params, dry_run=True, initial_state=dirty_state, replay_mode=True)
+    assert strat.s["trend_mode"] is False
+    assert strat.s["ledger_reconcile_required"] is False
+    assert strat.s["surge_active"] is False
+    assert strat.s["slow_grind_active"] is False
+    assert strat.s["orders"][0]["txid"] == "98765"
+    assert strat.s["orders"][0]["market"] is False
+    assert strat.s["orders"][0]["cancel_requested"] is False
+    assert strat.s["orders"][0]["intent_id"] is None
+    assert strat.s["pending_exit"]["soft_floor"] is False
+    assert strat._avg() is None
+
+    adopted = strat._order_from_pending(strat.s["pending_intent"])
+    assert adopted["txid"] == "54321"
+    assert adopted["market"] is False
+    assert adopted["intent_id"] is None
+
+def test_stratparams___post_init___normalizes_string_boolean_flags_iter173_s4():
+    """[ITER173 #4] StratParams.__post_init__ normalizes string boolean flags."""
+    from strategies.spot_engine import StratParams
+    # 4. StratParams.__post_init__ normalizes string boolean flags
+    sp = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=5.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit="",
+        order_ttl_min=60.0,
+        sl_mhdsl_enabled="false",
+        surge_guard="0",
+        tp_mdhtp_enabled="true",
+    )
+    assert sp.enable_takeprofit is True
+    assert sp.sl_mhdsl_enabled is False
+    assert sp.surge_guard is False
+    assert sp.tp_mdhtp_enabled is True

@@ -2156,3 +2156,397 @@ def test_iter67_terminal_shadowing_refused_status_negative_exec_qty_and_zero_not
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
+    """[ITER5 #1] Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)."""
+    from unittest.mock import MagicMock
+    import order_guard
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    from instrument import Instrument
+    # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
+    provider = MagicMock()
+    provider.name = "binance"
+    provider.get_current_price.return_value = 100.0
+    provider.round_amount = lambda s, a: round(a, 4)
+    provider.min_order_qty.return_value = 0.001
+    provider.min_order_notional.return_value = 5.0
+    provider.order_filter_refusal.return_value = None
+    provider.free_balance.return_value = 10000.0
+    provider.policy_cap_quantity.return_value = 10.0
+    provider.fee_cap_quantity.return_value = 100.0
+    provider.guards_internally.return_value = False
+    provider.get_orders.return_value = []
+    provider.get_trades.return_value = []
+    provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
+    from providers.quantity import decide_quantity
+    provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+
+    captured_bypasses = []
+    def fake_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None, **kw):
+        captured_bypasses.append((side, normalize_bypassed_guards(bypass_guards=kw.get("bypass_guards"))))
+        return False
+
+    monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+
+    mock_api = MagicMock()
+    mock_api.provider_by_name.return_value = provider
+    inst = Instrument("test_inst", "BTCUSDC", "binance", api=mock_api)
+
+    # SELL with bypass_guards={"financial"} must revoke G_PROF while keeping G_QLIMIT1 & G_QLIMIT2
+    inst.place("SELL", 100.0, 1.0, bypass_guards={"financial"}, wait_for_trend=False, caller_owns_retry=True)
+    assert len(captured_bypasses) == 1
+    sell_side, sell_byp = captured_bypasses[-1]
+    assert sell_side == "SELL"
+    assert GUARD_REGISTRY["G_PROF"].is_bypassed(sell_byp) is False
+    assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(sell_byp) is True
+    assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(sell_byp) is True
+
+    # BUY with bypass_guards={"qlimit"} must revoke G_QLIMIT1 while keeping G_QLIMIT2
+    inst.place("BUY", 100.0, 1.0, bypass_guards={"qlimit"}, wait_for_trend=False, caller_owns_retry=True)
+    assert len(captured_bypasses) == 2
+    buy_side, buy_byp = captured_bypasses[-1]
+    assert buy_side == "BUY"
+    assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(buy_byp) is False
+    assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(buy_byp) is True
+
+def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_already_iter10_s1(monkeypatch):
+    """[ITER10 #1] GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry."""
+    import time
+    import pytest
+    from unittest.mock import MagicMock
+    import order_guard
+    from types import SimpleNamespace
+    from instrument import Instrument
+    # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
+    submitted_qtys = []
+    provider = MagicMock()
+    provider.name = "binance"
+    provider.get_current_price.return_value = 100.0
+    provider.round_amount = lambda s, a: round(float(a), 4)
+    provider.min_order_qty.return_value = 0.001
+    provider.min_order_notional.return_value = 5.0
+    provider.order_filter_refusal.return_value = None
+    provider.free_balance.return_value = 10000.0
+    provider.policy_cap_quantity.return_value = 10.0
+    provider.fee_cap_quantity.return_value = 100.0
+    provider.guards_internally.return_value = False
+    provider.requires_cache_permit.return_value = False
+    provider.defers_smart_cancellation.return_value = False
+    provider.supports_business_minimum.return_value = False
+    provider.execution_enabled.return_value = True
+    provider.get_orders.return_value = []
+    provider.get_trades.return_value = []
+    provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
+    from providers.quantity import decide_quantity
+    provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+
+    def _fake_place_order(_sym, side, price, qty, **_kw):
+        submitted_qtys.append(float(qty))
+        return {"orderId": "gtm-1", "symbol": _sym, "side": side, "price": price, "origQty": qty}
+
+    provider.place_order.side_effect = _fake_place_order
+    provider.submit_order.side_effect = _fake_place_order
+
+    bear_ctx = SimpleNamespace(
+        symbol="BTCUSDC",
+        regime="bear",
+        resolved_trend="bear",
+        adverse_regime_for_buy=True,
+        adverse_regime_for_sell=False,
+        allowed_buy=True,
+        allowed_sell=True,
+        suggested_scale=1.0,
+        computed_at=time.time(),
+        decisions={},
+    )
+    monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+
+    mock_api = MagicMock()
+    mock_api.provider_by_name.return_value = provider
+    inst = Instrument(
+        "BTCUSDC",
+        "BTCUSDC",
+        "binance",
+        base="BTC",
+        quote="USDC",
+        params={"check_medium_trend": True, "medium_trend_action": "scale"},
+        api=mock_api,
+    )
+    # First pass with qty=1.0, applied_scale=1.0 -> scaled to 0.5
+    res1 = inst.place(
+        "BUY", 100.0, 1.0,
+        wait_for_trend=False,
+        caller_owns_retry=True,
+        regime_context=bear_ctx,
+        medium_trend_scale=0.5,
+    )
+    assert res1 is not None
+    assert submitted_qtys[-1] == pytest.approx(0.5)
+
+    # Retry pass where qty=0.5 was already scaled and applied_scale=0.5 is carried -> must stay 0.5 (not 0.25!)
+    res2 = inst.place(
+        "BUY", 100.0, 0.5,
+        wait_for_trend=False,
+        caller_owns_retry=True,
+        regime_context=bear_ctx,
+        medium_trend_scale=0.5,
+        applied_scale=0.5,
+    )
+    assert res2 is not None
+    assert submitted_qtys[-1] == pytest.approx(0.5)
+
+def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter21_s2(monkeypatch):
+    """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
+    import pytest
+    from unittest.mock import MagicMock
+    import order_guard
+    from market_regime import MarketRegimeDecision, MarketRegimeContext
+    def _build_test_context(symbol='BTCUSDC', provider='binance'):
+        decision = MarketRegimeDecision(
+            regime='bull', gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason='signal', source='mock',
+        )
+        return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
+    #    skips profit_guard_window_ref when G_PROF is bypassed, and ignores suggested_scale on bypass_guards={'all'}
+    window_ref_calls = []
+    pg_bypasses = []
+
+    class FakeSpotProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            window_ref_calls.append(1)
+            raise RuntimeError("should not be called when G_PROF is bypassed")
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            rc = kw.get("regime_context")
+            sc = getattr(rc, "suggested_scale", 1.0) if (rc is not None and side == "BUY") else 1.0
+            final_q = float(qty or 1.0) * (sc if 0 < sc < 1.0 else 1.0)
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=final_q,
+                scale_applied=(0 < sc < 1.0),
+                applied_scale=sc,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-21", "qty": qty}
+
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+
+    fake_prov = FakeSpotProvider()
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = fake_prov
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        api=fake_api,
+    )
+    # Pass bypass_guards={"financial"} on BUY -> G_QLIMIT1 is revoked, but G_PROF & G_QLIMIT2 stay bypassed!
+    res_buy = inst.place(
+        "BUY", 100.0, 2.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"financial"},
+    )
+    assert res_buy is not None
+    assert window_ref_calls == []  # G_PROF was bypassed, so profit_guard_window_ref was NOT called
+    assert len(pg_bypasses) == 1
+    assert "g_prof" in pg_bypasses[0]
+    assert "g_qlimit2" in pg_bypasses[0]
+    assert "g_qlimit1" not in pg_bypasses[0]
+
+    # Pass bypass_guards={"all"} on BUY with a regime_context that has suggested_scale=0.25 -> must NOT downscale qty!
+    ctx_scaled = _build_test_context()
+    object.__setattr__(ctx_scaled, "suggested_scale", 0.25)
+    res_all = inst.place(
+        "BUY", 100.0, 2.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"all"},
+        regime_context=ctx_scaled,
+    )
+    assert res_all is not None
+    assert res_all["qty"] == pytest.approx(2.0)
+
+def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_place_rejects_iter35_s3():
+    """[ITER35 #3] Instrument._apply_late_intelligence_scale NaN/bool safety & Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'."""
+    from types import SimpleNamespace
+    from instrument import Instrument
+    # 3. Instrument._apply_late_intelligence_scale NaN/bool safety
+    class _DummyProvider:
+        name = "kraken"
+        def validate_symbol(self, symbol):
+            return True
+        def guards_internally(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def round_amount(self, symbol, q):
+            return round(float(q), 4)
+        def free_balance(self, asset):
+            return 1000.0
+
+    dummy_prov = _DummyProvider()
+    inst = Instrument(
+        name="BTCUSDC",
+        provider="kraken",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        api=SimpleNamespace(provider_by_name=lambda _n: dummy_prov),
+    )
+    q_bool, sc_bool, ref_bool = inst._apply_late_intelligence_scale(
+        1.0, 100.0, False, True, SimpleNamespace(suggested_scale=True), 1.0, side_u="BUY"
+    )
+    assert q_bool == 1.0 and sc_bool == 1.0 and ref_bool is None
+
+    q_nan, sc_nan, ref_nan = inst._apply_late_intelligence_scale(
+        1.0, 100.0, False, True, SimpleNamespace(suggested_scale=float("nan")), 1.0, side_u="BUY"
+    )
+    assert q_nan == 1.0 and sc_nan == 1.0 and ref_nan is None
+
+    for bad_app in (0.0, -0.5, float("nan"), "invalid"):
+        q_bad_app, sc_bad_app, ref_bad_app = inst._apply_late_intelligence_scale(
+            1.0, 100.0, False, True, SimpleNamespace(suggested_scale=0.5), bad_app, side_u="BUY"
+        )
+        assert q_bad_app == 1.0 and ref_bad_app is None
+
+
+    # 4. Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'
+    for side in ("BUY", "SELL"):
+        for bad_px in (True, False, float("nan"), -5.0, 0.0):
+            out = {}
+            res = inst.place(
+                side, bad_px, 1.0, smart=False, wait_for_trend=False,
+                bypass_guards={"all"}, _outcome_context=out, caller_owns_retry=True,
+            )
+            assert res is None
+            assert out.get("reason") == "invalid_price"
+
+def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
+    """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
+    import pytest
+    from instrument import Instrument
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+    # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
+    class _GuardInternalProvider(MarketDataProvider):
+        name = "guard_internal"
+
+        def __init__(self):
+            self.last_side = None
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def get_price_history(self, symbol: str, lookback_h: float):
+            return []
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 1000.0
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return []
+
+        def guards_internally(self) -> bool:
+            return True
+
+        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+            self.last_side = side
+            return {"orderId": "OID-98", "status": "NEW"}
+
+    gip = _GuardInternalProvider()
+    api = MarketApi([gip])
+    inst = Instrument(
+        name="BTC",
+        symbol="BTCUSDC",
+        provider="guard_internal",
+        base="BTC",
+        quote="USDC",
+        params={"MT.GAIN": "9.5", "mt.nan_val": "nan", "mt.bool_val": True},
+        api=api,
+    )
+    out_ctx = {}
+    assert inst.place(True, 100.0, 1.0, _outcome_context=out_ctx) is None
+    assert out_ctx["reason"] == "invalid_side"
+    assert out_ctx["state"] == "refused"
+
+    out_ctx2 = {}
+    assert inst.place("INVALID", 100.0, 1.0, _outcome_context=out_ctx2) is None
+    assert out_ctx2["reason"] == "invalid_side"
+
+    res = inst.place(" b ", 100.0, 1.0)
+    assert res == {"orderId": "OID-98", "status": "NEW"}
+    assert gip.last_side == "BUY"
+
+    assert inst.param("mt", "gain", default=1.0, cast=float) == pytest.approx(9.5)
+    assert inst.param("mt", "nan_val", default=2.5, cast=float) == pytest.approx(2.5)
+    assert inst.param("mt", "bool_val", default=3.5, cast=float) == pytest.approx(3.5)
+    assert inst.param(True, "gain", default=4.5, cast=float) == pytest.approx(4.5)
+
+def test_instrument_param_with_cast_bool_and_instrument_enabled_iter156_s1():
+    """[ITER156 #1] Instrument.param with cast=bool and Instrument.enabled boolean parsing."""
+    from types import SimpleNamespace
+    from instrument import Instrument, _parse_bool_flag
+    # 1. Instrument.param with cast=bool and Instrument.enabled boolean parsing
+    dummy_prov = SimpleNamespace(name="dummy", validate_symbol=lambda s: None)
+    dummy_api = SimpleNamespace(provider_by_name=lambda p: dummy_prov)
+    inst = Instrument(
+        "BTCUSDC",
+        "BTCUSDC",
+        "dummy",
+        enabled="false",  # type: ignore[arg-type]
+        params={"mt.smart_sl": "false", "mt.enabled": "1", "mt.bad": "nan"},
+        api=dummy_api,
+    )
+    assert inst.enabled is False
+    assert inst.param("mt", "smart_sl", True, cast=bool) is False
+    assert inst.param("mt", "enabled", False, cast=bool) is True
+    assert inst.param("mt", "bad", True, cast=bool) is False
+    assert _parse_bool_flag("false", True) is False
+    assert _parse_bool_flag(float("nan"), True) is True

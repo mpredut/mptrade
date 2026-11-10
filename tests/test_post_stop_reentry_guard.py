@@ -728,3 +728,86 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
         assert ok is True
         mock_get_ps.assert_not_called()
         assert "TAOUSDC" not in mt._POST_STOP_AI_NOT_ENFORCED
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_poststopreentryguard_string_none_nan_input_formatting_safety_iter31_s4():
+    """[ITER31 #4] PostStopReentryGuard string/None/NaN input formatting safety."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
+    # 4. PostStopReentryGuard string/None/NaN input formatting safety
+    clear_post_stop_reentry_cache()
+    ps_guard = PostStopReentryGuard(
+        gemini_client=SimpleNamespace(query_json=lambda *a, **kw: ["not-a-dict"]),
+        fallback_action="downscale",
+        notify_enabled=False,
+        cache_ttl_sec=60.0,
+    )
+    ps_dec = ps_guard.check(
+        "tao/usdc",
+        current_price="bad",
+        last_sell_price=None,
+        trough=float("nan"),
+        bounce_pct=True,
+        qty="bad",
+        last_sell_time_s="bad",
+        telemetry={},
+        now="bad",
+    )
+    assert ps_dec.suggested_scale == 0.5
+
+def test_poststopreentryguard_mode_false_sets_mode_off_instead_of_iter125_s6():
+    """[ITER125 #6] PostStopReentryGuard(mode=False) sets mode='off' instead of 'enforce'."""
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, get_post_stop_reentry_guard
+    # 6. PostStopReentryGuard(mode=False) sets mode="off" instead of "enforce"
+    psr_off = PostStopReentryGuard(mode=False)
+    assert psr_off.mode == "off"
+    assert psr_off.check("BTCUSDC", 102.0, 105.0, 100.0, 0.02).allowed is True
+    psr_fac = get_post_stop_reentry_guard(
+        margins={
+            "post_stop_reentry_mode": False,
+            "post_stop_reentry_timeout_sec": 10.0,
+            "post_stop_reentry_fallback": "allow",
+            "post_stop_reentry_notify": False,
+            "post_stop_reentry_cache_ttl_sec": 60.0,
+        },
+        gemini_client=type("G", (), {"_custom_runner": True})(),
+    )
+    assert psr_fac.mode == "off"
+
+def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post_stop_reentry_mode_iter180_s1():
+    """[ITER180 #1] get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'."""
+    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+    from intelligence.sentiment.gemini_client import GeminiClient
+    # 1. get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'
+    ps_guard = get_post_stop_reentry_guard(
+        margins={"llm_guard_mode": "shadow"},
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "APPROVED", "reason": "ok"}'),
+    )
+    assert ps_guard.mode == "shadow"
+
+def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps_iter180_s2():
+    """[ITER180 #2] PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps."""
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, _POST_STOP_DECISION_CACHE
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, _HIGH_STAKE_DECISION_CACHE
+    from intelligence.sentiment.gemini_client import GeminiClient
+    # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
+    ps_enforced = PostStopReentryGuard(
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "trap"}'),
+        cache_ttl_sec=60.0,
+        notify_enabled=False,
+    )
+    _POST_STOP_DECISION_CACHE[("BTCUSDC", 90000.0, 1000)] = (None, None)
+    ps_dec = ps_enforced.check("BTCUSDC", 91000.0, 90000.0, 88000.0, 0.034, last_sell_time_s=1000.0, telemetry={}, now=1010.0)
+    assert ps_dec.allowed is False
+
+    hs_guard = HighStakeGuard(
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "risk"}'),
+        cache_ttl_sec=60.0,
+    )
+    _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY")] = (True, None)
+    hs_dec = hs_guard.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=1050.0, telemetry={}, now=1010.0)
+    assert hs_dec.allowed is False

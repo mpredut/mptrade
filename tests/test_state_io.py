@@ -500,6 +500,125 @@ def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypa
     monkeypatch.setattr("state_io.os.replace", replace_then_concurrent_unlink)
     stage_previous_generation(data_path)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_state_io_read_tail_lines_truncate_file_bytes_and_prune_rotated_archives_bool_zero_protection_iter46_s4(tmp_path):
+    """[ITER46 #4] state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection."""
+    import pytest
+    import state_io as sio
+    # 4. state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection
+    tail_file = tmp_path / "tail_test.txt"
+    tail_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=0) == [b"line2", b"line3"]
+    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=True) == [b"line2", b"line3"]
+    with pytest.raises(ValueError):
+        sio.truncate_file_bytes(str(tail_file), True)
+    with pytest.raises(ValueError):
+        sio.truncate_file_bytes(str(tail_file), -1)
 
+def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_path):
+    """[ITER64 #2] JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit."""
+    import pytest
+    from state_io import read_tail_lines
+    # 2. JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit
+    from strategies.state_store import JsonStateStore, StatePersistenceError
+    store = JsonStateStore(
+        str(tmp_path / "strat_state.json"),
+        default_factory=lambda: {"cycle": 0, "qty": 0.0},
+        label="test_strat",
+        logger=lambda _msg: None,
+        fail_closed=True,
+    )
+    with pytest.raises(StatePersistenceError):
+        store.save(["not", "a", "dict"])
+    assert read_tail_lines(str(tmp_path), 10) == []
+    assert read_tail_lines(str(tmp_path / "strat_state.json"), None) == []
+
+def test_state_io_truncate_file_bytes_rejects_fractional_non_finite_sizes_and_iter89_s4(tmp_path):
+    """[ITER89 #4] state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely."""
+    import pytest
+    import state_io
+    # 4. state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely
+    f_path = tmp_path / "data.bin"
+    f_path.write_bytes(b"0123456789")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        state_io.truncate_file_bytes(str(f_path), 4.5)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        state_io.truncate_file_bytes(str(f_path), float("inf"))
+    assert state_io.exact_pos_int("invalid", default=4096) == 4096
+    assert state_io.exact_pos_int(True, default=4096) == 4096
+
+def test_state_io_read_tail_lines__positive_chunk_size_prune_rotated_archives_iter99_s1(tmp_path):
+    """[ITER99 #1] state_io.read_tail_lines / _positive_chunk_size / prune_rotated_archives."""
+    import state_io
+    # 1. state_io.read_tail_lines / _positive_chunk_size / prune_rotated_archives
+    # Passing bool or int as path must not treat file descriptors (e.g. stdout=1) as paths!
+    assert state_io.read_tail_lines(True, 10) == []
+    assert state_io.read_tail_lines(1, 10) == []
+    assert state_io.read_tail_lines(None, 10) == []
+
+    sample_file = tmp_path / "sample.jsonl"
+    sample_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    assert state_io.read_tail_lines(str(sample_file), 2) == [b"line2", b"line3"]
+    assert state_io.read_tail_lines(str(sample_file), 2.5) == []
+    assert state_io.read_tail_lines(str(sample_file), True) == []
+    assert state_io.exact_pos_int(4096.5, default=65536) == 65536
+    assert state_io.exact_pos_int(True, default=65536) == 65536
+    assert state_io.prune_rotated_archives(str(sample_file), keep_count=2.5) == []
+    assert state_io.prune_rotated_archives(True, keep_count=2) == []
+
+def test_state_io_load_json_state_with_fail_closed_false_truncate_file_bytes_with_atomic_gzip_file_iter161_s1(tmp_path):
+    """[ITER161 #1] state_io: load_json_state with fail_closed='false', truncate_file_bytes with '4.0', atomic_gzip_file with remove_source='false'."""
+    import state_io
+    # 1. state_io: load_json_state with fail_closed="false", truncate_file_bytes with "4.0", atomic_gzip_file with remove_source="false"
+    corrupt_json = tmp_path / "corrupt.json"
+    corrupt_json.write_text("not-json", encoding="utf-8")
+    assert state_io.load_json_state(str(corrupt_json), default_factory=dict, fail_closed="false", label="test") == {}
+
+    bin_file = tmp_path / "data.bin"
+    bin_file.write_bytes(b"0123456789")
+    state_io.truncate_file_bytes(str(bin_file), "4.0")
+    assert bin_file.read_bytes() == b"0123"
+
+    _ = state_io.atomic_gzip_file(str(bin_file), remove_source="false")
+    assert bin_file.exists()
+    assert (tmp_path / "data.bin.gz").exists()
+
+def test_read_json_recovering_read_json_dict_recovering_handle_missing_corrupt_previous_and_non_iter184_s2(tmp_path):
+    """[ITER184 #2] read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files."""
+    import state_io
+    # 2. read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files
+    missing_path = str(tmp_path / "missing.json")
+    assert state_io.read_json_recovering(missing_path) is None
+    assert state_io.read_json_dict_recovering(missing_path) is None
+
+    list_path = tmp_path / "list_state.json"
+    list_path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert state_io.read_json_recovering(str(list_path)) == [1, 2, 3]
+    assert state_io.read_json_dict_recovering(str(list_path)) is None
+
+def test_read_json_dict_cached_memoizes_by_stat_signature_and_recovers_from_iter184_s3(tmp_path):
+    """[ITER184 #3] read_json_dict_cached memoizes by stat signature and recovers from .previous."""
+    import json
+    import state_io
+    # 3. read_json_dict_cached memoizes by stat signature and recovers from .previous
+    memo = {}
+    dict_path = tmp_path / "cached_dict.json"
+    prev_path = tmp_path / "cached_dict.json.previous"
+    dict_path.write_text("{corrupt", encoding="utf-8")
+    prev_path.write_text(json.dumps({"BTCUSDC": {"T": 12.0}}), encoding="utf-8")
+    loaded = state_io.read_json_dict_cached(str(dict_path), memo, max_entries=8)
+    assert loaded == {"BTCUSDC": {"T": 12.0}}
+    assert len(memo) == 1
+
+def test_state_io_atomic_write_jsonl_writes_iterable_of_dicts_atomically_and_iter185_s1(tmp_path):
+    """[ITER185 #1] state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts."""
+    import state_io
+    # 1. state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts
+    p_jsonl = tmp_path / "orders.jsonl"
+    data = [{"order_id": 1, "sym": "BTCUSDC"}, {"order_id": 2, "sym": "ETHUSDC"}]
+    state_io.atomic_write_jsonl(str(p_jsonl), data)
+    assert state_io.read_jsonl_dicts(str(p_jsonl)) == data

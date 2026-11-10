@@ -2009,8 +2009,124 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     assert "replace_max_sell_usd" not in rec_positions_no_oo[0]
     assert "trailing_peak" not in rec_positions_no_oo[0]
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_autonomousaireconciler_synthesize_and_diagnose_handles_none_bool_nan_in_prices_and_trends_iter56_s4(tmp_path):
+    """[ITER56 #4] AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary."""
+    from unittest.mock import MagicMock
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler, LogEventSummary, TelemetrySensorSnapshot
+    # 4. AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary
+    (tmp_path / "order_guard.conf").write_text("supervisor_mode = shadow\nsupervisor_notify = 0\n", encoding="utf-8")
+    (tmp_path / "config.env").write_text("NTFY_TOPIC_GUARD=test-guard\n", encoding="utf-8")
+    mock_gemini = MagicMock()
+    mock_gemini.query_json.return_value = {"summary": "OK", "market_trading_decisions": []}
+    rec = AutonomousAIReconciler(workspace_dir=str(tmp_path), gemini_auditor=mock_gemini)
+    snap = TelemetrySensorSnapshot(
+        prices_and_trends={
+            "BTCUSDC": {
+                "price": float("nan"),
+                "trend": None,
+                "growth_coefficient": None,
+                "chg_15m_pct": None,
+                "chg_30m_pct": float("nan"),
+                "chg_1h_pct": True,
+                "chg_3h_pct": None,
+                "low_24h": None,
+                "high_24h": float("nan"),
+                "chg_7d_pct": None,
+                "slope_15m": None,
+                "slope_3_7m": float("nan"),
+                "slope_2_5h": True,
+                "trend_3_7m": None,
+                "trend_15m": float("nan"),
+                "trend_2_5h": True,
+                "gradient_recent_fast": True,
+                "epsilon": float("nan"),
+                "kalman_vel": True,
+            }
+        },
+        microstructure={
+            "BTCUSDC": {
+                "bid_wall_px": float("nan"),
+                "ask_wall_px": True,
+            }
+        },
+        portfolio_summary={
+            "total_value_usdc": float("nan"),
+            "venue_quote_cash": {"binance:USDC": {"venue": "binance", "asset": "USDC", "free": float("nan")}},
+            "recent_orders": {"BTCUSDC": {"last_buy": {"ts_ms": "nan"}, "last_sell": None}},
+        },
+    )
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    res = rec.synthesize_and_diagnose(snap, logs, topic_key="auto_cryptotrade_executor")
+    assert res["summary"] == "OK"
 
+def test_autonomousintentgateway__get_live_price_rejects_boolean_true_prices_from_provider_iter65_s3(tmp_path):
+    """[ITER65 #3] AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache."""
+    import json
+    import math
+    from types import SimpleNamespace
+    from orchestratorTrade.autonomous_intent_gateway import (
+        AutonomousIntentGateway,
+    )
+    # 3. AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache
+    ws = tmp_path / "gw_ws"
+    ws.mkdir()
+    cache = ws / "cachedb"
+    cache.mkdir()
+    (ws / "order_guard.conf").write_text(
+        "autonomous_trading_mode = shadow\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n",
+        encoding="utf-8",
+    )
+    (cache / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[1000, True]]}}),
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb")
+    inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        _provider=SimpleNamespace(get_current_price=lambda _s: True),
+    )
+    assert math.isnan(gw._get_live_price(inst))
 
+def test_autonomousintentgateway_resolve_instrument_rejects_empty_boolean_symbol_venue_and_iter120_s5(monkeypatch, tmp_path):
+    """[ITER120 #5] AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode."""
+    from types import SimpleNamespace
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    # 5. AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode
+    gw = AutonomousIntentGateway(
+        workspace_dir=str(tmp_path),
+        mode="shadow",
+        max_notional_usd=100.0,
+        min_confidence=0.80,
+        notify_enabled=False,
+    )
+    fake_inst = SimpleNamespace(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", enabled=True)
+    inst_map = {"BINANCE_BTC": fake_inst}
+    assert gw.resolve_instrument("", venue="binance", instruments_map=inst_map) is None
+    assert gw.resolve_instrument(True, venue="binance", instruments_map=inst_map) is None
+    assert gw.resolve_instrument("BTCUSDC", venue=True, instruments_map=inst_map) is None
+    assert gw.resolve_instrument("BTCUSDC", venue="binance", instruments_map=inst_map) is fake_inst
 
+    monkeypatch.setattr(gw, "_get_live_price", lambda _i: 50000.0)
+    out = gw.process_intent(
+        {
+            "intent_id": True,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": None,
+            "confidence": 0.90,
+            "suggested_notional_usd": 50.0,
+        },
+        instruments_map=inst_map,
+        mode=" SHADOW ",
+    )
+    assert out["status"] == "OBSERVED_SHADOW"

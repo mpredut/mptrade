@@ -726,3 +726,743 @@ class T212ClientTransportTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_t212provider_get_orders_and_order_status_iter29_s2():
+    """[ITER29 #2] T212Provider.get_orders and order_status."""
+    import time
+    from types import SimpleNamespace
+    from providers.t212_provider import T212Provider
+    # 2. T212Provider.get_orders and order_status
+    fake_cli = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "averagePrice": 120.0, "quantity": 5.0}],
+        get_order_status=lambda oid: {
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": 5.0,
+            "filledValue": 600.0,
+            "fee": 0.0,
+            "orderedQuantity": float("nan"),
+        },
+    )
+    t212 = T212Provider(client=fake_cli, live_enabled=False)
+    assert t212.get_orders("NVDA_US_EQ", "BUY", float("nan")) == []
+    assert t212.get_orders("NVDA_US_EQ", "BUY", True) == []
+    assert t212.get_orders("NVDA_US_EQ", "BUY", -10.0) == []
+
+    # Case-insensitive ticker match and synthetic timestamp inside 600s window
+    now_ms = int(time.time() * 1000)
+    short_win_orders = t212.get_orders("nvda_us_eq", "BUY", 600.0)
+    assert len(short_win_orders) == 1
+    assert now_ms - short_win_orders[0]["timestamp"] <= 600_000
+
+    st = t212.order_status("nvda_us_eq", "ord-1")
+    assert st.status == "closed" and st.orig_qty is None
+
+def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1():
+    """[ITER41 #1] T212Provider rejects boolean qty/price/order_id/fill fields."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+    # 1. T212Provider rejects boolean qty/price/order_id/fill fields
+    tp = T212Provider(
+        client=SimpleNamespace(
+            get_portfolio=lambda: [{"ticker": "AAPL_US_EQ", "averagePrice": True, "quantity": 1.0, "currentPrice": True}],
+            get_cash=lambda: {"free": True},
+            get_order_status=lambda oid: {"ticker": "AAPL_US_EQ", "status": "FILLED", "filledQuantity": True, "filledValue": 100.0},
+        ),
+        live_enabled=True,
+        order_validity="DAY",
+    )
+    assert tp.free_balance("RON") is None
+    assert tp.free_balance("AAPL_US_EQ") == 1.0
+    with pytest.raises(ProviderError):
+        tp.get_orders("AAPL_US_EQ", "BUY", 3600.0)
+    with pytest.raises(ProviderError):
+        tp._signed_qty("BUY", True)
+    with pytest.raises(ProviderError):
+        tp._send_order("AAPL_US_EQ", "BUY", 1.0, True, market=False)
+    with pytest.raises(ProviderError):
+        tp.order_status("AAPL_US_EQ", True)
+    with pytest.raises(ProviderError):
+        tp.order_status("AAPL_US_EQ", "OID1")
+    with pytest.raises(ProviderError):
+        tp.cancel_order("AAPL_US_EQ", True)
+
+def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_before_iter50_s1():
+    """[ITER50 #1] T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP."""
+    import os
+    import sys
+    import pytest
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        import market_data as t212_md
+        _ = t212_md
+        import strategy as t212_strat
+        import replay as t212_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 1. T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP
+    cli = t212c.T212Client("k", "s", env="demo", min_gap_sec=True, portfolio_ttl_sec=float("nan"), order_min_gap_sec=-1.0)
+    assert cli._min_gap == 0.0
+    assert cli._pf_ttl == 6.0
+    assert cli._order_min_gap == 0.0
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", True, 100.0)
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", 1.0, float("nan"))
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", 0.001, 100.0)  # rounds to 0.0
+    with pytest.raises(ValueError):
+        cli.place_market_order("NVDA_US_EQ", False)
+    with pytest.raises(ValueError):
+        cli.place_market_order("NVDA_US_EQ", float("inf"))
+
+def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__portfolio_position_step_iter50_s2():
+    """[ITER50 #2] 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        import market_data as t212_md
+        _ = t212_md
+        import strategy as t212_strat
+        import replay as t212_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 2. 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(True, 10.0, 5)
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(2.0, 10.0, True)
+    assert t212_strat.adapt_ladder_rungs([(2.0, 0.5), (4.0, 0.5)], float("nan")) == []
+    assert t212_strat.adapt_ladder_rungs([(2.0, 0.5), (4.0, 0.5)], True) == []
+
+    params = t212_strat.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=0.5,
+        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=5.0,
+        takeprofit_pct=3.0, max_budget=500.0, max_dca_buys=5,
+        validity="GOOD_TILL_CANCEL", enable_takeprofit=True,
+        order_ttl_min=60.0, stop_loss_pct=10.0, yahoo_sym="NVDA",
+    )
+    dummy_cli = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": float("nan"), "averagePrice": 120.0}],
+        list_active_orders=lambda: [],
+    )
+    st = t212_strat.Strategy(dummy_cli, "NVDA_US_EQ", params, dry_run=True, fx_to_usd=1.0, clock=lambda: 1000.0)
+    assert st._portfolio_position() is None
+    st.s["qty"] = 2.0
+    st.s["cost_usd"] = float("nan")
+    assert st._avg() is None
+    assert st.reconcile(float("nan")) is False
+    assert st.reconcile(True) is False
+    st.step(float("nan"))
+    st.step(True)
+
+def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s3():
+    """[ITER50 #3] 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf."""
+    import os
+    import sys
+    import pytest
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        import market_data as t212_md
+        _ = t212_md
+        import strategy as t212_strat
+        import replay as t212_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    # 3. 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(True, 3)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(float("nan"), 3)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates([1.0, float("inf"), 1.0], 3)
+    assert t212_rep._md.compute_ols_slope_pct([True] * 10, bars=12) is None
+    assert t212_rep._md.compute_ols_slope_pct([float("nan")] * 10, bars=12) is None
+
+def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fee_iter51_s6(monkeypatch):
+    """[ITER51 #6] T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    from providers.t212_provider import T212Provider
+    # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
+    tp = T212Provider()
+    fake_t212 = SimpleNamespace(
+        get_order_status=lambda oid: {
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": "nan",
+            "filledValue": 100.0,
+            "fee": 0.0,
+        }
+    )
+    monkeypatch.setattr(tp, "_client", lambda: fake_t212)
+    with pytest.raises(ProviderError):
+        tp.order_status("NVDA_US_EQ", "ORD1")
+
+def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconcile_record_iter53_s1():
+    """[ITER53 #1] 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "order_manager")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import order_manager as t212_om
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    cli_nan_pf = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": float("nan")}])
+    assert t212_om._portfolio_qty(cli_nan_pf, "NVDA_US_EQ") is None
+    cli_bool_pf = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": True}])
+    assert t212_om._portfolio_qty(cli_bool_pf, "NVDA_US_EQ") is None
+
+    cli_orders = SimpleNamespace(
+        list_active_orders=lambda: [
+            {"ticker": "NVDA_US_EQ", "quantity": True, "limitPrice": 100.0},
+            {"ticker": "NVDA_US_EQ", "quantity": 1.0, "limitPrice": float("nan")},
+        ]
+    )
+    assert t212_om._matching_active_orders(cli_orders, {"ticker": "NVDA_US_EQ", "qty": 1.0, "limit_price": 100.0}) == []
+    assert t212_om._matching_active_orders(cli_orders, {"ticker": "NVDA_US_EQ", "qty": True, "limit_price": 100.0}) is None
+
+def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57_s4():
+    """[ITER57 #4] 212trading/strategy.py generate_tp_ladder & _active_order_identity."""
+    import pytest
+    # 4. 212trading/strategy.py generate_tp_ladder & _active_order_identity
+    import os
+    import sys
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as strat_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    with pytest.raises(ValueError, match="min_pct > -100"):
+        strat_mod.generate_tp_ladder(-100.0, 10.0, 3, curve="geometric")
+    with pytest.raises(ValueError, match="min_pct > -100"):
+        strat_mod.generate_tp_ladder(-150.0, 10.0, 3, curve="geometric")
+
+    ticker, side, qty, limit = strat_mod.Strategy._active_order_identity({
+        "ticker": "AAPL",
+        "quantity": True,
+        "limitPrice": float("nan"),
+    })
+    assert ticker == "AAPL"
+    assert qty is None
+    assert limit is None
+
+def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
+    """[ITER58 #6] 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER."""
+    import pytest
+    import os
+    import sys
+    # 6. 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as strat_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    base_env = {
+        "STRATEGY_MODE": "avg_tp",
+        "STRAT_TP_LADDER": "5:nan,10:50",
+        "STRAT_MAX_BUDGET": "1000",
+        "STRAT_ENTRY_PCT": "10",
+        "STRAT_DCA_PCT": "10",
+        "STRAT_MAX_DCA_BUYS": "5",
+    }
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
+        strat_mod.StratParams.from_env(base_env)
+
+def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61_s2(monkeypatch):
+    """[ITER61 #2] T212Provider.free_balance('EUR') converts RON using usd_ron * eur_usd, and order_status rejects negative fee."""
+    import pytest
+    from unittest.mock import MagicMock
+    from providers.t212_provider import T212Provider, ProviderError
+    # 2. T212Provider.free_balance("EUR") converts RON using usd_ron * eur_usd, and order_status rejects negative fee
+    fake_cli = MagicMock()
+    fake_cli.get_cash.return_value = {"free": 496.8}
+    tp = T212Provider(client=fake_cli, live_enabled=False)
+    fake_md = MagicMock()
+    fake_md.get_usd_ron.return_value = 4.60
+    fake_md.get_eur_usd.return_value = 1.08
+    monkeypatch.setattr("importlib.import_module", lambda name: fake_md if name == "212trading.market_data" else __import__(name))
+    assert tp.free_balance("USD") == pytest.approx(108.0)
+    assert tp.free_balance("EUR") == pytest.approx(100.0)
+
+    fake_cli.get_order_status.return_value = {
+        "status": "FILLED",
+        "ticker": "NVDA_US_EQ",
+        "filledQuantity": 1.0,
+        "filledValue": 100.0,
+        "fee": -1.5,
+    }
+    with pytest.raises(ProviderError, match="invalid fill values"):
+        tp.order_status("NVDA_US_EQ", "ord-1")
+
+def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4():
+    """[ITER69 #4] 212trading.market_data & 212trading.strategy.generate_tp_ladder."""
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t212_dir = os.path.join(repo_root, "212trading")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
+            sys.modules.pop(m, None)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    t212_md = _load_mod("_t212_market_data_69", os.path.join(t212_dir, "market_data.py"), t212_dir)
+    t212_strat = _load_mod("_t212_strategy_69", os.path.join(t212_dir, "strategy.py"), t212_dir)
+    # 4. 212trading.market_data & 212trading.strategy.generate_tp_ladder
+    with pytest.raises(ValueError):
+        t212_md.parse_interval_minutes(None)
+    assert t212_md.t212_to_yahoo(None) == ""
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(1.0, 10.0, steps=2.5)
+    ladder = t212_strat.generate_tp_ladder(1.0, 5.0, steps=2.0)
+    assert len(ladder) == 2
+
+def test_212trading_t212_bot_verify_instrument_isin_tolerates_non_dict_items_in_iter70_s2():
+    """[ITER70 #2] 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list."""
+    import importlib.util
+    import os
+    import sys
+    from types import SimpleNamespace
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t212_dir = os.path.join(repo_root, "212trading")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    t212_bot = _load_mod("_t212_bot_70", os.path.join(t212_dir, "t212_bot.py"), t212_dir)
+    # 2. 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list
+    dummy_t212 = SimpleNamespace(list_instruments=lambda: ["bad-item", {"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+    assert t212_bot.verify_instrument_isin(dummy_t212, "NVDA_US_EQ", "US67066G1040") is True
+
+def test_t212_continuous_grid_report_g_safely_rejects_non_dict_sub_iter75_s3():
+    """[ITER75 #3] t212_continuous_grid.report.g safely rejects non-dict sub-entries, bools, and NaN."""
+    from offline.research.t212_continuous_grid import report as t_rep
+    # 3. t212_continuous_grid.report.g safely rejects non-dict sub-entries, bools, and NaN
+    assert t_rep.g({"1h": "corrupt"}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": True}}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": float("nan")}}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": 4.5}}, "1h", "ret") == 4.5
+
+def test_t212provider__definitive_submit_failure_and_pair_precision_safety_iter87_s3():
+    """[ITER87 #3] T212Provider._definitive_submit_failure and pair_precision safety."""
+    from providers.t212_provider import T212Provider, _definitive_submit_failure
+    # 3. T212Provider._definitive_submit_failure and pair_precision safety
+    assert _definitive_submit_failure(None, "order rejected by venue") is True
+    assert _definitive_submit_failure(True, "timeout") is False
+    tp = T212Provider()
+    assert tp.pair_precision("   ") is None
+    assert tp.pair_precision(True) is None
+    assert tp.pair_precision("  AAPL_US_EQ  ").base_asset == "AAPL_US_EQ"
+
+def test_t212client_validates_env_ticker_timevalidity_and_get_historical_order_rejects_iter90_s3():
+    """[ITER90 #3] T212Client validates env/ticker/timeValidity and get_historical_order rejects None order_id."""
+    import importlib
+    import pytest
+    # 3. T212Client validates env/ticker/timeValidity and get_historical_order rejects None order_id
+    t212_mod = importlib.import_module("212trading.t212_client")
+    T212Client = t212_mod.T212Client
+    tc = T212Client("k", "s", env=" DEMO ", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    assert tc.env == "demo"
+    with pytest.raises(ValueError, match="invalid T212 ticker"):
+        tc.place_limit_order("   ", 1.0, 100.0, validity="DAY")
+    with pytest.raises(ValueError, match="invalid T212 timeValidity"):
+        tc.place_limit_order("AAPL_US_EQ", 1.0, 100.0, validity="GTC")
+    assert tc.get_historical_order(None) is None
+    assert tc.get_historical_order(True) is None
+
+def test_212trading_market_data_validation_future_timestamp_protection_iter91_s2(monkeypatch):
+    """[ITER91 #2] 212trading.market_data validation & future-timestamp protection."""
+    import importlib
+    import pytest
+    # 2. 212trading.market_data validation & future-timestamp protection
+    t212_md = importlib.import_module("212trading.market_data")
+    assert t212_md.t212_to_yahoo(True) == ""
+    assert t212_md.t212_to_yahoo(" nvda_us_eq ") == "NVDA"
+    with pytest.raises(ValueError, match="invalid symbol"):
+        t212_md.fetch_yahoo_candles("  ", "5d", "5m")
+    with pytest.raises(ValueError, match="invalid range"):
+        t212_md.fetch_yahoo_candles("NVDA", True, "5m")
+
+    # Future timestamp (>60s ahead) in check_market must not trigger fresh_series / really_trading
+    import time as _time
+    future_ts = _time.time() + 86400.0
+    monkeypatch.setattr(
+        t212_md,
+        "_chart",
+        lambda sym, rng="1d", interval="5m": (
+            {"marketState": 12345, "regularMarketPrice": 100.0, "regularMarketVolume": 0, "regularMarketTime": future_ts},
+            [(future_ts, 100.0, 500.0), (future_ts + 60, 102.0, 500.0)],
+        ),
+    )
+    cm_res = t212_md.check_market("SPCX")
+    assert cm_res["state"] == "?"
+    assert cm_res["launched"] is False
+    assert cm_res["trading"] is False
+
+def test_212trading_order_manager_ticker_validity_validation_iter91_s3():
+    """[ITER91 #3] 212trading.order_manager ticker/validity validation."""
+    import importlib
+    # 3. 212trading.order_manager ticker/validity validation
+    t212_om = importlib.import_module("212trading.order_manager")
+    assert t212_om.place_order_with_retry(None, "", 1.0, 100.0, "DAY", True) is False
+    assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, None, True) is False
+
+def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_import_isolation_iter94_s1(monkeypatch):
+    """[ITER94 #1] T212Client get_order_status / cancel_order & 212trading.t212_bot relative import isolation & verify_instrument_isin validation."""
+    import importlib
+    import importlib.util
+    import sys
+    # 1. T212Client get_order_status / cancel_order
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+    cli = t212_client_mod.T212Client(
+        "k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0
+    )
+    assert cli.get_order_status("") is None
+    assert cli.get_order_status(True) is None
+    assert cli.cancel_order("  ") is False
+    assert cli.cancel_order(False) is False
+
+
+    # 2. 212trading.t212_bot relative import isolation & verify_instrument_isin validation
+    monkeypatch.setitem(sys.modules, "strategy", object())
+    t212_bot_mod = importlib.import_module("212trading.t212_bot")
+    assert t212_bot_mod.verify_instrument_isin(cli, "", "US123") is False
+    assert t212_bot_mod.verify_instrument_isin(cli, True, "US123") is False
+    assert t212_bot_mod.verify_instrument_isin(cli, "SPCX_US_EQ", "") is True
+
+def test_t212provider_string_live_enabled_empty_symbol_in__position_and_iter95_s1():
+    """[ITER95 #1] T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders."""
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+    # 1. T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders
+    t212_p = T212Provider(
+        client=type("C", (), {"get_portfolio": lambda self: [{"ticker": "", "quantity": 10.0, "averagePrice": 50.0}]})(),
+        live_enabled="false",
+    )
+    assert t212_p.execution_enabled() is False
+    assert t212_p._position("") is None
+    with pytest.raises(ProviderError, match="invalid symbol"):
+        t212_p._position("  ", strict=True)
+    assert t212_p.get_orders("SPCX_US_EQ", True, 3600.0) == []
+    assert t212_p.get_orders("SPCX_US_EQ", "INVALID", 3600.0) == []
+
+def test_212trading_ipo_import_works_even_when_212trading_is_iter103_s5():
+    """[ITER103 #5] 212trading.ipo import works even when 212trading is not at sys.path[0]."""
+    import importlib
+    # 5. 212trading.ipo import works even when 212trading is not at sys.path[0]
+    mod_ipo = importlib.import_module("212trading.ipo")
+    assert hasattr(mod_ipo, "wait_for_launch")
+
+def test_t212provider_iter111_s3():
+    """[ITER111 #3] T212Provider."""
+    import pytest
+    from providers.base import ProviderError
+    import providers.t212_provider as tp
+    # 3. T212Provider
+    t_prov = tp.T212Provider.__new__(tp.T212Provider)
+    assert t_prov.free_balance(True) is None
+    assert t_prov.free_balance("   ") is None
+    with pytest.raises(ProviderError):
+        t_prov._signed_qty(True, 1.0)
+    assert t_prov.pair_precision(123) is None
+    assert t_prov.pair_precision("   ") is None
+
+def test_212trading_market_data__chart_url_encodes_symbol_range_and_iter117_s5(monkeypatch):
+    """[ITER117 #5] 212trading.market_data._chart URL-encodes symbol, range, and interval."""
+    import importlib
+    # 5. 212trading.market_data._chart URL-encodes symbol, range, and interval
+    t212_md = importlib.import_module("212trading.market_data")
+    called_urls = []
+    monkeypatch.setattr(t212_md, "http_get", lambda url, **_kw: called_urls.append(url) or (0, b""))
+    t212_md._chart("BRK/B?x=1", rng="5d&foo=1", interval="5m#bar")
+    assert len(called_urls) == 1
+    assert "BRK%2FB%3Fx%3D1" in called_urls[0]
+    assert "range=5d%26foo%3D1" in called_urls[0]
+    assert "interval=5m%23bar" in called_urls[0]
+
+def test_212trading_order_manager__persist_marker_and_integer_sanitization_iter117_s6(monkeypatch, tmp_path):
+    """[ITER117 #6] 212trading.order_manager._persist_marker and integer sanitization."""
+    import importlib
+    # 6. 212trading.order_manager._persist_marker and integer sanitization
+    t212_om = importlib.import_module("212trading.order_manager")
+    marker_path = tmp_path / "marker.json"
+    monkeypatch.setattr(t212_om, "_marker_path", lambda _t, test=False: str(marker_path))
+    t212_om._persist_marker({"version": 2, "ticker": "SPCX_US_EQ"}, str(marker_path))
+    assert marker_path.exists()
+
+def test_periods_per_year_rejects_nan_inf_bool_and_non_positive_iter136_s1():
+    """[ITER136 #1] periods_per_year rejects NaN, inf, bool, and non-positive values."""
+    import pytest
+    from offline.runners.t212_walk_forward_baseline import periods_per_year
+    # 1. periods_per_year rejects NaN, inf, bool, and non-positive values
+    for bad_im in (float("nan"), float("inf"), -10, 0, True, "bad"):
+        with pytest.raises(ValueError, match="interval_minutes must be positive"):
+            periods_per_year(bad_im)  # type: ignore[arg-type]
+    assert periods_per_year(1440) == pytest.approx(252.0)
+
+def test_fx_quote_normalizes_whitespace_casing_and_rejects_empty_boolean_iter136_s2():
+    """[ITER136 #2] fx_quote normalizes whitespace/casing and rejects empty/boolean currency."""
+    import pytest
+    from offline.runners.t212_walk_forward_baseline import fx_quote
+    # 2. fx_quote normalizes whitespace/casing and rejects empty/boolean currency
+    assert fx_quote(" ron ") == ("USDRON=X", True)
+    assert fx_quote(" eur ") == ("EURUSD=X", False)
+    for bad_ccy in ("", "   ", None, True):
+        with pytest.raises(ValueError, match="currency must be a non-empty string"):
+            fx_quote(bad_ccy)  # type: ignore[arg-type]
+
+def test_t212_client_mod_clean_order_id_normalizes_integer_floats_and_rejects_sentinel_iter138_s1():
+    """[ITER138 #1] t212_client_mod.clean_order_id normalizes integer floats and rejects sentinel strings / containers."""
+    import importlib
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+    T212Client = t212_client_mod.T212Client
+    # 1. t212_client_mod.clean_order_id normalizes integer floats and rejects sentinel strings / containers
+    assert t212_client_mod.clean_order_id(12345.0) == "12345"
+    assert t212_client_mod.clean_order_id(" 999 ") == "999"
+    for bad in ("nan", "null", "none", "inf", 12.5, ["123"], {"id": 1}, True, None):
+        assert t212_client_mod.clean_order_id(bad) is None
+
+    cli = T212Client("test-key", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    assert cli.get_order_status("nan") is None
+    assert cli.get_order_status(["123"]) is None
+    assert cli.cancel_order("null") is False
+    assert cli.cancel_order({"id": 1}) is False
+
+def test_t212provider_order_status_and_cancel_order_accept_integer_floats_while_iter138_s2():
+    """[ITER138 #2] T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers."""
+    import pytest
+    from types import SimpleNamespace
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+    # 2. T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers
+    seen_ids = []
+    fake_cli = SimpleNamespace(
+        get_order_status=lambda oid: (
+            seen_ids.append(("status", oid))
+            or {"id": oid, "ticker": "NVDA_US_EQ", "status": "FILLED", "filledQuantity": 1.0, "filledValue": 100.0}
+        ),
+        cancel_order=lambda oid: seen_ids.append(("cancel", oid)) or True,
+        place_limit_order=lambda ticker, qty, px, validity="DAY": (200, {"id": 777.0, "status": "NEW"}),
+    )
+    prov = T212Provider(client=fake_cli, live_enabled=True, order_validity="DAY")
+    st = prov.order_status("NVDA_US_EQ", 555.0)  # type: ignore[arg-type]
+    assert st.status == "closed"
+    prov.cancel_order("NVDA_US_EQ", 555.0)  # type: ignore[arg-type]
+    assert seen_ids == [("status", "555"), ("cancel", "555")]
+
+    for bad_oid in ("nan", "null", ["555"], {"id": 555}, True, None):
+        with pytest.raises(ProviderError):
+            prov.order_status("NVDA_US_EQ", bad_oid)  # type: ignore[arg-type]
+        with pytest.raises(ProviderError):
+            prov.cancel_order("NVDA_US_EQ", bad_oid)  # type: ignore[arg-type]
+
+    placed = prov.place_order("NVDA_US_EQ", "BUY", 100.0, 1.0)
+    assert placed["orderId"] == "777"
+
+def test__sanitize_t212_state_parses_string_boolean_flags_false_false_and_iter140_s1():
+    """[ITER140 #1] _sanitize_t212_state parses string boolean flags ('false'/'0' -> False) and cleans order IDs & levels."""
+    import pytest
+    import importlib
+    strat_mod = importlib.import_module("212trading.strategy")
+    _sanitize_t212_state = strat_mod._sanitize_t212_state
+    # 1. _sanitize_t212_state parses string boolean flags ("false"/"0" -> False) and cleans order IDs & levels
+    raw_state = {
+        "tr_alerted": "false",
+        "tr_armed": "0",
+        "sl_alerted": "false",
+        "sl_pending": "0",
+        "pending_submit": {
+            "side": "BUY",
+            "qty": 1.0,
+            "limit": 100.0,
+            "intent_id": "intent-1",
+            "market": "false",
+            "level": "5.0",
+            "portfolio_fill_observed": "0",
+        },
+        "orders": [
+            {
+                "id": 12345.0,
+                "side": "SELL",
+                "qty": 2.0,
+                "limit": 110.0,
+                "market": "false",
+                "level": "7.5",
+                "cancel_requested": "false",
+                "dca_counted": "0",
+                "intent_id": "nan",
+            },
+            {"id": "nan", "side": "BUY", "qty": 1.0, "limit": 95.0},
+            {"id": ["bad"], "side": "BUY", "qty": 1.0, "limit": 95.0},
+        ],
+    }
+    clean = _sanitize_t212_state(raw_state)
+    assert clean["tr_alerted"] is False
+    assert clean["tr_armed"] is False
+    assert clean["sl_alerted"] is False
+    assert clean["sl_pending"] is False
+    assert clean["pending_submit"]["market"] is False
+    assert clean["pending_submit"]["level"] == pytest.approx(5.0)
+    assert clean["pending_submit"]["portfolio_fill_observed"] is False
+    assert len(clean["orders"]) == 1
+    ord0 = clean["orders"][0]
+    assert ord0["id"] == "12345"
+    assert ord0["market"] is False
+    assert ord0["level"] == pytest.approx(7.5)
+    assert ord0["cancel_requested"] is False
+    assert ord0["dca_counted"] is False
+    assert ord0["intent_id"] is None
+
+    # Sentinel intent_id in pending_submit invalidates the corrupted pending_submit
+    bad_ps = _sanitize_t212_state(
+        {"pending_submit": {"side": "BUY", "qty": 1.0, "limit": 100.0, "intent_id": "null"}}
+    )
+    assert bad_ps["pending_submit"] is None
+
+def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
+    """[ITER150 #2] 212trading/analyze_volatility.py pct & pullbacks."""
+    import importlib.util
+    import os
+    # 2. 212trading/analyze_volatility.py pct & pullbacks
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    av_spec = importlib.util.spec_from_file_location("t212_av_t150", os.path.join(root, "212trading", "analyze_volatility.py"))
+    av_mod = importlib.util.module_from_spec(av_spec)
+    assert av_spec and av_spec.loader
+    av_spec.loader.exec_module(av_mod)
+
+    assert av_mod.pct(True, 100.0) == 0.0
+    assert av_mod.pct(100.0, float("nan")) == 0.0
+    assert av_mod.pct(100.0, -5.0) == 0.0
+    assert av_mod.pullbacks([True, float("nan"), -10.0, 100.0, 80.0, 105.0]) == [20.0]
+
+def test_t212provider__orders_live_rejects_nan_false_containers_iter152_s3():
+    """[ITER152 #3] T212Provider _orders_live rejects NaN / 'false' / containers."""
+    from providers.t212_provider import T212Provider, _parse_bool_flag as t212_bool
+    # 3. T212Provider _orders_live rejects NaN / "false" / containers
+    assert t212_bool("false", True) is False
+    assert t212_bool(float("nan"), False) is False
+    assert T212Provider(live_enabled="false").execution_enabled() is False  # type: ignore[arg-type]
+    assert T212Provider(live_enabled=float("nan")).execution_enabled() is False  # type: ignore[arg-type]
+    assert T212Provider(live_enabled="true").execution_enabled() is True  # type: ignore[arg-type]
+
+def test_t212provider__position_none_strict_false_returns_none_without_iter164_s4():
+    """[ITER164 #4] T212Provider: _position(None, strict='false') returns None without raising ProviderError."""
+    from types import SimpleNamespace
+    from providers.t212_provider import T212Provider
+    # 4. T212Provider: _position(None, strict="false") returns None without raising ProviderError
+    tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
+    assert tp._position(None, strict="false") is None
+
+def test_t212provider__signed_qty_aliases_and_positional_force_in_place_order_iter169_s4():
+    """[ITER169 #4] T212Provider _signed_qty aliases and positional force in place_order."""
+    import pytest
+    from providers import t212_provider as t212p
+    # 4. T212Provider _signed_qty aliases and positional force in place_order
+    assert t212p.T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)
+    assert t212p.T212Provider._signed_qty("ASK", 1.234) == pytest.approx(-1.23)
+
+    class _FakeT212Client:
+        def place_market_order(self, symbol, signed_qty, extended_hours=False):
+            return 200, {"id": 98765, "quantity": signed_qty}
+
+    t212 = t212p.T212Provider(client=_FakeT212Client(), live_enabled="y")
+    res_t212 = t212.place_order("AAPL_US_EQ", "LONG", 180.0, 1.5, True)
+    assert res_t212["orderId"] == "98765" and res_t212["quantity"] == pytest.approx(1.5)

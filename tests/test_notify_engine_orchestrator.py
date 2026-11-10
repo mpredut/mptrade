@@ -1604,7 +1604,415 @@ class EmailMirrorTest(unittest.TestCase):
             guard_alert = [{"name": "🛡 [VETO] Would Block BUY TAOUSDC", "source": "macro_shadow"}]
             self.assertEqual(_dedup_seconds(guard_alert, False), 1800)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_pricechecker__should_send_alert_recovers_from_nan_bool_last_time_and_iter55_s3():
+    """[ITER55 #3] PriceChecker._should_send_alert recovers from NaN/bool last_time and cooldown_minutes."""
+    from market_monitor.pricechecker import PriceChecker
+    # 3. PriceChecker._should_send_alert recovers from NaN/bool last_time and cooldown_minutes
+    checker = PriceChecker(cachePriceAll=None, config={"cooldown_minutes": float("nan")})
+    checker._last_alert_time["BTC_up"] = float("nan")
+    assert checker._should_send_alert("BTC", "up") is True
+    checker._last_alert_time["BTC_up"] = True
+    assert checker._should_send_alert("BTC", "up") is True
 
+def test_portfolio_snapshot_kraken_rows_handles_nan__kraken_price_and_none_orders_iter56_s1(monkeypatch):
+    """[ITER56 #1] portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError."""
+    import verify_tools.portfolio_snapshot as ps_mod
+    # 1. portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError
+    monkeypatch.setattr(ps_mod, "_load_state", lambda pair: {"qty": 2.0, "cost": 100.0, "orders": None})
+    monkeypatch.setattr(ps_mod, "_kraken_price", lambda pair: float("nan"))
+    rows = ps_mod.kraken_rows()
+    assert len(rows) == len(ps_mod.KRAKEN_PAIRS)
+    assert rows[0]["value_usd"] == 0.0
+    assert rows[0]["open_orders"] == 0
 
+def test_dexscreenersource_refresh_rejects_bool_nan_listedat_and_newcoinsmonitor_iter56_s2(monkeypatch):
+    """[ITER56 #2] DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols."""
+    from unittest.mock import MagicMock
+    from market_monitor.new_coins_discovery import DexScreenerSource, NewCoinsMonitor
+    # 2. DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "profiles": [
+            {"symbol": "ABC", "listedAt": True},
+            {"symbol": "DEF", "listedAt": "nan"},
+            {"symbol": "GHI", "listedAt": 1700000000000},
+        ]
+    }
+    monkeypatch.setattr("market_monitor.new_coins_discovery.requests.get", lambda *a, **kw: fake_resp)
+    dex = DexScreenerSource()
+    by_sym = {c["symbol"]: c["added_at"] for c in dex._cache}
+    assert by_sym["ABC"] is None
+    assert by_sym["DEF"] is None
+    assert by_sym["GHI"] is not None
+
+    dummy_pm = MagicMock()
+    dummy_pm.max_monitored_symbols = None
+    dummy_pm.original_symbols = []
+    dummy_pm.active_symbols = set()
+    ncm = NewCoinsMonitor.__new__(NewCoinsMonitor)
+    ncm.price_monitor = dummy_pm
+    assert ncm.add_new_coin_to_watchlist({"symbol": "NEWCOIN", "name": "NewCoin"}) is True
+
+def test_fleethealthmonitor_handles_bool_nan_now_list_null_json_iter56_s3(tmp_path):
+    """[ITER56 #3] FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision."""
+    import json
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+    # 3. FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
+    cachedb = tmp_path / "cachedb"
+    cachedb.mkdir(parents=True, exist_ok=True)
+    (cachedb / "geopolitical_eval.json").write_text("[]", encoding="utf-8")
+    (cachedb / "auto_cryptotrade_executor_eval.json").write_text(
+        json.dumps({"mode": "enforce", "market_trading_decision": None}),
+        encoding="utf-8",
+    )
+    aom = FleetHealthMonitor(workspace_dir=str(tmp_path))
+    assert aom.check_processes(now=float("nan")) == []
+    assert aom.check_processes(now=True) == []
+    s_stat = aom.gather_sensor_status()
+    assert "geopolitical_threat" not in s_stat
+    assert s_stat["supervisor_eval"]["decision"] == "HOLD"
+
+def test_visuals_drawprices_py_to_series_and_min_max_scale_iter57_s2():
+    """[ITER57 #2] visuals/drawprices.py to_series and min_max_scale."""
+    import pytest
+    import numpy as np
+    from visuals.drawprices import to_series, min_max_scale
+    # 2. visuals/drawprices.py to_series and min_max_scale
+    ts, prices, dt = to_series([
+        (1700000000000, 100.0),
+        (10**22, 105.0),
+        (True, 102.0),
+        (1700000060000, float("nan")),
+    ])
+    assert len(ts) == 1
+    assert prices[0] == pytest.approx(100.0)
+    assert len(dt) == 1
+    scaled, vmin, vmax = min_max_scale(np.array([1.0, float("nan"), 3.0]))
+    assert np.allclose(scaled, 0.5)
+    assert vmin == 0.0 and vmax == 0.0
+
+def test_mailer__config_rejects_out_of_range_tcp_ports_iter66_s4(monkeypatch):
+    """[ITER66 #4] mailer._config rejects out-of-range TCP ports (<= 0 or > 65535)."""
+    from notify_engine import mailer
+    # 4. mailer._config rejects out-of-range TCP ports (<= 0 or > 65535)
+    monkeypatch.setenv("SMTP_USERNAME", "user@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("ALERT_TO_EMAIL", "dest@example.com")
+    monkeypatch.setenv("SMTP_PORT", "70000")
+    assert mailer._config() is None
+    monkeypatch.setenv("SMTP_PORT", "0")
+    assert mailer._config() is None
+    monkeypatch.setenv("SMTP_PORT", "587")
+    cfg = mailer._config()
+    assert cfg is not None and cfg["port"] == 587
+
+def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__safe_days_back_iter66_s5():
+    """[ITER66 #5] PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back."""
+    from types import SimpleNamespace
+    import pytest
+    from market_monitor.pricechecker import PriceChecker
+    from market_monitor.new_coins_discovery import _safe_days_back, safe_float as _safe_num
+    # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
+    assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)
+    checker = PriceChecker(SimpleNamespace(original_symbols=[]))
+    with pytest.raises(ValueError):
+        checker.start_monitoring("not-a-number")
+    assert _safe_days_back(1e12) == 3650.0
+    assert _safe_num(10**400, 1.5) == 1.5
+
+def test_discovery_news_imports_cleanly_without_executing_http_calls_iter77_s1(monkeypatch):
+    """[ITER77 #1] discovery.news imports cleanly without executing HTTP calls, and get_binance_coins strips only trailing USDT."""
+    from discovery import news as d_news
+    # 1. discovery.news imports cleanly without executing HTTP calls, and get_binance_coins strips only trailing USDT
+    class _DummyResp:
+        def json(self):
+            return [
+                {"symbol": "BTCUSDT", "price": "65000.0"},
+                {"symbol": "USDTB", "price": "1.0"},
+            ]
+
+    monkeypatch.setattr(d_news.requests, "get", lambda url, timeout=15, **kw: _DummyResp())
+    b_map = d_news.get_binance_coins()
+    assert b_map["BTC"] == 65000.0
+    assert b_map["USDTB"] == 1.0
+
+def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3():
+    """[ITER77 #3] visuals.drawprices get_cache_for_symbol and min_max_inverse."""
+    import numpy as np
+    from visuals import drawprices
+    # 3. visuals.drawprices get_cache_for_symbol and min_max_inverse
+    assert drawprices.get_cache_for_symbol("__NON_EXISTENT_SYMBOL__") == []
+    inv_nan = drawprices.min_max_inverse(np.array([0.2, 0.8]), float("nan"), 10.0)
+    assert np.all(inv_nan == 0.0)
+    inv_bool = drawprices.min_max_inverse(np.array([0.2, 0.8]), True, 10.0)
+    assert np.all(inv_bool == 0.0)
+
+def test_notify_engine_server_process_line_handles_none_bool_negative_cooldown_minutes_iter77_s4():
+    """[ITER77 #4] notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time."""
+    import re
+    from notify_engine.server import NotificationServer
+    # 4. notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time
+    from collections import defaultdict
+    svc = NotificationServer.__new__(NotificationServer)
+    svc.traceback_buffers = defaultdict(list)
+    svc.rules = [
+        {
+            "name": "TestRule",
+            "regex_obj": re.compile(r"CRITICAL_TEST"),
+            "cooldown_minutes": None,
+            "topic_category": "ERROR",
+            "priority": "urgent",
+        }
+    ]
+    svc.cooldowns = {"bot_TestRule": 9e15}  # corrupted future timestamp
+    svc._resolve_topic = lambda cat: "test_topic"
+    sent = []
+    svc._gate_and_send_ntfy = lambda title, body, prio, topic, **kw: sent.append((title, body, topic))
+    svc.process_line("CRITICAL_TEST happened", "bot")
+    assert len(sent) == 1
+
+def test_pricechecker__get_thresholds_for_symbol_handles_partial_or_invalid_per_coin_dicts_iter78_s1():
+    """[ITER78 #1] PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts."""
+    from market_monitor.pricechecker import PriceChecker, PriceAlert, PRICE_ALERT_CONFIG
+    # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
+    class _DummyCache:
+        symbol_added_time = {}
+
+    checker = PriceChecker(
+        _DummyCache(),
+        config={
+            "per_coin": {
+                "BTC": {"up_percent": 2.5},  # missing down_percent
+                "ETH": {"up_percent": True, "down_percent": -5.0},
+            }
+        },
+    )
+    btc_th = checker._get_thresholds_for_symbol("BTCUSDC")
+    assert btc_th["up_percent"] == 2.5
+    assert btc_th["down_percent"] == PRICE_ALERT_CONFIG["default"]["down_percent"]
+    eth_th = checker._get_thresholds_for_symbol("ETHUSDC")
+    assert eth_th["up_percent"] == PRICE_ALERT_CONFIG["default"]["up_percent"]
+    assert eth_th["down_percent"] == PRICE_ALERT_CONFIG["default"]["down_percent"]
+
+    pa = PriceAlert("BTCUSDC", "up", 65000.0, 62000.0, 4.84, 4.1)
+    pa.timestamp = 1e20
+    assert "BTCUSDC" in str(pa)
+    assert pa.to_dict()["symbol"] == "BTCUSDC"
+
+def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter79_s1(tmp_path):
+    """[ITER79 #1] alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings."""
+    import pytest
+    from market_monitor import alerts_config
+    # 1. alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings
+    with pytest.raises(ValueError):
+        alerts_config._pair("6 / 10 / 15")
+    with pytest.raises(ValueError):
+        alerts_config._pair("6")
+
+    bad_cfg = tmp_path / "bad_alerts.conf"
+    bad_cfg.write_text(
+        "watch = BTC\n"
+        "sources = coinmarketcap\n"
+        "discover_new_coins = yes\n"
+        "default = 4 / 8\n"
+        "new_coin = 12 / 25\n"
+        "cooldown_minutes = 30\n"
+        "lookback_hours = 24\n"
+        "max_monitored = 3.5\n"
+        "max_new_coins = 5\n"
+        "new_coins_scan_seconds = 3600\n"
+        "price_scan_seconds = 60\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid alert configuration for max_monitored"):
+        alerts_config.load_config(str(bad_cfg))
+
+def test_alerts_config_resolve_normalizes_case_and_handles_none_per_coin_iter79_s2():
+    """[ITER79 #2] alerts_config.resolve normalizes case and handles None per_coin."""
+    from market_monitor import alerts_config
+    # 2. alerts_config.resolve normalizes case and handles None per_coin
+    ac = {
+        "default": {"up_percent": 4.0, "down_percent": 8.0},
+        "dynamic": {"up_percent": 12.0, "down_percent": 25.0},
+        "per_coin": {"BTC": {"up_percent": 6.0, "down_percent": 10.0}},
+    }
+    assert alerts_config.resolve(ac, "btcusdc", False) == {"up_percent": 6.0, "down_percent": 10.0}
+    assert alerts_config.resolve({"default": ac["default"], "dynamic": ac["dynamic"], "per_coin": None}, "ETH", False) == ac["default"]
+
+def test_gen_alert_thresholds__perc_and_suggest_input_validation_iter79_s3():
+    """[ITER79 #3] gen_alert_thresholds._perc and suggest input validation."""
+    from verify_tools import gen_alert_thresholds
+    # 3. gen_alert_thresholds._perc and suggest input validation
+    assert gen_alert_thresholds._perc([], 85) == 0.0
+    assert gen_alert_thresholds.suggest("BTC", days=False) is None
+    assert gen_alert_thresholds.suggest("BTC", days=-5) is None
+    assert gen_alert_thresholds.suggest("BTC", days=float("nan")) is None
+
+def test_watchdog_common_send_ntfy_strips_inline_comments_and_handles_full_iter120_s3(monkeypatch):
+    """[ITER120 #3] watchdog_common.send_ntfy strips inline comments and handles full URLs."""
+    from orchestratorOS.lib import watchdog_common
+    # 3. watchdog_common.send_ntfy strips inline comments and handles full URLs
+    sent_urls = []
+    monkeypatch.setattr(
+        watchdog_common.AlertNotifier,
+        "send_phone_webhook_batch",
+        lambda evs, webhook_url=None: sent_urls.append(webhook_url) or True,
+    )
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "https://ntfy.sh/custom_err # inline comment")
+    assert watchdog_common.send_ntfy("Title", "Body") is True
+    assert sent_urls[-1] == "https://ntfy.sh/custom_err"
+
+def test_stockyahoopriceplatform_splits_string_tickers_filters_non_strings_and_iter121_s4(monkeypatch):
+    """[ITER121 #4] StockYahooPricePlatform splits string tickers, filters non-strings, and URL-encodes symbols."""
+    from market_monitor.pricefetcher import StockYahooPricePlatform
+    # 4. StockYahooPricePlatform splits string tickers, filters non-strings, and URL-encodes symbols
+    yahoo = StockYahooPricePlatform(tickers=" nvda_us_eq , spcx ")
+    assert yahoo.get_available_symbols() == {"NVDA_US_EQ", "SPCX"}
+    yahoo_mixed = StockYahooPricePlatform(tickers=["NVDA", None, True, "  "])
+    assert yahoo_mixed.get_available_symbols() == {"NVDA"}
+
+    seen_urls = []
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"chart": {"result": [{"indicators": {"quote": [{"close": [125.5]}]}}]}}
+
+    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda url, **_kw: (seen_urls.append(url), _FakeResp())[1])
+    assert yahoo.get_price("BRK/B_US_EQ") == 125.5
+    assert "BRK%2FB" in seen_urls[0]
+
+def test_alerts_config_resolve_rejects_boolean_symbol_iter121_s5():
+    """[ITER121 #5] alerts_config.resolve rejects boolean symbol."""
+    from market_monitor import alerts_config
+    # 5. alerts_config.resolve rejects boolean symbol
+    ac = {
+        "per_coin": {"TRUE": {"up_percent": 99.0, "down_percent": 99.0}},
+        "default": {"up_percent": 4.0, "down_percent": 7.0},
+        "dynamic": {"up_percent": 10.0, "down_percent": 20.0},
+    }
+    assert alerts_config.resolve(ac, True, False) == {"up_percent": 4.0, "down_percent": 7.0}
+
+def test_mailer_is_email_mirrored_handles_full_urls_inline_comments_and_iter122_s1(monkeypatch):
+    """[ITER122 #1] mailer.is_email_mirrored handles full URLs, inline comments, and rejects booleans."""
+    from notify_engine import mailer
+    # 1. mailer.is_email_mirrored handles full URLs, inline comments, and rejects booleans
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-err-custom # inline comment")
+    assert mailer.is_email_mirrored("https://ntfy.sh/ntfy-err-custom/") is True
+    assert mailer.is_email_mirrored(True) is False
+    monkeypatch.setenv("SMTP_USERNAME", "bot@example.com # comment")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("ALERT_TO_EMAIL", "ops@example.com # comment")
+    monkeypatch.setenv("SMTP_PORT", "587.0 # tls port")
+    cfg = mailer._config()
+    assert cfg is not None and cfg["port"] == 587 and cfg["username"] == "bot@example.com"
+
+def test_notificationserver__send_ntfy_strips_cr_lf_from_headers_and_iter122_s2(monkeypatch, tmp_path):
+    """[ITER122 #2] NotificationServer._send_ntfy strips CR/LF from headers and accepts full URL topic."""
+    from notify_engine.server import NotificationServer
+    # 2. NotificationServer._send_ntfy strips CR/LF from headers and accepts full URL topic
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notif_state.json"))
+    sent_calls = []
+    class _OkResp:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+    monkeypatch.setattr("notify_engine.server.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), _OkResp())[1])
+    srv = NotificationServer()
+    assert srv._send_ntfy("Line1\r\nLine2", "Body", "urgent\n", "https://ntfy.sh/custom-topic", is_retry=True, skip_email=True) is True
+    assert sent_calls[0][0] == "https://ntfy.sh/custom-topic"
+    assert "\n" not in sent_calls[0][1]["Title"] and "\r" not in sent_calls[0][1]["Title"]
+    assert sent_calls[0][1]["Priority"] == "urgent"
+
+def test_newcoinsfactory_splits_comma_separated_string_enabled_sources_and_coinmarketcapsource_iter122_s3(monkeypatch):
+    """[ITER122 #3] NewCoinsFactory splits comma-separated string enabled_sources and CoinMarketCapSource rejects whitespace api_key."""
+    from market_monitor import new_coins_discovery as ncd
+    # 3. NewCoinsFactory splits comma-separated string enabled_sources and CoinMarketCapSource rejects whitespace api_key
+    cmc_blank = ncd.CoinMarketCapSource(api_key="   ")
+    assert cmc_blank.is_available() is False
+    monkeypatch.setattr(ncd.CoinMarketCapSource, "refresh", lambda self: None)
+    monkeypatch.setattr(ncd.BinanceNewListingsSource, "refresh", lambda self: None)
+    fac = ncd.NewCoinsFactory(enabled_sources=" coinmarketcap , binance ", cmc_api_key="valid_key")
+    assert set(fac.get_available_sources()) == {"coinmarketcap", "binance"}
+
+def test_portfolio_snapshot_run_alerts_treats_string_false_paper_flag_as_iter136_s4(tmp_path, monkeypatch):
+    """[ITER136 #4] portfolio_snapshot.run_alerts treats string 'false' paper flag as a live position."""
+    from verify_tools import portfolio_snapshot as ps
+    # 4. portfolio_snapshot.run_alerts treats string "false" paper flag as a live position
+    alert_file = tmp_path / "alert_state.json"
+    monkeypatch.setattr(ps, "ALERT_STATE", str(alert_file))
+    monkeypatch.setattr(ps, "_ntfy", lambda *_a, **_k: None)
+    monkeypatch.setattr(ps, "_policy_float", lambda k: 10.0 if k == "RISK_DD_ALERT_PCT" else 2.0)
+    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": "false", "qty": 10.0, "dd_pct": -15.0, "unrealized": -150.0, "cost": 1000.0}])
+    assert len(fired) == 1
+
+def test_gen_alert_thresholds_resolve_id_strips_whitespace_for_exact_match_and_iter137_s1(monkeypatch):
+    """[ITER137 #1] gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols."""
+    from verify_tools import gen_alert_thresholds as gat
+    # 1. gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols
+    assert gat.resolve_id(None) == (None, None, None)
+    assert gat.resolve_id(True) == (None, None, None)
+    assert gat.resolve_id("   ") == (None, None, None)
+    monkeypatch.setattr(
+        gat,
+        "_get",
+        lambda _url: {
+            "coins": [
+                {"id": "wrapped-bitcoin", "symbol": "wbtc", "name": "Wrapped Bitcoin"},
+                {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"},
+            ]
+        },
+    )
+    assert gat.resolve_id(" btc ") == ("bitcoin", "BTC", "Bitcoin")
+    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window=float("nan")) is None
+    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window="10.0") is not None
+
+def test_verify_account_facade_position_from_and_order_key_handle_both_legacy_quantity_iter137_s2():
+    """[ITER137 #2] verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts."""
+    import pytest
+    from verify_tools import verify_account_facade as vaf
+    # 2. verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts
+    avg, net = vaf.position_from(
+        [{"price": "100.0", "quantity": "2.0", "time": 1700000000000, "type": "BUY"}],
+        [{"price": "110.0", "qty": "0.5", "timestamp": 1700000005000, "side": "SELL"}],
+    )
+    assert avg == pytest.approx(100.0)
+    assert net == pytest.approx(1.5)
+    assert vaf.order_key({"price": "100.0", "quantity": "2.0", "time": 1700000000000, "type": "buy"}) == (
+        1700000000000.0,
+        100.0,
+        2.0,
+        "BUY",
+    )
+
+def test_watch_trade_decisions_position_handles_buy_orders_with_missing_none_iter137_s3(monkeypatch):
+    """[ITER137 #3] watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError."""
+    import pytest
+    from verify_tools import watch_trade_decisions as wtd
+    # 3. watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError
+    monkeypatch.setattr(
+        wtd.apiorders,
+        "get_trade_orders",
+        lambda side, _sym, _maxage: (
+            [
+                {"price": 100.0, "qty": 1.0, "timestamp": None},
+                {"price": 120.0, "qty": 1.0, "timestamp": 1700000000000},
+            ]
+            if side == "BUY"
+            else []
+        ),
+    )
+    avg_w, net_w, n_sells_w, last_buy_w = wtd.position("BTCUSDC")
+    assert avg_w == pytest.approx(110.0)
+    assert net_w == pytest.approx(2.0)
+    assert n_sells_w == 0
+    assert last_buy_w == pytest.approx(120.0)

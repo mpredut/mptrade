@@ -1581,3 +1581,194 @@ class ProcessOnceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_order_retry_worker_preserves_wait_for_trend_false_for_kind_stop_enforces_iter6_s1(tmp_path, monkeypatch):
+    """[ITER6 #1] order_retry_worker preserves wait_for_trend=False for kind='STOP', enforces True otherwise."""
+    import order_retry as oq
+    import order_retry_worker as worker
+    from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
+    # 1. order_retry_worker preserves wait_for_trend=False for kind="STOP", enforces True otherwise
+    q_file = str(tmp_path / "q.jsonl")
+    l_file = str(tmp_path / "q.lock")
+    monkeypatch.setattr(oq, "QUEUE_FILE", q_file)
+    monkeypatch.setattr(oq, "LOCK_FILE", l_file)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "RETRY_INTERVAL_SEC", 300.0)
+    monkeypatch.setattr(oq, "RETRY_TTL_SEC", 86400.0)
+    monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
+
+    class DummyMkt:
+        def __init__(self):
+            self.calls = []
+        def get_current_price(self, symbol, provider_name=None):
+            return 100.0
+        def place(self, symbol, side, price, qty, **kw):
+            self.calls.append(kw)
+            return {"orderId": "1"}
+        def order_status(self, symbol, order_id, provider_name=None):
+            return OrderStatus("open", 0.0, 0.0, 0.0, "NEW")
+        def order_by_client_id(self, symbol, cid, provider_name=None):
+            return None
+        def reconciliation_capabilities(self, symbol, provider_name=None):
+            return OrderReconciliationCapabilities(True, True, True, True, not_found_reliable_for_seconds=86400)
+
+    oq.rewrite([])
+    oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="STOP", now=1000.0)
+    mkt_stop = DummyMkt()
+    worker.process_once(mkt_stop, now=1500.0)
+    assert len(mkt_stop.calls) == 1
+    assert mkt_stop.calls[0]["wait_for_trend"] is False
+
+    oq.rewrite([])
+    oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="TP", now=1000.0)
+    mkt_tp = DummyMkt()
+    worker.process_once(mkt_tp, now=1500.0)
+    assert len(mkt_tp.calls) == 1
+    assert mkt_tp.calls[0]["wait_for_trend"] is True
+
+def test__persistentquarantineset___contains___syncs_from_disk_across_restart_maintains_iter20_s2(tmp_path, monkeypatch):
+    """[ITER20 #2] _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous."""
+    import order_retry as oq
+    import order_retry_worker as worker
+    # 2. _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    pset1 = worker._PersistentQuarantineSet("terminal")
+    pset1.add(("rec1", 0, "ord1", "canceled"))
+    alerts_path = tmp_path / "order_retry_quarantine_alerts.json"
+    assert alerts_path.exists()
+
+    # Fresh instance simulating worker process restart checks `in` before any `.add()`
+    pset2 = worker._PersistentQuarantineSet("terminal")
+    assert ("rec1", 0, "ord1", "canceled") in pset2
+
+    # Simulate mid-write crash where only .previous exists on disk
+    from state_io import stage_previous_generation
+    stage_previous_generation(str(alerts_path))
+    alerts_path.unlink()
+    pset3 = worker._PersistentQuarantineSet("terminal")
+    assert ("rec1", 0, "ord1", "canceled") in pset3
+
+    # IncidentDigest.collect uses save_json_state and recovers when only .previous exists
+    digest_path = tmp_path / "digest.json"
+    digest = worker.IncidentDigest(str(digest_path), 300.0)
+    ev = {
+        "labels": {"symbol": "BTCUSDC", "side": "BUY", "reason": "active_ttl"},
+        "quantity": 0.5,
+        "sample_id": "s1",
+    }
+    due1 = digest.collect([ev], now=1000.0)
+    assert len(due1) == 1
+    due2 = digest.collect([ev], now=1010.0)
+    assert due2 == []
+    # Stage .previous and remove primary file -> collect([], now=1400.0) still recovers from .previous!
+    stage_previous_generation(str(digest_path))
+    digest_path.unlink()
+    due3 = digest.collect([], now=1400.0)
+    assert len(due3) == 1
+    assert due3[0]["count"] == 1
+
+def test_order_retry_worker_awaiting_cancel_with_nan_filled_qty_must_not_resolve_iter45_s2(monkeypatch, tmp_path):
+    """[ITER45 #2] order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record."""
+    from types import SimpleNamespace
+    import pytest
+    import order_retry as oq
+    import order_retry_worker as orw
+    # 2. order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "q45.jsonl"))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "q45.lock"))
+    rid = oq.enqueue(
+        "BTCUSDC",
+        "SELL",
+        1.0,
+        lifecycle="awaiting_cancel",
+        replaces_order_id="ORD-999",
+        replaces_original_qty=1.0,
+        now=1000.0,
+        created_ts=1000.0,
+    )
+    assert rid is not None
+    fake_mkt = SimpleNamespace(
+        order_status=lambda sym, oid, provider_name=None: SimpleNamespace(
+            status="canceled",
+            venue_status="CANCELED",
+            filled_qty=float("nan"),
+            terminal=True,
+        ),
+    )
+    orw.process_once(fake_mkt, now=2000.0)
+    rec_after = oq.get(rid)
+    assert rec_after is not None
+    assert rec_after["lifecycle"] == "awaiting_cancel"
+    assert rec_after.get("status_error") == "cancel_activation_failed"
+    assert orw._format_ts(True) == "N/A"
+    with pytest.raises(ValueError):
+        orw.IncidentDigest(tmp_path / "dig.json", True)
+
+def test_order_retry_worker__normalize_bypass_set_and_incidentdigest_boolean_missing_key_rejection_iter89_s1(tmp_path):
+    """[ITER89 #1] order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection."""
+    import pytest
+    import order_retry_worker as orw
+    # 1. order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection
+    assert orw._normalize_bypass_set(True) == set()
+    assert orw._normalize_bypass_set([" G_PROF ", None, False, ""]) == {"G_PROF"}
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"a": "b"}, "quantity": True, "sample_id": "1"}], now=1000.0)
+
+def test_order_retry_worker__format_record_context_incidentdigest_collect_validation_iter97_s3(tmp_path):
+    """[ITER97 #3] order_retry_worker._format_record_context & IncidentDigest.collect validation."""
+    import pytest
+    import order_retry_worker as orw
+    # 3. order_retry_worker._format_record_context & IncidentDigest.collect validation
+    ctx_str = orw._format_record_context(
+        {"side": "BUY", "symbol": "BTCUSDC", "qty": True, "requested_price": True, "attempts": True}
+    )
+    assert "@ market" in ctx_str
+    assert "(0 attempts" in ctx_str
+
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0}], now=1000.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0, "sample_id": "s1", "attempts": True}], now=1000.0)
+    reports = digest.collect(
+        [{"labels": {"symbol": "BTCUSDC"}, "quantity": 2.0, "sample_id": " s1 ", "attempts": None, "price": True}],
+        now=1000.0,
+    )
+    assert len(reports) == 1
+    assert reports[0]["sample_id"] == "s1"
+    assert reports[0]["attempts"] == 0
+    assert reports[0].get("last_price") is None
+
+def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
+    """[ITER104 #4] order_retry & order_retry_worker non-dict / bool safety."""
+    import order_retry as oq
+    import order_retry_worker as orw
+    # 4. order_retry & order_retry_worker non-dict / bool safety
+    assert oq.complete_claim(None, "release") is False
+    assert oq.activate_claimed_replacement(None, 1.0) is None
+    ctx = orw._format_record_context({"side": True, "symbol": True, "provider_name": True, "last_failure_reason": True})
+    assert "Order: ? 0 ? (? · ROUTED)" in ctx
+    assert "reason=none" in ctx
+
+def test_order_retry_worker__provider_name_and_incidentdigest_iter114_s1(tmp_path):
+    """[ITER114 #1] order_retry_worker._provider_name and IncidentDigest."""
+    from types import SimpleNamespace
+    import pytest
+    import order_retry_worker as orw
+    # 1. order_retry_worker._provider_name and IncidentDigest
+    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: None), {"symbol": "BTCUSDC", "provider_name": True}) is None
+    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: "Binance"), {"symbol": "BTCUSDC", "provider_name": "   "}) == "Binance"
+    with pytest.raises(ValueError):
+        orw.IncidentDigest(tmp_path / "digest.json", None)
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError):
+        digest.collect([], now=None)
+    with pytest.raises(ValueError):
+        digest.collect([], now="bad")

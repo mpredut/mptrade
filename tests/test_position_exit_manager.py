@@ -1061,4 +1061,650 @@ class TestPositionReentryManager(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
+
+def test_positionexitmanager_preserves_episode_started_at_across_trend_up_flips_prevents_smart_iter8_s2():
+    """[ITER8 #2] PositionExitManager preserves episode_started_at across trend_up flips & prevents Smart-SL re-arm."""
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+    # 2. PositionExitManager preserves episode_started_at across trend_up flips & prevents Smart-SL re-arm
+    smart_calls = []
+
+    def fake_smart_sl(**kw):
+        smart_calls.append(kw["now"])
+        if len(smart_calls) == 1:
+            return False, "grace_active", {}
+        return True, "grace_period_expired (120s elapsed without bounce)", {}
+
+    mgr = PositionExitManager(
+        config=PositionExitConfig(lost_threshold=0.05, sl_trend_defer_max_sec=300.0, smart_sl_enabled=True),
+        smart_sl_evaluator=fake_smart_sl,
+    )
+    # t=1000: trend_up=True -> initiates bounce watch at started_at=1000
+    d1 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+    )
+    assert d1.should_exit is False
+    assert mgr.sl_bounce_state["TAOUSDC"]["started_at"] == 1000.0
+
+    # t=1100: trend_up=False -> Smart-SL defers (grace_active), sl_bounce_state popped
+    d2 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1100.0, trend_up=False)
+    )
+    assert d2.should_exit is False
+    assert "TAOUSDC" not in mgr.sl_bounce_state
+
+    # t=1150: trend_up=True again -> restores started_at=1000.0 from sl_episode_state (NOT 1150.0!)
+    d3 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1150.0, trend_up=True)
+    )
+    assert d3.should_exit is False
+    assert mgr.sl_bounce_state["TAOUSDC"]["started_at"] == 1000.0
+
+    # t=1220: trend_up=False -> Smart-SL expires (grace_period_expired) -> SELL & marks smart_sl_done
+    d4 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1220.0, trend_up=False)
+    )
+    assert d4.should_exit is True
+    assert mgr.sl_episode_state["TAOUSDC"].get("smart_sl_done") is True
+
+    # t=1225: if order was deferred by GT_S and re-evaluated with trend_up=False, Smart-SL is NOT called again
+    d5 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1225.0, trend_up=False)
+    )
+    assert d5.should_exit is True
+    assert len(smart_calls) == 2
+
+    # t=1310 (>= 1000 + 300s): trend_up=True -> immediately triggers mhdsl_bounce_timeout!
+    d6 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1310.0, trend_up=True)
+    )
+    assert d6.should_exit is True
+    assert d6.metadata.get("sub_reason") == "timeout"
+
+def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guards_mode_monitortrades__apply_post_stop_ai_guard__execute_reentry_buy_iter15_s1(monkeypatch, tmp_path):
+    """[ITER15 #1] get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode & monitortrades._apply_post_stop_ai_guard & _execute_reentry_buy preserve HighStakeGuard when PostStopReentryGuard is off/shadow & smart_stop_loss_guard._load_grace_state recovers from .previous and evaluate_smart_stop_loss honors external_guard_mode & external_order_guard caps whale_guard_mode='enforce' to 'shadow' when external_guard_mode='shadow' & AutonomousIntentGateway._get_live_price recovers from .previous and skips 0/NaN price entries."""
+    import json
+    import time
+    import pytest
+    import external_order_guard
+    import monitortrades as mt
+    import order_guard
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+    from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
+    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from strategies.position_exit_manager import ReentrySnapshot
+    # 1. get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode
+    base_m = dict(order_guard._load_margins())
+    m_llm_off = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "off"}
+    g_off = get_post_stop_reentry_guard(margins=m_llm_off, gemini_client=object())
+    assert g_off.mode == "off"
+
+    m_llm_shadow = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "shadow"}
+    g_shadow = get_post_stop_reentry_guard(margins=m_llm_shadow, gemini_client=object())
+    assert g_shadow.mode == "shadow"
+
+
+    # 2. monitortrades._apply_post_stop_ai_guard & _execute_reentry_buy preserve HighStakeGuard when PostStopReentryGuard is off/shadow
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst=None: False)
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: m_llm_shadow)
+    snap = ReentrySnapshot(
+        symbol="TAOUSDC",
+        current_price=210.0,
+        last_sell_price=210.0,
+        last_exit_kind="STOP",
+        post_sell_peak=210.0,
+        post_sell_trough=195.0,
+        current_time_s=2000.0,
+        last_sell_time_s=1000.0,
+        trend_up=True,
+        trend_down=False,
+    )
+    allowed, _, _, _ = mt._apply_post_stop_ai_guard(
+        "TAOUSDC", 210.0, 210.0, 1000.0, snap, 1000.0, None, 5.0, inst=None
+    )
+    assert allowed is True
+    assert "TAOUSDC" in mt._POST_STOP_AI_NOT_ENFORCED
+
+    captured_bypasses = []
+    monkeypatch.setattr(
+        mt,
+        "_place_guarded",
+        lambda inst, side, px, q, mq, **kw: (captured_bypasses.append(kw.get("bypass_guards")) or True),
+    )
+
+    class _DummyInst:
+        symbol = "TAOUSDC"
+
+        def param(self, ns, key, default=None, cast=None):
+            return default
+
+    mt._execute_reentry_buy(_DummyInst(), "TAOUSDC", 200.0, 5.0, 0.01, 3600.0, "STOP", {"sell_time": 1000.0})
+    assert captured_bypasses == [{"G_PROF"}]
+
+
+    # 3. smart_stop_loss_guard._load_grace_state recovers from .previous and evaluate_smart_stop_loss honors external_guard_mode
+    state_file = tmp_path / "smart_stop_loss_state.json"
+    prev_file = tmp_path / "smart_stop_loss_state.json.previous"
+    state_file.write_text("{corrupt_json", encoding="utf-8")
+    now_ts = time.time()
+    prev_file.write_text(
+        json.dumps({"TAOUSDC": {"start_ts": now_ts - 10.0, "initial_loss_pct": 3.5}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ssl_mod, "_effective_smart_sl_state_file", lambda: str(state_file))
+    ssl_mod._GRACE_TRACKER.clear()
+    ssl_mod._LOADED_STATE_FILE_KEY = None
+    tracker = ssl_mod._load_grace_state(is_sim=False)
+    assert "TAOUSDC" in tracker
+
+    m_ext_off = {**base_m, "smart_sl_mode": "enforce", "external_guard_mode": "off"}
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: m_ext_off)
+    sl_exec, sl_reason, _ = ssl_mod.evaluate_smart_stop_loss("TAOUSDC", 0.04, 0.033, provider="sim")
+    assert sl_exec is True
+    assert sl_reason == "smart_sl_disabled"
+
+
+    # 4. external_order_guard caps whale_guard_mode='enforce' to 'shadow' when external_guard_mode='shadow'
+    collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    collector.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="TAOUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.66,
+            taker_buy_sell_ratio=0.60,
+            taker_buy_vol_usd=60_000.0,
+            taker_sell_vol_usd=100_000.0,
+            open_interest_usd=50_000_000.0,
+            open_interest_1h_change_pct=-5.0,
+            divergence_regime="long_liquidation_risk",
+            ts=now_ts,
+        )
+    )
+    monkeypatch.setattr(external_order_guard, "_whale_collector", collector)
+    m_ext_shadow = {
+        **base_m,
+        "external_guard_mode": "shadow",
+        "whale_guard_mode": "enforce",
+        "orderbook_wall_guard_mode": "off",
+        "funding_guard_mode": "off",
+    }
+    ext_ok, ext_reason, ext_scale = external_order_guard.check_external_order_guards(
+        "TAOUSDC", "BUY", 200.0, margins=m_ext_shadow, now=now_ts
+    )
+    assert ext_ok is True
+    assert ext_scale == 1.0
+
+
+    # 5. AutonomousIntentGateway._get_live_price recovers from .previous and skips 0/NaN price entries
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    cp_file = cache_dir / "cache_current_price.json"
+    cp_prev = cache_dir / "cache_current_price.json.previous"
+    cp_file.write_text("{corrupt", encoding="utf-8")
+    cp_prev.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSD": [[now_ts, 0.0]],
+                    "TAOUSDC": [[now_ts, 245.5]],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow")
+
+    class _FakeInst:
+        symbol = "TAOUSD"
+        base = "TAO"
+        _provider = None
+
+    assert gw._get_live_price(_FakeInst()) == pytest.approx(245.5)
+
+def test_positionexitmanager__evaluate_stop_loss_core_sets_sl_timer_expired_true_and_prioritizes_timeout_iter16_s2():
+    """[ITER16 #2] PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break."""
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+    # 2. PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break
+    cfg = PositionExitConfig(
+        lost_threshold=0.05,
+        sl_trend_defer_max_sec=900.0,
+        sl_structural_break_enabled=True,
+        smart_sl_enabled=False,
+    )
+    mgr = PositionExitManager(cfg)
+    # Sample 1 at t=2000 initiates bounce watch (5.5% loss >= 5.0% threshold, below 6.5% disaster floor)
+    d1 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.5,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2000.0,
+            trend_up=True,
+        )
+    )
+    assert d1.should_exit is False
+    assert d1.metadata.get("state") == "initiated"
+
+    # Sample 2 at t=2100 records a bounce up to 94.95 (+0.48% above 94.5 trough, still >= 5.0% loss threshold)
+    d2 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.95,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2100.0,
+            trend_up=True,
+        )
+    )
+    assert d2.should_exit is False
+
+    # Sample 3 at t=2950 (950s >= 900s max defer) with price 94.2 (< lowest_px 94.5, which would also be structural_break):
+    # timeout must take precedence over structural_break and set sl_timer_expired=True
+    d3 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.2,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2950.0,
+            trend_up=True,
+        )
+    )
+    assert d3.should_exit is True
+    assert d3.metadata.get("sl_timer_expired") is True
+    assert d3.metadata.get("sub_reason") == "timeout"
+
+def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter20_s3():
+    """[ITER20 #3] PositionExitManager is_valid_price rejects Inf/NaN and re-anchors future SL/TP/Re-entry timestamps."""
+    from strategies.position_exit_manager import ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentryAction, ReentrySnapshot
+    # 3. PositionExitManager is_valid_price rejects Inf/NaN and re-anchors future SL/TP/Re-entry timestamps
+    snap_inf = PositionSnapshot(symbol="BTCUSDC", current_price=float("inf"), avg_buy_price=100.0)
+    assert snap_inf.is_valid_price is False
+
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_trend_defer_max_sec=200.0,
+            gain_threshold=0.05,
+            tp_stagnation_max_sec=100.0,
+            hard_tp_enabled=True,
+            hard_tp_pct=0.10,
+            hard_tp_frac=0.5,
+            hard_tp_cooldown_sec=300.0,
+            reentry_sl_bounce_pct=0.02,
+            reentry_post_stop_cooldown_sec=60.0,
+        )
+    )
+    # Seed future started_at (clock skew) on SL episode & bounce state
+    mgr.sl_episode_state["BTCUSDC"] = {"started_at": 5000.0, "buy_price": 100.0, "disaster_floor": 0.08}
+    mgr.sl_bounce_state["BTCUSDC"] = {
+        "started_at": 5000.0,
+        "entry_loss": 0.06,
+        "lowest_price": 94.0,
+        "peak_bounce_price": 94.0,
+        "min_loss": 0.06,
+        "buy_price": 100.0,
+    }
+    d_sl1 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+    )
+    assert d_sl1.should_exit is False
+    # Re-anchored to 1000.0 instead of staying at 5000.0
+    assert mgr.sl_episode_state["BTCUSDC"]["started_at"] == 1000.0
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 1000.0
+    # 200s later (t=1200.0), SL bounce timeout fires on schedule!
+    d_sl2 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1200.0, trend_up=True)
+    )
+    assert d_sl2.should_exit is True
+    assert d_sl2.action == ExitAction.SELL
+    assert d_sl2.metadata.get("sl_timer_expired") is True
+
+    # Future hard_tp_last is cleared on clock step-back so Hard-TP spike is not blocked for hours
+    mgr.hard_tp_last["BTCUSDC"] = 9000.0
+    d_tp_hard = mgr.evaluate_take_profit(
+        PositionSnapshot(symbol="BTCUSDC", current_price=112.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+    )
+    assert d_tp_hard.should_exit is True
+    assert d_tp_hard.action == ExitAction.PARTIAL_SELL
+
+    # Future last_sell_time_s on STOP re-entry does not permanently lock post_stop_stabilization_cooldown
+    d_re = mgr.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="BTCUSDC",
+            current_price=98.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            post_sell_trough=94.0,
+            current_time_s=1000.0,
+            last_sell_time_s=9000.0,
+            trend_up=True,
+        )
+    )
+    assert d_re.should_enter is True
+    assert d_re.action == ReentryAction.ENTER
+
+def test_positionsnapshot_reentrysnapshot_reject_bool_none_prices_positionexitmanager_disaster_iter32_s2():
+    """[ITER32 #2] PositionSnapshot & ReentrySnapshot reject bool/None prices & PositionExitManager disaster buffer fallback on NaN vol_1h & reentry with NaN trough."""
+    import math
+    from strategies.position_exit_manager import ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentryAction, ReentrySnapshot
+    # 2. PositionSnapshot & ReentrySnapshot reject bool/None prices
+    snap_bool = PositionSnapshot(symbol="BTCUSDC", current_price=True, avg_buy_price=85000.0)
+    assert snap_bool.is_valid_price is False
+    snap_none = PositionSnapshot(symbol="BTCUSDC", current_price=None, avg_buy_price=85000.0)
+    assert snap_none.is_valid_price is False
+    re_bool = ReentrySnapshot(symbol="BTCUSDC", current_price=True, last_sell_price=85000.0)
+    assert re_bool.is_valid_price is False
+
+
+    # 3. PositionExitManager disaster buffer fallback on NaN vol_1h & reentry with NaN trough
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_disaster_buffer_ratio=0.30,
+            sl_disaster_vol_multiplier=1.0,
+            sl_disaster_buffer_min_pct=0.008,
+            reentry_sl_bounce_pct=0.02,
+            allow_external_cache=False,
+        ),
+        vol_resolver=lambda sym: (0.04, "custom_resolver"),
+    )
+    buf, meta = mgr.compute_disaster_buffer("BTCUSDC", 0.05, vol_1h=float("nan"))
+    assert math.isclose(buf, 0.04) and meta["vol_source"] == "custom_resolver"
+
+    # evaluate_stop_loss with current_price=True must HOLD ("invalid_prices"), not SELL
+    sl_dec = mgr.evaluate_stop_loss(snap_bool)
+    assert sl_dec.action == ExitAction.HOLD and sl_dec.should_exit is False
+
+    # evaluate_reentry with post_sell_trough=NaN and last_sell_time_s=NaN must not poison trough with NaN
+    re_snap = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=103.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+        current_time_s=float("nan"),
+        last_sell_time_s=float("nan"),
+    )
+    # First tick at 100.0 sets trough=100.0 even when post_sell_trough=NaN
+    re_snap_dip = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=100.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+        current_time_s=float("nan"),
+        last_sell_time_s=float("nan"),
+    )
+    d_wait = mgr.evaluate_reentry(re_snap_dip)
+    assert d_wait.action == ReentryAction.WAIT
+    assert math.isfinite(mgr.reentry_state["BTCUSDC"]["trough"])
+    # Second tick at 103.0 (+3% bounce >= 2% required) confirms re-entry without NaN sell_time resetting state
+    d_enter = mgr.evaluate_reentry(re_snap)
+    assert d_enter.action == ReentryAction.ENTER and d_enter.should_enter is True
+
+def test_positionexitmanager_preserves_started_at_across_subsequent_ticks_without_calling_iter33_s2(monkeypatch):
+    """[ITER33 #2] PositionExitManager preserves started_at=0.0 across subsequent ticks without calling time.time()."""
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+    # 2. PositionExitManager preserves started_at=0.0 across subsequent ticks without calling time.time()
+    cfg = PositionExitConfig(
+        lost_threshold=0.05,
+        gain_threshold=0.05,
+        sl_trend_defer_max_sec=60.0,
+        tp_stagnation_max_sec=60.0,
+        allow_external_cache=False,
+    )
+    mgr = PositionExitManager(config=cfg)
+    snap_t0 = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price=94.0,
+        avg_buy_price=100.0,
+        net_qty=1.0,
+        sellable_qty=1.0,
+        current_time_s=0.0,
+        trend_up=True,
+        vol_1h=0.02,
+        provider="test",
+    )
+    d0 = mgr.evaluate_stop_loss(snap_t0)
+    assert d0.should_exit is False
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 0.0
+
+    snap_t65 = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price=94.0,
+        avg_buy_price=100.0,
+        net_qty=1.0,
+        sellable_qty=1.0,
+        current_time_s=65.0,
+        trend_up=True,
+        vol_1h=0.02,
+        provider="test",
+    )
+    d65 = mgr.evaluate_stop_loss(snap_t65)
+    assert d65.should_exit is True and "mhdsl_bounce_timeout" in d65.reason
+
+    # Restore time.time for subsequent checks
+    monkeypatch.undo()
+
+def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_iter33_s3(monkeypatch):
+    """[ITER33 #3] monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN."""
+    import math
+    from types import SimpleNamespace
+    import monitortrades as mt
+    from strategies.position_exit_manager import ReentrySnapshot
+    # 3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN
+    captured_trough = []
+
+    class _DummyPSGuard:
+        mode = "enforce"
+
+        def check(self, **kwargs):
+            captured_trough.append(kwargs.get("trough"))
+            return SimpleNamespace(allowed=True, scale=1.0, reason="ok")
+
+    import intelligence.sentiment.guards.post_stop_reentry_guard as ps_mod
+    import intelligence.sentiment.guards.high_stake_guard as hs_mod
+    monkeypatch.setattr(ps_mod, "get_post_stop_reentry_guard", lambda: _DummyPSGuard())
+    monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst: False)
+
+    re_snap = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=105.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+    )
+    allowed, _, _, _ = mt._apply_post_stop_ai_guard(
+        symbol="BTCUSDC",
+        current_price=105.0,
+        sell_price=105.0,
+        sell_time=1700000000.0,
+        reentry_snap=re_snap,
+        buy_budget=100.0,
+        buy_qty_cfg=None,
+        qty=1.0,
+        inst=SimpleNamespace(provider_name="binance", params={"bypass_guards": []}),
+    )
+    assert allowed is True
+    assert len(captured_trough) == 1 and math.isfinite(captured_trough[0]) and captured_trough[0] == 105.0
+
+def test_positionexitmanager_evaluate_reentry_honors_lower_external_post_sell_trough_and_higher_iter121_s1():
+    """[ITER121 #1] PositionExitManager.evaluate_reentry honors lower external post_sell_trough and higher post_sell_peak across ticks, plus lowercase 'stop'."""
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentrySnapshot
+    # 1. PositionExitManager.evaluate_reentry honors lower external post_sell_trough and higher post_sell_peak across ticks, plus lowercase "stop"
+    pem = PositionExitManager(
+        PositionExitConfig(
+            reentry_sl_bounce_pct=0.02,
+            reentry_pullback_pct=0.02,
+            reentry_hybrid_enabled=True,
+            reentry_post_stop_cooldown_sec=0.0,
+            reentry_tolerance_pct=0.0,
+        )
+    )
+    # Tick 1 (post-STOP with lowercase " stop "): trough=98.0 -> needs 99.96
+    d1 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="SOLUSDC",
+            current_price=98.0,
+            last_sell_price=100.0,
+            last_exit_kind=" stop ",
+            post_sell_trough=98.0,
+            current_time_s=1000.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert not d1.should_enter and "post_stop_bounce_waiting" in d1.reason
+    # Tick 2: external post_sell_trough dropped to 94.0 while current_price recovered to 96.0 (+2.13% >= 2.0%)
+    d2 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="SOLUSDC",
+            current_price=96.0,
+            last_sell_price=100.0,
+            last_exit_kind=" stop ",
+            post_sell_trough=94.0,
+            current_time_s=1060.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert d2.should_enter and "post_stop_bounce_confirmed" in d2.reason
+
+    # Post-TP bull pullback: Tick 1 peak=105.0, Tick 2 external post_sell_peak=130.0 with current_price=127.0 (-2.31% >= 2.0%)
+    d3 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="ETHUSDC",
+            current_price=105.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            post_sell_peak=105.0,
+            trend_up=True,
+            current_time_s=1000.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert not d3.should_enter and "bull_reentry_pullback_waiting" in d3.reason
+    d4 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="ETHUSDC",
+            current_price=127.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            post_sell_peak=130.0,
+            trend_up=True,
+            current_time_s=1060.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert d4.should_enter and "bull_reentry_pullback_confirmed" in d4.reason
+
+def test_all_str_enum_classes_return_raw_value_on_iter125_s1():
+    """[ITER125 #1] All (str, Enum) classes return raw value on str() in Python 3.12+."""
+    from intelligence.internal.guards.guard_decision import BrakeAction
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
+    from market_regime import MarketRegimeHorizon
+    from strategies.position_exit_manager import ExitAction, ReentryAction
+    # 1. All (str, Enum) classes return raw value on str() in Python 3.12+
+    assert str(TriggerAction.ENTRY) == "ENTRY"
+    assert str(TriggerSide.BUY) == "BUY"
+    assert str(BrakeAction.HARD_VETO) == "HARD_VETO"
+    assert str(ExitAction.SELL) == "SELL"
+    assert str(ReentryAction.ENTER) == "ENTER"
+    assert str(MarketRegimeHorizon.SHORT) == "short"
+
+def test_positionsnapshot_reentrysnapshot_normalize_string_nan_boolean_flags_and_iter146_s1():
+    """[ITER146 #1] PositionSnapshot & ReentrySnapshot normalize string/NaN boolean flags and guard tol_pct/threshold."""
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot
+    # 1. PositionSnapshot & ReentrySnapshot normalize string/NaN boolean flags and guard tol_pct/threshold
+    ps = PositionSnapshot(symbol="BTCUSDC", current_price="95.0", avg_buy_price="100.0", trend_up="false")  # type: ignore[arg-type]
+    assert ps.trend_up is False
+    assert ps.in_sl_territory(0.05, tol_pct=float("nan")) is True
+    assert ps.in_sl_territory(float("nan"), tol_pct=1.0) is False
+    assert ps.in_tp_territory(True, tol_pct=1.0) is False  # type: ignore[arg-type]
+
+    rs = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price="98.0",
+        last_sell_price="100.0",
+        trend_up="0",  # type: ignore[arg-type]
+        trend_down=float("nan"),  # type: ignore[arg-type]
+    )
+    assert rs.trend_up is False
+    assert rs.trend_down is False
+    assert rs.has_dropped(100.0, 0.02, tol_pct=True) is True  # type: ignore[arg-type]
+
+    mgr = PositionExitManager(PositionExitConfig(smart_sl_enabled=True, allow_external_cache=False))
+    mgr.sl_episode_state["BTCUSDC"] = {"started_at": 1000.0, "buy_price": 100.0, "disaster_floor": 0.08, "smart_sl_done": "false"}
+    called_smart = []
+    mgr.smart_sl_evaluator = lambda **kw: (called_smart.append(True) or False, "deferred_test", {})
+    dec = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1010.0, trend_up="false")  # type: ignore[arg-type]
+    )
+    assert called_smart == [True]
+    assert dec.should_exit is False
+
+def test__parse_bool_flag_preserves_default_true_on_empty_null_strings_iter173_s1():
+    """[ITER173 #1] _parse_bool_flag preserves default=True on empty/null strings across modules."""
+    from strategies.position_exit_manager import _parse_bool_flag as pem_bool
+    from strategies.spot_engine import _parse_bool_flag as se_bool
+    import monitortrades as mt
+    # 1. _parse_bool_flag preserves default=True on empty/null strings across modules
+    assert pem_bool("", True) is True
+    assert pem_bool("none", True) is True
+    assert pem_bool("false", True) is False
+    assert se_bool("", True) is True
+    assert se_bool("null", True) is True
+    assert se_bool("0", True) is False
+    assert mt._parse_bool_flag("", True) is True
+    assert mt._parse_bool_flag("y", False) is True
+    assert mt._parse_bool_flag("n", True) is False
+
+def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s2():
+    """[ITER173 #2] PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal."""
+    import pytest
+    from decimal import Decimal
+    from strategies.position_exit_manager import PositionExitConfig, PositionSnapshot, ReentrySnapshot
+    # 2. PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal
+    cfg = PositionExitConfig(smart_sl_enabled="", sl_bounce_ratchet_enabled="")
+    assert cfg.smart_sl_enabled is True
+    assert cfg.sl_bounce_ratchet_enabled is True
+
+    ps = PositionSnapshot(symbol=None, current_price=Decimal("105.5"), avg_buy_price=Decimal("100.0"))
+    assert ps.symbol == ""
+    assert isinstance(ps.current_price, float) and ps.current_price == pytest.approx(105.5)
+    assert isinstance(ps.avg_buy_price, float) and ps.avg_buy_price == pytest.approx(100.0)
+
+    rs = ReentrySnapshot(
+        symbol=True,
+        current_price=Decimal("95.0"),
+        last_sell_price=Decimal("100.0"),
+        post_sell_peak=Decimal("101.0"),
+        post_sell_trough=Decimal("94.0"),
+    )
+    assert rs.symbol == ""
+    assert isinstance(rs.last_sell_price, float) and rs.last_sell_price == pytest.approx(100.0)
+
+def test_positionexitmanager_symbol_whitespace_normalization_in_restore_reentry_state_record_hard_tp_iter173_s3():
+    """[ITER173 #3] PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp."""
+    import pytest
+    from strategies.position_exit_manager import PositionExitManager
+    # 3. PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp
+    mgr = PositionExitManager()
+    mgr.reentry_state["BTCUSDC"] = {"trough": 90.0}
+    mgr._pop_reentry_state(" BTCUSDC ")
+    assert "BTCUSDC" not in mgr.reentry_state
+    mgr.restore_reentry_state(" BTCUSDC ")
+    assert mgr.reentry_state.get("BTCUSDC") == {"trough": 90.0}
+    mgr.record_hard_tp(" BTCUSDC ", 1234.0)
+    assert mgr.hard_tp_last.get("BTCUSDC") == pytest.approx(1234.0)

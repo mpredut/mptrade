@@ -611,6 +611,17 @@ def _load_mt_conf(path=None):
     MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
     MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(parsed["reentry_post_stop_cooldown_s"])
 
+    if not (0.0 < HARD_TP_FRACTION <= 1.0) or HARD_TP_PCT <= 0.0:
+        raise ValueError(f"monitortrades.conf: invalid hard_tp bounds (pct={HARD_TP_PCT}, fraction={HARD_TP_FRACTION})")
+    if not (0.0 < MT_SL_BOUNCE_MIN_PULLBACK_PCT <= MT_SL_BOUNCE_PULLBACK_PCT <= MT_SL_BOUNCE_MIN_RECOVERY_PCT):
+        raise ValueError(
+            "monitortrades.conf: require 0 < sl_bounce_min_pullback_pct <= sl_bounce_pullback_pct <= sl_bounce_min_recovery_pct"
+        )
+    if not (0.0 < MT_TP_RATCHET_MIN_PULLBACK_PCT <= MT_TP_PULLBACK_PCT):
+        raise ValueError("monitortrades.conf: require 0 < tp_ratchet_min_pullback_pct <= tp_pullback_pct")
+    if not (0.0 < MT_SL_DISASTER_BUFFER_RATIO < 1.0) or not (0.0 < MT_TP_PROFIT_FLOOR_RATIO <= 1.0):
+        raise ValueError("monitortrades.conf: disaster buffer and profit floor ratios must be in (0, 1]")
+
 
 _load_mt_conf()
 

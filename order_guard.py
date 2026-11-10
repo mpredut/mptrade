@@ -189,6 +189,47 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
             f"must be >= autonomous_trading_min_notional_usd ({min_auto_usd})"
         )
 
+    fav_h = safe_pos_float(m.get("dynamic_window_favorable_h"), default=None)
+    flat_h = safe_pos_float(m.get("dynamic_window_flat_h"), default=None)
+    adv_h = safe_pos_float(m.get("dynamic_window_adverse_h"), default=None)
+    if fav_h is None or flat_h is None or adv_h is None or not (fav_h <= flat_h <= adv_h):
+        raise ValueError(
+            f"Invalid dynamic window progression in {path}: require 0 < dynamic_window_favorable_h ({fav_h}) "
+            f"<= dynamic_window_flat_h ({flat_h}) <= dynamic_window_adverse_h ({adv_h})"
+        )
+
+    pullback_pct = safe_pos_float(m.get("parabolic_pullback_pct"), default=None)
+    surge_pct = safe_pos_float(m.get("parabolic_surge_pct"), default=None)
+    if pullback_pct is None or surge_pct is None or pullback_pct > surge_pct:
+        raise ValueError(
+            f"Invalid parabolic bounds in {path}: require 0 < parabolic_pullback_pct ({pullback_pct}) "
+            f"<= parabolic_surge_pct ({surge_pct})"
+        )
+
+    min_taker = safe_pos_float(m.get("min_taker_ratio"), default=None)
+    downscale_taker = safe_pos_float(m.get("taker_downscale_threshold"), default=None)
+    if min_taker is None or downscale_taker is None or min_taker > downscale_taker:
+        raise ValueError(
+            f"Invalid taker ratio bounds in {path}: require 0 < min_taker_ratio ({min_taker}) "
+            f"<= taker_downscale_threshold ({downscale_taker})"
+        )
+
+    min_imb = safe_pos_float(m.get("min_buy_imbalance"), default=None)
+    max_imb = safe_pos_float(m.get("max_sell_imbalance"), default=None)
+    if min_imb is None or max_imb is None or not (0.0 < min_imb < max_imb < 1.0):
+        raise ValueError(
+            f"Invalid orderbook imbalance bounds in {path}: require 0 < min_buy_imbalance ({min_imb}) "
+            f"< max_sell_imbalance ({max_imb}) < 1.0"
+        )
+
+    min_short_rate = safe_float(m.get("funding_min_short_rate"), default=None)
+    max_long_rate = safe_pos_float(m.get("funding_max_long_rate"), default=None)
+    if min_short_rate is None or max_long_rate is None or not (min_short_rate < 0.0 < max_long_rate):
+        raise ValueError(
+            f"Invalid funding rate bounds in {path}: require funding_min_short_rate ({min_short_rate}) "
+            f"< 0 < funding_max_long_rate ({max_long_rate})"
+        )
+
 
 def _load_margins():
     """Read and cache `key = value` lines strictly from order_guard.conf.

@@ -591,3 +591,47 @@ class TestOrderRetryTTL:
             assert capped > 0
             # traded_value = 2.5 * 100 = 250; total_ref = 1250; max_trade_value = 625; remaining = 375 -> 3.75 qty
             assert abs(capped - 3.75) < 1e-6
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_monitororder_resolve_effective_order_ttl_monitor_open_orders_by_type_iter105_s2():
+    """[ITER105 #2] monitororder: resolve_effective_order_ttl & monitor_open_orders_by_type."""
+    import monitororder as mo
+    # 2. monitororder: resolve_effective_order_ttl & monitor_open_orders_by_type
+    ttl = mo.resolve_effective_order_ttl(True, True, owner=True, custom_ttl_map={"True": 10.0, "None": 10.0})
+    assert ttl == mo.DEFAULT_ORDER_TTL_SEC
+    # Invalid symbol/order_type exits cleanly without calling api
+    mo.monitor_open_orders_by_type(True, "SELL")
+    mo.monitor_open_orders_by_type("BTCUSDC", True)
+    mo.monitor_open_orders_by_type("BTCUSDC", "INVALID_SIDE")
+
+def test_resolve_effective_order_ttl_falls_back_to_client_order_id_ttl_when_order_id_iter124_s1():
+    """[ITER124 #1] resolve_effective_order_ttl falls back to client_order_id TTL when order_id TTL is invalid/NaN, and normalizes integer float IDs."""
+    import monitororder as mo
+    # 1. resolve_effective_order_ttl falls back to client_order_id TTL when order_id TTL is invalid/NaN, and normalizes integer float IDs
+    ttl = mo.resolve_effective_order_ttl(
+        1001.0,
+        "TA_main_123",
+        custom_ttl_map={"1001": float("nan"), "TA_main_123": 1800.0},
+    )
+    assert ttl == 1800.0
+    ttl_float_id = mo.resolve_effective_order_ttl(
+        2002.0,
+        "",
+        custom_ttl_map={"2002": 900.0},
+    )
+    assert ttl_float_id == 900.0
+
+def test_monitororder_resolve_effective_order_ttl_rejects_sentinel_ids_iter159_s2():
+    """[ITER159 #2] monitororder: resolve_effective_order_ttl rejects '0' sentinel IDs."""
+    import monitororder as mo
+    # 2. monitororder: resolve_effective_order_ttl rejects "0" sentinel IDs
+    assert mo.resolve_effective_order_ttl("0", "0", custom_ttl_map={"0": 99.0}) == min(
+        mo.DEFAULT_ORDER_TTL_SEC, mo.MAX_GLOBAL_ORDER_TTL_SEC
+    )
+    assert mo.resolve_effective_order_ttl("123.0", "", custom_ttl_map={"123": 120.0}) == 120.0
+    assert mo.safe_pos_float(float("nan")) == 0.0
+    assert mo.safe_pos_float(True) == 0.0

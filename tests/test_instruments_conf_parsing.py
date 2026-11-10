@@ -699,3 +699,185 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_marketapi_place_inherits_instrument_params_from_instrument_registry_bool_iter28_s4(monkeypatch):
+    """[ITER28 #4] MarketApi.place inherits instrument params from instrument_registry & bool rejections."""
+    import time
+    import order_guard
+    import threading
+    from types import SimpleNamespace
+    import pytest
+    import cacheManager as cm
+    import instrument_registry
+    from providers.market_api import MarketApi
+    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
+    tm.lock = threading.RLock()
+    tm.sync_account_reader_if_needed = lambda: None
+    tm.cache = {
+        "BTCUSDC": [
+            {
+                "symbol": "BTCUSDC",
+                "id": 101,
+                "orderId": 201,
+                "price": "88500.0",
+                "qty": "0.1",
+                "time": 1_700_000_000_000,
+                "isBuyer": False,
+            }
+        ]
+    }
+    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
+    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
+    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
+    cpm.cls_name = "CacheCurrentPriceManager"
+    cpm.lock = threading.RLock()
+    cpm.symbols = ["TAOUSD"]
+    cpm._provider_names = {"TAOUSD": "kraken"}
+    now_ms = int(time.time() * 1000)
+    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
+    assert cpm.provider_name_for("tao/usd") == "kraken"
+    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
+    assert obs is not None and obs[1] == 420.5
+    assert cpm.get_price_value("tao/usd") == 420.5
+    # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
+    captured_bypasses = []
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: orig_margins)
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (captured_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    monkeypatch.setattr(
+        instrument_registry,
+        "select_instruments",
+        lambda prov=None: {
+            "KRAKEN:TAOUSD": SimpleNamespace(
+                symbol="TAOUSD",
+                base="TAO",
+                quote="USD",
+                params={"bypass_guards": "GI_WHALE"},
+            )
+        },
+    )
+
+    class DummyProv:
+        name = "kraken"
+        def supports_symbol(self, sym):
+            return sym == "TAOUSD"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 1000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            from providers.quantity import QuantityDecision
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-28", "qty": qty}
+
+    mapi = MarketApi([DummyProv()])
+    res_place = mapi.place(
+        "TAOUSD", "BUY", 100.0, 1.0,
+        provider_name="kraken", smart=False, wait_for_trend=False, caller_owns_retry=True,
+    )
+    assert res_place is not None
+    assert len(captured_bypasses) == 1
+    assert "gi_whale" in captured_bypasses[0]
+
+    with pytest.raises(ValueError):
+        mapi.latest_fill_price("TAOUSD", "BUY", True, provider_name="kraken")
+
+def test_instrumentspec_programmatic_non_string_and_mixed_case_params_iter97_s1():
+    """[ITER97 #1] InstrumentSpec programmatic non-string and mixed-case params handling."""
+    import pytest
+    from instrument_registry import InstrumentSpec
+    # 1. InstrumentSpec programmatic non-string and mixed-case params handling
+    spec = InstrumentSpec(
+        name="BTC",
+        provider="binance",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={"ROLE.MT": True, "TRAILING.PCT": 1.5, "trailing.rebuy": False},
+    )
+    assert spec.has_role("mt") is True
+    assert spec.number("trailing.pct") == pytest.approx(1.5)
+    assert spec.rebuy_mode() == "off"
+
+def test_scan_backtest_ranges_rejects_bool_int_path_and_strips_trailing_iter139_s1(tmp_path):
+    """[ITER139 #1] scan_backtest_ranges rejects bool/int path and strips trailing semicolon comments."""
+    from offline.research.backtest_ranges import scan_backtest_ranges
+    # 1. scan_backtest_ranges rejects bool/int path and strips trailing semicolon comments
+    assert scan_backtest_ranges(True) == {}  # type: ignore[arg-type]
+    assert scan_backtest_ranges(1) == {}  # type: ignore[arg-type]
+    conf_file = tmp_path / "instruments.conf"
+    conf_file.write_text(
+        "[BINANCE_BTC]\n# BACKTEST: 5.0, 6.0, 7.0 ; inline INI comment\nmt.gain = 6.0\n",
+        encoding="utf-8",
+    )
+    assert scan_backtest_ranges(str(conf_file)) == {"BINANCE_BTC.mt.gain": ["5.0", "6.0", "7.0"]}
+
+def test_instrument_registry_select_instruments_accepts_provider_object_with_name_and_iter162_s4():
+    """[ITER162 #4] instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider."""
+    import pytest
+    import instrument_registry as ir
+    # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
+    class _DummyProv:
+        name = "Binance"
+
+    selected = ir.select_instruments(_DummyProv())
+    assert len(selected) > 0
+    with pytest.raises(ValueError):
+        ir.select_instruments("   ")
+
+def test_symbols_validate_ordertype_validate_symbols_and_validate_params_with_case_slash_iter167_s1():
+    """[ITER167 #1] symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs."""
+    import pytest
+    import instrument_registry as sym_mod
+    # 1. symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs
+    valid_sym = sym_mod.symbols[0]
+    sym_mod.validate_ordertype("b")
+    sym_mod.validate_ordertype(" sell ")
+    sym_mod.validate_symbols(f" {valid_sym.lower()} ")
+    sym_mod.validate_params("b", f" {valid_sym.lower()} ", price="100.5", qty="0.25")
+    with pytest.raises(ValueError):
+        sym_mod.validate_params("BUY", valid_sym, price=True, qty=1.0)
+    with pytest.raises(ValueError):
+        sym_mod.validate_params("BUY", valid_sym, price="nan", qty=1.0)

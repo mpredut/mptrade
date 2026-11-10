@@ -935,3 +935,130 @@ class TestAdoptare(_XStockBase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_krakentrailing__submit_lifecycle_order_normalizes_bypass_guards_all_all_iter7_s3(monkeypatch):
+    """[ITER7 #3] KrakenTrailing._submit_lifecycle_order normalizes bypass_guards='ALL' / {'ALL'}."""
+    from unittest.mock import MagicMock
+    import order_guard
+    from kraken.trailing_stop import KrakenTrailing
+    # 3. KrakenTrailing._submit_lifecycle_order normalizes bypass_guards="ALL" / {"ALL"}
+    eng = object.__new__(KrakenTrailing)
+    eng.executor = MagicMock()
+    eng.order_lifecycle = MagicMock()
+    eng.order_lifecycle.submit.return_value = MagicMock(outcome="accepted")
+    guard_called = []
+    monkeypatch.setattr(
+        order_guard,
+        "check_intelligence_guards",
+        lambda *a, **k: guard_called.append(1) or (False, "should_be_skipped", 1.0),
+    )
+    res = eng._submit_lifecycle_order(
+        intent={"intent_id": "id1", "client_order_id": "cid1"},
+        persist=lambda x: None, pair="SOLUSD", side="BUY",
+        qty=1.0, price=100.0, kind="TRAIL", bypass_guards="ALL", market=False,
+    )
+    assert res.outcome == "accepted"
+    assert guard_called == []
+
+def test_trailing_core_should_sell_krakentrailing__trend_value_previous_recovery_iter21_s3(tmp_path, monkeypatch):
+    """[ITER21 #3] trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery."""
+    import json
+    import time
+    import pytest
+    import trailing_core
+    import kraken.trailing_stop as kt
+    # 3. trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery
+    assert trailing_core.should_sell(0.0, 100.0, 15.0) is False
+    assert trailing_core.should_sell(-5.0, 100.0, 15.0) is False
+    assert trailing_core.should_sell(float("nan"), 100.0, 15.0) is False
+    assert trailing_core.should_sell(80.0, 100.0, 15.0) is True
+
+    trend_file = tmp_path / "cache_short_trend.json"
+    trend_prev = tmp_path / "cache_short_trend.json.previous"
+    trend_file.write_text("{corrupt", encoding="utf-8")
+    trend_prev.write_text(
+        json.dumps({"HYPEUSDC": {"ts": time.time() * 1000.0, "gradient_recent": 0.42}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kt, "CACHE_TREND", str(trend_file))
+    kt_inst = object.__new__(kt.KrakenTrailing)
+    assert kt_inst.trend("HYPE/USD") == pytest.approx(0.42)
+
+def test_kraken_trailing_stop_krakentrailing_reconcile_pending_execute_rebuy_nan_bool_safety_iter52_s3(tmp_path):
+    """[ITER52 #3] kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety."""
+    from types import SimpleNamespace
+    from kraken import trailing_stop as k_ts
+    # 3. kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety
+    kt = k_ts.KrakenTrailing(
+        client=SimpleNamespace(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=str(tmp_path / "kt_state.json"),
+    )
+    kt.order_lifecycle = SimpleNamespace(
+        reconcile=lambda pending, persist: SimpleNamespace(
+            outcome="terminal",
+            status=SimpleNamespace(status="closed", filled_qty=float("nan"), cost=float("nan"), fee=0.0),
+            intent=pending,
+        ),
+        new_intent=lambda **kw: kw,
+    )
+    st_dict = {"retry_counts": {}}
+    persist_fn = lambda _val: None
+    persist_fn.st = st_dict
+    pending_obj = {"symbol": "HYPEUSD", "action": "SELL", "submitted_qty": float("nan"), "attempt": True}
+    res = kt.reconcile_pending(pending_obj, persist_fn)
+    assert res.outcome == "terminal"
+    assert st_dict["retry_counts"]["SELL"] == 1
+
+    captured_intent = {}
+    kt._submit_lifecycle_order = lambda intent, *a, **kw: (
+        captured_intent.update(intent) or SimpleNamespace(outcome="refused", intent=intent)
+    )
+    kt.execute_rebuy(
+        "HYPE", "HYPE", "HYPEUSD", 1.0, 25.0,
+        {"low": float("nan"), "sell_price": True},
+        persist_fn,
+    )
+    assert captured_intent["metadata"]["anchor"] == 25.0
+    assert captured_intent["metadata"]["sell_price"] == 0.0
+
+def test_krakentrailing__sync_retry_count_from_state__order_intent_iter57_s3():
+    """[ITER57 #3] KrakenTrailing._sync_retry_count_from_state & _order_intent."""
+    from unittest.mock import MagicMock
+    from kraken.trailing_stop import KrakenTrailing
+    # 3. KrakenTrailing._sync_retry_count_from_state & _order_intent
+    adapter = object.__new__(KrakenTrailing)
+    adapter._retry_counts = {}
+    adapter.order_lifecycle = MagicMock()
+    adapter.order_lifecycle.new_intent.side_effect = lambda **kw: kw
+    dummy_persist = type("P", (), {"st": {"retry_counts": {"SELL": True}}})()
+    adapter._sync_retry_count_from_state("HYPEUSD", "SELL", dummy_persist)
+    assert adapter._retry_counts.get(("HYPEUSD", "SELL"), 0) == 0
+    intent = adapter._order_intent("SELL", "HYPE", "HYPE", "HYPEUSD", 1.5, 20.0, anchor=None)
+    assert ":20.00000000" in intent["intent_id"]
+
+def test_krakentrailing_string_enabled_trailing_market_and_reconcile_pending_safety_iter117_s2(tmp_path):
+    """[ITER117 #2] KrakenTrailing string enabled / trailing_market and reconcile_pending safety."""
+    from kraken.trailing_stop import KrakenTrailing
+    # 2. KrakenTrailing string enabled / trailing_market and reconcile_pending safety
+    kt = KrakenTrailing(
+        client=object(),
+        enabled="false",
+        trailing_market="0",
+        state_file=str(tmp_path / "kt_state.json"),
+    )
+    assert kt.enabled is False
+    assert kt.trailing_market is False
+    assert kt.reconcile_pending(None, lambda _p: None) is None
+    assert kt.reconcile_pending("not-a-dict", lambda _p: None) is None
+    from types import SimpleNamespace
+    kt.order_lifecycle = SimpleNamespace(
+        reconcile=lambda _p, persist: SimpleNamespace(outcome="absent", status=None)
+    )
+    kt.reconcile_pending({"symbol": " XXBTZUSD ", "action": " sell "}, lambda _p: None)
+    assert kt._retry_counts.get(("XXBTZUSD", "SELL")) == 1

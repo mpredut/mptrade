@@ -288,3 +288,87 @@ class MarketApiLifecycleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_marketapi_provider_by_name_handles_non_string_safely_iter86_s4():
+    """[ITER86 #4] MarketApi.provider_by_name handles non-string safely."""
+    from providers.market_api import api
+    # 4. MarketApi.provider_by_name handles non-string safely
+    assert api.provider_by_name(True) is None
+    assert api.provider_by_name(123) is None
+    assert api.provider_by_name("binance") is not None
+
+def test_marketapi_rejects_bool_none_blank_order_id_and_client_order_id_iter112_s3():
+    """[ITER112 #3] MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion."""
+    import pytest
+    from providers.base import ProviderError
+    import providers.market_api as ma
+    # 3. MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion
+    with pytest.raises(ProviderError):
+        ma.api.order_by_client_id("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        ma.api.order_status("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        ma.api.order_status("BTCUSDC", "   ")
+    with pytest.raises(ProviderError):
+        ma.api.cancel_order("BTCUSDC", None)
+
+def test_marketapi_latest_fill_price_and_market_regime_context_raise_valueerror_on_none_iter112_s4():
+    """[ITER112 #4] MarketApi.latest_fill_price and market_regime_context raise ValueError on None/non-numeric."""
+    import pytest
+    import providers.market_api as ma
+    # 4. MarketApi.latest_fill_price and market_regime_context raise ValueError on None/non-numeric
+    with pytest.raises(ValueError):
+        ma.api.latest_fill_price("BTCUSDC", "BUY", None)
+    with pytest.raises(ValueError):
+        ma.api.latest_fill_price("BTCUSDC", "BUY", 60.0, min_notional="bad")
+    with pytest.raises(ValueError):
+        ma.api.market_regime_context("BTCUSDC", now="bad")
+
+def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
+    """[ITER170 #1] market_api._parse_bool_flag and require_int_order_id."""
+    import pytest
+    from providers import market_api as mapi
+    from providers import strategy_executor as sexec
+    # 1. market_api._parse_bool_flag and require_int_order_id
+    assert mapi._parse_bool_flag("y", False) is True
+    assert mapi._parse_bool_flag("n", True) is False
+    assert mapi._parse_bool_flag(2, False) is True
+    assert mapi.require_int_order_id("+12345.0", "ctx") == 12345
+    with pytest.raises(sexec.ProviderError):
+        mapi.require_int_order_id(frozenset({1}), "ctx")
+
+def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_s2():
+    """[ITER170 #2] MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force."""
+    import pytest
+    import time
+    from providers import market_api as mapi
+    # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
+    captured = {}
+
+    class _DummyProvider(mapi.MarketDataProvider):
+        @property
+        def name(self):
+            return "Dummy"
+
+        def get_current_price(self, symbol):
+            return 100.0
+
+        def supports_symbol(self, symbol):
+            return True
+
+        def get_trades(self, symbol, since_s):
+            return [{"side": "BUY", "price": 105.0, "qty": 1.0, "timestamp": int(time.time() * 1000)}]
+
+        def place_order(self, symbol, side, price, qty, force=False, **kwargs):
+            captured["force"] = force
+            return {"orderId": "111", "force": force}
+
+    facade = mapi.MarketApi([_DummyProvider()])
+    assert facade.latest_fill_price("BTCUSDC", "BID", 3600) == pytest.approx(105.0)
+    res = facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, True)
+    assert res["force"] is True and captured["force"] is True

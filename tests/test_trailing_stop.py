@@ -1038,3 +1038,217 @@ class TestMinProfit(Base):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_does_iter44_s1(tmp_path):
+    """[ITER44 #1] TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell."""
+    from types import SimpleNamespace
+    import trailing_core
+    # 1. TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell
+    sold_calls = []
+    adapter = SimpleNamespace(
+        assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 10.0)],
+        begin_tick=lambda: True,
+        free_qty=lambda asset: 1.0,
+        price=lambda pair: 85.0,
+        trend=lambda pair: True,  # boolean True must be treated as 0.0, not > 0
+        log_dry_sell=lambda *a: sold_calls.append(a),
+        log_skip_sell_trend=lambda *a: None,
+        log_hold=lambda *a: None,
+        log_item_error=lambda *a: None,
+    )
+    core = trailing_core.TrailingCore(
+        adapter,
+        log=lambda *a: None,
+        enabled=False,
+        state_file=str(tmp_path / "trail_state.json"),
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=True,
+        sell_skip_if_trend_up=True,
+        sell_fraction=1.0,
+    )
+    assert core._safe_trend("BTCUSDC") == 0.0
+    core.save({"BTCUSDC": {"peak": 100.0, "exit_sold_qty": float("nan")}})
+    core.check_once()
+    assert len(sold_calls) == 1
+
+def test_trailingcore__process_ignores_invalid_trail_bool_nan_iter58_s2():
+    """[ITER58 #2] TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)."""
+    from unittest.mock import MagicMock
+    from trailing_core import TrailingCore
+    # 2. TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)
+    core = object.__new__(TrailingCore)
+    core.a = MagicMock()
+    core.a.free_qty.return_value = 10.0
+    core.a.price.return_value = 100.0
+    st_dict = {}
+    core._process("BTCUSDC", "BTC", "BTCUSDC", float("nan"), st_dict)
+    core._process("BTCUSDC", "BTC", "BTCUSDC", True, st_dict)
+    core._process("BTCUSDC", "BTC", "BTCUSDC", 120.0, st_dict)
+    assert st_dict == {}
+
+def test_trailingcore_sanitizes_sets_normalizes_constructor_params_and_skips_iter65_s1(tmp_path):
+    """[ITER65 #1] TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices."""
+    from trailing_core import TrailingCore
+    # 1. TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices
+    class _DummyAdapter:
+        def assets(self):
+            return [("BTC", "BTC", "BTCUSDC", 15.0)]
+        def begin_tick(self):
+            return True
+        def free_qty(self, asset):
+            return 1.0
+        def price(self, pair):
+            return "not-a-number"
+
+    tc = TrailingCore(
+        _DummyAdapter(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=str(tmp_path / "trail_state.json"),
+        min_notional="bad",
+        rebuy_enabled=True,
+        rebuy_bounce_pct=-5.0,
+        rebuy_skip_if_trend_down=False,
+        sell_fraction=2.5,
+        min_profit_pct="bad",
+    )
+    assert tc.sell_fraction == 1.0
+    assert tc.min_notional == 0.0
+    assert tc.min_profit_pct == 0.0
+    assert tc.save({"BTC": {"tags": {"a", "b"}, "peak": float("nan")}}) is True
+    tc.check_once()  # does not raise ValueError on "not-a-number" price
+
+def test_trailingcore__reconcile_pending_cleans_up_corrupted_non_dict_pending_order_iter70_s4(tmp_path):
+    """[ITER70 #4] TrailingCore._reconcile_pending cleans up corrupted non-dict pending_order without crashing."""
+    from types import SimpleNamespace
+    from trailing_core import TrailingCore
+    # 4. TrailingCore._reconcile_pending cleans up corrupted non-dict pending_order without crashing
+    core = TrailingCore(
+        SimpleNamespace(),
+        log=lambda *_: None,
+        enabled=True,
+        state_file=str(tmp_path / "trail.json"),
+        min_notional=10.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=1.2,
+        rebuy_skip_if_trend_down=False,
+    )
+    st_coin = {"pending_order": True, "peak": 100.0}
+    assert core._reconcile_pending({"BTC": st_coin}, st_coin, 95.0, "BTCUSDC") is False
+    assert "pending_order" not in st_coin
+
+def test_trailingcore__finish_pending_cleans_up_target_exit_qty_on_fill_terminal_iter91_s4():
+    """[ITER91 #4] TrailingCore._finish_pending cleans up target_exit_qty on 0-fill terminal SELL."""
+    import trailing_core as tcore
+    # 4. TrailingCore._finish_pending cleans up target_exit_qty on 0-fill terminal SELL
+    tc_obj = tcore.TrailingCore(
+        adapter=type("A", (), {"assets": lambda self: []})(),
+        log=lambda *a, **k: None,
+        enabled=False,
+        state_file="dummy.json",
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    st = {"peak": 100.0, "target_exit_qty": 5.0, "pending_order": {"action": "SELL"}}
+    res = type(
+        "R",
+        (),
+        {
+            "status": type("S", (), {"filled_qty": 0.0, "cost": 0.0, "status": "canceled"})(),
+            "intent": {"action": "SELL"},
+        },
+    )()
+    tc_obj._finish_pending(st, res, 95.0, "HYPEUSD")
+    assert "target_exit_qty" not in st
+    assert "pending_order" not in st
+
+def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110_s1(tmp_path):
+    """[ITER110 #1] trailing_core: string 'false' flags and malformed pending metadata in _finish_pending."""
+    from types import SimpleNamespace
+    import trailing_core as tc
+    # 1. trailing_core: string 'false' flags and malformed pending metadata in _finish_pending
+    adapter = SimpleNamespace(
+        assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 20.0)],
+        free_qty=lambda _a: 0.0,
+        total_qty=lambda _a: 0.0,
+        rebuy_configured_for=lambda _p: False,
+        rebuy_enabled_for=lambda _p: False,
+    )
+    core = tc.TrailingCore(
+        adapter,
+        log=lambda _m: None,
+        enabled="false",
+        state_file=str(tmp_path / "tc.json"),
+        min_notional=10.0,
+        rebuy_enabled="false",
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down="false",
+        sell_skip_if_trend_up="false",
+    )
+    assert core.enabled is False
+    assert core.rebuy_enabled is False
+    assert core.rebuy_skip_if_trend_down is False
+    assert core.sell_skip_if_trend_up is False
+
+    st = {"pending_order": {"action": "SELL"}, "peak": 100.0}
+    res = SimpleNamespace(
+        status=SimpleNamespace(filled_qty=1.0, cost=90.0, status="closed"),
+        intent={"action": "SELL", "metadata": True, "asset": True},
+    )
+    core._finish_pending(st, res, 90.0, "BTCUSDC")
+    assert "pending_order" not in st
+    assert st["peak"] == 90.0
+
+def test_trailingcore_string_false_in_st_is_flat_does_not_iter131_s1(tmp_path):
+    """[ITER131 #1] TrailingCore: string 'false' in st['is_flat'] does not block peak tracking or reset warmup."""
+    import json
+    from trailing_core import TrailingCore
+    # 1. TrailingCore: string "false" in st["is_flat"] does not block peak tracking or reset warmup
+    state_file = str(tmp_path / "trail_state.json")
+    with open(state_file, "w", encoding="utf-8") as fh:
+        json.dump([1, 2, 3], fh)
+
+    class _DummyAdapter:
+        def assets(self):
+            return [("BTCUSDC", "BTC", "BTCUSDC", 15.0)]
+
+        def begin_tick(self):
+            return True
+
+        def free_qty(self, _asset):
+            return 1.0
+
+        def price(self, _pair):
+            return 120.0
+
+        def trend(self, _pair):
+            return 0.0
+
+        def log_hold(self, *a):
+            pass
+
+    core_paper = TrailingCore(
+        _DummyAdapter(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=state_file,
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+        min_profit_pct=5.0,
+    )
+    assert core_paper.load() == {}
+
+    st_state = {"BTCUSDC": {"peak": 100.0, "is_flat": "false"}}
+    core_paper._process("BTCUSDC", "BTC", "BTCUSDC", 15.0, st_state)
+    assert st_state["BTCUSDC"]["peak"] == 120.0
+    assert "warmup_at" not in st_state["BTCUSDC"]

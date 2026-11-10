@@ -493,4 +493,303 @@ def test_smart_sl_save_grace_state_filters_simulated_entries_and_uses_exact_memo
     assert ssl_guard._LOADED_STATE_FILE_KEY is not None
     assert ssl_guard._LOADED_STATE_FILE_KEY[1] != ("unrelated_sig",)
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
+
+def test_smartstoplossguard_now_propagation_clock_skewed_grace_reset_iter19_s2(tmp_path, monkeypatch):
+    """[ITER19 #2] SmartStopLossGuard `now` propagation & clock-skewed grace reset."""
+    import pytest
+    import external_order_guard
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard, _GRACE_TRACKER
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+    # 2. SmartStopLossGuard `now` propagation & clock-skewed grace reset
+    w_col = WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
+    w_col.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.68,
+            taker_buy_sell_ratio=1.10,
+            taker_buy_vol_usd=500_000.0,
+            taker_sell_vol_usd=450_000.0,
+            open_interest_usd=20_000_000.0,
+            open_interest_1h_change_pct=1.5,
+            divergence_regime="accumulation",
+            ts=2000.0,
+        ),
+        save_to_disk=True,
+    )
+    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: w_col)
+    sl_guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    _GRACE_TRACKER["BTCUSDC"] = {
+        "start_ts": 99999.0,  # future clock-skewed grace start_ts
+        "initial_loss_pct": 3.1,
+        "lost_threshold_pct": 3.0,
+        "provider": "binance",
+        "current_price": 96.9,
+        "buy_price": 100.0,
+    }
+    should_exec, sl_reason, _ = sl_guard.evaluate(
+        "BTCUSDC",
+        price_decrease=0.031,
+        lost_threshold=0.030,
+        now=2050.0,
+        provider="binance",
+        current_price=96.9,
+        buy_price=100.0,
+    )
+    assert should_exec is False
+    assert "suspected_wick_hunt" in sl_reason
+    assert _GRACE_TRACKER["BTCUSDC"]["start_ts"] == pytest.approx(2050.0)
+    _GRACE_TRACKER.pop("BTCUSDC", None)
+
+def test_smartstoplossguard__load_grace_state_symbol_normalization_none_snapshot_attributes_poststopreentryguard_iter25_s1(tmp_path, monkeypatch):
+    """[ITER25 #1] SmartStopLossGuard._load_grace_state & symbol normalization & None snapshot attributes & PostStopReentryGuard.check handles NaN last_sell_time_s and matches TAO/USD with TAOUSD in cache & Internal, Sentiment, and Cascade guards tolerate None / bool / NaN / Inf inputs & GeopoliticalThreatAnalyzer & SentimentAdvisor _load_from_disk tolerate null JSON fields."""
+    import json
+    import time
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    # 1. SmartStopLossGuard._load_grace_state & symbol normalization & None snapshot attributes
+    ssl_file = tmp_path / "smart_stop_loss_state.json"
+    now_curr = time.time()
+    ssl_file.write_text(
+        json.dumps({
+            "BAD_NULL": {"start_ts": None},
+            "FUTURE_SKEW": {"start_ts": now_curr + 600.0},
+            "TAO/USD": {"start_ts": now_curr - 30.0, "initial_loss_pct": 3.1, "lost_threshold_pct": 3.0},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ssl_mod, "_SMART_SL_STATE_FILE", str(ssl_file))
+    ssl_mod._GRACE_TRACKER.clear()
+    ssl_mod._LOADED_STATE_FILE_KEY = None
+    tracker = ssl_mod._load_grace_state(is_sim=False)
+    assert "BAD_NULL" not in tracker
+    assert "FUTURE_SKEW" not in tracker
+    assert "TAOUSD" in tracker
+
+    ssl_guard = ssl_mod.SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    should_exec, reason, meta = ssl_guard.evaluate(
+        "TAO/USD",
+        0.032,
+        0.030,
+        now=now_curr,
+        provider="replay",
+        whale_snapshot=SimpleNamespace(
+            top_traders_long_pct=None,
+            taker_buy_sell_ratio=float("nan"),
+            divergence_regime=None,
+        ),
+        orderbook_snapshot=SimpleNamespace(
+            imbalance_ratio=None,
+            largest_bid_wall_usd=float("nan"),
+        ),
+    )
+    assert should_exec is True
+    assert meta["symbol"] == "TAOUSD"
+
+
+    # 2. PostStopReentryGuard.check handles NaN last_sell_time_s and matches TAO/USD with TAOUSD in cache
+    clear_post_stop_reentry_cache()
+    fake_gemini = MagicMock()
+    fake_gemini.query_json.return_value = {
+        "decision": "APPROVED",
+        "suggested_scale": 1.0,
+        "reason": "clean accumulation",
+    }
+    ps_guard = PostStopReentryGuard(
+        gemini_client=fake_gemini,
+        mode="enforce",
+        notify_enabled=False,
+        cache_ttl_sec=600.0,
+    )
+    monkeypatch.setattr(
+        "intelligence.sentiment.guards.post_stop_reentry_guard.is_llm_guard_exempt",
+        lambda _explicit: False,
+    )
+    dec1 = ps_guard.check(
+        "TAO/USD",
+        current_price=405.0,
+        last_sell_price=float("nan"),
+        trough=395.0,
+        bounce_pct=0.025,
+        last_sell_time_s=float("nan"),
+        telemetry={},
+        now=now_curr,
+    )
+    assert dec1.allowed is True
+    assert fake_gemini.query_json.call_count == 1
+    dec2 = ps_guard.check(
+        "TAOUSD",
+        current_price=405.0,
+        last_sell_price=0.0,
+        trough=395.0,
+        bounce_pct=0.025,
+        last_sell_time_s=0,
+        telemetry={},
+        now=now_curr + 1.0,
+    )
+    assert dec2.allowed is True
+    assert fake_gemini.query_json.call_count == 1  # served from cache
+
+
+    # 3. Internal, Sentiment, and Cascade guards tolerate None / bool / NaN / Inf inputs
+    exh = WeibullExhaustionGuard()
+    assert exh.check(
+        "BTCUSDC",
+        "BUY",
+        trend_duration_seconds=None,
+        p90_days=float("nan"),
+        median_days=True,
+        gaussian_horizon_days=float("inf"),
+    ).allowed is True
+    assert exh.check(
+        "BTCUSDC",
+        "BUY",
+        trend_duration_seconds=3600.0,
+        p90_days=float("nan"),
+        median_days=float("nan"),
+        gaussian_horizon_days=float("inf"),
+    ).allowed is True
+
+    para = ParabolicSurgeGuard()
+    assert para.check("BTCUSDC", "BUY", current_price=None, now=float("nan")).allowed is True
+
+    noise = NoiseFloorGuard()
+    assert noise.check("BTCUSDC", "BUY", gradient=None, epsilon=True).allowed is True
+
+    greed = ExtremeGreedGuard()
+    assert greed.check("BTCUSDC", None, SimpleNamespace(value=None, classification=None)).allowed is True
+    assert greed.check("BTCUSDC", "BUY", SimpleNamespace(value=float("nan"), classification=None)).allowed is True
+
+    panic = PanicWashoutGuard()
+    assert panic.check(
+        "BTCUSDC",
+        "BUY",
+        breadth_snapshot=SimpleNamespace(advance_ratio=None, median_change_pct=float("nan")),
+        fear_greed_snapshot=SimpleNamespace(value=10, historical_values=[10, None]),
+        asset_24h_change_pct=float("nan"),
+    ).allowed is True
+
+    casc = LiquidationCascadeGuard()
+    assert casc.check(
+        "BTCUSDC",
+        "BUY",
+        summary=SimpleNamespace(long_liq_usd=None, short_liq_usd=float("nan")),
+    ).allowed is True
+
+
+    # 4. GeopoliticalThreatAnalyzer & SentimentAdvisor _load_from_disk tolerate null JSON fields
+    geo_file = tmp_path / "geopolitical_eval.json"
+    geo_file.write_text(
+        json.dumps({
+            "threat_level": None,
+            "risk_score": None,
+            "summary": None,
+            "recommended_brake": None,
+            "headlines_analyzed": None,
+            "ts": now_curr,
+        }),
+        encoding="utf-8",
+    )
+    geo_analyzer = GeopoliticalThreatAnalyzer(state_file=str(geo_file), cache_ttl_sec=3600.0, fallback_retry_ttl_sec=120.0)
+    assert geo_analyzer._cached_assessment is not None
+    assert geo_analyzer._cached_assessment.threat_level == "NORMAL"
+    assert geo_analyzer._cached_assessment.recommended_brake == "NONE"
+    assert geo_analyzer._cached_assessment.headlines_analyzed == 0
+
+    adv_file = tmp_path / "sentiment_eval.json"
+    adv_file.write_text(
+        json.dumps({
+            "market_bias": None,
+            "risk_level": None,
+            "confidence": None,
+            "summary": None,
+            "key_risks": None,
+            "recommended_action": None,
+            "ts": now_curr,
+        }),
+        encoding="utf-8",
+    )
+    adv = SentimentAdvisor(cache_file=str(adv_file), cache_ttl_sec=3600.0)
+    assert adv._cached_assessment is not None
+    assert adv._cached_assessment.market_bias == "NEUTRAL"
+    assert adv._cached_assessment.recommended_action == "HOLD"
+    assert adv._cached_assessment.key_risks == []
+
+def test_smartstoplossguard_preserves_hard_disaster_floor_when_disaster_buffer_pct_nan_iter31_s5():
+    """[ITER31 #5] SmartStopLossGuard preserves Hard Disaster Floor when disaster_buffer_pct=NaN."""
+    import math
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    # 5. SmartStopLossGuard preserves Hard Disaster Floor when disaster_buffer_pct=NaN
+    ssl = SmartStopLossGuard(mode="enforce", max_threshold_pct=6.0, disaster_buffer_pct=0.85)
+    should_exec, reason, meta = ssl.evaluate(
+        "BTCUSDC",
+        price_decrease=0.04,       # 4.0% loss
+        lost_threshold=0.02925,    # 2.925% SL + 0.85% buf = 3.775% disaster floor
+        disaster_buffer_pct=float("nan"),
+        provider="sim",
+    )
+    assert should_exec is True
+    assert "hard_disaster_floor_breached" in reason
+    assert math.isfinite(meta["disaster_floor_pct"])
+
+def test_smartstoplossguard_evaluate_and_on_recovered_with_now_must_not_iter33_s1(monkeypatch):
+    """[ITER33 #1] SmartStopLossGuard.evaluate and on_recovered with now=0.0 must not invoke time.time()."""
+    import time
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    def _forbidden_time():
+        raise AssertionError("time.time() must not be invoked when an explicit finite timestamp is provided!")
+    # 1. SmartStopLossGuard.evaluate and on_recovered with now=0.0 must not invoke time.time()
+    ssl_guard = SmartStopLossGuard(mode="off")
+    monkeypatch.setattr(time, "time", _forbidden_time)
+    should_exec, reason, meta = ssl_guard.evaluate(
+        "BTCUSDC",
+        0.04,
+        0.03,
+        now=0.0,
+        provider="test",
+        current_price=96.0,
+        buy_price=100.0,
+    )
+    assert should_exec is True and meta["now"] == 0.0
+
+def test_smartstoplossguard_mode_false_handling_iter101_s3():
+    """[ITER101 #3] SmartStopLossGuard mode=False handling."""
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    # 3. SmartStopLossGuard mode=False handling
+    sslg = SmartStopLossGuard(mode=False)
+    ok_sl, reason_sl, _ = sslg.evaluate("BTCUSDC", 0.04, 0.03)
+    assert ok_sl is True and reason_sl == "smart_sl_disabled"
+
+def test_smartstoplossguard__is_simulated_provider_handles_uppercase_replay_mode_backtest_mode_and_mode_iter125_s2(monkeypatch):
+    """[ITER125 #2] SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode='true'."""
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard, _is_simulated_provider
+    # 2. SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode="true"
+    monkeypatch.setenv("REPLAY_MODE", "TRUE")
+    assert _is_simulated_provider("binance") is True
+    monkeypatch.delenv("REPLAY_MODE", raising=False)
+    sl_guard = SmartStopLossGuard(mode="true")
+    assert sl_guard.mode == "enforce"
+
+def test_smartstoplossguard_helper_deduplications_iter182_s4():
+    """[ITER182 #4] SmartStopLossGuard helper deduplications."""
+    from intelligence.external.guards.smart_stop_loss_guard import _format_price_part, _is_buy_price_changed
+    # 4. SmartStopLossGuard helper deduplications
+    assert _format_price_part(105.0, 100.0) == " | $105.00 (Last Buy Price: $100.00)"
+    assert _format_price_part(105.0, None) == " @ $105.00"
+    assert _format_price_part(None, None) == ""
+    assert _is_buy_price_changed(100.0, 100.0) is False
+    assert _is_buy_price_changed(100.0, 101.0) is True

@@ -629,3 +629,1133 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_bapi_allorders_get_trade_orders_bapi_trades_get_trade_orders_and_aggregate_trades_iter28_s2(monkeypatch):
+    """[ITER28 #2] bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades."""
+    import time
+    import threading
+    from types import SimpleNamespace
+    import cacheManager as cm
+    from binance_api import bapi_allorders, bapi_trades
+    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
+    tm.lock = threading.RLock()
+    tm.sync_account_reader_if_needed = lambda: None
+    tm.cache = {
+        "BTCUSDC": [
+            {
+                "symbol": "BTCUSDC",
+                "id": 101,
+                "orderId": 201,
+                "price": "88500.0",
+                "qty": "0.1",
+                "time": 1_700_000_000_000,
+                "isBuyer": False,
+            }
+        ]
+    }
+    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
+    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
+    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
+    cpm.cls_name = "CacheCurrentPriceManager"
+    cpm.lock = threading.RLock()
+    cpm.symbols = ["TAOUSD"]
+    cpm._provider_names = {"TAOUSD": "kraken"}
+    now_ms = int(time.time() * 1000)
+    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
+    assert cpm.provider_name_for("tao/usd") == "kraken"
+    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
+    assert obs is not None and obs[1] == 420.5
+    assert cpm.get_price_value("tao/usd") == 420.5
+    # 2. bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades
+    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda s: None)
+    monkeypatch.setattr(bapi_trades.sym, "validate_symbols", lambda s: None)
+    future_ts = now_ms + 3_600_000  # 1 hour in the future (clock skew)
+    valid_ts = now_ms - 10_000
+    fake_order_mgr = SimpleNamespace(
+        lock=threading.RLock(),
+        cache={
+            "BTCUSDC": [
+                {"orderId": 1, "price": 90000.0, "quantity": 0.1, "timestamp": future_ts, "side": "SELL"},
+                {"orderId": 2, "price": 0.0, "quantity": 0.1, "timestamp": valid_ts, "side": "SELL"},
+                {"orderId": 3, "price": 85000.0, "quantity": 0.2, "timestamp": valid_ts, "side": "SELL"},
+            ]
+        },
+    )
+    monkeypatch.setattr(cm, "get_cache_manager", lambda name, **kw: fake_order_mgr)
+    orders_out = bapi_allorders.get_trade_orders("SELL", "BTC/USDC", 300)
+    assert len(orders_out) == 1 and orders_out[0]["orderId"] == 3
+
+    fake_trade_mgr = SimpleNamespace(
+        lock=threading.RLock(),
+        cache={
+            "BTCUSDC": [
+                {"symbol": "BTCUSDC", "id": 1, "orderId": 1, "price": 90000.0, "qty": 0.1, "time": future_ts, "isBuyer": False},
+                {"symbol": "BTCUSDC", "id": 2, "orderId": 2, "price": 0.0, "qty": 0.1, "time": valid_ts, "isBuyer": False},
+                {"symbol": "BTCUSDC", "id": 3, "orderId": 3, "price": 86000.0, "qty": 0.3, "time": valid_ts, "isBuyer": False},
+            ]
+        },
+    )
+    monkeypatch.setattr(bapi_trades, "init_cache_trade_manager", lambda: fake_trade_mgr)
+    trades_out = bapi_trades.get_trade_orders("SELL", "BTC/USDC", 300)
+    assert len(trades_out) == 1 and trades_out[0]["id"] == 3
+
+def test_bapi_cancel_expired_orders_and_bapi_cancel_recent_orders_with_nan_bool_iter28_s3(monkeypatch):
+    """[ITER28 #3] bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time."""
+    import time
+    import threading
+    import cacheManager as cm
+    from binance_api import bapi
+    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
+    tm.lock = threading.RLock()
+    tm.sync_account_reader_if_needed = lambda: None
+    tm.cache = {
+        "BTCUSDC": [
+            {
+                "symbol": "BTCUSDC",
+                "id": 101,
+                "orderId": 201,
+                "price": "88500.0",
+                "qty": "0.1",
+                "time": 1_700_000_000_000,
+                "isBuyer": False,
+            }
+        ]
+    }
+    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
+    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
+    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
+    cpm.cls_name = "CacheCurrentPriceManager"
+    cpm.lock = threading.RLock()
+    cpm.symbols = ["TAOUSD"]
+    cpm._provider_names = {"TAOUSD": "kraken"}
+    now_ms = int(time.time() * 1000)
+    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
+    assert cpm.provider_name_for("tao/usd") == "kraken"
+    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
+    assert obs is not None and obs[1] == 420.5
+    assert cpm.get_price_value("tao/usd") == 420.5
+    # 3. bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time
+    canceled_ids = []
+    monkeypatch.setattr(bapi.sym, "validate_params", lambda ot, s: None)
+    monkeypatch.setattr(
+        bapi,
+        "get_open_orders",
+        lambda ot, s, **kw: {
+            501: {"time": now_ms - 5_000, "price": 80000.0, "qty": 0.1},
+            502: {"time": now_ms + 60_000, "price": 80000.0, "qty": 0.1},  # future timestamp
+        },
+    )
+    monkeypatch.setattr(bapi, "cancel_order", lambda s, oid: (canceled_ids.append(oid) or True))
+
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", 0)
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", -10)
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", float("nan"))
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", True)
+    assert canceled_ids == []
+
+def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_price_iter37_s2():
+    """[ITER37 #2] bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price."""
+    import pytest
+    from binance_api import bapi_placeorder as bp
+    # 2. bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", True, 1.0, 1.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, True, 1.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, 1.0, True)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", True, price=60000.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", 1.0, price=True)
+    with pytest.raises(bp.SubmissionRefused):
+        bp._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
+
+def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_ages_iter38_s1():
+    """[ITER38 #1] _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages."""
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_placeorder as bp
+    # 1. _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages
+    for bad_status in (
+        SimpleNamespace(order_age_sec=0.5, trade_age_sec=float("nan")),
+        SimpleNamespace(order_age_sec=float("nan"), trade_age_sec=0.5),
+        SimpleNamespace(order_age_sec=True, trade_age_sec=0.5),
+        SimpleNamespace(order_age_sec=-1.0, trade_age_sec=0.5),
+    ):
+        with pytest.raises(bp.SubmissionRefused):
+            bp._require_submit_permit_headroom(bad_status)
+
+def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_iter38_s2(monkeypatch):
+    """[ITER38 #2] cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price."""
+    import pytest
+    from binance_api import bapi_placeorder as bp
+    # 2. cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price
+    with pytest.raises(bp.SubmissionRefused):
+        bp.cancel_opposite_orders("BUY", "BTCUSDC", True)
+
+    canceled_ids = []
+    monkeypatch.setattr(
+        bp.api,
+        "get_open_orders",
+        lambda side, sym, **kw: {
+            "oid_zero": {"price": "0.00000000"},
+            "oid_adverse": {"price": "59000.0" if side == "SELL" else "61000.0"},
+        },
+    )
+    monkeypatch.setattr(bp.api, "cancel_order", lambda sym, oid: canceled_ids.append(oid) or True)
+    bp.cancel_opposite_orders("BUY", "BTCUSDC", 60000.0)
+    assert canceled_ids == ["oid_adverse"]
+    canceled_ids.clear()
+    bp.cancel_opposite_orders("SELL", "BTCUSDC", 60000.0)
+    assert canceled_ids == ["oid_adverse"]
+
+def test_binance_filters__decimal_rejects_bool_and__parse_bool_flag_handles_string_iter39_s1():
+    """[ITER39 #1] binance_filters._decimal rejects bool and _parse_bool_flag handles string 'false'."""
+    import pytest
+    from providers.quantity import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool_flag
+    # 1. binance_filters._decimal rejects bool and _parse_bool_flag handles string "false"
+    with pytest.raises(BinanceFilterError):
+        _decimal(True, name="qty")
+    assert _parse_bool_flag("false") is False
+    assert _parse_bool_flag("true") is True
+    rules = BinanceOrderRules.from_symbol_info({
+        "baseAsset": "BTC",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "1", "maxPrice": "1000000"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "100"},
+            {"filterType": "NOTIONAL", "minNotional": "10", "maxNotional": "100000", "applyMinToMarket": "false"},
+        ],
+    })
+    assert rules.min_notional_market is False
+
+def test_binanceprovider_position_cost_basis_order_status_cancel_order_reject_boolean_inputs_iter39_s3():
+    """[ITER39 #3] BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs."""
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.market_api import BinanceProvider
+    # 3. BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs
+    bp_prov = BinanceProvider()
+    with pytest.raises(ValueError):
+        bp_prov.position_cost_basis("BTCUSDC", 1.0, True)
+    with pytest.raises(ProviderError):
+        bp_prov.order_status("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        bp_prov.cancel_order("BTCUSDC", True)
+
+def test_bapi_get_current_price_ignores_nan_bool_cached_values_and_iter41_s2(monkeypatch):
+    """[ITER41 #2] bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id."""
+    import time
+    import pytest
+    from binance_api import bapi
+    # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order rejects bool order_id
+    monkeypatch.setitem(bapi.cprice, "BTCUSDC", float("nan"))
+    monkeypatch.setitem(bapi.cprice_time, "BTCUSDC", time.time())
+    monkeypatch.setattr(bapi, "update_price", lambda sym: 61234.5)
+    assert bapi.get_current_price("BTCUSDC") == pytest.approx(61234.5)
+    assert bapi.cancel_order("BTCUSDC", True) is False
+    assert bapi._convert_to_usdc("USDC", True) == 0.0
+
+def test_bapi_allorders_get_total_traded_stats_ignores_malformed_nan_bool_trades_and_iter41_s3(monkeypatch):
+    """[ITER41 #3] bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate."""
+    import pytest
+    from binance_api import bapi_allorders
+    # 3. bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate
+    monkeypatch.setattr(
+        bapi_allorders,
+        "get_trade_orders",
+        lambda order_type, symbol, max_age_seconds: [
+            {"side": "BUY", "price": 100.0, "quantity": 2.0},
+            {"side": "BUY", "price": float("nan"), "quantity": 5.0},
+            {"side": "SELL", "price": True, "quantity": 3.0},
+            "malformed",
+        ],
+    )
+    st = bapi_allorders.get_total_traded_stats("BTCUSDC", period_seconds=True)
+    assert st["BUY"]["total_quantity"] == pytest.approx(2.0)
+    assert st["BUY"]["total_value"] == pytest.approx(200.0)
+    assert st["SELL"]["trade_count"] == 0
+
+def test_bapi_ws_normalize_now_ms_true_nan_falls_back_to_current_iter42_s2():
+    """[ITER42 #2] bapi_ws_normalize: now_ms=True / NaN falls back to current epoch ms; boolean commission ignored."""
+    from binance_api import bapi_ws_normalize
+    # 2. bapi_ws_normalize: now_ms=True / NaN falls back to current epoch ms; boolean commission ignored
+    ev = {
+        "s": "BTCUSDC",
+        "x": "TRADE",
+        "X": "FILLED",
+        "S": "BUY",
+        "i": 1001,
+        "t": 2002,
+        "l": "0.5",
+        "L": "60000.0",
+        "n": True,
+        "N": False,
+    }
+    sym1, ord_row = bapi_ws_normalize.parse_order_execution_report(ev, now_ms=True)
+    assert sym1 == "BTCUSDC"
+    assert ord_row["timestamp"] > 1_700_000_000_000
+    sym2, ord_row2 = bapi_ws_normalize.parse_order_execution_report(ev, now_ms=float("nan"))
+    assert sym2 == "BTCUSDC"
+    assert ord_row2["timestamp"] > 1_700_000_000_000
+    sym3, tr_row = bapi_ws_normalize.parse_trade_execution_report(ev, now_ms=True)
+    assert sym3 == "BTCUSDC"
+    assert tr_row["time"] > 1_700_000_000_000
+    assert "commission" not in tr_row
+    assert "commissionAsset" not in tr_row
+
+def test_bapi_ws_health_mark_ws_event_received_ignores_bool_nan_and_falls_back_iter43_s1():
+    """[ITER43 #1] bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock."""
+    from binance_api import bapi_ws_bridge as bapi_ws_health
+    # 1. bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock
+    ts_bool = bapi_ws_health.mark_ws_event_received(True)
+    assert ts_bool > 1_700_000_000.0
+    ts_nan = bapi_ws_health.mark_ws_event_received(float("nan"))
+    assert ts_nan > 1_700_000_000.0
+
+def test_market_data_fetch_ohlc_candles_rejects_boolean_window_parameters_iter43_s2():
+    """[ITER43 #2] market_data.fetch_ohlc_candles rejects boolean window parameters."""
+    import pytest
+    from binance_api import market_data
+    # 2. market_data.fetch_ohlc_candles rejects boolean window parameters
+    with pytest.raises(ValueError):
+        market_data.fetch_ohlc_candles("BTCUSDC", start_ms=True)
+    with pytest.raises(ValueError):
+        market_data.fetch_ohlc_candles("BTCUSDC", lookback_days=True)
+
+def test_trailingstop_rejects_boolean_price_balance_trend_iter43_s5():
+    """[ITER43 #5] TrailingStop rejects boolean price/balance/trend."""
+    from types import SimpleNamespace
+    from binance_api import trailing_stop
+    # 5. TrailingStop rejects boolean price/balance/trend
+    dummy_api = SimpleNamespace(
+        get_current_price=lambda pair: True,
+        get_account_assets_balances=lambda: [{"asset": "BTC", "free": True, "locked": False}],
+    )
+    dummy_po = SimpleNamespace(position_cost_basis=lambda *a, **k: 50000.0)
+    dummy_sym = SimpleNamespace(symbols=["BTCUSDC"])
+    ts = trailing_stop.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled=False)
+    ts._balances = [{"asset": "BTC", "free": True, "locked": True}]
+    assert ts.price("BTCUSDC") is None
+    assert ts.free_qty("BTC") == 0.0
+    assert ts.total_qty("BTC") == 0.0
+    assert ts.cost_basis("BTCUSDC") is None
+
+def test_bapi_placeorder__submit_binance_order_rejects_bool_nan_inf_even_when_iter51_s1():
+    """[ITER51 #1] bapi_placeorder._submit_binance_order rejects bool/NaN/Inf/<=0 even when cache_permit is None."""
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_placeorder
+    # 1. bapi_placeorder._submit_binance_order rejects bool/NaN/Inf/<=0 even when cache_permit is None
+    dummy_bclient = SimpleNamespace(
+        order_limit_buy=lambda **kw: {"orderId": 1},
+        order_market_buy=lambda **kw: {"orderId": 2},
+    )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", True, price=50000.0, market=False, api_client=dummy_bclient
+        )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", 0.01, price=float("nan"), market=False, api_client=dummy_bclient
+        )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", float("nan"), price=None, market=True, api_client=dummy_bclient
+        )
+    with pytest.raises(ValueError):
+        bapi_placeorder.order_candidate_price("BUY", True, 100.0)
+    assert bapi_placeorder.order_candidate_price("BUY", 100.0, True) == 100.0
+    assert bapi_placeorder.order_candidate_price("BUY", 100.0, float("nan")) == 100.0
+
+def test_bapi_allorders_paginate_my_trades_rejects_bool_start_time_ms_normalizes_bool_limit_iter51_s2():
+    """[ITER51 #2] bapi_allorders.paginate_my_trades rejects bool start_time_ms & normalizes bool limit to 1000."""
+    from types import SimpleNamespace
+    from binance_api import bapi_allorders
+    # 2. bapi_allorders.paginate_my_trades rejects bool start_time_ms & normalizes bool limit to 1000
+    assert bapi_allorders.paginate_my_trades(SimpleNamespace(), "BTCUSDC", start_time_ms=True) == []
+    seen_limits = []
+    assert (
+        bapi_allorders.paginate_my_trades(
+            SimpleNamespace(get_my_trades=lambda **kw: seen_limits.append(kw["limit"]) or []),
+            "BTCUSDC",
+            start_time_ms=1000,
+            limit=True,
+        )
+        == []
+    )
+    assert seen_limits == [1000]
+
+def test_trailingstop_reconcile_pending_handles_nan_bool_filled_qty_and_req_qty_iter51_s3():
+    """[ITER51 #3] TrailingStop.reconcile_pending handles NaN/bool filled_qty and req_qty safely."""
+    from types import SimpleNamespace
+    from binance_api import trailing_stop
+    # 3. TrailingStop.reconcile_pending handles NaN/bool filled_qty and req_qty safely
+    ts = trailing_stop.TrailingStop(
+        api=SimpleNamespace(), po=SimpleNamespace(), sym=SimpleNamespace(symbols=[]), log=lambda _m: None
+    )
+    ts.order_lifecycle = SimpleNamespace(
+        reconcile=lambda pending, persist: SimpleNamespace(
+            outcome="terminal",
+            status=SimpleNamespace(status="closed", filled_qty=float("nan")),
+        )
+    )
+    st_dict = {"retry_counts": {}}
+    persist_fn = lambda _val: None
+    persist_fn.st = st_dict
+    pending_obj = {"symbol": "BTCUSDC", "action": "SELL", "submitted_qty": float("nan"), "attempt": True}
+    res = ts.reconcile_pending(pending_obj, persist_fn)
+    assert res.outcome == "terminal"
+    assert st_dict["retry_counts"]["SELL"] == 1
+
+def test_binance_api_market_data_parse_interval_minutes_fetch_ohlc_candles_reject_float_inf_nan_iter52_s1():
+    """[ITER52 #1] binance_api/market_data: parse_interval_minutes & fetch_ohlc_candles reject float/Inf/NaN/bool."""
+    import pytest
+    from binance_api import market_data as b_md
+    # 1. binance_api/market_data: parse_interval_minutes & fetch_ohlc_candles reject float/Inf/NaN/bool
+    with pytest.raises(ValueError):
+        b_md.parse_interval_minutes(float("inf"))
+    with pytest.raises(ValueError):
+        b_md.parse_interval_minutes(60.5)
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, timeout=True)
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, timeout=float("nan"))
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, end_ms=float("inf"))
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, start_ms=-5, end_ms=1000)
+
+def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_s1():
+    """[ITER58 #1] Binance TrailingStop._sync_retry_count_from_state & _order_intent."""
+    from unittest.mock import MagicMock
+    from binance_api.trailing_stop import TrailingStop
+    # 1. Binance TrailingStop._sync_retry_count_from_state & _order_intent
+    ts = object.__new__(TrailingStop)
+    ts._retry_counts = {}
+    ts.order_lifecycle = MagicMock()
+    ts.order_lifecycle.new_intent.side_effect = lambda **kw: kw
+    dummy_persist = type("P", (), {"st": {"retry_counts": {"SELL": True}}})()
+    ts._sync_retry_count_from_state("BTCUSDC", "SELL", dummy_persist)
+    assert ts._retry_counts.get(("BTCUSDC", "SELL"), 0) == 0
+    intent = ts._order_intent("SELL", "BTCUSDC", "BTC", "BTCUSDC", 0.1, 60000.0, anchor=None)
+    assert ":60000.00000000" in intent["intent_id"]
+
+def test_binanceprovider_open_orders_order_status_reject_bool_nan_iter58_s3(monkeypatch):
+    """[ITER58 #3] BinanceProvider.open_orders & order_status reject bool/NaN."""
+    import pytest
+    from unittest.mock import MagicMock
+    from providers.market_api import BinanceProvider
+    from providers.strategy_executor import ProviderError
+    # 3. BinanceProvider.open_orders & order_status reject bool/NaN
+    bp = BinanceProvider()
+    fake_bapi = MagicMock()
+    fake_bapi.client.get_open_orders.return_value = [{"orderId": 1, "price": float("nan"), "origQty": 1.0, "executedQty": 0.0}]
+    monkeypatch.setattr("providers.market_api._get_bapi", lambda: fake_bapi)
+    with pytest.raises(ProviderError):
+        bp.open_orders("BTCUSDC")
+
+    fake_bapi.client.get_order.return_value = {"status": "NEW", "executedQty": True, "cummulativeQuoteQty": 0.0, "origQty": 1.0}
+    with pytest.raises(ProviderError):
+        bp.order_status("BTCUSDC", "123")
+
+def test_parse_trade_execution_report_derives_price_from_y_z_when_l_iter61_s1():
+    """[ITER61 #1] parse_trade_execution_report derives price from Y/z when L, p, l are NaN/0."""
+    import pytest
+    from binance_api import bapi_ws_normalize
+    # 1. parse_trade_execution_report derives price from Y/z when L, p, l are NaN/0
+    sym_t, trd = bapi_ws_normalize.parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "X": "FILLED",
+            "t": 9,
+            "i": 11,
+            "l": "nan",
+            "z": "0.5",
+            "L": "nan",
+            "p": "0",
+            "Y": "25000",
+            "S": "BUY",
+            "T": 1000,
+        }
+    )
+    assert sym_t == "BTCUSDC"
+    assert float(trd["qty"]) == pytest.approx(0.5)
+    assert float(trd["price"]) == pytest.approx(50000.0)
+
+def test_bapi_client_sync_time_rejects_boolean_invalid_servertime_without_corrupting_iter61_s4(monkeypatch):
+    """[ITER61 #4] bapi_client.sync_time rejects boolean/invalid serverTime without corrupting timestamp_offset."""
+    from unittest.mock import MagicMock
+    from binance_api import bapi_client
+    # 4. bapi_client.sync_time rejects boolean/invalid serverTime without corrupting timestamp_offset
+    fake_bclient = MagicMock()
+    fake_bclient.timestamp_offset = 0
+    fake_bclient.get_server_time.return_value = {"serverTime": True}
+    monkeypatch.setattr(bapi_client, "_client", fake_bclient)
+    assert bapi_client.sync_time(safety_margin_ms=float("nan")) is None
+    assert fake_bclient.timestamp_offset == 0
+
+def test_binancepricestream__process_message_rejects_non_integer_e_timestamps_and_iter67_s1():
+    """[ITER67 #1] BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E."""
+    import json
+    from binance_api.bapi_ws import BinancePriceStream
+    # 1. BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E
+    ps = BinancePriceStream(symbols=["BTCUSDC"])
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64600.25", "E": "not-an-int"}}))
+    assert ps.get_price("BTCUSDC") is None
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64500.5", "E": 1700000000000}}))
+    assert ps.get_price("BTCUSDC") == 64500.5
+
+def test_binanceaccountstream__watchdog_loop_handles__last_event_ts_age_inf_without_overflowerror_iter67_s2():
+    """[ITER67 #2] BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError."""
+    from binance_api.bapi_ws import BinanceAccountStream
+    # 2. BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError
+    unhealthy_called = []
+    acc_stream = BinanceAccountStream(
+        on_event=lambda _e: None,
+        on_unhealthy=lambda: (unhealthy_called.append(True), acc_stream._stop_event.set()),
+        loss_timeout_sec=0.01,
+    )
+    acc_stream._available = True
+    acc_stream._healthy = True
+    acc_stream._last_event_ts = 0.0
+    acc_stream._watchdog_loop()
+    assert unhealthy_called == [True]
+
+def test_bapi_ws_normalize_strips_uppercases_symbols_rejects_whitespace_symbols_and_iter82_s2():
+    """[ITER82 #2] bapi_ws_normalize strips/uppercases symbols, rejects whitespace symbols, and replaces negative timestamps with fallback."""
+    from binance_api import bapi_ws_normalize
+    # 2. bapi_ws_normalize strips/uppercases symbols, rejects whitespace symbols, and replaces negative timestamps with fallback
+    assert bapi_ws_normalize.parse_order_execution_report({"s": "   ", "x": "TRADE", "X": "FILLED", "t": 1}) is None
+    res_order = bapi_ws_normalize.parse_order_execution_report(
+        {"s": " btcusdc ", "x": "TRADE", "X": "FILLED", "t": 42, "i": 100, "L": "65000", "l": "0.01", "T": -50},
+        now_ms=1700000000000,
+    )
+    assert res_order is not None
+    sym, order_item = res_order
+    assert sym == "BTCUSDC"
+    assert order_item["symbol"] == "BTCUSDC"
+    assert order_item["timestamp"] == 1700000000000
+
+    assert bapi_ws_normalize.parse_trade_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "t": "   ", "i": None}
+    ) is None
+
+def test_providers_binance_filters__parse_bool_flag_handles_nan_and_binanceorderrules_rejects_iter85_s3():
+    """[ITER85 #3] providers.binance_filters._parse_bool_flag handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset."""
+    import pytest
+    from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
+    # 3. providers.binance_filters._parse_bool_flag handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset
+    assert _parse_bool_flag(float("nan"), default=False) is False
+    assert _parse_bool_flag("unknown", default=True) is True
+    with pytest.raises(BinanceFilterError, match="baseAsset and quoteAsset must not be boolean"):
+        BinanceOrderRules.from_symbol_info({
+            "baseAsset": True,
+            "quoteAsset": "USDC",
+            "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "0.01", "maxPrice": "100000"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "1000"},
+            ],
+        })
+
+def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_iter86_s2(monkeypatch):
+    """[ITER86 #2] BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY & BinanceProvider.order_status normalizes lowercase/whitespace venue status."""
+    import pytest
+    from providers.strategy_executor import SubmissionRefused
+    from providers.market_api import BinanceProvider
+    import providers.market_api as market_api_mod
+    # 2. BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY
+    bp = BinanceProvider()
+    for bad_side in ("", None, "HOLD", "bad", True):
+        with pytest.raises(SubmissionRefused, match="invalid_side"):
+            bp.submit_order("BTCUSDC", bad_side, 0.01, price=65000.0)
+
+
+    # 3. BinanceProvider.order_status normalizes lowercase/whitespace venue status
+    class _FakeClient:
+        def get_order(self, symbol, orderId):
+            return {
+                "status": " filled ",
+                "executedQty": "0.0",
+                "cummulativeQuoteQty": "0.0",
+                "origQty": "1.0",
+            }
+
+    class _FakeBapi:
+        client = _FakeClient()
+
+    monkeypatch.setattr(market_api_mod, "_get_bapi", lambda: _FakeBapi())
+    st = bp.order_status("BTCUSDC", "12345")
+    assert st.status == "closed"
+    assert st.venue_status == "FILLED"
+
+def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractional_decimals_in_iter96_s3():
+    """[ITER96 #3] MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price & ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation & resolve_assets & balance_cap_quantity bool rejection & BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price."""
+    import pytest
+    from providers.base import MarketDataProvider
+    from providers.market_api import BinanceProvider, MarketApi
+    from providers.quantity import balance_cap_quantity, resolve_assets
+    from providers.replay_provider import ReplayMarketDataProvider
+    from providers.strategy_executor import ProviderError
+    # 3. MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price
+    class _DummyProvider(MarketDataProvider):
+        name = "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def get_price_history(self, symbol: str, lookback_h: float):
+            return []
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 100.0
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return [{"side": side or "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000}]
+
+        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+            return None
+
+        def pair_precision(self, symbol: str):
+            return type("PP", (), {"volume_decimals": 2.5, "price_decimals": 3.5, "order_min": 0.01})()
+
+    dp = _DummyProvider()
+    assert dp.last_opposite_fill("BTCUSDC", True) is None
+    assert dp.last_opposite_fill("BTCUSDC", "INVALID") is None
+    assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(100.0)
+    assert dp.round_quantity("BTCUSDC", 1.23456) == pytest.approx(1.23456)
+    assert dp.round_price("BTCUSDC", 1.23456) == pytest.approx(1.23456)
+
+
+    # 4. ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (2000.0, 51000.0)]})
+    assert rp.advance("BTCUSDC", 1.5) is None
+    assert rp.advance("BTCUSDC", 1) == pytest.approx(50000.0)
+    rp.place_order("BTCUSDC", "BUY", 50000.0, 1.5)
+    assert rp.free_balance(" btc ") == pytest.approx(1.5)
+    assert rp.free_balance(True) == 0.0
+    assert rp.get_orders("BTCUSDC", True, 3600.0) == []
+    assert rp.get_orders("BTCUSDC", "INVALID", 3600.0) == []
+    assert len(rp.get_orders("BTCUSDC", "BUY", 3600.0)) == 1
+
+
+    # 5. resolve_assets & balance_cap_quantity bool rejection
+    assert resolve_assets("BTCUSDC", base=True, quote=False) == ("BTC", "USDC")
+    with pytest.raises(ValueError, match="side must be BUY or SELL"):
+        balance_cap_quantity(lambda _a: 100.0, "BTCUSDC", True, 100.0)
+
+
+    # 6. BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price
+    bp = BinanceProvider()
+    assert bp.supports_symbol(None) is False
+    assert bp.supports_symbol(True) is False
+    assert bp.supports_symbol(" btcusdc ") is True
+    assert bp.supports_symbol(" hypeusdc ") is False
+    with pytest.raises(ProviderError, match="invalid order id"):
+        bp.order_status("BTCUSDC", 123.7)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        bp.cancel_order("BTCUSDC", 123.7)
+
+    ma = MarketApi([dp])
+    with pytest.raises(ValueError, match="side must be BUY or SELL"):
+        ma.latest_fill_price("BTCUSDC", True, 60.0)
+
+def test_bapi_placeorder_order_candidate_price_supports_b_s_and_rejects_bool_iter106_s4():
+    """[ITER106 #4] bapi_placeorder: order_candidate_price supports 'b'/'s' and rejects bool."""
+    from binance_api import bapi_placeorder as bpo
+    # 4. bapi_placeorder: order_candidate_price supports 'b'/'s' and rejects bool
+    assert bpo.order_candidate_price(" b ", 100.0, 95.0) == 95.0
+    assert bpo.order_candidate_price(" s ", 100.0, 105.0) == 105.0
+
+def test_bapi_ws_normalize_parse_order_execution_report_rejects_non_integer_float_orderid_or_iter108_s2():
+    """[ITER108 #2] bapi_ws_normalize: parse_order_execution_report rejects non-integer float orderId or boolean side."""
+    from binance_api import bapi_ws_normalize as ws_norm
+    # 2. bapi_ws_normalize: parse_order_execution_report rejects non-integer float orderId or boolean side
+    assert ws_norm.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": float("nan"), "S": "BUY", "l": "1.0", "L": "100.0"}
+    ) is None
+    assert ws_norm.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": 200, "S": True, "l": "1.0", "L": "100.0"}
+    ) is None
+
+    # parse_trade_execution_report sanitizes fallback trade_id and commission fields
+    res_trade = ws_norm.parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": None,
+            "i": 555,
+            "T": True,
+            "L": "100.0",
+            "l": "1.0",
+            "n": "nan",
+            "N": 12345,
+        },
+        now_ms=1700000000000,
+    )
+    assert res_trade is not None
+    _sym, trade_row = res_trade
+    assert trade_row["id"] == "555-1700000000000"
+    assert "commission" not in trade_row
+    assert "commissionAsset" not in trade_row
+
+def test_bapi_ws_bridge_handle_binance_ws_event_ignores_unhashable_or_boolean_event_types_iter108_s3():
+    """[ITER108 #3] bapi_ws_bridge: handle_binance_ws_event ignores unhashable or boolean event types."""
+    from binance_api import bapi_ws_bridge as ws_bridge
+    # 3. bapi_ws_bridge: handle_binance_ws_event ignores unhashable or boolean event types
+    ws_bridge.handle_binance_ws_event({"e": ["unhashable"]})
+    ws_bridge.handle_binance_ws_event({"e": True})
+
+def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109_s4(tmp_path):
+    """[ITER109 #4] binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards."""
+    from types import SimpleNamespace
+    from binance_api import trailing_stop as bts
+    # 4. binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards
+    dummy_api = SimpleNamespace()
+    dummy_po = SimpleNamespace()
+    dummy_sym = SimpleNamespace(symbols=["BTCUSDC"])
+    ts = bts.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled="false", state_file=str(tmp_path / "trail.json"))
+    assert ts.enabled is False
+    assert ts.rebuy_enabled_for(True) is False
+    assert ts.rebuy_configured_for(True) is False
+
+def test_binanceprovider_open_orders_rejects_missing_bool_orderid_and_bool_iter112_s1(monkeypatch):
+    """[ITER112 #1] BinanceProvider.open_orders rejects missing/bool orderId and bool status/side."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    import providers.market_api as ma
+    # 1. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
+    b_prov = ma.BinanceProvider()
+    monkeypatch.setattr(
+        ma,
+        "_get_bapi",
+        lambda: SimpleNamespace(
+            client=SimpleNamespace(
+                get_open_orders=lambda symbol: [{"orderId": None, "price": "100", "origQty": "1", "executedQty": "0"}]
+            )
+        ),
+    )
+    with pytest.raises(ProviderError):
+        b_prov.open_orders("BTCUSDC")
+
+def test_bapi_placeorder__normalize_side_and__last_opposite_fill_price_api_iter115_s1():
+    """[ITER115 #1] bapi_placeorder._normalize_side and _last_opposite_fill_price_api."""
+    import pytest
+    import binance_api.bapi_placeorder as bpo
+    # 1. bapi_placeorder._normalize_side and _last_opposite_fill_price_api
+    assert bpo._normalize_side(" b ") == "BUY"
+    assert bpo._normalize_side(" s ") == "SELL"
+    with pytest.raises( bpo.SubmissionRefused ):
+        bpo.apply_weight_limit("BTCUSDC", True, 100.0, 1.0, 2.0)
+    with pytest.raises( bpo.SubmissionRefused ):
+        bpo.apply_weight_limit("BTCUSDC", "INVALID", 100.0, 1.0, 2.0)
+    with pytest.raises(ValueError):
+        bpo._last_opposite_fill_price_api("BTCUSDC", "INVALID")
+    with pytest.raises(ValueError):
+        bpo._last_opposite_fill_price_api("BTCUSDC", True)
+
+def test_binancewsbase_stop_timeout_and_binanceaccountstream_keepalive_sec_loss_timeout_sec_iter117_s3():
+    """[ITER117 #3] BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec."""
+    from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream, WS_USERDATA_KEEPALIVE_SEC, WS_USERDATA_LOSS_TIMEOUT_SEC
+    # 3. BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec
+    ps = BinancePriceStream(["BTCUSDC"])
+    ps.stop(timeout=float("nan"))
+    ps.stop(timeout=True)
+    acc_stream = BinanceAccountStream(
+        on_event=lambda *a: None,
+        keepalive_sec=True,
+        loss_timeout_sec=-5.0,
+    )
+    assert acc_stream.keepalive_sec == float(WS_USERDATA_KEEPALIVE_SEC)
+    assert acc_stream.loss_timeout_sec == float(WS_USERDATA_LOSS_TIMEOUT_SEC)
+
+def test_parse_order_execution_report_rejects_none_or_orderid_iter117_s4():
+    """[ITER117 #4] parse_order_execution_report rejects None or <= 0 orderId."""
+    from binance_api.bapi_ws_normalize import parse_order_execution_report
+    # 4. parse_order_execution_report rejects None or <= 0 orderId
+    base_exec = {
+        "e": "executionReport",
+        "s": "BTCUSDC",
+        "x": "TRADE",
+        "X": "FILLED",
+        "t": 101,
+        "S": "BUY",
+        "l": "1.0",
+        "z": "1.0",
+        "L": "50000.0",
+        "Z": "50000.0",
+        "T": 1700000000000,
+    }
+    assert parse_order_execution_report({**base_exec, "i": None}) is None
+    assert parse_order_execution_report({**base_exec, "i": 0}) is None
+    assert parse_order_execution_report({**base_exec, "i": "-5"}) is None
+    parsed_exec = parse_order_execution_report({**base_exec, "i": 42})
+    assert parsed_exec is not None and parsed_exec[1]["orderId"] == 42
+
+def test_bapi_allorders_paginate_my_trades_symbol_validation_and_limit_cap_at_iter120_s1():
+    """[ITER120 #1] bapi_allorders.paginate_my_trades symbol validation and limit cap at 1000."""
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_allorders
+    # 1. bapi_allorders.paginate_my_trades symbol validation and limit cap at 1000
+    assert bapi_allorders.paginate_my_trades(object(), "", 1000) == []
+    assert bapi_allorders.paginate_my_trades(object(), True, 1000) == []
+    with pytest.raises(ValueError, match="symbol must be a non-empty string"):
+        bapi_allorders.paginate_my_trades(object(), "  ", 1000, strict=True)
+    captured_kw = {}
+    dummy_api = SimpleNamespace(get_my_trades=lambda **kw: captured_kw.update(kw) or [])
+    bapi_allorders.paginate_my_trades(dummy_api, " btcusdc ", 1000, limit=5000)
+    assert captured_kw["symbol"] == "BTCUSDC"
+    assert captured_kw["limit"] == 1000
+
+def test_parse_trade_execution_report_does_not_leak_invalid_event_i_into_iter120_s2():
+    """[ITER120 #2] parse_trade_execution_report does not leak invalid event['i'] into trade_item['orderId']."""
+    from binance_api.bapi_ws_normalize import parse_trade_execution_report
+    # 2. parse_trade_execution_report does not leak invalid event["i"] into trade_item["orderId"]
+    res = parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": 999,
+            "i": float("nan"),
+            "L": "50000.0",
+            "l": "0.1",
+            "T": 1700000000000,
+        }
+    )
+    assert res is not None
+    assert res[1]["orderId"] is None
+    res2 = parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": 999,
+            "i": -5,
+            "L": "50000.0",
+            "l": "0.1",
+            "T": 1700000000000,
+        }
+    )
+    assert res2 is not None and res2[1]["orderId"] is None
+
+def test_bapi_trades__valid_fill_id_rejects_containers_non_integer_floats_and_iter130_s1():
+    """[ITER130 #1] bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats."""
+    from binance_api import bapi_trades
+    # 1. bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats
+    assert bapi_trades._valid_fill_id(777.0) == 777
+    assert bapi_trades._valid_fill_id(12.5) is None
+    assert bapi_trades._valid_fill_id("nan") is None
+    assert bapi_trades._valid_fill_id("null") is None
+    assert bapi_trades._valid_fill_id({"a": 1}) is None
+    assert bapi_trades._valid_fill_id([123]) is None
+
+def test_bapi_placeorder__submit_binance_order_replaces_boolean_blank_client_order_id_and_tolerates_iter130_s4(monkeypatch):
+    """[ITER130 #4] bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key."""
+    from types import SimpleNamespace
+    from binance_api import bapi_placeorder
+    # 4. bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key
+    captured = {}
+
+    def _fake_limit_buy(**kw):
+        captured.update(kw)
+        return {"id": "ord-999"}
+
+    fake_api = SimpleNamespace(order_limit_buy=_fake_limit_buy)
+    monkeypatch.setattr(bapi_placeorder.sym, "validate_symbols", lambda _s: None)
+    monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
+    monkeypatch.setattr(bapi_placeorder.rc, "create_client_order_id", lambda: "AUTO_CID_1")
+    res = bapi_placeorder._submit_binance_order(
+        "BUY", "BTCUSDC", 1.0, price=100.0, client_order_id=True, api_client=fake_api
+    )
+    assert res == {"id": "ord-999"}
+    assert captured["newClientOrderId"] == "AUTO_CID_1"
+
+def test_bapi_ws_normalize_rejects_sentinel_strings_nan_null_and_containers_iter131_s2():
+    """[ITER131 #2] bapi_ws_normalize rejects sentinel strings ('0', 'nan', 'null') and containers for order/trade IDs."""
+    from binance_api import bapi_ws_normalize
+    # 2. bapi_ws_normalize rejects sentinel strings ("0", "nan", "null") and containers for order/trade IDs
+    assert (
+        bapi_ws_normalize.parse_order_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "nan", "t": 10, "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_order_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "0", "t": 10, "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_trade_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "null", "t": "nan", "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_trade_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": [1], "t": {"a": 1}, "l": "1", "L": "100"}
+        )
+        is None
+    )
+
+def test_bapi_get_current_price_normalizes_symbol_casing_whitespace_to_hit_iter133_s1():
+    """[ITER133 #1] bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache."""
+    import pytest
+    from binance_api import bapi
+    # 1. bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache
+    bapi.cprice["BTCUSDC"] = 64000.0
+    bapi.cprice_time["BTCUSDC"] = bapi.time.time()
+    assert bapi.get_current_price(" btcusdc ") == pytest.approx(64000.0)
+
+def test_bapi_get_open_orders_rejects_sentinel_container_orderid_and_normalizes_iter133_s2(monkeypatch):
+    """[ITER133 #2] bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId."""
+    from types import SimpleNamespace
+    from binance_api import bapi
+    # 2. bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId
+    monkeypatch.setattr(bapi.sym, "validate_params", lambda *_a: None)
+    monkeypatch.setattr(
+        bapi,
+        "client",
+        SimpleNamespace(
+            get_open_orders=lambda symbol: [
+                {"orderId": "nan", "side": "BUY", "price": "100", "origQty": "1"},
+                {"orderId": {"bad": 1}, "side": "BUY", "price": "100", "origQty": "1"},
+                {"orderId": 444.0, "side": "BUY", "price": "100", "origQty": "1"},
+            ],
+            cancel_order=lambda **kw: (_ for _ in ()).throw(AssertionError(f"Should not cancel {kw}")),
+        ),
+    )
+    open_ords = bapi.get_open_orders("BUY", "BTCUSDC")
+    assert list(open_ords.keys()) == [444]
+
+def test_bapi_cancel_order_rejects_sentinel_strings_nan_null_and_iter133_s3():
+    """[ITER133 #3] bapi.cancel_order rejects sentinel strings ('nan', 'null') and containers."""
+    from binance_api import bapi
+    # 3. bapi.cancel_order rejects sentinel strings ("nan", "null") and containers
+    assert bapi.cancel_order("BTCUSDC", "nan") is False
+    assert bapi.cancel_order("BTCUSDC", "null") is False
+    assert bapi.cancel_order("BTCUSDC", {"a": 1}) is False
+
+def test_bapi_client_stop_periodic_resync_tolerates_boolean_nan_negative_timeout_iter133_s4():
+    """[ITER133 #4] bapi_client.stop_periodic_resync tolerates boolean/NaN/negative timeout."""
+    from binance_api import bapi_client
+    # 4. bapi_client.stop_periodic_resync tolerates boolean/NaN/negative timeout
+    assert bapi_client.stop_periodic_resync(timeout=True) is True
+    assert bapi_client.stop_periodic_resync(timeout=float("nan")) is True
+    assert bapi_client.stop_periodic_resync(timeout=-5.0) is True
+
+def test_providers_binance_filters_py_binanceorderrules_normalize_string_boolean_market_iter154_s4():
+    """[ITER154 #4] providers/binance_filters.py: BinanceOrderRules.normalize string boolean market='false'."""
+    from decimal import Decimal
+    from providers.quantity import BinanceOrderRules
+    # 4. providers/binance_filters.py: BinanceOrderRules.normalize string boolean market="false"
+    rules = BinanceOrderRules.from_symbol_info({
+        "baseAsset": "BTC",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.10", "minPrice": "1.0", "maxPrice": "1000000.0"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01", "maxQty": "1000.0"},
+        ],
+    })
+    norm_qty, norm_px = rules.normalize(quantity="1.234", price="100.56", market="false")  # type: ignore[arg-type]
+    assert norm_qty == Decimal("1.23")
+    assert norm_px == Decimal("100.50")
+
+def test_bapi_cancel_order_check_order_filled_and_get_open_orders_reject_negative_orderids_iter159_s3(monkeypatch):
+    """[ITER159 #3] bapi: cancel_order, check_order_filled, and get_open_orders reject '0'/negative orderIds and parse bool flags."""
+    from types import SimpleNamespace
+    from binance_api import bapi
+    # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
+    monkeypatch.setattr(
+        bapi,
+        "client",
+        SimpleNamespace(
+            cancel_order=lambda **kw: (_ for _ in ()).throw(AssertionError("should not call cancel")),
+            get_open_orders=lambda symbol: [
+                {"orderId": 0, "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+                {"orderId": "0.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+                {"orderId": "777.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000, "clientOrderId": "None"},
+            ],
+        ),
+    )
+    assert bapi.cancel_order("BTCUSDC", 0) is False
+    assert bapi.cancel_order("BTCUSDC", "0.0") is False
+    assert bapi.cancel_order("BTCUSDC", -5) is False
+
+    open_map = bapi.get_open_orders("BUY", "BTCUSDC", strict="false")
+    assert list(open_map.keys()) == ["777"]
+    assert open_map["777"]["clientOrderId"] == ""
+
+def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_market_false_and_iter159_s4(monkeypatch):
+    """[ITER159 #4] bapi_placeorder: order_candidate_price and _submit_binance_order handle market='false' and client_order_id='0'."""
+    from binance_api import bapi_placeorder
+    # 4. bapi_placeorder: order_candidate_price and _submit_binance_order handle market="false" and client_order_id="0"
+    assert bapi_placeorder.order_candidate_price("BUY", 60000.0, 60100.0, market="false") == 60000.0
+    captured_submit = {}
+
+    class _DummyBinanceClient:
+        def order_limit_buy(self, **kw):
+            captured_submit.update(kw)
+            return {"orderId": 888}
+
+    monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
+    res_order = bapi_placeorder._submit_binance_order(
+        "BUY",
+        "BTCUSDC",
+        0.01,
+        price=60000.0,
+        market="false",
+        client_order_id="0",
+        api_client=_DummyBinanceClient(),
+    )
+    assert res_order == {"orderId": 888}
+    assert captured_submit["newClientOrderId"] != "0"
+
+def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders_does_iter159_s5(monkeypatch):
+    """[ITER159 #5] bapi_allorders: paginate_my_trades accepts '100.0' tail id and get_filled_orders does not group orderId=0 fills."""
+    import time
+    from binance_api import bapi_allorders
+    # 5. bapi_allorders: paginate_my_trades accepts "100.0" tail id and get_filled_orders does not group orderId=0 fills
+    pages = [
+        [{"id": "100.0", "orderId": 0, "price": "100.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
+        [{"id": "101", "orderId": "0.0", "price": "200.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
+    ]
+
+    class _PagerClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get_my_trades(self, **kw):
+            idx = self.calls
+            self.calls += 1
+            return pages[idx] if idx < len(pages) else []
+
+    pager = _PagerClient()
+    monkeypatch.setattr(bapi_allorders.time, "sleep", lambda _s: None)
+    all_trades = bapi_allorders.paginate_my_trades(pager, "BTCUSDC", int(time.time() * 1000) - 10000, limit=1, strict="false")
+    assert len(all_trades) == 2
+
+def test_providers_market_api_binanceprovider_ohlc_series_with_marketapi_provider_by_name_with_iter164_s2(monkeypatch):
+    """[ITER164 #2] providers.market_api: BinanceProvider.ohlc_series with '15.0', MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot='false')."""
+    from types import SimpleNamespace
+    from providers import market_api as mapi
+    # 2. providers.market_api: BinanceProvider.ohlc_series with "15.0", MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot="false")
+    bp = mapi.BinanceProvider()
+    fake_klines = [[0, "1", "2", "0.5", "100.0", "10", 1700000000000] for _ in range(25)]
+    monkeypatch.setattr(
+        mapi,
+        "_get_bapi",
+        lambda: SimpleNamespace(client=SimpleNamespace(get_klines=lambda **kw: fake_klines)),
+    )
+    series = bp.ohlc_series("BTCUSDC", "15.0")
+    assert series.interval_min == 15 and len(series.closes) == 24
+    assert mapi.api.provider_by_name(bp) is not None
+
+    snap_called = []
+    custom_api = mapi.MarketApi(
+        [bp],
+        regime_snapshot_resolver=lambda sym, now=None: (snap_called.append(sym), None)[1],
+    )
+    custom_api.market_regime_context("BTCUSDC", use_runtime_snapshot="false", allow_fallback="false", now=1700000000.0)
+    assert snap_called == []
+
+def test_bapi_ws_health__parse_bool_flag_value_default_bapi_ws_bridge_handle_binance_ws_event_log_enabled_true_iter166_s4():
+    """[ITER166 #4] bapi_ws_health._parse_bool_flag(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)."""
+    from binance_api import bapi_ws_bridge as ws_health
+    from binance_api import bapi_ws_bridge as ws_bridge
+    # 4. bapi_ws_health._parse_bool_flag(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
+    assert ws_health._parse_bool_flag("unknown", default=True) is True
+    assert ws_health._parse_bool_flag("false", default=True) is False
+    persisted = []
+    ws_bridge.handle_binance_ws_event(
+        {"e": "executionReport", "s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": 123},
+        log_enabled=True,
+        upsert_order_fn=lambda ev: True,
+        append_trade_fn=lambda ev: True,
+        persist_fn=lambda et: persisted.append(et),
+    )
+    assert persisted == ["executionReport"]
+
+def test_binancepricestream_with_scalar_string_symbols_and_slash_formatted_iter167_s3():
+    """[ITER167 #3] BinancePriceStream with scalar string symbols and slash-formatted symbol methods."""
+    import pytest
+    from binance_api import bapi_ws as bws
+    # 3. BinancePriceStream with scalar string symbols and slash-formatted symbol methods
+    ps = bws.BinancePriceStream("btc/usdc")
+    assert ps.running_symbols == {"BTCUSDC"}
+    assert ps.add_symbol("tao/usdc") is True
+    assert "TAOUSDC" in ps.running_symbols
+    ps._prices["TAOUSDC"] = 450.0
+    assert ps.get_price(" tao/usdc ") == pytest.approx(450.0)
+    assert ps.remove_symbol("tao/usdc") is True
+    assert "TAOUSDC" not in ps.running_symbols
+
+def test_binance_filters_decimal_places_with_decimal_str_float_and_invalid_iter168_s1():
+    """[ITER168 #1] binance_filters.decimal_places with Decimal, str, float, and invalid inputs."""
+    import pytest
+    from decimal import Decimal
+    from providers import quantity as bf
+    # 1. binance_filters.decimal_places with Decimal, str, float, and invalid inputs
+    assert bf.decimal_places(Decimal("0.001")) == 3
+    assert bf.decimal_places("0.0001") == 4
+    assert bf.decimal_places(0.01) == 2
+    assert bf._parse_bool_flag("", default=True) is True
+    assert bf._parse_bool_flag("y", default=False) is True
+    assert bf._parse_bool_flag("n", default=True) is False
+    with pytest.raises(bf.BinanceFilterError):
+        bf.decimal_places(True)
+    with pytest.raises(bf.BinanceFilterError):
+        bf.decimal_places(0)
+
+def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock_and_iter185_s2():
+    """[ITER185 #2] bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants."""
+    import threading
+    from binance_api import bapi_allorders as ao
+    # 2. bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants
+    class DummyCacheManager:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.cache = {"BTCUSDC": [{"orderId": 100, "status": "FILLED"}]}
+            self.sync_called = False
+
+        def sync_account_reader_if_needed(self):
+            self.sync_called = True
+
+    mgr = DummyCacheManager()
+    rows = ao.snapshot_cache_symbol_rows(mgr, "BTC/USDC")
+    assert mgr.sync_called is True
+    assert rows == [{"orderId": 100, "status": "FILLED"}]
+    # Ensure rows are defensive copies (mutating snapshot does not mutate cache)
+    rows[0]["status"] = "CANCELED"
+    assert mgr.cache["BTCUSDC"][0]["status"] == "FILLED"
+
+def test_market_data_fetch_ohlc_candles_discards_candles_with_inverted_timestamps_close_time_iter185_s4(monkeypatch):
+    """[ITER185 #4] market_data.fetch_ohlc_candles discards candles with inverted timestamps (close_time < open_time)."""
+    import binance_api.market_data as md
+    # 4. market_data.fetch_ohlc_candles discards candles with inverted timestamps (close_time < open_time)
+    fake_klines = [
+        [1000, "10.0", "15.0", "9.0", "12.0", "1.0", 900, "12.0", 1, "0.5", "6.0", "0"],
+        [2000, "12.0", "18.0", "11.0", "17.0", "2.0", 2500, "34.0", 2, "1.0", "17.0", "0"],
+    ]
+    monkeypatch.setattr(md, "fetch_public_json", lambda *a, **kw: fake_klines)
+    candles = md.fetch_ohlc_candles("BTCUSDC", "1h", start_ms=1000, end_ms=3000)
+    assert len(candles) == 1
+    assert candles[0]["timestamp"] == 2
+    assert candles[0]["close"] == 17.0

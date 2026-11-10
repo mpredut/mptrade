@@ -2229,3 +2229,274 @@ class TestAtomicWrite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_cachelongtrendmanager_get_remote_items_resolves_taousd_taousdc_from_priceanalysis_json_iter6_s2(tmp_path, monkeypatch):
+    """[ITER6 #2] CacheLongTrendManager.get_remote_items resolves TAOUSD -> TAOUSDC from priceanalysis.json."""
+    import json
+    import cacheManager as cm
+    # 2. CacheLongTrendManager.get_remote_items resolves TAOUSD -> TAOUSDC from priceanalysis.json
+    pa_dir = tmp_path / "pa"
+    pa_dir.mkdir()
+    (pa_dir / "priceanalysis.json").write_text(
+        json.dumps({"TAOUSDC": {"timestamp": 1700000000, "direction": "up", "duration_seconds": 86400}}),
+        encoding="utf-8",
+    )
+    lt = cm.CacheLongTrendManager(60, ["TAOUSD"], str(pa_dir / "cache_long_trend.json"), read_only=True)
+    monkeypatch.setattr(cm, "_CONFIG_ROOT", str(pa_dir))
+    assert lt.get_remote_items("TAOUSD", 0) == [{"timestamp": 1700000000, "direction": "up", "duration_seconds": 86400}]
+
+def test_normalize_cache_base_asset_preserves_usdcusdt_and_strips_ron_gbp_quotes_iter13_s2():
+    """[ITER13 #2] normalize_cache_base_asset preserves USDCUSDT and strips RON/GBP quotes."""
+    from cachepaths import normalize_cache_base_asset
+    # 2. normalize_cache_base_asset preserves USDCUSDT and strips RON/GBP quotes
+    assert normalize_cache_base_asset("USDCUSDT") == "USDCUSDT"
+    assert normalize_cache_base_asset("USDC/USDT") == "USDCUSDT"
+    assert normalize_cache_base_asset("BTCRON") == "BTC"
+    assert normalize_cache_base_asset("ETHGBP") == "ETH"
+
+def test_cachetrend__short_trend_symbol_variants_preserves_usdcusdt_intact_and_strips_ron_iter14_s4():
+    """[ITER14 #4] cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP."""
+    from cachetrend import _short_trend_symbol_variants
+    # 4. cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP
+    assert _short_trend_symbol_variants("USDCUSDT") == ["USDCUSDT"]
+    assert "BTCUSDC" in _short_trend_symbol_variants("BTCRON")
+    assert "ETHUSDC" in _short_trend_symbol_variants("ETHGBP")
+
+def test_cacheshorttrendmanager_slash_sanitization_cross_venue_dynamic_window_resolution_iter23_s4(tmp_path):
+    """[ITER23 #4] CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution."""
+    import json
+    import os
+    from cachetrend import CacheShortTrendManager
+    # 4. CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution
+    st_file = tmp_path / "cache_short_trend.json"
+    (tmp_path / "24trend").mkdir(parents=True, exist_ok=True)
+    stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=True)
+    assert "/" not in os.path.basename(stm._live_trend_file("TAO/USD"))
+    c24_path = tmp_path / "cache_24_price_TAOUSDC.json"
+    c24_path.write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": [
+                    [1_700_000_000_000, 100.0],
+                    [1_700_000_010_000, 101.0],
+                    [1_700_000_020_000, 102.0],
+                    [1_700_000_030_000, 103.0],
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    dyn_res = stm.get_short_trend_for_window("TAO/USD", 30, now=1_700_000_030.0)
+    assert dyn_res is not None
+    assert dyn_res["growth_coefficient"] > 0
+
+def test_cacheshorttrendmanager_should_wait_gt_s_with_none_growth_coefficient_gradient_recent_fast_iter27_s1():
+    """[ITER27 #1] CacheShortTrendManager.should_wait (GT_S) with None growth_coefficient / gradient_recent_fast."""
+    from cachetrend import CacheShortTrendManager
+    # 1. CacheShortTrendManager.should_wait (GT_S) with None growth_coefficient / gradient_recent_fast
+    mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    mgr.window_seconds = (1800,)
+    mgr._epsilon = lambda snap: 1e-6
+    mgr.get_fresh_snapshot = lambda sym, now=None: {
+        "growth_coefficient": None,
+        "gradient_recent_fast": None,
+        "gradient_recent": -0.005,
+    }
+    assert mgr.should_wait("BUY", "BTCUSDC", fast=False, use_noise_gate=False) is True
+    assert mgr.should_wait("BUY", "BTCUSDC", fast=True, use_noise_gate=False) is True
+    assert mgr.should_wait("SELL", "BTCUSDC", fast=False, use_noise_gate=False) is False
+
+    mgr.get_short_trend_for_window = lambda sym, win, now=None: {
+        "growth_coefficient": None,
+        "gradient_recent": 0.004,
+        "epsilon": 1e-6,
+    }
+    assert mgr.should_wait("SELL", "BTCUSDC", window_seconds=900, use_noise_gate=True) is True
+    assert mgr.should_wait("BUY", "BTCUSDC", window_seconds=900, use_noise_gate=True) is False
+
+def test_priceanalysis_get_weight_for_cash_permission_at_quant_time_iter27_s2(monkeypatch):
+    """[ITER27 #2] priceAnalysis.get_weight_for_cash_permission_at_quant_time."""
+    import time
+    from types import SimpleNamespace
+    import cacheManager as cm
+    import priceAnalysis as pa
+    # 2. priceAnalysis.get_weight_for_cash_permission_at_quant_time
+    fake_lt_cache = {
+        "TAOUSD": [
+            {
+                "duration_seconds": 86400 * 7,
+                "direction": "up",
+                "start_timestamp": 1_700_000_000.0,
+                "timestamp": 1_700_604_800.0,
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        cm,
+        "get_cache_manager",
+        lambda name: SimpleNamespace(cache=fake_lt_cache),
+    )
+    pa.last_timestamp.clear()
+    pa.last_w.clear()
+    pa.last_calc_time.clear()
+    pa.last_duration.clear()
+
+    # Slash symbol TAO/USD resolves to TAOUSD and computes aligned BUY weight (~0.95 at mid-T)
+    w_up = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_up is not None and w_up > 0.8
+
+    # Flipping direction to 'down' at the same timestamp must NOT return the cached 'up' weight
+    fake_lt_cache["TAOUSD"][0]["direction"] = "down"
+    w_down = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_down is not None and w_down < 0.2
+
+    # Future last_calc_time (clock skew) forces recalculation instead of using stale last_w
+    memo_key = ("TAO/USD", "BUY", 14.0, "down")
+    pa.last_calc_time[memo_key] = time.time() + 10_000.0
+    pa.last_w[memo_key] = [0.999]
+    w_recalc = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_recalc is not None and w_recalc < 0.2
+
+    # NaN duration_seconds returns None cleanly without ValueError
+    fake_lt_cache["TAOUSD"][0]["duration_seconds"] = float("nan")
+    assert pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY") is None
+
+def test_cacheintegrity_trade_data_version_trade_semantic_signature_build_account_meta_snapshot_iter71_s1():
+    """[ITER71 #1] cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot."""
+    import pytest
+    import cacheintegrity
+    # 1. cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("", 1)
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("stream1", 1.5)
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("stream1", -1)
+    assert cacheintegrity.trade_data_version("stream1", 2) == "stream1:2"
+
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_semantic_signature({
+            "symbol": "BTCUSDC", "id": 10.5, "orderId": 20,
+            "price": "100", "qty": "1", "time": 1000, "isBuyer": True,
+        })
+    with pytest.raises(ValueError):
+        cacheintegrity.build_account_meta_snapshot(
+            data_version="s:1", fetchtime={}, counts={},
+            stream_id="s", revision=1.5, committed_bytes=10, content_digest="chain:" + "00" * 16,
+        )
+
+def test_priceanalysis_format_duration_format_timestamp_get_trade_weight_get_weight_for_cash_permission_at_quant_time_iter102_s2():
+    """[ITER102 #2] priceAnalysis: format_duration, format_timestamp, get_trade_weight, get_weight_for_cash_permission_at_quant_time."""
+    import pytest
+    import priceAnalysis as pa
+    # 2. priceAnalysis: format_duration, format_timestamp, get_trade_weight, get_weight_for_cash_permission_at_quant_time
+    assert pa.format_duration(None) == "0m"
+    assert pa.format_duration(True) == "0m"
+    assert pa.format_duration(-100) == "0m"
+    assert pa.format_duration(float("nan")) == "0m"
+    assert pa.format_duration(3660) == "1h 1m"
+    assert isinstance(pa.format_timestamp(None), str)
+    assert isinstance(pa.format_timestamp(True), str)
+    assert isinstance(pa.format_timestamp(float("inf")), str)
+
+    t_b, w_b = pa.get_trade_weight(T=True, trend_len=5.0, trend="up", order_type="BUY")
+    assert len(w_b) == 0
+    t_inv, w_inv = pa.get_trade_weight(T=14.0, trend_len=5.0, trend="up", order_type="INVALID")
+    assert len(w_inv) == 0
+    t_bull, w_bull = pa.get_trade_weight(T=14.0, trend_len=7.0, trend=" BULL ", order_type=" b ")
+    assert len(w_bull) > 0 and float(w_bull[0]) == pytest.approx(0.95, abs=0.02)
+    t_bear, w_bear = pa.get_trade_weight(T=14.0, trend_len=7.0, trend=" BEAR ", order_type=" s ")
+    assert len(w_bear) > 0 and float(w_bear[0]) == pytest.approx(0.95, abs=0.02)
+
+    assert pa.get_weight_for_cash_permission_at_quant_time(None, "BUY") is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", None) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", True) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", "BUY", T_quanta=True) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", "BUY", quant_seconds=False) is None
+
+def test_cachepaths_migrate_legacy_filename_if_needed_and_cache_path_with_pathlike_bool_none_iter110_s2(tmp_path):
+    """[ITER110 #2] cachepaths: migrate_legacy_filename_if_needed and cache_path with PathLike/bool/None."""
+    import cachepaths as cp
+    # 2. cachepaths: migrate_legacy_filename_if_needed and cache_path with PathLike/bool/None
+    cp.migrate_legacy_filename_if_needed(None)
+    cp.migrate_legacy_filename_if_needed(True)
+    cp.migrate_legacy_filename_if_needed(tmp_path / "cache_short_trend.json")
+    assert cp.cache_path(True) is True
+    assert cp.cache_path(123) == 123
+
+def test_priceanalysis_detect_long_term_trend_with_int_strings_mk_alpha_string_bool_iter163_s2():
+    """[ITER163 #2] priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau='false'."""
+    import priceAnalysis as pa
+    # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
+    ts = [float(i * 3600) for i in range(1, 100)]
+    px = [100.0 + i * 0.5 for i in range(1, 100)]
+    assert pa.detect_long_term_trend(ts, px, min_consecutive_blocks=3.5) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=True) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=float("nan")) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=1.5) is None
+    res_trend = pa.detect_long_term_trend(
+        ts,
+        px,
+        min_consecutive_blocks="3.0",
+        noise_tolerance="2.0",
+        min_points_per_window="4.0",
+        mk_alpha="0.05",
+    )
+    assert res_trend is not None and res_trend["direction"] == "up"
+    _, w_plateau = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="true")
+    _, w_decay = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="false")
+    assert w_plateau[0] > w_decay[0]
+
+def test_cachetrademanager_string_symbols_normalization_read_only_true_flag_and_iter165_s2(tmp_path, monkeypatch):
+    """[ITER165 #2] CacheTradeManager: string symbols normalization, read_only='true' flag, and 'B'/'S' side aliases in get_last_opposite_fill_price."""
+    import pytest
+    import cacheManager as cm
+    # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
+    monkeypatch.setattr("utils.cache_path", lambda fn: str(tmp_path / fn))
+    tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
+    assert tm.symbols == ["BTCUSDC"]
+    assert tm.read_only is True
+    monkeypatch.setattr(tm, "sync_account_reader_if_needed", lambda: None)
+    tm.cache["BTCUSDC"] = [
+        {"symbol": "BTCUSDC", "id": 1, "orderId": 10, "price": "65000.0", "qty": "0.1", "time": 1700000000000, "isBuyer": True},
+        {"symbol": "BTCUSDC", "id": 2, "orderId": 11, "price": "66000.0", "qty": "0.1", "time": 1700000005000, "isBuyer": False},
+    ]
+    assert tm.get_last_opposite_fill_price("BTCUSDC", "b") == pytest.approx(66000.0)
+    assert tm.get_last_opposite_fill_price("BTCUSDC", "s") == pytest.approx(65000.0)
+
+def test_cacheshorttrendmanager_string_symbols_writer_false_window_seconds_as_scalar_iter165_s3(tmp_path):
+    """[ITER165 #3] CacheShortTrendManager: string symbols, writer='false', window_seconds as scalar, and should_wait with ' buy '/' sell '/'b'/'s' + use_noise_gate='false'."""
+    import cachetrend as ct
+    # 3. CacheShortTrendManager: string symbols, writer="false", window_seconds as scalar, and should_wait with " buy "/" sell "/"b"/"s" + use_noise_gate="false"
+    st_file = str(tmp_path / "test_short_trend.json")
+    stm = ct.CacheShortTrendManager(
+        "BTCUSDC",
+        filename=st_file,
+        writer="false",
+        window_seconds="120.0",
+        read_only="true",
+    )
+    assert stm.symbols == ["BTCUSDC"]
+    assert stm.writer is False
+    assert stm.read_only is True
+    assert stm.window_seconds == [120.0]
+
+    now_ts = 1700000100.0
+    stm._set_mem(
+        "BTCUSDC",
+        growth_coefficient=-0.5,
+        gradient_recent=-0.5,
+        gradient_recent_fast=-0.5,
+        epsilon=0.01,
+        current_price=65000.0,
+        ts=now_ts,
+    )
+    assert stm.should_wait(" buy ", "BTCUSDC", now=now_ts, use_noise_gate="false") is True
+    assert stm.should_wait("b", "BTCUSDC", now=now_ts, use_noise_gate="false") is True
+    assert stm.should_wait(" sell ", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
+    assert stm.should_wait("s", "BTCUSDC", now=now_ts, use_noise_gate="false") is False

@@ -964,3 +964,86 @@ class T212CancellationLifecycleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter70_s1():
+    """[ITER70 #1] 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character."""
+    import importlib.util
+    import os
+    import sys
+    import pytest
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t212_dir = os.path.join(repo_root, "212trading")
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    t212_rep = _load_mod("_t212_replay_70", os.path.join(t212_dir, "replay.py"), t212_dir)
+    # 1. 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character
+    assert t212_rep._fx_rates("1.08", 3) == [1.08, 1.08, 1.08]
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates("not-a-float", 2)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(1.0, -1)
+
+def test_walk_forward_compare__load_hl_replay_and__load_t212_replay_register_sys_modules_before_iter72_s6():
+    """[ITER72 #6] walk_forward_compare._load_hl_replay and _load_t212_replay register sys.modules before exec_module."""
+    from offline.runners import walk_forward_compare as wfc
+    # 6. walk_forward_compare._load_hl_replay and _load_t212_replay register sys.modules before exec_module
+    hl_mod = wfc._load_hl_replay()
+    t212_mod = wfc._load_t212_replay()
+    assert hasattr(hl_mod, "run_replay")
+    assert hasattr(t212_mod, "run_replay")
+
+def test_212trading_replay_run_replay_validates_non_sequence_ohlc_and_iter117_s7():
+    """[ITER117 #7] 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope."""
+    import os
+    import sys
+    import pytest
+    # 7. 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    t212_mods = ("strategy", "signals", "price_analysis", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in t212_mods}
+    try:
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+        import replay as t212_replay
+        sp = t212_strat.StratParams(
+            currency="USD",
+            entry_amount=100.0,
+            entry_discount_pct=1.0,
+            dca_amount=100.0,
+            dca_drop_pct=2.0,
+            check_minutes=5.0,
+            takeprofit_pct=2.0,
+            max_budget=1000.0,
+            max_dca_buys=5,
+            validity="GOOD_TILL_CANCEL",
+            enable_takeprofit=True,
+            order_ttl_min=60.0,
+            stop_loss_pct=5.0,
+        )
+        with pytest.raises(ValueError, match="ohlc cannot be empty"):
+            t212_replay.run_replay("not-a-sequence", sp)
+        with pytest.raises(ValueError, match="invalid OHLC bar at index 0"):
+            # high (101) < open (105) even though high >= low (99)
+            t212_replay.run_replay([(105.0, 101.0, 99.0, 100.0, 1000)], sp)
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v

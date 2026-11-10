@@ -427,3 +427,232 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
+
+
+def test_marketregimeservice__evaluate_provider_source_clock_skew_iter27_s3():
+    """[ITER27 #3] MarketRegimeService._evaluate_provider_source clock skew."""
+    from market_regime import MarketRegimeService, ClosedPriceSeries
+    # 3. MarketRegimeService._evaluate_provider_source clock skew
+    svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
+
+    calls = []
+    class DummyRegimeProv:
+        name = "kraken"
+        def ohlc_series(self, sym, interval_min):
+            calls.append(sym)
+            return ClosedPriceSeries(
+                closes=tuple(100.0 + i for i in range(30)),
+                interval_min=interval_min,
+                last_closed_at=1000.0,
+                timestamps=tuple(1000.0 - (29 - i) * 60.0 for i in range(30)),
+            )
+
+    prov = DummyRegimeProv()
+    svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
+    assert len(calls) == 1
+    # Inject future timestamp into cache (clock skew: cached_at = 2000.0 > clock = 1000.0)
+    cache_key = ("kraken", "TAOUSD", 1, 900.0)
+    svc._cache[cache_key] = (2000.0,) + svc._cache[cache_key][1:]
+    svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
+    assert len(calls) == 2
+
+def test_market_regime_marketregimedecision_marketregimecontext_marketregimeevidence_marketregimeevaluator_marketregimeservice_iter47_s2():
+    """[ITER47 #2] market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService."""
+    import pytest
+    import market_regime as mr
+    # 2. market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService
+    dec_bool = mr.MarketRegimeDecision(
+        regime="bull", gradient=True, epsilon=0.01, strength=float("nan"), fresh=True, reason="ok", n_samples=10
+    )
+    assert dec_bool.fitted_move_pct is None
+
+    ctx = mr.MarketRegimeContext(
+        decision=dec_bool, resolved_trend="bull", evaluated_at=1000.0, trend_duration_seconds=60.0
+    )
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=float("nan")) is False
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=True) is False
+    assert ctx.is_valid_for(now=1010.0, max_horizon_seconds=float("nan")) is False
+    assert ctx.is_valid_for(now=1010.0, max_horizon_seconds=True) is False
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=30.0, max_horizon_seconds=120.0) is True
+
+    ev = mr.MarketRegimeEvidence(
+        role="asset_short",
+        family="price_trend",
+        classifier="test",
+        provider="binance",
+        symbol="BTCUSDC",
+        decision=dec_bool,
+        evaluated_at=1010.0,
+        observed_at=1000.0,
+        max_age_seconds=float("nan"),
+    )
+    assert ev.temporal_state == "stale"
+    assert ev.usable is False
+
+    with pytest.raises(ValueError):
+        mr.MarketRegimeEvaluator(strength_threshold=True)
+    with pytest.raises(ValueError):
+        mr.MarketRegimeService(cache_ttl_sec=True)
+
+    svc = mr.MarketRegimeService()
+    assert svc._snapshot_observed_at({"ts": True}) is None
+    assert svc.evaluate_closes([100.0, 101.0, 102.0], interval_min=0).reason == "invalid_window_metadata"
+    assert svc.evaluate_closes([100.0, 101.0, 102.0], window_seconds=float("nan")).reason == "invalid_window_metadata"
+
+def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_and_iter88_s1():
+    """[ITER88 #1] MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans & MarketRegimeEvidence.temporal_state handles non-numeric max_age_seconds without ValueError & MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default."""
+    import pytest
+    from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvidence, MarketRegimeService
+    # 1. MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans
+    dec = MarketRegimeDecision(
+        regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="directional_signal"
+    )
+
+    class _ProvObj:
+        name = "Binance"
+
+    ctx = MarketRegimeContext.from_decision(
+        dec,
+        evaluated_at=1000.0,
+        symbol=" btcusdc ",
+        provider=_ProvObj(),
+        trend_duration_seconds=True,
+        benchmark_symbol=True,
+    )
+    assert ctx.symbol == "BTCUSDC"
+    assert ctx.provider == "binance"
+    assert ctx.trend_duration_seconds == 0.0
+    assert ctx.benchmark_symbol is None
+
+
+    # 2. MarketRegimeEvidence.temporal_state handles non-numeric max_age_seconds without ValueError
+    ev = MarketRegimeEvidence(
+        role="asset_short",
+        family="price_trend",
+        classifier="linear_noise_v1",
+        provider="Binance",
+        symbol="BTCUSDC",
+        decision=dec,
+        evaluated_at=1000.0,
+        observed_at=990.0,
+        max_age_seconds="bad_age",
+    )
+    assert ev.temporal_state == "stale"
+
+
+    # 3. MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="now must be a positive"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", now=True)
+    with pytest.raises(ValueError, match="regime interval"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=True)
+    with pytest.raises(ValueError, match="regime interval"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=0)
+
+def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_closes_validation_iter98_s1():
+    """[ITER98 #1] MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation."""
+    import pytest
+    from market_regime import MarketRegimeEvaluator, MarketRegimeHorizon, MarketRegimeService
+    # 1. MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation
+    assert MarketRegimeHorizon.parse(" short ") == MarketRegimeHorizon.SHORT
+    with pytest.raises(ValueError, match="unsupported market-regime horizon"):
+        MarketRegimeHorizon.parse(True)
+
+    ev = MarketRegimeEvaluator(2.0)
+    bull_dec = ev.evaluate({"gradient_recent": 0.5, "epsilon": 0.1})
+    bear_dec = ev.evaluate({"gradient_recent": -0.5, "epsilon": 0.1})
+    assert bear_dec.adverse_to(" long ") is True
+    assert bear_dec.adverse_to(" buy ") is True
+    assert bull_dec.adverse_to(" sold ") is True
+    assert bull_dec.adverse_to(True) is False
+
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.horizon_sample_capacity("short", interval_min=1.5)
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.evaluate_closes_for_horizon([100, 101, 102], horizon="short", interval_min=True)
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.evaluate_closes_for_horizon([100, 101, 102], horizon="short", interval_min=1.5)
+    assert svc.evaluate_closes([100, 101, 102], interval_min=1.5).reason == "invalid_window_metadata"
+    assert svc.evaluate_closes("12345").reason == "invalid_ohlc"
+
+def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_iter107_s2():
+    """[ITER107 #2] market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series."""
+    import pytest
+    from types import SimpleNamespace
+    import market_regime as mr
+    # 2. market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series
+    dec = mr.MarketRegimeEvaluator().unknown()
+    ctx = mr.MarketRegimeContext(
+        decision=dec,
+        resolved_trend="unknown",
+        evaluated_at=1000.0,
+        symbol=True,
+        provider=True,
+    )
+    assert ctx.is_valid_for(now=1000.0, require_identity=True) is False
+    ctx_ok = mr.MarketRegimeContext(
+        decision=dec,
+        resolved_trend="unknown",
+        evaluated_at=1000.0,
+        symbol="BTCUSDC",
+        provider="binance",
+    )
+    assert ctx_ok.is_valid_for(symbol=True, now=1000.0) is False
+    assert ctx_ok.is_valid_for(provider=True, now=1000.0) is False
+
+    svc = mr.MarketRegimeService()
+
+    # _closed_series rejects boolean interval_min even when interval_min == 1 (since int(True) == 1)
+    bad_provider = SimpleNamespace(
+        name="binance",
+        ohlc_series=lambda _s, _i: mr.ClosedPriceSeries((100.0, 101.0, 102.0), True),
+    )
+    with pytest.raises(ValueError):
+        svc._closed_series(bad_provider, "BTCUSDC", 1)
+
+def test_marketregimeservice__age_limit_ignores_boolean_interval_min_and_resolve_with_evidence_validates_iter121_s2():
+    """[ITER121 #2] MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds."""
+    import pytest
+    from market_regime import MarketRegimeHorizon, MarketRegimeService
+    # 2. MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds
+    assert MarketRegimeService._age_limit({1: 180.0, "default": 300.0}, MarketRegimeHorizon.SHORT, interval_min=True) == 300.0
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="the regime interval and window must be positive"):
+        svc.resolve_with_evidence(object(), "BTCUSDC", window_seconds="invalid")
+    with pytest.raises(ValueError, match="the regime interval and window must be positive"):
+        svc.resolve_with_evidence(object(), "BTCUSDC", window_seconds=-10.0)
+
+def test_market_regime_evaluate_closes_with_interval_min_evaluate_with_n_samples_and_iter161_s3():
+    """[ITER161 #3] market_regime: evaluate_closes with interval_min='5.0', evaluate with n_samples='15.0', and is_valid_for with require_identity='false'."""
+    import market_regime as mr
+    # 3. market_regime: evaluate_closes with interval_min="5.0", evaluate with n_samples="15.0", and is_valid_for with require_identity="false"
+    svc = mr.MarketRegimeService(cache_max="64.0")
+    assert svc.cache_max == 64
+    dec = svc.evaluate_closes([100.0 + i for i in range(10)], interval_min="5.0", window_seconds="1800.0")
+    assert dec.fresh is True and dec.regime == "bull"
+
+    snap_dec = svc.evaluator.evaluate({"gradient_recent": 0.01, "epsilon": 0.001, "n_samples": "15.0", "window_seconds": "900.0"})
+    assert snap_dec.fresh is True and snap_dec.n_samples == 15
+
+    ctx = mr.MarketRegimeContext.from_decision(snap_dec, evaluated_at=1000.0)
+    assert ctx.is_valid_for(now=1005.0, require_identity="false") is True
+
+def test_marketregimedecision_adverse_to_supports_bid_ask_a_and_marketregimecontext_iter179_s3():
+    """[ITER179 #3] MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict."""
+    import pytest
+    from market_regime import MarketRegimeDecision, MarketRegimeContext
+    # 3. MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict
+    bear_dec = MarketRegimeDecision(regime="bear", gradient="-0.01", epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples="11")
+    bull_dec = MarketRegimeDecision(regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples=11)
+    assert bear_dec.adverse_to("BID") is True
+    assert bull_dec.adverse_to("ASK") is True
+    assert bull_dec.adverse_to("A") is True
+    assert bear_dec.fitted_move_pct == pytest.approx(-10.0)
+    ctx_from_dict = MarketRegimeContext.from_decision({"regime": "sideways", "fresh": True, "strength": 1.2}, evaluated_at=1000.0)
+    assert ctx_from_dict.resolved_trend == "flat"
+    assert ctx_from_dict.fresh is True
