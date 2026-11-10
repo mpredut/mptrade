@@ -430,22 +430,45 @@ class TestMonitororderNotifications(unittest.TestCase):
             mock_place.assert_not_called()
 
     def test_dynamic_reprice_bounds_scale_with_venue_tick_size(self):
+        import math
+        # Derived anchor relationships from MIN_PROC
+        self.assertAlmostEqual(monitororder.MAX_PROC, round(monitororder.MIN_PROC * 9.6, 4), places=6)
+        self.assertAlmostEqual(monitororder.INITIAL_MAX_PROC, round(monitororder.MIN_PROC * 21.25, 4), places=6)
+
         # Fine-tick asset (BTC: px=73780, tick=0.01 -> tick_pct ~ 0.000014%)
+        b_tick_pct = 0.01 / 73780.0 * 100.0
         b_min, b_mid, b_max, b_init = monitororder.resolve_dynamic_reprice_bounds(
             "BTCUSDC", 73780.0, tick_size=0.01
         )
-        self.assertAlmostEqual(b_min, monitororder.MIN_PROC + (0.01 / 73780.0 * 100.0), places=6)
-        self.assertAlmostEqual(b_max, monitororder.MAX_PROC + 2.0 * (0.01 / 73780.0 * 100.0), places=6)
-        self.assertAlmostEqual(b_init, monitororder.INITIAL_MAX_PROC + 4.0 * (0.01 / 73780.0 * 100.0), places=6)
+        self.assertAlmostEqual(b_min, monitororder.MIN_PROC + monitororder.TICK_CUSHION * b_tick_pct, places=6)
+        self.assertAlmostEqual(
+            b_max,
+            monitororder.MAX_PROC + monitororder.TICK_CUSHION * math.sqrt(monitororder.MAX_PROC / monitororder.MIN_PROC) * b_tick_pct,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            b_init,
+            monitororder.INITIAL_MAX_PROC + monitororder.TICK_CUSHION * math.sqrt(monitororder.INITIAL_MAX_PROC / monitororder.MIN_PROC) * b_tick_pct,
+            places=6,
+        )
         self.assertAlmostEqual(b_mid, (b_min + b_max) / 2.0, places=6)
 
         # Coarse-tick asset (TAO: px=200.0, tick=0.10 -> tick_pct = 0.05%)
+        t_tick_pct = 0.05
         t_min, t_mid, t_max, t_init = monitororder.resolve_dynamic_reprice_bounds(
             "TAOUSDC", 200.0, tick_size=0.10
         )
-        self.assertAlmostEqual(t_min, monitororder.MIN_PROC + 0.05, places=6)
-        self.assertAlmostEqual(t_max, monitororder.MAX_PROC + 0.10, places=6)
-        self.assertAlmostEqual(t_init, monitororder.INITIAL_MAX_PROC + 0.20, places=6)
+        self.assertAlmostEqual(t_min, monitororder.MIN_PROC + monitororder.TICK_CUSHION * t_tick_pct, places=6)
+        self.assertAlmostEqual(
+            t_max,
+            monitororder.MAX_PROC + monitororder.TICK_CUSHION * math.sqrt(monitororder.MAX_PROC / monitororder.MIN_PROC) * t_tick_pct,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            t_init,
+            monitororder.INITIAL_MAX_PROC + monitororder.TICK_CUSHION * math.sqrt(monitororder.INITIAL_MAX_PROC / monitororder.MIN_PROC) * t_tick_pct,
+            places=6,
+        )
         self.assertAlmostEqual(t_mid, (t_min + t_max) / 2.0, places=6)
 
         # Verify monitor_open_orders_by_type uses mkt.price_tick_size dynamically

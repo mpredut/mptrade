@@ -1,5 +1,6 @@
-import time
 import datetime
+import math
+import time
 from collections import OrderedDict
 
 # Binance imports.
@@ -42,18 +43,18 @@ from botcore import (
 load_dotenv()
 
 MIN_PROC = required_float_env("MONITOR_MIN_PROC")
-MAX_PROC = required_float_env("MONITOR_MAX_PROC")
-INITIAL_MAX_PROC = required_float_env("MONITOR_INITIAL_MAX_PROC")
+TICK_CUSHION = required_float_env("MONITOR_TICK_CUSHION")
 if (
     safe_pos_float(MIN_PROC, default=None) is None
-    or safe_pos_float(MAX_PROC, default=None) is None
-    or safe_pos_float(INITIAL_MAX_PROC, default=None) is None
-    or not (MIN_PROC < MAX_PROC <= INITIAL_MAX_PROC < 100.0)
+    or MIN_PROC >= 10.0
+    or safe_nonneg_float(TICK_CUSHION, default=None) is None
 ):
     raise ValueError(
-        f"Invalid monitororder proc bounds: MIN_PROC={MIN_PROC!r}, "
-        f"MAX_PROC={MAX_PROC!r}, INITIAL_MAX_PROC={INITIAL_MAX_PROC!r}"
+        f"Invalid monitororder config: MIN_PROC={MIN_PROC!r}, TICK_CUSHION={TICK_CUSHION!r}"
     )
+# Derived formulaically from primary anchor MONITOR_MIN_PROC:
+MAX_PROC = round(MIN_PROC * 9.6, 4)
+INITIAL_MAX_PROC = round(MIN_PROC * 21.25, 4)
 MID_PROC = (MIN_PROC + MAX_PROC) / 2.0
 REPRICE_OFFSET = MIN_PROC / 100.0
 PUSHBACK_OFFSET = MID_PROC / 100.0
@@ -235,9 +236,9 @@ def resolve_dynamic_reprice_bounds(
 ) -> tuple[float, float, float, float]:
     """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size.
 
-    Adds a natural cushion of 1 tick to ``MIN_PROC``, 2 ticks to ``MAX_PROC``,
-    and 4 ticks to ``INITIAL_MAX_PROC`` so venue price rounding/flooring across
-    Binance, Kraken, Hyperliquid, and T212 never collapses the repricing offset.
+    Applies the general formula ``P + TICK_CUSHION * sqrt(P / MIN_PROC) * tick_pct``
+    across all bounds so venue price rounding/flooring across Binance, Kraken,
+    Hyperliquid, and T212 never collapses the repricing offset.
     """
     px_f = safe_pos_float(current_price, default=None)
     if tick_size is None:
@@ -259,9 +260,13 @@ def resolve_dynamic_reprice_bounds(
                     tick_size = 0.0
     tick_f = safe_pos_float(tick_size, default=0.0)
     tick_pct = (tick_f / px_f * 100.0) if (px_f is not None and tick_f > 0.0) else 0.0
-    eff_min_proc = MIN_PROC + 1.0 * tick_pct
-    eff_max_proc = MAX_PROC + 2.0 * tick_pct
-    eff_initial_max_proc = INITIAL_MAX_PROC + 4.0 * tick_pct
+
+    def _scale_proc(base_proc: float) -> float:
+        return base_proc + TICK_CUSHION * math.sqrt(base_proc / MIN_PROC) * tick_pct
+
+    eff_min_proc = _scale_proc(MIN_PROC)
+    eff_max_proc = _scale_proc(MAX_PROC)
+    eff_initial_max_proc = _scale_proc(INITIAL_MAX_PROC)
     eff_mid_proc = (eff_min_proc + eff_max_proc) / 2.0
     return eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc
 
