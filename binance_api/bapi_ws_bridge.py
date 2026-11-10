@@ -105,13 +105,13 @@ _ws_bridge_lock = threading.Lock()
 _ws_event_stats: defaultdict[str, int] = defaultdict(int)
 
 
-def _default_cache_getter(name: str, symbols=None, *, start_sync: bool = False):
+def _default_cache_getter(name: str, symbols=None):
     import cacheManager as cm
 
     try:
         if symbols is not None:
-            return cm.get_cache_manager(name, symbols=symbols, start_sync=start_sync)
-        return cm.get_cache_manager(name, start_sync=start_sync)
+            return cm.get_cache_manager(name, symbols=symbols)
+        return cm.get_cache_manager(name)
     except TypeError:
         if symbols is not None:
             return cm.get_cache_manager(name, symbols)

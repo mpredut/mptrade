@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from binance_api import bapi_ws_bridge
 import binance_cache_health as health
 import cacheManager as cm
 
@@ -642,8 +643,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                 "l": "1", "L": "120", "z": "2", "Z": "220",
             }
             with patch.object(cm, "get_cache_manager", return_value=manager):
-                cm._upsert_order_from_execution_report(partial)
-                cm._upsert_order_from_execution_report(filled)
+                bapi_ws_bridge.upsert_order_from_execution_report(partial)
+                bapi_ws_bridge.upsert_order_from_execution_report(filled)
 
             self.assertEqual(1, len(manager.cache["BTCUSDC"]))
             aggregate = manager.cache["BTCUSDC"][0]
@@ -668,7 +669,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                 "z": "2", "Z": "220",
             }
             with patch.object(cm, "get_cache_manager", return_value=manager):
-                cm._upsert_order_from_execution_report(filled_event)
+                bapi_ws_bridge.upsert_order_from_execution_report(filled_event)
 
             manager._persist_items("BTCUSDC", [{
                 **_order(7, 2000),
@@ -705,7 +706,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                 "z": "2", "Z": "220",
             }
             with patch.object(cm, "get_cache_manager", return_value=manager):
-                cm._upsert_order_from_execution_report(later_fill_event)
+                bapi_ws_bridge.upsert_order_from_execution_report(later_fill_event)
 
             manager._persist_items("BTCUSDC", [
                 {
@@ -750,7 +751,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             "l": "1", "L": "100", "t": 101,
         }
         with patch.object(cm, "get_cache_manager", return_value=manager):
-            cm._upsert_order_from_execution_report(malformed)
+            bapi_ws_bridge.upsert_order_from_execution_report(malformed)
         self.assertEqual([], manager.cache["BTCUSDC"])
         self.assertFalse(manager._account_cache_dirty)
 
@@ -1202,8 +1203,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             raise AssertionError(f"unexpected cache lookup: {cache_name}")
 
         with patch.object(cm, "get_cache_manager", side_effect=manager_for):
-            cm._upsert_order_from_execution_report(event)
-            cm._append_trade_from_execution_report(event)
+            bapi_ws_bridge.upsert_order_from_execution_report(event)
+            bapi_ws_bridge.append_trade_from_execution_report(event)
 
         self.assertEqual(
             ["0"], order_manager.cache["BTCUSDC"][0]["_fillIds"]

@@ -718,7 +718,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
         trd_inst = CacheTradeManager(
             venue=expected_venue,
             filename=os.path.join(temp_cache_dir, expected_fname),
-            start_sync=False,
+            read_only=True,
         )
         assert trd_inst.venue == expected_venue
         assert trd_inst.stream_format == expected_fmt
@@ -743,7 +743,7 @@ def test_portfolio_tca_and_macro_3tier_polymorphic_hierarchy_and_cache_contracts
     sanitized = CacheTradeManager.load_sanitized_trade_snapshot(kraken_trd_path, venue="kraken")
     assert len(sanitized["items"].get("TAOUSD", [])) == 2
     assert sanitized["fetchtime"].get("TAOUSD") == 1700000200
-    k_mgr = CacheTradeManager(filename=kraken_trd_path, venue="kraken", stream_format="json", start_sync=False)
+    k_mgr = CacheTradeManager(filename=kraken_trd_path, venue="kraken", stream_format="json", read_only=True)
     assert k_mgr.get_last_opposite_fill_price("TAOUSD", "BUY") == pytest.approx(412.5)
     assert k_mgr.get_last_opposite_fill_price("TAOUSD", "SELL") == pytest.approx(405.0)
 
@@ -1186,7 +1186,7 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     krk_tm = CacheTradeManager(
         venue="kraken",
         filename=os.path.join(temp_cache_dir, "cache_trade_kraken.json"),
-        start_sync=False,
+        read_only=True,
     )
     krk_tm._persist_items(
         "XBTUSD",
@@ -1197,7 +1197,7 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     t212_tm = CacheTradeManager(
         venue="t212",
         filename=os.path.join(temp_cache_dir, "cache_trade_t212.json"),
-        start_sync=False,
+        read_only=True,
     )
     t212_tm._persist_items(
         "NVDA_US_EQ",
@@ -1378,9 +1378,10 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         [],
         os.path.join(temp_cache_dir, "str_flag_trade.jsonl"),
         read_only="false",
-        start_sync="true",
+        data_sync_mode="producer",
     )
     assert tm_str_flag.read_only is False
+    assert tm_str_flag.data_sync_mode == "producer"
 
     krk_st = os.path.join(ws_dir, "kraken", ".state_TAOUSD.json")
     hl_st = os.path.join(ws_dir, "hyperliquid", ".state_HYPE_LONG.json")

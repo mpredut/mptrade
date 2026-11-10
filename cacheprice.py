@@ -156,9 +156,9 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 self._price_subscribers.append(subscriber)
         if (
             not getattr(subscriber, "save_state", False)
-            and getattr(subscriber, "mode", None) == self.MODE_DISK_READER
+            and getattr(subscriber, "data_sync_mode", None) == self.MODE_DISK_READER
         ):
-            subscriber.mode = self.MODE_LIVE_READER
+            subscriber.data_sync_mode = self.MODE_LIVE_READER
 
     def unsubscribe_price(self, subscriber) -> None:
         with self.lock:
@@ -228,10 +228,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 )
                 get_cpm = _cm_override("get_current_price_manager", default_getter)
                 if callable(get_cpm):
-                    try:
-                        cpm = get_cpm(start_sync=False)
-                    except TypeError:
-                        cpm = get_cpm()
+                    cpm = get_cpm()
             if cpm is None:
                 return []
             entry = cpm.get_price(symbol)
@@ -271,8 +268,6 @@ class CacheSparsePriceManager(CachePriceManagerBase):
         current_price_getter=None,
         current_price_mgr=None,
     ):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         super().__init__(
             sync_ts,
             symbols,
@@ -305,8 +300,6 @@ class Cache24PriceManager(CachePriceManagerBase):
         current_price_getter=None,
         current_price_mgr=None,
     ):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         super().__init__(
             sync_ts,
             symbols,
@@ -575,8 +568,6 @@ class Cache365PriceManager(Cache24PriceManager):
         current_price_getter=None,
         current_price_mgr=None,
     ):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         self._last_long_trim = 0.0
         CachePriceManagerBase.__init__(
             self,
@@ -959,9 +950,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         market_api=None,
         provider_names=None,
         read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
     ):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         self._ws_manager = ws_manager
         self._ws_managers = [ws_manager] if ws_manager is not None else []
         self._ws_default_event_ts = 0.0
@@ -981,6 +972,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             append_mode=False,
             api_client=api_client,
             read_only=read_only,
+            data_sync_mode=data_sync_mode,
         )
         self.attach_ws_manager(ws_manager)
 
@@ -1316,7 +1308,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             or age_ms > stale_threshold_ms
             or age_ms < -5_000
         ):
-            if getattr(self, "mode", None) == self.MODE_DISK_READER and not self.save_state:
+            if (
+                getattr(self, "data_sync_mode", None) == self.MODE_DISK_READER
+                and not self.save_state
+            ):
                 self.resync_mem_file()
                 with self.lock:
                     target_sym = self._resolve_target_symbol_locked(symbol)
@@ -1350,8 +1345,11 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._ws_manager = ws_manager
         if ws_manager not in self._ws_managers:
             self._ws_managers.append(ws_manager)
-        if not self.save_state and getattr(self, "mode", None) == self.MODE_DISK_READER:
-            self.mode = self.MODE_LIVE_READER
+        if (
+            not self.save_state
+            and getattr(self, "data_sync_mode", None) == self.MODE_DISK_READER
+        ):
+            self.data_sync_mode = self.MODE_LIVE_READER
         ws_manager.subscribe(self)
 
 
@@ -2176,7 +2174,7 @@ def attach_default_price_ws_stream(
     cpm_getter=None,
     *,
     sync_ts: float = 0.8,
-    start_sync: bool = False,
+    data_sync_mode: str = CacheManagerInterface.MODE_DISK_READER,
 ) -> Optional[CacheCurrentPriceManager]:
     """Attach the default venue price WebSocket manager to ``CacheCurrentPriceManager``."""
     from binance_api import bapi_ws
@@ -2188,7 +2186,7 @@ def attach_default_price_ws_stream(
     return getter(
         ws_manager=bapi_ws.get_ws_manager(),
         sync_ts=sync_ts,
-        start_sync=start_sync,
+        data_sync_mode=data_sync_mode,
     )
 
 

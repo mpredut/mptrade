@@ -602,6 +602,7 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
                     f"[SMALL-WINDOW] Acceleration {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope:.3f}, "
                     f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
                 )
+                _advance_small_trend(direction)
                 return _fire_trend_order(
                     enable, symbol, trend_state, direction, action, current_price,
                     reason, regime_ctx=regime_ctx,
@@ -1000,21 +1001,15 @@ if __name__ == "__main__":
     # Create CacheCurrentPriceManager before Cache24PriceManager with the correct sync_ts; otherwise
     # Cache24PriceManager.get_remote_items creates it internally with sync_ts=30.
     from binance_api import bapi_ws
-    # The user-data WebSocket bridge is opt-in; tradeall needs execution reports.
-    cm.enable_real_ws_event_sync()
     current_price_mgr = cm.get_current_price_manager(
         ws_manager=bapi_ws.get_ws_manager(),
         symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
-        sync_to_file=False,
-        mode="live_reader",
     )
-    current_price_mgr.periodic_sync(TIME_SLEEP_GET_PRICE, sync_to_file=False)
+    current_price_mgr.periodic_sync(TIME_SLEEP_GET_PRICE, save_state=False)
     cache24_managers = cm.CacheFactory.get(
         "24Price",
         symbols=_main_symbols,
-        sync_to_file=False,
-        mode="live_reader",
     )   # dict {symbol: Cache24PriceManager}
 
     # Trend manager owns windows, calculations, and the cross-process cache.
@@ -1038,11 +1033,9 @@ if __name__ == "__main__":
         coordinator.run()
     finally:
         coordinator.stop()
-        cm.request_stop_account_ws_streams()
         cm.request_stop_price_ws_streams()
         instant_mgr.shutdown(timeout=0.5)
         cm.CacheFactory.shutdown_all(timeout=0.5)
         current_price_mgr.shutdown(timeout=0.3)
         shutdown_deadline = time.monotonic() + 0.3
-        cm.stop_account_ws_streams(shutdown_deadline)
         cm.stop_price_ws_streams(shutdown_deadline)

@@ -73,12 +73,10 @@ def build_price_cache_manager(symbols=None, provider_names=None):
         cm.get_current_price_manager(
             symbols=symbols,
             provider_names=provider_names,
-            start_sync=False,
         )
     price_cache_manager = cm.get_cache_manager(
         "SparsePrice",
         symbols=symbols,
-        start_sync=False,
     )  # Dictionary keyed by symbol.
 
 def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
@@ -714,10 +712,7 @@ def get_weight_for_cash_permission_at_quant_time(
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
         return None
 
-    try:
-        lt_mgr = cm.get_cache_manager("LongTrend", start_sync=False)
-    except TypeError:
-        lt_mgr = cm.get_cache_manager("LongTrend")
+    lt_mgr = cm.get_cache_manager("LongTrend")
     if hasattr(lt_mgr, "resync_mem_file"):
         lt_mgr.resync_mem_file()
     all_trend_data = lt_mgr.cache

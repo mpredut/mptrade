@@ -18,7 +18,7 @@ def init_cache_trade_manager():
     """Return the process-wide BinanceTrade cache reader from CacheFactory."""
     import cacheManager as cm
 
-    return cm.get_cache_manager("BinanceTrade", start_sync=False)
+    return cm.get_cache_manager("BinanceTrade")
 
 #######
 #######      get_my_trades     #######

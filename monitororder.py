@@ -29,7 +29,6 @@ import order_retry
 import order_lifecycle
 from botcore import (
     are_close,
-    float_env,
     format_price_log,
     load_dotenv,
     lru_dict_put,
@@ -43,6 +42,9 @@ from botcore import (
 load_dotenv()
 
 MAX_PROC = required_float_env("MONITOR_MAX_PROC")
+REPRICE_OFFSET = required_float_env("MONITOR_REPRICE_OFFSET")
+if safe_pos_float(REPRICE_OFFSET, default=None) is None or REPRICE_OFFSET >= 1.0:
+    raise ValueError(f"Invalid MONITOR_REPRICE_OFFSET={REPRICE_OFFSET!r}")
 MAX_TRACKED_ORDER_IDS = 10_000
 
 # Order Market TTL configurations (in seconds)
@@ -53,7 +55,7 @@ MODULE_ORDER_TTLS = {
     "tradeall": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),       # 2 hours
     "spot_dca": required_float_env("SPOT_DCA_DEFAULT_ORDER_TTL_SEC"),     # 24 hours
     "manual": required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC"),         # 24 hours
-    "ai_executor": float_env("AI_EXECUTOR_DEFAULT_ORDER_TTL_SEC", default=required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC")),  # 24 hours
+    "ai_executor": required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC"),    # 24 hours (derived from MANUAL_DEFAULT_ORDER_TTL_SEC)
     "monitororder": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),   # 2 hours
 }
 
@@ -367,9 +369,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # deferral before canceling the live venue order so an active order is
             # not pulled from the book when GT_S would immediately defer re-placement.
             if order_type == "SELL":
-                new_price = current_price * 1.001
+                new_price = current_price * (1.0 + REPRICE_OFFSET)
             else:
-                new_price = current_price * 0.999
+                new_price = current_price * (1.0 - REPRICE_OFFSET)
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):

@@ -1635,7 +1635,6 @@ print(f"[INFO] DEFAULT_ADJUSTMENT_PERCENT = {DEFAULT_ADJUSTMENT_PERCENT}")
 
 if __name__ == "__main__":
     symbol = single_symbol_for("binance", "rtrade")
-    cm.enable_real_ws_event_sync()
 
     initial_price = 0.0
     for attempt in range(1, 13):

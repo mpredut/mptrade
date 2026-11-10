@@ -1649,7 +1649,6 @@ def main():
     if not instruments:
         raise RuntimeError("No enabled monitortrades instruments are configured")
 
-    cm.enable_real_ws_event_sync()
     maxage_trade_s = 4 * 24 * 3600
 
     for _inst in instruments.values():

@@ -155,15 +155,12 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
         *,
         cache24_getter: Optional[Callable[[], Any]] = None,
         current_price_getter: Optional[Callable[[], Any]] = None,
-        api_client: Any = None,
     ) -> None:
         """Bind default reader/service factories from ``cacheManager``."""
         if callable(cache24_getter):
             cls._default_cache24_getter = staticmethod(cache24_getter)
         if callable(current_price_getter):
             cls._default_current_price_getter = staticmethod(current_price_getter)
-        if api_client is not None:
-            cls._default_api_client = api_client
 
     def __init__(self, *args, **kwargs):
         if type(self) is CacheTrendManagerBase:
@@ -179,8 +176,6 @@ class CacheLongTrendManager(CacheTrendManagerBase):
     T_TREND_FILENAME = CACHE_T_TREND_FILENAME
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
-        if api_client is None:
-            api_client = _cm_attr("api", None)
         super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client, read_only=read_only)
 
     def rebuild_fetchtimes(self):
@@ -311,7 +306,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self._flush_thread = None
 
         effective_sync_ts = safe_pos_float(sync_ts, default=self.FULL_EVAL_INTERVAL_SEC)
-        effective_api = api_client if api_client is not None else _cm_attr("api", None)
         effective_read_only = (
             (not self.writer)
             if read_only is None
@@ -322,7 +316,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             symbols,
             filename,
             append_mode=False,
-            api_client=effective_api,
+            api_client=api_client,
             read_only=effective_read_only,
         )
         self._live_instances.add(self)

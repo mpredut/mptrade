@@ -83,7 +83,7 @@ def test_binance_uses_immutable_fills_and_current_durable_versions(binance_histo
     assert api.position_cost_basis("ARBUSDC", 1, 3600, provider_name="binance") == 100
     current.assert_called_once()
     ensure.assert_called_once_with(current.return_value)
-    get_cache.assert_called_once_with("BinanceTrade", start_sync=False)
+    get_cache.assert_called_once_with("BinanceTrade")
     assert api.position_cost_basis("ARBUSDC", 2, 3600, provider_name="binance") is None
 
 
@@ -182,8 +182,10 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
         def _persist_items(self, symbol, items):
             persisted.extend(items)
 
+    from binance_api import bapi_ws_bridge
+
     monkeypatch.setattr(cm, "get_cache_manager", lambda name: DummyTradeCache())
-    cm._append_trade_from_execution_report({
+    bapi_ws_bridge.append_trade_from_execution_report({
         "x": "TRADE",
         "X": "FILLED",
         "s": "ARBUSDC",
@@ -248,11 +250,13 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
     mgr.fetchtime_per_symbol["ARBUSDC"] = 1000
     mgr._rest_sync_cursor_per_symbol["ARBUSDC"] = 1000
 
+    from binance_api import bapi_ws_bridge
+
     # 1. WS disconnects briefly (fill 501 at t=1500 is missed on WS), then WS reconnects
     #    and delivers fill 502 at t=2000 BEFORE REST polling runs:
-    cm._mark_ws_available(True)
-    cm._mark_ws_unhealthy()
-    cm._mark_ws_event_received()
+    bapi_ws_bridge.mark_ws_available(True)
+    bapi_ws_bridge.mark_ws_unhealthy()
+    bapi_ws_bridge.mark_ws_event_received()
     mgr._persist_items("ARBUSDC", [{
         "symbol": "ARBUSDC",
         "id": "502",
@@ -263,10 +267,10 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
         "isBuyer": True,
     }])
 
-    # Even if WS_ONLY_MODE is True and WS is healthy again, _should_poll_for_manager
+    # Even if WS_ONLY_MODE is True and WS is healthy again, should_poll_for_manager
     # must force a REST reconciliation poll after the unhealthy period:
-    monkeypatch.setattr(cm._bapi_ws_bridge, "WS_ONLY_MODE", True)
-    assert cm._should_poll_for_manager("CacheTradeManager") is True
+    monkeypatch.setattr(bapi_ws_bridge, "WS_ONLY_MODE", True)
+    assert bapi_ws_bridge.should_poll_for_manager("CacheTradeManager") is True
 
     # 2. Now REST poll runs: it must query from startTime=1000 (NOT 2000!),
     #    backfill missed fill 501, deduplicate fill 502 (and enrich its commission),
@@ -277,7 +281,7 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
     assert [int(r["id"]) for r in bucket] == [501, 502]
     assert bucket[1].get("commission") == "0.010"
     assert bucket[1].get("commissionAsset") == "USDC"
-    assert cm._should_poll_for_manager("CacheTradeManager") is False
+    assert bapi_ws_bridge.should_poll_for_manager("CacheTradeManager") is False
 
 
 def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():

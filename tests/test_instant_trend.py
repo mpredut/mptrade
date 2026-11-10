@@ -1125,16 +1125,20 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             cm,
             "get_cache_manager",
             side_effect=lambda name, *args, **kwargs: (
-                seen_sync_flags.append((name, kwargs.get("start_sync"))),
+                seen_sync_flags.append((name, kwargs.get("data_sync_mode", "disk_reader"))),
                 _ExplodingCache(),
             )[1],
         ):
-            cm._upsert_order_from_execution_report(trade_event)
-            cm._append_trade_from_execution_report(trade_event)
+            bapi_ws_bridge.upsert_order_from_execution_report(trade_event)
+            bapi_ws_bridge.append_trade_from_execution_report(trade_event)
             bapi_ws_bridge._default_cache_getter("BinanceOrder")
         self.assertEqual(
             seen_sync_flags,
-            [("BinanceOrder", False), ("BinanceTrade", False), ("BinanceOrder", False)],
+            [
+                ("BinanceOrder", "disk_reader"),
+                ("BinanceTrade", "disk_reader"),
+                ("BinanceOrder", "disk_reader"),
+            ],
         )
 
         # _save_jsonl_append keeps _persisted_counts updated after fsync when _write_meta returns False so retry updates .meta without duplicating rows

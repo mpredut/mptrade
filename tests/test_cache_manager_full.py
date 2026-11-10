@@ -1321,26 +1321,29 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 class TestWsHealthFunctions(unittest.TestCase):
 
     def setUp(self):
-        cm._bapi_ws_bridge._ws_available = False
-        cm._bapi_ws_bridge._ws_last_event_ts = 0.0
-        cm._bapi_ws_bridge._ws_is_healthy = False
+        from binance_api import bapi_ws_bridge
+
+        self.bws = bapi_ws_bridge
+        self.bws._ws_available = False
+        self.bws._ws_last_event_ts = 0.0
+        self.bws._ws_is_healthy = False
 
     def test_ws_health_lifecycle_and_policies(self):
         with self.subTest("mark ws available"):
             for available in (True, False):
                 with self.subTest(available=available):
-                    cm._mark_ws_available(available)
-                    with cm._bapi_ws_bridge._ws_health_lock:
-                        self.assertEqual(cm._bapi_ws_bridge._ws_available, available)
+                    self.bws.mark_ws_available(available)
+                    with self.bws._ws_health_lock:
+                        self.assertEqual(self.bws._ws_available, available)
 
         with self.subTest("ws event and unhealthy lifecycle"):
-            cm._mark_ws_event_received()
-            with cm._bapi_ws_bridge._ws_health_lock:
-                self.assertTrue(cm._bapi_ws_bridge._ws_is_healthy)
-                self.assertGreater(cm._bapi_ws_bridge._ws_last_event_ts, 0)
-            cm._mark_ws_unhealthy()
-            with cm._bapi_ws_bridge._ws_health_lock:
-                self.assertFalse(cm._bapi_ws_bridge._ws_is_healthy)
+            self.bws.mark_ws_event_received()
+            with self.bws._ws_health_lock:
+                self.assertTrue(self.bws._ws_is_healthy)
+                self.assertGreater(self.bws._ws_last_event_ts, 0)
+            self.bws.mark_ws_unhealthy()
+            with self.bws._ws_health_lock:
+                self.assertFalse(self.bws._ws_is_healthy)
 
         with self.subTest("polling fallback policies"):
             cases = (
@@ -1351,11 +1354,11 @@ class TestWsHealthFunctions(unittest.TestCase):
             try:
                 for label, ws_only, available, manager_name in cases:
                     with self.subTest(case=label):
-                        cm._bapi_ws_bridge.WS_ONLY_MODE = ws_only
-                        cm._bapi_ws_bridge._ws_available = available
-                        self.assertTrue(cm._should_poll_for_manager(manager_name))
+                        self.bws.WS_ONLY_MODE = ws_only
+                        self.bws._ws_available = available
+                        self.assertTrue(self.bws.should_poll_for_manager(manager_name))
             finally:
-                cm._bapi_ws_bridge.WS_ONLY_MODE = False
+                self.bws.WS_ONLY_MODE = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1378,9 +1381,9 @@ class TestCacheFactory(unittest.TestCase):
             _reset()
             with patch.object(cm.CacheTradeManager, "periodic_sync") as periodic, \
                  patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-                first = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
+                first = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"])
                 periodic.assert_not_called()
-                second = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=True)
+                second = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], data_sync_mode="live_reader")
                 self.assertIs(first, second)
                 periodic.assert_called_once()
             _reset()
@@ -1402,9 +1405,9 @@ class TestCacheFactory(unittest.TestCase):
             with patch.object(
                     cm.CacheCurrentPriceManager, "load_state", return_value=None):
                 factory_manager = cm.CacheFactory.get(
-                    "CurrentPrice", symbols=["BTC"], start_sync=False)
+                    "CurrentPrice", symbols=["BTC"])
                 singleton_manager = cm.get_current_price_manager(
-                    symbols=["BTC"], start_sync=False)
+                    symbols=["BTC"])
             self.assertIs(factory_manager, singleton_manager)
             self.assertEqual(
                 singleton_manager.sync_ts,
@@ -1423,7 +1426,7 @@ class TestCacheFactory(unittest.TestCase):
                     "CurrentPrice", symbols=["BTC"])
                 periodic.assert_not_called()
                 promoted_manager = cm.CacheFactory.get(
-                    "CurrentPrice", symbols=["BTC"], start_sync=True)
+                    "CurrentPrice", symbols=["BTC"], data_sync_mode="live_reader")
             self.assertIs(factory_manager, singleton_manager)
             self.assertIs(promoted_manager, singleton_manager)
             self.assertEqual(factory_manager.sync_ts, 0.8)
@@ -1441,11 +1444,11 @@ class TestCacheFactory(unittest.TestCase):
                 load_calls += 1
                 time.sleep(0.03)
 
-            def worker(start_sync):
+            def worker(sync_mode):
                 barrier.wait(timeout=2.0)
                 results.append(
                     cm.CacheFactory.get(
-                        "BinanceOrder", symbols=["BTC"], start_sync=start_sync
+                        "BinanceOrder", symbols=["BTC"], data_sync_mode=sync_mode
                     )
                 )
 
@@ -1455,8 +1458,8 @@ class TestCacheFactory(unittest.TestCase):
                  patch.object(
                     cm.CacheOrderManager, "periodic_sync") as periodic:
                 threads = [
-                    threading.Thread(target=worker, args=(False,)),
-                    threading.Thread(target=worker, args=(True,)),
+                    threading.Thread(target=worker, args=("disk_reader",)),
+                    threading.Thread(target=worker, args=("live_reader",)),
                 ]
                 for t in threads:
                     t.start()
@@ -1468,16 +1471,16 @@ class TestCacheFactory(unittest.TestCase):
             periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
             _reset()
 
-        with self.subTest("start_sync_false_never_queries_remote_when_cache_missing_or_empty"):
+        with self.subTest("disk_reader_never_queries_remote_when_cache_missing_or_empty"):
             _reset()
             empty_dir = tempfile.mkdtemp()
             with patch("utils.cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
                  patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
                  patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:
-                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
-                order_mgr = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=False)
-                price_mgr = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"], start_sync=False)
+                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"])
+                order_mgr = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"])
+                price_mgr = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
                 self.assertTrue(trade_mgr.read_only)
                 self.assertTrue(order_mgr.read_only)
                 self.assertTrue(price_mgr.read_only)
@@ -1494,11 +1497,11 @@ class TestCacheFactory(unittest.TestCase):
                  side_effect=[RuntimeError("can't start new thread"), None],
              ) as periodic:
             with self.assertRaises(RuntimeError):
-                cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=True)
+                cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader")
             first = cm.CacheFactory._instances.get("BinanceOrder")
             self.assertIsNotNone(first)
             self.assertNotIn("BinanceOrder", cm.CacheFactory._sync_started)
-            second = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=True)
+            second = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader")
         self.assertIs(first, second)
         self.assertEqual(periodic.call_count, 2)
         self.assertIn("BinanceOrder", cm.CacheFactory._sync_started)
@@ -1515,7 +1518,7 @@ class TestCacheFactory(unittest.TestCase):
             with self.subTest(factory=name):
                 cm.CacheFactory.remove(name)
                 with patch("cacheManager.get_current_price_manager", return_value=cur_mock):
-                    result = cm.CacheFactory.get(name, symbols=symbols, start_sync=False)
+                    result = cm.CacheFactory.get(name, symbols=symbols)
                 self.assertIsInstance(result, dict)
                 for symbol in symbols:
                     self.assertIn(symbol, result)
@@ -1531,14 +1534,13 @@ class TestCacheFactory(unittest.TestCase):
              patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None):
             for name, expected_class in cases:
                 with self.subTest(factory=name):
-                    result = cm.CacheFactory.get(
-                        name, symbols=["BTC"], start_sync=False)
+                    result = cm.CacheFactory.get(name, symbols=["BTC"])
                     self.assertIsInstance(result, expected_class)
 
     def test_get_cache_manager_delegates_to_factory(self):
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-            r1 = cm.get_cache_manager("BinanceTrade", symbols=["BTC"], start_sync=False)
-            r2 = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
+            r1 = cm.get_cache_manager("BinanceTrade", symbols=["BTC"])
+            r2 = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"])
         self.assertIs(r1, r2)
 
     def test_factory_default_symbols_use_ssot_price_tracking(self):
@@ -1548,8 +1550,8 @@ class TestCacheFactory(unittest.TestCase):
              patch.object(cm.CacheLongTrendManager, "load_state", return_value=None):
             cm.CacheFactory.remove("CurrentPrice")
             cm.CacheFactory.remove("LongTrend")
-            cpm = cm.CacheFactory.get("CurrentPrice", start_sync=False)
-            plt = cm.CacheFactory.get("LongTrend", start_sync=False)
+            cpm = cm.CacheFactory.get("CurrentPrice")
+            plt = cm.CacheFactory.get("LongTrend")
             self.assertEqual(cpm.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
             self.assertEqual(cpm._provider_names.get("HYPEUSD"), "kraken")
             self.assertEqual(plt.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
@@ -1568,20 +1570,20 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
 
     def test_get_current_price_manager_singleton_and_ws_wiring(self):
         with self.subTest("returns single cache current price manager"):
-            m1 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
-            m2 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
+            m1 = cm.get_current_price_manager(symbols=["BTC"])
+            m2 = cm.get_current_price_manager(symbols=["BTC"])
             self.assertIsInstance(m1, cm.CacheCurrentPriceManager)
             self.assertIs(m1, m2)
 
         with self.subTest("ws manager subscribed if provided"):
             ws = MagicMock()
             mgr = cm.get_current_price_manager(
-                ws_manager=ws, symbols=["BTC"], start_sync=False,
+                ws_manager=ws, symbols=["BTC"],
             )
             ws.subscribe.assert_called_once_with(mgr)
 
-        with self.subTest("price series get_remote_items does not start sync on start_sync=False singleton"):
-            mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
+        with self.subTest("price series get_remote_items does not start sync on disk_reader singleton"):
+            mgr = cm.get_current_price_manager(symbols=["BTC"])
             self.assertIsNone(mgr.thread)
             now_ms = int(time.time() * 1000)
             with mgr.lock:
@@ -1605,9 +1607,9 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
             cm.CacheFactory._instances.pop("ShortTrend", None)
             with patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
                  patch.object(cm.CacheTradeManager, "load_state", return_value=None):
-                mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=True)
+                mgr = cm.get_current_price_manager(symbols=["BTC"], data_sync_mode="live_reader")
                 short_mgr = cm.get_short_trend_manager(symbols=["BTC"])
-                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
+                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"])
                 try:
                     with patch.object(cm.CacheFactory, "_lock", _ForbidLock()), \
                          patch.object(mgr, "lock", _ForbidLock()):
@@ -1615,7 +1617,7 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                         self.assertIs(mgr.periodic_sync(save_state=False), mgr.thread)
                         self.assertIs(cm.get_short_trend_manager(), short_mgr)
                         self.assertIs(
-                            cm.CacheFactory.get("BinanceTrade", start_sync=False),
+                            cm.CacheFactory.get("BinanceTrade"),
                             trade_mgr,
                         )
                 finally:
@@ -1649,20 +1651,22 @@ class TestRefreshSymbolInCache(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def test_refresh_symbol_in_cache(self):
+        from binance_api import bapi_ws_bridge
+
         with self.subTest("refresh single symbol"):
             fname = _tmp_file(self.tmp)
             remote = {"SYM": [[int(time.time()*1000), 42.0]]}
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items=remote)
             with mgr.lock:
                 mgr.cache["SYM"] = []
-            cm.refresh_symbol_in_cache(mgr, "SYM")
+            bapi_ws_bridge.refresh_symbol_in_cache(mgr, "SYM")
             with mgr.lock:
                 self.assertIn(42.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
         with self.subTest("refresh missing symbol no crash"):
             fname = _tmp_file(self.tmp, "x.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={})
-            cm.refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
+            bapi_ws_bridge.refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
 
 
 class TestFactorySingletonWarning(unittest.TestCase):
@@ -2230,7 +2234,7 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertEqual(cm.CacheFactory._CONFIG["T212Trade"]["filename"], "cache_trade_t212.json")
         cm.CacheFactory._instances.pop("KrakenTrade", None)
         cm.CacheFactory._sync_started.discard("KrakenTrade")
-        kt_mgr = cm.get_cache_manager("KrakenTrade", symbols=["SOLUSD"], start_sync=True)
+        kt_mgr = cm.get_cache_manager("KrakenTrade", symbols=["SOLUSD"], data_sync_mode="producer")
         self.assertTrue(kt_mgr.read_only)
         self.assertNotIn("KrakenTrade", cm.CacheFactory._sync_started)
         cm.CacheFactory._instances.pop("KrakenTrade", None)
@@ -2251,7 +2255,7 @@ class TestAtomicWrite(unittest.TestCase):
             )
         hl_san = cm.CacheTradeManager.load_sanitized_trade_snapshot(hl_trd_path, venue="hyperliquid")
         self.assertEqual(len(hl_san["items"].get("HYPEUSDC", [])), 2)
-        hl_mgr = cm.CacheTradeManager(filename=hl_trd_path, venue="hyperliquid", stream_format="json", start_sync=False)
+        hl_mgr = cm.CacheTradeManager(filename=hl_trd_path, venue="hyperliquid", stream_format="json", read_only=True)
         self.assertEqual(hl_mgr.get_last_opposite_fill_price("HYPEUSDC", "BUY"), 88.0)
         self.assertEqual(hl_mgr.get_last_opposite_fill_price("HYPEUSDC", "SELL"), 83.8)
 
@@ -2670,7 +2674,7 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
 
     sync_set = set()
     cacheaccount.start_account_cache_daemon(
-        cache_getter=lambda name, start_sync=False: SimpleNamespace(
+        cache_getter=lambda name: SimpleNamespace(
             get_persisted_sync_state=lambda: (f"v-{name}", now_ms - 1000)
         ),
         sync_started_set=sync_set,
@@ -2706,10 +2710,13 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     res = cacheprice.attach_default_price_ws_stream(
         cpm_getter=lambda **kw: cpm_calls.append(kw) or "cpm-inst",
         sync_ts=0.8,
-        start_sync=False,
     )
     assert res == "cpm-inst"
-    assert len(cpm_calls) == 1 and cpm_calls[0]["sync_ts"] == 0.8 and cpm_calls[0]["start_sync"] is False
+    assert (
+        len(cpm_calls) == 1
+        and cpm_calls[0]["sync_ts"] == 0.8
+        and cpm_calls[0]["data_sync_mode"] == "disk_reader"
+    )
     assert cpm_calls[0]["ws_manager"] == "fake-ws-mgr"
 
 
@@ -2763,15 +2770,15 @@ def test_cache24pricemanager_external_ohlc_reload_and_merge(tmp_path):
 
 
 def test_consumer_safe_defaults_and_auto_resync(tmp_path):
-    """Verify the 3 cache operating models (writer, live_reader, disk_reader) and sync_to_file semantics."""
+    """Verify the 3 cache operating models (producer, live_reader, disk_reader) via data_sync_mode."""
     import inspect
 
-    assert inspect.signature(cm.get_cache_manager).parameters["sync_to_file"].default is False
-    assert inspect.signature(cm.CacheFactory.get).parameters["sync_to_file"].default is False
-    assert inspect.signature(cm.get_current_price_manager).parameters["sync_to_file"].default is False
-    assert inspect.signature(cm.get_cache_manager).parameters["start_sync"].default is False
-    assert inspect.signature(cm.CacheFactory.get).parameters["start_sync"].default is False
-    assert inspect.signature(cm.get_current_price_manager).parameters["start_sync"].default is False
+    for fn in (cm.get_cache_manager, cm.CacheFactory.get, cm.get_current_price_manager):
+        params = inspect.signature(fn).parameters
+        assert params["data_sync_mode"].default == cm.CacheManagerInterface.MODE_DISK_READER
+        assert "start_sync" not in params
+        assert "sync_to_file" not in params
+        assert "mode" not in params
     assert inspect.signature(cm.get_short_trend_manager).parameters["writer"].default is False
 
     cm.CacheFactory.remove("24Price")
@@ -2788,8 +2795,7 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
             # 1. Model 3 (default): disk_reader -> starts from disk, never increments on its own, auto-resyncs from disk
             managers = cm.get_cache_manager("24Price", symbols=["BTCUSDC"])
             mgr = managers["BTCUSDC"]
-            assert mgr.mode == cm.CacheManagerInterface.MODE_DISK_READER
-            assert mgr.sync_to_file is False
+            assert mgr.data_sync_mode == cm.CacheManagerInterface.MODE_DISK_READER
             assert mgr.read_only is True
             assert mgr.save_state is False
             assert mgr.thread is None
@@ -2810,15 +2816,16 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
 
             # 2. Model 2: live_reader -> starts from disk, increments in memory, never writes to disk or reloads from disk
             cm.CacheFactory.remove("24Price")
-            live_managers = cm.get_cache_manager(
-                "24Price",
-                symbols=["BTCUSDC"],
-                sync_to_file=False,
-                mode="live_reader",
-            )
+            with patch.object(cm.Cache24PriceManager, "periodic_sync") as live_periodic:
+                live_managers = cm.get_cache_manager(
+                    "24Price",
+                    symbols=["BTCUSDC"],
+                    data_sync_mode="live_reader",
+                )
+                live_periodic.assert_called_once_with(cm.PRICE_24_SYNC_INTERVAL_SEC, False)
             live_mgr = live_managers["BTCUSDC"]
-            assert live_mgr.mode == cm.CacheManagerInterface.MODE_LIVE_READER
-            assert live_mgr.sync_to_file is False
+            assert live_mgr.data_sync_mode == cm.CacheManagerInterface.MODE_LIVE_READER
+            assert live_mgr.save_state is False
             t_live = t1 + 15
             live_mgr.on_price_update("BTCUSDC", t_live * 1000, 90800.0)
             assert live_mgr.cache["BTCUSDC"][-1] == [t_live * 1000, 90800.0]
@@ -2835,33 +2842,33 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
             cm.get_cache_manager("24Price")
             assert [pt[1] for pt in live_mgr.cache["BTCUSDC"]] == [90000.0, 90500.0, 90800.0]
 
-            # 3. Model 1: writer (sync_to_file=True) -> persists state to disk
+            # 3. Model 1: producer (data_sync_mode='producer') -> persists state to disk
             with patch.object(cm.Cache24PriceManager, "periodic_sync") as periodic_mock:
-                writer_managers = cm.get_cache_manager(
+                producer_managers = cm.get_cache_manager(
                     "24Price",
                     symbols=["BTCUSDC"],
-                    sync_to_file=True,
+                    data_sync_mode="producer",
                 )
-                writer_mgr = writer_managers["BTCUSDC"]
-                assert writer_mgr.mode == cm.CacheManagerInterface.MODE_WRITER
-                assert writer_mgr.sync_to_file is True
-                assert writer_mgr.save_state is True
-                assert writer_mgr.read_only is False
+                producer_mgr = producer_managers["BTCUSDC"]
+                assert producer_mgr.data_sync_mode == cm.CacheManagerInterface.MODE_PRODUCER
+                assert producer_mgr.save_state is True
+                assert producer_mgr.read_only is False
                 periodic_mock.assert_called_once_with(cm.PRICE_24_SYNC_INTERVAL_SEC, True)
     finally:
         cm.CacheFactory.remove("24Price")
 
 
 def test_ast_only_producers_enable_cache_sync_or_writer():
-    """Verify via AST that no consumer module passes sync_to_file=True, mode='writer', start_sync=True, or writer=True."""
+    """Verify via AST that no consumer module passes data_sync_mode='producer' or writer=True."""
     import ast
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cache_getters = {
-        "get_cache_manager": {"start_sync", "sync_to_file"},
-        "get_current_price_manager": {"start_sync", "sync_to_file"},
-        "get_short_trend_manager": {"writer"},
+        "get_cache_manager",
+        "get_current_price_manager",
+        "attach_default_price_ws_stream",
     }
+    legacy_aliases = {"start_sync", "sync_to_file", "mode"}
     violations = []
     for root, dirs, files in os.walk(repo_root):
         dirs[:] = [
@@ -2902,27 +2909,30 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
                         and node.func.value.attr == "CacheFactory"
                     ):
                         is_cache_factory_get = True
-                target_kws = None
-                if is_cache_factory_get:
-                    target_kws = {"start_sync", "sync_to_file"}
-                elif func_name in cache_getters:
-                    target_kws = cache_getters[func_name]
-                if not target_kws:
-                    continue
-                for kw in node.keywords:
-                    if (
-                        kw.arg in target_kws
-                        and isinstance(kw.value, ast.Constant)
-                        and kw.value.value is True
-                    ):
-                        violations.append(f"{rel_path}:{node.lineno} ({func_name} {kw.arg}=True)")
-                    elif (
-                        kw.arg == "mode"
-                        and isinstance(kw.value, ast.Constant)
-                        and str(kw.value.value).strip().lower() == "writer"
-                    ):
-                        violations.append(f"{rel_path}:{node.lineno} ({func_name} mode='writer')")
-    assert violations == [], f"Consumer modules must not enable producer sync/writer: {violations}"
+                if func_name in ("enable_real_ws_event_sync", "start_account_cache_daemon") and rel_path not in {
+                    "cacheaccount.py",
+                    os.path.join("binance_api", "bapi_ws_bridge.py"),
+                }:
+                    violations.append(f"{rel_path}:{node.lineno} ({func_name})")
+                if is_cache_factory_get or func_name in cache_getters:
+                    for kw in node.keywords:
+                        if kw.arg in legacy_aliases:
+                            violations.append(f"{rel_path}:{node.lineno} ({func_name} legacy kwarg {kw.arg})")
+                        elif (
+                            kw.arg == "data_sync_mode"
+                            and isinstance(kw.value, ast.Constant)
+                            and str(kw.value.value).strip().lower() == "producer"
+                        ):
+                            violations.append(f"{rel_path}:{node.lineno} ({func_name} data_sync_mode='producer')")
+                elif func_name == "get_short_trend_manager":
+                    for kw in node.keywords:
+                        if (
+                            kw.arg == "writer"
+                            and isinstance(kw.value, ast.Constant)
+                            and kw.value.value is True
+                        ):
+                            violations.append(f"{rel_path}:{node.lineno} (get_short_trend_manager writer=True)")
+    assert violations == [], f"Consumer modules must not enable producer mode or use legacy aliases: {violations}"
 
 
 

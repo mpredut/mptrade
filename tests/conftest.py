@@ -138,10 +138,10 @@ def _shutdown_runtime_threads_after_suite():
     cm.CacheManagerInterface.shutdown_all_instances()
     cm.CacheShortTrendManager.shutdown_all_instances()
     cm.CacheFactory.shutdown_all()
-    if cm._bapi_ws_bridge._ws_bridge is not None:
-        cm._bapi_ws_bridge._ws_bridge.stop()
 
-    from binance_api import bapi_client, bapi_ws
+    from binance_api import bapi_client, bapi_ws, bapi_ws_bridge
+    if bapi_ws_bridge._ws_bridge is not None:
+        bapi_ws_bridge._ws_bridge.stop()
     assert bapi_client.stop_periodic_resync(), "BinanceTimeResync did not stop"
     bapi_ws.bapi_ws_manager.stop()
 

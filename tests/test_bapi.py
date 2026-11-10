@@ -129,7 +129,7 @@ class BapiTradesReaderTest(unittest.TestCase):
                 actual = bapi_trades.init_cache_trade_manager()
 
             self.assertIs(actual, manager)
-            get_cache_manager.assert_called_once_with("BinanceTrade", start_sync=False)
+            get_cache_manager.assert_called_once_with("BinanceTrade")
 
         with self.subTest(msg="recent trade reader copies one locked generation"):
             trade = {
@@ -270,7 +270,7 @@ class TestCachedOrders(unittest.TestCase):
         manager = MagicMock(cache={SYMBOL: []})
         with patch("cacheManager.get_cache_manager", return_value=manager) as get_manager:
             self.assertEqual(ao.get_trade_orders("BUY", SYMBOL, 60), [])
-        get_manager.assert_called_once_with("BinanceOrder", start_sync=False)
+        get_manager.assert_called_once_with("BinanceOrder")
 
     def test_reader_copies_mutable_order_rows_under_manager_lock(self):
         now_ms = int(time.time() * 1000)

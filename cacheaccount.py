@@ -95,21 +95,6 @@ from state_io import (
 )
 
 
-# WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
-_mark_ws_available = _bapi_ws_bridge.mark_ws_available
-_mark_ws_event_received = _bapi_ws_bridge.mark_ws_event_received
-_mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
-
-
-def _should_poll_for_manager(cls_name):
-    return _bapi_ws_bridge.should_poll_for_manager(
-        cls_name,
-        ws_only_mode=_cm_override("WS_ONLY_MODE", _bapi_ws_bridge.WS_ONLY_MODE),
-        ws_available=_cm_override("_ws_available", _bapi_ws_bridge._ws_available),
-        ws_is_healthy=_cm_override("_ws_is_healthy", _bapi_ws_bridge._ws_is_healthy),
-    )
-
-
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for account-domain caches (``Order``, ``Trade``, ``AssetValue``)."""
 
@@ -150,7 +135,9 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         return bool(self._is_trade_account_cache or self._is_order_account_cache)
 
     def _should_poll(self):
-        poll_fn = _cm_override("_should_poll_for_manager", _should_poll_for_manager)
+        poll_fn = _cm_override(
+            "_should_poll_for_manager", _bapi_ws_bridge.should_poll_for_manager
+        )
         if callable(poll_fn):
             return bool(poll_fn(self.cls_name))
         return True
@@ -1115,7 +1102,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         venue: Optional[str] = None,
         append_persist: Optional[bool] = None,
         stream_format: Optional[str] = None,
-        start_sync: Optional[bool] = None,
+        data_sync_mode: Optional[str] = None,
     ):
         self.venue = self._normalize_trade_venue(venue, filename, symbols)
         eff_filename = str(filename) if filename else self.resolve_cache_filepath(venue=self.venue)
@@ -1138,13 +1125,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         else:
             eff_append_persist = self.venue == "binance" or eff_filename.lower().endswith(".jsonl")
         self.stream_format = "jsonl" if eff_append_persist else "json"
-        eff_read_only = (
-            (not _parse_bool_flag(start_sync, default=False))
-            if start_sync is not None
-            else _parse_bool_flag(read_only, default=False)
-        )
-        if eff_append_persist and api_client is None:
-            api_client = _cm_override("api", api)
+        eff_read_only = _parse_bool_flag(read_only, default=False)
         super().__init__(
             sync_ts,
             eff_symbols,
@@ -1153,7 +1134,10 @@ class CacheTradeManager(CacheAccountManagerBase):
             api_client=api_client,
             append_persist=eff_append_persist,
             read_only=eff_read_only,
+            data_sync_mode=data_sync_mode,
         )
+        if not eff_append_persist and api_client is None:
+            self.api_client = None
 
     @staticmethod
     def _is_valid_item(trade):
@@ -1948,8 +1932,6 @@ class CacheOrderManager(CacheAccountManagerBase):
         return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         super().__init__(
             sync_ts,
             symbols,
@@ -2382,8 +2364,6 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         return out
 
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
-        if api_client is None:
-            api_client = _cm_override("api", api)
         self._migrated_usdt_on_load = False
         super().__init__(
             sync_ts,
@@ -2450,12 +2430,6 @@ class CacheAssetValueManager(CacheAccountManagerBase):
                 return {}
             live_cp_data = None
             cp_default_filename = CACHE_CURRENT_PRICE_FILENAME
-            try:
-                from cacheprice import CacheCurrentPriceManager as _CCPM
-
-                cp_default_filename = getattr(_CCPM, "DEFAULT_FILENAME", cp_default_filename) or cp_default_filename
-            except Exception:
-                pass
             for cp_cand in (
                 os.path.join(cache_root, "prices", cp_default_filename),
                 os.path.join(cache_root, cp_default_filename),
@@ -2557,76 +2531,14 @@ def ensure_account_cache_readers(status):
         trade_version = status.trade_cache_version
         if not order_version or not trade_version:
             raise ValueError("health marker has no durable cache versions")
-        getter("BinanceOrder", start_sync=False).ensure_persisted_version(
-            order_version
-        )
-        getter("BinanceTrade", start_sync=False).ensure_persisted_version(
-            trade_version
-        )
+        getter("BinanceOrder").ensure_persisted_version(order_version)
+        getter("BinanceTrade").ensure_persisted_version(trade_version)
     except ach.AccountCacheNotReady:
         raise
     except (AttributeError, TypeError, ValueError) as exc:
         raise ach.AccountCacheNotReady(
             "account_cache_reader_not_current"
         ) from exc
-
-
-def _ws_cache_getter(name, symbols=None, *, start_sync=False):
-    """Look up caches from WebSocket callbacks without spawning rogue polling loops in consumers."""
-    getter = _resolve_account_cache_getter()
-    try:
-        if symbols is not None:
-            return getter(name, symbols=symbols, start_sync=start_sync)
-        return getter(name, start_sync=start_sync)
-    except TypeError:
-        if symbols is not None:
-            return getter(name, symbols)
-        return getter(name)
-
-
-def _upsert_order_from_execution_report(event):
-    return _bapi_ws_bridge.upsert_order_from_execution_report(
-        event, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
-    )
-
-
-def _append_trade_from_execution_report(event):
-    return _bapi_ws_bridge.append_trade_from_execution_report(
-        event, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
-    )
-
-
-refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
-
-
-def _handle_binance_ws_event(event):
-    cache_getter = _cm_override("_ws_cache_getter", _ws_cache_getter)
-    _bapi_ws_bridge.handle_binance_ws_event(
-        event,
-        cache_getter=cache_getter,
-        log_enabled=_cm_override("WS_EVENT_LOG_ENABLED", _bapi_ws_bridge.WS_EVENT_LOG_ENABLED),
-        upsert_order_fn=_cm_override(
-            "_upsert_order_from_execution_report",
-            _upsert_order_from_execution_report,
-        ),
-        append_trade_fn=_cm_override(
-            "_append_trade_from_execution_report",
-            _append_trade_from_execution_report,
-        ),
-        persist_fn=lambda event_type: _bapi_ws_bridge.persist_ws_updated_caches(
-            event_type, cache_getter=cache_getter
-        ),
-    )
-
-
-def enable_real_ws_event_sync():
-    return _bapi_ws_bridge.enable_real_ws_event_sync(
-        on_event=_cm_override("_handle_binance_ws_event", _handle_binance_ws_event),
-        on_available=_cm_override("_mark_ws_available", _mark_ws_available),
-        on_healthy=_cm_override("_mark_ws_event_received", _mark_ws_event_received),
-        on_unhealthy=_cm_override("_mark_ws_unhealthy", _mark_ws_unhealthy),
-        loss_timeout_sec=_cm_override("WS_LOSS_TIMEOUT_SEC", _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC),
-    )
 
 
 def start_account_cache_daemon(
@@ -2639,7 +2551,7 @@ def start_account_cache_daemon(
     now_ms = int(_now_time() * 1000)
     max_age_ms = int(ach.MAX_AGE_SEC * 1000)
     for account_cache_name in ("BinanceOrder", "BinanceTrade"):
-        acc_mgr = getter(account_cache_name, start_sync=False)
+        acc_mgr = getter(account_cache_name)
         if isinstance(sync_started_set, set):
             sync_started_set.add(account_cache_name)
         ver, sync_ms = (
@@ -2651,9 +2563,7 @@ def start_account_cache_daemon(
             ach.record_successful_sync(
                 account_cache_name, ver, now_ms=sync_ms
             )
-    _bapi_ws_bridge.initialize_ws_bridge_once(
-        enable_fn=_cm_override("enable_real_ws_event_sync", enable_real_ws_event_sync)
-    )
+    _bapi_ws_bridge.initialize_ws_bridge_once()
 
 
 def disable_account_cache_daemon_writer() -> None:
