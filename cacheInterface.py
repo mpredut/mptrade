@@ -192,6 +192,37 @@ class CacheManagerInterface(ABC):
 
     _default_api_client: Any = None
 
+    @classmethod
+    def resolve_data_sync_mode(
+        cls,
+        data_sync_mode: Optional[str] = None,
+        *,
+        config_read_only: bool = False,
+    ) -> tuple[str, bool, bool]:
+        """Resolve ``(data_sync_mode, save_state, start_periodic_sync)`` across the 3 cache operating models:
+
+        1. ``producer``: starts from persistent disk state, updates memory, and persists to disk.
+        2. ``live_reader``: starts from persistent disk state once and increments data in memory
+           without writing to disk or repeatedly re-checking persistent disk state.
+        3. ``disk_reader`` (default): passive reader that never increments data in memory on its own
+           and always resynchronizes with the persistent disk state.
+        """
+        if data_sync_mode is None:
+            norm_mode = cls.MODE_DISK_READER
+        else:
+            norm_mode = str(data_sync_mode).strip().lower()
+            if norm_mode not in cls.VALID_SYNC_MODES:
+                raise ValueError(
+                    f"Invalid data_sync_mode {data_sync_mode!r}; expected one of {sorted(cls.VALID_SYNC_MODES)}"
+                )
+        if config_read_only:
+            return cls.MODE_DISK_READER, False, False
+        if norm_mode == cls.MODE_PRODUCER:
+            return cls.MODE_PRODUCER, True, True
+        if norm_mode == cls.MODE_LIVE_READER:
+            return cls.MODE_LIVE_READER, False, True
+        return cls.MODE_DISK_READER, False, False
+
     def __init__(
         self,
         sync_ts,
@@ -216,31 +247,18 @@ class CacheManagerInterface(ABC):
             else _cm_override("api", self._default_api_client)
         )
         self.append_persist = _parse_bool_flag(append_persist, default=False)
-        norm_mode = (
-            str(data_sync_mode).strip().lower()
-            if data_sync_mode is not None
-            else None
+        resolved_mode, self.save_state, _ = self.resolve_data_sync_mode(
+            data_sync_mode
         )
-        if norm_mode is not None and norm_mode not in self.VALID_SYNC_MODES:
-            raise ValueError(
-                f"Invalid data_sync_mode {data_sync_mode!r}; expected one of {sorted(self.VALID_SYNC_MODES)}"
-            )
-        if norm_mode == self.MODE_PRODUCER:
-            self.data_sync_mode = self.MODE_PRODUCER
+        self.data_sync_mode = resolved_mode
+        if resolved_mode == self.MODE_PRODUCER:
             self.read_only = False
-            self.save_state = True
-        elif norm_mode == self.MODE_DISK_READER:
-            self.data_sync_mode = self.MODE_DISK_READER
+        elif data_sync_mode is not None and resolved_mode == self.MODE_DISK_READER:
             self.read_only = True
-            self.save_state = False
-        elif norm_mode == self.MODE_LIVE_READER:
-            self.data_sync_mode = self.MODE_LIVE_READER
+        elif resolved_mode == self.MODE_LIVE_READER:
             self.read_only = _parse_bool_flag(read_only, default=True)
-            self.save_state = False
         else:
-            self.data_sync_mode = self.MODE_DISK_READER
             self.read_only = _parse_bool_flag(read_only, default=False)
-            self.save_state = False
         self._persisted_counts = {}
         self._reader_reload_lock = threading.Lock()
         self._legacy_jsonl_needs_rewrite = False
@@ -1149,8 +1167,6 @@ class CacheManagerInterface(ABC):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
         self.request_stop()
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        if eff_timeout is None:
-            eff_timeout = 5.0
         thread = self.thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=eff_timeout)
@@ -1165,8 +1181,6 @@ class CacheManagerInterface(ABC):
         for manager in instances:
             manager.request_stop()
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        if eff_timeout is None:
-            eff_timeout = 5.0
         deadline = _monotonic_time() + eff_timeout
         results = [
             manager.shutdown(timeout=max(0.0, deadline - _monotonic_time()))

@@ -91,35 +91,7 @@ from state_io import (
 load_dotenv()
 
 
-def _resolve_data_sync_mode(
-    data_sync_mode: Optional[str] = None,
-    *,
-    config_read_only: bool = False,
-) -> tuple[str, bool, bool]:
-    """Resolve ``(data_sync_mode, save_state, start_periodic_sync)`` across the 3 cache operating models:
-
-    1. ``producer``: starts from persistent disk state, updates memory, and persists to disk.
-    2. ``live_reader``: starts from persistent disk state once and increments data in memory
-       without writing to disk or repeatedly re-checking persistent disk state.
-    3. ``disk_reader`` (default): passive reader that never increments data in memory on its own
-       and always resynchronizes with the persistent disk state.
-    """
-    if data_sync_mode is None:
-        norm_mode = CacheManagerInterface.MODE_DISK_READER
-    else:
-        norm_mode = str(data_sync_mode).strip().lower()
-        if norm_mode not in CacheManagerInterface.VALID_SYNC_MODES:
-            raise ValueError(
-                f"Invalid data_sync_mode {data_sync_mode!r}; expected one of {sorted(CacheManagerInterface.VALID_SYNC_MODES)}"
-            )
-
-    if config_read_only:
-        return CacheManagerInterface.MODE_DISK_READER, False, False
-    if norm_mode == CacheManagerInterface.MODE_PRODUCER:
-        return CacheManagerInterface.MODE_PRODUCER, True, True
-    if norm_mode == CacheManagerInterface.MODE_LIVE_READER:
-        return CacheManagerInterface.MODE_LIVE_READER, False, True
-    return CacheManagerInterface.MODE_DISK_READER, False, False
+_resolve_data_sync_mode = CacheManagerInterface.resolve_data_sync_mode
 
 
 def get_current_price_manager(
@@ -550,8 +522,6 @@ class CacheFactory:
                 if callable(req_stop):
                     req_stop()
             eff_timeout = safe_nonneg_float(timeout, default=5.0)
-            if eff_timeout is None:
-                eff_timeout = 5.0
             deadline = _monotonic_time() + eff_timeout
             results = [
                 manager.shutdown(timeout=max(0.0, deadline - _monotonic_time()))

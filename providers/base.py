@@ -688,6 +688,17 @@ class MarketDataProvider(ABC):
                 return ts_ms, px_f
         return None
 
+    @classmethod
+    def _resolve_ssot_memory_manager(cls, reader_fn: Any, factory_key: str) -> Any:
+        if callable(reader_fn):
+            with contextlib.suppress(Exception):
+                mgr = reader_fn()
+                if mgr is not None:
+                    return mgr
+        cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+        instances = getattr(cf, "_instances", None)
+        return instances.get(factory_key) if isinstance(instances, dict) else None
+
     @staticmethod
     def _read_ssot_current_price_candidates(
         candidates: tuple[str, ...] | List[str],
@@ -699,16 +710,9 @@ class MarketDataProvider(ABC):
     ) -> Optional[float]:
         max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
         if use_memory_manager:
-            cpm = None
-            if callable(MarketDataProvider._ssot_current_price_reader):
-                try:
-                    cpm = MarketDataProvider._ssot_current_price_reader()
-                except Exception:
-                    cpm = None
-            if cpm is None:
-                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
-                if cf is not None and hasattr(cf, "_instances"):
-                    cpm = cf._instances.get("CurrentPrice")
+            cpm = MarketDataProvider._resolve_ssot_memory_manager(
+                MarketDataProvider._ssot_current_price_reader, "CurrentPrice"
+            )
             cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
             cpm_matches_path = (
                 not isinstance(cpm_file, str)
@@ -867,16 +871,9 @@ class MarketDataProvider(ABC):
         custom_path = getattr(self, "_ssot_trend_cache_path", None)
         now_s = time.time()
         if custom_path is None:
-            stm = None
-            if callable(self._ssot_short_trend_reader):
-                try:
-                    stm = self._ssot_short_trend_reader()
-                except Exception:
-                    stm = None
-            if stm is None:
-                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
-                if cf is not None and hasattr(cf, "_instances"):
-                    stm = cf._instances.get("ShortTrend")
+            stm = self._resolve_ssot_memory_manager(
+                self._ssot_short_trend_reader, "ShortTrend"
+            )
             if stm is not None:
                 if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
                     for cand in candidates:
