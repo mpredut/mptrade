@@ -321,7 +321,8 @@ def _run_once(
 
     qty = strategy.s["qty"]
     cost = strategy.s["cost"]
-    realized = strategy.s["realized_net"]
+    realized_gross = strategy.s["realized_gross"]
+    realized_net = strategy.s["realized_net"]
     final_upnl = (strategy.sign * (c - cost / qty) * qty) if qty > 1e-12 else 0.0
     cycles = strategy.s.get("cycles_completed", 0)
     wins = strategy.s.get("wins", 0)
@@ -333,10 +334,10 @@ def _run_once(
         total_fees += final_open_fee
 
     return build_replay_summary(
-        realized=realized,
-        net=realized + funding,
+        realized=realized_gross,
+        net=realized_net + funding,
         fees=total_fees,
-        total=realized + funding + final_upnl - final_open_fee,
+        total=realized_net + funding + final_upnl - final_open_fee,
         final_upnl=final_upnl,
         cycles=cycles,
         wins=wins,

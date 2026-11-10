@@ -205,7 +205,7 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     net_pct = (safe_float(m_dict.get("net"), 0.0) / safe_budget) * 100.0
     total_pct = (safe_float(m_dict.get("total"), 0.0) / safe_budget) * 100.0
     max_dd = safe_float(m_dict.get("max_drawdown_pct"), 0.0)
-    calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
+    calmar = (total_pct / max_dd) if max_dd > 0 else 0.0
     raw_sharpe = m_dict.get("sharpe") if m_dict.get("sharpe") is not None else m_dict.get("sharpe_ratio")
     sharpe = safe_float(raw_sharpe, 0.0)
     return {
@@ -362,9 +362,11 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
             and l_f <= min(o_f, h_f, c_f)
         ):
             valid_bars.append((ts_f, o_f, h_f, l_f, c_f))
+    pre_bars = [b for b in valid_bars if b[0] < anchor_ts]
     fwd_bars = [b for b in valid_bars if b[0] >= anchor_ts]
     full_ohlc = [(b[1], b[2], b[3], b[4]) for b in valid_bars]
     fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
+    fwd_warmup = [(b[1], b[2], b[3], b[4]) for b in pre_bars[-40:]]
 
     if len(fwd_ohlc) < 2 or len(full_ohlc) < 2:
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")
@@ -374,7 +376,9 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     fee_pct = 0.26
     interval = 240
     if len(fwd_ohlc) > 40:
-        kraken_replay.prewarm_trend_series(fwd_ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
+        kraken_replay.prewarm_trend_series(
+            fwd_warmup + fwd_ohlc, warmup=len(fwd_warmup), params=LIVE_PARAMS, bar_minutes=interval,
+        )
     if len(full_ohlc) > 40:
         kraken_replay.prewarm_trend_series(full_ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
@@ -387,6 +391,7 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         # Forward bars
         m_fwd = kraken_replay.run_replay(
             fwd_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
+            warmup_ohlc=fwd_warmup,
             execution=ExecutionModel(),
         )
         s_fwd = _summarize_replay(m_fwd, budget)

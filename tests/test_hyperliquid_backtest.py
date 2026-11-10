@@ -102,6 +102,8 @@ def test_hyperliquid_simulate_take_profit_long():
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
     assert m["realized"] > 0.0
+    assert m["realized"] > m["net"]
+    assert abs((m["realized"] + m["funding"] + m["final_upnl"] - m["fees"]) - m["total"]) < 1e-6
 
 
 def test_hyperliquid_simulate_take_profit_short():
@@ -148,6 +150,8 @@ def test_hyperliquid_simulate_dca_execution():
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
     assert m["realized"] > 0.0
+    assert m["realized"] > m["net"]
+    assert abs((m["realized"] + m["funding"] + m["final_upnl"] - m["fees"]) - m["total"]) < 1e-6
 
 
 def test_hyperliquid_simulate_signal_gate():

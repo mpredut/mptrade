@@ -21,9 +21,9 @@ def default_candidates() -> list[Candidate]:
     return [
         Candidate("live", "the live configuration, unchanged", {}),
         Candidate("classic_tp", "a fixed TP; the trailing is off", {"tp_trend_hold": False}),
-        Candidate("trail_2", "trailing 2%", {"tp_trail_pct": 2.0}),
-        Candidate("trail_4", "trailing 4%", {"tp_trail_pct": 4.0}),
-        Candidate("trail_5", "trailing 5%", {"tp_trail_pct": 5.0}),
+        Candidate("trail_2", "trailing 2%", {"tp_trail_adaptive": False, "tp_trail_pct": 2.0}),
+        Candidate("trail_4", "trailing 4%", {"tp_trail_adaptive": False, "tp_trail_pct": 4.0}),
+        Candidate("trail_5", "trailing 5%", {"tp_trail_adaptive": False, "tp_trail_pct": 5.0}),
         Candidate("tp_4", "prag TP 4%", {"takeprofit_pct": 4.0}),
         Candidate("tp_6", "prag TP 6%", {"takeprofit_pct": 6.0}),
         Candidate("dca_drop_1", "DCA on a 1% drop", {"dca_drop_pct": 1.0}),
@@ -39,7 +39,7 @@ def default_candidates() -> list[Candidate]:
         Candidate(
             "confirm_dca_1_5_trail_2",
             "confirmare: DCA 1,5% + trailing 2%",
-            {"dca_drop_pct": 1.5, "tp_trail_pct": 2.0},
+            {"dca_drop_pct": 1.5, "tp_trail_adaptive": False, "tp_trail_pct": 2.0},
         ),
     ]
 

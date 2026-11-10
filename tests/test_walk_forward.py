@@ -192,10 +192,12 @@ class WalkForwardCompareTest(unittest.TestCase):
     def test_default_candidates_not_empty(self):
         candidates = default_candidates()
         self.assertTrue(len(candidates) >= 10)
-        names = {c.name for c in candidates}
-        self.assertIn("live", names)
-        self.assertIn("classic_tp", names)
-        self.assertIn("dca_drop_1_5", names)
+        by_name = {c.name: c for c in candidates}
+        self.assertIn("live", by_name)
+        self.assertIn("classic_tp", by_name)
+        self.assertIn("dca_drop_1_5", by_name)
+        for fixed_trail_name in ("trail_2", "trail_4", "trail_5", "confirm_dca_1_5_trail_2"):
+            self.assertIs(by_name[fixed_trail_name].overrides.get("tp_trail_adaptive"), False)
 
     def test_default_fee_stress_schedules(self):
         for venue in ("kraken", "binance", "hyperliquid", "trading212"):

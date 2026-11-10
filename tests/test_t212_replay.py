@@ -102,6 +102,30 @@ class T212ReplayTest(unittest.TestCase):
             )
             self.assertAlmostEqual(historical["open_qty"], one_to_one["open_qty"] / 2)
             self.assertEqual(historical["account_currency"], "RON")
+            self.assertAlmostEqual(historical["total"], historical["net_pnl"], places=6)
+            self.assertAlmostEqual(
+                historical["realized"] - historical["fees"] + historical["final_upnl"],
+                historical["total"],
+                places=6,
+            )
+
+        with self.subTest(msg="non_usd_account_currency_keeps_all_summary_fields_in_account_currency"):
+            params = _params(STRAT_CURRENCY="RON", STRAT_TAKEPROFIT_PCT="3")
+            bars = [
+                (100.0, 101.0, 99.0, 100.0),  # decide ENTRY
+                (100.0, 101.0, 99.0, 100.0),  # fill ENTRY, decide TP + re-entry
+                (100.0, 104.0, 99.0, 103.5),  # fill TP SELL, decide next ENTRY
+                (103.5, 104.0, 102.0, 103.0), # fill next ENTRY (open leg remains)
+            ]
+            ron = replay.run_replay(bars, params, bar_minutes=1440, fx_to_usd=[0.5, 0.5, 0.5, 0.4])
+            self.assertEqual(ron["cycles"], 1)
+            self.assertGreater(ron["open_qty"], 0.0)
+            self.assertAlmostEqual(ron["total"], ron["net_pnl"], places=6)
+            self.assertAlmostEqual(
+                ron["realized"] - ron["fees"] + ron["final_upnl"],
+                ron["total"],
+                places=6,
+            )
 
         with self.subTest(msg="worst_case_reports_ambiguous_buy_and_sell_paths"):
             params = _params()

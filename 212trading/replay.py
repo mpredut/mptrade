@@ -152,7 +152,7 @@ def _run_once(
         equity_curve = [initial_capital]
         exposure = []
         trade_pnls = []
-        turnover_account = realized_net_account = 0.0
+        turnover_account = realized_gross_account = realized_net_account = fees_account = 0.0
         fills = wins = ambiguous_bars = 0
         cycle0 = engine.s.get("cycle", 1)
         side_order = execution.side_order()
@@ -198,6 +198,8 @@ def _run_once(
                                 _gross, _fee, net = _strat._sell_pnl(avg, price, quantity, params.fx_fee_pct)
                                 if complete and fill_order.get("level") is not None:
                                     engine._record_tp_sold_level(fill_order["level"])
+                                realized_gross_account += _gross / rate
+                                fees_account += _fee / rate
                                 realized_net_account += net / rate
                                 wins += int(net > 0)
                                 trade_pnls.append(net / rate)
@@ -224,14 +226,17 @@ def _run_once(
 
     qty = engine.s["qty"]
     avg = engine._avg()
+    final_rate = fx_rates[-1]
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
+    final_upnl_account = final_upnl_usd / final_rate
+    open_buy_fee_account = open_buy_fee_usd / final_rate
     return build_replay_summary(
-        realized=engine.s["realized_pnl_usd"],
-        net=engine.s["realized_net_usd"],
-        fees=engine.s["fees_usd"] + open_buy_fee_usd,
-        total=engine.s["realized_net_usd"] + final_upnl_usd - open_buy_fee_usd,
-        final_upnl=final_upnl_usd,
+        realized=realized_gross_account,
+        net=realized_net_account,
+        fees=fees_account + open_buy_fee_account,
+        total=realized_net_account + final_upnl_account - open_buy_fee_account,
+        final_upnl=final_upnl_account,
         cycles=engine.s.get("cycle", 1) - cycle0,
         wins=wins,
         open_qty=qty,
@@ -245,7 +250,7 @@ def _run_once(
         turnover_notional=turnover_account,
         bar_minutes=bar_minutes,
         periods_per_year=periods_per_year,
-        extra_fields={"open_buy_fee": round_metric(open_buy_fee_usd)},
+        extra_fields={"open_buy_fee": round_metric(open_buy_fee_account)},
     )
 
 

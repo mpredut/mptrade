@@ -147,7 +147,7 @@ def simulate(ohlc, P):
             env_overrides[env_key] = str(v).lower() if isinstance(v, bool) else str(v)
 
     params = StratParams.from_env(env_overrides)
-    return run_replay(ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=1.0)
+    return run_replay(ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=P.get("fx_to_usd", 1.0))
 
 
 
