@@ -541,15 +541,9 @@ def last_store_activity() -> float:
         try:
             con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
             try:
-                try:
-                    rows = con.execute(
-                        "SELECT conversation_id FROM conversation_summaries "
-                        "WHERE status='CASCADE_RUN_STATUS_RUNNING' OR COALESCE(not_fully_idle, 0) != 0"
-                    ).fetchall()
-                except sqlite3.Error:
-                    rows = con.execute(
-                        "SELECT conversation_id FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING'"
-                    ).fetchall()
+                rows = con.execute(
+                    "SELECT conversation_id FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING'"
+                ).fetchall()
                 running_cids = [r[0] for r in rows if r and r[0] and r[0] not in ignored]
             finally:
                 con.close()

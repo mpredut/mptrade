@@ -173,6 +173,16 @@ def test_stale_running_status_does_not_deadlock_ui_sync_while_fresh_running_bloc
     _age_store(d1, 1200)
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
+    # An IDLE conversation with not_fully_idle=1 (e.g. sleeping between repeating timers) aged > idle_sec (180s > 120s, < 900s) does not block ui-sync
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("UPDATE conversation_summaries SET status='CASCADE_RUN_STATUS_IDLE', not_fully_idle=1 WHERE conversation_id='stale-run'")
+    conn.commit()
+    conn.close()
+    _age_store(d1, 180)
+    (tmp_path / "ui_sync_state.json").unlink(missing_ok=True)
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+    _age_store(d1, 1200)
+
     # And repair_summaries restores canonical topic titles from TOPIC_REGISTRY / TOPIC_SPECS over stale ntfy-* titles
     (tmp_path / "llm_topic_threads.json").write_text(
         json.dumps({"macro_sentiment": {"conversation_id": "new-topic"}})
@@ -639,15 +649,26 @@ def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store,
 
     assert mirror_topic_thread_to_ui(new_cid, topic_title, bot_cli_base=str(bot_base), ui_cli_base=str(cli)) is True
 
-    # Before daemon restart: ghost old_cid.db exists in D1 with cascade_id rewritten to old_cid so Web UI opens it cleanly!
+    # Before daemon restart: ghost old_cid.db exists in D1 with cascade_id rewritten to old_cid and annotation preserved!
     ghost_db = d1 / f"{old_cid}.db"
     assert ghost_db.exists()
+    assert asf.read_annotation_title(str(cli), old_cid) == topic_title
     gconn = sqlite3.connect(str(ghost_db))
     try:
         assert gconn.execute("SELECT cascade_id FROM trajectory_meta").fetchone()[0] == old_cid
         assert gconn.execute("SELECT step_payload FROM steps WHERE idx=0").fetchone()[0] == f"turn:{old_cid}:HOLD".encode("utf-8")
     finally:
         gconn.close()
+
+    # If the daemon resurrects old_cid into conversation_summaries when opened in Web UI, the next mirror cleans the duplicate row again
+    conn = sqlite3.connect(asf.DB)
+    conn.execute(
+        "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, '', 'CASCADE_RUN_STATUS_IDLE', 'autonommptrade', 1, 0, ?)",
+        (old_cid, asf.read_annotation_title(str(cli), old_cid), raw_old),
+    )
+    conn.commit()
+    conn.close()
+    assert mirror_topic_thread_to_ui(new_cid, topic_title, bot_cli_base=str(bot_base), ui_cli_base=str(cli)) is True
 
     # Meanwhile pending_ui_sync still queues both gone:<old_cid> and new:<new_cid>
     pending = asf.pending_ui_sync()

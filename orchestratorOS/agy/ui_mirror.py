@@ -37,6 +37,7 @@ from orchestratorOS.agy.summary_store import (
     summaries_db,
     upsert_summary_row_dict,
     upsert_ui_visible_summary,
+    write_annotation_title,
 )
 from state_io import durable_replace_file
 
@@ -261,6 +262,7 @@ def mirror_topic_thread_to_ui(
                         drop_wal_sidecars(tmp_db, force=True)
                         drop_wal_sidecars(ghost_db, force=True)
                         durable_replace_file(tmp_db, ghost_db)
+                        write_annotation_title(dst_base, ghost_cid, clean_title)
                         if src_brain and os.path.isdir(src_brain):
                             shutil.copytree(src_brain, os.path.join(dst_base, "brain", ghost_cid), dirs_exist_ok=True)
                     except (OSError, sqlite3.Error) as exc:
