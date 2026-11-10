@@ -154,12 +154,19 @@ def update_post_sell_anchors(
     return lsp
 
 
-def safe_state_token(val: object, default: str = "unknown", *, lower: bool = False) -> str:
+def safe_state_token(
+    val: object,
+    default: str = "unknown",
+    *,
+    lower: bool = False,
+    allow_equals: bool = False,
+) -> str:
     """Sanitize a symbol/ticker/direction token for use in a ``.state_<token>.json`` filename."""
     if isinstance(val, bool) or not isinstance(val, str):
         return default
     s = val.strip().lower() if lower else val
-    return "".join(c for c in s if c.isalnum() or c in "._-").strip("._-") or default
+    allowed = "._-=" if allow_equals else "._-"
+    return "".join(c for c in s if c.isalnum() or c in allowed).strip("._-") or default
 
 
 def state_path_for(

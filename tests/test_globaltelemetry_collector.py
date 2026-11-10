@@ -907,14 +907,15 @@ def test_external_collectors_and_survival_producer_consumer_decoupling(
     assert kline_calls == []
 
     # 5. update_microstructure_cycle_deltas with persist=False computes cycle_delta in-memory without writing disk
-    mhist_path = os.path.join(temp_cache_dir, "microstructure_cycle_history.json")
+    from cachepaths import resolve_cachedb_filepath
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(temp_cache_dir, "microstructure_cycle_history.json")))
     if os.path.exists(mhist_path):
         os.remove(mhist_path)
     micro_map = {"BTCUSDC": {"ob_imbalance": 0.62, "cvd_15m_usd": 120000.0}}
     update_microstructure_cycle_deltas(temp_cache_dir, micro_map, now_ts=1700000100.0, persist=False)
     assert not os.path.exists(mhist_path)
     update_microstructure_cycle_deltas(temp_cache_dir, micro_map, now_ts=1700000100.0, persist=True)
-    assert os.path.exists(mhist_path)
+    assert os.path.exists(str(resolve_cachedb_filepath(os.path.join(temp_cache_dir, "microstructure_cycle_history.json"))))
 
 
 def test_read_market_and_portfolio_snapshot_read_only_consumer(
@@ -1021,7 +1022,8 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     with open(os.path.join(temp_cache_dir, "instruments.conf"), "w", encoding="utf-8") as fh:
         fh.write("BTCUSDC\n")
 
-    mhist_path = os.path.join(temp_cache_dir, "microstructure_cycle_history.json")
+    from cachepaths import resolve_cachedb_filepath
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(temp_cache_dir, "microstructure_cycle_history.json")))
     if os.path.exists(mhist_path):
         os.remove(mhist_path)
     bals_mtime_before = os.path.getmtime(bals_path)

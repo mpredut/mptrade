@@ -93,8 +93,8 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "suffixes": (".npz",),
     },
     "telemetry": {
-        "exact": (),
-        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"),
+        "exact": ("microstructure_cycle_history.json",),
+        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_", "microstructure_cycle_history."),
         "suffixes": (),
     },
     "macro": {

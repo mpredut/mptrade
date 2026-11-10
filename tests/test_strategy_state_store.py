@@ -75,6 +75,8 @@ class JsonStateStoreTest(unittest.TestCase):
 
     def test_safe_state_token_and_state_path_for_sanitize_and_fallback(self):
         self.assertEqual(safe_state_token("HYPE/USD", "unknown"), "HYPEUSD")
+        self.assertEqual(safe_state_token("CL=F", "unknown", allow_equals=True), "CL=F")
+        self.assertEqual(safe_state_token("CL=F", "unknown", allow_equals=False), "CLF")
         self.assertEqual(safe_state_token(" LONG ", "long", lower=True), "long")
         self.assertEqual(safe_state_token(True, "unknown"), "unknown")
         self.assertEqual(safe_state_token("...", "unknown"), "unknown")
