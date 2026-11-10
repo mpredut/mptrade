@@ -58,6 +58,7 @@ def define_candidate_grid() -> dict[str, dict]:
 
         # --- Adaptive Trailing Variations (Combined with Live tp_regime_gate) ---
         "04_adaptive_trail_k15": {
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 1.5,
             "tp_trail_min": 1.5,
@@ -65,6 +66,7 @@ def define_candidate_grid() -> dict[str, dict]:
             "tp_trail_vol_interval": 240,
         },
         "05_adaptive_trail_k20": {
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
             "tp_trail_min": 1.5,
@@ -72,6 +74,7 @@ def define_candidate_grid() -> dict[str, dict]:
             "tp_trail_vol_interval": 240,
         },
         "06_adaptive_trail_k25": {
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.5,
             "tp_trail_min": 2.0,

@@ -198,6 +198,7 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertIn("dca_drop_1_5", by_name)
         for fixed_trail_name in ("trail_2", "trail_4", "trail_5", "confirm_dca_1_5_trail_2"):
             self.assertIs(by_name[fixed_trail_name].overrides.get("tp_trail_adaptive"), False)
+            self.assertIs(by_name[fixed_trail_name].overrides.get("tp_mdhtp_enabled"), False)
 
     def test_default_fee_stress_schedules(self):
         for venue in ("kraken", "binance", "hyperliquid", "trading212"):
