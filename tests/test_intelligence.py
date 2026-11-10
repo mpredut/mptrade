@@ -9143,9 +9143,10 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
 
 def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and_daemon_recovery(tmp_path):
     import json
+    from types import SimpleNamespace
     import botcore
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import _collect_and_format_pretrade_recent_fills
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import RecentFillsExecutionStage
     from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
     from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
     from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
@@ -9193,7 +9194,16 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
     orig_loader = ptc_mod.load_symbol_best_recent_fills
     ptc_mod.load_symbol_best_recent_fills = lambda *a, **kw: ro_tao["TAOUSDC"]
     try:
-        _collect_and_format_pretrade_recent_fills(str(cdir_pt), "TAOUSDC", ["TAOUSDC"], telemetry_out, lambda p: {})
+        RecentFillsExecutionStage().evaluate(
+            SimpleNamespace(
+                cachedb_dir=str(cdir_pt),
+                symbol="TAOUSDC",
+                quote_variants=["TAOUSDC"],
+                rj=lambda p: {},
+                telemetry=telemetry_out,
+                record_pillar_source=lambda *a: None,
+            )
+        )
     finally:
         ptc_mod.load_symbol_best_recent_fills = orig_loader
     assert "Open LIFO Lots=[4.6774@258.5, 1.2515@240.494974, 1.4268@237.1, 3.5017@212.5]" in telemetry_out["Recent Venue Fills"]
