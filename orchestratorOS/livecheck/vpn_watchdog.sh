@@ -74,6 +74,9 @@ daemon_responsive() { [ -n "$(pia get connectionstate)" ]; }
 vpn_healthy() {
     [ "$(pia get connectionstate)" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
+    if command -v resolvectl >/dev/null 2>&1; then
+        timeout 4 resolvectl query --cache=no api.binance.com >/dev/null 2>&1 || return 1
+    fi
     curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
         --fail --silent https://api.binance.com/api/v3/time >/dev/null 2>&1 || return 1
 }
@@ -187,6 +190,22 @@ rung_reconnect() {
     log "rung 2: disconnect + connect (session reset)"
     pia disconnect >/dev/null
     sleep 4
+    pia connect >/dev/null
+}
+
+rung_fallback_region() {
+    local cur_reg fallback_reg
+    cur_reg=$(pia get region)
+    ensure_dedicated_ips_registered >/dev/null 2>&1 || true
+    fallback_reg=$(pia get regions | grep -m1 '^dedicated-belgium' || true)
+    if [ -z "$fallback_reg" ] || [ "$cur_reg" = "$fallback_reg" ]; then
+        fallback_reg="de-frankfurt"
+    fi
+    log "rung 2b: switching from '${cur_reg:-unknown}' to fallback region '$fallback_reg'"
+    pia disconnect >/dev/null 2>&1 || true
+    sleep 2
+    pia set region "$fallback_reg" >/dev/null || return 1
+    pia set requestportforward true >/dev/null 2>&1 || true
     pia connect >/dev/null
 }
 
@@ -403,7 +422,11 @@ log "VPN UNHEALTHY (state=$(pia get connectionstate) daemon=$(daemon_responsive 
 systemctl stop pia.service >/dev/null 2>&1
 
 if daemon_responsive; then
-    LADDER="rung_connect rung_reconnect rung_restart_daemon rung_relogin rung_reinstall"
+    if [ "$(pia get connectionstate)" = "Connected" ]; then
+        LADDER="rung_reconnect rung_fallback_region rung_restart_daemon rung_relogin rung_reinstall"
+    else
+        LADDER="rung_connect rung_reconnect rung_fallback_region rung_restart_daemon rung_relogin rung_reinstall"
+    fi
 else
     log "the daemon does not answer piactl -> skipping rungs 1-2"
     LADDER="rung_restart_daemon rung_relogin rung_reinstall"

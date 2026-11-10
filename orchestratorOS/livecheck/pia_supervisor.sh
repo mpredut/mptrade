@@ -40,9 +40,12 @@ vpn_healthy() {
     # Verify kernel policy routing sends normal application traffic via the VPN interface.
     ip route get 1.1.1.1 2>/dev/null | grep -q "dev $VPN_IF" || return 1
 
-    local binance_ip
-    binance_ip=$(getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
-    [ -n "$binance_ip" ] || binance_ip=$(resolvectl query api.binance.com 2>/dev/null | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+    local binance_ip=""
+    if command -v resolvectl >/dev/null 2>&1; then
+        binance_ip=$(timeout 4 resolvectl query --cache=no api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+    else
+        binance_ip=$(timeout 4 getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
+    fi
     [ -n "$binance_ip" ] || return 1
 
     curl -4 --interface "$VPN_IF" \
@@ -52,12 +55,20 @@ vpn_healthy() {
         >/dev/null 2>&1 || return 1
 }
 
+dip_endpoint_reachable() {
+    local region="$1" dip_ip http_code
+    dip_ip=$(printf '%s' "$region" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)
+    [ -n "$dip_ip" ] || return 0
+    http_code=$(curl -4 -k -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 4 "https://${dip_ip}:1337/" 2>/dev/null || echo "000")
+    [ "$http_code" != "000" ]
+}
+
 prewarm_dns() {
     local now; now=$(date +%s)
     if [ $((now - last_prewarm)) -ge "$PREWARM_INTERVAL" ]; then
         last_prewarm=$now
         for d in api.binance.com stream.binance.com api.kraken.com api.hyperliquid.xyz live.trading212.com ntfy.sh; do
-            getent ahostsv4 "$d" >/dev/null 2>&1 &
+            timeout 5 getent ahostsv4 "$d" >/dev/null 2>&1 &
         done
     fi
 }
@@ -264,6 +275,10 @@ while true; do
             if [ $((now - last_restore_attempt)) -ge "$RESTORE_INTERVAL" ]; then
                 last_restore_attempt=$now
                 prev_reg="$current_reg"
+                if ! dip_endpoint_reachable "$REG_DED_DE"; then
+                    echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Primary Frankfurt DIP ($REG_DED_DE) endpoint :1337 still unreachable; deferring failback."
+                    continue
+                fi
                 echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Attempting automatic failback to Primary Frankfurt DIP ($REG_DED_DE)..."
                 if connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP"; then
                     echo "Successfully restored connection to Primary Frankfurt DIP ($REG_DED_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"

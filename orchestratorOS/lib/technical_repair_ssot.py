@@ -661,6 +661,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
     bot_cycle_recovered_pattern = re.compile(
         r"(Order \d+ .* is protected from monitororder repricing|"
+        r"For [A-Z0-9_]+ there are no open (?:BUY|SELL) orders to begin with\.|"
         r"get_trade_orders:\s+Total found \d+ orders|"
         r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
         r"\[[A-Z0-9_]+\]\s+price=\d+(?:\.\d+)?,\s+window_min/max=|"
@@ -685,7 +686,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
         r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
         r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
-        r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:)",
+        r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:|"
+        r"OK \(tun0 \+ HTTPS through the tunnel\)|PIA healthy \(tun0 \+ DNS \+ HTTPS\)|\[order_retry\]\s+start|\.env loaded from .*hyperliquid)",
         re.IGNORECASE,
     )
     startup_fatal_exc_pattern = re.compile(
@@ -839,6 +841,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned
                                     or "! network error " in cleaned
+                                    or "T212 order history: timeout/network error" in cleaned
+                                    or "FAILURE: every rung exhausted, the VPN is still down" in cleaned
                                 )
                                 and any(
                                     daemon_recovered_pattern.search(lines[j])
