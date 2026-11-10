@@ -35,6 +35,7 @@ from .base import (
 )
 from .order_ohlc_utils import (
     normalize_order,
+    normalize_timestamp_ms,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -180,6 +181,11 @@ class T212Provider(MarketDataProvider):
 
     # -- Market data. ----------------------------------------------------------
     def get_current_price(self, symbol: str) -> Optional[float]:
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
+        cached_px = self.get_ssot_cached_price(symbol)
+        if cached_px is not None:
+            return cached_px
         p = self._position(symbol)
         if p:
             px = safe_pos_float(p.get("currentPrice"), default=None)
@@ -195,7 +201,209 @@ class T212Provider(MarketDataProvider):
         return None
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        return None  # This client exposes no granular T212 history.
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
+        lookback_f = safe_pos_float(lookback_h, default=None)
+        if lookback_f is None:
+            return None
+        return self.get_ssot_price_history(symbol, lookback_f)
+
+    @staticmethod
+    def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, Optional[dict]]]:
+        matches: list[tuple[dict, Optional[dict]]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order") if isinstance(item.get("order"), dict) else item
+            cand_oid = extract_order_id(order)
+            if cand_oid is not None and cand_oid == target_oid:
+                matches.append((order, item.get("fill")))
+        return matches
+
+    @staticmethod
+    def _aggregate_history_fills(matches: list[tuple[dict, Optional[dict]]]) -> dict:
+        result = dict(matches[0][0])
+        total_qty = total_cost = total_fee = priced_qty = 0.0
+        fee_currencies = set()
+        latest_fill_ts_ms: Optional[int] = None
+        seen_fill_ids: set[str] = set()
+        for order, fill in matches:
+            cand_ts = normalize_timestamp_ms(
+                (fill.get("filledAt") if isinstance(fill, dict) else None)
+                or order.get("createdAt")
+                or order.get("dateCreated"),
+                default=None,
+            )
+            if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
+                latest_fill_ts_ms = cand_ts
+            if not isinstance(fill, dict):
+                continue
+            fill_id = extract_order_id(fill)
+            if fill_id is not None:
+                if fill_id in seen_fill_ids:
+                    continue
+                seen_fill_ids.add(fill_id)
+            qf = safe_float(fill.get("quantity"), default=None)
+            pf = safe_float(fill.get("price"), default=None)
+            if qf is None or pf is None:
+                continue
+            qty = abs(qf)
+            price = abs(pf)
+            total_qty += qty
+            if price > 0.0 and qty > 0.0:
+                total_cost += qty * price
+                priced_qty += qty
+            wallet = fill.get("walletImpact")
+            taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
+            for tax in taxes or []:
+                if not isinstance(tax, dict):
+                    continue
+                tqf = safe_float(tax.get("quantity"), default=None)
+                if tqf is None:
+                    continue
+                tax_amt = abs(tqf)
+                if tax_amt <= 0.0:
+                    continue
+                total_fee += tax_amt
+                raw_cur = tax.get("currency")
+                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
+                if currency:
+                    fee_currencies.add(currency)
+        if total_qty > 0:
+            result["filledQuantity"] = total_qty
+            result["filledValue"] = total_cost
+            if priced_qty > 0:
+                result["fillPrice"] = total_cost / priced_qty
+        result["fee"] = total_fee
+        if fee_currencies:
+            result["_feeCurrencies"] = sorted(fee_currencies)
+        if latest_fill_ts_ms is not None:
+            result["_timestamp_ms"] = latest_fill_ts_ms
+        return result
+
+    @classmethod
+    def normalize_history_items(cls, items: list) -> dict[str, list[dict]]:
+        """Group FILLED T212 history items by ticker and orderId into canonical cache_trade_t212 records."""
+        grouped: dict[str, list[tuple[dict, Optional[dict]]]] = {}
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order") if isinstance(item.get("order"), dict) else item
+            if not isinstance(order, dict):
+                continue
+            if str(order.get("status") or "").strip().upper() != "FILLED":
+                continue
+            oid = extract_order_id(order)
+            if not oid:
+                continue
+            grouped.setdefault(str(oid), []).append((order, item.get("fill") if isinstance(item.get("fill"), dict) else None))
+        by_symbol: dict[str, list[dict]] = {}
+        for oid, matches in grouped.items():
+            enriched = cls._aggregate_history_fills(matches)
+            inst_d = enriched.get("instrument") if isinstance(enriched.get("instrument"), dict) else {}
+            ticker = str(enriched.get("ticker") or inst_d.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            raw_qty = safe_float(
+                enriched.get("orderedQuantity")
+                if enriched.get("orderedQuantity") is not None
+                else enriched.get("quantity"),
+                default=0.0,
+            )
+            side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
+            qty = safe_pos_float(enriched.get("filledQuantity"), default=None) or safe_pos_float(abs(raw_qty), default=None)
+            px = safe_pos_float(enriched.get("fillPrice") or enriched.get("limitPrice"), default=None)
+            ts_ms = enriched.get("_timestamp_ms")
+            if qty is None or px is None or ts_ms is None:
+                continue
+            cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
+            fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
+            by_symbol.setdefault(ticker, []).append({
+                "symbol": ticker,
+                "orderId": str(oid),
+                "side": side,
+                "type": str(enriched.get("type") or "MARKET").strip().upper(),
+                "price": round(px, 6),
+                "qty": round(qty, 6),
+                "executedQty": round(qty, 6),
+                "cummulativeQuoteQty": round(cost, 4),
+                "fee": round(fee, 6),
+                "timestamp": int(ts_ms),
+                "time": int(ts_ms),
+                "status": "FILLED",
+            })
+        for sym_list in by_symbol.values():
+            sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
+        return by_symbol
+
+    @classmethod
+    def fetch_remote_trades_with_client(
+        cls, symbol: str, start_time_ms: int = 0, client=None
+    ) -> Optional[List[dict]]:
+        """Fetch normalized T212 fills for ``symbol`` using an injected ``client`` when compatible."""
+        if client is None or not callable(getattr(client, "refresh_order_history", None)):
+            return None
+        return cls(client=client).fetch_remote_trades(symbol, start_time_ms, client=client)
+
+    def fetch_remote_trades(
+        self, symbol: str, start_time_ms: int = 0, *, client=None
+    ) -> List[dict]:
+        """Fetch normalized T212 fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return []
+        cli = client if client is not None else self._client()
+        refresh_fn = getattr(cli, "refresh_order_history", None)
+        if not callable(refresh_fn):
+            return []
+        items = refresh_fn(max_age_sec=0.0)
+        if not isinstance(items, list) or not items:
+            return []
+        by_sym = self.normalize_history_items(items)
+        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
+        sym_u = symbol.strip().upper()
+        out: List[dict] = []
+        for k, rows in by_sym.items():
+            if k.upper() == sym_u or _t212_tickers_match(symbol, k):
+                for r in rows:
+                    if (r.get("timestamp") or r.get("time") or 0) >= start_ms:
+                        out.append(dict(r))
+        return out
+
+    def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
+        """Fetch recent T212 order history and return normalized fills for ``symbol``."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return []
+        cache_file = self._fills_cache_file()
+        try:
+            cli = self._client()
+            refresh_fn = getattr(cli, "refresh_order_history", None)
+            items = None
+            if callable(refresh_fn):
+                if (
+                    (publish_cache or getattr(self, "_ssot_fills_cache_path", None))
+                    and cache_file
+                    and not getattr(cli, "_trade_cache_path", None)
+                ):
+                    cli._trade_cache_path = str(cache_file)
+                items = refresh_fn(max_age_sec=0.0)
+            if isinstance(items, list) and items:
+                by_sym = self.normalize_history_items(items)
+                if publish_cache and cache_file and by_sym:
+                    self.merge_ssot_fills_cache(cache_file, by_sym)
+                sym_u = symbol.strip().upper()
+                matched: List[dict] = []
+                for k, rows in by_sym.items():
+                    if k.upper() == sym_u or _t212_tickers_match(symbol, k):
+                        matched.extend(rows)
+                if matched:
+                    return matched
+            if cache_file:
+                cached = self._fills_from_cache(symbol)
+                if cached is not None:
+                    return cached
+        except Exception:
+            pass
+        return []
 
     # -- Account. --------------------------------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
@@ -277,17 +485,8 @@ class T212Provider(MarketDataProvider):
             if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
                 return []
         rows = None if (authoritative or publish_cache) else self._fills_from_cache(symbol)
-        if rows is None and (cache_file := self._fills_cache_file()):
-            try:
-                cli = self._client()
-                refresh_fn = getattr(cli, "refresh_order_history", None)
-                if callable(refresh_fn):
-                    if getattr(self, "_ssot_fills_cache_path", None) and not getattr(cli, "_trade_cache_path", None):
-                        cli._trade_cache_path = str(cache_file)
-                    refresh_fn(max_age_sec=0.0)
-                    rows = self._fills_from_cache(symbol)
-            except Exception:
-                rows = None
+        if rows is None and (authoritative or publish_cache or self._fills_cache_file()):
+            rows = self._fills_from_api(symbol, publish_cache=publish_cache)
         if rows:
             cutoff_ms = (time.time() - since_val) * 1000.0
             cached_orders = aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)

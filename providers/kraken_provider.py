@@ -698,6 +698,15 @@ class KrakenProvider(MarketDataProvider):
             lst.sort(key=lambda t: t["time"])
         return by_sym
 
+    @classmethod
+    def fetch_remote_trades_with_client(
+        cls, symbol: str, start_time_ms: int = 0, client=None
+    ) -> Optional[List[dict]]:
+        """Fetch normalized Kraken fills for ``symbol`` using an injected ``client`` when compatible."""
+        if client is None or not callable(getattr(client, "_private", None)):
+            return None
+        return cls(client=client).fetch_remote_trades(symbol, start_time_ms, client=client)
+
     def fetch_remote_trades(
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:

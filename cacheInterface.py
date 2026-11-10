@@ -19,7 +19,10 @@ from typing import Any, Optional
 import weakref
 
 from botcore import (
+    _parse_bool_flag,
+    extract_timestamp_ms,
     load_dotenv,
+    normalize_timestamp_ms,
     required_float_env,
     required_int_env,
     resolve_patched_attr,
@@ -36,11 +39,6 @@ from cachepaths import (
     migrate_legacy_filename_if_needed,
 )
 from lock import FileLock
-from providers.base import (
-    _parse_bool_flag,
-    extract_timestamp_ms,
-    normalize_timestamp_ms,
-)
 from state_io import (
     atomic_gzip_file,
     atomic_snapshot_file,
@@ -235,7 +233,10 @@ class CacheManagerInterface(ABC):
         *,
         data_sync_mode: Optional[str] = None,
     ):
-        self._live_instances.add(self)
+        resolved_mode, self.save_state, _ = self.resolve_data_sync_mode(
+            data_sync_mode
+        )
+        self.data_sync_mode = resolved_mode
         self.cls_name = self.__class__.__name__
         self.sync_ts = sync_ts
         self.symbols = _coerce_symbol_list(symbols)
@@ -247,10 +248,6 @@ class CacheManagerInterface(ABC):
             else _cm_override("api", self._default_api_client)
         )
         self.append_persist = _parse_bool_flag(append_persist, default=False)
-        resolved_mode, self.save_state, _ = self.resolve_data_sync_mode(
-            data_sync_mode
-        )
-        self.data_sync_mode = resolved_mode
         if resolved_mode == self.MODE_PRODUCER:
             self.read_only = False
         elif data_sync_mode is not None and resolved_mode == self.MODE_DISK_READER:
@@ -272,6 +269,7 @@ class CacheManagerInterface(ABC):
 
         self.thread = None
         self._stop_event = threading.Event()
+        self._live_instances.add(self)
         if not hasattr(self, "_first_sleep"):
             self._first_sleep = False
         self.lock = threading.RLock()
@@ -701,6 +699,8 @@ class CacheManagerInterface(ABC):
                 self.cache = items
                 self._hydrate_fetchtimes_from_mapping_locked(payload)
                 self._persisted_counts = {}
+            if self.read_only:
+                return
             if not self.compact_jsonl():
                 raise ValueError(
                     "legacy cache could not be converted into a durable JSONL generation"
@@ -779,13 +779,18 @@ class CacheManagerInterface(ABC):
             self.cache = {}
             had_invalid_line = False
             backup_path = self._previous_generation_path()
-            if not os.path.exists(self.filename) and os.path.exists(backup_path):
+            if not os.path.exists(self.filename) and os.path.exists(backup_path) and not self.read_only:
                 try:
                     self._restore_previous_generation(backup_path)
                 except OSError:
                     pass
-            if os.path.exists(self.filename):
-                with open(self.filename, "r", encoding="utf-8") as f:
+            read_path = (
+                self.filename
+                if os.path.exists(self.filename)
+                else (backup_path if os.path.exists(backup_path) else None)
+            )
+            if read_path:
+                with open(read_path, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -803,7 +808,7 @@ class CacheManagerInterface(ABC):
                             had_invalid_line = True
                             continue
             self._legacy_jsonl_needs_rewrite = had_invalid_line
-            if not had_invalid_line and os.path.exists(backup_path):
+            if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             self._hydrate_fetchtimes_from_mapping_locked(

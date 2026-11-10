@@ -125,6 +125,24 @@ class MarketDataProvider(ABC):
         return {}
 
     @staticmethod
+    def resolve_venue_provider_class(venue: Any) -> Any:
+        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue``."""
+        v_norm = normalize_venue_name(venue)
+        if v_norm == "kraken":
+            from .kraken_provider import KrakenProvider
+
+            return KrakenProvider
+        if v_norm == "hyperliquid":
+            from .hyperliquid_provider import HyperliquidProvider
+
+            return HyperliquidProvider
+        if v_norm == "t212":
+            from .t212_provider import T212Provider
+
+            return T212Provider
+        return None
+
+    @staticmethod
     def resolve_provider_cached_fee_and_limits(
         venue: str,
         symbol: str,
@@ -143,16 +161,42 @@ class MarketDataProvider(ABC):
                     return res
             except Exception:
                 pass
-        v_norm = normalize_venue_name(venue or getattr(provider, "name", ""))
-        if v_norm == "kraken":
-            from .kraken_provider import KrakenProvider
-
-            return KrakenProvider.extract_cached_fee_and_limits(provider, symbol)
-        if v_norm == "hyperliquid":
-            from .hyperliquid_provider import HyperliquidProvider
-
-            return HyperliquidProvider.extract_cached_fee_and_limits(provider, symbol, price=price)
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(
+            venue or getattr(provider, "name", "")
+        )
+        extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
+        if callable(extract_fn):
+            try:
+                res = extract_fn(provider, symbol, price=price)
+            except TypeError:
+                res = extract_fn(provider, symbol)
+            if isinstance(res, dict):
+                return res
         return {}
+
+    @classmethod
+    def fetch_venue_remote_trades(
+        cls,
+        venue: Any,
+        symbol: str,
+        start_time_ms: int = 0,
+        *,
+        api_client: Any = None,
+    ) -> List[dict]:
+        """Venue-agnostic remote trade fetcher for non-append ``CacheTradeManager`` instances."""
+        if api_client is None:
+            return []
+        if isinstance(api_client, cls) or "fetch_remote_trades" in getattr(api_client, "__dict__", {}):
+            return list(api_client.fetch_remote_trades(symbol, start_time_ms) or [])
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        if prov_cls is not None and callable(getattr(prov_cls, "fetch_remote_trades_with_client", None)):
+            res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client)
+            if res is not None:
+                return list(res)
+        fetch_fn = getattr(api_client, "fetch_remote_trades", None)
+        if callable(fetch_fn):
+            return list(fetch_fn(symbol, start_time_ms) or [])
+        return []
 
     def validate_symbol(self, symbol: str) -> None:
         """Reject a symbol incompatible with this configured provider instance."""

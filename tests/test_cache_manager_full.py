@@ -2937,5 +2937,72 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
     assert violations == [], f"Consumer modules must not enable producer mode or use legacy aliases: {violations}"
 
 
+def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
+    """Verify CacheTradeManager delegates non-append trade fetches via MarketDataProvider and T212Provider consults SSOT caches."""
+    from providers.base import MarketDataProvider
+    from providers.t212_provider import T212Provider
+
+    # 1. cacheManager no longer exposes unused apiorders
+    assert not hasattr(cm, "apiorders")
+
+    # 2. CacheTradeManager has no venue-specific parsing methods
+    for removed_attr in (
+        "fetch_kraken_ledger_into_snapshot",
+        "merge_kraken_ledger_into_snapshot",
+        "apply_hyperliquid_ws_user_fills",
+        "touch_hyperliquid_ws_fetchtimes",
+        "touch_kraken_ws_fetchtimes",
+        "normalize_kraken_ws_trade",
+        "kraken_ledger_to_fills",
+    ):
+        assert not hasattr(cm.CacheTradeManager, removed_attr)
+
+    # 3. Polymorphic MarketDataProvider.resolve_venue_provider_class covers kraken, hyperliquid, t212
+    assert MarketDataProvider.resolve_venue_provider_class("kraken").__name__ == "KrakenProvider"
+    assert MarketDataProvider.resolve_venue_provider_class("hyperliquid").__name__ == "HyperliquidProvider"
+    assert MarketDataProvider.resolve_venue_provider_class("t212").__name__ == "T212Provider"
+
+    # 4. CacheTradeManager.get_remote_items routes polymorphically for t212 without venue branches
+    fake_t212_client = MagicMock()
+    fake_t212_client.refresh_order_history.return_value = [
+        {
+            "order": {"id": 501, "ticker": "NVDA_US_EQ", "side": "BUY", "status": "FILLED"},
+            "fill": {
+                "id": 9001,
+                "quantity": 2.0,
+                "price": 120.5,
+                "filledAt": "2026-01-15T14:30:00Z",
+                "walletImpact": {"taxes": []},
+            },
+        }
+    ]
+    t212_trade_mgr = cm.CacheTradeManager(
+        sync_ts=9999,
+        symbols=["NVDA_US_EQ"],
+        filename=str(tmp_path / "cache_t212_trades.json"),
+        api_client=fake_t212_client,
+        data_sync_mode="disk_reader",
+        venue="t212",
+    )
+    assert t212_trade_mgr.append_persist is False
+    rows = t212_trade_mgr.get_remote_items("NVDA_US_EQ", 0)
+    assert len(rows) == 1
+    assert rows[0]["orderId"] == "501"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["price"] == 120.5
+    assert rows[0]["qty"] == 2.0
+
+    # 5. T212Provider consults SSOT price and 24h history caches first when enabled
+    tp = T212Provider(client=fake_t212_client, live_enabled=False)
+    with patch.object(tp, "get_ssot_cached_price", return_value=135.25) as mock_ssot_px:
+        assert tp.get_current_price("NVDA_US_EQ") == 135.25
+        mock_ssot_px.assert_called_once_with("NVDA_US_EQ")
+    with patch.object(tp, "get_ssot_price_history", return_value=[(1700000000.0, 130.0), (1700000060.0, 135.25)]) as mock_ssot_hist:
+        hist = tp.get_price_history("NVDA_US_EQ", 1.0)
+        assert hist == [(1700000000.0, 130.0), (1700000060.0, 135.25)]
+        mock_ssot_hist.assert_called_once_with("NVDA_US_EQ", 1.0)
+
+
+
 
 

@@ -41,7 +41,7 @@ from botcore import (
 from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import extract_order_id, normalize_timestamp_ms
+from providers.t212_provider import T212Provider
 from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
@@ -420,133 +420,9 @@ class T212Client:
             "extendedHours": ext_flag,
         })
 
-    @staticmethod
-    def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, dict | None]]:
-        matches: list[tuple[dict, dict | None]] = []
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") if isinstance(item.get("order"), dict) else item
-            cand_oid = extract_order_id(order)
-            if cand_oid is not None and cand_oid == target_oid:
-                matches.append((order, item.get("fill")))
-        return matches
-
-    @staticmethod
-    def _aggregate_history_fills(matches: list[tuple[dict, dict | None]]) -> dict:
-        result = dict(matches[0][0])
-        total_qty = total_cost = total_fee = priced_qty = 0.0
-        fee_currencies = set()
-        latest_fill_ts_ms: int | None = None
-        seen_fill_ids: set[str] = set()
-        for order, fill in matches:
-            cand_ts = normalize_timestamp_ms(
-                (fill.get("filledAt") if isinstance(fill, dict) else None)
-                or order.get("createdAt")
-                or order.get("dateCreated"),
-                default=None,
-            )
-            if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
-                latest_fill_ts_ms = cand_ts
-            if not isinstance(fill, dict):
-                continue
-            fill_id = extract_order_id(fill)
-            if fill_id is not None:
-                if fill_id in seen_fill_ids:
-                    continue
-                seen_fill_ids.add(fill_id)
-            qf = safe_float(fill.get("quantity"), default=None)
-            pf = safe_float(fill.get("price"), default=None)
-            if qf is None or pf is None:
-                continue
-            qty = abs(qf)
-            price = abs(pf)
-            total_qty += qty
-            if price > 0.0 and qty > 0.0:
-                total_cost += qty * price
-                priced_qty += qty
-            wallet = fill.get("walletImpact")
-            taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
-            for tax in taxes or []:
-                if not isinstance(tax, dict):
-                    continue
-                tqf = safe_float(tax.get("quantity"), default=None)
-                if tqf is None:
-                    continue
-                tax_amt = abs(tqf)
-                if tax_amt <= 0.0:
-                    continue
-                total_fee += tax_amt
-                raw_cur = tax.get("currency")
-                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
-                if currency:
-                    fee_currencies.add(currency)
-        if total_qty > 0:
-            result["filledQuantity"] = total_qty
-            result["filledValue"] = total_cost
-            if priced_qty > 0:
-                result["fillPrice"] = total_cost / priced_qty
-        result["fee"] = total_fee
-        if fee_currencies:
-            result["_feeCurrencies"] = sorted(fee_currencies)
-        if latest_fill_ts_ms is not None:
-            result["_timestamp_ms"] = latest_fill_ts_ms
-        return result
-
-    @classmethod
-    def normalize_history_items(cls, items: list) -> dict[str, list[dict]]:
-        """Group FILLED T212 history items by ticker and orderId into canonical cache_trade_t212 records."""
-        grouped: dict[str, list[tuple[dict, dict | None]]] = {}
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") if isinstance(item.get("order"), dict) else item
-            if not isinstance(order, dict):
-                continue
-            if str(order.get("status") or "").strip().upper() != "FILLED":
-                continue
-            oid = extract_order_id(order)
-            if not oid:
-                continue
-            grouped.setdefault(str(oid), []).append((order, item.get("fill") if isinstance(item.get("fill"), dict) else None))
-        by_symbol: dict[str, list[dict]] = {}
-        for oid, matches in grouped.items():
-            enriched = cls._aggregate_history_fills(matches)
-            inst_d = enriched.get("instrument") if isinstance(enriched.get("instrument"), dict) else {}
-            ticker = str(enriched.get("ticker") or inst_d.get("ticker") or "").strip().upper()
-            if not ticker:
-                continue
-            raw_qty = safe_float(
-                enriched.get("orderedQuantity")
-                if enriched.get("orderedQuantity") is not None
-                else enriched.get("quantity"),
-                default=0.0,
-            )
-            side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-            qty = safe_pos_float(enriched.get("filledQuantity"), default=None) or safe_pos_float(abs(raw_qty), default=None)
-            px = safe_pos_float(enriched.get("fillPrice") or enriched.get("limitPrice"), default=None)
-            ts_ms = enriched.get("_timestamp_ms")
-            if qty is None or px is None or ts_ms is None:
-                continue
-            cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
-            fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
-            by_symbol.setdefault(ticker, []).append({
-                "symbol": ticker,
-                "orderId": str(oid),
-                "side": side,
-                "type": str(enriched.get("type") or "MARKET").strip().upper(),
-                "price": round(px, 6),
-                "qty": round(qty, 6),
-                "executedQty": round(qty, 6),
-                "cummulativeQuoteQty": round(cost, 4),
-                "fee": round(fee, 6),
-                "timestamp": int(ts_ms),
-                "time": int(ts_ms),
-                "status": "FILLED",
-            })
-        for sym_list in by_symbol.values():
-            sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
-        return by_symbol
+    _extract_history_matches = staticmethod(T212Provider._extract_history_matches)
+    _aggregate_history_fills = staticmethod(T212Provider._aggregate_history_fills)
+    normalize_history_items = staticmethod(T212Provider.normalize_history_items)
 
     def _sync_trade_cache(self, items: list) -> None:
         explicit_path = getattr(self, "_trade_cache_path", None)

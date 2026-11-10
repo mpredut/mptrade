@@ -153,7 +153,7 @@ class HyperliquidProvider(MarketDataProvider):
     _FILLS_CACHE_MAX_STALE_S = 60.0
 
     #: Served spot token, defaulting to HYPE.
-    def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None):
+    def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None, *, client=None):
         if isinstance(token, bool):
             raise ValueError(f"invalid Hyperliquid token: {token!r}")
         raw_tok = str(token or "HYPE").strip().upper() or "HYPE"
@@ -162,8 +162,8 @@ class HyperliquidProvider(MarketDataProvider):
         self._token = raw_tok
         self._live_enabled = live_enabled
         self._lock = threading.Lock()
-        self._client = None          # HLClient read-only (lazy)
-        self._client_tried = False   # Avoid endless retries when the SDK is absent.
+        self._client = client        # HLClient read-only (lazy)
+        self._client_tried = client is not None  # Avoid endless retries when the SDK is absent.
         self._spot_pair: Optional[str] = None  # Memoized, for example '@107'.
         self._env_loaded = False
 
@@ -363,7 +363,7 @@ class HyperliquidProvider(MarketDataProvider):
         pair = self._pair()
         if c is None or pair is None:
             raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
-        addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+        addr = os.environ.get("HL_ACCOUNT_ADDRESS") or getattr(c, "account_address", None)
         if not addr:
             raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
         fills = _call_hl_info_read(c.info.user_fills, addr)
@@ -380,6 +380,29 @@ class HyperliquidProvider(MarketDataProvider):
             if cache_file:
                 self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
         return spot_fills
+
+    @classmethod
+    def fetch_remote_trades_with_client(
+        cls, symbol: str, start_time_ms: int = 0, client=None
+    ) -> Optional[List[dict]]:
+        """Fetch Hyperliquid spot fills for ``symbol`` using an injected ``client`` when compatible."""
+        if client is None or getattr(client, "info", None) is None:
+            return None
+        tok = canonical_base_asset(symbol) or str(symbol or "HYPE").strip().upper()
+        return cls(token=tok, client=client).fetch_remote_trades(symbol, start_time_ms)
+
+    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
+        """Fetch Hyperliquid spot fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
+        rows = super().fetch_remote_trades(symbol, start_time_ms)
+        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
+        out: List[dict] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            ts = extract_timestamp_ms(r, default=0) or 0
+            if ts >= start_ms:
+                out.append(dict(r))
+        return out
 
     @classmethod
     def extract_ws_user_fills(

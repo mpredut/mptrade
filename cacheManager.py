@@ -44,7 +44,6 @@ from cacheaccount import (
     CacheTradeManager,
     account_cache_health,
     api,
-    apiorders,
     bind_account_cache_getter,
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
@@ -171,7 +170,6 @@ def get_current_price_manager(
             filename=CacheCurrentPriceManager.DEFAULT_FILENAME,
             ws_manager=ws_manager,
             provider_names=provider_names,
-            api_client=api,
             read_only=(
                 (not start_periodic and not save_state_flag)
                 if read_only is None
@@ -479,7 +477,6 @@ class CacheFactory:
                             sync_ts=sync_ts,
                             filename=f"{prefix}{s}.{ext}",
                             symbols=[s],
-                            api_client=api,
                             read_only=eff_read_only,
                             **extra_kwargs,
                         )
@@ -490,7 +487,6 @@ class CacheFactory:
                         sync_ts=sync_ts,
                         filename=config["filename"],
                         symbols=symbols,
-                        api_client=None if is_non_binance_venue else api,
                         read_only=eff_read_only,
                         **extra_kwargs,
                     )

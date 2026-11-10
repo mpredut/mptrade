@@ -64,11 +64,11 @@ from cachepaths import (
 )
 import instrument_registry as sym
 from instrument_registry import casefold_get
+from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     _is_fresh_obs_ts,
     _ts_ms_to_s,
     clean_order_id,
-    extract_order_fee,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -1567,21 +1567,9 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def get_remote_items(self, symbol, startTime):
         if not self.append_persist:
-            if self.api_client is not None:
-                if (
-                    self.venue == "kraken"
-                    and callable(getattr(self.api_client, "_private", None))
-                    and "fetch_remote_trades" not in getattr(self.api_client, "__dict__", {})
-                ):
-                    from providers.kraken_provider import KrakenProvider
-
-                    return KrakenProvider().fetch_remote_trades(
-                        symbol, startTime, client=self.api_client
-                    )
-                fetch_fn = getattr(self.api_client, "fetch_remote_trades", None)
-                if callable(fetch_fn):
-                    return list(fetch_fn(symbol, startTime) or [])
-            return []
+            return MarketDataProvider.fetch_venue_remote_trades(
+                self.venue, symbol, startTime, api_client=self.api_client
+            )
         new_trades = self._paginate_validated_trades(symbol, startTime, "trade")
         print(f"[{self.cls_name}][info] New trades: {len(new_trades)}")
         return new_trades
