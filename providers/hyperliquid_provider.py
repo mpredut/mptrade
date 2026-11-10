@@ -19,7 +19,7 @@ import os
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from botcore import (
     _LOCAL_MODULE_LOCK,
@@ -523,6 +523,45 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"{caller}({symbol}): non-positive price={price!r}")
         return submit_px, order_tif
 
+    def _execute_spot_order_live(
+        self,
+        symbol: str,
+        pair: str,
+        is_buy: bool,
+        qty: float,
+        submit_px: float,
+        *,
+        is_market: bool,
+        order_tif: str,
+        client_order_id: Optional[str] = None,
+        include_none_cloid: bool = False,
+    ) -> tuple[bool, Any, Any, Optional[str]]:
+        if not self._client_tried and not self._env_loaded:
+            self._load_env()
+        cloid = (
+            _cloid_for_client_order_id(client_order_id)
+            if client_order_id is not None
+            else None
+        )
+        signer = self._signer()
+        sz_dec = signer.sz_decimals(self._token)
+        ok, oid, msg = self._invoke_spot_order(
+            signer,
+            pair,
+            is_buy,
+            float(qty),
+            float(submit_px),
+            sz_decimals=sz_dec,
+            is_market=is_market,
+            tif=order_tif,
+            cloid=cloid,
+            include_none_cloid=include_none_cloid,
+        )
+        clean_oid = extract_order_id(oid, default=None)
+        if ok and clean_oid:
+            self._invalidate_fills_cache(symbol)
+        return ok, oid, msg, clean_oid
+
     # -- Spot order placement, dry by default due to wallet co-mingling. --------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
@@ -770,28 +809,26 @@ class HyperliquidProvider(MarketDataProvider):
             symbol, side, qty, px, market=eff_market, kind=kind,
         )
         try:
-            signer = self._signer()
-            szd = signer.sz_decimals(self._token)
-            cloid = (
-                _cloid_for_client_order_id(client_order_id)
-                if client_order_id is not None else None
-            )
-            ok, oid, msg = self._invoke_spot_order(
-                signer, pair, is_buy, float(qty), float(px),
-                sz_decimals=szd, is_market=eff_market,
-                tif=order_tif, cloid=cloid,
+            ok, _oid, msg, clean_oid = self._execute_spot_order_live(
+                symbol,
+                pair,
+                is_buy,
+                qty,
+                px,
+                is_market=eff_market,
+                order_tif=order_tif,
+                client_order_id=client_order_id,
+                include_none_cloid=False,
             )
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"submit_order({symbol}): {e}") from e
-        clean_oid = extract_order_id(oid, default=None)
         if not ok or not clean_oid:
             # ``spot_order`` returned a synchronous venue rejection, proving that
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
             raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
-        self._invalidate_fills_cache(symbol)
         return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,

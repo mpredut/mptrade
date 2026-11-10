@@ -509,16 +509,17 @@ class BinanceProvider(MarketDataProvider):
                     kind=kind,
                 )
             else:
-                kwargs = {"force": False}
-                if client_order_id is not None:
-                    kwargs["client_order_id"] = client_order_id
-                if cache_permit is not None:
-                    kwargs.update(
-                        cache_permit=cache_permit,
-                        permit_requested_price=permit_requested_price,
-                        kind=kind,
-                    )
-                res = _po.place_order_mechanics(order_type, symbol, price, qty, **kwargs)
+                res = self.place_order(
+                    symbol,
+                    order_type,
+                    price,
+                    qty,
+                    force=False,
+                    client_order_id=client_order_id,
+                    cache_permit=cache_permit,
+                    permit_requested_price=permit_requested_price,
+                    kind=kind,
+                )
         except SubmissionRefused:
             raise
         except Exception as e:  # noqa: BLE001

@@ -15,7 +15,7 @@ gate. Importing this module does not eagerly initialize the Kraken client.
 import os
 import threading
 import time
-from typing import Optional, List
+from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -841,35 +841,61 @@ class KrakenProvider(MarketDataProvider):
             if isinstance(tr, dict) and kraken_pair_matches(symbol, str(tr.get("pair", "")).upper())
         ]
 
+    def _prepare_kraken_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float],
+        *,
+        is_market: bool,
+        caller: str,
+    ) -> tuple[str, str, float, Optional[float], str]:
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
+            raise SubmissionRefused(f"{caller} {symbol}: invalid side={side!r}")
+        s = s_norm.lower()
+        ordertype = "market" if is_market else "limit"
+        submit_price = None
+        if not is_market:
+            submit_price = safe_pos_float(price, default=None)
+            if submit_price is None:
+                raise ProviderError(f"{caller} {symbol} {s}: invalid/non-positive price={price!r}")
+        rounded_qty = self._round_required_qty(symbol, qty, f"{caller} {s}")
+        return s_norm, s, rounded_qty, submit_price, ordertype
+
+    def _execute_kraken_live_order(
+        self,
+        symbol: str,
+        s_norm: str,
+        s: str,
+        qty: float,
+        submit_price: Optional[float],
+        raw_price: Optional[float],
+        *,
+        ordertype: str,
+        cl_ord_id: Optional[str] = None,
+        include_none_cl_ord_id: bool = False,
+    ):
+        self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, submit_price or raw_price)
+        order_kwargs: dict[str, Any] = {"ordertype": ordertype, "validate": False}
+        if cl_ord_id is not None or include_none_cl_ord_id:
+            order_kwargs["cl_ord_id"] = cl_ord_id
+        return self._client().add_order(symbol, s, qty, submit_price, **order_kwargs)
+
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
         live = self.execution_enabled()
-        s_norm = normalize_side(side)
-        if s_norm not in {"BUY", "SELL"}:
-            print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
-            return None
-        s = s_norm.lower()
         market = resolve_market_flag(force=force, **kwargs)
-        ordertype = "market" if market else "limit"
-        submit_price = None if market else price
-        if not market:
-            px_f = safe_pos_float(submit_price, default=None)
-            if px_f is None:
-                print(f"[Kraken] place_order {symbol}: refused invalid/non-positive price={submit_price!r}")
-                return None
-            submit_price = px_f
-        client_order_id = kwargs.get("client_order_id")
         try:
-            cl_ord_id = (
-                _kraken_client_order_id(client_order_id)
-                if client_order_id is not None else None)
-        except ProviderError as exc:
-            print(f"[Kraken] place_order {symbol}: {exc}")
-            return None
-        qty = self.round_quantity(symbol, qty)
-        if qty <= 0:
-            print(f"[Kraken] place_order {symbol}: refused non-positive qty={qty}")
+            s_norm, s, qty, submit_price, ordertype = self._prepare_kraken_order(
+                symbol, side, qty, price, is_market=market, caller="place_order"
+            )
+            client_order_id = kwargs.get("client_order_id")
+            cl_ord_id = _kraken_client_order_id(client_order_id) if client_order_id is not None else None
+        except (SubmissionRefused, ProviderError) as exc:
+            print(f"[Kraken] {exc}")
             return None
         if not live:
             print(f"[Kraken][DRY] would place {side} {symbol} qty={qty} @ {price} "

@@ -417,3 +417,71 @@ def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
     assert hl_api.place("HYPE", "BUY", 40.0, 1.0) == "ok"
     assert captured_quotes[-1][1] == "USDC"
 
+
+def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
+    """Enforce strict downward DAG on providers/base.py and verify unified submit_order across MarketDataProvider, MarketApi, and ReplayMarketDataProvider."""
+    import ast
+    from pathlib import Path
+    import pytest
+    import order_guard
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+    from providers.replay_provider import ReplayMarketDataProvider
+    from providers.strategy_executor import StrategyExecutor, SubmissionRefused
+
+    root = Path(__file__).resolve().parents[1]
+    base_src = (root / "providers" / "base.py").read_text(encoding="utf-8")
+    base_tree = ast.parse(base_src, filename="providers/base.py")
+    forbidden_base_imports = {
+        "order_guard",
+        "instrument",
+        "strategies",
+        "cacheManager",
+        "binance_api",
+        "kraken",
+        "hyperliquid",
+        "212trading",
+    }
+    imported_roots = set()
+    for node in ast.walk(base_tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported_roots.add(node.module.split(".")[0])
+    assert not (imported_roots & forbidden_base_imports), f"DAG violation in providers/base.py: {imported_roots & forbidden_base_imports}"
+
+    class _BaseSubmitDummy(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "DummyExec"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return symbol == "TESTUSDC"
+
+        def _fetch_current_price(self, symbol: str):
+            return 50.0
+
+        def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
+            return {"orderId": "ORD-777", "symbol": symbol, "side": side, "price": price, "qty": qty, "force": force}
+
+    dummy = _BaseSubmitDummy()
+    facade = MarketApi([dummy])
+    assert isinstance(dummy, StrategyExecutor)
+    assert isinstance(facade, StrategyExecutor)
+    assert facade.submit_order("TESTUSDC", "buy", 2.0, price=49.5) == "ORD-777"
+    with pytest.raises(SubmissionRefused):
+        facade.submit_order("TESTUSDC", "HOLD", 2.0, price=49.5)
+
+    # Verify order_guard bound hooks remain monkeypatch-transparent
+    monkeypatch.setattr(order_guard, "window_reference", lambda *a, **kw: 98.75)
+    monkeypatch.setattr(order_guard, "get_window_cfg", lambda *a, **kw: 3600.0)
+    assert dummy.profit_guard_window_ref("TESTUSDC", "BUY", 120.0) == pytest.approx(98.75)
+
+    replay = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 100.0), (1060.0, 102.0)]})
+    replay.advance("BTCUSDC")
+    assert isinstance(replay, StrategyExecutor)
+    replay_oid = replay.submit_order("BTCUSDC", "BUY", 1.0, price=100.0)
+    assert replay_oid.startswith("replay-")
+
+

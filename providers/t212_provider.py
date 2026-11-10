@@ -15,7 +15,7 @@ import os
 import threading
 import time
 import importlib
-from typing import Optional, List
+from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -571,6 +571,34 @@ class T212Provider(MarketDataProvider):
         if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
             raise ProviderError(f"T212_ORDER_VALIDITY invalid: {validity!r}")
         return self._client().place_limit_order(symbol, signed, price_f, validity=validity)
+
+    def _execute_t212_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float],
+        *,
+        is_market: bool,
+        order_validity: Optional[str] = None,
+        caller: str,
+    ) -> tuple[Any, Optional[str]]:
+        rounded_qty = self._round_required_qty(symbol, qty, caller)
+        try:
+            send_kw: dict[str, Any] = {"market": is_market}
+            if order_validity is not None:
+                send_kw["order_validity"] = order_validity
+            status, data = self._send_order(symbol, side, rounded_qty, price, **send_kw)
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"{caller}({symbol}): {e}") from e
+        if status not in (200, 201):
+            message = f"{caller}({symbol}): T212 HTTP {status}: {data}"
+            if _definitive_submit_failure(status, data):
+                raise SubmissionRefused(message)
+            raise ProviderError(message)
+        return data, extract_order_id(data)
 
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):

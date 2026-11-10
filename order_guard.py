@@ -1921,3 +1921,11 @@ for _og_cls in (
 ):
     OrderGuardEvaluatorFactory.register(_og_cls.GUARD_ID, _og_cls)
 
+from providers.base import MarketDataProvider as _MarketDataProvider  # noqa: E402
+
+_MarketDataProvider.bind_order_guard_hooks(
+    weight_limit_fn=lambda *a, **kw: weight_limit(*a, **kw),
+    window_cfg_fn=lambda *a, **kw: get_window_cfg(*a, **kw),
+    window_reference_fn=lambda *a, **kw: window_reference(*a, **kw),
+)
+

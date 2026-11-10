@@ -24,46 +24,29 @@ from botcore import (
     safe_pos_float,
     safe_nonneg_float,
 )
-from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_venue_name
-from instrument_registry import casefold_get
+from cachepaths import normalize_venue_name
 from .base import (
     MarketDataProvider,
-    compute_fills_cost_basis,
-    extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
     normalize_side,
 )
 from .order_ohlc_utils import (
-    build_open_order_entry,
     clean_order_id,
-    extract_order_fee,
     extract_order_qty,
     extract_order_side,
-    normalize_order,
     require_clean_order_id,
     require_int_order_id,
-    resolve_market_flag,
 )
-from .quantity import (
-    BinanceFilterError,
-    BinanceOrderRules,
-    binance_filter_refusal_reason,
-    decimal_places,
-    fee_cap_quantity,
-    resolve_assets,
-)
+from .quantity import resolve_assets
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
     ProviderError,
-    SubmissionRefused,
-    candle_interval,
     reconciliation_capabilities_of,
 )
 from market_regime import (
-    ClosedPriceSeries,
     MarketRegimeContext,
     MarketRegimeDecision,
     MarketRegimeEvaluator,
@@ -163,6 +146,12 @@ class MarketApi:
         self, symbol: str, lookback_h: float, *, provider_name=None,
     ) -> Optional[List]:
         return self._provider_explicit_or_routed(symbol, provider_name).get_price_history(symbol, lookback_h)
+
+    def ohlc_closes(
+        self, symbol: str, interval_min: int, *, provider_name=None,
+    ) -> list[float]:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        return provider.ohlc_closes(symbol, interval_min) if hasattr(provider, "ohlc_closes") else []
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
@@ -558,6 +547,32 @@ class MarketApi:
         if force and "force" not in kwargs:
             kwargs["force"] = force
         return provider.place_order(symbol, side, price, qty, **kwargs)
+
+    def submit_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        *,
+        market: bool = False,
+        kind: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        provider_name=None,
+        **kwargs,
+    ) -> str:
+        """Route strict ``StrategyExecutor`` order submission to the target venue adapter."""
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        return provider.submit_order(
+            symbol,
+            side,
+            qty,
+            price=price,
+            market=market,
+            kind=kind,
+            client_order_id=client_order_id,
+            **kwargs,
+        )
 
     def place(self, symbol: str, side: str, price: float, qty: Optional[float] = None,
               base: Optional[str] = None, quote: Optional[str] = None, **kwargs):

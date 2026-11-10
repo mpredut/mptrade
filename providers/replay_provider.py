@@ -138,6 +138,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
     and shares it among every Instrument in that run.
     """
 
+    _USES_SSOT_MARKET_CACHE: bool = False
+
     def __init__(self, price_series: Dict[str, List[Tuple[float, float]]], fee_pct: float = 0.1):
         self._series = dict(price_series) if isinstance(price_series, dict) else {}
         self._cursor: Dict[str, int] = {s: 0 for s in self._series if isinstance(s, str)}
@@ -368,6 +370,29 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._orders_version += 1
         self._positions[sym] = (pos_qty, pos_cost)
         return {"orderId": -1, "backtest": True}
+
+    def submit_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        *,
+        market: bool = False,
+        kind: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        from .strategy_executor import ProviderError, SubmissionRefused
+
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
+            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        eff_price = price if (price is not None and not market) else self.get_current_price(symbol)
+        res = self.place_order(symbol, s_norm, eff_price or 0.0, qty, market=market, kind=kind, client_order_id=client_order_id, **kwargs)
+        if res is None:
+            raise ProviderError(f"submit_order({symbol}): simulated replay fill rejected")
+        return f"replay-{self._orders_version}"
 
     def guards_internally(self) -> bool:
         # Deliberate phase-one simplification: order_guard.py uses thresholds and

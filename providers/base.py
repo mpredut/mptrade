@@ -68,8 +68,10 @@ from .quantity import (  # noqa: E402, F401
 )
 from .strategy_executor import (  # noqa: E402, F401
     OrderReconciliationCapabilities,
+    OrderStatus,
     PairPrecision,
     ProviderError,
+    SubmissionRefused,
 )
 
 
@@ -130,6 +132,9 @@ class MarketDataProvider(ABC):
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
+    _policy_weight_limit_fn: Any = None
+    _policy_window_cfg_fn: Any = None
+    _policy_window_reference_fn: Any = None
 
     @classmethod
     def bind_ssot_cache_readers(
@@ -139,7 +144,23 @@ class MarketDataProvider(ABC):
     ) -> None:
         """Bind read-only SSOT memory cache getter for current price."""
         if current_price_reader is not None:
-            cls._ssot_current_price_reader = current_price_reader
+            cls._ssot_current_price_reader = staticmethod(current_price_reader)
+
+    @classmethod
+    def bind_order_guard_hooks(
+        cls,
+        *,
+        weight_limit_fn: Any = None,
+        window_cfg_fn: Any = None,
+        window_reference_fn: Any = None,
+    ) -> None:
+        """Bind order-guard policy callbacks from the higher Order Gateway layer."""
+        if weight_limit_fn is not None:
+            cls._policy_weight_limit_fn = staticmethod(weight_limit_fn)
+        if window_cfg_fn is not None:
+            cls._policy_window_cfg_fn = staticmethod(window_cfg_fn)
+        if window_reference_fn is not None:
+            cls._policy_window_reference_fn = staticmethod(window_reference_fn)
 
     def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
         """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
@@ -508,6 +529,43 @@ class MarketDataProvider(ABC):
     def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
         return None
 
+    def submit_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        *,
+        market: bool = False,
+        kind: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """Submit an order via the strict ``StrategyExecutor`` contract and return its venue order ID."""
+        self.validate_symbol(symbol)
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
+            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        if not self.execution_enabled():
+            raise ProviderError(f"submit_order({symbol}): real execution is disabled on {self.name}")
+        is_market = _parse_bool_flag(market, False) or price is None
+        eff_price = price if price is not None else (self.get_current_price(symbol) or 0.0)
+        call_kw = dict(kwargs)
+        if is_market:
+            call_kw["market"] = True
+        if kind is not None:
+            call_kw["kind"] = kind
+        if client_order_id is not None:
+            call_kw["client_order_id"] = client_order_id
+        res = self.place_order(symbol, s_norm, eff_price, qty, force=is_market, **call_kw)
+        oid = extract_order_id(res)
+        if oid is None:
+            raise ProviderError(f"submit_order({symbol}): response without orderId ({res})")
+        return oid
+
+    def order_status(self, symbol: str, order_id: str) -> OrderStatus:
+        raise ProviderError(f"{self.name}: order_status is unsupported")
+
     def cancel_order(self, symbol: str, order_id: str) -> None:
         return None
 
@@ -616,8 +674,12 @@ class MarketDataProvider(ABC):
 
     def policy_cap_quantity(self, symbol: str, side: str, price: float,
                             qty: float, available_qty: float, **kwargs) -> float:
-        import order_guard
-        return order_guard.weight_limit(self, symbol, side, price, qty, available_qty=available_qty)
+        fn = self._policy_weight_limit_fn
+        if callable(fn):
+            return fn(self, symbol, side, price, qty, available_qty=available_qty)
+        avail = safe_pos_float(available_qty, default=0.0) or 0.0
+        req = float("inf") if qty is None or qty == float("inf") else (safe_pos_float(qty, default=0.0) or 0.0)
+        return min(req, avail)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
                          available_qty: float) -> float:
@@ -640,23 +702,30 @@ class MarketDataProvider(ABC):
         self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None,
         *, prefer_safeback: bool = False, default_safeback_sec: float = 0.0,
     ):
-        import order_guard
+        ref_fn = self._policy_window_reference_fn
+        if not callable(ref_fn):
+            return None
         sb_f = safe_pos_float(safeback_sec, default=None)
         if prefer_safeback and sb_f is not None:
             window_s = sb_f
         else:
-            win_cfg = order_guard.get_window_cfg(
-                self.name,
-                symbol=symbol,
-                order_type=side,
-                regime_context=regime_context,
-                module=module,
-                reference_mode=reference_mode,
+            cfg_fn = self._policy_window_cfg_fn
+            win_cfg = (
+                cfg_fn(
+                    self.name,
+                    symbol=symbol,
+                    order_type=side,
+                    regime_context=regime_context,
+                    module=module,
+                    reference_mode=reference_mode,
+                )
+                if callable(cfg_fn)
+                else None
             )
             win_f = safe_pos_float(win_cfg, default=None)
             window_s = win_f if win_f is not None else (sb_f if sb_f is not None else default_safeback_sec)
         wr_kwargs = {k: v for k, v in (("reference_mode", reference_mode), ("module", module)) if v is not None}
-        return order_guard.window_reference(self, symbol, side, window_s, **wr_kwargs)
+        return ref_fn(self, symbol, side, window_s, **wr_kwargs)
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
