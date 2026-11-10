@@ -339,7 +339,95 @@ class TestMonitororderNotifications(unittest.TestCase):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
 
         self.assertEqual(len(placed), 1)
-        self.assertAlmostEqual(placed[0][2], 217.90 * 1.001, places=6)
+        self.assertAlmostEqual(placed[0][2], 217.90 * (1.0 + monitororder.REPRICE_OFFSET), places=6)
+
+    def test_favorable_short_and_super_short_trend_pushes_order_in_favor_of_profit(self):
+        # SELL order very close to market (218.10 vs 217.90 -> 0.09% <= MID_PROC=0.425%)
+        # with both short and super-short trends rising -> pushed UP to 217.90 * (1 + PUSHBACK_OFFSET)
+        sell_orders = {
+            9001: {
+                "price": 218.10,
+                "quantity": 2.0,
+                "remainingQty": 2.0,
+                "clientOrderId": "TA_OR_push_sell_0",
+            }
+        }
+        placed_sell = []
+
+        def fake_place_sell(symbol, side, price, qty, **kw):
+            placed_sell.append((symbol, side, price, qty, kw))
+            return {"orderId": 9002}
+
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=217.90), \
+             patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place_sell), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+
+        self.assertEqual(len(placed_sell), 1)
+        self.assertAlmostEqual(placed_sell[0][2], 217.90 * (1.0 + monitororder.PUSHBACK_OFFSET), places=6)
+        self.assertGreater(placed_sell[0][2], 218.10)
+        self.assertFalse(placed_sell[0][4]["wait_for_trend"])
+        self.assertIn("GT_S", placed_sell[0][4]["bypass_guards"])
+
+        # Symmetric BUY order very close to market (199.80 vs 200.00 -> 0.10% <= MID_PROC=0.425%)
+        # with both short and super-short trends falling -> pushed DOWN to 200.00 * (1 - PUSHBACK_OFFSET)
+        buy_orders = {
+            9003: {
+                "price": 199.80,
+                "quantity": 2.0,
+                "remainingQty": 2.0,
+                "clientOrderId": "TA_OR_push_buy_0",
+            }
+        }
+        placed_buy = []
+
+        def fake_place_buy(symbol, side, price, qty, **kw):
+            placed_buy.append((symbol, side, price, qty, kw))
+            return {"orderId": 9004}
+
+        with patch.object(monitororder.api, "get_open_orders", return_value=buy_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=200.00), \
+             patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, True)), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place_buy), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+
+        self.assertEqual(len(placed_buy), 1)
+        self.assertAlmostEqual(placed_buy[0][2], 200.00 * (1.0 - monitororder.PUSHBACK_OFFSET), places=6)
+        self.assertLess(placed_buy[0][2], 199.80)
+        self.assertFalse(placed_buy[0][4]["wait_for_trend"])
+        self.assertIn("GT_S", placed_buy[0][4]["bypass_guards"])
+
+    def test_favorable_short_trend_keeps_order_on_book_when_above_mid_proc(self):
+        # Order is at 0.60% distance (> MID_PROC=0.425%) while short trend is favorable:
+        # must NOT cancel the live order on the book.
+        sell_orders = {
+            9005: {
+                "price": 100.60,
+                "quantity": 1.0,
+                "remainingQty": 1.0,
+                "clientOrderId": "TA_OR_hold_0",
+            }
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.00), \
+             patch.object(monitororder, "_evaluate_reprice_trend_state", return_value=(True, False)), \
+             patch.object(monitororder.api, "cancel_order") as mock_cancel, \
+             patch.object(monitororder.mkt, "place") as mock_place, \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+            mock_cancel.assert_not_called()
+            mock_place.assert_not_called()
 
     def test_cumulative_initial_max_proc_allows_sequential_step_up_to_one_percent(self):
         # Initial anchor was 100.0; order was already stepped to 99.20.
@@ -520,7 +608,7 @@ class TestOrderRetryTTL:
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
         assert len(placed) == 1
-        assert abs(placed[0][2] - (0.1999 * 0.999)) < 1e-9
+        assert abs(placed[0][2] - (0.1999 * (1.0 - monitororder.REPRICE_OFFSET))) < 1e-9
 
     def test_subdollar_sell_replacement_avoids_plus_one_jump(self, tmp_path):
         import order_retry as oq
@@ -549,7 +637,7 @@ class TestOrderRetryTTL:
              patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "SELL")
         assert len(placed) == 1
-        assert abs(placed[0][2] - (0.1999 * 1.001)) < 1e-9
+        assert abs(placed[0][2] - (0.1999 * (1.0 + monitororder.REPRICE_OFFSET))) < 1e-9
 
     def test_skips_redundant_replacement_when_price_unchanged(self, tmp_path):
         import order_retry as oq

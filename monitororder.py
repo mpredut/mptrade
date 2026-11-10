@@ -54,7 +54,9 @@ if (
         f"Invalid monitororder proc bounds: MIN_PROC={MIN_PROC!r}, "
         f"MAX_PROC={MAX_PROC!r}, INITIAL_MAX_PROC={INITIAL_MAX_PROC!r}"
     )
+MID_PROC = (MIN_PROC + MAX_PROC) / 2.0
 REPRICE_OFFSET = MIN_PROC / 100.0
+PUSHBACK_OFFSET = MID_PROC / 100.0
 MAX_TRACKED_ORDER_IDS = 10_000
 
 # Order Market TTL configurations (in seconds)
@@ -224,6 +226,44 @@ def _remember_initial_price(cache, order_id, price):
     lru_dict_put(cache, order_id, price, MAX_TRACKED_ORDER_IDS)
 
 
+def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, bool]:
+    """Return ``(short_favorable, super_short_favorable)`` for ``order_type``.
+
+    A favorable trend means price is moving in the direction that improves profit
+    for the open order (rising ``g > 0`` for SELL, falling ``g < 0`` for BUY),
+    which matches the condition where ``GT_S`` defers immediate execution.
+    Fails open to ``(False, False)`` if trend caches are unavailable.
+    """
+    try:
+        import cacheManager as cm
+        import pricewindow as pw
+
+        if hasattr(mkt.place, "_mock_name") and not hasattr(cm.get_short_trend_manager, "_mock_name"):
+            return False, False
+        short_tm = cm.get_short_trend_manager()
+        if short_tm is None:
+            return False, False
+        short_favorable = bool(
+            pw.should_wait_short_trend(
+                short_tm,
+                order_type,
+                symbol,
+                short_trend_cls=getattr(cm, "CacheShortTrendManager", None),
+            )
+        )
+        super_short_favorable = bool(
+            short_tm.should_wait(
+                order_type,
+                symbol,
+                fast=True,
+                use_noise_gate=False,
+            )
+        )
+        return short_favorable, super_short_favorable
+    except Exception:
+        return False, False
+
+
 TIME_SLEEP_ERROR = 10
 
 
@@ -363,32 +403,39 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         
         if are_close(current_price, price, MAX_PROC):
             print(f"Current price {current_price} and {order_type} price {price} are close!")
-            
-            difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
-            if not are_close(current_price, initial_prices[order_id], INITIAL_MAX_PROC):
-                print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
+            order_diff_percent = difference_percent
+            short_favorable, super_short_favorable = _evaluate_reprice_trend_state(symbol, order_type)
+
+            if short_favorable and super_short_favorable and order_diff_percent <= MID_PROC:
+                if order_type == "SELL":
+                    new_price = max(float(price), current_price * (1.0 + PUSHBACK_OFFSET))
+                else:
+                    new_price = min(float(price), current_price * (1.0 - PUSHBACK_OFFSET))
+                replace_bypass_guards = ["G_PROF", "GT_S"]
+                replace_wait_for_trend = False
+                print(
+                    f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
+                    f"order {order_id} near market ({order_diff_percent:.2f}% <= {MID_PROC:.2f}%); "
+                    f"pushing order in favor of profit to {format_price_log(new_price)}"
+                )
+            elif short_favorable:
+                print(
+                    f"[MONITORORDER] Short trend is favorable for {order_type} order {order_id} "
+                    f"at {price} (diff {order_diff_percent:.2f}%); keeping live order on book."
+                )
                 continue
-            print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
-            
-            # Build and validate the exact replacement before canceling the live
-            # order. Instrument.place repeats this check immediately before submit
-            # to close the time-of-check/time-of-use window.
-            # NOTE (Point 2 Design Consideration — Trend-Aware Repricing & Pushback):
-            # 1. Pull-in pre-check: Replacement submission keeps wait_for_trend=True
-            #    active so GT_S short-trend protection cannot be bypassed. Pre-checking
-            #    GT_S before api.cancel_order() prevents pulling a live venue order off
-            #    the book when short-trend deferral would immediately hold re-placement.
-            # 2. Favorable-trend pushback (trailing limit order): When an order is very
-            #    close to spot (e.g. difference_percent <= (MIN_PROC + MAX_PROC) / 2 or
-            #    <= MIN_PROC) AND both short_trend (GT_S) and super_short_trend (fast=True)
-            #    are strongly favorable (rising for SELL, falling for BUY), instead of
-            #    pulling the order closer or letting it fill prematurely, push the order
-            #    slightly farther in the favorable direction (toward MID_PROC / MAX_PROC)
-            #    to trail the momentum wave while keeping the order live on the book.
-            if order_type == "SELL":
-                new_price = current_price * (1.0 + REPRICE_OFFSET)
             else:
-                new_price = current_price * (1.0 - REPRICE_OFFSET)
+                difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
+                if not are_close(current_price, initial_prices[order_id], INITIAL_MAX_PROC):
+                    print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
+                    continue
+                print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
+                if order_type == "SELL":
+                    new_price = current_price * (1.0 + REPRICE_OFFSET)
+                else:
+                    new_price = current_price * (1.0 - REPRICE_OFFSET)
+                replace_bypass_guards = ["G_PROF"]
+                replace_wait_for_trend = True
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
@@ -427,9 +474,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 {
                     "smart": False,
                     "kind": "monitor_order_replace",
-                    "bypass_guards": ["G_PROF"],
+                    "bypass_guards": list(replace_bypass_guards),
                     "allow_math_reference_sell": True,
-                    "wait_for_trend": True,
+                    "wait_for_trend": replace_wait_for_trend,
                     "prefix": replace_pfx,
                     "parent_client_order_id": cid,
                     "parent_owner": owner,
@@ -571,9 +618,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 new_order = mkt.place(
                     symbol, order_type, new_price, quantity, smart=False,
                     kind="monitor_order_replace",
-                    bypass_guards={"G_PROF"},
+                    bypass_guards=set(replace_bypass_guards),
                     allow_math_reference_sell=True,
-                    wait_for_trend=True,
+                    wait_for_trend=replace_wait_for_trend,
                     caller_owns_retry=True,
                     client_order_id=client_order_id,
                     _outcome_context=outcome,
