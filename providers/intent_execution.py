@@ -272,15 +272,17 @@ def execute_enforce_intent_order(
 
             if callable(dispatch_notify_fn):
                 try:
-                    from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
+                    from notify_engine.alertnotifiers import dispatch_order_event_notification
 
-                    notify_helper = notify_order_placed if is_limit else notify_order_executed
-                    notify_helper(
+                    dispatch_order_event_notification(
                         inst.symbol,
                         decision,
                         order_id_str,
                         price,
                         target_qty,
+                        default_verb="PLACED LIMIT" if is_limit else "EXECUTED",
+                        default_icon="📝" if is_limit else "🎉",
+                        order_type="LIMIT" if is_limit else "MARKET",
                         venue=inst.provider_name,
                         owner="ai_executor",
                         source=None,

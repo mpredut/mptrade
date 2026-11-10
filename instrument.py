@@ -303,9 +303,62 @@ class Instrument:
         print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={scale_f:.2f})")
         return scaled_qty, scale_f, None
 
-    def _resolve_place_guard_config(
-        self, ctx: _PlaceContext, bypass_guards_raw: Any
-    ) -> None:
+    def _init_and_gate_pre_pipeline(
+        self,
+        side: str,
+        price: Any,
+        qty: Any,
+        kwargs: dict,
+    ) -> tuple[Optional[_PlaceContext], Any]:
+        caller_owns_retry = _parse_bool_flag(kwargs.pop("caller_owns_retry", False), False)
+        outcome_context = kwargs.pop("_outcome_context", None)
+        if outcome_context is not None and not isinstance(outcome_context, dict):
+            raise TypeError("_outcome_context must be a dict")
+        cache_permit = kwargs.pop("cache_permit", None)
+        retry_requested_price_raw = kwargs.pop("_retry_requested_price", None)
+        retry_price_tolerance_raw = kwargs.pop("_retry_price_tolerance", None)
+        bypass_guards_raw = kwargs.pop("bypass_guards", None)
+        caller_profit_margin = kwargs.pop("profit_margin", None)
+        profit_reference_mode = kwargs.pop("reference_mode", None)
+        caller_module = kwargs.pop("module", None)
+        allow_math_reference_sell = _parse_bool_flag(
+            kwargs.pop("allow_math_reference_sell", False), False
+        )
+        order_kind = kwargs.get("kind") or kwargs.get("motivation")
+        if order_kind is not None:
+            kwargs["kind"] = order_kind
+
+        def _refuse_early(r: str):
+            if outcome_context is not None:
+                outcome_context.update(accepted=False, reason=r, state="refused")
+            return None
+
+        side_u = normalize_side(side)
+        if not side_u:
+            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
+            return None, _refuse_early("invalid_side")
+
+        ctx = _PlaceContext(
+            side_u=side_u,
+            price=price,
+            qty=qty,
+            orig_price=price,
+            orig_qty=qty,
+            kwargs=kwargs,
+            caller_owns_retry=caller_owns_retry,
+            outcome_context=outcome_context,
+            cache_permit=cache_permit,
+            caller_supplied_cache_permit=cache_permit is not None,
+            retry_requested_price_raw=retry_requested_price_raw,
+            retry_price_tolerance_raw=retry_price_tolerance_raw,
+            retry_constraint_supplied=(
+                retry_requested_price_raw is not None or retry_price_tolerance_raw is not None
+            ),
+            profit_reference_mode=profit_reference_mode,
+            caller_module=caller_module,
+            allow_math_reference_sell=allow_math_reference_sell,
+            order_kind=order_kind,
+        )
         ctx.medium_trend_action_cfg = ctx.kwargs.get("medium_trend_action")
         ctx.medium_trend_scale_cfg = ctx.kwargs.get("medium_trend_scale")
         inst_bypass_raw = None
@@ -373,63 +426,6 @@ class Instrument:
             revoke_guard_bypass(ctx.bypassed_guards, "G_QLIMIT1")
             ctx.bypass_quantity_policy = False
 
-    def _init_and_gate_pre_pipeline(
-        self,
-        side: str,
-        price: Any,
-        qty: Any,
-        kwargs: dict,
-    ) -> tuple[Optional[_PlaceContext], Any]:
-        caller_owns_retry = _parse_bool_flag(kwargs.pop("caller_owns_retry", False), False)
-        outcome_context = kwargs.pop("_outcome_context", None)
-        if outcome_context is not None and not isinstance(outcome_context, dict):
-            raise TypeError("_outcome_context must be a dict")
-        cache_permit = kwargs.pop("cache_permit", None)
-        retry_requested_price_raw = kwargs.pop("_retry_requested_price", None)
-        retry_price_tolerance_raw = kwargs.pop("_retry_price_tolerance", None)
-        bypass_guards_raw = kwargs.pop("bypass_guards", None)
-        caller_profit_margin = kwargs.pop("profit_margin", None)
-        profit_reference_mode = kwargs.pop("reference_mode", None)
-        caller_module = kwargs.pop("module", None)
-        allow_math_reference_sell = _parse_bool_flag(
-            kwargs.pop("allow_math_reference_sell", False), False
-        )
-        order_kind = kwargs.get("kind") or kwargs.get("motivation")
-        if order_kind is not None:
-            kwargs["kind"] = order_kind
-
-        def _refuse_early(r: str):
-            if outcome_context is not None:
-                outcome_context.update(accepted=False, reason=r, state="refused")
-            return None
-
-        side_u = normalize_side(side)
-        if not side_u:
-            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
-            return None, _refuse_early("invalid_side")
-
-        ctx = _PlaceContext(
-            side_u=side_u,
-            price=price,
-            qty=qty,
-            orig_price=price,
-            orig_qty=qty,
-            kwargs=kwargs,
-            caller_owns_retry=caller_owns_retry,
-            outcome_context=outcome_context,
-            cache_permit=cache_permit,
-            caller_supplied_cache_permit=cache_permit is not None,
-            retry_requested_price_raw=retry_requested_price_raw,
-            retry_price_tolerance_raw=retry_price_tolerance_raw,
-            retry_constraint_supplied=(
-                retry_requested_price_raw is not None or retry_price_tolerance_raw is not None
-            ),
-            profit_reference_mode=profit_reference_mode,
-            caller_module=caller_module,
-            allow_math_reference_sell=allow_math_reference_sell,
-            order_kind=order_kind,
-        )
-        self._resolve_place_guard_config(ctx, bypass_guards_raw)
         ctx.wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         ctx.abort_if = kwargs.pop("abort_if", None)
         ctx.early_abort_if = getattr(ctx.abort_if, "is_aborted", None)
@@ -516,497 +512,6 @@ class Instrument:
                 or (ctx.caller_module == "assetguardian" and ctx.side_u == "SELL")
             )
         return ctx, None
-
-    def _prepare_preflight_and_smart_price(self, ctx: _PlaceContext) -> None:
-        if ctx.retry_constraint_supplied:
-            ctx.retry_requested_price = safe_pos_float(ctx.retry_requested_price_raw, default=None)
-            ctx.retry_price_tolerance = safe_nonneg_float(
-                ctx.retry_price_tolerance_raw, default=None
-            )
-            if (
-                ctx.retry_requested_price is None
-                or ctx.retry_price_tolerance is None
-                or ctx.retry_price_tolerance >= 1.0
-            ):
-                raise SubmissionRefused("invalid_retry_price_constraint")
-        ctx.preflight_order = getattr(self._provider, "preflight_order", None)
-        if ctx.requires_permit and ctx.smart and ctx.caller_supplied_cache_permit:
-            raise SubmissionRefused("external_cache_permit_not_allowed_for_smart_cancel")
-        if ctx.requires_permit and ctx.cache_permit is None:
-            prepare_order_state = getattr(self._provider, "prepare_order_state", None)
-            if not callable(prepare_order_state):
-                raise SubmissionRefused("account_cache_not_fresh")
-            ctx.guarded_order_state = prepare_order_state()
-            if ctx.guarded_order_state is None:
-                raise SubmissionRefused("account_cache_not_fresh")
-        if not ctx.requires_permit and callable(ctx.preflight_order):
-            defers_qty = getattr(
-                self._provider,
-                "defers_preflight_quantity",
-                lambda: MarketDataProvider.defers_preflight_quantity(self._provider),
-            )()
-            preflight_qty = None if defers_qty else ctx.qty
-            ctx.preflight_order(
-                self.symbol,
-                ctx.side_u,
-                preflight_qty,
-                ctx.price,
-                market=ctx.is_market,
-                kind=ctx.order_kind,
-            )
-
-        # 0. Compute smart venue pricing before the guards.
-        if ctx.smart and not isinstance(ctx.price, bool):
-            ctx.price = self._provider.adjust_order_price(
-                self.symbol,
-                ctx.side_u,
-                ctx.price,
-                cancel_opposite=not ctx.defers_smart_cancel,
-            )
-        if not ctx.is_market and ctx.price is not None and not isinstance(ctx.price, bool):
-            round_px = getattr(self._provider, "round_price", None)
-            if callable(round_px):
-                px_f = safe_pos_float(round_px(self.symbol, ctx.price), default=None)
-                if px_f is not None and not (
-                    ctx.caller_supplied_cache_permit and ctx.side_u == "BUY" and px_f > ctx.price
-                ):
-                    ctx.price = px_f
-
-    def _resolve_authoritative_balance_and_market_price(
-        self, ctx: _PlaceContext
-    ) -> Optional[str]:
-        if isinstance(ctx.price, bool) or (
-            ctx.price is not None and (ctx.side_u == "BUY" or not ctx.is_market)
-        ):
-            price_f = safe_pos_float(ctx.price, default=None)
-            if price_f is None:
-                print(f"[{self.symbol}] {ctx.side_u} preflight refused: price invalid {ctx.price!r}")
-                ctx.quantity_price = ctx.price
-                return "invalid_price"
-            ctx.price = price_f
-
-        ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
-        target_asset = ctx.quote_asset if ctx.side_u == "BUY" else ctx.base_asset
-
-        ctx.known_balance = None
-        if (
-            hasattr(self._provider, "free_balance")
-            and callable(self._provider.free_balance)
-            and target_asset
-        ):
-            try:
-                kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
-                if kb_f is not None:
-                    if kb_f <= 0:
-                        print(
-                            f"[{self.symbol}] {ctx.side_u} preflight refused: "
-                            f"balance_unavailable asset={target_asset}"
-                        )
-                        ctx.quantity_price = ctx.price
-                        return "balance_unavailable"
-                    ctx.known_balance = kb_f
-            except Exception:
-                ctx.known_balance = None
-
-        ctx.quantity_price = ctx.price
-        if ctx.is_market:
-            ctx.quantity_price = safe_pos_float(
-                self._provider.get_current_price(self.symbol), default=None
-            )
-            if ctx.quantity_price is None:
-                print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED: current price unavailable")
-                return "market_price_unavailable"
-        return None
-
-    def _evaluate_quantity_sizing(self, ctx: _PlaceContext) -> Optional[str]:
-        hours_f = safe_pos_float(ctx.kwargs.get("hours", 5), default=5.0)
-        decision = self._provider.quantity_decision(
-            self.symbol,
-            ctx.side_u,
-            ctx.quantity_price,
-            ctx.qty,
-            base=ctx.base_asset,
-            quote=ctx.quote_asset,
-            cancelorders=_parse_bool_flag(ctx.kwargs.get("cancelorders", False), False),
-            hours=hours_f,
-            apply_policy=not ctx.bypass_quantity_policy,
-            market=ctx.is_market,
-            enforce_business_minimum=ctx.enforce_business_minimum,
-            regime_context=(
-                None
-                if (
-                    ctx.caller_applied_scale < 1.0
-                    or ctx.bypass_profit_guard
-                    or ctx.is_monitor_replace
-                )
-                else ctx.regime_context
-            ),
-            known_balance=ctx.known_balance,
-        )
-        ctx.qty = decision.final_qty
-        raw_dec_scale = (
-            getattr(decision, "applied_scale", 1.0)
-            if getattr(decision, "scale_applied", False)
-            else 1.0
-        )
-        dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
-        ctx.applied_scale = min(float(ctx.caller_applied_scale), dec_scale)
-        if ctx.qty <= 0:
-            print(
-                f"[{self.symbol}] {ctx.side_u} qty refused: "
-                f"{decision.refuse_reason} asset={decision.balance_asset}"
-            )
-            return decision.refuse_reason or "qty_zero_after_weight"
-
-        if (
-            not ctx.bypass_profit_guard
-            and not ctx.is_monitor_replace
-            and ctx.regime_context is not None
-            and ctx.side_u == "BUY"
-            and ctx.qty > 0
-            and not getattr(decision, "scale_applied", False)
-        ):
-            ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
-                ctx.qty,
-                ctx.quantity_price,
-                ctx.is_market,
-                ctx.enforce_business_minimum,
-                ctx.regime_context,
-                ctx.applied_scale,
-                side_u=ctx.side_u,
-            )
-            if refusal:
-                return refusal
-        return None
-
-    def _evaluate_pre_sizing_profit_guard(self, ctx: _PlaceContext) -> Optional[str]:
-        ctx.profit_window_ref = None
-        if ctx.bypass_profit_guard:
-            return None
-        try:
-            eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
-                self._provider.name,
-                ctx.side_u,
-                module=ctx.caller_module,
-                reference_mode=ctx.profit_reference_mode,
-            )
-        except Exception:
-            eff_ref_mode = None
-        if ctx.regime_context is None:
-            ctx.regime_context = self._resolve_regime_context()
-        if ctx.profit_margin is None:
-            ctx.profit_margin = order_guard.get_margin_cfg(self._provider.name)
-        if not ctx.bypass_math_ref and eff_ref_mode != "off":
-            ctx.profit_window_ref = self._call_profit_guard_window_ref(
-                self.symbol,
-                ctx.side_u,
-                ctx.safeback_override,
-                regime_context=ctx.regime_context,
-                reference_mode=ctx.profit_reference_mode,
-                module=ctx.caller_module,
-            )
-
-        # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
-        if ctx.bypass_math_ref:
-            print(
-                f"[GUARD] {ctx.side_u} {self.symbol}: the historical price reference "
-                "was explicitly bypassed; the quantity/weight guard remains active"
-            )
-        elif (
-            not ctx.bypass_all
-            and not hasattr(order_guard.profit_guard, "_mock_name")
-            and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
-        ):
-            guard_px_stage1 = ctx.quantity_price if ctx.is_market else ctx.price
-            cm_kwargs = self._build_profit_guard_kwargs(
-                ctx.profit_window_ref,
-                ctx.regime_context,
-                None,
-                None,
-                ctx.profit_reference_mode,
-                ctx.caller_module,
-                include_qty=False,
-            )
-            if not order_guard.check_math_profit_reference(
-                self._provider,
-                self.symbol,
-                ctx.side_u,
-                guard_px_stage1,
-                ctx.profit_margin,
-                **cm_kwargs,
-            ):
-                return "profit_guard"
-        return None
-
-    def _check_short_trend_gate(self, ctx: _PlaceContext) -> Optional[str]:
-        if not ctx.wait_for_trend:
-            return None
-        try:
-            import cacheManager as cm
-            import pricewindow as pw
-            if pw.should_wait_short_trend(
-                cm.get_short_trend_manager(),
-                ctx.side_u,
-                self.symbol,
-                short_trend_cls=cm.CacheShortTrendManager,
-            ):
-                retry_note = (
-                    "caller owns retry"
-                    if ctx.caller_owns_retry
-                    else "the intent stays queued for retry"
-                )
-                print(
-                    f"[{self.symbol}] {ctx.side_u} deferred by trend; "
-                    f"placement does not wait, {retry_note}"
-                )
-                return "trend_deferred"
-        except Exception as e:  # noqa: BLE001 — Opportunistic gate.
-            print(f"[{self.symbol}] {ctx.side_u} trend gate unavailable: {e}")
-        return None
-
-    def _apply_medium_trend_gate(self, ctx: _PlaceContext) -> Optional[str]:
-        check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
-        medium_trend_action = (
-            ctx.medium_trend_action_cfg.strip().lower()
-            if isinstance(ctx.medium_trend_action_cfg, str)
-            else None
-        )
-        gt2_context = ctx.regime_context
-        if check_medium_trend and gt2_context is None and medium_trend_action in {"defer", "scale"}:
-            gt2_context = self._resolve_regime_context()
-            if gt2_context is not None and ctx.regime_context is None:
-                ctx.regime_context = gt2_context
-        if check_medium_trend and gt2_context is not None:
-            raw_reg = obj_attr(gt2_context, "regime") or obj_attr(gt2_context, "resolved_trend")
-            resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
-            adverse_medium_trend = order_guard.is_adverse_trend(ctx.side_u, resolved_regime)
-            if medium_trend_action == "defer" and adverse_medium_trend:
-                regime_label = (
-                    "BEAR regime" if ctx.side_u == "BUY" else "BULL regime, riding trend"
-                )
-                print(
-                    f"[{self.symbol}] {ctx.side_u} deferred by medium-term trend "
-                    f"(4h-24h {regime_label})"
-                )
-                return "medium_trend_deferred"
-            if (
-                medium_trend_action == "scale"
-                and adverse_medium_trend
-                and not ctx.is_monitor_replace
-            ):
-                scale_factor = parse_scale_factor(ctx.medium_trend_scale_cfg, default=0.5)
-                if scale_factor <= 0.0:
-                    return "medium_trend_qty_zero"
-                if scale_factor < float(ctx.applied_scale):
-                    ctx.qty = round_provider_qty(
-                        self._provider,
-                        self.symbol,
-                        max(0.0, ctx.qty * (scale_factor / float(ctx.applied_scale))),
-                    )
-                    print(
-                        f"[{self.symbol}] {ctx.side_u} scaled by medium-term trend "
-                        f"({scale_factor*100:.0f}%, new qty={ctx.qty})"
-                    )
-                    if ctx.qty <= 0:
-                        return "medium_trend_qty_zero"
-                    gt2_refusal = check_order_filter_refusal(
-                        self._provider,
-                        self.symbol,
-                        ctx.side_u,
-                        ctx.quantity_price if ctx.is_market else ctx.price,
-                        ctx.qty,
-                        market=ctx.is_market,
-                        enforce_business_minimum=ctx.enforce_business_minimum,
-                    )
-                    if gt2_refusal:
-                        print(
-                            f"[{self.symbol}] {ctx.side_u} medium-trend scaled qty {ctx.qty} "
-                            f"refused by filter: {gt2_refusal}"
-                        )
-                        return gt2_refusal
-                    ctx.applied_scale = min(float(ctx.applied_scale), scale_factor)
-        return None
-
-    def _reserve_outbox_claim(self, ctx: _PlaceContext) -> Optional[str]:
-        if not ctx.caller_owns_retry:
-            try:
-                if order_retry.RETRY_ENABLED:
-                    prequeue_kwargs = {**ctx.retry_kwargs, "smart": ctx.smart}
-                    if 0.0 < float(ctx.applied_scale) < 1.0:
-                        prequeue_kwargs["applied_scale"] = float(ctx.applied_scale)
-                    self._apply_outbox_lineage_prefix(prequeue_kwargs, ctx.kwargs)
-                    ctx.prequeued_claim = order_retry.enqueue_claimed(
-                        self.symbol,
-                        ctx.side_u,
-                        ctx.qty,
-                        prequeue_kwargs,
-                        requested_price=ctx.orig_price,
-                        ref_price=ctx.price,
-                        failure_reason="submit_pending",
-                        provider_name=self.provider_name,
-                        intent_id=ctx.kwargs.get("intent_id"),
-                        kind=ctx.order_kind,
-                        ttl_sec=ctx.kwargs.get("ttl_sec"),
-                    )
-                    if ctx.prequeued_claim is None:
-                        raise RuntimeError("the intent cannot be read back after persisting")
-                    ctx.prequeued_client_order_id = dict(
-                        ctx.prequeued_claim.get("place_kwargs") or {}
-                    ).get("client_order_id")
-                    if not ctx.prequeued_client_order_id:
-                        raise RuntimeError("the persisted intent has no client_order_id")
-                    ctx.kwargs["client_order_id"] = ctx.prequeued_client_order_id
-            except Exception as exc:
-                print(
-                    f"[{self.symbol}] {ctx.side_u} BLOCKED: the intent cannot be "
-                    f"persisted before the submit ({exc})"
-                )
-                return "pre_submit_persist_failed"
-        else:
-            ctx.prequeued_claim = ctx.kwargs.get("_retry_claim")
-
-        if ctx.prequeued_claim is not None:
-            ctx.prequeued_record_id = ctx.prequeued_claim.get("id")
-            ctx.prequeued_client_order_id = dict(
-                ctx.prequeued_claim.get("place_kwargs") or {}
-            ).get("client_order_id")
-            ctx.prequeued_intent_id = ctx.prequeued_claim.get("intent_id")
-
-        if ctx.prequeued_intent_id and not ctx.caller_owns_retry:
-            _EXECUTION_AUDIT.record(
-                "submit_requested",
-                intent_id=ctx.prequeued_intent_id,
-                venue=self.provider_name,
-                symbol=self.symbol,
-                side=ctx.side_u.lower(),
-                qty=ctx.qty,
-                price=ctx.price,
-                market=ctx.is_market,
-                kind=ctx.order_kind,
-                client_order_id=ctx.prequeued_client_order_id,
-            )
-        return None
-
-    def _revalidate_market_dispatch(self, ctx: _PlaceContext) -> Optional[str]:
-        final_profit_check = not ctx.bypass_profit_guard and ctx.is_market
-        if not (ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied)):
-            return None
-        final_market_price = safe_pos_float(
-            self._provider.get_current_price(self.symbol), default=None
-        )
-        if final_market_price is None:
-            print(
-                f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED at dispatch: "
-                "current price unavailable"
-            )
-            return "market_price_unavailable"
-        if ctx.retry_constraint_supplied and not order_retry.is_retry_price_favorable(
-            ctx.side_u,
-            final_market_price,
-            ctx.retry_requested_price,
-            ctx.retry_price_tolerance,
-        ):
-            return "retry_price_unfavorable"
-        if final_profit_check:
-            pg_kwargs = self._build_profit_guard_kwargs(
-                ctx.profit_window_ref,
-                ctx.regime_context,
-                ctx.qty,
-                ctx.bypassed_guards,
-                ctx.profit_reference_mode,
-                ctx.caller_module,
-            )
-            if not order_guard.profit_guard(
-                self._provider,
-                self.symbol,
-                ctx.side_u,
-                final_market_price,
-                ctx.profit_margin,
-                **pg_kwargs,
-            ):
-                return "profit_guard"
-            pre_final_qty = ctx.qty
-            ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
-                ctx.qty,
-                final_market_price,
-                ctx.is_market,
-                ctx.enforce_business_minimum,
-                ctx.regime_context,
-                ctx.applied_scale,
-                side_u=ctx.side_u,
-            )
-            if refusal:
-                return refusal
-            if (
-                ctx.qty != pre_final_qty
-                and ctx.requires_permit
-                and not ctx.caller_supplied_cache_permit
-                and callable(ctx.preflight_order)
-            ):
-                ctx.cache_permit = ctx.preflight_order(
-                    self.symbol,
-                    ctx.side_u,
-                    ctx.qty,
-                    ctx.price,
-                    market=ctx.is_market,
-                    kind=ctx.order_kind,
-                )
-                if ctx.cache_permit is None:
-                    raise SubmissionRefused("account_cache_not_fresh")
-            if ctx.prequeued_claim is not None:
-                ctx.prequeued_claim = self._sync_claimed_qty(
-                    ctx.prequeued_claim, ctx.qty, ctx.applied_scale
-                )
-                if ctx.prequeued_intent_id and ctx.applied_scale < 1.0:
-                    _EXECUTION_AUDIT.record(
-                        "submit_scaled",
-                        intent_id=ctx.prequeued_intent_id,
-                        venue=self.provider_name,
-                        symbol=self.symbol,
-                        side=ctx.side_u.lower(),
-                        qty=ctx.qty,
-                        scale=ctx.applied_scale,
-                    )
-        return None
-
-    def _dispatch_provider_order(self, ctx: _PlaceContext) -> Any:
-        if ctx.prequeued_claim is not None:
-            if not ctx.caller_owns_retry:
-                refreshed_claim = order_retry.begin_claimed_submit(
-                    ctx.prequeued_claim, qty=ctx.qty, applied_scale=ctx.applied_scale
-                )
-                if refreshed_claim is None:
-                    raise SubmissionRefused("producer_claim_lost")
-                ctx.prequeued_claim = refreshed_claim
-            else:
-                ctx.prequeued_claim = self._sync_claimed_qty(
-                    ctx.prequeued_claim, ctx.qty, ctx.applied_scale
-                )
-        ctx.reason = "submit_ambiguous"
-        ctx.submit_attempted = True
-        provider_kwargs = {
-            **ctx.kwargs,
-            "market": ctx.is_market,
-            "force": ctx.is_market,
-            "_balance_verified": True,
-        }
-        if ctx.known_balance is not None:
-            provider_kwargs["known_balance"] = ctx.known_balance
-        if ctx.supports_biz_min:
-            provider_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
-        if ctx.cache_permit is not None:
-            provider_kwargs["permit_requested_price"] = ctx.permit_requested_price
-            provider_kwargs["cache_permit"] = ctx.cache_permit
-        if ctx.smart and ctx.defers_smart_cancel:
-            provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
-        response = self._provider.place_order(
-            self.symbol, ctx.side_u, ctx.price, ctx.qty, **provider_kwargs
-        )
-        if _accepted_order_payload(response):
-            ctx.order, ctx.reason = response, None
-        else:
-            ctx.order, ctx.reason = None, "response_without_order_id"
-        return ctx.order
 
     def _finalize_place_outcome(
         self, ctx: _PlaceContext, *, caller: Optional[str]
@@ -1210,7 +715,59 @@ class Instrument:
         if ctx is None:
             return early_return
         try:
-            self._prepare_preflight_and_smart_price(ctx)
+            if ctx.retry_constraint_supplied:
+                ctx.retry_requested_price = safe_pos_float(ctx.retry_requested_price_raw, default=None)
+                ctx.retry_price_tolerance = safe_nonneg_float(
+                    ctx.retry_price_tolerance_raw, default=None
+                )
+                if (
+                    ctx.retry_requested_price is None
+                    or ctx.retry_price_tolerance is None
+                    or ctx.retry_price_tolerance >= 1.0
+                ):
+                    raise SubmissionRefused("invalid_retry_price_constraint")
+            ctx.preflight_order = getattr(self._provider, "preflight_order", None)
+            if ctx.requires_permit and ctx.smart and ctx.caller_supplied_cache_permit:
+                raise SubmissionRefused("external_cache_permit_not_allowed_for_smart_cancel")
+            if ctx.requires_permit and ctx.cache_permit is None:
+                prepare_order_state = getattr(self._provider, "prepare_order_state", None)
+                if not callable(prepare_order_state):
+                    raise SubmissionRefused("account_cache_not_fresh")
+                ctx.guarded_order_state = prepare_order_state()
+                if ctx.guarded_order_state is None:
+                    raise SubmissionRefused("account_cache_not_fresh")
+            if not ctx.requires_permit and callable(ctx.preflight_order):
+                defers_qty = getattr(
+                    self._provider,
+                    "defers_preflight_quantity",
+                    lambda: MarketDataProvider.defers_preflight_quantity(self._provider),
+                )()
+                preflight_qty = None if defers_qty else ctx.qty
+                ctx.preflight_order(
+                    self.symbol,
+                    ctx.side_u,
+                    preflight_qty,
+                    ctx.price,
+                    market=ctx.is_market,
+                    kind=ctx.order_kind,
+                )
+
+            # 0. Compute smart venue pricing before the guards.
+            if ctx.smart and not isinstance(ctx.price, bool):
+                ctx.price = self._provider.adjust_order_price(
+                    self.symbol,
+                    ctx.side_u,
+                    ctx.price,
+                    cancel_opposite=not ctx.defers_smart_cancel,
+                )
+            if not ctx.is_market and ctx.price is not None and not isinstance(ctx.price, bool):
+                round_px = getattr(self._provider, "round_price", None)
+                if callable(round_px):
+                    px_f = safe_pos_float(round_px(self.symbol, ctx.price), default=None)
+                    if px_f is not None and not (
+                        ctx.caller_supplied_cache_permit and ctx.side_u == "BUY" and px_f > ctx.price
+                    ):
+                        ctx.price = px_f
 
             # 1. Provider-agnostic daily trade cap (30 orders / 24h per symbol and side).
             if not GUARD_REGISTRY["GO1"].is_bypassed(ctx.bypassed_guards):
@@ -1221,35 +778,266 @@ class Instrument:
                     return None
 
             # Stage 0 & Stage 1: Authoritative Balance/Price & Mathematical Reference Check (G_PROF).
-            for stage_fn in (
-                self._resolve_authoritative_balance_and_market_price,
-                self._evaluate_pre_sizing_profit_guard,
+            if isinstance(ctx.price, bool) or (
+                ctx.price is not None and (ctx.side_u == "BUY" or not ctx.is_market)
             ):
-                if refusal := stage_fn(ctx):
-                    ctx.reason = refusal
+                price_f = safe_pos_float(ctx.price, default=None)
+                if price_f is None:
+                    print(f"[{self.symbol}] {ctx.side_u} preflight refused: price invalid {ctx.price!r}")
+                    ctx.quantity_price = ctx.price
+                    ctx.reason = "invalid_price"
                     return None
+                ctx.price = price_f
+
+            ctx.base_asset, ctx.quote_asset = resolve_assets(self.symbol, self.base, self.quote)
+            target_asset = ctx.quote_asset if ctx.side_u == "BUY" else ctx.base_asset
+
+            ctx.known_balance = None
+            if (
+                hasattr(self._provider, "free_balance")
+                and callable(self._provider.free_balance)
+                and target_asset
+            ):
+                try:
+                    kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                    if kb_f is not None:
+                        if kb_f <= 0:
+                            print(
+                                f"[{self.symbol}] {ctx.side_u} preflight refused: "
+                                f"balance_unavailable asset={target_asset}"
+                            )
+                            ctx.quantity_price = ctx.price
+                            ctx.reason = "balance_unavailable"
+                            return None
+                        ctx.known_balance = kb_f
+                except Exception:
+                    ctx.known_balance = None
+
+            ctx.quantity_price = ctx.price
+            if ctx.is_market:
+                ctx.quantity_price = safe_pos_float(
+                    self._provider.get_current_price(self.symbol), default=None
+                )
+                if ctx.quantity_price is None:
+                    print(f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED: current price unavailable")
+                    ctx.reason = "market_price_unavailable"
+                    return None
+
+            ctx.profit_window_ref = None
+            if not ctx.bypass_profit_guard:
+                try:
+                    eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
+                        self._provider.name,
+                        ctx.side_u,
+                        module=ctx.caller_module,
+                        reference_mode=ctx.profit_reference_mode,
+                    )
+                except Exception:
+                    eff_ref_mode = None
+                if ctx.regime_context is None:
+                    ctx.regime_context = self._resolve_regime_context()
+                if ctx.profit_margin is None:
+                    ctx.profit_margin = order_guard.get_margin_cfg(self._provider.name)
+                if not ctx.bypass_math_ref and eff_ref_mode != "off":
+                    ctx.profit_window_ref = self._call_profit_guard_window_ref(
+                        self.symbol,
+                        ctx.side_u,
+                        ctx.safeback_override,
+                        regime_context=ctx.regime_context,
+                        reference_mode=ctx.profit_reference_mode,
+                        module=ctx.caller_module,
+                    )
+
+                if ctx.bypass_math_ref:
+                    print(
+                        f"[GUARD] {ctx.side_u} {self.symbol}: the historical price reference "
+                        "was explicitly bypassed; the quantity/weight guard remains active"
+                    )
+                elif (
+                    not ctx.bypass_all
+                    and not hasattr(order_guard.profit_guard, "_mock_name")
+                    and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
+                ):
+                    guard_px_stage1 = ctx.quantity_price if ctx.is_market else ctx.price
+                    cm_kwargs = self._build_profit_guard_kwargs(
+                        ctx.profit_window_ref,
+                        ctx.regime_context,
+                        None,
+                        None,
+                        ctx.profit_reference_mode,
+                        ctx.caller_module,
+                        include_qty=False,
+                    )
+                    if not order_guard.check_math_profit_reference(
+                        self._provider,
+                        self.symbol,
+                        ctx.side_u,
+                        guard_px_stage1,
+                        ctx.profit_margin,
+                        **cm_kwargs,
+                    ):
+                        ctx.reason = "profit_guard"
+                        return None
 
             if _is_aborted(ctx.early_abort_if):
                 ctx.reason = "aborted_by_caller"
                 return None
 
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
-            if refusal := self._evaluate_quantity_sizing(ctx):
-                ctx.reason = refusal
+            hours_f = safe_pos_float(ctx.kwargs.get("hours", 5), default=5.0)
+            decision = self._provider.quantity_decision(
+                self.symbol,
+                ctx.side_u,
+                ctx.quantity_price,
+                ctx.qty,
+                base=ctx.base_asset,
+                quote=ctx.quote_asset,
+                cancelorders=_parse_bool_flag(ctx.kwargs.get("cancelorders", False), False),
+                hours=hours_f,
+                apply_policy=not ctx.bypass_quantity_policy,
+                market=ctx.is_market,
+                enforce_business_minimum=ctx.enforce_business_minimum,
+                regime_context=(
+                    None
+                    if (
+                        ctx.caller_applied_scale < 1.0
+                        or ctx.bypass_profit_guard
+                        or ctx.is_monitor_replace
+                    )
+                    else ctx.regime_context
+                ),
+                known_balance=ctx.known_balance,
+            )
+            ctx.qty = decision.final_qty
+            raw_dec_scale = (
+                getattr(decision, "applied_scale", 1.0)
+                if getattr(decision, "scale_applied", False)
+                else 1.0
+            )
+            dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
+            ctx.applied_scale = min(float(ctx.caller_applied_scale), dec_scale)
+            if ctx.qty <= 0:
+                print(
+                    f"[{self.symbol}] {ctx.side_u} qty refused: "
+                    f"{decision.refuse_reason} asset={decision.balance_asset}"
+                )
+                ctx.reason = decision.refuse_reason or "qty_zero_after_weight"
                 return None
+
+            if (
+                not ctx.bypass_profit_guard
+                and not ctx.is_monitor_replace
+                and ctx.regime_context is not None
+                and ctx.side_u == "BUY"
+                and ctx.qty > 0
+                and not getattr(decision, "scale_applied", False)
+            ):
+                ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
+                    ctx.qty,
+                    ctx.quantity_price,
+                    ctx.is_market,
+                    ctx.enforce_business_minimum,
+                    ctx.regime_context,
+                    ctx.applied_scale,
+                    side_u=ctx.side_u,
+                )
+                if refusal:
+                    ctx.reason = refusal
+                    return None
 
             if _is_aborted(ctx.early_abort_if):
                 ctx.reason = "aborted_by_caller"
                 return None
 
             # 2 & 2b: Short Trend Gate (GT_S) & Medium-Term Trend Gate (GT_M).
-            for stage_fn in (
-                self._check_short_trend_gate,
-                self._apply_medium_trend_gate,
-            ):
-                if refusal := stage_fn(ctx):
-                    ctx.reason = refusal
+            if ctx.wait_for_trend:
+                try:
+                    import cacheManager as cm
+                    import pricewindow as pw
+                    if pw.should_wait_short_trend(
+                        cm.get_short_trend_manager(),
+                        ctx.side_u,
+                        self.symbol,
+                        short_trend_cls=cm.CacheShortTrendManager,
+                    ):
+                        retry_note = (
+                            "caller owns retry"
+                            if ctx.caller_owns_retry
+                            else "the intent stays queued for retry"
+                        )
+                        print(
+                            f"[{self.symbol}] {ctx.side_u} deferred by trend; "
+                            f"placement does not wait, {retry_note}"
+                        )
+                        ctx.reason = "trend_deferred"
+                        return None
+                except Exception as e:  # noqa: BLE001 — Opportunistic gate.
+                    print(f"[{self.symbol}] {ctx.side_u} trend gate unavailable: {e}")
+
+            check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(ctx.bypassed_guards)
+            medium_trend_action = (
+                ctx.medium_trend_action_cfg.strip().lower()
+                if isinstance(ctx.medium_trend_action_cfg, str)
+                else None
+            )
+            gt2_context = ctx.regime_context
+            if check_medium_trend and gt2_context is None and medium_trend_action in {"defer", "scale"}:
+                gt2_context = self._resolve_regime_context()
+                if gt2_context is not None and ctx.regime_context is None:
+                    ctx.regime_context = gt2_context
+            if check_medium_trend and gt2_context is not None:
+                raw_reg = obj_attr(gt2_context, "regime") or obj_attr(gt2_context, "resolved_trend")
+                resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
+                adverse_medium_trend = order_guard.is_adverse_trend(ctx.side_u, resolved_regime)
+                if medium_trend_action == "defer" and adverse_medium_trend:
+                    regime_label = (
+                        "BEAR regime" if ctx.side_u == "BUY" else "BULL regime, riding trend"
+                    )
+                    print(
+                        f"[{self.symbol}] {ctx.side_u} deferred by medium-term trend "
+                        f"(4h-24h {regime_label})"
+                    )
+                    ctx.reason = "medium_trend_deferred"
                     return None
+                if (
+                    medium_trend_action == "scale"
+                    and adverse_medium_trend
+                    and not ctx.is_monitor_replace
+                ):
+                    scale_factor = parse_scale_factor(ctx.medium_trend_scale_cfg, default=0.5)
+                    if scale_factor <= 0.0:
+                        ctx.reason = "medium_trend_qty_zero"
+                        return None
+                    if scale_factor < float(ctx.applied_scale):
+                        ctx.qty = round_provider_qty(
+                            self._provider,
+                            self.symbol,
+                            max(0.0, ctx.qty * (scale_factor / float(ctx.applied_scale))),
+                        )
+                        print(
+                            f"[{self.symbol}] {ctx.side_u} scaled by medium-term trend "
+                            f"({scale_factor*100:.0f}%, new qty={ctx.qty})"
+                        )
+                        if ctx.qty <= 0:
+                            ctx.reason = "medium_trend_qty_zero"
+                            return None
+                        gt2_refusal = check_order_filter_refusal(
+                            self._provider,
+                            self.symbol,
+                            ctx.side_u,
+                            ctx.quantity_price if ctx.is_market else ctx.price,
+                            ctx.qty,
+                            market=ctx.is_market,
+                            enforce_business_minimum=ctx.enforce_business_minimum,
+                        )
+                        if gt2_refusal:
+                            print(
+                                f"[{self.symbol}] {ctx.side_u} medium-trend scaled qty {ctx.qty} "
+                                f"refused by filter: {gt2_refusal}"
+                            )
+                            ctx.reason = gt2_refusal
+                            return None
+                        ctx.applied_scale = min(float(ctx.applied_scale), scale_factor)
 
             if _is_aborted(ctx.early_abort_if):
                 ctx.reason = "aborted_by_caller"
@@ -1297,9 +1085,64 @@ class Instrument:
                 raise SubmissionRefused("execution_disabled")
 
             # Stage 4: Persistent Outbox Claim Reservation & Cache Permit Acquisition.
-            if refusal := self._reserve_outbox_claim(ctx):
-                ctx.reason = refusal
-                return None
+            if not ctx.caller_owns_retry:
+                try:
+                    if order_retry.RETRY_ENABLED:
+                        prequeue_kwargs = {**ctx.retry_kwargs, "smart": ctx.smart}
+                        if 0.0 < float(ctx.applied_scale) < 1.0:
+                            prequeue_kwargs["applied_scale"] = float(ctx.applied_scale)
+                        self._apply_outbox_lineage_prefix(prequeue_kwargs, ctx.kwargs)
+                        ctx.prequeued_claim = order_retry.enqueue_claimed(
+                            self.symbol,
+                            ctx.side_u,
+                            ctx.qty,
+                            prequeue_kwargs,
+                            requested_price=ctx.orig_price,
+                            ref_price=ctx.price,
+                            failure_reason="submit_pending",
+                            provider_name=self.provider_name,
+                            intent_id=ctx.kwargs.get("intent_id"),
+                            kind=ctx.order_kind,
+                            ttl_sec=ctx.kwargs.get("ttl_sec"),
+                        )
+                        if ctx.prequeued_claim is None:
+                            raise RuntimeError("the intent cannot be read back after persisting")
+                        ctx.prequeued_client_order_id = dict(
+                            ctx.prequeued_claim.get("place_kwargs") or {}
+                        ).get("client_order_id")
+                        if not ctx.prequeued_client_order_id:
+                            raise RuntimeError("the persisted intent has no client_order_id")
+                        ctx.kwargs["client_order_id"] = ctx.prequeued_client_order_id
+                except Exception as exc:
+                    print(
+                        f"[{self.symbol}] {ctx.side_u} BLOCKED: the intent cannot be "
+                        f"persisted before the submit ({exc})"
+                    )
+                    ctx.reason = "pre_submit_persist_failed"
+                    return None
+            else:
+                ctx.prequeued_claim = ctx.kwargs.get("_retry_claim")
+
+            if ctx.prequeued_claim is not None:
+                ctx.prequeued_record_id = ctx.prequeued_claim.get("id")
+                ctx.prequeued_client_order_id = dict(
+                    ctx.prequeued_claim.get("place_kwargs") or {}
+                ).get("client_order_id")
+                ctx.prequeued_intent_id = ctx.prequeued_claim.get("intent_id")
+
+            if ctx.prequeued_intent_id and not ctx.caller_owns_retry:
+                _EXECUTION_AUDIT.record(
+                    "submit_requested",
+                    intent_id=ctx.prequeued_intent_id,
+                    venue=self.provider_name,
+                    symbol=self.symbol,
+                    side=ctx.side_u.lower(),
+                    qty=ctx.qty,
+                    price=ctx.price,
+                    market=ctx.is_market,
+                    kind=ctx.order_kind,
+                    client_order_id=ctx.prequeued_client_order_id,
+                )
 
             ctx.permit_requested_price = None if ctx.is_market else ctx.orig_price
             if ctx.requires_permit and ctx.cache_permit is None:
@@ -1322,16 +1165,132 @@ class Instrument:
                 validate_order_state(ctx.guarded_order_state)
 
             # Stage 5: Pre-dispatch Market Revalidation & Venue Submission.
-            if refusal := self._revalidate_market_dispatch(ctx):
-                ctx.reason = refusal
-                return None
+            final_profit_check = not ctx.bypass_profit_guard and ctx.is_market
+            if ctx.is_market and (final_profit_check or ctx.retry_constraint_supplied):
+                final_market_price = safe_pos_float(
+                    self._provider.get_current_price(self.symbol), default=None
+                )
+                if final_market_price is None:
+                    print(
+                        f"[{self.symbol}] {ctx.side_u} MARKET BLOCKED at dispatch: "
+                        "current price unavailable"
+                    )
+                    ctx.reason = "market_price_unavailable"
+                    return None
+                if ctx.retry_constraint_supplied and not order_retry.is_retry_price_favorable(
+                    ctx.side_u,
+                    final_market_price,
+                    ctx.retry_requested_price,
+                    ctx.retry_price_tolerance,
+                ):
+                    ctx.reason = "retry_price_unfavorable"
+                    return None
+                if final_profit_check:
+                    pg_kwargs = self._build_profit_guard_kwargs(
+                        ctx.profit_window_ref,
+                        ctx.regime_context,
+                        ctx.qty,
+                        ctx.bypassed_guards,
+                        ctx.profit_reference_mode,
+                        ctx.caller_module,
+                    )
+                    if not order_guard.profit_guard(
+                        self._provider,
+                        self.symbol,
+                        ctx.side_u,
+                        final_market_price,
+                        ctx.profit_margin,
+                        **pg_kwargs,
+                    ):
+                        ctx.reason = "profit_guard"
+                        return None
+                    pre_final_qty = ctx.qty
+                    ctx.qty, ctx.applied_scale, refusal = self._apply_late_intelligence_scale(
+                        ctx.qty,
+                        final_market_price,
+                        ctx.is_market,
+                        ctx.enforce_business_minimum,
+                        ctx.regime_context,
+                        ctx.applied_scale,
+                        side_u=ctx.side_u,
+                    )
+                    if refusal:
+                        ctx.reason = refusal
+                        return None
+                    if (
+                        ctx.qty != pre_final_qty
+                        and ctx.requires_permit
+                        and not ctx.caller_supplied_cache_permit
+                        and callable(ctx.preflight_order)
+                    ):
+                        ctx.cache_permit = ctx.preflight_order(
+                            self.symbol,
+                            ctx.side_u,
+                            ctx.qty,
+                            ctx.price,
+                            market=ctx.is_market,
+                            kind=ctx.order_kind,
+                        )
+                        if ctx.cache_permit is None:
+                            raise SubmissionRefused("account_cache_not_fresh")
+                    if ctx.prequeued_claim is not None:
+                        ctx.prequeued_claim = self._sync_claimed_qty(
+                            ctx.prequeued_claim, ctx.qty, ctx.applied_scale
+                        )
+                        if ctx.prequeued_intent_id and ctx.applied_scale < 1.0:
+                            _EXECUTION_AUDIT.record(
+                                "submit_scaled",
+                                intent_id=ctx.prequeued_intent_id,
+                                venue=self.provider_name,
+                                symbol=self.symbol,
+                                side=ctx.side_u.lower(),
+                                qty=ctx.qty,
+                                scale=ctx.applied_scale,
+                            )
+
             if _is_aborted(ctx.abort_if):
                 ctx.reason = "aborted_by_caller"
                 return None
             if callable(ctx.execution_enabled) and not bool(ctx.execution_enabled()):
                 raise SubmissionRefused("execution_disabled")
 
-            return self._dispatch_provider_order(ctx)
+            if ctx.prequeued_claim is not None:
+                if not ctx.caller_owns_retry:
+                    refreshed_claim = order_retry.begin_claimed_submit(
+                        ctx.prequeued_claim, qty=ctx.qty, applied_scale=ctx.applied_scale
+                    )
+                    if refreshed_claim is None:
+                        raise SubmissionRefused("producer_claim_lost")
+                    ctx.prequeued_claim = refreshed_claim
+                else:
+                    ctx.prequeued_claim = self._sync_claimed_qty(
+                        ctx.prequeued_claim, ctx.qty, ctx.applied_scale
+                    )
+            ctx.reason = "submit_ambiguous"
+            ctx.submit_attempted = True
+            provider_kwargs = {
+                **ctx.kwargs,
+                "market": ctx.is_market,
+                "force": ctx.is_market,
+                "_balance_verified": True,
+            }
+            if ctx.known_balance is not None:
+                provider_kwargs["known_balance"] = ctx.known_balance
+            if ctx.supports_biz_min:
+                provider_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
+            if ctx.cache_permit is not None:
+                provider_kwargs["permit_requested_price"] = ctx.permit_requested_price
+                provider_kwargs["cache_permit"] = ctx.cache_permit
+            if ctx.smart and ctx.defers_smart_cancel:
+                provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
+            response = self._provider.place_order(
+                self.symbol, ctx.side_u, ctx.price, ctx.qty, **provider_kwargs
+            )
+            if _accepted_order_payload(response):
+                ctx.order, ctx.reason = response, None
+            else:
+                ctx.order, ctx.reason = None, "response_without_order_id"
+            return ctx.order
         except SubmissionRefused as exc:
             ctx.reason = exc.reason
             ctx.submit_attempted = False

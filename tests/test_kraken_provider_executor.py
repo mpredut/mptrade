@@ -1499,7 +1499,7 @@ def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter1
     ksl.LOG_DIR = str(tmp_path / "shadow_logs")
     try:
         os.makedirs(ksl.LOG_DIR, exist_ok=True)
-        anchor_p = ksl._anchor_path("HYPEUSD", 240)
+        anchor_p = os.path.join(ksl.LOG_DIR, f"{ksl._safe_pair('HYPEUSD')}_240m.anchor")
         with open(anchor_p, "w", encoding="utf-8") as fh:
             fh.write("1700000000.0\n")
         assert ksl._get_anchor("HYPEUSD", 240, 1600000000) == 1700000000

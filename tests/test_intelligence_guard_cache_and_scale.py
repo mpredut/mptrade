@@ -1075,11 +1075,11 @@ class TestSisterArchitecturalDefects:
         trend_file.write_text(json.dumps(data), encoding="utf-8")
 
         # BTCUSDC has only null, duration is 0.0
-        dur_btc = order_guard._read_cached_trend_duration("BTCUSDC")
+        dur_btc = order_guard._resolve_trend_duration("BTCUSDC")
         assert dur_btc == 0.0
 
         # ARBUSD matches ARBUSDC and skips initial None to get 518293.69
-        dur_arb = order_guard._read_cached_trend_duration("ARBUSD")
+        dur_arb = order_guard._resolve_trend_duration("ARBUSD")
         assert abs(dur_arb - 518293.69) < 1e-2
 
     def test_sister9_order_retry_worker_syncs_late_scaled_qty_from_outcome_context(self, tmp_path, monkeypatch):
@@ -2095,8 +2095,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
             }),
             encoding="utf-8",
         )
-        assert order_guard._read_cached_trend_duration("TAOUSD") == pytest.approx(172800.0)
-        assert order_guard._read_cached_trend_direction("TAOUSD") == "up"
+        assert order_guard._resolve_trend_duration("TAOUSD") == pytest.approx(172800.0)
+        assert order_guard._resolve_trend_direction("TAOUSD") == "up"
 
         # cache_short_trend.json and cache_order.json for collect_pretrade_telemetry("TAO/USD")
         st_path = tmp_path / "cache_short_trend.json"

@@ -264,11 +264,7 @@ def check_geopolitical_order_guards(
             analyzer = GeopoliticalThreatAnalyzer(start_sync=False)
         except TypeError:
             analyzer = GeopoliticalThreatAnalyzer()
-        cached_geo = (
-            analyzer.read_assessment()
-            if callable(getattr(analyzer, "read_assessment", None))
-            else getattr(analyzer, "_cached_assessment", None)
-        )
+        cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)
             geo_ts = float(obj_attr(cached_geo, "ts", 0.0) or 0.0)

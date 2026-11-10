@@ -1068,6 +1068,8 @@ _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 
 def _scan_cached_long_trend(symbol: str, parser):
+    if not symbol or not isinstance(symbol, str):
+        return None
     try:
         p = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
         data = read_json_dict_cached(p, _JSON_RECOVERING_MEMO, max_entries=32)
@@ -1077,42 +1079,13 @@ def _scan_cached_long_trend(symbol: str, parser):
         return None
 
 
-def _resolve_long_trend_field(
-    symbol: str,
-    field: str,
-    parser: Callable[[Any], Any],
-    fallback_fn: Callable[[str], Any],
-    default: Any = None,
-) -> Any:
-    if not symbol or not isinstance(symbol, str):
-        return default
-    try:
-        import cacheManager as cm
-        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
-        if isinstance(trend_meta, dict) and field in trend_meta:
-            parsed = parser(trend_meta.get(field))
-            if parsed is not None:
-                return parsed
-    except Exception:
-        pass
-    res = fallback_fn(symbol)
-    return default if res is None else res
-
-
-def _read_cached_trend_duration(symbol: str) -> float:
-    return _scan_cached_long_trend(
-        symbol, lambda e: safe_pos_float(e.get("duration_seconds"), default=None)
-    ) or 0.0
-
-
 def _resolve_trend_duration(symbol: str) -> float:
     """Resolve trend duration in seconds from memory/cache files once."""
-    return _resolve_long_trend_field(
-        symbol,
-        "duration_seconds",
-        lambda v: safe_pos_float(v, default=None),
-        _read_cached_trend_duration,
-        default=0.0,
+    return (
+        _scan_cached_long_trend(
+            symbol, lambda e: safe_pos_float(e.get("duration_seconds"), default=None)
+        )
+        or 0.0
     )
 
 
@@ -1133,12 +1106,6 @@ def resolve_effective_trend_duration(
     return dur_sec
 
 
-def _read_cached_trend_direction(symbol: str) -> Optional[str]:
-    return _scan_cached_long_trend(
-        symbol, lambda e: normalize_trend_direction(e.get("direction"), default=None, preserve_bull_bear=True)
-    )
-
-
 def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
     """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
     if regime_context is not None:
@@ -1146,12 +1113,11 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
         norm_rt = normalize_trend_direction(rt, default=None, preserve_bull_bear=True)
         if norm_rt is not None:
             return norm_rt
-    return _resolve_long_trend_field(
+    return _scan_cached_long_trend(
         symbol,
-        "direction",
-        lambda v: normalize_trend_direction(v, default=None, preserve_bull_bear=True),
-        _read_cached_trend_direction,
-        default=None,
+        lambda e: normalize_trend_direction(
+            e.get("direction"), default=None, preserve_bull_bear=True
+        ),
     )
 
 

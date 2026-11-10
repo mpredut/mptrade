@@ -1671,8 +1671,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
                 fh,
             )
         with unittest.mock.patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
-            self.assertEqual(order_guard._read_cached_trend_duration("BTCUSDC"), 0.0)
-            self.assertIsNone(order_guard._read_cached_trend_direction("BTCUSDC"))
+            self.assertEqual(order_guard._resolve_trend_duration("BTCUSDC"), 0.0)
+            self.assertIsNone(order_guard._resolve_trend_direction("BTCUSDC"))
 
         # 2. order_guard._read_cached_price_history recovers from .previous when primary is corrupt and filters non-finite rows
         p24_path = os.path.join(self.tmp, "cache_24_price_BTCUSDC.json")

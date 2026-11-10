@@ -670,10 +670,6 @@ class CachedTopicAssessmentAgent:
 
         return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
 
-    def read_assessment(self) -> Optional[Any]:
-        """Read-only consumer entrypoint: return the disk-backed cached assessment with 0 LLM/network calls."""
-        return getattr(self, "_cached_assessment", None)
-
     def _load_from_disk(self) -> None:
         path = self._effective_state_file()
         if not path:

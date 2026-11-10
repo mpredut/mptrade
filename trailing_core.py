@@ -792,9 +792,6 @@ class TrailingAdapterBase:
                         st.pop("retry_counts", None)
         return result
 
-    def _format_order_target(self, asset, pair, qty) -> str:
-        return f"{qty} {asset}" if self._PREFER_ASSET_LABEL else f"{pair} {qty}"
-
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
         price_f = safe_float(price, 0.0)
         peak_f = safe_float(peak, price_f)
@@ -807,7 +804,7 @@ class TrailingAdapterBase:
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         price_f = safe_nonneg_float(price, 0.0)
         low_val, _ = extract_rebuy_anchors(rb, price_f)
-        target_desc = self._format_order_target(asset, pair, qty)
+        target_desc = f"{qty} {asset}" if self._PREFER_ASSET_LABEL else f"{pair} {qty}"
         self.log(
             f"  🟡 {self._LOG_TAG}[DRY] WOULD RE-BUY {target_desc} @ ~{price_f:.4f}  "
             f"(a pullback from the low {low_val:.4f})  [{self._ENABLED_ENV_VAR}=true for it to execute]"

@@ -1285,7 +1285,7 @@ def bind_notify(symbol_env_keys: tuple, default_symbol: str):
     return bound_notify
 
 
-def _dispatch_order_event_notification(
+def dispatch_order_event_notification(
     symbol: Any,
     side: Any,
     order_id: Any,
@@ -1349,23 +1349,3 @@ def _dispatch_order_event_notification(
         price=px_f if include_price else None,
     )
     return True
-
-
-def notify_order_placed(
-    symbol: Any, side: Any, order_id: Any, price: Any, quantity: Any, *, order_type: str = "LIMIT", **kwargs: Any
-) -> bool:
-    """Dispatch a passive order placement notification via notify_fn or notify_engine."""
-    return _dispatch_order_event_notification(
-        symbol, side, order_id, price, quantity,
-        default_verb="PLACED LIMIT", default_icon="📝", order_type=order_type, **kwargs,
-    )
-
-
-def notify_order_executed(
-    symbol: Any, side: Any, order_id: Any, price: Any, quantity: Any, *, order_type: str = "MARKET", **kwargs: Any
-) -> bool:
-    """Dispatch an order execution notification via notify_fn or notify_engine."""
-    return _dispatch_order_event_notification(
-        symbol, side, order_id, price, quantity,
-        default_verb="EXECUTED", default_icon="🎉", order_type=order_type, **kwargs,
-    )

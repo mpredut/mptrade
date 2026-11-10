@@ -155,10 +155,6 @@ def _safe_pair(pair: str) -> str:
     return cleaned or "UNKNOWN"
 
 
-def _anchor_path(pair: str, interval: int) -> str:
-    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.anchor")
-
-
 def _history_path(pair: str, interval: int) -> str:
     return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.ohlc.json")
 
@@ -166,7 +162,7 @@ def _history_path(pair: str, interval: int) -> str:
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
-    path = _anchor_path(pair, interval)
+    path = os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.anchor")
     vi = exact_pos_int(read_text_file(path, default="").strip(), default=None)
     if vi is not None:
         return vi
