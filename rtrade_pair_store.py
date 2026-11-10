@@ -61,27 +61,23 @@ class RTradePairStore:
     def _finite_positive(value, field):
         return require_pos_float(value, field, error_msg=f"invalid rtrade pair-store {field}")
 
-    @staticmethod
-    def _new_pair_record(symbol, pair_id: str, start_side: str, qty: float, now: float) -> dict:
-        return {
-            "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
-            "pair_id": pair_id,
-            "start_side": normalize_side(start_side),
-            "qty": qty,
-            "phase": "reserved",
-            "terminal": False,
-            "intents": {},
-            "state": None,
-            "created_ts": now,
-            "updated_ts": now,
-        }
-
     def _get_or_create_pair_record(self, pairs, pid_clean, symbol, start_side, qty, now):
         rec = pairs.get(pid_clean)
         if rec is None:
             if not symbol:
                 raise KeyError(f"unknown pair: {pid_clean}")
-            rec = pairs[pid_clean] = self._new_pair_record(symbol, pid_clean, start_side, qty, now)
+            rec = pairs[pid_clean] = {
+                "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
+                "pair_id": pid_clean,
+                "start_side": normalize_side(start_side),
+                "qty": qty,
+                "phase": "reserved",
+                "terminal": False,
+                "intents": {},
+                "state": None,
+                "created_ts": now,
+                "updated_ts": now,
+            }
         return rec
 
     @classmethod
@@ -235,22 +231,20 @@ class RTradePairStore:
     def mutate(self, fn):
         with self._lock_ctx():
             data = self._read()
-            result = fn(data["pairs"])
+            pairs = data["pairs"]
+            result = fn(pairs)
             if result is not False:
-                self._prune_terminal(data["pairs"])
+                terminal = sorted(
+                    (rec for rec in pairs.values() if isinstance(rec, dict) and rec.get("terminal")),
+                    key=lambda rec: float(rec.get("updated_ts") or 0.0),
+                    reverse=True,
+                )
+                keep = {rec.get("pair_id") for rec in terminal[:self.terminal_retention]}
+                for pair_id, rec in list(pairs.items()):
+                    if isinstance(rec, dict) and rec.get("terminal") and pair_id not in keep:
+                        del pairs[pair_id]
                 self._write(self._validate(data))
             return result
-
-    def _prune_terminal(self, pairs):
-        terminal = sorted(
-            (rec for rec in pairs.values() if isinstance(rec, dict) and rec.get("terminal")),
-            key=lambda rec: float(rec.get("updated_ts") or 0.0),
-            reverse=True,
-        )
-        keep = {rec.get("pair_id") for rec in terminal[:self.terminal_retention]}
-        for pair_id, rec in list(pairs.items()):
-            if isinstance(rec, dict) and rec.get("terminal") and pair_id not in keep:
-                del pairs[pair_id]
 
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")

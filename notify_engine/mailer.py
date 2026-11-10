@@ -51,7 +51,9 @@ def last_error_is_auth_failure() -> bool:
     return _LAST_ERROR_IS_AUTH
 
 
-def email_mirrored_topics() -> set[str]:
+def is_email_mirrored(topic: str | None) -> bool:
+    if not topic or not isinstance(topic, str) or not topic.strip():
+        return False
     if not os.environ.get("NTFY_TOPIC_ERROR"):
         load_env_stack()
     topics = {
@@ -61,13 +63,7 @@ def email_mirrored_topics() -> set[str]:
     topics.discard("")
     if not topics:
         topics.update({"ntfy-error-1978", "ntfy-server-1978"})
-    return topics
-
-
-def is_email_mirrored(topic: str | None) -> bool:
-    if not topic or not isinstance(topic, str) or not topic.strip():
-        return False
-    return _canonical_topic_key(topic) in email_mirrored_topics()
+    return _canonical_topic_key(topic) in topics
 
 
 def _config() -> dict | None:

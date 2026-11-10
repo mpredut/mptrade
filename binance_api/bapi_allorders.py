@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 # BINANCE
 from binance.exceptions import BinanceAPIException
@@ -31,19 +30,6 @@ from .bapi import (
     _normalize_side,
     _parse_bool_flag,
 )
-
-
-def _build_trade_order_record(order_id: Any, price: float, qty: float, timestamp_ms: int, side: str) -> dict[str, Any]:
-    return {
-        'orderId': order_id,
-        'price': price,
-        'quantity': qty,
-        'qty': qty,
-        'timestamp': timestamp_ms,
-        'time': timestamp_ms,
-        'side': side,
-        'isBuyer': side == 'BUY',
-    }
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -163,7 +149,16 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # into callers such as order_retry_worker.
     cache_order_manager = cm.get_cache_manager("BinanceOrder")
     return [
-        _build_trade_order_record(order.get("orderId"), px, qty, ts_ms, side)
+        {
+            'orderId': order.get("orderId"),
+            'price': px,
+            'quantity': qty,
+            'qty': qty,
+            'timestamp': ts_ms,
+            'time': ts_ms,
+            'side': side,
+            'isBuyer': side == 'BUY',
+        }
         for order, side, ts_ms, px, qty in filter_recent_cached_orders(
             cache_order_manager, order_type, symbol, max_age_seconds
         )

@@ -949,20 +949,6 @@ def cache_symbol_variants(
     return variants
 
 
-def _extract_live_prices_map(live_prices: object) -> dict[str, float]:
-    """Normalize a cache_current_price payload, prices_and_trends dict, or raw symbol->price map."""
-    if not isinstance(live_prices, dict) or not live_prices:
-        return {}
-    from botcore import extract_current_price_item
-
-    src = live_prices.get("items") if isinstance(live_prices.get("items"), dict) else live_prices
-    return {
-        raw_k.strip().upper(): float(px)
-        for raw_k, raw_v in (src.items() if isinstance(src, dict) else ())
-        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
-    }
-
-
 def compute_venue_nav_breakdown(
     *,
     positions: object = None,
@@ -981,11 +967,20 @@ def compute_venue_nav_breakdown(
     Deduplicates free base balance by ``(venue, asset_class, base_asset)``, locked base balance
     by ``(venue, symbol)``, and quote cash by ``(venue, quote_asset)``.
     """
-    from botcore import safe_nonneg_float, safe_pos_float
+    from botcore import extract_current_price_item, safe_nonneg_float, safe_pos_float
 
     excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
     scope_norm = str(scope or "all").strip().lower()
-    live_px_map = _extract_live_prices_map(live_prices)
+    live_src = (
+        live_prices.get("items")
+        if isinstance(live_prices, dict) and isinstance(live_prices.get("items"), dict)
+        else (live_prices if isinstance(live_prices, dict) else {})
+    )
+    live_px_map = {
+        raw_k.strip().upper(): float(px)
+        for raw_k, raw_v in live_src.items()
+        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
+    }
 
     pos_rows: list[dict] = []
     cash_items: list[tuple[str, object]] = []

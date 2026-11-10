@@ -1269,21 +1269,19 @@ class TradingBot:
         if callable(unblock):
             unblock(pid, False)
 
-    @staticmethod
-    def _default_recovered_state(record) -> dict:
-        created_ts = normalize_epoch_sec(record.get("created_ts"), default=None)
-        now_s = time.time()
-        return {
-            "pair_id": record["pair_id"], "qty": record["qty"], "start_side": record["start_side"],
-            "phase": "quoting", "reason": "recovered_by_client_order_id", "shock": False,
-            "elapsed_sec": max(0.0, now_s - (created_ts if created_ts is not None else now_s)),
-            "first_fill_elapsed_sec": None, "first_fill_side": None, "stop_order_id": None,
-            "limit_revisions": {"BUY": 0, "SELL": 0}, "hard_stop_revision": 0,
-            "hard_stop_reason": None, "tickets": [], "snapshots": {},
-        }
-
     def _adopt_pair_record(self, venue, pair_store, policy: PairPolicy, record, *, retry_label: str = ""):
-        state = record.get("state") or self._default_recovered_state(record)
+        state = record.get("state")
+        if not state:
+            created_ts = normalize_epoch_sec(record.get("created_ts"), default=None)
+            now_s = time.time()
+            state = {
+                "pair_id": record["pair_id"], "qty": record["qty"], "start_side": record["start_side"],
+                "phase": "quoting", "reason": "recovered_by_client_order_id", "shock": False,
+                "elapsed_sec": max(0.0, now_s - (created_ts if created_ts is not None else now_s)),
+                "first_fill_elapsed_sec": None, "first_fill_side": None, "stop_order_id": None,
+                "limit_revisions": {"BUY": 0, "SELL": 0}, "hard_stop_revision": 0,
+                "hard_stop_reason": None, "tickets": [], "snapshots": {},
+            }
         state = venue.merge_checkpoint_intents(record, state)
         intents = record.get("intents", {})
         all_exhausted = bool(intents) and all(

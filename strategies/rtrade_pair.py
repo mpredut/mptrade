@@ -605,16 +605,6 @@ class PairCoordinator:
             None,
         )
 
-    def _cancel_entry_remainder(self, exposure_side: str) -> bool:
-        entry_side = "BUY" if exposure_side == "LONG" else "SELL"
-        for ticket in self.tickets:
-            if ticket.side.upper() == entry_side and ticket.active:
-                _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                if cancel_reason is not None:
-                    self.reason = "entry_cancel_failed" if cancel_reason == "cancel_failed" else "entry_cancel_ambiguous"
-                    return False
-        return True
-
     def _ensure_anchored_exit(self, exposure_side: str, net_qty: float,
                               entry_avg: float, current: float) -> bool:
         exit_side = "SELL" if exposure_side == "LONG" else "BUY"
@@ -870,8 +860,13 @@ class PairCoordinator:
 
             exposure_side = "LONG" if net > 0 else "SOLD"
             self.phase = "exposed"
-            if not self._cancel_entry_remainder(exposure_side):
-                return self.outcome()
+            entry_side = "BUY" if exposure_side == "LONG" else "SELL"
+            for ticket in self.tickets:
+                if ticket.side.upper() == entry_side and ticket.active:
+                    _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+                    if cancel_reason is not None:
+                        self.reason = "entry_cancel_failed" if cancel_reason == "cancel_failed" else "entry_cancel_ambiguous"
+                        return self.outcome()
             self._refresh()
             bq, bc, _bf, sq, sc, _sf = self._totals()
             net = bq - sq

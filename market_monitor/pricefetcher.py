@@ -594,7 +594,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         super().__init__(sync_ts, initial_symbols, filename, append_mode=True,
                          api_client=api_client, read_only=read_only)
         self._load_symbol_metadata()
-        self._log_symbol_support()
+        print("[Pricefetcher] Checking symbol support:")
+        for symbol in self.original_symbols:
+            support = self.price_factory.check_symbol_support(symbol)
+            supported_platforms = [p for p, s in support.items() if s]
+            if supported_platforms:
+                print(f"  ✅ {symbol} -> {', '.join(supported_platforms)}")
+            else:
+                print(f"  ❌ {symbol} -> NO PLATFORM SUPPORT!")
     
     def _load_symbol_metadata(self):
         data = read_json_dict(self.filename, default=None, recover_previous=True)
@@ -660,16 +667,6 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         super()._reload_from_disk()
         with self.lock:
             self._load_symbol_metadata()
-    
-    def _log_symbol_support(self):
-        print("[Pricefetcher] Checking symbol support:")
-        for symbol in self.original_symbols:
-            support = self.price_factory.check_symbol_support(symbol)
-            supported_platforms = [p for p, s in support.items() if s]
-            if supported_platforms:
-                print(f"  ✅ {symbol} -> {', '.join(supported_platforms)}")
-            else:
-                print(f"  ❌ {symbol} -> NO PLATFORM SUPPORT!")
 
     def rebuild_fetchtimes(self):
         if not self.cache:

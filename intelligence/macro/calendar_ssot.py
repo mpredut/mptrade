@@ -104,19 +104,6 @@ _WEEKDAY_SESSION_WINDOWS_EET: Tuple[Tuple[int, int, str, str, bool, bool, str, s
 )
 
 
-def get_session_transition_checkpoints_eet() -> Tuple[Tuple[int, int, str], ...]:
-    """Load intraday session transition checkpoints from ``macro_intelligence.conf``."""
-    parsed: List[Tuple[int, int, str]] = []
-    for item in split_csv(_ssot._cfg_str("sessions", "checkpoints_eet")):
-        parts = item.split(":")
-        if len(parts) >= 3:
-            try:
-                parsed.append((int(parts[0]), int(parts[1]), parts[2].strip()))
-            except ValueError:
-                continue
-    return tuple(parsed)
-
-
 def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
     now_ts = normalize_epoch_sec(now_ts, default=now_ts, allow_zero=True) or now_ts
     if ZoneInfo is not None:
@@ -196,12 +183,21 @@ def did_cross_session_checkpoint(
     if last_f <= 0.0 or now_f <= last_f or (now_f - last_f) < cooldown_f:
         return None
 
+    checkpoints: List[Tuple[int, int, str]] = []
+    for item in split_csv(_ssot._cfg_str("sessions", "checkpoints_eet")):
+        parts = item.split(":")
+        if len(parts) >= 3:
+            try:
+                checkpoints.append((int(parts[0]), int(parts[1]), parts[2].strip()))
+            except ValueError:
+                continue
+
     dt_last, dt_now = _primary_eet_dt(last_f), _primary_eet_dt(now_f)
     candidate_days = [dt_last.date()] + ([dt_now.date()] if dt_now.date() != dt_last.date() else [])
     crossed_label: Optional[str] = None
     for day in candidate_days:
         is_weekend_day = day.weekday() >= 5
-        for hour, minute, label in get_session_transition_checkpoints_eet():
+        for hour, minute, label in checkpoints:
             if is_weekend_day and label not in ("EU_MORNING_BUY_OPEN", "EU_EVENING_POSITION_CLOSE"):
                 continue
             cp_ts = datetime(day.year, day.month, day.day, hour, minute, tzinfo=dt_now.tzinfo).timestamp()

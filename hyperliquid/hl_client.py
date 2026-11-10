@@ -232,22 +232,16 @@ class HLClient:
     def _coin_cand_cfs(cls, coin: str) -> set[str]:
         return {c.casefold() for c in cls._coin_candidates(coin)}
 
-    def _meta_for_coin(self, cand_coins: tuple[str, ...]) -> dict | None:
-        try:
-            meta_map = self._meta()
-            for cand in cand_coins:
-                meta = casefold_get(meta_map, cand)
-                if meta is not None:
-                    return meta
-        except Exception:  # noqa: BLE001
-            pass
-        return None
-
     def sz_decimals(self, coin: str) -> int:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             raise HLError(f"Missing size precision metadata for {coin}")
         cand_coins = self._coin_candidates(coin)
-        meta = self._meta_for_coin(cand_coins)
+        meta = None
+        try:
+            meta_map = self._meta()
+            meta = next((m for cand in cand_coins if (m := casefold_get(meta_map, cand)) is not None), None)
+        except Exception:  # noqa: BLE001
+            pass
         dec_i = _exact_int_in_range(meta.get("szDecimals") if isinstance(meta, dict) else None, 0, 18)
         if dec_i is not None:
             return dec_i
@@ -306,18 +300,6 @@ class HLClient:
             raise HLError(f"Invalid user_state payload: {type(st).__name__}")
         return st
 
-    def _find_position_dict(self, coin: str) -> dict | None:
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-            return None
-        cand_cfs = self._coin_cand_cfs(coin)
-        for ap in (self._user_state().get("assetPositions") or []):
-            if not isinstance(ap, dict):
-                continue
-            p = ap.get("position")
-            if isinstance(p, dict) and str(p.get("coin") or "").casefold() in cand_cfs:
-                return p
-        return None
-
     def position_strict(self, coin: str) -> tuple[float, float]:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
@@ -325,7 +307,17 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return 0.0, 0.0
         coin = coin.strip()
-        p = self._find_position_dict(coin)
+        cand_cfs = self._coin_cand_cfs(coin)
+        p = next(
+            (
+                pos
+                for ap in (self._user_state().get("assetPositions") or [])
+                if isinstance(ap, dict)
+                and isinstance(pos := ap.get("position"), dict)
+                and str(pos.get("coin") or "").casefold() in cand_cfs
+            ),
+            None,
+        )
         if p is not None:
             raw_szi = p.get("szi")
             raw_entry = p.get("entryPx")

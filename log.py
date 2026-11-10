@@ -262,17 +262,6 @@ class _DailyFileHandler(logging.Handler):
         self._current_folder = folder
         self._current_date = date_str
 
-    def _file_deleted(self) -> bool:
-        """Return True if the log file or its folder was removed externally."""
-        if self._stream is None:
-            return True
-        try:
-            fd_stat = os.fstat(self._stream.fileno())
-            disk_stat = os.stat(self._current_path)
-            return fd_stat.st_ino != disk_stat.st_ino or fd_stat.st_dev != disk_stat.st_dev
-        except OSError:
-            return True
-
     def emit(self, record: logging.LogRecord) -> None:
         try:
             with self._lock:
@@ -284,12 +273,15 @@ class _DailyFileHandler(logging.Handler):
                     suppress_default or self._app_name.lower() in {"__main__", "c", "app"}
                 ):
                     return
-                if (
-                    today != self._current_date
-                    or folder != self._current_folder
-                    or self._stream is None
-                    or self._file_deleted()
-                ):
+                reopen = today != self._current_date or folder != self._current_folder or self._stream is None
+                if not reopen:
+                    try:
+                        fd_stat = os.fstat(self._stream.fileno())
+                        disk_stat = os.stat(self._current_path)
+                        reopen = fd_stat.st_ino != disk_stat.st_ino or fd_stat.st_dev != disk_stat.st_dev
+                    except OSError:
+                        reopen = True
+                if reopen:
                     self._open_for_date(folder, today)
                 try:
                     self._stream.write(self.format(record) + "\n")

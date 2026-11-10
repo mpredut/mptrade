@@ -793,19 +793,6 @@ class Strategy(BaseSpotMixin):
                 return None if (q_f is None or avg_f is None) else (q_f, avg_f)
         return 0.0, 0.0
 
-    def _active_order_ids(self, orders: list[dict] | None = None) -> set | None:
-        if orders is None:
-            orders = self.client.list_active_orders()
-        if orders is None:
-            return None
-        active_ids: set[str] = set()
-        for o in orders:
-            if isinstance(o, dict) and _t212_tickers_match(self._active_order_identity(o)[0], self.ticker):
-                oid = extract_order_id(o)
-                if oid is not None:
-                    active_ids.add(oid)
-        return active_ids
-
     def _tracked_order_status(self, order: dict, cache: dict[str, object]):
         """Return strict order status, cached for one reconciliation pass."""
         key = str(order.get("id"))
@@ -910,9 +897,16 @@ class Strategy(BaseSpotMixin):
         active_orders = self.client.list_active_orders()
         pending_outcome = self._recover_pending_submit(real_qty, active_orders)
         pending_for_fill = dict(self.s.get("pending_submit") or {}) if pending_outcome == "filled" else None
-        active = self._active_order_ids(active_orders)
-        if active is None:
+        if active_orders is None:
             active = {str(o["id"]) for o in self.s["orders"]}
+        else:
+            active = {
+                oid
+                for o in active_orders
+                if isinstance(o, dict)
+                and _t212_tickers_match(self._active_order_identity(o)[0], self.ticker)
+                and (oid := extract_order_id(o)) is not None
+            }
 
         prev_qty = self.s["qty"]
         prev_avg = self._avg() or real_avg
