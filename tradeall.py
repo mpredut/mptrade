@@ -14,7 +14,7 @@ from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
 import order_lifecycle
 from providers.base import extract_order_id, normalize_side
-from cachepaths import split_symbol_assets
+from cachepaths import clean_symbol_key, split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 from state_io import append_text_line
 
@@ -173,7 +173,7 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 
 def _resolve_tradeall_symbol(symbol, allowed_set=TRADEALL_FIRE_SYMBOLS, *, preserve_raw=False):
     sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    sym_clean = clean_symbol_key(sym_u)
     if sym_u in allowed_set:
         return sym_u
     if sym_clean in allowed_set:
