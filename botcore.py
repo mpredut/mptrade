@@ -1744,9 +1744,6 @@ def register_module_aliases(module_name: str, *aliases: str) -> None:
 
 _MERGED_MODULE_TARGETS = {
     "hyperliquid.signals": "hyperliquid.signals",
-    "keys": "credentials",
-    "keys.apikeys": "credentials",
-    "config": "botcore",
     "symbols": "instrument_registry",
 }
 
@@ -1774,33 +1771,8 @@ class _MergedModuleAliasLoader:
             sys.modules[self.alias_name] = target_mod
             return
 
-        if self.alias_name == "keys":
-            is_reload = getattr(module, "_is_credentials_shim", False) and self.target_name in sys.modules
-            target_mod = (
-                importlib.reload(sys.modules[self.target_name])
-                if is_reload
-                else importlib.import_module(self.target_name)
-            )
-            keys_pkg = sys.modules.get("keys")
-            if keys_pkg is None or not getattr(keys_pkg, "_is_credentials_shim", False):
-                import types as _types
-
-                keys_pkg = module if getattr(module, "__name__", None) == "keys" else _types.ModuleType("keys")
-                keys_pkg.__path__ = []
-                keys_pkg._is_credentials_shim = True
-            if getattr(keys_pkg, "__spec__", None) is None:
-                keys_pkg.__spec__ = _MergedModuleAliasFinder.find_spec("keys")
-            keys_pkg.apikeys = target_mod
-            sys.modules["keys"] = keys_pkg
-            sys.modules["keys.apikeys"] = target_mod
-            return
-
         target_mod = importlib.import_module(self.target_name)
-        if self.alias_name == "keys.apikeys":
-            keys_pkg = sys.modules.get("keys")
-            if keys_pkg is not None:
-                keys_pkg.apikeys = target_mod
-        elif "." in self.alias_name:
+        if "." in self.alias_name:
             parent_name, child_attr = self.alias_name.rsplit(".", 1)
             parent_pkg = sys.modules.get(parent_name)
             if parent_pkg is not None:
@@ -1844,22 +1816,11 @@ class _MergedModuleAliasFinder:
                 return spec
         if target_name is None:
             return None
-        if fullname in ("keys", "keys.apikeys"):
-            existing_keys = sys.modules.get("keys")
-            if "keys" in sys.modules and existing_keys is None:
-                return None
-            if (
-                existing_keys is not None
-                and not hasattr(existing_keys, "__path__")
-                and not getattr(existing_keys, "_is_credentials_shim", False)
-            ):
-                return None
         import importlib.util
 
         return importlib.util.spec_from_loader(
             fullname,
             _MergedModuleAliasLoader(fullname, target_name),
-            is_package=(fullname == "keys"),
         )
 
 
@@ -1868,7 +1829,4 @@ if not any(
     for f in sys.meta_path
 ):
     sys.meta_path.append(_MergedModuleAliasFinder())
-
-
-register_module_aliases(__name__, "config")
 

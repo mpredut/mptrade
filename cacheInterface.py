@@ -57,7 +57,6 @@ from state_io import (
     prune_rotated_archives,
     read_json_dict,
     restore_previous_generation,
-    stage_previous_generation,
     truncate_file_bytes,
 )
 import utils as u
@@ -782,10 +781,6 @@ class CacheManagerInterface(ABC):
         """Serialize cache data/manifest publication and canonical recovery."""
         os.makedirs(os.path.dirname(os.path.abspath(self.filename)), exist_ok=True)
         return FileLock(generation_lock_path(self.filename))
-
-    def _stage_previous_generation(self):
-        """Keep the currently certified cache data until the new manifest commits."""
-        return stage_previous_generation(self.filename)
 
     def _restore_previous_generation(self, backup_path=None):
         """Atomically restore data matching the still-current manifest."""

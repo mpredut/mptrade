@@ -615,9 +615,6 @@ class PairCoordinator:
                     return False
         return True
 
-    def _has_active_tickets(self) -> bool:
-        return any(ticket.active for ticket in self.tickets)
-
     def _ensure_anchored_exit(self, exposure_side: str, net_qty: float,
                               entry_avg: float, current: float) -> bool:
         exit_side = "SELL" if exposure_side == "LONG" else "BUY"
@@ -797,7 +794,7 @@ class PairCoordinator:
         bq, bc, _bf, sq, sc, _sf = self._totals()
         net = bq - sq
         if abs(net) <= 1e-8:
-            if cancel_ambiguous or self._has_active_tickets():
+            if cancel_ambiguous or any(ticket.active for ticket in self.tickets):
                 self.phase, self.reason = "closing", "balanced_cancel_pending"
             else:
                 self.phase, self.reason = "complete", None
@@ -908,7 +905,7 @@ class PairCoordinator:
             bq, _bc, _bf, sq, _sc, _sf = self._totals()
             if bq > 0 or sq > 0:
                 return self.step(now=now)
-            if self._has_active_tickets():
+            if any(ticket.active for ticket in self.tickets):
                 self.reason = "quote_cancel_pending"
                 return self.outcome()
             self.phase, self.reason = "expired", "quote_ttl"

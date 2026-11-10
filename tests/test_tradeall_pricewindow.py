@@ -38,8 +38,7 @@ _IMPORT_MOCKS = dict([
     ("providers.market_api", _mock_market_api),
     ("alertnotifiers",  MagicMock()),
     ("log",             MagicMock()),
-    ("keys",            MagicMock()),
-    ("keys.apikeys",    MagicMock(**{"api_key_ws": "fake"})),
+    ("credentials",     MagicMock(**{"api_key_ws": "fake"})),
 ])
 _PRELOADED_IMPORTS = {
     name: sys.modules[name] for name in _IMPORT_MOCKS if name in sys.modules

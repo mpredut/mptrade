@@ -72,6 +72,7 @@ from state_io import (
     meta_file_path,
     read_json_dict,
     read_recovering_previous,
+    stage_previous_generation,
 )
 
 
@@ -188,9 +189,9 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         """Validate and stage the prior certified generation before overwriting active data."""
         if previous_metadata is not None:
             validate_recovering_fn(previous_metadata)
-            return self._stage_previous_generation(), True
+            return stage_previous_generation(self.filename), True
         if os.path.exists(self.filename):
-            return self._stage_previous_generation(), True
+            return stage_previous_generation(self.filename), True
         discard_generation_file(self._previous_generation_path())
         return None, False
 

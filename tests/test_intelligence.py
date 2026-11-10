@@ -3717,7 +3717,6 @@ def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
     import json
     import subprocess
     import botcore
-    import config as cfg_mod
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         reconcile_sibling_flow_and_liq_regimes,
@@ -5045,26 +5044,15 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
 
     # 1. _MergedModuleAliasFinder resolves merged Package E module aliases even after sys.modules.pop
-    for alias in (
-        "keys.apikeys",
-        "config",
-        "symbols",
-    ):
-        sys.modules.pop(alias, None)
-    cfg_mod = importlib.import_module("config")
-    assert hasattr(cfg_mod, "require_shadow_interval")
-    assert cfg_mod.__name__ == "botcore"
-
+    sys.modules.pop("symbols", None)
     sym_mod = importlib.import_module("symbols")
     assert hasattr(sym_mod, "load_registry")
     assert sym_mod.__name__ == "instrument_registry"
 
-    # 2. credentials reload refreshes keys.apikeys shim while preserving keys._is_credentials_shim
-    sys.modules.pop("keys.apikeys", None)
+    # 2. credentials reload refreshes module attributes cleanly
     import credentials
-    importlib.reload(credentials)
-    assert sys.modules.get("keys.apikeys") is credentials
-    assert getattr(sys.modules.get("keys"), "_is_credentials_shim", False) is True
+    reloaded_creds = importlib.reload(credentials)
+    assert reloaded_creds is credentials
 
     # 3. hyperliquid.signals reload updates hyperliquid.signals alias and get_signal honors monkeypatched signals.signal
     import hyperliquid.signals as hl_sig
@@ -5345,7 +5333,6 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
     import credentials
     import instrument_registry
     import symbols
-    import config
 
     # 1. symbols facade attributes (`forcesellsymbol`, `<base>symbol`), monkeypatch undo dynamic resolution,
     #    empty `symbols = []` override, and `_normalize_ordertype` extended tokens
@@ -5377,11 +5364,10 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
         assert symbols.forcesellsymbol == ["ETHUSDC"]
         assert symbols.ethsymbol == "ETHUSDC"
 
-    # 2. config.ROOT_DIR compatibility, botcore watcher preservation on reload, and importlib.reload(keys)
-    assert hasattr(config, "ROOT_DIR") and os.path.isdir(config.ROOT_DIR)
-    keys_mod = importlib.import_module("keys")
-    reloaded_keys = importlib.reload(keys_mod)
-    assert reloaded_keys.apikeys is sys.modules["credentials"]
+    # 2. botcore.ROOT_DIR compatibility, botcore watcher preservation on reload, and importlib.reload(credentials)
+    assert hasattr(botcore, "ROOT_DIR") and os.path.isdir(botcore.ROOT_DIR)
+    reloaded_creds = importlib.reload(credentials)
+    assert reloaded_creds is sys.modules["credentials"]
 
     # 3. inspect_prod_fleet merges non-Binance open_orders:* with Binance cache_order.json fallback
     from verify_tools import inspect_prod_fleet

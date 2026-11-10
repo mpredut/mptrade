@@ -19,7 +19,6 @@ BinanceAccountStream     (private user-data execution reports)
 import asyncio
 import json
 import logging
-import os
 import threading
 import time
 import websockets
@@ -37,17 +36,9 @@ from botcore import (
     safe_nonneg_int,
 )
 
-import sys
 import credentials as _credentials
 
-_existing_keys = sys.modules.get("keys")
-if _existing_keys is not None and "keys.apikeys" not in sys.modules and not getattr(_existing_keys, "_is_credentials_shim", False):
-    # Read-only and test imports must not require secrets. The private stream
-    # refuses to start below when the key is unavailable.
-    api_key_ws = os.environ.get("BINANCE_API_KEY_WS", "")
-else:
-    _ak_mod = sys.modules.get("keys.apikeys") or _credentials
-    api_key_ws = getattr(_ak_mod, "api_key_ws", _credentials.api_key_ws)
+api_key_ws = _credentials.api_key_ws
 
 logger = logging.getLogger("binance.ws")
 

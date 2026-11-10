@@ -326,14 +326,7 @@ class RuntimeImportSafetyTest(unittest.TestCase):
     def test_provider_layer_imports_without_binance_key_module(self):
         code = textwrap.dedent(
             """
-            import sys
-            import types
             import importlib
-
-            keys = types.ModuleType("keys")
-            keys.__path__ = []
-            sys.modules["keys"] = keys
-            sys.modules.pop("keys.apikeys", None)
 
             from providers.t212_provider import T212Provider
             from providers import market_api
@@ -397,8 +390,8 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         code = textwrap.dedent('''
             from unittest.mock import patch
             from binance_api import bapi_client
-            from keys import apikeys
-            assert apikeys.api_key_ws == "", "REST key must not substitute for the Ed25519 key"
+            import credentials
+            assert credentials.api_key_ws == "", "REST key must not substitute for the Ed25519 key"
             with patch.object(bapi_client, "Client") as client:
                 try:
                     bapi_client.getClient()
@@ -479,7 +472,7 @@ class RuntimeImportSafetyTest(unittest.TestCase):
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
         from unittest.mock import MagicMock, patch
         from binance_api import bapi_client
-        from keys import apikeys
+        import credentials
 
         init_kwargs = {}
         events = []
@@ -502,12 +495,74 @@ class RuntimeImportSafetyTest(unittest.TestCase):
             patch.object(bapi_client, "_client", None),
             patch.object(bapi_client, "Client", _FakeSdkClient),
             patch.object(bapi_client, "_start_periodic_resync"),
-            patch.object(apikeys, "api_key", "k"),
-            patch.object(apikeys, "api_secret", "s"),
+            patch.object(credentials, "api_key", "k"),
+            patch.object(credentials, "api_secret", "s"),
         ):
             cl = bapi_client.getClient()
 
         self.assertIs(init_kwargs.get("ping"), False)
         self.assertEqual(events, [("get_server_time", True)])
         self.assertEqual(cl.REQUEST_RECVWINDOW, bapi_client.REQUEST_RECVWINDOW_MS)
+
+
+def test_pyproject_python_version_and_active_packages_aligned():
+    import tomllib
+    import pytest
+    import order_guard
+    import monitortrades as mt
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["requires-python"] == ">=3.12"
+    assert pyproject["tool"]["black"]["target-version"] == ["py312"]
+    assert pyproject["tool"]["ruff"]["target-version"] == "py312"
+    assert pyproject["tool"]["mypy"]["python_version"] == "3.12"
+
+    include_patterns = set(pyproject["tool"]["setuptools"]["packages"]["find"]["include"])
+    assert "shmem*" not in include_patterns
+    expected_packages = {
+        "212trading*",
+        "binance_api*",
+        "discovery*",
+        "hyperliquid*",
+        "intelligence*",
+        "kraken*",
+        "lock*",
+        "market_monitor*",
+        "notify_engine*",
+        "orchestratorOS*",
+        "orchestratorTrade*",
+        "providers*",
+        "strategies*",
+        "verify_tools*",
+        "visuals*",
+    }
+    assert expected_packages <= include_patterns
+
+    base_margins = dict(order_guard._load_margins())
+    with pytest.raises(ValueError, match="dynamic window progression"):
+        order_guard._validate_margins_cfg(
+            {**base_margins, "dynamic_window_favorable_h": 48.0, "dynamic_window_flat_h": 24.0},
+            "order_guard.conf",
+        )
+    with pytest.raises(ValueError, match="parabolic bounds"):
+        order_guard._validate_margins_cfg(
+            {**base_margins, "parabolic_pullback_pct": 20.0, "parabolic_surge_pct": 15.0},
+            "order_guard.conf",
+        )
+    with pytest.raises(ValueError, match="taker ratio bounds"):
+        order_guard._validate_margins_cfg(
+            {**base_margins, "min_taker_ratio": 0.95, "taker_downscale_threshold": 0.85},
+            "order_guard.conf",
+        )
+    with pytest.raises(ValueError, match="orderbook imbalance bounds"):
+        order_guard._validate_margins_cfg(
+            {**base_margins, "min_buy_imbalance": 0.80, "max_sell_imbalance": 0.70},
+            "order_guard.conf",
+        )
+    with pytest.raises(ValueError, match="funding rate bounds"):
+        order_guard._validate_margins_cfg(
+            {**base_margins, "funding_min_short_rate": 0.0001, "funding_max_long_rate": 0.0005},
+            "order_guard.conf",
+        )
+
 

@@ -804,12 +804,14 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         self.assertEqual([first], manager.cache["BTCUSDC"])
 
     def test_restart_recovers_previous_generation_after_compaction_crash(self):
+        from state_io import stage_previous_generation
+
         first = _trade(1, 1000)
         writer = self._trade_manager([first], 1000)
         writer.save_state = True
         self.assertTrue(writer.save_state_to_file())
         old_version = writer._persisted_data_version
-        backup_path = writer._stage_previous_generation()
+        backup_path = stage_previous_generation(writer.filename)
 
         changed = {**first, "price": "200"}
         with cm.atomic_text_writer(writer.filename) as handle:

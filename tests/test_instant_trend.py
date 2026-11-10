@@ -1719,7 +1719,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         os.makedirs(stm.trend_dir, exist_ok=True)
         now = time.time()
 
-        # 1. _read_live_symbol_file recovers from .previous when live_<SYMBOL>.json is corrupt
+        # 1. _published_window recovers from .previous when live_<SYMBOL>.json is corrupt
         live_path = stm._live_trend_file("BTCUSDT")
         with open(live_path, "w", encoding="utf-8") as fh:
             fh.write("{corrupt")
@@ -1735,8 +1735,9 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
                 },
                 fh,
             )
-        recovered_live = stm._read_live_symbol_file("BTCUSDT")
-        self.assertIn("222", recovered_live)
+        recovered_live = stm._published_window("BTCUSDT", 222, now=now)
+        self.assertIsNotNone(recovered_live)
+        self.assertEqual(recovered_live["gradient_recent"], 0.4)
         self.assertFalse(os.path.exists(live_path + ".previous"))
 
         # 3. priceAnalysis.write_all_trends restores .previous if atomic_write_json fails

@@ -1044,9 +1044,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         except Exception as e:
             print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
 
-    def _read_live_symbol_file(self, symbol: str) -> dict:
-        return read_json_dict(self._live_trend_file(symbol), default={}, recover_previous=True)
-
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
         norm = self._normalize_dynamic_window_request(
@@ -1113,7 +1110,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         for cand in variants:
             if not isinstance(cand, str) or not cand:
                 continue
-            file_live = self._read_live_symbol_file(cand).get(w_key)
+            file_live = read_json_dict(self._live_trend_file(cand), default={}, recover_previous=True).get(w_key)
             if isinstance(file_live, dict):
                 fresh = _check_fresh(file_live)
                 if fresh is not None:

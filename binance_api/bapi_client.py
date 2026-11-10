@@ -1,5 +1,4 @@
 ####Binance
-import sys
 import time
 import threading
 
@@ -168,9 +167,8 @@ def getClient():
         return _client
     with _client_lock:
         if _client is None:
-            _ak_mod = sys.modules.get("keys.apikeys") or _credentials
-            api_key = getattr(_ak_mod, "api_key", _credentials.api_key)
-            api_secret = getattr(_ak_mod, "api_secret", _credentials.api_secret)
+            api_key = _credentials.api_key
+            api_secret = _credentials.api_secret
             if not api_key or not api_secret:
                 raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
             try:
