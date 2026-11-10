@@ -1427,6 +1427,28 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     assert rgnt_entry["major_swing_low_px"] == pytest.approx(1.15)
     assert rgnt_entry["rally_from_major_low_pct"] == pytest.approx(30.43, abs=0.02)
 
+    rgnt_breakdown = {
+        "price": 1.15,
+        "low_7d": 1.16,
+        "high_7d": 1.60,
+        "swing_low_px": 1.27,
+        "swing_high_px": 1.60,
+        "major_swing_low_px": 1.16,
+        "rally_from_swing_low_pct": 18.11,
+        "rally_from_major_low_pct": 29.31,
+        "recent_swings_7d": ["+37.9%", "-20.6%", "+18.1%"],
+    }
+    _apply_24h_series_enrichment(
+        "RGNT_US_EQ",
+        rgnt_breakdown,
+        {"low_24h": 1.15, "high_24h": 1.55},
+        [[1000, 1.50], [2000, 1.15]],
+        None,
+    )
+    assert rgnt_breakdown["swing_low_px"] == pytest.approx(1.15)
+    assert "major_swing_low_px" not in rgnt_breakdown
+    assert "rally_from_major_low_pct" not in rgnt_breakdown
+
 
 
 

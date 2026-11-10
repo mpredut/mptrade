@@ -1293,8 +1293,18 @@ def _apply_24h_series_enrichment(
                     entry["pullback_from_swing_high_pct"] = pct_delta(cur_e_px, sw_hi_n)
             if (maj_lo_e := safe_pos_float(entry.get("major_swing_low_px"), default=None)) is not None and maj_lo_e > 0.0:
                 maj_lo_en = round(min(maj_lo_e, cur_e_px, l24_e), eff_dec_7d)
-                entry["major_swing_low_px"] = maj_lo_en
-                entry["rally_from_major_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
+                eff_sw_lo_e = safe_pos_float(entry.get("swing_low_px"), default=None)
+                if eff_sw_lo_e is not None and maj_lo_en >= eff_sw_lo_e - 1e-9:
+                    entry.pop("major_swing_low_px", None)
+                    entry.pop("rally_from_major_low_pct", None)
+                elif eff_sw_lo_e is not None and abs(cur_e_px - eff_sw_lo_e) / max(cur_e_px, 1e-12) < 5e-4:
+                    entry["swing_low_px"] = maj_lo_en
+                    entry["rally_from_swing_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
+                    entry.pop("major_swing_low_px", None)
+                    entry.pop("rally_from_major_low_pct", None)
+                else:
+                    entry["major_swing_low_px"] = maj_lo_en
+                    entry["rally_from_major_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:
