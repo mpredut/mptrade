@@ -20,7 +20,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from market_monitor.pricechecker import start_price_alert_checker
+from market_monitor.pricechecker import PriceChecker
 from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
@@ -256,13 +256,13 @@ def main():
     time.sleep(5)
 
     print("⏳ Starting the price-threshold checker...")
-    price_checker = start_price_alert_checker(
+    price_checker = PriceChecker(
         cachePriceAll=cachePriceAll,
         alert_callback=lambda alert: AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL),
-        check_interval_seconds=cfg["price_scan_seconds"],
         config=ac,
         state_file=cache_path("cache_watcher_all_price.cooldowns.json"),
     )
+    price_checker.start_monitoring(cfg["price_scan_seconds"])
 
     new_coins_checker = None
     if not cfg["discover_new_coins"]:

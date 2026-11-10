@@ -2487,16 +2487,12 @@ def _venue_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
     )
 
 
-def _venue_order_and_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
-    return (
+CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
+CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
+    lambda: (
         (CacheOrderManager.disk_filename("binance"), "binance"),
         *_venue_trade_cache_contracts(),
     )
-
-
-CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
-CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
-    _venue_order_and_trade_cache_contracts
 )
 
 

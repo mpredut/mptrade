@@ -277,14 +277,6 @@ def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
     return False
 
 
-def _normalize_alert_title_for_identity(name: str) -> str:
-    """Strip volatile percentages, prices, and durations from guard/error titles."""
-    norm = re.sub(r"[+-]?\d+(?:\.\d+)?%", "<PCT>", name)
-    norm = re.sub(r"@\s*~?\$?\d+(?:\.\d+)?", "@ <PX>", norm)
-    norm = re.sub(r"\(\d+(?:\.\d+)?s\)", "(<DUR>)", norm)
-    return norm
-
-
 _REDUNDANT_BULK_LINE_RE = re.compile(
     r"^(?:Mode:\s*\S+\s*·\s*Status:\s*Simulated/Observed"
     r"|Action:\s*[^·]+·\s*Bias:\s*[^(]+\(([^)]+)\)"
@@ -694,7 +686,9 @@ def _alert_identity(alert: Any) -> dict:
         if _is_guard_alert([alert]) or _is_error_or_ops_alert([alert]):
             # For guard, error, ops, watchdog, and mailer alerts, dedup on stable
             # identity fields excluding volatile body timestamps/reasoning/log lines.
-            norm_name = _normalize_alert_title_for_identity(name)
+            norm_name = re.sub(r"[+-]?\d+(?:\.\d+)?%", "<PCT>", name)
+            norm_name = re.sub(r"@\s*~?\$?\d+(?:\.\d+)?", "@ <PX>", norm_name)
+            norm_name = re.sub(r"\(\d+(?:\.\d+)?s\)", "(<DUR>)", norm_name)
             identity = {
                 "type": alert.get("type"),
                 "symbol": alert.get("symbol"),

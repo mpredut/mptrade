@@ -58,14 +58,6 @@ REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 _CLIENT_ORDER_COUNTER = itertools.count()
 
 
-def _script_stem():
-    if not sys.argv:
-        return "python"
-    script = sys.argv[0] or "python"
-    stem, _ = os.path.splitext(os.path.basename(script))
-    return stem or "python"
-
-
 def _derive_process_name(stem):
     stem = "python" if (stem is None or isinstance(stem, bool)) else (str(stem) or "python")
     key = stem.lower()
@@ -96,7 +88,12 @@ def _base36(value):
     return "".join(reversed(chars))
 
 
-PROCESS_NAME = _sanitize_name(_derive_process_name(_script_stem()), default="PY")
+PROCESS_NAME = _sanitize_name(
+    _derive_process_name(
+        os.path.splitext(os.path.basename((sys.argv[0] if sys.argv else "") or "python"))[0] or "python"
+    ),
+    default="PY",
+)
 
 
 def get_process_name():

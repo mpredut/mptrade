@@ -89,13 +89,6 @@ def resolve_quantity(order_price: float,
 # ---------------------------------------------------------------------------
 # Duplicate-prevention marker
 # ---------------------------------------------------------------------------
-def _read_marker(path: str) -> dict | None:
-    try:
-        return load_json_state(path, default_factory=lambda: None, fail_closed=True, label="T212 marker")
-    except RuntimeError as exc:
-        raise RuntimeError(f"unreadable T212 marker {path}: {exc}") from exc
-
-
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
     profile = sanitize_identifier(os.environ.get("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
@@ -398,9 +391,9 @@ def place_order_with_retry(
     marker_path = _marker_path(ticker, test=not write_marker)
     now = time.time()
     try:
-        record = _read_marker(marker_path)
+        record = load_json_state(marker_path, default_factory=lambda: None, fail_closed=True, label="T212 marker")
     except RuntimeError as exc:
-        log(f"  ! [ORDER] {exc} — NOT sending without verifiable durable state")
+        log(f"  ! [ORDER] unreadable T212 marker {marker_path}: {exc} — NOT sending without verifiable durable state")
         return False
     if record:
         # Legacy accepted markers stay blocking rather than silently creating a

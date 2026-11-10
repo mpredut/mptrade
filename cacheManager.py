@@ -285,16 +285,6 @@ def get_short_trend_manager(
     return _short_trend_instance
 
 
-def get_active_current_price_manager() -> Optional[CacheCurrentPriceManager]:
-    """Return the active in-memory ``CacheCurrentPriceManager`` singleton without creating one."""
-    return _current_price_instance or CacheFactory._instances.get("CurrentPrice")
-
-
-def get_active_short_trend_manager() -> Optional[CacheShortTrendManager]:
-    """Return the active in-memory ``CacheShortTrendManager`` singleton without creating one."""
-    return _short_trend_instance
-
-
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
 TRADE_SYNC_INTERVAL_SEC = 3 * 60
 SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
@@ -798,8 +788,8 @@ CacheTrendManagerBase.bind_service_getters(
 )
 if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     MarketDataProvider.bind_ssot_cache_readers(
-        current_price_reader=get_active_current_price_manager,
-        short_trend_reader=get_active_short_trend_manager,
+        current_price_reader=lambda: _current_price_instance or CacheFactory._instances.get("CurrentPrice"),
+        short_trend_reader=lambda: _short_trend_instance,
     )
 
 

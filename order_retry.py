@@ -1284,12 +1284,6 @@ class OutboxStatusTransition:
             raise ValueError(f"invalid outbox status action: {self.action!r}")
 
 
-def _outbox_retryable_terminal(status: OrderStatus) -> bool:
-    """Preserve the current mechanical outbox terminal rule."""
-    native = str(status.venue_status or "").upper()
-    return native in {"REJECTED", "EXPIRED"} or status.status == "expired"
-
-
 def advance_claimed_status(claimed: dict, status: OrderStatus, now=None) -> OutboxStatusTransition:
     """Persist one accepted order-status transition without venue I/O."""
     if not isinstance(status, OrderStatus):
@@ -1317,7 +1311,7 @@ def advance_claimed_status(claimed: dict, status: OrderStatus, now=None) -> Outb
 
     current_qty = safe_pos_float(getattr(status, "orig_qty", None), default=None) or safe_nonneg_float(claimed.get("qty"), default=0.0)
     remaining_qty = max(0.0, current_qty - status.filled_qty)
-    if _outbox_retryable_terminal(status):
+    if str(status.venue_status or "").upper() in {"REJECTED", "EXPIRED"} or status.status == "expired":
         complete_claim(claimed, "retry_terminal", now, status=status)
         return OutboxStatusTransition("retry_terminal", status_changed=True, remaining_qty=remaining_qty)
 

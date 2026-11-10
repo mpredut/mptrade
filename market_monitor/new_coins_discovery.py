@@ -700,17 +700,6 @@ class NewCoinsMonitor:
             print(f"[NewCoinsMonitor] Cleaned up {len(removed)} old coins from the watchlist")
 
 # ============================================
-# Convenience functions
-# ============================================
-
-def create_new_coins_checker(price_monitor=None, enabled_sources=None, cmc_api_key=CMC_API_KEY):
-    factory = NewCoinsFactory(enabled_sources=enabled_sources, cmc_api_key=cmc_api_key)
-    monitor = NewCoinsMonitor(price_monitor, factory)
-    print("[NewCoins] ✅ New coin monitor initialized")
-    print(f"[NewCoins] 📡 Active sources: {factory.get_available_sources()}")
-    return monitor, factory
-
-# ============================================
 # Test
 # ============================================
 
@@ -718,7 +707,9 @@ if __name__ == "__main__":
     print("=" * 80)
     print("🆕 NEW COIN DISCOVERY MODULE TEST")
     print("=" * 80)
-    monitor, factory = create_new_coins_checker()
+    factory = NewCoinsFactory()
+    monitor = NewCoinsMonitor(None, factory)
+    print("[NewCoins] ✅ New coin monitor initialized")
     print(f"\n📡 Active sources: {factory.get_available_sources()}")
     print(monitor.get_report())
     summary = monitor.get_summary()

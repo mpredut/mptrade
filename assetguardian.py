@@ -560,14 +560,6 @@ def _effective_portfolio_growth_threshold(sell_mult=1.0):
     return PORTFOLIO_GROWTH_PERCENT * safe_pos_float(sell_mult, default=1.0)
 
 
-def _portfolio_sell_multiplier(portfolio_growth_pct=None, sell_mult=1.0):
-    """Return SELL threshold compression multiplier from 24h portfolio growth."""
-    pg = _finite_float(portfolio_growth_pct)
-    if pg is not None and pg >= _effective_portfolio_growth_threshold(sell_mult):
-        return 1.0 - PORTFOLIO_SELL_MAX_DISCOUNT
-    return 1.0
-
-
 def _trigger_threshold_for_sell_tier(
     canonical_threshold, sell_mult=1.0, portfolio_growth_pct=None, volatility_mult=1.0
 ):
@@ -586,7 +578,12 @@ def _trigger_threshold_for_sell_tier(
     static_thresholds = {float(t) for t, _ in SELL_TIERS}
     if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
         return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * sm)
-    pg_mult = _portfolio_sell_multiplier(portfolio_growth_pct, sm)
+    pg = _finite_float(portfolio_growth_pct)
+    pg_mult = (
+        1.0 - PORTFOLIO_SELL_MAX_DISCOUNT
+        if pg is not None and pg >= _effective_portfolio_growth_threshold(sm)
+        else 1.0
+    )
     return max(
         SELL_REARM_GROWTH_PERCENT + 2.0,
         thr * sm * float(pg_mult) * vm,
@@ -1172,19 +1169,21 @@ def _active_sell_orders(provider, symbol):
 _rtrade_sell_block_since: dict = {}
 
 
-def _is_rtrade_order(order):
-    if not isinstance(order, dict):
-        return False
-    cid = extract_client_order_id(order, default="") or ""
-    return cid.startswith(("RT_", "MO_RT_")) or resolve_order_owner(cid) == "rtrade"
-
-
 def _resolve_blocking_sell_orders(symbol, open_sells):
     """Allow short retry when blocked only by rtrade (RT_*), then preemptively cancel."""
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
         return []
-    non_rtrade = [o for o in open_sells if not _is_rtrade_order(o)]
+    non_rtrade = [
+        o for o in open_sells
+        if not (
+            isinstance(o, dict)
+            and (
+                (cid := (extract_client_order_id(o, default="") or "")).startswith(("RT_", "MO_RT_"))
+                or resolve_order_owner(cid) == "rtrade"
+            )
+        )
+    ]
     if non_rtrade:
         _rtrade_sell_block_since.pop(symbol, None)
         return open_sells

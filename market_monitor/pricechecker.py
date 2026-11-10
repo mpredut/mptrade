@@ -452,9 +452,3 @@ class PriceChecker:
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
         print("[Checker] Monitoring stopped")
-
-
-def start_price_alert_checker(cachePriceAll, alert_callback=None, check_interval_seconds=60, config=None, state_file: Optional[str] = None):
-    checker = PriceChecker(cachePriceAll, alert_callback=alert_callback, config=config, state_file=state_file)
-    checker.start_monitoring(check_interval_seconds)
-    return checker

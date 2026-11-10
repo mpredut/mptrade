@@ -52,11 +52,6 @@ _TERMINAL = frozenset({
 _STATUS_FIELDS = ("last_status", "status", "lifecycle", "submission_outcome", "submit_status")
 
 
-def _is_backup(path: str) -> bool:
-    name = os.path.basename(path)
-    return any(token in name for token in (".pre_", ".bak", ".backup", ".tmp"))
-
-
 def _first(row: dict, *names):
     for name in names:
         value = row.get(name)
@@ -155,11 +150,6 @@ def _read(path: str, *, json_lines: bool):
     if json_lines:
         return read_recovering_previous(path, lambda p: read_jsonl_records(p, strict=True))
     return read_json_file(path, recover_previous=True)
-
-
-def _path_context(path: str) -> dict:
-    name = os.path.basename(path)
-    return {"symbol": name[len(".state_"):-len(".json")]} if name.startswith(".state_") and name.endswith(".json") else {}
 
 
 def _extract_exposure(payload: dict, *, owner: str, source: str, inherited: dict) -> dict | None:
@@ -313,13 +303,18 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
                     if matched_paths:
                         break
         for path in matched_paths:
-            if _is_backup(path):
+            name = os.path.basename(path)
+            if any(token in name for token in (".pre_", ".bak", ".backup", ".tmp")):
                 continue
             relative = os.path.relpath(path, root).replace(os.sep, "/")
             files.append(relative)
             try:
                 payload = _read(path, json_lines=spec.json_lines)
-                inherited = _path_context(path)
+                inherited = (
+                    {"symbol": name[len(".state_"):-len(".json")]}
+                    if name.startswith(".state_") and name.endswith(".json")
+                    else {}
+                )
                 intents.extend(_walk(
                     payload, owner=spec.owner, source=relative,
                     inherited=inherited,
