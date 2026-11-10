@@ -544,16 +544,6 @@ class IncrementalTrendBuffer:
         tol = 1e-10 * max(1.0, abs(ref_last))
         return 0.0 if (val is None or abs(val) <= tol) else val
 
-    def _rebase(self) -> None:
-        if not self.prices:
-            self.clear()
-            return
-        saved_px = list(self.prices)
-        saved_ts = list(self.timestamps)
-        self.clear()
-        for px, ts in zip(saved_px, saved_ts):
-            self.append(px, ts)
-
     def trim_front(self, count: int) -> None:
         count_int = safe_pos_int(count, default=None)
         if count_int is None:
@@ -571,7 +561,11 @@ class IncrementalTrendBuffer:
         if not self.prices:
             self.clear()
         elif self.offset >= max(65536, 16 * len(self.prices)):
-            self._rebase()
+            saved_px = list(self.prices)
+            saved_ts = list(self.timestamps)
+            self.clear()
+            for px, ts in zip(saved_px, saved_ts):
+                self.append(px, ts)
 
     def sync_entries(self, entries) -> None:
         """Synchronize incrementally with an ordered list of [ts_ms, price] entries."""

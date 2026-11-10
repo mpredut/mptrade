@@ -15,7 +15,7 @@ import json
 import os
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 import weakref
 
 from botcore import (
@@ -377,24 +377,19 @@ class CacheManagerInterface(ABC):
                 self.query_remote_and_update_cache()
                 self.save_state_to_file_if_enabled()
 
-    def _preserve_rest_sync_cursor_before_update_locked(self, symbol):
-        """Anchor the REST cursor before a non-REST update advances fetchtime."""
-        if symbol in self._rest_sync_cursor_per_symbol:
-            return
-        if symbol in self.fetchtime_per_symbol:
-            prior_cursor = int(self.fetchtime_per_symbol[symbol] or 0)
-        else:
-            rebuilt = self._rebuild_fetchtimes()
-            prior_cursor = int(rebuilt.get(symbol, self.fallback_time_default) or 0)
-        self._rest_sync_cursor_per_symbol[symbol] = max(0, prior_cursor)
-
     def _advance_symbol_fetchtime_locked(
         self, symbol, now_ms: Optional[int] = None
     ) -> None:
         """Anchor REST cursor, advance ``fetchtime_per_symbol``, and mark account cache dirty."""
         if now_ms is None:
             now_ms = int(_now_time() * 1000)
-        self._preserve_rest_sync_cursor_before_update_locked(symbol)
+        if symbol not in self._rest_sync_cursor_per_symbol:
+            if symbol in self.fetchtime_per_symbol:
+                prior_cursor = int(self.fetchtime_per_symbol[symbol] or 0)
+            else:
+                rebuilt = self._rebuild_fetchtimes()
+                prior_cursor = int(rebuilt.get(symbol, self.fallback_time_default) or 0)
+            self._rest_sync_cursor_per_symbol[symbol] = max(0, prior_cursor)
         self.fetchtime_per_symbol[symbol] = max(
             int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
             int(now_ms),

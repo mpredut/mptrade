@@ -152,8 +152,8 @@ def cmd_scan(args) -> int:
 
 # ── verify ────────────────────────────────────────────────────────────────────
 
-def strip_docstrings(tree: ast.AST) -> ast.AST:
-    """Remove true docstrings, so only executable code remains for comparison."""
+def code_fingerprint(source: str) -> str:
+    tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, DOC_OWNERS) and getattr(node, "body", None):
             first = node.body[0]
@@ -163,11 +163,7 @@ def strip_docstrings(tree: ast.AST) -> ast.AST:
                 node.body.pop(0)
                 if not node.body:
                     node.body.append(ast.Pass())
-    return tree
-
-
-def code_fingerprint(source: str) -> str:
-    return ast.dump(strip_docstrings(ast.parse(source)), include_attributes=False)
+    return ast.dump(tree, include_attributes=False)
 
 
 def line_ending_style(source: str) -> str:

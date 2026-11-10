@@ -642,20 +642,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             now_ts=now,
         )
 
-    @staticmethod
-    def _post_hyperliquid_info(
-        payload: Dict[str, Any],
-        *,
-        timeout: float = 4.0,
-        user_agent: str = "mptrade-intelligence/1.0",
-    ) -> Any:
-        return fetch_json_post(
-            "https://api.hyperliquid.xyz/info",
-            payload,
-            timeout=timeout,
-            headers={"User-Agent": user_agent},
-        )
-
     @classmethod
     def _fetch_json_dict(
         cls,
@@ -678,8 +664,11 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         q_params[int_k] = int(q_params[int_k])
                     except (TypeError, ValueError):
                         pass
-            raw_data = cls._post_hyperliquid_info(
-                q_params, timeout=timeout, user_agent=user_agent
+            raw_data = fetch_json_post(
+                "https://api.hyperliquid.xyz/info",
+                q_params,
+                timeout=timeout,
+                headers={"User-Agent": user_agent},
             )
         else:
             raw_data = fetch_fn(url, timeout=timeout, user_agent=user_agent)

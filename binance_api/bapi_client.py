@@ -31,20 +31,6 @@ _resync_lock = threading.Lock()
 _client_lock = threading.Lock()
 
 
-def _install_retry(cl):
-    """Retry transient DNS/connection/5xx/429 failures on idempotent methods only.
-
-    Never retry POST order placement: if the request succeeds but its response is lost,
-    retrying could duplicate a real-money order. urllib3's idempotent-method default
-    (kept by the shared helper) excludes POST. Together with the timeout, a transient
-    fault fails quickly and GET requests retry internally instead of hanging.
-    """
-    if not mount_connect_retry(cl.session, attempts=3, backoff=1.0, read=3,
-                               status_forcelist=[429, 500, 502, 503, 504],
-                               raise_on_status=True):
-        print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
-
-
 def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     """Synchronize ``client.timestamp_offset`` with Binance server time.
 
@@ -181,7 +167,11 @@ def getClient():
             except TypeError:
                 cl = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
             cl.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
-            _install_retry(cl)             # Retry transient GET failures, never POST/order placement.
+            # Retry transient DNS/connection/5xx/429 failures on idempotent methods only (never POST/order placement).
+            if not mount_connect_retry(cl.session, attempts=3, backoff=1.0, read=3,
+                                       status_forcelist=[429, 500, 502, 503, 504],
+                                       raise_on_status=True):
+                print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
             _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.
             _client = cl
             sync_time()                    # Initial server-time alignment.

@@ -1559,8 +1559,6 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             restarted_trade, "_is_canonical_account_cache", return_value=True
         ), patch.object(
             cm.time, "time", return_value=(t0 + 5000) / 1000.0
-        ), patch.object(
-            health.time, "time", return_value=(t0 + 5000) / 1000.0
         ):
             health.enable_writer(path=health_path, now_ms=t0 + 5000)
             try:

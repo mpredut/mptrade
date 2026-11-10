@@ -68,20 +68,6 @@ def connect():
     return c
 
 
-def check_errors(c, log_path):
-    """Return error lines found within the last 30 log lines."""
-    if not log_path:
-        return []
-    out = run(c, f"tail -30 {ROOT}/{log_path} 2>/dev/null")
-    if not out or out == "(timeout)":
-        return []
-    errors = []
-    for line in out.splitlines():
-        if any(kw in line for kw in ERROR_KEYWORDS):
-            errors.append(line.strip())
-    return errors[-5:]  # At most five relevant lines.
-
-
 def load_procs(c):
     """Read procs.conf from the server and derive the log to scan for each process.
 
@@ -169,7 +155,12 @@ def main():
     for p in procs:
         alive = run(c, f"pgrep -f {shlex.quote(p.pat)} > /dev/null 2>&1 && echo YES || echo NO")
         is_alive = alive.strip() == "YES"
-        errors = check_errors(c, p.log)
+        tail_out = run(c, f"tail -30 {ROOT}/{p.log} 2>/dev/null") if p.log else ""
+        errors = (
+            [line.strip() for line in tail_out.splitlines() if any(kw in line for kw in ERROR_KEYWORDS)][-5:]
+            if tail_out and tail_out != "(timeout)"
+            else []
+        )
 
         if not is_alive:
             dead.append((p.label, p.role))

@@ -516,20 +516,6 @@ class BaseSpotMixin:
         except OSError:
             pass
 
-    def _reload_if_externally_modified(self) -> None:
-        if (
-            getattr(self, "replay_mode", False)
-            or getattr(self, "_state_write_failed", False)
-            or not isinstance(getattr(self, "state_file", None), str)
-        ):
-            return
-        try:
-            if os.path.exists(self.state_file):
-                if float(os.path.getmtime(self.state_file)) > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
-                    self.s = self._load()
-        except OSError:
-            pass
-
     def _load(self) -> dict:
         loaded = self._sanitize_state_dict(self._store().load())
         self._record_state_file_mtime()
@@ -1200,8 +1186,17 @@ class BaseSpotMixin:
                     if not self._recover_state_write_or_skip():
                         _delay()
                         continue
-                    if reload_external:
-                        self._reload_if_externally_modified()
+                    if (
+                        reload_external
+                        and not getattr(self, "replay_mode", False)
+                        and not getattr(self, "_state_write_failed", False)
+                        and isinstance(getattr(self, "state_file", None), str)
+                    ):
+                        try:
+                            if os.path.exists(self.state_file) and float(os.path.getmtime(self.state_file)) > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
+                                self.s = self._load()
+                        except OSError:
+                            pass
                     if self.reconcile(price) is False:
                         _delay()
                         continue

@@ -20,7 +20,6 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
-import sys
 from typing import Optional
 import uuid
 
@@ -1814,9 +1813,6 @@ class CacheOrderManager(CacheAccountManagerBase):
         )
 
     def _load_snapshot_state(self):
-        self._load_order_state()
-
-    def _load_order_state(self):
         """Load Order cache state strictly when durable data or metadata exists."""
         with self._generation_lock():
             loaded = self._load_order_state_generation_locked()

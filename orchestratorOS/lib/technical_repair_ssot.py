@@ -60,18 +60,6 @@ def _resolve_repair_json_reader(read_json_fn: Any = None) -> Any:
     )
 
 
-def _resolve_repair_save_json_state(save_json_fn: Any = None) -> Any:
-    if callable(save_json_fn) and save_json_fn is not _default_save_json_state:
-        return save_json_fn
-    return resolve_patched_attr(
-        "save_json_state",
-        save_json_fn if callable(save_json_fn) else save_json_state,
-        local_val=save_json_state,
-        defaults=(_default_save_json_state,),
-        modules=("orchestratorOS.supervisor.autonomous_ai_reconciler",),
-        require_callable=True,
-    )
-
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
 # ---------------------------------------------------------------------------
@@ -147,20 +135,6 @@ SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
 # 2. `procs.conf` Manifest & Process Target Resolution SSOT
 # ---------------------------------------------------------------------------
 
-def _extract_script_tokens(pattern: str, cmd: str) -> Set[str]:
-    """Extract normalized script paths, basenames, and stems from a procs.conf pattern and start_cmd."""
-    tokens: Set[str] = set()
-    if clean_pat := pattern.rstrip("$").strip():
-        pat_first = clean_pat.split()[0]
-        base = os.path.basename(pat_first)
-        tokens.update({clean_pat.lower(), pat_first.lower(), base.lower(), *( [base[:-3].lower()] if base.endswith(".py") else [] )})
-    for tok in (cmd or "").split():
-        if (cleaned := tok.strip("\"'&;")).endswith(".py"):
-            b_tok = os.path.basename(cleaned)
-            tokens.update({cleaned.lower(), b_tok.lower(), b_tok[:-3].lower()})
-    return {t for t in tokens if t}
-
-
 def resolve_heartbeat_paths(
     workspace_dir: str,
     proc_dir: str,
@@ -228,7 +202,16 @@ def parse_procs_manifest(
                 workspace_dir, resolved_dir, name, pat, resolved_hblog, hb_stale_s,
                 include_stdout_with_heartbeat_file=include_stdout_with_heartbeat_file,
             )
-            aliases = _extract_script_tokens(pat, resolved_cmd) | {name.lower(), *([name[:-3].lower()] if name.lower().endswith(".py") else [])}
+            tokens: Set[str] = {name.lower(), *([name[:-3].lower()] if name.lower().endswith(".py") else [])}
+            if clean_pat := pat.rstrip("$").strip():
+                pat_first = clean_pat.split()[0]
+                base = os.path.basename(pat_first)
+                tokens.update({clean_pat.lower(), pat_first.lower(), base.lower(), *([base[:-3].lower()] if base.endswith(".py") else [])})
+            for tok in (resolved_cmd or "").split():
+                if (cleaned := tok.strip("\"'&;")).endswith(".py"):
+                    b_tok = os.path.basename(cleaned)
+                    tokens.update({cleaned.lower(), b_tok.lower(), b_tok[:-3].lower()})
+            aliases = {t for t in tokens if t}
             procs.append({
                 "name": name, "pattern": pat, "clean_pattern": pat.rstrip("$"),
                 "dir": resolved_dir, "cmd": resolved_cmd, "hb_log": resolved_hblog,
@@ -1403,7 +1386,14 @@ def persist_supervisor_audit_artifact(
     """Persist full SupervisorAuditReport dict and heartbeat JSON to disk in cachedb/."""
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        _save_json = _resolve_repair_save_json_state()
+        _save_json = resolve_patched_attr(
+            "save_json_state",
+            save_json_state,
+            local_val=save_json_state,
+            defaults=(_default_save_json_state,),
+            modules=("orchestratorOS.supervisor.autonomous_ai_reconciler",),
+            require_callable=True,
+        )
         _save_json(state_file, clean_json_value(report_dict), indent=2)
         hb = build_heartbeat_payload(
             {"ts": report_dict.get("ts")},

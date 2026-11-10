@@ -192,7 +192,7 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
         self.assertEqual(order_only.reason, "account_cache_initializing")
 
         with patch.object(
-                health, "_now_ms", return_value=self.NOW_MS + 2_500):
+                health, "resolve_now_ms", side_effect=lambda v=None: (self.NOW_MS + 2_500) if v is None else v):
             self.assertTrue(health.record_successful_sync(
                 "BinanceTrade", "trade-v2", now_ms=self.NOW_MS + 2_000
             ))
@@ -342,12 +342,12 @@ if __name__ == "__main__":
 
 
 def test_binance_cache_health__clean_now_ms_ignores_bool_nan_iter38_s3():
-    """[ITER38 #3] binance_cache_health._clean_now_ms ignores bool/NaN."""
+    """[ITER38 #3] binance_cache_health.resolve_now_ms ignores bool/NaN."""
     import binance_cache_health as bch
-    # 3. binance_cache_health._clean_now_ms ignores bool/NaN
-    ts_clean = bch._clean_now_ms(True)
+    # 3. binance_cache_health.resolve_now_ms ignores bool/NaN
+    ts_clean = bch.resolve_now_ms(True)
     assert ts_clean > 1_000_000_000_000
-    assert bch._clean_now_ms(float("nan")) > 1_000_000_000_000
+    assert bch.resolve_now_ms(float("nan")) > 1_000_000_000_000
 
 def test_binance_cache_health_accountcachenotready_record_successful_sync_record_persisted_version_iter107_s1():
     """[ITER107 #1] binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version."""

@@ -51,19 +51,16 @@ _FILENAME_CACHE_MAX = 512
 _filename_cache: dict[str, tuple[str, str]] = {}
 
 
-def _resolve_filename(raw: str) -> tuple[str, str]:
-    entry = _filename_cache.get(raw)
-    if entry is None:
-        entry = (os.path.normpath(os.path.abspath(raw)), os.path.basename(raw))
-        lru_dict_put(_filename_cache, raw, entry, _FILENAME_CACHE_MAX)
-    return entry
-
-
 def _get_caller_info() -> str:
     try:
         frame = sys._getframe(0)
         while frame is not None:
-            norm, base = _resolve_filename(frame.f_code.co_filename)
+            raw = frame.f_code.co_filename
+            entry = _filename_cache.get(raw)
+            if entry is None:
+                entry = (os.path.normpath(os.path.abspath(raw)), os.path.basename(raw))
+                lru_dict_put(_filename_cache, raw, entry, _FILENAME_CACHE_MAX)
+            norm, base = entry
             if norm != _THIS_FILE:
                 return f"[{base}:{frame.f_lineno}]"
             frame = frame.f_back
@@ -179,15 +176,7 @@ def _cleanup_loop() -> None:
 
 _cleanup_thread = threading.Thread(target=_cleanup_loop, name="logger-cleanup", daemon=True)
 _cleanup_thread.start()
-
-
-def _stop_cleanup_thread() -> None:
-    _cleanup_stop.set()
-    _cleanup_event.set()
-    _cleanup_thread.join(timeout=5.0)
-
-
-atexit.register(_stop_cleanup_thread)
+atexit.register(lambda: (_cleanup_stop.set(), _cleanup_event.set(), _cleanup_thread.join(timeout=5.0)))
 
 
 # ── Write counter & application name ──────────────────────────────────────────
@@ -208,15 +197,11 @@ def _bump_counter() -> bool:
     return False
 
 
-def _resolve_app_name() -> str:
-    entry = sys.argv[0] if sys.argv and sys.argv[0] else __file__
-    return os.path.splitext(os.path.basename(entry))[0].lstrip("-") or "app"
-
-
 # ── File handler setup ────────────────────────────────────────────────────────
 
 os.makedirs(_log_folder, exist_ok=True)
-_app_name = _resolve_app_name()
+_entry_script = sys.argv[0] if sys.argv and sys.argv[0] else __file__
+_app_name = os.path.splitext(os.path.basename(_entry_script))[0].lstrip("-") or "app"
 _file_logger = logging.getLogger(f"app_file_logger.{_app_name}")
 _file_logger.setLevel(logging.DEBUG)
 _file_logger.propagate = False

@@ -183,7 +183,16 @@ def main() -> int:
     if args.find_ticker:
         return _cmd_find_ticker(client, args.find_ticker)
     if args.test_notify:
-        return _cmd_test_notify(args.test_notify, label, args.desktop)
+        ts = now_str()
+        if args.test_notify in ("market", "all"):
+            notify(title=f"[TEST] {label} started trading!",
+                   body=f"{label} IS TRADING.\nLast price: 99.99 USD\n{ts}",
+                   source="market", price=99.99, desktop=args.desktop)
+        if args.test_notify in ("trade", "all"):
+            notify(title=f"[TEST] Order {label} placed on T212!",
+                   body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=args.desktop)
+        log("[TEST] Done.")
+        return 0
     if args.test_order:
         return _cmd_test_order(client, args.test_order, order_price, order_qty,
                                order_budget_ron, order_validity, order_dry, args.desktop)
@@ -219,7 +228,17 @@ def main() -> int:
     #     with real volume. NVDA passes immediately; SPCX waits for its actual launch.
     #     --skip-wait provides an emergency bypass.
     if not args.skip_wait:
-        if not _wait_for_launch(args, yahoo_symbol, label, interval):
+        try:
+            launched = wait_for_launch(
+                yahoo_symbol,
+                label,
+                interval,
+                market_hours_only=bool(getattr(args, "market_hours_only", False)),
+            )
+        except KeyboardInterrupt:
+            log("Stopped manually.")
+            launched = False
+        if not launched:
             return 130  # interrupted
 
     # --- FINAL post-launch verification catches ticker reuse before trading ---
@@ -236,20 +255,6 @@ def main() -> int:
     except KeyboardInterrupt:
         log("Stopped manually.")
         return 130
-
-
-def _wait_for_launch(args, yahoo_symbol, label, interval) -> bool:
-    """Wait until the symbol is actually trading; return False if interrupted."""
-    try:
-        return wait_for_launch(
-            yahoo_symbol,
-            label,
-            interval,
-            market_hours_only=bool(getattr(args, "market_hours_only", False)),
-        )
-    except KeyboardInterrupt:
-        log("Stopped manually.")
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -277,19 +282,6 @@ def _cmd_find_ticker(client: T212Client, query: str) -> int:
             f"currency={h.get('currencyCode')}  isin={h.get('isin')}")
     if not hits:
         log(f"  No result for '{query}'")
-    return 0
-
-
-def _cmd_test_notify(what: str, label: str, desktop: bool) -> int:
-    ts = now_str()
-    if what in ("market", "all"):
-        notify(title=f"[TEST] {label} started trading!",
-               body=f"{label} IS TRADING.\nLast price: 99.99 USD\n{ts}",
-               source="market", price=99.99, desktop=desktop)
-    if what in ("trade", "all"):
-        notify(title=f"[TEST] Order {label} placed on T212!",
-               body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=desktop)
-    log("[TEST] Done.")
     return 0
 
 

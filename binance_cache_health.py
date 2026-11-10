@@ -12,7 +12,6 @@ import json
 import os
 import sys
 import threading
-import time
 from typing import Callable, Optional
 
 from botcore import (
@@ -26,7 +25,6 @@ from botcore import (
     resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
 )
 from cachepaths import resolve_cachedb_filepath
 from state_io import atomic_write_json, read_json_dict, read_text_file, read_text_lines
@@ -84,10 +82,6 @@ _writer_path = HEALTH_PATH
 _writer_state: dict = {}
 
 
-def _now_ms() -> int:
-    return resolve_now_ms()
-
-
 def _proc_stat_fields(stat: str) -> Optional[list[str]]:
     """Return fields after the command name in `/proc/<pid>/stat`, or None if malformed."""
     rparen = stat.rfind(")") if stat else -1
@@ -116,14 +110,10 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         return None
 
 
-def _clean_now_ms(now_ms: Optional[int]) -> int:
-    return resolve_now_ms(now_ms)
-
-
 def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:
     """Enable the sole cacheManager writer and invalidate the old generation."""
     global _writer_enabled, _writer_path, _writer_state
-    timestamp = _clean_now_ms(now_ms)
+    timestamp = resolve_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
         writer_pid = exact_pos_int(pid, default=None) or os.getpid()
@@ -156,7 +146,7 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
         try:
             if _writer_enabled and _writer_state:
                 _writer_state["stopping"] = True
-                _writer_state["published_at_ms"] = _clean_now_ms(now_ms)
+                _writer_state["published_at_ms"] = resolve_now_ms(now_ms)
                 _writer_state["generation"] += 1
                 _publish_locked()
                 published = True
@@ -192,7 +182,7 @@ def _record_cache_version(
     if fields is None:
         return False
     sync_field, version_field = fields
-    timestamp = _clean_now_ms(now_ms)
+    timestamp = resolve_now_ms(now_ms)
     with _writer_lock:
         if not _writer_enabled:
             return False
@@ -200,7 +190,7 @@ def _record_cache_version(
             _writer_state[sync_field] = timestamp
             # Publication time describes this atomic write, while the conservative
             # synchronization timestamp remains the first request start of the cycle.
-            _writer_state["published_at_ms"] = _now_ms()
+            _writer_state["published_at_ms"] = resolve_now_ms()
         else:
             _writer_state["published_at_ms"] = timestamp
         _writer_state[version_field] = version
@@ -284,7 +274,7 @@ def inspect_health(
     if initializing:
         return CacheHealthStatus(False, "account_cache_initializing")
 
-    current_ms = _clean_now_ms(now_ms)
+    current_ms = resolve_now_ms(now_ms)
     max_age_val = safe_pos_float(max_age_sec, default=MAX_AGE_SEC)
     future_tolerance_ms = int(safe_nonneg_float(future_tolerance_sec, default=5.0) * 1000)
 
