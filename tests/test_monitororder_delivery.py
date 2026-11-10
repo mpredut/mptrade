@@ -341,6 +341,46 @@ class TestMonitororderNotifications(unittest.TestCase):
         self.assertEqual(len(placed), 1)
         self.assertAlmostEqual(placed[0][2], 217.90 * 1.001, places=6)
 
+    def test_cumulative_initial_max_proc_allows_sequential_step_up_to_one_percent(self):
+        # Initial anchor was 100.0; order was already stepped once to 99.60.
+        # Current price is 99.10 (0.50% from 99.60 <= MAX_PROC=0.77%, and 0.90% from
+        # initial 100.0 <= INITIAL_MAX_PROC=1.00%) -> allowed!
+        monitororder.initial_sell_prices[8001] = 100.0
+        sell_orders = {
+            8001: {
+                "price": 99.60,
+                "quantity": 1.0,
+                "remainingQty": 1.0,
+                "clientOrderId": "TA_OR_seq_0",
+            }
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=99.10), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
+             patch.object(monitororder.mkt, "place", return_value={"orderId": 8002}) as mock_place, \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+            mock_place.assert_called_once()
+
+        # Next step: current price drops to 98.80 (1.20% from initial 100.0 > INITIAL_MAX_PROC=1.00%) -> blocked!
+        sell_orders_next = {
+            8002: {
+                "price": 99.20,
+                "quantity": 1.0,
+                "remainingQty": 1.0,
+                "clientOrderId": "MO_TA_OR_seq_1",
+            }
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders_next), \
+             patch.object(monitororder.api, "get_current_price", return_value=98.80), \
+             patch.object(monitororder.mkt, "place") as mock_place_blocked, \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+            mock_place_blocked.assert_not_called()
+
 
 class TestMonitororderTTLResolution:
     def test_module_default_ttl(self):

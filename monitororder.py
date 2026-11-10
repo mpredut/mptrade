@@ -41,10 +41,20 @@ from botcore import (
 
 load_dotenv()
 
+MIN_PROC = required_float_env("MONITOR_MIN_PROC")
 MAX_PROC = required_float_env("MONITOR_MAX_PROC")
-REPRICE_OFFSET = required_float_env("MONITOR_REPRICE_OFFSET")
-if safe_pos_float(REPRICE_OFFSET, default=None) is None or REPRICE_OFFSET >= 1.0:
-    raise ValueError(f"Invalid MONITOR_REPRICE_OFFSET={REPRICE_OFFSET!r}")
+INITIAL_MAX_PROC = required_float_env("MONITOR_INITIAL_MAX_PROC")
+if (
+    safe_pos_float(MIN_PROC, default=None) is None
+    or safe_pos_float(MAX_PROC, default=None) is None
+    or safe_pos_float(INITIAL_MAX_PROC, default=None) is None
+    or not (MIN_PROC < MAX_PROC <= INITIAL_MAX_PROC < 100.0)
+):
+    raise ValueError(
+        f"Invalid monitororder proc bounds: MIN_PROC={MIN_PROC!r}, "
+        f"MAX_PROC={MAX_PROC!r}, INITIAL_MAX_PROC={INITIAL_MAX_PROC!r}"
+    )
+REPRICE_OFFSET = MIN_PROC / 100.0
 MAX_TRACKED_ORDER_IDS = 10_000
 
 # Order Market TTL configurations (in seconds)
@@ -355,7 +365,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Current price {current_price} and {order_type} price {price} are close!")
             
             difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
-            if not are_close(current_price, initial_prices[order_id], MAX_PROC):
+            if not are_close(current_price, initial_prices[order_id], INITIAL_MAX_PROC):
                 print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
                 continue
             print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
@@ -363,11 +373,18 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # Build and validate the exact replacement before canceling the live
             # order. Instrument.place repeats this check immediately before submit
             # to close the time-of-check/time-of-use window.
-            # NOTE (Design Consideration): Replacement submission keeps
-            # wait_for_trend=True active so GT_S short-trend protection cannot be
-            # bypassed. A future refinement to evaluate is pre-checking short-trend
-            # deferral before canceling the live venue order so an active order is
-            # not pulled from the book when GT_S would immediately defer re-placement.
+            # NOTE (Point 2 Design Consideration — Trend-Aware Repricing & Pushback):
+            # 1. Pull-in pre-check: Replacement submission keeps wait_for_trend=True
+            #    active so GT_S short-trend protection cannot be bypassed. Pre-checking
+            #    GT_S before api.cancel_order() prevents pulling a live venue order off
+            #    the book when short-trend deferral would immediately hold re-placement.
+            # 2. Favorable-trend pushback (trailing limit order): When an order is very
+            #    close to spot (e.g. difference_percent <= (MIN_PROC + MAX_PROC) / 2 or
+            #    <= MIN_PROC) AND both short_trend (GT_S) and super_short_trend (fast=True)
+            #    are strongly favorable (rising for SELL, falling for BUY), instead of
+            #    pulling the order closer or letting it fill prematurely, push the order
+            #    slightly farther in the favorable direction (toward MID_PROC / MAX_PROC)
+            #    to trail the momentum wave while keeping the order live on the book.
             if order_type == "SELL":
                 new_price = current_price * (1.0 + REPRICE_OFFSET)
             else:
