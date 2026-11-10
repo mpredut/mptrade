@@ -627,6 +627,7 @@ def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_typ
     reconciler_log = tmp_path / "autonomous_ai_reconciler_2026-11-10.log"
     reconciler_log.write_text(
         "18:00:10 [argparse.py:2654] [STDERR] autonomous_ai_reconciler.py: error: the following arguments are required: --topic-key\n"
+        "TypeError: Can't instantiate abstract class BinanceProvider without an implementation for abstract method 'get_current_price'\n"
         "18:00:02 [__init__.py:1163] [STDERR] 2026-11-10 18:00:02,969 [INFO] Starting Autonomous AI Supervisor cycle (mode=enforce, topic=auto_cryptotrade_executor)...\n",
         encoding="utf-8",
     )

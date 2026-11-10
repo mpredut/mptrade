@@ -54,9 +54,14 @@ discover_regions() {
 connect_to_region() {
     local target_region="$1" desc="$2" max_attempts="${3:-12}" current_reg
     current_reg=$(pia get region 2>/dev/null | tr -d '\r')
-    if [ "$current_reg" = "$target_region" ] && vpn_healthy; then
-        echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
-        return 0
+    if [ "$current_reg" = "$target_region" ]; then
+        if vpn_healthy; then
+            echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+            return 0
+        fi
+        echo "Tunnel on $desc ($target_region) is unhealthy; disconnecting before session reset..."
+        pia disconnect >/dev/null 2>&1 || true
+        sleep 2
     fi
     pia_write_supervisor_state "connecting"
     echo "Attempting connection to $desc ($target_region)..."
@@ -306,9 +311,20 @@ while true; do
         recovered=0
 
         if [ -n "$REG_DED_DE" ] && [ "$current_reg" = "$REG_DED_DE" ]; then
-            try_fallback_switch "$REG_DED_BE" "Belgium Dedicated IP" \
-                "PIA VPN: Frankfurt DIP Failing" "Dedicated Frankfurt IP failed $failures probes. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." \
-                "PIA VPN: Switched to Belgium DIP" && recovered=1
+            if dip_endpoint_reachable "$REG_DED_DE" && connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP" 5; then
+                echo "Primary Frankfurt Dedicated IP ($REG_DED_DE) recovered via in-place session reset."
+                send_ntfy "PIA VPN: Frankfurt DIP Reset OK" "Primary Frankfurt Dedicated IP ($REG_DED_DE) recovered after in-place session reset." "default"
+                failures=0
+                current_cooldown_sec="$BACKOFF_MIN_SEC"
+                current_restore_interval="$RESTORE_INTERVAL"
+                last_restore_attempt=$(date +%s)
+                recovered=1
+            fi
+            if [ "$recovered" -eq 0 ]; then
+                try_fallback_switch "$REG_DED_BE" "Belgium Dedicated IP" \
+                    "PIA VPN: Frankfurt DIP Failing" "Dedicated Frankfurt IP failed $failures probes. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." \
+                    "PIA VPN: Switched to Belgium DIP" && recovered=1
+            fi
             if [ "$recovered" -eq 0 ]; then
                 try_fallback_switch "$REG_DYN_DE" "Dynamic Frankfurt" \
                     "PIA VPN: Dedicated IP Failing" "Dedicated IP failed $failures probes. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." \
