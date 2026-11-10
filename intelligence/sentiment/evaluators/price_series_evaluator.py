@@ -1147,7 +1147,7 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         if sw_hi_new > 0.0:
             pinfo["pullback_from_swing_high_pct"] = pct_delta(p_cur, sw_hi_new)
     if (maj_lo := safe_pos_float(pinfo.get("major_swing_low_px"), default=None)) is not None and maj_lo > 0.0:
-        maj_lo_new = round(min(maj_lo, p_cur), 6)
+        maj_lo_new = round(min(maj_lo, p_cur, *([l24] if l24 is not None else [])), 6)
         eff_sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
         if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
             pinfo.pop("major_swing_low_px", None)
@@ -1280,13 +1280,21 @@ def _apply_24h_series_enrichment(
             sw_hi_e = safe_pos_float(entry.get("swing_high_px"), default=None)
             if sw_lo_e is not None and sw_hi_e is not None:
                 has_swings_e = bool(entry.get("recent_swings_7d"))
-                sw_lo_n = round(min(sw_lo_e, cur_e_px, *([l24_e] if not has_swings_e or l24_e < sw_lo_e else [])), eff_dec_7d)
+                has_maj_lo_e = bool(entry.get("major_swing_low_px"))
+                sw_lo_n = round(
+                    min(sw_lo_e, cur_e_px, *([l24_e] if not has_swings_e or (l24_e < sw_lo_e and not has_maj_lo_e) else [])),
+                    eff_dec_7d,
+                )
                 sw_hi_n = round(max(sw_hi_e, cur_e_px, *([h24_e] if not has_swings_e else [])), eff_dec_7d)
                 entry["swing_low_px"], entry["swing_high_px"] = sw_lo_n, sw_hi_n
                 if sw_lo_n > 0.0:
                     entry["rally_from_swing_low_pct"] = pct_delta(cur_e_px, sw_lo_n)
                 if sw_hi_n > 0.0:
                     entry["pullback_from_swing_high_pct"] = pct_delta(cur_e_px, sw_hi_n)
+            if (maj_lo_e := safe_pos_float(entry.get("major_swing_low_px"), default=None)) is not None and maj_lo_e > 0.0:
+                maj_lo_en = round(min(maj_lo_e, cur_e_px, l24_e), eff_dec_7d)
+                entry["major_swing_low_px"] = maj_lo_en
+                entry["rally_from_major_low_pct"] = pct_delta(cur_e_px, maj_lo_en)
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:

@@ -1396,6 +1396,38 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     hl_files = iter_venue_cycle_state_files("hyperliquid", workspace_dir=ws_dir)
     assert hl_files[0] == hl_st
 
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _apply_24h_series_enrichment,
+        recalculate_live_price_geometry,
+    )
+
+    rgnt_entry = {
+        "price": 1.50,
+        "low_7d": 1.16,
+        "high_7d": 1.60,
+        "swing_low_px": 1.27,
+        "swing_high_px": 1.60,
+        "major_swing_low_px": 1.16,
+        "rally_from_swing_low_pct": 18.11,
+        "rally_from_major_low_pct": 29.31,
+        "recent_swings_7d": ["+37.9%", "-20.6%", "+18.1%"],
+    }
+    _apply_24h_series_enrichment(
+        "RGNT_US_EQ",
+        rgnt_entry,
+        {"low_24h": 1.15, "high_24h": 1.55},
+        [[1000, 1.15], [2000, 1.50]],
+        None,
+    )
+    assert rgnt_entry["low_7d"] == pytest.approx(1.15)
+    assert rgnt_entry["swing_low_px"] == pytest.approx(1.27)
+    assert rgnt_entry["major_swing_low_px"] == pytest.approx(1.15)
+    recalculate_live_price_geometry(rgnt_entry, 1.50)
+    assert rgnt_entry["swing_low_px"] == pytest.approx(1.27)
+    assert rgnt_entry["major_swing_low_px"] == pytest.approx(1.15)
+    assert rgnt_entry["rally_from_major_low_pct"] == pytest.approx(30.43, abs=0.02)
+
+
 
 
 
