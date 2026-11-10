@@ -692,6 +692,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
         r"ValueError:\s+Unknown cache type:|"
         r"TypeError:.*got an unexpected keyword argument|"
+        r"error:\s+the following arguments are required:|"
         r"\bname '[^']+' is not defined\b|"
         r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
         re.IGNORECASE,
