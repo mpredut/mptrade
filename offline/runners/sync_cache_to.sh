@@ -31,6 +31,10 @@ sync_to_dev() {
     echo "[sync_cache_to:dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
     rsync_cachedb "$ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" \
         --exclude 'dev_regression_status.json' -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
+    if [ -d "$ROOT/logs/shadow_live" ]; then
+        rsync -az "$ROOT/logs/shadow_live/"*.ohlc.json "$ROOT/logs/shadow_live/"*.anchor \
+            "$DEV_USER@$DEV_HOST:$DEV_PATH/logs/shadow_live/" -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
+    fi
     echo "[sync_cache_to:dev $(date '+%F %T')] done"
 }
 
