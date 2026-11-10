@@ -200,6 +200,20 @@ class CacheManagerInterface(ABC):
 
     _default_api_client: Any = None
 
+    @staticmethod
+    def resolve_active_instance(factory_key: str, *, reader_fn: Any = None) -> Any:
+        """Return an already-instantiated cache manager for ``factory_key`` (or from ``reader_fn``)."""
+        if callable(reader_fn):
+            try:
+                mgr = reader_fn()
+                if mgr is not None:
+                    return mgr
+            except Exception:
+                pass
+        cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+        instances = getattr(cf, "_instances", None)
+        return instances.get(factory_key) if isinstance(instances, dict) else None
+
     @classmethod
     def resolve_data_sync_mode(
         cls,
@@ -768,7 +782,7 @@ class CacheManagerInterface(ABC):
     def _load_jsonl(self):
         """Load generic JSONL state and recover ``.previous`` if interrupted."""
         legacy_metadata = {}
-        metaf = self.filename + ".meta"
+        metaf = meta_file_path(self.filename)
         if os.path.exists(metaf):
             try:
                 legacy_metadata = read_json_dict(metaf)

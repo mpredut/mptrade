@@ -1530,6 +1530,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         *,
         custom_path: Optional[str] = None,
         memory_manager: Any = None,
+        reader_fn: Any = None,
         now_s: Optional[float] = None,
     ) -> Optional[dict]:
         """Resolve a fresh short-trend snapshot from in-memory ``CacheShortTrendManager`` or ``cache_short_trend.json``."""
@@ -1538,12 +1539,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
         eff_now = resolve_now_ts(now_s)
         if custom_path is None:
-            stm = memory_manager
-            if stm is None:
-                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
-                instances = getattr(cf, "_instances", None)
-                if isinstance(instances, dict):
-                    stm = instances.get("ShortTrend")
+            stm = (
+                memory_manager
+                if memory_manager is not None
+                else cls.resolve_active_instance("ShortTrend", reader_fn=reader_fn)
+            )
             if stm is not None:
                 if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
                     for cand in candidates:

@@ -55,7 +55,6 @@ from botcore import (
     required_int_env,
     resolve_now_ms,
     resolve_now_ts,
-    resolve_patched_attr,
     resolve_sustained_sample_rate,
     safe_nonneg_float,
     safe_pos_float,
@@ -106,7 +105,9 @@ from state_io import (
     discard_generation_file,
     encode_json_payload,
     iter_jsonl_retention_lines,
+    meta_file_path,
     parse_json_payload,
+    previous_generation_path,
     read_json_dict,
     read_json_dict_recovering,
     read_tail_complete_lines_text,
@@ -543,7 +544,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             if isinstance(points[-1], (list, tuple)) and points[-1]
             else int(now_ts * 1000)
         )
-        meta_path = f"{target_path}.meta"
+        meta_path = meta_file_path(target_path)
         prev_meta = read_json_dict(meta_path) if os.path.exists(meta_path) else {}
         prev_ft = (
             prev_meta.get("fetchtime")
@@ -748,7 +749,7 @@ class Cache365PriceManager(Cache24PriceManager):
                     ):
                         self.cache.setdefault(rec["s"], []).append(rec["i"])
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
-            metaf = self.filename + ".meta"
+            metaf = meta_file_path(self.filename)
             if os.path.exists(metaf):
                 try:
                     meta_payload = read_json_dict(metaf)
@@ -1446,16 +1447,16 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         now_s: Optional[float] = None,
         use_memory_manager: bool = True,
         memory_manager: Any = None,
+        reader_fn: Any = None,
     ) -> Optional[float]:
         """Resolve a fresh current price for ``candidates`` from in-memory ``CacheCurrentPriceManager`` or ``price_path``."""
         max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
         if use_memory_manager:
-            cpm = memory_manager
-            if cpm is None:
-                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
-                instances = getattr(cf, "_instances", None)
-                if isinstance(instances, dict):
-                    cpm = instances.get("CurrentPrice")
+            cpm = (
+                memory_manager
+                if memory_manager is not None
+                else cls.resolve_active_instance("CurrentPrice", reader_fn=reader_fn)
+            )
             cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
             cpm_matches_path = (
                 not isinstance(cpm_file, str)
@@ -1640,7 +1641,7 @@ def resolve_cached_symbol_price(
     try:
         for cand in series_cands:
             p24_path = os.path.join(cache_dir, Cache24PriceManager.disk_filename_for_symbol(cand))
-            if os.path.exists(p24_path) or os.path.exists(p24_path + ".previous"):
+            if os.path.exists(p24_path) or os.path.exists(previous_generation_path(p24_path)):
                 raw_p24 = read_json_dict_recovering(p24_path)
                 if isinstance(raw_p24, dict):
                     raw_items = raw_p24.get("items")
@@ -1692,7 +1693,7 @@ def resolve_cached_symbol_price(
             ]
             for cand in ob_cands:
                 ob_path = telemetry_cache_file_path(cache_dir, "orderbook_depth", cand)
-                if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(ob_path + ".previous")):
+                if not ob_path or (not os.path.exists(ob_path) and not os.path.exists(previous_generation_path(ob_path))):
                     continue
                 ob = read_json_dict_recovering(ob_path)
                 if isinstance(ob, dict):

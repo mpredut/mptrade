@@ -695,14 +695,9 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return False
         sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        try:
-            data = cls._load_venue_snapshot_dict(cache_file, create=True)
-            data["items"][sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
-            data["fetchtime"][sym_key] = int(_now_time() * 1000)
-            save_json_state(str(cache_file), data)
-            return True
-        except Exception:
-            return False
+        return cls.merge_venue_fills_snapshot(
+            cache_file, {sym_key: list(fills or ())}, is_snapshot=True
+        )
 
     @classmethod
     def merge_venue_fills_into_dict(
@@ -782,10 +777,10 @@ class CacheTradeManager(CacheAccountManagerBase):
             if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
                 changed = True
             ft[sym_key] = eff_now_ms
-        for s_sym in touch_symbols or ():
-            if s_sym in items and s_sym in ft and ft.get(s_sym) != eff_now_ms:
-                ft[s_sym] = eff_now_ms
-                changed = True
+        if touch_symbols and cls.touch_venue_ws_fetchtimes_in_dict(
+            cache_obj, eff_now_ms, symbols=touch_symbols
+        ):
+            changed = True
         return changed
 
     @classmethod
@@ -841,7 +836,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 items.setdefault(s_sym, [])
                 ft[s_sym] = resolved_ms
                 changed = True
-            elif s_sym in ft and s_sym in items:
+            elif s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms:
                 ft[s_sym] = resolved_ms
                 changed = True
         if create_missing:
@@ -1062,7 +1057,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     not self._persisted_data_version
                     and (
                         self._legacy_jsonl_needs_rewrite
-                        or not os.path.exists(self.filename + ".meta")
+                        or not os.path.exists(meta_file_path(self.filename))
                     )
                 )
             else:
@@ -1344,7 +1339,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return
 
         legacy_metadata = {}
-        metaf = self.filename + ".meta"
+        metaf = meta_file_path(self.filename)
         if os.path.exists(metaf):
             try:
                 legacy_metadata = read_json_dict(metaf)
@@ -1525,16 +1520,16 @@ class CacheTradeManager(CacheAccountManagerBase):
             new_items = self._coerce_item_list(new_items)
             with self.lock:
                 bucket = self.cache.setdefault(symbol, [])
-                by_key: dict[str, dict] = {}
+                by_key: dict[tuple, dict] = {}
                 for item in bucket:
                     if isinstance(item, dict):
-                        k = str(item.get("id") or item.get("orderId") or len(by_key))
+                        k = self.fill_dedup_key(item) or ("idx", len(by_key))
                         by_key[k] = item
                 changed = False
                 for item in new_items:
                     if not self._is_valid_snapshot_item(item):
                         continue
-                    k = str(item.get("id") or item.get("orderId") or len(by_key))
+                    k = self.fill_dedup_key(item) or ("idx", len(by_key))
                     if by_key.get(k) != item:
                         by_key[k] = dict(item)
                         changed = True
@@ -1754,7 +1749,7 @@ class CacheOrderManager(CacheAccountManagerBase):
             self.save_state_to_file_if_enabled()
 
     def _load_order_state_generation_locked(self):
-        meta_path = self.filename + ".meta"
+        meta_path = meta_file_path(self.filename)
         backup_path = self._previous_generation_path()
         has_file = os.path.exists(self.filename)
         has_meta = os.path.exists(meta_path)

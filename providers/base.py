@@ -14,9 +14,7 @@ from botcore import (
     bool_env,
     clamp_price_to_bbo_mid,
     exact_nonneg_int,
-    extract_current_price_item,
     is_shared_disk_cache_enabled,
-    resolve_now_ts,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -26,21 +24,15 @@ from botcore import (
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
-    CACHE_SHORT_TREND_FILENAME,
-    cache_24_price_filename,
     cache_path,
     cache_symbol_variants,
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
-    get_cachedb_dir,
     normalize_venue_name,
-    resolve_cache_dir_path,
-    resolve_cachedb_filepath,
     resolve_kraken_lookup_symbol,
     split_symbol_assets,
 )
-from instrument_registry import casefold_get
 
 
 _LIVE_FETCH_LOCAL = threading.local()
@@ -721,44 +713,6 @@ class MarketDataProvider(ABC):
 
         return CachePriceManagerBase.parse_ssot_price_point(entry, fallback_ts=fallback_ts)
 
-    @classmethod
-    def _resolve_ssot_memory_manager(cls, reader_fn: Any, factory_key: str) -> Any:
-        if callable(reader_fn):
-            with contextlib.suppress(Exception):
-                mgr = reader_fn()
-                if mgr is not None:
-                    return mgr
-        cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
-        instances = getattr(cf, "_instances", None)
-        return instances.get(factory_key) if isinstance(instances, dict) else None
-
-    @staticmethod
-    def _read_ssot_current_price_candidates(
-        candidates: tuple[str, ...] | List[str],
-        price_path: str,
-        max_age_sec: float,
-        *,
-        now_s: Optional[float] = None,
-        use_memory_manager: bool = True,
-    ) -> Optional[float]:
-        from cacheprice import CacheCurrentPriceManager
-
-        cpm = (
-            MarketDataProvider._resolve_ssot_memory_manager(
-                MarketDataProvider._ssot_current_price_reader, "CurrentPrice"
-            )
-            if use_memory_manager
-            else None
-        )
-        return CacheCurrentPriceManager.read_ssot_current_price_candidates(
-            candidates,
-            price_path,
-            max_age_sec,
-            now_s=now_s,
-            use_memory_manager=use_memory_manager,
-            memory_manager=cpm,
-        )
-
     def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
         if not self._allow_ssot_price_cache():
@@ -766,20 +720,17 @@ class MarketDataProvider(ABC):
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
+        from cacheprice import CacheCurrentPriceManager
+
         custom_path = getattr(self, "_ssot_price_cache_path", None)
         price_path = str(custom_path) if custom_path else cache_path(CACHE_CURRENT_PRICE_FILENAME)
-        return self._read_ssot_current_price_candidates(
+        return CacheCurrentPriceManager.read_ssot_current_price_candidates(
             candidates,
             price_path,
             safe_pos_float(max_age_sec, default=12.0) or 12.0,
             use_memory_manager=(custom_path is None),
+            reader_fn=self._ssot_current_price_reader,
         )
-
-    @staticmethod
-    def _read_ssot_24price_entries(c24_path: str, cand: str) -> tuple[Optional[dict], Optional[list]]:
-        from cacheprice import Cache24PriceManager
-
-        return Cache24PriceManager.read_ssot_24price_entries(c24_path, cand)
 
     def get_ssot_price_history(
         self,
@@ -802,21 +753,6 @@ class MarketDataProvider(ABC):
             custom_dir=getattr(self, "_ssot_24price_cache_dir", None),
         )
 
-    @staticmethod
-    def read_ssot_short_trend_file(
-        trend_path: str,
-        candidates: tuple[str, ...] | List[str],
-        max_age_sec: float = 15.0,
-        *,
-        now_s: Optional[float] = None,
-    ) -> Optional[dict]:
-        """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
-        from cachetrend import CacheShortTrendManager
-
-        return CacheShortTrendManager.read_ssot_short_trend_file(
-            trend_path, candidates, max_age_sec=max_age_sec, now_s=now_s
-        )
-
     def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0) -> Optional[dict]:
         """Return a fresh short-trend snapshot for ``symbol`` from CacheShortTrendManager / cache_short_trend.json."""
         if not self._allow_ssot_price_cache():
@@ -826,17 +762,11 @@ class MarketDataProvider(ABC):
             return None
         from cachetrend import CacheShortTrendManager
 
-        custom_path = getattr(self, "_ssot_trend_cache_path", None)
-        stm = (
-            self._resolve_ssot_memory_manager(self._ssot_short_trend_reader, "ShortTrend")
-            if custom_path is None
-            else None
-        )
         return CacheShortTrendManager.resolve_ssot_snapshot(
             candidates,
             max_age_sec=max_age_sec,
-            custom_path=custom_path,
-            memory_manager=stm,
+            custom_path=getattr(self, "_ssot_trend_cache_path", None),
+            reader_fn=self._ssot_short_trend_reader,
         )
 
     def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
