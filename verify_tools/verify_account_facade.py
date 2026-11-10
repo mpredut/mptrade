@@ -31,12 +31,12 @@ from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
 )
-from providers.market_api import api as mkt                     # noqa: E402  (facada singleton)
+from providers.market_api import api as mkt                     # noqa: E402  (singleton facade)
+from providers.quantity import resolve_assets                   # noqa: E402
 from instrument_registry import symbols_for                     # noqa: E402
 
-MAXAGE = 17 * 24 * 3600   # ca trade_watch.position (referinta botului)
+MAXAGE = 17 * 24 * 3600   # like trade_watch.position (bot reference)
 SYMBOLS = symbols_for("binance")
-import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 
 
 from botcore import safe_float
@@ -87,7 +87,7 @@ def order_key(o):
 def main():
     failures = []
     for s in SYMBOLS:
-        base = utils.base_asset(s)
+        base = resolve_assets(s)[0]
         print(f"\n==== {s} (base={base}) ====")
 
         # 1) free_balance ------------------------------------------------------
@@ -99,10 +99,10 @@ def main():
         same_free = balance_available and math.isclose(
             fd_f, ff_f, rel_tol=1e-9, abs_tol=1e-12
         )
-        state = "OK" if same_free else ("SKIP (date indisponibile)" if not balance_available else "DIFERA")
-        print(f"  free: direct={fd!r}  facada={ff!r}  -> {state}")
+        state = "OK" if same_free else ("SKIP (data unavailable)" if not balance_available else "DIFF")
+        print(f"  free: direct={fd!r}  facade={ff!r}  -> {state}")
         if balance_available and not same_free:
-            failures.append(f"{s}: free_balance direct={fd!r} != facada={ff!r}")
+            failures.append(f"{s}: free_balance direct={fd!r} != facade={ff!r}")
         if not balance_available:
             print("  the rest of the private comparison is skipped; two empty lists after API "
                   "errors are not proof of parity")
@@ -117,7 +117,7 @@ def main():
             direct[side], facade[side] = raw, nrm
             if len(raw) != len(nrm):
                 failures.append(f"{s} {side}: order count direct={len(raw)} != facade={len(nrm)}")
-                print(f"  {side}: COUNT DIFERA direct={len(raw)} facada={len(nrm)}")
+                print(f"  {side}: COUNT DIFF direct={len(raw)} facade={len(nrm)}")
                 continue
             mism = 0
             for r, n in zip(sorted(raw, key=order_key), sorted(nrm, key=order_key)):
@@ -134,14 +134,14 @@ def main():
             math.isclose(avg_d, avg_f, rel_tol=1e-9, abs_tol=1e-12)
             and math.isclose(net_d, net_f, rel_tol=1e-9, abs_tol=1e-12)
         )
-        print(f"  avg_buy: direct={avg_d:.8f} facada={avg_f:.8f} | net: direct={net_d:.8f} "
-              f"facada={net_f:.8f} -> {'OK' if same_pos else 'DIFERA'}")
+        print(f"  avg_buy: direct={avg_d:.8f} facade={avg_f:.8f} | net: direct={net_d:.8f} "
+              f"facade={net_f:.8f} -> {'OK' if same_pos else 'DIFF'}")
         if not same_pos:
-            failures.append(f"{s}: pozitie direct(avg={avg_d},net={net_d}) != facada(avg={avg_f},net={net_f})")
+            failures.append(f"{s}: direct position(avg={avg_d},net={net_d}) != facade(avg={avg_f},net={net_f})")
 
     print("\n" + "=" * 56)
     if failures:
-        print(f"FAIL — {len(failures)} diferente:")
+        print(f"FAIL — {len(failures)} differences:")
         for f in failures:
             print(f"  - {f}")
         sys.exit(1)

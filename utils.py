@@ -18,13 +18,6 @@ from cachepaths import (
 from state_io import read_text_file
 
 
-def base_asset(symbol: str) -> str:
-    """Return a trading symbol's base asset by removing the first known quote suffix."""
-    from providers.quantity import resolve_assets
-
-    return resolve_assets(symbol)[0]
-
-
 def value_diff_to_percent(value1, value2):
     v1 = botcore.safe_float(value1, default=None)
     v2 = botcore.safe_float(value2, default=None)

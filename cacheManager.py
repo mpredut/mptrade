@@ -46,7 +46,11 @@ from cacheInterface import (
     WS_ONLY_MODE,
     _CONFIG_ROOT,
     _coerce_symbol_list,
+    _mark_ws_available,
+    _mark_ws_event_received,
+    _mark_ws_unhealthy,
     _monotonic_time,
+    _should_poll_for_manager,
     _strict_int_field,
 )
 from cacheaccount import (
@@ -90,33 +94,6 @@ _ws_health_lock = _bapi_ws_bridge._ws_health_lock
 _ws_available = _bapi_ws_bridge._ws_available
 _ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
 _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
-def _mark_ws_available(value):
-    global _ws_available
-    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
-
-
-def _mark_ws_event_received():
-    global _ws_last_event_ts, _ws_is_healthy
-    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
-def _mark_ws_unhealthy():
-    global _ws_is_healthy
-    _bapi_ws_bridge.mark_ws_unhealthy()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
-def _should_poll_for_manager(cls_name):
-    return _bapi_ws_bridge.should_poll_for_manager(
-        cls_name,
-        ws_only_mode=WS_ONLY_MODE,
-        ws_available=_ws_available,
-        ws_is_healthy=_ws_is_healthy,
-    )
-
 
 _current_price_instance: Optional[CacheCurrentPriceManager] = None
 _current_price_lock = threading.RLock()

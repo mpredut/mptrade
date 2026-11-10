@@ -34,6 +34,7 @@ from botcore import (
     is_us_rth_open,
     load_env_file_defaults,
     normalize_side,
+    obj_attr,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -135,6 +136,10 @@ class _PlaceContext:
     reason: Optional[str] = None
 
 
+def _is_instrument_spec(item: Any) -> bool:
+    return isinstance(item, InstrumentSpec) or type(item).__name__ == "InstrumentSpec"
+
+
 class Instrument:
     """Provider-bound symbol with namespaced consumer parameters.
 
@@ -159,7 +164,7 @@ class Instrument:
         self.params = dict(params or {})
         self.spec = (
             spec
-            if (isinstance(spec, InstrumentSpec) or type(spec).__name__ == "InstrumentSpec")
+            if _is_instrument_spec(spec)
             else InstrumentSpec(
                 name=self.name,
                 provider=normalize_venue_name(provider) or str(provider or "").casefold(),
@@ -800,14 +805,7 @@ class Instrument:
             if gt2_context is not None and ctx.regime_context is None:
                 ctx.regime_context = gt2_context
         if check_medium_trend and gt2_context is not None:
-            raw_reg = (
-                (gt2_context.get("regime") or gt2_context.get("resolved_trend"))
-                if isinstance(gt2_context, dict)
-                else (
-                    getattr(gt2_context, "regime", None)
-                    or getattr(gt2_context, "resolved_trend", None)
-                )
-            )
+            raw_reg = obj_attr(gt2_context, "regime") or obj_attr(gt2_context, "resolved_trend")
             resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
             adverse_medium_trend = (
                 (ctx.side_u == "BUY" and resolved_regime == "bear")
@@ -1374,10 +1372,6 @@ class Instrument:
 
     def __repr__(self) -> str:
         return f"<Instrument {self.name} {self.symbol}@{self.provider_name} {'on' if self.enabled else 'off'}>"
-
-
-def _is_instrument_spec(item) -> bool:
-    return isinstance(item, InstrumentSpec) or type(item).__name__ == "InstrumentSpec"
 
 
 def bind_instruments(specs: dict, api=None) -> dict:

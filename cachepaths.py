@@ -797,13 +797,11 @@ def iter_venue_cycle_state_files(
     cache_dir: object = None,
 ) -> list[str]:
     """Return sorted ``.state_*.json`` cycle state paths for ``venue``."""
-    import glob as _glob
-
     v_norm = normalize_venue_name(venue, default="binance") or "binance"
     rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
     if not os.path.isdir(rt_dir):
         return []
-    paths = _glob.glob(os.path.join(rt_dir, ".state_*.json"))
+    paths = glob.glob(os.path.join(rt_dir, ".state_*.json"))
     if v_norm == "hyperliquid":
         return sorted(
             paths,

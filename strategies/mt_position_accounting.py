@@ -204,7 +204,7 @@ def _as_instrument(x):
         return x
     sym_s = str(x)
     facade = _mt_attr("mkt", mkt)
-    return inst_cls(name=sym_s, symbol=sym_s, provider=facade.provider_name_for(sym_s), base=u.base_asset(sym_s))
+    return inst_cls(name=sym_s, symbol=sym_s, provider=facade.provider_name_for(sym_s), base=resolve_assets(sym_s)[0])
 
 
 def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:

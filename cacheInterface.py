@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 import json
 import os
+import sys
 import threading
 import time
 from typing import Optional
@@ -113,8 +114,6 @@ _ORIG_BASE_ATTRS = {
     "atomic_write_json": atomic_write_json,
     "atomic_snapshot_file": atomic_snapshot_file,
     "WS_ONLY_MODE": WS_ONLY_MODE,
-    "_ws_available": _ws_available,
-    "_ws_is_healthy": _ws_is_healthy,
 }
 
 
@@ -143,29 +142,18 @@ def _monotonic_time() -> float:
     return mono_fn() if callable(mono_fn) else time.monotonic()
 
 
-def _mark_ws_available(value):
-    global _ws_available
-    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
-
-
-def _mark_ws_event_received():
-    global _ws_last_event_ts, _ws_is_healthy
-    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
-def _mark_ws_unhealthy():
-    global _ws_is_healthy
-    _bapi_ws_bridge.mark_ws_unhealthy()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+_mark_ws_available = _bapi_ws_bridge.mark_ws_available
+_mark_ws_event_received = _bapi_ws_bridge.mark_ws_event_received
+_mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
 
 
 def _should_poll_for_manager(cls_name):
+    cm = sys.modules.get("cacheManager")
     return _bapi_ws_bridge.should_poll_for_manager(
         cls_name,
         ws_only_mode=_cm_override("WS_ONLY_MODE", WS_ONLY_MODE),
-        ws_available=_cm_override("_ws_available", _ws_available),
-        ws_is_healthy=_cm_override("_ws_is_healthy", _ws_is_healthy),
+        ws_available=getattr(cm, "_ws_available", _ws_available) if cm is not None else _ws_available,
+        ws_is_healthy=getattr(cm, "_ws_is_healthy", _ws_is_healthy) if cm is not None else _ws_is_healthy,
     )
 
 

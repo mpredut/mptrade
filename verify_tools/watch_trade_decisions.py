@@ -34,11 +34,11 @@ import pricewindow as pw  # noqa: E402
 SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
-import utils  # noqa: E402 — base_asset centralized in utils
+from providers.quantity import resolve_assets  # noqa: E402
 
 
 def free_qty(symbol):
-    base_up = str(utils.base_asset(symbol) or "").strip().upper()
+    base_up = str(resolve_assets(symbol)[0] or "").strip().upper()
     for b in (api.get_account_assets_balances() or []):
         if isinstance(b, dict) and str(b.get("asset") or "").strip().upper() == base_up:
             return safe_float(b.get("free", 0), default=0.0)

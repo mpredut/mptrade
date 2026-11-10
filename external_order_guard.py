@@ -16,21 +16,19 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_scale,
     normalize_side,
     obj_attr,
+    resolve_now_ts,
     safe_float,
+    safe_pos_float,
 )
+from cachepaths import clean_symbol_key
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
 import intelligence.external.guards.whale_divergence_guard as wdg
 from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
-from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    clean_symbol_key,
-    resolve_now_ts,
-    safe_pos_float,
-)
 
 _whale_collector = None
 _orderbook_collector = None

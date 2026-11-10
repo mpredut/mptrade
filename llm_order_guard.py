@@ -21,18 +21,16 @@ from typing import Any, Dict, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
-    normalize_side,
-    resolve_order_notional,
-)
-from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
-from intelligence.internal.guards.guard_decision import BrakeAction
-from intelligence.macro_sentiment_ssot import (
     clean_scale,
-    clean_symbol_key,
+    normalize_side,
     obj_attr,
     resolve_now_ts,
+    resolve_order_notional,
     safe_pos_float,
 )
+from cachepaths import clean_symbol_key
+from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
+from intelligence.internal.guards.guard_decision import BrakeAction
 
 logger = logging.getLogger("llm_order_guard")
 

@@ -48,8 +48,10 @@ from cachepaths import (
     CACHE_TRADE_FILENAME,
     cache_path,
     cache_symbol_variants,
+    cachedb_root_for_file,
     clean_symbol_key,
     compute_venue_nav_breakdown,
+    normalize_venue_name,
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
@@ -330,13 +332,9 @@ class CacheTradeManager(CacheAccountManagerBase):
         filename: Optional[str] = None,
         symbols=None,
     ) -> str:
-        raw_v = str(venue or "").strip().lower()
-        if raw_v in ("hl", "hyperliquid"):
-            return "hyperliquid"
-        if raw_v in ("t212", "trading212"):
-            return "t212"
-        if raw_v in ("kraken", "binance"):
-            return raw_v
+        v_norm = normalize_venue_name(venue)
+        if v_norm in ("binance", "kraken", "hyperliquid", "t212"):
+            return v_norm
         base_f = os.path.basename(str(filename or "")).lower()
         for cand_v, cand_f in (
             ("kraken", CACHE_KRAKEN_TRADE_FILENAME),
@@ -407,11 +405,8 @@ class CacheTradeManager(CacheAccountManagerBase):
                     row_copy["id"] = clean_id
                     row_copy["time"] = int(t_f)
                     if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
-                        ib_s = row_copy["isBuyer"].strip().lower()
-                        if ib_s in ("true", "1", "yes"):
-                            row_copy["isBuyer"] = True
-                        elif ib_s in ("false", "0", "no", "nan"):
-                            row_copy["isBuyer"] = False
+                        if (ib_b := _parse_bool_flag(row_copy["isBuyer"], default=None)) is not None:
+                            row_copy["isBuyer"] = ib_b
                     valid_rows.append(row_copy)
                 valid_rows.sort(key=lambda t: t["time"])
                 clean_items[str(k)] = valid_rows
@@ -1745,19 +1740,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
 
     def _resolve_venue_balances_usd(self, binance_total_val: float) -> dict[str, float]:
         try:
-            fdir = os.path.dirname(os.path.abspath(str(self.filename or "")))
-            if os.path.basename(fdir) in (
-                "orders",
-                "prices",
-                "state",
-                "trends",
-                "telemetry",
-                "macro",
-                "system",
-            ):
-                cache_root = os.path.dirname(fdir)
-            else:
-                cache_root = fdir
+            cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
             vb_data = None
             for cand in (
                 os.path.join(cache_root, "state", "venue_balances_state.json"),

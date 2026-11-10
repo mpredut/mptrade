@@ -633,7 +633,7 @@ class TrailingCore:
             # Warm up until price exceeds the threshold set on the first tick or after re-buy.
             # Normal dips do not sell, but crash circuit breaker above still protects against collapse.
             if price < st["warmup_at"]:
-                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up — activ la {st['warmup_at']:.4f}"
+                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up — active at {st['warmup_at']:.4f}"
                          f" (+{self.min_profit_pct}%)")
                 return
             st.pop("warmup_at")                              # threshold reached; trailing is now active
@@ -857,7 +857,7 @@ class TrailingAdapterBase:
             peak_f = safe_float(peak, price_f)
             self.log(
                 f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
-                f"(varf {peak_f:.4f}, scadere >= {trail}%)  "
+                f"(varf {peak_f:.4f}, drop >= {trail}%)  "
                 f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
             )
 

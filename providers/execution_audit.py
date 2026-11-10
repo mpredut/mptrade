@@ -886,11 +886,7 @@ def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, An
             continue
         if scope_norm in ("equities", "crypto"):
             v_norm = normalize_venue_name(i.get("venue"))
-            is_eq = (
-                v_norm == "t212"
-                if v_norm
-                else str(i.get("symbol") or "").strip().upper().endswith(("_EQ", "_US_EQ"))
-            )
+            is_eq = v_norm == "t212" if v_norm else _is_eq_suffix(i.get("symbol"))
             if is_eq != (scope_norm == "equities"):
                 continue
         out.append(i)
@@ -1657,17 +1653,10 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     decisions: list[dict[str, Any]] = []
     seen_keys: set[tuple[Any, ...]] = set()
     for item in candidates:
-        sym_raw = str(item.get("symbol") or "").strip().upper()
-        sym_canon = canonical_base_asset(sym_raw) or sym_raw
-        venue_norm = normalize_venue_name(item.get("venue"))
-        if sym_canon and (_is_eq_suffix(sym_raw) or venue_norm == "t212"):
-            sym_canon = f"EQ:{sym_canon}"
-        side_norm = str(item.get("decision") or "HOLD").strip().upper()
-        key = (
-            (venue_norm, sym_canon, compatible_quote_suffixes(sym_raw), "")
-            if sym_canon
-            else (venue_norm, "", (), side_norm)
+        venue_norm, sym_canon, quotes, side_norm = _intent_venue_symbol_side_key(
+            item.get("venue"), item.get("symbol"), item.get("decision") or "HOLD"
         )
+        key = (venue_norm, sym_canon, quotes, "") if sym_canon else (venue_norm, "", (), side_norm)
         if key not in seen_keys:
             seen_keys.add(key)
             decisions.append(item)

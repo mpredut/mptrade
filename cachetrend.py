@@ -278,8 +278,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self._disk_c24_cache = {}
         self._mem_dirty = False
         self._dirty_live_symbols = set()
-        self._file_mtime = None
-        self._file_cache = None
         # Writer state populated by start_computation: symbol/window to analyzer objects.
         self.windows = {}
         self.analyzers = {}
@@ -1313,8 +1311,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     def shutdown(self, timeout=5.0):
         """Stop evaluation, flush, and base sync loops, then unsubscribe Cache24 sources."""
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        if eff_timeout is None:
-            eff_timeout = 5.0
         deadline = time.monotonic() + eff_timeout
         base_stopped = super().shutdown(timeout=eff_timeout)
         for sym_key, cache24 in (self._cache24_managers or {}).items():
@@ -1407,8 +1403,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self._disk_c24_cache.clear()
             self._mem_dirty = False
             self._dirty_live_symbols.clear()
-            self._file_mtime = None
-            self._file_cache = None
             try:
                 discard_generation_file(
                     self.filename, include_previous=True, include_meta=True
