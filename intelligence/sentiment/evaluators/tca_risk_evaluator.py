@@ -113,80 +113,34 @@ def _resolve_venue_fee_and_limits_impl(
     step_size = float(safe_pos_float(params.get("step_size"), default=default_step))
     tick_size = float(safe_pos_float(params.get("tick_size"), default=default_tick))
 
-    prov = getattr(inst, "_provider", None) if inst is not None else None
-    if v_norm == "kraken" and prov is not None:
-        sym_u = str(symbol or "").strip().upper()
-        kr_cands = list(
-            dict.fromkeys(
-                kc for kc in (symbol, sym_u, clean_symbol_key(sym_u), resolve_kraken_lookup_symbol(sym_u) if "USD" in compatible_quote_suffixes(sym_u) else None)
-                if isinstance(kc, str) and kc
-            )
-        )
-        if isinstance((minqty_map := getattr(prov, "_minqty", None)), dict):
-            min_qty = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), min_qty)
-        client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
-        cache_dict = getattr(client, "_CACHE", None)
-        if not isinstance(cache_dict, dict):
-            kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
-            cache_dict = getattr(kc_mod, "_CACHE", None)
-        if isinstance(cache_dict, dict):
-            def _cache_val(ckey: Any) -> Any:
-                return hit[1] if isinstance((hit := cache_dict.get(ckey)), tuple) and len(hit) >= 2 else None
+    cached_meta: Dict[str, Any] = {}
+    if inst is not None:
+        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
+        if callable(inst_hook):
+            try:
+                res = inst.cached_fee_and_limits(price=px_f)
+                if isinstance(res, dict):
+                    cached_meta = res
+            except Exception:
+                cached_meta = {}
+        if not cached_meta:
+            prov = getattr(inst, "provider", None)
+            if prov is None or isinstance(prov, str):
+                prov = getattr(inst, "_provider", None)
+            if prov is not None:
+                from providers.base import MarketDataProvider
 
-            p_meta = next((m for kc in kr_cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
-            if p_meta is None:
-                p_meta = next(
-                    (v for kc in kr_cands if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict) for v in ap_res.values() if isinstance(v, dict)),
-                    None,
+                cached_meta = MarketDataProvider.resolve_provider_cached_fee_and_limits(
+                    v_norm, symbol, prov, price=px_f
                 )
-            if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
-                p_meta = next((ap_all_res[kc] for kc in kr_cands if isinstance(ap_all_res.get(kc), dict)), None)
-            if isinstance(p_meta, dict):
-                for fee_key, is_maker in (("fees_maker", True), ("fees", False)):
-                    tbl = p_meta.get(fee_key)
-                    if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
-                        if (fv := safe_nonneg_float(tbl[0][1], default=None)) is not None:
-                            if is_maker:
-                                maker_bps = round(fv * 100.0, 2)
-                            else:
-                                taker_bps = round(fv * 100.0, 2)
-                min_qty = safe_pos_float(p_meta.get("ordermin"), default=min_qty) or min_qty
-                min_notional = safe_pos_float(p_meta.get("costmin"), default=min_notional) or min_notional
-                if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None and 0 <= int(lot_dec) <= 18:
-                    step_size = round(10.0 ** (-int(lot_dec)), 8)
-                if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None and 0 <= int(pair_dec) <= 18:
-                    tick_size = round(10.0 ** (-int(pair_dec)), 8)
-    elif v_norm == "hyperliquid" and prov is not None:
-        client = getattr(prov, "_client", None)
-        base_tok = canonical_base_asset(symbol)
-        meta_cache = getattr(prov, "_meta_cache", None) or getattr(client, "_meta_cache", None)
-        meta_entry = casefold_get(meta_cache, base_tok) if isinstance(meta_cache, dict) else None
-        sz_dec = safe_nonneg_float(meta_entry.get("szDecimals"), default=None) if isinstance(meta_entry, dict) else None
-        if sz_dec is None:
-            sz_cache = getattr(client, "_sz_decimals_cache", None)
-            if isinstance(sz_cache, dict):
-                sz_dec = safe_nonneg_float(casefold_get(sz_cache, base_tok), default=None)
-        if sz_dec is None:
-            info_obj = getattr(client, "info", None)
-            c2a, a2sz, n2c = getattr(info_obj, "coin_to_asset", None), getattr(info_obj, "asset_to_sz_decimals", None), getattr(info_obj, "name_to_coin", None)
-            if isinstance(c2a, dict) and isinstance(a2sz, dict):
-                spot_pair = getattr(prov, "_spot_pair", None) or (casefold_get(n2c, f"{base_tok}/USDC") if isinstance(n2c, dict) else None)
-                sz_dec = next(
-                    (
-                        v
-                        for ck in (spot_pair, base_tok)
-                        if ck
-                        and (asset_id := casefold_get(c2a, ck)) is not None
-                        and (v := safe_nonneg_float(a2sz.get(asset_id), default=None)) is not None
-                    ),
-                    None,
-                )
-        if sz_dec is not None and 0 <= int(sz_dec) <= 18:
-            sz_i = int(sz_dec)
-            step_size = min_qty = round(10.0 ** (-sz_i), 8)
-            if safe_pos_float(params.get("tick_size"), default=None) is None:
-                eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
-                tick_size = round(10.0 ** (-eff_px_dec), 8)
+    if cached_meta:
+        maker_bps = float(safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps))
+        taker_bps = float(safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps))
+        min_notional = float(safe_pos_float(cached_meta.get("min_notional"), default=min_notional))
+        min_qty = float(safe_pos_float(cached_meta.get("min_qty"), default=min_qty))
+        step_size = float(safe_pos_float(cached_meta.get("step_size"), default=step_size))
+        if v_norm != "hyperliquid" or safe_pos_float(params.get("tick_size"), default=None) is None:
+            tick_size = float(safe_pos_float(cached_meta.get("tick_size"), default=tick_size))
 
     out: Dict[str, Any] = {
         "fee_tier": fee_tier,

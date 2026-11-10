@@ -38,8 +38,9 @@ import utils as u
 # -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
 RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for primary 222s window).
-WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
-WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
+WINDOW_SECONDS_SMALL = round(3.7 * 60, 6)          # 3.7 minutes (222.0s)
+WINDOW_SECONDS_BIG   = round(2.5 * 60 * 60, 6)     # 2.5 hours (9000.0s)
+DEFAULT_TREND_WINDOW_SECONDS = (WINDOW_SECONDS_SMALL, WINDOW_SECONDS_BIG)
 
 # -- Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) --
 # Direct Step-WOLS estimator on raw price increments:
@@ -66,7 +67,13 @@ DEFAULT_STEP_WOLS_POWER = 2.0         # Default exponent p when symbol is not in
 
 def _resolve_short_trend_estimator() -> str:
     raw = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
-    return raw if raw in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS
+    if not raw:
+        return SHORT_TREND_ESTIMATOR_STEP_WOLS
+    if raw not in _SHORT_TREND_ESTIMATORS:
+        raise ValueError(
+            f"Unsupported MPTRADE_SHORT_TREND_ESTIMATOR={raw!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
+        )
+    return raw
 
 
 SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
@@ -84,6 +91,12 @@ def _env_or_estimator_power(estimator_name: str | None = None) -> float | None:
     if "MPTRADE_STEP_WOLS_POWER" in os.environ:
         return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
     est = str(estimator_name if estimator_name is not None else os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "")).strip().lower()
+    if not est:
+        return None
+    if est not in _SHORT_TREND_ESTIMATORS:
+        raise ValueError(
+            f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
+        )
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
         return 3.0
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:
@@ -248,10 +261,12 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
 
 
 def _active_estimator() -> str:
-    est = SHORT_TREND_ESTIMATOR
+    est = str(SHORT_TREND_ESTIMATOR or "").strip().lower()
     if est in _SHORT_TREND_ESTIMATORS:
         return est
-    return SHORT_TREND_ESTIMATOR_STEP_WOLS
+    raise ValueError(
+        f"Unsupported short trend estimator {est!r}; expected one of {_SHORT_TREND_ESTIMATORS}"
+    )
 
 
 def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:

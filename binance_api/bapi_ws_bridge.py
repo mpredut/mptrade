@@ -40,7 +40,7 @@ def mark_ws_available(value: bool) -> bool:
     global _ws_available
     with _ws_health_lock:
         _ws_available = _parse_bool_flag(value)
-        for mod_name in ("cacheManager", "cacheInterface"):
+        for mod_name in ("cacheManager", "cacheaccount", "cacheInterface"):
             mod = sys.modules.get(mod_name)
             if mod is not None:
                 mod._ws_available = _ws_available
@@ -54,7 +54,7 @@ def mark_ws_event_received(now: float | None = None) -> float:
     with _ws_health_lock:
         _ws_last_event_ts = ts
         _ws_is_healthy = True
-        for mod_name in ("cacheManager", "cacheInterface"):
+        for mod_name in ("cacheManager", "cacheaccount", "cacheInterface"):
             mod = sys.modules.get(mod_name)
             if mod is not None:
                 mod._ws_last_event_ts = ts
@@ -69,7 +69,7 @@ def mark_ws_unhealthy() -> None:
     with _ws_health_lock:
         _ws_is_healthy = False
         _ws_needs_rest_resync.update(WS_MANAGED_CACHE_CLASSES)
-        for mod_name in ("cacheManager", "cacheInterface"):
+        for mod_name in ("cacheManager", "cacheaccount", "cacheInterface"):
             mod = sys.modules.get(mod_name)
             if mod is not None:
                 mod._ws_is_healthy = False

@@ -1364,6 +1364,17 @@ class Instrument:
         except Exception:  # noqa: BLE001
             return 0.0
 
+    def cached_fee_and_limits(self, *, price: Optional[float] = None) -> dict:
+        """Return non-blocking cached fee tier and exchange limit overrides from the bound provider."""
+        from providers.base import MarketDataProvider
+
+        return MarketDataProvider.resolve_provider_cached_fee_and_limits(
+            self.provider_name,
+            self.symbol,
+            self._provider,
+            price=price,
+        )
+
     # ── params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ──────────
     def param(self, consumer: str, key: str, default: Any = None,
               cast: Optional[Callable] = None) -> Any:

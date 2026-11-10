@@ -20,6 +20,13 @@ from providers.order_ohlc_utils import (
 cache_trade_manager = None
 _cache_trade_manager_lock = threading.Lock()
 
+def clear_cache_trade_manager(expected=None):
+    """Clear the process-wide trade cache reference when the singleton is shut down."""
+    global cache_trade_manager
+    if expected is None or cache_trade_manager is expected:
+        cache_trade_manager = None
+
+
 def init_cache_trade_manager():
     """Build the cache on the first call that actually consumes trades.
 
@@ -34,6 +41,8 @@ def init_cache_trade_manager():
             import cacheManager as cm
             # Trading processes are read-only consumers. Only the central
             # cacheManager process may poll Binance and publish cache versions.
+            if hasattr(cm.CacheFactory, "register_teardown_hook"):
+                cm.CacheFactory.register_teardown_hook("Trade", clear_cache_trade_manager)
             cache_trade_manager = cm.get_cache_manager("Trade", start_sync=False)
     return cache_trade_manager
 

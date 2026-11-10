@@ -25,14 +25,12 @@ import uuid
 
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
+from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_now_ts, safe_pos_float
 from cacheInterface import (
     CacheManagerInterface,
-    _ACCOUNT_CACHE_CLASSES,
     _CACHE_META_SCHEMA_VERSION,
-    _ORDER_CACHE_CLASSES,
-    _TRADE_CACHE_CLASSES,
     _cm_override,
     _jsonl_line,
     _now_time,
@@ -54,6 +52,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import (
     extract_order_price,
@@ -78,6 +77,50 @@ from state_io import (
 )
 
 
+# WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
+WS_ONLY_MODE = _bapi_ws_bridge.WS_ONLY_MODE
+WS_LOSS_TIMEOUT_SEC = _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC
+WS_EVENT_LOG_ENABLED = _bapi_ws_bridge.WS_EVENT_LOG_ENABLED
+
+_ws_health_lock = _bapi_ws_bridge._ws_health_lock
+_ws_available = _bapi_ws_bridge._ws_available
+_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
+_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+
+
+def _mark_ws_available(value):
+    global _ws_available
+    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
+
+
+def _mark_ws_event_received():
+    global _ws_last_event_ts, _ws_is_healthy
+    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+
+
+def _mark_ws_unhealthy():
+    global _ws_is_healthy
+    _bapi_ws_bridge.mark_ws_unhealthy()
+    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+
+
+def _should_poll_for_manager(cls_name):
+    return _bapi_ws_bridge.should_poll_for_manager(
+        cls_name,
+        ws_only_mode=_cm_override("WS_ONLY_MODE", WS_ONLY_MODE),
+        ws_available=_cm_override("_ws_available", _ws_available),
+        ws_is_healthy=_cm_override("_ws_is_healthy", _ws_is_healthy),
+    )
+
+
+CacheManagerInterface.bind_runtime_services(
+    api_client=api,
+    poll_predicate=_should_poll_for_manager,
+    ws_resync_clear_hook=_bapi_ws_bridge.clear_ws_rest_resync_for_manager,
+)
+
+
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for account-domain caches (``Order``, ``Trade``, ``AssetValue``)."""
 
@@ -85,11 +128,60 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     _is_order_account_cache = False
 
     def _is_account_cache(self):
-        return bool(
-            self._is_trade_account_cache
-            or self._is_order_account_cache
-            or self.cls_name in _ACCOUNT_CACHE_CLASSES
-        )
+        return bool(self._is_trade_account_cache or self._is_order_account_cache)
+
+    def _is_canonical_account_cache(self):
+        sym_mod = _cm_override("sym", sym)
+        return self._is_account_cache() and set(self.symbols) == set(sym_mod.symbols)
+
+    def _mark_account_cache_dirty_locked(self):
+        if self._is_account_cache():
+            self._account_cache_dirty = True
+
+    def _resolve_remote_query_start_time(self, symbol: str, fallback_ft):
+        if self._is_account_cache():
+            return min(
+                self._rest_sync_cursor_per_symbol.get(symbol, fallback_ft),
+                fallback_ft,
+            )
+        return fallback_ft
+
+    def _on_symbol_remote_sync_completed(
+        self, symbol: str, request_high_water: int
+    ) -> None:
+        if self._is_account_cache():
+            with self.lock:
+                cursor_ms = max(0, request_high_water - 1)
+                self._rest_sync_cursor_per_symbol[symbol] = cursor_ms
+                self.fetchtime_per_symbol[symbol] = max(
+                    int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
+                    cursor_ms,
+                )
+                self._mark_account_cache_dirty_locked()
+
+    def _on_complete_remote_sync_cycle(
+        self, account_cycle_high_water: Optional[int]
+    ) -> None:
+        if self._is_account_cache():
+            with self.lock:
+                self._last_complete_sync_at_ms = account_cycle_high_water or 0
+
+    def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:
+        with self.lock:
+            publish = (
+                sync_complete
+                and persisted
+                and self._is_canonical_account_cache()
+                and bool(self._persisted_data_version)
+                and self._last_complete_sync_at_ms > 0
+            )
+            version = self._persisted_data_version
+            sync_at_ms = self._last_complete_sync_at_ms
+        if publish:
+            ach = _cm_override("account_cache_health", account_cache_health)
+            ach.record_successful_sync(
+                self.cls_name, version, now_ms=sync_at_ms
+            )
 
     @abstractmethod
     def _is_valid_item(self, item) -> bool:
@@ -166,12 +258,8 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         """Reject any financial row that strict readers could not accept."""
         _cache_integrity.validate_account_cache_state(
             cls_name=self.cls_name,
-            is_trade_cache=bool(
-                self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-            ),
-            is_order_cache=bool(
-                self._is_order_account_cache or self.cls_name in _ORDER_CACHE_CLASSES
-            ),
+            is_trade_cache=bool(self._is_trade_account_cache),
+            is_order_cache=bool(self._is_order_account_cache),
             cache=self.cache,
             fetchtime_per_symbol=self.fetchtime_per_symbol,
             rest_sync_cursor_per_symbol=self._rest_sync_cursor_per_symbol,
@@ -179,9 +267,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         )
 
     def _account_reader_reason(self):
-        is_trade = bool(
-            self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-        )
+        is_trade = bool(self._is_trade_account_cache)
         prefix = "trade" if is_trade else "order"
         return f"{prefix}_cache_reader_not_current"
 
@@ -199,9 +285,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     def _load_versioned_account_meta(self, *, optional=False, required_version=None):
         """Load and validate the small durable account-cache manifest."""
-        is_trade = bool(
-            self._is_trade_account_cache or self.cls_name in _TRADE_CACHE_CLASSES
-        )
+        is_trade = bool(self._is_trade_account_cache)
         return _cache_integrity.load_versioned_account_meta_file(
             meta_file_path(self.filename),
             is_trade_cache=is_trade,

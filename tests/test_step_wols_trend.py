@@ -138,7 +138,8 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")
             self.assertEqual(pw._resolve_step_wols_power("step_wols"), 2.0)
         with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "bogus"}):
-            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")
+            with self.assertRaises(ValueError):
+                pw._resolve_short_trend_estimator()
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MPTRADE_SHORT_TREND_ESTIMATOR", None)
             self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")

@@ -1,6 +1,7 @@
 """Specialized Multi-Source Feeds & Dynamic Crisis Lexicon Discovery (SSOT sub-module)."""
 from __future__ import annotations
 
+import configparser
 import logging
 import os
 import re
@@ -8,18 +9,89 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
+    load_ini_config,
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
+    resolve_patched_attr,
     safe_float,
+    safe_int,
+    safe_pos_float,
     split_csv,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_dict_cached, save_json_state
 
-_ssot: Any = None
-
 logger = logging.getLogger(__name__)
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
+
+
+def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
+    """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
+    default_path = resolve_patched_attr(
+        "DEFAULT_MACRO_CONFIG_PATH",
+        DEFAULT_MACRO_CONFIG_PATH,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
+    )
+    target = config_path or os.environ.get("MACRO_INTELLIGENCE_CONF") or default_path
+    try:
+        return load_ini_config(target, must_exist=False, inline_comments=True)
+    except Exception as exc:
+        logger.warning("Failed reading %s: %s", target, exc)
+        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+
+
+def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
+    loader = resolve_patched_attr(
+        "load_macro_intelligence_config",
+        load_macro_intelligence_config,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
+        require_callable=True,
+    )
+    cfg = loader(config_path)
+    return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
+
+
+def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
+        require_callable=True,
+    )
+    return safe_float(cfg_str_fn(section, key, "", config_path=config_path), fallback)
+
+
+def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
+        require_callable=True,
+    )
+    raw = cfg_str_fn(section, key, "", config_path=config_path)
+    if not raw:
+        return fallback
+    if "/" in raw:
+        num_s, den_s = raw.split("/", 1)
+        num = safe_float(num_s.strip(), None)
+        den = safe_pos_float(den_s.strip(), 0.0)
+        if num is not None and den > 0.0:
+            return float(num) / float(den)
+    return safe_float(raw, fallback)
+
+
+def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
+        require_callable=True,
+    )
+    return safe_int(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 _LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[str, ...]]] = {}
@@ -153,7 +225,7 @@ _SEED_SETS_CACHE: Dict[str, Tuple[Any, Set[str]]] = {}
 
 
 def _get_stopwords_set() -> Set[str]:
-    raw = _ssot._cfg_str("lexicon_seed", "stopwords")
+    raw = _cfg_str("lexicon_seed", "stopwords")
     cached = _SEED_SETS_CACHE.get("stopwords")
     if cached is not None and cached[0] == raw:
         return cached[1]
@@ -163,7 +235,7 @@ def _get_stopwords_set() -> Set[str]:
 
 
 def _get_crisis_stems_set() -> Set[str]:
-    raw = _ssot._cfg_str("lexicon_seed", "crisis_context_stems")
+    raw = _cfg_str("lexicon_seed", "crisis_context_stems")
     cached = _SEED_SETS_CACHE.get("crisis_stems")
     if cached is not None and cached[0] == raw:
         return cached[1]
@@ -173,8 +245,8 @@ def _get_crisis_stems_set() -> Set[str]:
 
 
 def _get_seed_terms_set() -> Set[str]:
-    raw_h = _ssot._cfg_str("lexicon_seed", "high_severity_terms")
-    raw_a = _ssot._cfg_str("lexicon_seed", "acute_shock_phrases")
+    raw_h = _cfg_str("lexicon_seed", "high_severity_terms")
+    raw_a = _cfg_str("lexicon_seed", "acute_shock_phrases")
     key_sig = (raw_h, raw_a)
     cached = _SEED_SETS_CACHE.get("seed_terms")
     if cached is not None and cached[0] == key_sig:
@@ -691,7 +763,7 @@ def _strip_headline_publisher_suffix(title: str) -> str:
 
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
-    fname = _ssot._cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
+    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
     return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname) if cache_dir else cache_path(fname)))
 
 
@@ -704,7 +776,7 @@ def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
     """Load unexpired dynamically discovered high-severity and acute-shock terms from cachedb."""
     now = resolve_now_ts(now_ts)
-    ttl = _ssot._cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
+    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
     empty_res: Dict[str, Tuple[str, ...]] = {
         "high_severity_terms": (),
@@ -773,7 +845,7 @@ def update_dynamic_lexicon(
 ) -> Dict[str, Tuple[str, ...]]:
     """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
     now = resolve_now_ts(now_ts)
-    ttl = _ssot._cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
+    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
 
     stopwords = _get_stopwords_set()
@@ -848,7 +920,7 @@ def demote_dynamic_acute_terms(
 ) -> bool:
     """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
     now = resolve_now_ts(now_ts)
-    ttl = _ssot._cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
+    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
@@ -897,13 +969,13 @@ def demote_dynamic_acute_terms(
 
 
 def get_active_severity_keywords(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = split_csv(_ssot._cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
+    seed = split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ())
     return tuple(dict.fromkeys((*seed, *dyn)))
 
 
 def get_active_acute_shock_phrases(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = split_csv(_ssot._cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    seed = split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ())
     return tuple(dict.fromkeys((*seed, *dyn)))
 
@@ -1021,8 +1093,8 @@ def record_dynamic_crisis_terms_from_assessment(
 
 def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> str:
     """Dynamically construct the supplementary RSS query URL from active dynamic lexicon + config."""
-    template = _ssot._cfg_str("feeds", "dynamic_search_rss_template")
-    max_terms = max(4, _ssot._cfg_int("feeds", "dynamic_search_max_terms", 16))
+    template = _cfg_str("feeds", "dynamic_search_rss_template")
+    max_terms = max(4, _cfg_int("feeds", "dynamic_search_max_terms", 16))
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts)
     candidates = (*dyn.get("acute_shock_phrases", ()), *dyn.get("high_severity_terms", ()), *get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts))
     prioritized: List[str] = []
@@ -1044,7 +1116,7 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
 
 def build_equity_tickers_rss_url() -> str:
     """Build the Yahoo Finance RSS headline feed URL for all active tracked equity tickers."""
-    template = _ssot._cfg_str("feeds", "equity_tickers_rss_template")
+    template = _cfg_str("feeds", "equity_tickers_rss_template")
     if not template:
         return ""
     try:
@@ -1067,7 +1139,7 @@ def build_equity_tickers_rss_url() -> str:
 
 def get_equity_entity_keywords() -> Tuple[str, ...]:
     """Return configured equity company/ticker keywords plus active tracked equity base symbols."""
-    cfg_kws = list(split_csv(_ssot._cfg_str("feeds", "equity_entity_keywords"), lower=True))
+    cfg_kws = list(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
     try:
         from cachepaths import canonical_base_asset
         from instrument_registry import is_equity_symbol, tracked_price_instruments
@@ -1099,7 +1171,7 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
     return tuple(
         dict.fromkeys(
             (
-                *split_csv(_ssot._cfg_str("feeds", "specialized_rss_urls")),
+                *split_csv(_cfg_str("feeds", "specialized_rss_urls")),
                 *([eq_url] if eq_url else []),
                 *([dyn_url] if dyn_url else []),
             )
@@ -1109,7 +1181,7 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
 
 def get_excluded_reference_sources() -> Tuple[str, ...]:
     """Load static encyclopedia/dictionary reference sources excluded from live breaking news."""
-    return split_csv(_ssot._cfg_str("feeds", "excluded_reference_sources"), lower=True)
+    return split_csv(_cfg_str("feeds", "excluded_reference_sources"), lower=True)
 
 
 def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:
@@ -1422,7 +1494,4 @@ def has_acute_shock_keywords(
         ):
             return True
     return False
-
-
-import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
 

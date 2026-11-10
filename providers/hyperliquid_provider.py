@@ -14,6 +14,7 @@ does not require the SDK or credentials. Unavailable read dependencies generally
 from __future__ import annotations
 
 import inspect
+import math
 import os
 import re
 import sys
@@ -34,6 +35,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import CACHE_HYPERLIQUID_TRADE_FILENAME, canonical_base_asset
+from instrument_registry import casefold_get
 from .base import (
     MarketDataProvider,
     bool_env,
@@ -267,6 +269,12 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[HL] resolve_spot_pair({self._token}) failed: {e}")
         return self._spot_pair
+
+    def spot_pair(self, symbol: Optional[str] = None) -> Optional[str]:
+        """Return the resolved Hyperliquid spot pair identifier (e.g. '@107') for ``symbol``."""
+        if symbol is not None:
+            self.validate_symbol(symbol)
+        return self._pair()
 
     # -- Public market data without a key. -------------------------------------
     def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
@@ -631,6 +639,59 @@ class HyperliquidProvider(MarketDataProvider):
         # retain notional enforcement.
         return PairPrecision(price_decimals=max(8 - szd, 0), volume_decimals=szd,
                              order_min=0.0, base_asset=self._token)
+
+    @classmethod
+    def extract_cached_fee_and_limits(
+        cls,
+        provider: object,
+        symbol: str,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
+        """Extract non-blocking cached size/price precision limits for ``symbol``."""
+        if provider is None:
+            return {}
+        client = getattr(provider, "_client", None)
+        base_tok = canonical_base_asset(symbol)
+        meta_cache = getattr(provider, "_meta_cache", None) or getattr(client, "_meta_cache", None)
+        meta_entry = casefold_get(meta_cache, base_tok) if isinstance(meta_cache, dict) else None
+        sz_dec = safe_nonneg_float(meta_entry.get("szDecimals"), default=None) if isinstance(meta_entry, dict) else None
+        if sz_dec is None:
+            sz_cache = getattr(client, "_sz_decimals_cache", None)
+            if isinstance(sz_cache, dict):
+                sz_dec = safe_nonneg_float(casefold_get(sz_cache, base_tok), default=None)
+        if sz_dec is None:
+            info_obj = getattr(client, "info", None)
+            c2a = getattr(info_obj, "coin_to_asset", None)
+            a2sz = getattr(info_obj, "asset_to_sz_decimals", None)
+            n2c = getattr(info_obj, "name_to_coin", None)
+            if isinstance(c2a, dict) and isinstance(a2sz, dict):
+                spot_pair = getattr(provider, "_spot_pair", None) or (
+                    casefold_get(n2c, f"{base_tok}/USDC") if isinstance(n2c, dict) else None
+                )
+                sz_dec = next(
+                    (
+                        v
+                        for ck in (spot_pair, base_tok)
+                        if ck
+                        and (asset_id := casefold_get(c2a, ck)) is not None
+                        and (v := safe_nonneg_float(a2sz.get(asset_id), default=None)) is not None
+                    ),
+                    None,
+                )
+        out: dict = {}
+        if sz_dec is not None and 0 <= int(sz_dec) <= 18:
+            sz_i = int(sz_dec)
+            step = round(10.0 ** (-sz_i), 8)
+            out["step_size"] = step
+            out["min_qty"] = step
+            px_f = safe_pos_float(price, default=0.0) or 0.0
+            eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
+            out["tick_size"] = round(10.0 ** (-eff_px_dec), 8)
+        return out
+
+    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
+        return self.extract_cached_fee_and_limits(self, symbol, price=price)
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)

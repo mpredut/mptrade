@@ -27,11 +27,10 @@ import json
 import os
 import threading
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 import websockets as _websockets
 
 from binance_api import bapi as api
-from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 from binance_api.bapi_ws import (
     PublicPriceStreamBase,
     WS_CLOSE_TIMEOUT,
@@ -108,10 +107,25 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
+    _default_current_price_getter: Optional[Callable[..., Any]] = None
 
-    def __init__(self, *args, **kwargs):
+    @classmethod
+    def bind_current_price_getter(cls, getter: Callable[..., Any]) -> None:
+        """Bind the default current-price reader factory from ``cacheManager``."""
+        if callable(getter):
+            cls._default_current_price_getter = staticmethod(getter)
+
+    def __init__(
+        self,
+        *args,
+        current_price_getter: Optional[Callable[..., Any]] = None,
+        current_price_mgr: Any = None,
+        **kwargs,
+    ):
         if type(self) is CachePriceManagerBase:
             raise TypeError("Cannot instantiate abstract class CachePriceManagerBase")
+        self._current_price_getter = current_price_getter
+        self._current_price_mgr = current_price_mgr
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -160,12 +174,21 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
                 if self.cache.get(symbol):
                     return []
         try:
-            get_cpm = _cm_override("get_current_price_manager")
-            if get_cpm is None:
-                import cacheManager as _cm_mod
-
-                get_cpm = _cm_mod.get_current_price_manager
-            entry = get_cpm(start_sync=False).get_price(symbol)
+            cpm = getattr(self, "_current_price_mgr", None)
+            if cpm is None:
+                default_getter = (
+                    getattr(self, "_current_price_getter", None)
+                    or self._default_current_price_getter
+                )
+                get_cpm = _cm_override("get_current_price_manager", default_getter)
+                if callable(get_cpm):
+                    try:
+                        cpm = get_cpm(start_sync=False)
+                    except TypeError:
+                        cpm = get_cpm()
+            if cpm is None:
+                return []
+            entry = cpm.get_price(symbol)
         except Exception as e:
             print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
             return []
@@ -191,7 +214,17 @@ class CacheSparsePriceManager(CachePriceManagerBase):
     FILE_PREFIX = CACHE_SPARSE_PRICE_PREFIX
     FILE_EXT = "jsonl"
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        current_price_getter=None,
+        current_price_mgr=None,
+    ):
         if api_client is None:
             api_client = _cm_override("api", api)
         super().__init__(
@@ -202,6 +235,8 @@ class CacheSparsePriceManager(CachePriceManagerBase):
             api_client=api_client,
             append_persist=True,
             read_only=read_only,
+            current_price_getter=current_price_getter,
+            current_price_mgr=current_price_mgr,
         )
 
 
@@ -213,7 +248,17 @@ class Cache24PriceManager(CachePriceManagerBase):
     FILE_EXT = "json"
     _filter_fetchtimes_to_symbols = True
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        current_price_getter=None,
+        current_price_mgr=None,
+    ):
         if api_client is None:
             api_client = _cm_override("api", api)
         super().__init__(
@@ -223,6 +268,8 @@ class Cache24PriceManager(CachePriceManagerBase):
             append_mode=True,
             api_client=api_client,
             read_only=read_only,
+            current_price_getter=current_price_getter,
+            current_price_mgr=current_price_mgr,
         )
         self._filter_maps_to_configured_symbols_locked()
 
@@ -449,10 +496,22 @@ class Cache365PriceManager(Cache24PriceManager):
         atomic_write_jsonl(target_path, rows)
         return True
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        current_price_getter=None,
+        current_price_mgr=None,
+    ):
         if api_client is None:
             api_client = _cm_override("api", api)
         self._last_long_trim = 0.0
+        self._current_price_getter = current_price_getter
+        self._current_price_mgr = current_price_mgr
         CacheManagerInterface.__init__(
             self,
             sync_ts,
@@ -920,10 +979,21 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         return self._is_ws_ts_map_healthy(self._ws_last_event_ts_per_symbol, symbol)
 
-    def _real_ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
+    def is_real_ws_healthy(self, symbol: Optional[str] = None) -> bool:
         return self._is_ws_ts_map_healthy(
             self._ws_stream_event_ts_per_symbol, symbol
         )
+
+    _real_ws_is_healthy = is_real_ws_healthy
+
+    def mark_symbol_ws_event(self, symbol: str, now_ts: Optional[float] = None) -> None:
+        ts_val = safe_nonneg_float(now_ts, default=None)
+        if ts_val is None:
+            ts_val = _now_time()
+        self._ws_last_event_ts_per_symbol[symbol] = ts_val
+
+    def is_rth_gate_enforced(self) -> Optional[bool]:
+        return getattr(self, "_enforce_rth_gate", None)
 
     def _record_price_timestamp(self, symbol: str) -> None:
         now = _now_time()
@@ -934,7 +1004,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             while dq and dq[0] < cutoff:
                 dq.popleft()
 
-    def _push_price(
+    def push_price(
         self, symbol: str, price: float, ts_ms: Optional[int] = None
     ) -> None:
         if isinstance(ts_ms, bool):
@@ -952,8 +1022,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._notify_price_subscribers(symbol, ts_val, price_val)
 
+    _push_price = push_price
+
     @staticmethod
-    def _extract_price_and_ts(items):
+    def extract_price_and_ts(items):
         if not items or not isinstance(items, (list, tuple)):
             return None, None
         candidates = (
@@ -967,6 +1039,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if ts_ms is not None and price is not None:
                 return price, ts_ms
         return None, None
+
+    _extract_price_and_ts = extract_price_and_ts
 
     def on_items_update(self, symbol: str, items):
         price, ts_ms = self._extract_price_and_ts(items)
@@ -1029,7 +1103,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if is_rth_sym:
                     self._rth_empty_backoff_ts.pop(symbol, None)
                 self._persist_items(symbol, new_items)
-        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
+        self._clear_ws_rest_resync()
         return True
 
     def get_remote_items(self, symbol, startTime):
@@ -1079,6 +1153,41 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if span is None:
             return fb
         return span / (len(samples) - 1)
+
+    def get_sustained_sample_rate(
+        self, symbol: str, *, min_span_sec: float = 5.0
+    ) -> Optional[float]:
+        """Return observed sample rate when at least two ticks span ``>= min_span_sec``, else ``None``."""
+        with self.lock:
+            dq = self._timestamps_deque_locked(symbol)
+            samples = list(dq) if dq else []
+        if len(samples) < 2:
+            return None
+        span = safe_pos_float(samples[-1] - samples[0], default=None)
+        if span is None or span < float(min_span_sec):
+            return None
+        return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (len(samples) - 1))
+
+    @classmethod
+    def resolve_sustained_sample_rate(
+        cls, cpm, symbol: str, *, min_span_sec: float = 5.0
+    ) -> Optional[float]:
+        """Resolve sustained sample rate from a ``CacheCurrentPriceManager`` or compatible test double."""
+        if cpm is None:
+            return None
+        if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
+            return safe_pos_float(cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_sec), default=None)
+        lock_obj = getattr(cpm, "lock", None)
+        with lock_obj if hasattr(lock_obj, "__enter__") else threading.RLock():
+            ts_map = getattr(cpm, "_update_timestamps", None)
+            dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
+            samples = list(dq) if dq else []
+        if len(samples) < 2 or (samples[-1] - samples[0]) < float(min_span_sec):
+            return None
+        sr_fn = getattr(cpm, "get_sample_rate", None)
+        if callable(sr_fn):
+            return safe_pos_float(sr_fn(symbol, fallback=None), default=None)
+        return safe_pos_float((samples[-1] - samples[0]) / (len(samples) - 1), default=None)
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         max_age = safe_pos_float(max_age_sec, default=None)
@@ -1491,12 +1600,16 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
                     not hasattr(prov, "supports_symbol")
                     or prov.supports_symbol(symbol)
                 ):
-                    pair_fn = getattr(prov, "_pair", None)
-                    spot_pair = (
-                        pair_fn()
-                        if callable(pair_fn)
-                        else getattr(prov, "_spot_pair", None)
-                    )
+                    spot_pair_fn = getattr(prov, "spot_pair", None)
+                    if callable(spot_pair_fn):
+                        spot_pair = spot_pair_fn(symbol)
+                    else:
+                        pair_fn = getattr(prov, "_pair", None)
+                        spot_pair = (
+                            pair_fn()
+                            if callable(pair_fn)
+                            else getattr(prov, "_spot_pair", None)
+                        )
                     if isinstance(spot_pair, str) and spot_pair.strip():
                         keys.append(spot_pair.strip())
             except Exception:
@@ -1912,11 +2025,28 @@ def _start_nonbinance_trend_poller(
     )
     stop_event = threading.Event()
 
+    def _mark_symbol_ws_ts(sym_key: str, ts_val: float) -> None:
+        mark_fn = getattr(cpm, "mark_symbol_ws_event", None)
+        if callable(mark_fn):
+            mark_fn(sym_key, ts_val)
+            return
+        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
+        if isinstance(ws_ts_map, dict):
+            ws_ts_map[sym_key] = ts_val
+
+    def _is_ws_healthy(sym_key: str) -> bool:
+        fn = getattr(cpm, "is_real_ws_healthy", None) or getattr(
+            cpm, "_real_ws_is_healthy", None
+        )
+        return bool(fn(sym_key)) if callable(fn) else False
+
     def run():
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
         cpm_cache = getattr(cpm, "cache", None)
-        extract_fn = getattr(cpm, "_extract_price_and_ts", None)
+        extract_fn = getattr(cpm, "extract_price_and_ts", None) or getattr(
+            cpm, "_extract_price_and_ts", None
+        )
         if isinstance(cpm_cache, dict) and callable(extract_fn):
             for s in symbols:
                 try:
@@ -1926,34 +2056,33 @@ def _start_nonbinance_trend_poller(
                 except Exception:
                     pass
         if ws_streams:
-            real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
-            if callable(real_ws_fn):
-                for _ in range(20):
-                    if stop_event.is_set() or all(real_ws_fn(s) for s in symbols):
-                        break
-                    stop_event.wait(0.1)
+            for _ in range(20):
+                if stop_event.is_set() or all(_is_ws_healthy(s) for s in symbols):
+                    break
+                stop_event.wait(0.1)
         while not stop_event.is_set():
             for s in symbols:
                 if stop_event.is_set():
                     break
-                real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
-                if callable(real_ws_fn) and real_ws_fn(s):
+                if _is_ws_healthy(s):
                     continue
+                rth_gate_fn = getattr(cpm, "is_rth_gate_enforced", None)
+                rth_gate_flag = (
+                    rth_gate_fn()
+                    if callable(rth_gate_fn)
+                    else getattr(cpm, "_enforce_rth_gate", None)
+                )
                 rth_gate_active = is_rth_gate_enabled(
-                    getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
+                    rth_gate_flag, rth_fn=is_us_rth_open
                 )
                 now_ts = time.time()
                 if rth_gate_active and not is_symbol_market_open(s, now_ts):
                     if s in rth_seeded:
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = now_ts
+                        _mark_symbol_ws_ts(s, now_ts)
                         continue
                     last_empty = empty_backoff_ts.get(s, 0.0)
                     if last_empty > 0.0 and (now_ts - last_empty) < 300.0:
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = now_ts
+                        _mark_symbol_ws_ts(s, now_ts)
                         continue
                 elif rth_gate_active:
                     last_empty = empty_backoff_ts.get(s, 0.0)
@@ -1971,10 +2100,12 @@ def _start_nonbinance_trend_poller(
                     if pf is not None:
                         rth_seeded.add(s)
                         empty_backoff_ts.pop(s, None)
-                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                        if isinstance(ws_ts_map, dict):
-                            ws_ts_map[s] = time.time()
-                        cpm._push_price(s, pf)
+                        _mark_symbol_ws_ts(s, time.time())
+                        push_fn = getattr(cpm, "push_price", None) or getattr(
+                            cpm, "_push_price", None
+                        )
+                        if callable(push_fn):
+                            push_fn(s, pf)
                     else:
                         empty_backoff_ts[s] = time.time()
                 except _futures.TimeoutError:

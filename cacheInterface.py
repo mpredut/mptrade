@@ -16,12 +16,9 @@ import os
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 import weakref
 
-from binance_api import bapi as api
-from binance_api import bapi_ws_bridge as _bapi_ws_bridge
-import binance_cache_health as account_cache_health
 from botcore import (
     load_dotenv,
     required_float_env,
@@ -38,7 +35,6 @@ from cachepaths import (
     clean_symbol_key,
     migrate_legacy_filename_if_needed,
 )
-import instrument_registry as sym
 from lock import FileLock
 from providers.base import (
     _parse_bool_flag,
@@ -94,26 +90,12 @@ for _name, _value in (
     if _value <= 0:
         raise ValueError(f"{_name} must be positive")
 
-# WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
-WS_ONLY_MODE = _bapi_ws_bridge.WS_ONLY_MODE
-WS_LOSS_TIMEOUT_SEC = _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC
-WS_EVENT_LOG_ENABLED = _bapi_ws_bridge.WS_EVENT_LOG_ENABLED
-
-_ws_health_lock = _bapi_ws_bridge._ws_health_lock
-_ws_available = _bapi_ws_bridge._ws_available
-_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
-_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
 _CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
-_TRADE_CACHE_CLASSES = {"CacheTradeManager"}
-_ORDER_CACHE_CLASSES = {"CacheOrderManager"}
-_ACCOUNT_CACHE_CLASSES = _ORDER_CACHE_CLASSES | _TRADE_CACHE_CLASSES
 
 _ORIG_BASE_ATTRS = {
     "time": time,
     "atomic_write_json": atomic_write_json,
     "atomic_snapshot_file": atomic_snapshot_file,
-    "WS_ONLY_MODE": WS_ONLY_MODE,
 }
 
 
@@ -140,21 +122,6 @@ def _monotonic_time() -> float:
     t_mod = _cm_override("time", time)
     mono_fn = getattr(t_mod, "monotonic", None)
     return mono_fn() if callable(mono_fn) else time.monotonic()
-
-
-_mark_ws_available = _bapi_ws_bridge.mark_ws_available
-_mark_ws_event_received = _bapi_ws_bridge.mark_ws_event_received
-_mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
-
-
-def _should_poll_for_manager(cls_name):
-    cm = sys.modules.get("cacheManager")
-    return _bapi_ws_bridge.should_poll_for_manager(
-        cls_name,
-        ws_only_mode=_cm_override("WS_ONLY_MODE", WS_ONLY_MODE),
-        ws_available=getattr(cm, "_ws_available", _ws_available) if cm is not None else _ws_available,
-        ws_is_healthy=getattr(cm, "_ws_is_healthy", _ws_is_healthy) if cm is not None else _ws_is_healthy,
-    )
 
 
 def _strict_int_field(val, *, min_value: int = 1) -> Optional[int]:
@@ -216,13 +183,33 @@ class CacheManagerInterface(ABC):
     RESYNC_INTERVAL_SEC = CM_RESYNC_INTERVAL_SEC
     DEDUP_WINDOW = CM_DEDUP_WINDOW
 
+    _default_api_client: Any = None
+    _poll_predicate: Optional[Callable[[str], bool]] = None
+    _ws_resync_clear_hook: Optional[Callable[[str], None]] = None
+
+    @classmethod
+    def bind_runtime_services(
+        cls,
+        *,
+        api_client: Any = None,
+        poll_predicate: Optional[Callable[[str], bool]] = None,
+        ws_resync_clear_hook: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Bind optional runtime services (API client, poll predicate, WS resync clear hook) from factory/daemon."""
+        if api_client is not None:
+            cls._default_api_client = api_client
+        if callable(poll_predicate):
+            cls._poll_predicate = staticmethod(poll_predicate)
+        if callable(ws_resync_clear_hook):
+            cls._ws_resync_clear_hook = staticmethod(ws_resync_clear_hook)
+
     def __init__(
         self,
         sync_ts,
         symbols,
         filename,
         append_mode=True,
-        api_client=api,
+        api_client=None,
         append_persist=False,
         read_only=False,
     ):
@@ -232,7 +219,11 @@ class CacheManagerInterface(ABC):
         self.symbols = _coerce_symbol_list(symbols)
         self.filename = u.cache_path(filename)
         self.append_mode = _parse_bool_flag(append_mode, default=True)
-        self.api_client = api_client
+        self.api_client = (
+            api_client
+            if api_client is not None
+            else _cm_override("api", self._default_api_client)
+        )
         self.append_persist = _parse_bool_flag(append_persist, default=False)
         self.read_only = _parse_bool_flag(read_only, default=False)
         self._persisted_counts = {}
@@ -451,14 +442,13 @@ class CacheManagerInterface(ABC):
             return 0
 
     def _is_account_cache(self):
-        return self.cls_name in _ACCOUNT_CACHE_CLASSES
+        return False
 
     def _is_canonical_account_cache(self):
-        return self._is_account_cache() and set(self.symbols) == set(sym.symbols)
+        return False
 
     def _mark_account_cache_dirty_locked(self):
-        if self._is_account_cache():
-            self._account_cache_dirty = True
+        pass
 
     def _hydrate_fetchtimes_from_mapping_locked(
         self,
@@ -1024,6 +1014,24 @@ class CacheManagerInterface(ABC):
         """Persist one symbol to the cache by default."""
         self.update_cache_per_symbol(symbol, new_items)
 
+    def _resolve_remote_query_start_time(self, symbol: str, fallback_ft):
+        return fallback_ft
+
+    def _on_symbol_remote_sync_completed(
+        self, symbol: str, request_high_water: int
+    ) -> None:
+        pass
+
+    def _on_complete_remote_sync_cycle(
+        self, account_cycle_high_water: Optional[int]
+    ) -> None:
+        pass
+
+    def _clear_ws_rest_resync(self) -> None:
+        hook = self._ws_resync_clear_hook
+        if callable(hook):
+            hook(self.cls_name)
+
     def query_remote_and_update_cache(self):
         self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
 
@@ -1033,14 +1041,8 @@ class CacheManagerInterface(ABC):
             fallback_ft = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
             )
-            if self._is_account_cache():
-                startTime = min(
-                    self._rest_sync_cursor_per_symbol.get(symbol, fallback_ft),
-                    fallback_ft,
-                )
-            else:
-                startTime = fallback_ft
-            if self._is_account_cache() and account_cycle_high_water is None:
+            startTime = self._resolve_remote_query_start_time(symbol, fallback_ft)
+            if account_cycle_high_water is None:
                 account_cycle_high_water = request_high_water
             new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
             if new_items is None:
@@ -1053,19 +1055,9 @@ class CacheManagerInterface(ABC):
                 )
             else:
                 self._persist_items(symbol, new_items)
-            if self._is_account_cache():
-                with self.lock:
-                    cursor_ms = max(0, request_high_water - 1)
-                    self._rest_sync_cursor_per_symbol[symbol] = cursor_ms
-                    self.fetchtime_per_symbol[symbol] = max(
-                        int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
-                        cursor_ms,
-                    )
-                    self._mark_account_cache_dirty_locked()
-        if self._is_account_cache():
-            with self.lock:
-                self._last_complete_sync_at_ms = account_cycle_high_water or 0
-        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
+            self._on_symbol_remote_sync_completed(symbol, request_high_water)
+        self._on_complete_remote_sync_cycle(account_cycle_high_water)
+        self._clear_ws_rest_resync()
         return True
 
     def on_items_update(self, symbol, items):
@@ -1075,24 +1067,13 @@ class CacheManagerInterface(ABC):
 
     def _should_poll(self):
         """Decide whether the synchronization loop polls the API."""
-        poll_fn = _cm_override("_should_poll_for_manager", _should_poll_for_manager)
-        return poll_fn(self.cls_name)
+        poll_fn = _cm_override("_should_poll_for_manager", self._poll_predicate)
+        if callable(poll_fn):
+            return bool(poll_fn(self.cls_name))
+        return True
 
     def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:
-        with self.lock:
-            publish = (
-                sync_complete
-                and persisted
-                and self._is_canonical_account_cache()
-                and bool(self._persisted_data_version)
-                and self._last_complete_sync_at_ms > 0
-            )
-            version = self._persisted_data_version
-            sync_at_ms = self._last_complete_sync_at_ms
-        if publish:
-            account_cache_health.record_successful_sync(
-                self.cls_name, version, now_ms=sync_at_ms
-            )
+        pass
 
     def _persist_periodic_state(self, sync_complete):
         """Persist one cycle and publish periodic sync health when applicable."""

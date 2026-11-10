@@ -16,6 +16,7 @@ from botcore import (
     extract_current_price_item,
     is_shared_disk_cache_enabled,
     resolve_now_ts,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -104,6 +105,55 @@ class MarketDataProvider(ABC):
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
+    _ssot_current_price_reader: Any = None
+    _ssot_short_trend_reader: Any = None
+
+    @classmethod
+    def bind_ssot_cache_readers(
+        cls,
+        *,
+        current_price_reader: Any = None,
+        short_trend_reader: Any = None,
+    ) -> None:
+        """Bind read-only SSOT memory cache getters for current price and short trend."""
+        if current_price_reader is not None:
+            cls._ssot_current_price_reader = current_price_reader
+        if short_trend_reader is not None:
+            cls._ssot_short_trend_reader = short_trend_reader
+
+    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
+        """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
+        return {}
+
+    @staticmethod
+    def resolve_provider_cached_fee_and_limits(
+        venue: str,
+        symbol: str,
+        provider: Any,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
+        """Resolve cached fee/limit overrides from ``provider`` via public hook or venue adapter."""
+        if provider is None:
+            return {}
+        method = getattr(type(provider), "resolve_cached_fee_and_limits", None)
+        if callable(method):
+            try:
+                res = provider.resolve_cached_fee_and_limits(symbol, price=price)
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+        v_norm = normalize_venue_name(venue or getattr(provider, "name", ""))
+        if v_norm == "kraken":
+            from .kraken_provider import KrakenProvider
+
+            return KrakenProvider.extract_cached_fee_and_limits(provider, symbol)
+        if v_norm == "hyperliquid":
+            from .hyperliquid_provider import HyperliquidProvider
+
+            return HyperliquidProvider.extract_cached_fee_and_limits(provider, symbol, price=price)
+        return {}
 
     def validate_symbol(self, symbol: str) -> None:
         """Reject a symbol incompatible with this configured provider instance."""
@@ -632,8 +682,14 @@ class MarketDataProvider(ABC):
     ) -> Optional[float]:
         max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
         if use_memory_manager:
-            cm = sys.modules.get("cacheManager")
-            cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
+            cpm = None
+            if callable(MarketDataProvider._ssot_current_price_reader):
+                try:
+                    cpm = MarketDataProvider._ssot_current_price_reader()
+                except Exception:
+                    cpm = None
+            if cpm is None:
+                cpm = resolve_patched_attr("_current_price_instance", None, modules=("cacheManager",))
             cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
             cpm_matches_path = (
                 not isinstance(cpm_file, str)
@@ -792,25 +848,38 @@ class MarketDataProvider(ABC):
         custom_path = getattr(self, "_ssot_trend_cache_path", None)
         now_s = time.time()
         if custom_path is None:
-            cm = sys.modules.get("cacheManager")
-            stm = getattr(cm, "_short_trend_instance", None) if cm is not None else None
+            stm = None
+            if callable(self._ssot_short_trend_reader):
+                try:
+                    stm = self._ssot_short_trend_reader()
+                except Exception:
+                    stm = None
+            if stm is None:
+                stm = resolve_patched_attr("_short_trend_instance", None, modules=("cacheManager",))
             if stm is not None:
-                stm_mem = getattr(stm, "_mem", None)
-                if isinstance(stm_mem, dict):
-                    lock_ctx = getattr(stm, "_lock", None) or getattr(stm, "lock", None) or contextlib.nullcontext()
-                    with contextlib.suppress(Exception), lock_ctx:
-                        for cand in candidates:
-                            snap = casefold_get(stm_mem, cand)
-                            if isinstance(snap, dict) and _is_fresh_obs_ts(extract_timestamp_s(snap, default=None), now_s, max_age):
-                                return dict(snap)
-                elif hasattr(stm, "get_fresh_snapshot"):
+                if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
                     for cand in candidates:
                         with contextlib.suppress(Exception):
-                            snap = stm.get_fresh_snapshot(cand)
+                            snap = stm.get_cached_memory_snapshot(cand, max_age_sec=max_age, now_s=now_s)
                             if isinstance(snap, dict):
-                                raw_ts = extract_timestamp_s(snap, default=None)
-                                if raw_ts is None or _is_fresh_obs_ts(raw_ts, now_s, max_age):
+                                return snap
+                else:
+                    stm_mem = getattr(stm, "_mem", None)
+                    if isinstance(stm_mem, dict):
+                        lock_ctx = getattr(stm, "_lock", None) or getattr(stm, "lock", None) or contextlib.nullcontext()
+                        with contextlib.suppress(Exception), lock_ctx:
+                            for cand in candidates:
+                                snap = casefold_get(stm_mem, cand)
+                                if isinstance(snap, dict) and _is_fresh_obs_ts(extract_timestamp_s(snap, default=None), now_s, max_age):
                                     return dict(snap)
+                    elif hasattr(stm, "get_fresh_snapshot"):
+                        for cand in candidates:
+                            with contextlib.suppress(Exception):
+                                snap = stm.get_fresh_snapshot(cand)
+                                if isinstance(snap, dict):
+                                    raw_ts = extract_timestamp_s(snap, default=None)
+                                    if raw_ts is None or _is_fresh_obs_ts(raw_ts, now_s, max_age):
+                                        return dict(snap)
         trend_path = str(custom_path) if custom_path else cache_path(CACHE_SHORT_TREND_FILENAME)
         return self.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=now_s)
 

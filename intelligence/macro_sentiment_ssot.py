@@ -62,6 +62,22 @@ from cachepaths import (
     compatible_quote_suffixes,
 )
 from instrument_registry import casefold_get
+from intelligence.macro.lexicon_ssot import (
+    DEFAULT_MACRO_CONFIG_PATH,
+    _cfg_float,
+    _cfg_int,
+    _cfg_ratio,
+    _cfg_str,
+    _get_crisis_stems_set,
+    _get_seed_terms_set,
+    _get_stopwords_set,
+    _is_excluded_non_crisis_attack_keyword,
+    _is_noise_dynamic_keyword,
+    filter_valid_severity_keywords,
+    headlines_are_semantic_duplicates,
+    is_excluded_reference_news_item,
+    load_macro_intelligence_config,
+)
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -79,7 +95,6 @@ read_json_cached = _default_read_json_dict_recovering
 logger = logging.getLogger(__name__)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
 DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
 _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
 
@@ -189,43 +204,6 @@ def _parse_kv_map(raw: str) -> Dict[str, str]:
         for item in split_csv(raw, upper=True)
         if ":" in item and (k := item.split(":", 1)[0]).strip() and (v := item.split(":", 1)[1]).strip()
     }
-
-
-def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
-    """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
-    target = config_path or os.environ.get("MACRO_INTELLIGENCE_CONF") or DEFAULT_MACRO_CONFIG_PATH
-    try:
-        return load_ini_config(target, must_exist=False, inline_comments=True)
-    except Exception as exc:
-        logger.warning("Failed reading %s: %s", target, exc)
-        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-
-
-def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
-    cfg = load_macro_intelligence_config(config_path)
-    return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
-
-
-def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    return safe_float(_cfg_str(section, key, "", config_path=config_path), fallback)
-
-
-def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
-    raw = _cfg_str(section, key, "", config_path=config_path)
-    if not raw:
-        return fallback
-    if "/" in raw:
-        num_s, den_s = raw.split("/", 1)
-        num = safe_float(num_s.strip(), None)
-        den = safe_pos_float(den_s.strip(), 0.0)
-        if num is not None and den > 0.0:
-            return float(num) / float(den)
-    return safe_float(raw, fallback)
-
-
-def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
-    return safe_int(_cfg_str(section, key, "", config_path=config_path), fallback)
 
 
 def _parse_crontab_executor_interval_sec(crontab_path: Optional[str] = None) -> Optional[float]:
@@ -908,17 +886,5 @@ def scan_latest_long_trend_value(
                 if val is not None:
                     return val
     return None
-
-
-from intelligence.macro.lexicon_ssot import (  # noqa: E402
-    _get_crisis_stems_set,
-    _get_seed_terms_set,
-    _get_stopwords_set,
-    _is_excluded_non_crisis_attack_keyword,
-    _is_noise_dynamic_keyword,
-    filter_valid_severity_keywords,
-    headlines_are_semantic_duplicates,
-    is_excluded_reference_news_item,
-)
 
 

@@ -17,13 +17,12 @@ import bisect
 import builtins
 import math
 import os
-import sys
 import threading
 import time
 import weakref
 from abc import ABC
 from collections import defaultdict
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
@@ -94,18 +93,15 @@ _ORIG_CACHETREND_ATTRS = {
 
 def _cm_attr(name: str, default=None):
     """Resolve an attribute from ``cachetrend`` (when monkeypatched) or ``cacheManager``."""
-    if name in _ORIG_CACHETREND_ATTRS:
-        local_val = globals().get(name)
-        if local_val is not _ORIG_CACHETREND_ATTRS[name]:
-            return local_val
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is None:
-        main_mod = sys.modules.get("__main__")
-        if main_mod is not None and os.path.basename(getattr(main_mod, "__file__", "") or "") == "cacheManager.py":
-            cm_mod = main_mod
-        else:
-            import cacheManager as cm_mod
-    return resolve_patched_attr(name, default, modules=("cacheManager", getattr(cm_mod, "__name__", "")))
+    orig = _ORIG_CACHETREND_ATTRS.get(name, default)
+    local_val = globals().get(name, orig)
+    return resolve_patched_attr(
+        name,
+        default if default is not None else orig,
+        local_val=local_val,
+        defaults=(orig, default),
+        modules=("cachetrend", "cacheManager"),
+    )
 
 
 def _short_trend_symbol_variants(symbol) -> list:
@@ -148,6 +144,25 @@ class CacheTrendManagerBase(CacheManagerInterface, ABC):
 
     Shared by ``CacheLongTrendManager`` and ``CacheShortTrendManager``.
     """
+
+    _default_cache24_getter: Optional[Callable[[], Any]] = None
+    _default_current_price_getter: Optional[Callable[[], Any]] = None
+
+    @classmethod
+    def bind_service_getters(
+        cls,
+        *,
+        cache24_getter: Optional[Callable[[], Any]] = None,
+        current_price_getter: Optional[Callable[[], Any]] = None,
+        api_client: Any = None,
+    ) -> None:
+        """Bind default reader/service factories from ``cacheManager``."""
+        if callable(cache24_getter):
+            cls._default_cache24_getter = staticmethod(cache24_getter)
+        if callable(current_price_getter):
+            cls._default_current_price_getter = staticmethod(current_price_getter)
+        if api_client is not None:
+            cls._default_api_client = api_client
 
     def __init__(self, *args, **kwargs):
         if type(self) is CacheTrendManagerBase:
@@ -244,7 +259,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     FULL_EVAL_INTERVAL_SEC = 3.0   # Cadence for expensive complete metrics.
     FLUSH_INTERVAL_SEC     = 0.5   # Writer-only file flush cadence.
     # Every window is a slice of the same 24-hour Cache24 buffer. The smallest is primary.
-    WINDOW_SECONDS = [round(3.7 * 60, 6), round(2.5 * 60 * 60, 6)]   # [3.7 min momentum, 2.5 hours trend]
+    WINDOW_SECONDS = list(pw.DEFAULT_TREND_WINDOW_SECONDS)   # [3.7 min momentum, 2.5 hours trend]
     _live_instances = weakref.WeakSet()
 
     def __init__(
@@ -257,6 +272,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         sync_ts=None,
         api_client=None,
         read_only=None,
+        *,
+        cache24_getter=None,
+        current_price_getter=None,
     ):
         self.writer = _parse_bool_flag(writer, default=False)   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
@@ -282,6 +300,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self.windows = {}
         self.analyzers = {}
         self.current_price_mgr = None
+        self._cache24_getter = cache24_getter
+        self._current_price_getter = current_price_getter
         # start_computation supplies raw Cache24 buffers for dynamic windows. Until then,
         # dynamic windows are unavailable and safely return unknown.
         self._cache24_managers = None
@@ -435,11 +455,24 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if self.writer:
             self.prime_from_file(symbols=self.symbols, overwrite=False)
         if cache24_managers is None:
-            get_cm = _cm_attr("get_cache_manager")
-            cache24_managers = get_cm("24Price")
+            get_cm = _cm_attr("get_cache_manager", None)
+            if callable(get_cm):
+                cache24_managers = get_cm("24Price")
+            else:
+                c24_getter = (
+                    getattr(self, "_cache24_getter", None)
+                    or self._default_cache24_getter
+                )
+                if callable(c24_getter):
+                    cache24_managers = c24_getter()
         if current_price_mgr is None:
-            get_cpm = _cm_attr("get_current_price_manager")
-            current_price_mgr = get_cpm()
+            get_cpm = _cm_attr(
+                "get_current_price_manager",
+                getattr(self, "_current_price_getter", None)
+                or self._default_current_price_getter,
+            )
+            if callable(get_cpm):
+                current_price_mgr = get_cpm()
         self.current_price_mgr = current_price_mgr
         self._cache24_managers = cache24_managers   # Raw sources for dynamic windows.
         for s in self.symbols:
@@ -492,14 +525,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         # Keep PriceWindow sampling rate synchronized with sustained live cadence.
         try:
-            with getattr(self.current_price_mgr, "lock", threading.RLock()):
-                dq = (getattr(self.current_price_mgr, "_update_timestamps", None) or {}).get(symbol)
-                samples = list(dq) if dq else []
-            if len(samples) >= 2 and (samples[-1] - samples[0]) >= 5.0:
-                actual_rate = safe_pos_float(self.current_price_mgr.get_sample_rate(symbol, fallback=None), default=None)
-                if actual_rate is not None and actual_rate >= 0.1:
-                    for w in wins.values():
-                        w.set_sample_rate(actual_rate)
+            from cacheprice import CacheCurrentPriceManager
+
+            actual_rate = CacheCurrentPriceManager.resolve_sustained_sample_rate(
+                self.current_price_mgr, symbol, min_span_sec=5.0
+            )
+            if actual_rate is not None and actual_rate >= 0.1:
+                for w in wins.values():
+                    w.set_sample_rate(actual_rate)
         except Exception:
             pass
 
@@ -1361,12 +1394,30 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         """Reload flat symbol snapshots and synchronize fetchtime cursors."""
         self.prime_from_file(overwrite=True)
 
-    def get_snapshot(self, symbol):
-        """Return local calculated/primed memory, or the file for a pure reader."""
+    def get_cached_memory_snapshot(
+        self,
+        symbol,
+        *,
+        max_age_sec: Optional[float] = None,
+        now_s: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Return an in-memory snapshot for ``symbol`` without disk I/O."""
         with self._lock:
             _, val = _find_by_symbol_variant(self._mem, symbol, expected_type=dict)
-            if val is not None:
-                return dict(val)
+            if val is None:
+                return None
+            snap = dict(val)
+        if max_age_sec is not None:
+            eff_now = now_s if now_s is not None else time.time()
+            if not self._snapshot_is_usable(snap, eff_now, max_age_sec):
+                return None
+        return snap
+
+    def get_snapshot(self, symbol):
+        """Return local calculated/primed memory, or the file for a pure reader."""
+        mem_snap = self.get_cached_memory_snapshot(symbol)
+        if mem_snap is not None:
+            return mem_snap
         _, val = _find_by_symbol_variant(self._read_file(), symbol, expected_type=dict)
         return dict(val) if val is not None else None
 

@@ -41,16 +41,9 @@ from cacheInterface import (
     CM_LONG_ARCHIVE_MONTHS,
     CM_LONG_ARCHIVE_SAMPLE_SEC,
     CacheManagerInterface,
-    WS_EVENT_LOG_ENABLED,
-    WS_LOSS_TIMEOUT_SEC,
-    WS_ONLY_MODE,
     _CONFIG_ROOT,
     _coerce_symbol_list,
-    _mark_ws_available,
-    _mark_ws_event_received,
-    _mark_ws_unhealthy,
     _monotonic_time,
-    _should_poll_for_manager,
     _strict_int_field,
 )
 from cacheaccount import (
@@ -58,6 +51,17 @@ from cacheaccount import (
     CacheAssetValueManager,
     CacheOrderManager,
     CacheTradeManager,
+    WS_EVENT_LOG_ENABLED,
+    WS_LOSS_TIMEOUT_SEC,
+    WS_ONLY_MODE,
+    _mark_ws_available,
+    _mark_ws_event_received,
+    _mark_ws_unhealthy,
+    _should_poll_for_manager,
+    _ws_available,
+    _ws_health_lock,
+    _ws_is_healthy,
+    _ws_last_event_ts,
 )
 from cachepaths import migrate_legacy_filename_if_needed
 from cacheprice import (
@@ -81,7 +85,7 @@ from cachetrend import (
 )
 import instrument_registry as sym
 from instrument_registry import tracked_price_instruments
-from providers.base import _parse_bool_flag
+from providers.base import MarketDataProvider, _parse_bool_flag
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
@@ -198,8 +202,22 @@ def get_short_trend_manager(
                 _coerce_symbol_list(symbols) if isinstance(symbols, str) else symbols
             )
         _short_trend_instance = CacheShortTrendManager(
-            _syms, filename, writer=writer
+            _syms,
+            filename,
+            writer=writer,
+            cache24_getter=lambda: get_cache_manager("24Price"),
+            current_price_getter=get_current_price_manager,
         )
+    return _short_trend_instance
+
+
+def get_active_current_price_manager() -> Optional[CacheCurrentPriceManager]:
+    """Return the active in-memory ``CacheCurrentPriceManager`` singleton without creating one."""
+    return _current_price_instance or CacheFactory._instances.get("CurrentPrice")
+
+
+def get_active_short_trend_manager() -> Optional[CacheShortTrendManager]:
+    """Return the active in-memory ``CacheShortTrendManager`` singleton without creating one."""
     return _short_trend_instance
 
 
@@ -230,6 +248,17 @@ class CacheFactory:
     _instances = {}
     _sync_started = set()
     _CONFIG = {}
+    _teardown_hooks: dict = {}
+
+    @classmethod
+    def register_teardown_hook(cls, name: str, callback) -> None:
+        """Register an optional teardown callback invoked when ``name`` is removed or shut down."""
+        if not isinstance(name, str) or not name.strip() or not callable(callback):
+            return
+        with cls._lock:
+            hooks = cls._teardown_hooks.setdefault(name, [])
+            if callback not in hooks:
+                hooks.append(callback)
 
     @classmethod
     def register(
@@ -390,10 +419,15 @@ class CacheFactory:
 
             return cls._instances[name]
 
-    @staticmethod
-    def _clear_bapi_trade_manager_ref(trade_mgr) -> None:
+    @classmethod
+    def _clear_bapi_trade_manager_ref(cls, trade_mgr) -> None:
         if trade_mgr is None:
             return
+        for hook in list(cls._teardown_hooks.get("Trade", ())):
+            try:
+                hook(trade_mgr)
+            except Exception:
+                pass
         _bapi_tr = sys.modules.get("binance_api.bapi_trades")
         if (
             _bapi_tr is not None
@@ -564,6 +598,25 @@ CacheFactory.register(
 
 def get_cache_manager(name, symbols=None, *, start_sync=True):
     return CacheFactory.get(name, symbols, start_sync=start_sync)
+
+
+# Inject readers and runtime services across the domain base classes and MarketDataProvider.
+CacheManagerInterface.bind_runtime_services(
+    api_client=api,
+    poll_predicate=_should_poll_for_manager,
+    ws_resync_clear_hook=_bapi_ws_bridge.clear_ws_rest_resync_for_manager,
+)
+CachePriceManagerBase.bind_current_price_getter(get_current_price_manager)
+CacheTrendManagerBase.bind_service_getters(
+    cache24_getter=lambda: get_cache_manager("24Price"),
+    current_price_getter=get_current_price_manager,
+    api_client=api,
+)
+if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
+    MarketDataProvider.bind_ssot_cache_readers(
+        current_price_reader=get_active_current_price_manager,
+        short_trend_reader=get_active_short_trend_manager,
+    )
 
 
 def ensure_account_cache_readers(status):

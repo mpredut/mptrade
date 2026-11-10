@@ -14,6 +14,7 @@ gate. Importing this module does not eagerly initialize the Kraken client.
 """
 import os
 import re
+import sys
 import threading
 import time
 from typing import Optional, List
@@ -55,6 +56,9 @@ from cachepaths import (
     _LEGACY_KRAKEN_X_BASES,
     cache_path,
     canonical_base_asset,
+    clean_symbol_key,
+    compatible_quote_suffixes,
+    resolve_kraken_lookup_symbol,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
@@ -816,6 +820,72 @@ class KrakenProvider(MarketDataProvider):
             )
         except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"pair_precision {symbol}: malformed pair_info ({e})") from e
+
+    @classmethod
+    def extract_cached_fee_and_limits(cls, provider: object, symbol: str) -> dict:
+        """Extract non-blocking cached fee tier, ordermin, costmin, step_size, and tick_size for ``symbol``."""
+        if provider is None:
+            return {}
+        sym_u = str(symbol or "").strip().upper()
+        kr_cands = list(
+            dict.fromkeys(
+                kc
+                for kc in (
+                    symbol,
+                    sym_u,
+                    clean_symbol_key(sym_u),
+                    resolve_kraken_lookup_symbol(sym_u) if "USD" in compatible_quote_suffixes(sym_u) else None,
+                )
+                if isinstance(kc, str) and kc
+            )
+        )
+        out: dict = {}
+        minqty_map = getattr(provider, "_minqty", None)
+        if isinstance(minqty_map, dict):
+            mq = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), None)
+            if mq is not None:
+                out["min_qty"] = mq
+        client = getattr(provider, "_cli", None) or getattr(provider, "_client", None)
+        cache_dict = getattr(client, "_CACHE", None)
+        if not isinstance(cache_dict, dict):
+            kc_mod = sys.modules.get("kraken_client") or sys.modules.get("kraken.kraken_client")
+            cache_dict = getattr(kc_mod, "_CACHE", None)
+        if isinstance(cache_dict, dict):
+            def _cache_val(ckey: object) -> object:
+                return hit[1] if isinstance((hit := cache_dict.get(ckey)), tuple) and len(hit) >= 2 else None
+
+            p_meta = next((m for kc in kr_cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
+            if p_meta is None:
+                p_meta = next(
+                    (
+                        v
+                        for kc in kr_cands
+                        if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict)
+                        for v in ap_res.values()
+                        if isinstance(v, dict)
+                    ),
+                    None,
+                )
+            if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
+                p_meta = next((ap_all_res[kc] for kc in kr_cands if isinstance(ap_all_res.get(kc), dict)), None)
+            if isinstance(p_meta, dict):
+                for fee_key, out_key in (("fees_maker", "maker_fee_bps"), ("fees", "taker_fee_bps")):
+                    tbl = p_meta.get(fee_key)
+                    if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
+                        if (fv := safe_nonneg_float(tbl[0][1], default=None)) is not None:
+                            out[out_key] = round(fv * 100.0, 2)
+                if (ord_min := safe_pos_float(p_meta.get("ordermin"), default=None)) is not None:
+                    out["min_qty"] = ord_min
+                if (cost_min := safe_pos_float(p_meta.get("costmin"), default=None)) is not None:
+                    out["min_notional"] = cost_min
+                if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None and 0 <= int(lot_dec) <= 18:
+                    out["step_size"] = round(10.0 ** (-int(lot_dec)), 8)
+                if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None and 0 <= int(pair_dec) <= 18:
+                    out["tick_size"] = round(10.0 ** (-int(pair_dec)), 8)
+        return out
+
+    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
+        return self.extract_cached_fee_and_limits(self, symbol)
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = exact_pos_int(interval_min, default=None)
