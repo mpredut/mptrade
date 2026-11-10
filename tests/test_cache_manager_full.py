@@ -3004,6 +3004,66 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
         mock_ssot_hist.assert_called_once_with("NVDA_US_EQ", 1.0)
 
 
+def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
+    """Verify cache modules use state_io/cacheintegrity instead of raw open/json calls and unify factory getters."""
+    import ast
+    from providers.kraken_provider import KrakenProvider
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    checked_files = (
+        "cacheInterface.py",
+        "cacheaccount.py",
+        "cacheprice.py",
+        "cacheManager.py",
+        os.path.join("kraken", "kraken_cachemanager.py"),
+    )
+    raw_violations = []
+    for rel_path in checked_files:
+        full_path = os.path.join(repo_root, rel_path)
+        with open(full_path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=rel_path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "open":
+                raw_violations.append(f"{rel_path}:{node.lineno} raw open()")
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr in {"load", "dump", "loads", "dumps"}
+            ):
+                raw_violations.append(f"{rel_path}:{node.lineno} raw json.{node.func.attr}()")
+    assert raw_violations == [], f"Unexpected raw open/json calls in cache layer: {raw_violations}"
+
+    # Verify KrakenProvider.extract_ws_own_trades extracts and groups ownTrades WS frames
+    ws_frame = [
+        [
+            {
+                "TX-101": {
+                    "pair": "HYPE/USD",
+                    "type": "buy",
+                    "price": "24.5",
+                    "vol": "2.0",
+                    "time": 1700000005.0,
+                    "ordertxid": "ORD-101",
+                }
+            }
+        ],
+        "ownTrades",
+        {"sequence": 1},
+    ]
+    extracted = KrakenProvider.extract_ws_own_trades(ws_frame, pairs=["HYPEUSD"])
+    assert extracted is not None
+    assert "HYPEUSD" in extracted
+    assert len(extracted["HYPEUSD"]) == 1
+    assert extracted["HYPEUSD"][0]["id"] == "TX-101"
+    assert extracted["HYPEUSD"][0]["orderId"] == "ORD-101"
+    assert extracted["HYPEUSD"][0]["side"] == "BUY"
+    assert KrakenProvider.extract_ws_own_trades({"event": "heartbeat"}, pairs=["HYPEUSD"]) is None
+
+
+
 
 
 
