@@ -148,19 +148,6 @@ def disable_webrtc_mesh(stamp: str) -> str:
         return "error"
 
 
-def webrtc_mesh_status() -> str:
-    if not os.path.isfile(AGY_BIN):
-        return "missing"
-    data = read_bytes_file(AGY_BIN, default=None)
-    if data is None:
-        return "unreadable"
-    if WEBRTC_FLAG_ORIG in data:
-        return "ENABLED (unpatched)"
-    if WEBRTC_FLAG_PATCHED in data:
-        return "disabled (patched)"
-    return "unknown"
-
-
 # ---------------------------------------------------------------- pre
 def mode_pre(force: bool = False) -> int:
     force = _parse_bool_flag(force, False)
@@ -425,7 +412,17 @@ def mode_check() -> int:
     d1 = {f for f in os.listdir(D1) if f.endswith(".db")} if os.path.isdir(D1) else set()
     d2 = {f for f in os.listdir(D2) if f.endswith(".db")} if os.path.isdir(D2) else set()
     linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
-    print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={webrtc_mesh_status()}")
+    if not os.path.isfile(AGY_BIN):
+        mesh_st = "missing"
+    elif (agy_bytes := read_bytes_file(AGY_BIN, default=None)) is None:
+        mesh_st = "unreadable"
+    elif WEBRTC_FLAG_ORIG in agy_bytes:
+        mesh_st = "ENABLED (unpatched)"
+    elif WEBRTC_FLAG_PATCHED in agy_bytes:
+        mesh_st = "disabled (patched)"
+    else:
+        mesh_st = "unknown"
+    print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={mesh_st}")
     if os.path.exists(DB):
         c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         try:

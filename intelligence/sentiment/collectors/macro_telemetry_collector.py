@@ -25,12 +25,8 @@ from intelligence.macro.lexicon_ssot import (
     is_off_topic_general_news_title,
 )
 from intelligence.macro_sentiment_ssot import (
-    get_binance_btc_ticker_url,
+    _cfg_str,
     get_breadth_excluded_bases,
-    get_coinbase_btc_ticker_url,
-    get_deribit_dvol_url,
-    get_deribit_hist_vol_url,
-    get_deribit_options_book_url,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
     normalize_epoch_sec,
@@ -255,11 +251,11 @@ def _collect_macro_benchmarks_snapshot_impl(
     if fetch_fn is None:
         # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs SSOT cacheManager BTCUSDC / fallback Binance HTTP)
         try:
-            cb_raw = _fetch(get_coinbase_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            cb_raw = _fetch(_cfg_str("feeds", "coinbase_btc_ticker_url"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
             cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
             bn_px = resolve_ssot_price_from_cache("BTCUSDC", cache_dir=cache_dir, max_age_sec=60.0, now_ts=eff_now)
             if bn_px is None:
-                bn_raw = _fetch(get_binance_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                bn_raw = _fetch(_cfg_str("feeds", "binance_btc_ticker_url"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                 bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
             if cb_px and bn_px and bn_px > 0:
                 cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2) + 0.0
@@ -273,16 +269,19 @@ def _collect_macro_benchmarks_snapshot_impl(
         try:
             end_ms = int(eff_now * 1000)
             start_ms = end_ms - 3600 * 1000
+            dvol_tpl = _cfg_str("feeds", "deribit_dvol_url_template")
+            hvol_tpl = _cfg_str("feeds", "deribit_hist_vol_url_template")
+            obook_tpl = _cfg_str("feeds", "deribit_options_book_url_template")
             for ccy in get_deribit_options_currencies():
                 d_key = f"{ccy.lower()}_dvol"
-                d_raw = _fetch(get_deribit_dvol_url(ccy, start_ms, end_ms), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                 d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
                 if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
                     if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
                         extra_macro[d_key] = round(dv, 2)
                 rv_val: Optional[float] = None
                 try:
-                    hv_raw = _fetch(get_deribit_hist_vol_url(ccy), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                    hv_raw = _fetch(hvol_tpl.format(currency=ccy), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                     hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
                     if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
                         rv_val = safe_pos_float(hv_res[-1][1], default=None)
@@ -290,7 +289,7 @@ def _collect_macro_benchmarks_snapshot_impl(
                     pass
                 opt_books_list: Any = None
                 try:
-                    ob_raw = _fetch(get_deribit_options_book_url(ccy), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+                    ob_raw = _fetch(obook_tpl.format(currency=ccy), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
                     opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
                 except Exception:
                     pass
@@ -892,7 +891,7 @@ def _populate_market_and_portfolio_snapshot_impl(
     trailing_map, trailing_by_venue = load_venue_trailing_maps(cache_dir, workspace_dir, _rj)
     long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
     t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
-    snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
+    snapshot.prices_and_trends = _harvest_initial_prices_and_trends_impl(cache_dir, prices_data, trends_data, _rj)
 
     intents_data = None
     if callable(load_intents_fn := getattr(intent_gateway, "load_all_intents", None)):
@@ -1421,19 +1420,6 @@ def harvest_macro_and_news_sensors(
     )
 
 
-def harvest_initial_prices_and_trends(
-    cache_dir: str, prices_data: Any, trends_data: Any, read_json_fn: Any = None,
-) -> Dict[str, Dict[str, Any]]:
-    """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
-    return TelemetryCollectorFactory.create("macro_initial_prices_trends", start_sync=False).collect(
-        cache_dir,
-        "*",
-        prices_data=prices_data,
-        trends_data=trends_data,
-        read_json_fn=read_json_fn,
-    )
-
-
 def harvest_portfolio_and_venue_cycles(
     cache_dir: str,
     workspace_dir: str,
@@ -1511,7 +1497,6 @@ __all__ = [
     "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_macro_benchmarks_summary_line",
-    "harvest_initial_prices_and_trends",
     "harvest_macro_and_news_sensors",
     "harvest_portfolio_and_venue_cycles",
     "populate_market_and_portfolio_snapshot",

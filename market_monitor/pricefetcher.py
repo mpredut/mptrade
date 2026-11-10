@@ -953,20 +953,6 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
 
-def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):
-    extra_kwargs = {"cmc_api_key": cmc_api_key}
-    if max_symbols is not None and not isinstance(max_symbols, bool):
-        extra_kwargs["max_symbols"] = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
-    CacheFactory.register(
-        "PriceMulti",
-        CacheAllPriceFetcherManager,
-        filename=CacheAllPriceFetcherManager.DEFAULT_FILENAME,
-        sync_ts=lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
-        **extra_kwargs,
-    )
-    print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
-
-
 def is_valid_symbol_for_monitoring(symbol: str) -> bool:
     if not isinstance(symbol, str) or not (1 <= len(symbol) <= 10):
         return False
@@ -1052,7 +1038,15 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
     print(f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)}")
     print(f"[pricefetcher] List: {all_symbols}")
 
-    register_enhanced_cachePriceAll(cmc_api_key, max_symbols=eff_max)
+    CacheFactory.register(
+        "PriceMulti",
+        CacheAllPriceFetcherManager,
+        filename=CacheAllPriceFetcherManager.DEFAULT_FILENAME,
+        sync_ts=lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
+        cmc_api_key=cmc_api_key,
+        max_symbols=eff_max,
+    )
+    print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
     cachePriceAll = CacheFactory.get("PriceMulti", symbols=all_symbols)
     cachePriceAll.max_monitored_symbols = eff_max
     cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)

@@ -343,8 +343,10 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:
+        import cacheManager as cm
         from binance_api import bapi_placeorder as _po
-        ref = _po._last_opposite_fill_price(symbol, order_type)        # cache fills (via WS)
+
+        ref = cm.get_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
         if ref is None:
             ref = _po._last_opposite_fill_price_api(symbol, order_type)  # direct API fallback
         return ref

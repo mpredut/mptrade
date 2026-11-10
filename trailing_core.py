@@ -122,20 +122,6 @@ def resolve_rebuy_bypass_guards(price: object, sell_price: object) -> set[str]:
     return {"math_reference"}
 
 
-def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
-    """Restore in-memory retry count from persisted state when higher."""
-    st = getattr(persist, "st", None)
-    if not isinstance(st, dict):
-        return
-    rc = st.get("retry_counts")
-    if isinstance(rc, dict) and action in rc:
-        persisted = safe_nonneg_int(rc[action], 0)
-        retry_key = (pair, action)
-        cur_rc_i = safe_nonneg_int(retry_counts.get(retry_key), 0)
-        if persisted > cur_rc_i:
-            retry_counts[retry_key] = persisted
-
-
 def build_trailing_order_intent(
     order_lifecycle,
     retry_counts: dict,
@@ -823,7 +809,15 @@ class TrailingAdapterBase:
             return 0.0
 
     def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
-        sync_trailing_retry_count(self._retry_counts, pair, action, persist)
+        st = getattr(persist, "st", None)
+        if not isinstance(st, dict):
+            return
+        rc = st.get("retry_counts")
+        if isinstance(rc, dict) and action in rc:
+            persisted = safe_nonneg_int(rc[action], 0)
+            retry_key = (pair, action)
+            if persisted > safe_nonneg_int(self._retry_counts.get(retry_key), 0):
+                self._retry_counts[retry_key] = persisted
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
         return build_trailing_order_intent(

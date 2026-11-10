@@ -10,11 +10,10 @@ from cachepaths import canonical_base_asset
 from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from botcore import safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
+    _cfg_float,
     fetch_public_json,
     get_breadth_excluded_bases,
-    get_breadth_min_volume_usd,
     get_breadth_quote_suffixes,
-    get_breadth_top_mover_min_volume_usd,
     get_market_breadth_endpoint_url,
     resolve_now_ts,
     safe_float,
@@ -85,8 +84,8 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
             return None
 
         now = resolve_now_ts(now_ts)
-        min_vol = safe_nonneg_float(min_volume_usd, get_breadth_min_volume_usd())
-        top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
+        min_vol = safe_nonneg_float(min_volume_usd, _cfg_float("taxonomies", "breadth_min_volume_usd", 5_000_000.0))
+        top_mover_min_vol = max(min_vol, _cfg_float("taxonomies", "breadth_top_mover_min_volume_usd", 10_000_000.0))
         quote_suffixes = get_breadth_quote_suffixes()
         excluded_bases = set(get_breadth_excluded_bases())
         all_upper_symbols: set[str] = (

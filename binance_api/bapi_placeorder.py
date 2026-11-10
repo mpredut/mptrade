@@ -346,20 +346,6 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         return None
 
 
-def _last_opposite_fill_price(symbol, order_type):
-    """Return the latest opposite fill price without a time limit.
-
-    BUY uses the latest SELL fill and SELL uses the latest BUY fill. Return ``None``
-    only when the cache is healthy but has no opposite fill. Raise when the manager or
-    cache is unavailable so the caller can fail closed. CacheTradeManager supplies real
-    WebSocket fills without an API call.
-    """
-    import cacheManager as cm
-    # Retry workers only read the persisted/WS-produced trade cache. Starting another
-    # API polling loop here duplicates cacheManager's work and contaminates worker logs.
-    return cm.get_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
-
-
 def _last_opposite_fill_price_api(symbol, order_type):
     """Query ``get_my_trades`` when the cache has no opposite fill.
 

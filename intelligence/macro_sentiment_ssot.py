@@ -326,28 +326,6 @@ def get_market_breadth_endpoint_url() -> str:
     return _cfg_str("feeds", "market_breadth_endpoint_url")
 
 
-def get_coinbase_btc_ticker_url() -> str:
-    return _cfg_str("feeds", "coinbase_btc_ticker_url")
-
-
-def get_binance_btc_ticker_url() -> str:
-    return _cfg_str("feeds", "binance_btc_ticker_url")
-
-
-def get_deribit_dvol_url(currency: str, start_ms: int, end_ms: int) -> str:
-    return _cfg_str("feeds", "deribit_dvol_url_template").format(
-        currency=currency, start_ms=start_ms, end_ms=end_ms
-    )
-
-
-def get_deribit_hist_vol_url(currency: str = "BTC") -> str:
-    return _cfg_str("feeds", "deribit_hist_vol_url_template").format(currency=currency)
-
-
-def get_deribit_options_book_url(currency: str = "BTC") -> str:
-    return _cfg_str("feeds", "deribit_options_book_url_template").format(currency=currency)
-
-
 def _require_feed_str(key: str) -> str:
     val = _cfg_str("feeds", key)
     if not val:
@@ -368,22 +346,6 @@ def get_deribit_options_currencies() -> Tuple[str, ...]:
 
 def get_yahoo_chart_url(symbol: str) -> str:
     return _require_feed_str("yahoo_chart_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
-
-
-def get_yahoo_equity_chart_5d_url(symbol: str) -> str:
-    return _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
-
-
-def get_nasdaq_equity_quote_url(symbol: str) -> str:
-    return _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
-
-
-def get_cboe_delayed_options_url(option_path: str) -> str:
-    return _require_feed_str("cboe_delayed_options_url_template").format(option_path=str(option_path or "").strip().lstrip("/"))
-
-
-def get_cboe_index_tickers() -> Tuple[str, ...]:
-    return _require_feed_csv("cboe_index_tickers")
 
 
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
@@ -415,14 +377,6 @@ def get_breadth_excluded_bases() -> Set[str]:
 
 def get_breadth_quote_suffixes() -> Tuple[str, ...]:
     return _tax_tuple("breadth_quote_suffixes")
-
-
-def get_breadth_min_volume_usd() -> float:
-    return _cfg_float("taxonomies", "breadth_min_volume_usd", 5_000_000.0)
-
-
-def get_breadth_top_mover_min_volume_usd() -> float:
-    return _cfg_float("taxonomies", "breadth_top_mover_min_volume_usd", 10_000_000.0)
 
 
 def get_cache_filenames(group_key: str) -> Tuple[str, ...]:

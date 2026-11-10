@@ -35,11 +35,9 @@ from cachepaths import (
 )
 from instrument_registry import is_equity_symbol, is_symbol_market_open, venue_for_symbol
 from intelligence.macro_sentiment_ssot import (
+    _require_feed_csv,
+    _require_feed_str,
     fetch_public_json,
-    get_cboe_delayed_options_url,
-    get_cboe_index_tickers,
-    get_nasdaq_equity_quote_url,
-    get_yahoo_equity_chart_5d_url,
     resolve_derived_telemetry_intervals,
     resolve_now_ts,
 )
@@ -767,14 +765,15 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
             cboe_paths = (
                 (f"_{ticker}.json", f"{ticker}.json")
-                if ticker in get_cboe_index_tickers()
+                if ticker in _require_feed_csv("cboe_index_tickers")
                 else (f"{ticker}.json",)
             )
             found_opts = False
+            cboe_tpl = _require_feed_str("cboe_delayed_options_url_template")
             for cboe_path in cboe_paths:
                 try:
                     cb = self._fetch_json_dict(
-                        get_cboe_delayed_options_url(cboe_path),
+                        cboe_tpl.format(option_path=str(cboe_path or "").strip().lstrip("/")),
                         "cboe_options",
                         ticker,
                         timeout=timeout,
@@ -868,9 +867,12 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         daily_vol_sh = 0.0
 
         # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
+        import urllib.parse as _urlparse
+
+        q_ticker = _urlparse.quote(str(ticker or "").strip())
         try:
             nq = self._fetch_json_dict(
-                get_nasdaq_equity_quote_url(ticker),
+                _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=q_ticker),
                 "nasdaq_quote",
                 ticker,
                 timeout=timeout,
@@ -897,7 +899,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         bars: List[Tuple[float, float, float, float, float, float]] = []
         try:
             yh = self._fetch_json_dict(
-                get_yahoo_equity_chart_5d_url(ticker),
+                _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=q_ticker),
                 "yahoo_chart_5m",
                 ticker,
                 timeout=timeout,
