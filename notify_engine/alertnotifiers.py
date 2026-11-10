@@ -673,7 +673,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         else:
             body_lines.append(f"{idx}. {t}{repeat_tag}")
 
-    summary_subject = _synthesize_bulk_subject_summary(items, best_topic)
+    summary_subject = (_synthesize_bulk_subject_summary(items, best_topic) or "").strip() or _topic_category_label(best_topic) or "Alerts"
     bulk_title = f"📦 Bulk ({len(items)}): {summary_subject}"
     bulk_body = "\n\n".join(body_lines)
     return (bulk_title, bulk_body, best_priority, best_topic)

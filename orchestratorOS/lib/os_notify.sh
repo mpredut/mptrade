@@ -50,6 +50,7 @@ send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mir
 
 send_os_ntfy() {
     local title="${1:-OS Alert}" body="${2:-}" priority="${3:-default}" topic="${4:-}"
+    [ -z "${title// /}" ] && title="OS Alert"
     if [ -z "$topic" ]; then
         case "$title" in
             *FAILED*|*ERROR*|*CRITICAL*|*DOWN*|*DEAD*) topic="$(ntfy_error_topic)" ;;

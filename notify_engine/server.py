@@ -493,7 +493,7 @@ class NotificationServer:
             "",
             title,
             flags=re.IGNORECASE,
-        ).strip()
+        ).strip() or "Alert"
 
         has_auto_topic_tag = bool(re.search(r"\[auto_[a-z0-9_]+", cleaned_title))
         is_macro_bot = bot_name.lower() in ("macro_analyzer", "macro_analyzer.py")
