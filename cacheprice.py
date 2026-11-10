@@ -1685,59 +1685,19 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         )
 
     def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:
-        raw_fills = (
-            data.get("fills")
-            if isinstance(data, dict)
-            else (data if isinstance(data, list) else None)
-        )
-        if not isinstance(raw_fills, list):
-            return
-        is_snapshot = (
-            bool(data.get("isSnapshot")) if isinstance(data, dict) else False
-        )
-        cache_file = self._resolve_fills_cache_file()
-        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-        cache_obj = (
-            loaded
-            if isinstance(loaded, dict)
-            and isinstance(loaded.get("items"), dict)
-            and isinstance(loaded.get("fetchtime"), dict)
-            else {"items": {}, "fetchtime": {}}
-        )
+        from cacheaccount import CacheTradeManager
+
         with self._lock:
             symbols = self._symbols
-        for s_sym in symbols:
-            spot_coins = {
-                k.upper()
-                for k in self._candidate_mids_keys(s_sym)
-                if isinstance(k, str) and (k.startswith("@") or "/" in k)
-            }
-            sym_fills = [
-                dict(f)
-                for f in raw_fills
-                if isinstance(f, dict)
-                and str(f.get("coin") or "").strip().upper() in spot_coins
-            ]
-            if is_snapshot:
-                cache_obj["items"][s_sym] = sym_fills
-                cache_obj["fetchtime"][s_sym] = ts_ms
-            elif sym_fills:
-                bucket = list(cache_obj["items"].get(s_sym) or [])
-                seen_keys = {
-                    (f.get("tid"), f.get("oid"), f.get("time"))
-                    for f in bucket
-                    if isinstance(f, dict)
-                }
-                for f in sym_fills:
-                    fk = (f.get("tid"), f.get("oid"), f.get("time"))
-                    if fk not in seen_keys:
-                        bucket.append(f)
-                        seen_keys.add(fk)
-                cache_obj["items"][s_sym] = bucket
-                cache_obj["fetchtime"][s_sym] = ts_ms
-            elif s_sym in cache_obj["items"] and s_sym in cache_obj["fetchtime"]:
-                cache_obj["fetchtime"][s_sym] = ts_ms
-        save_json_state(cache_file, cache_obj)
+        is_snapshot = CacheTradeManager.apply_hyperliquid_ws_user_fills(
+            self._resolve_fills_cache_file(),
+            symbols,
+            data,
+            candidate_mids_fn=self._candidate_mids_keys,
+            ts_ms=ts_ms,
+        )
+        if is_snapshot is None:
+            return
         if is_snapshot:
             self._fills_ws_seeded = True
         self._last_fills_touch_ms = ts_ms
@@ -1749,23 +1709,14 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         ):
             return
         try:
-            cache_file = self._resolve_fills_cache_file()
-            loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-            if (
-                isinstance(loaded, dict)
-                and isinstance(loaded.get("fetchtime"), dict)
-                and isinstance(loaded.get("items"), dict)
-            ):
-                with self._lock:
-                    symbols = self._symbols
-                changed = False
-                for s_sym in symbols:
-                    if s_sym in loaded["fetchtime"] and s_sym in loaded["items"]:
-                        loaded["fetchtime"][s_sym] = ts_ms
-                        changed = True
-                if changed:
-                    save_json_state(cache_file, loaded)
-                self._last_fills_touch_ms = ts_ms
+            from cacheaccount import CacheTradeManager
+
+            with self._lock:
+                symbols = self._symbols
+            CacheTradeManager.touch_hyperliquid_ws_fetchtimes(
+                self._resolve_fills_cache_file(), symbols, ts_ms
+            )
+            self._last_fills_touch_ms = ts_ms
         except Exception:
             pass
 

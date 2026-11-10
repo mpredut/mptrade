@@ -991,13 +991,14 @@ class MarketDataProvider(ABC):
         return {"bids": bids, "asks": asks}
 
     def _matching_ssot_cache_keys(self, mapping: dict, symbol: str, match_fn: Any = None) -> list[str]:
-        if callable(match_fn):
-            return [k for k in mapping if isinstance(k, str) and match_fn(symbol, k)]
-        cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
-        return [
-            k for k in mapping
-            if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands)
-        ]
+        from cacheaccount import CacheTradeManager
+
+        return CacheTradeManager.matching_snapshot_keys(
+            mapping,
+            symbol,
+            match_fn=match_fn,
+            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
+        )
 
     def read_ssot_fills_cache(
         self,
@@ -1011,106 +1012,29 @@ class MarketDataProvider(ABC):
         """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return None
-        data = read_json_dict_recovering(str(cache_file), default=None)
-        if not isinstance(data, dict):
-            return None
-        items = data.get("items")
-        ft = data.get("fetchtime")
-        if not isinstance(items, dict) or not isinstance(ft, dict):
-            return None
-        keys = self._matching_ssot_cache_keys(items, symbol, match_fn)
-        if not keys:
-            return None
-        now_s = time.time()
-        max_stale_s = safe_pos_float(max_stale_sec, default=90.0) or 90.0
-        sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        best_rows: Optional[List[dict]] = None
-        best_rank: Optional[tuple[float, int]] = None
-        for key in keys:
-            if not isinstance(items.get(key), list):
-                continue
-            ft_val = safe_pos_float(casefold_get(ft, key), default=None)
-            if ft_val is None or not _is_fresh_obs_ts(_ts_ms_to_s(ft_val), now_s, max_stale_s):
-                continue
-            rank = (_ts_ms_to_s(ft_val), 1 if key.strip().upper() == sym_clean else 0)
-            if best_rank is None or rank > best_rank:
-                best_rank = rank
-                best_rows = (
-                    [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
-                    if callable(normalize_fn)
-                    else [dict(t) for t in items[key] if isinstance(t, dict)]
-                )
-        return best_rows
+        from cacheaccount import CacheTradeManager
+
+        return CacheTradeManager.read_venue_fills_snapshot(
+            symbol,
+            cache_file,
+            max_stale_sec=max_stale_sec,
+            match_fn=match_fn,
+            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
+            normalize_fn=normalize_fn,
+        )
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return False
-        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        try:
-            data = read_json_dict_recovering(str(cache_file), default=None)
-            if not isinstance(data, dict):
-                data = {"items": {}, "fetchtime": {}}
-            items = data.get("items") if isinstance(data.get("items"), dict) else {}
-            ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
-            items[sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
-            ft[sym_key] = int(time.time() * 1000)
-            data["items"] = items
-            data["fetchtime"] = ft
-            save_json_state(str(cache_file), data)
-            return True
-        except Exception:
-            return False
+        from cacheaccount import CacheTradeManager
+
+        return CacheTradeManager.write_venue_fills_snapshot(symbol, cache_file, fills)
 
     @staticmethod
     def merge_ssot_fills_cache(cache_file: str, fills_by_symbol: dict) -> bool:
         """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`) deduplicating by `orderId`."""
-        if not cache_file or not isinstance(fills_by_symbol, dict) or not fills_by_symbol:
-            return False
-        target_path = str(cache_file)
-        try:
-            loaded = read_json_dict_recovering(target_path, default=None)
-            cache_obj = (
-                loaded
-                if isinstance(loaded, dict)
-                and isinstance(loaded.get("items"), dict)
-                and isinstance(loaded.get("fetchtime"), dict)
-                else {"items": {}, "fetchtime": {}}
-            )
-            now_ms = int(time.time() * 1000)
-            changed = False
-            for sym, new_rows in fills_by_symbol.items():
-                if not sym or isinstance(sym, bool) or not isinstance(new_rows, list):
-                    continue
-                sym_key = str(sym).strip().upper()
-                if not sym_key:
-                    continue
-                existing = cache_obj["items"].get(sym_key)
-                by_oid: dict[str, dict] = {}
-                for row in (existing if isinstance(existing, list) else ()):
-                    if isinstance(row, dict) and (r_oid := extract_order_id(row)):
-                        by_oid[str(r_oid)] = row
-                for row in new_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    r_oid = extract_order_id(row)
-                    if not r_oid:
-                        continue
-                    r_oid_s = str(r_oid)
-                    if by_oid.get(r_oid_s) != row:
-                        by_oid[r_oid_s] = dict(row)
-                        changed = True
-                merged = sorted(by_oid.values(), key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
-                cache_obj["items"][sym_key] = merged
-                old_ft = safe_pos_float(cache_obj["fetchtime"].get(sym_key), default=None)
-                if old_ft is None or (now_ms - old_ft) >= 60_000:
-                    changed = True
-                cache_obj["fetchtime"][sym_key] = now_ms
-            if changed or not os.path.exists(target_path):
-                save_json_state(target_path, cache_obj)
-            return True
-        except Exception:
-            return False
+        from cacheaccount import CacheTradeManager
+
+        return CacheTradeManager.merge_venue_fills_snapshot(cache_file, fills_by_symbol)
 
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None
@@ -1118,22 +1042,14 @@ class MarketDataProvider(ABC):
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
-        try:
-            if not os.path.exists(str(cache_file)):
-                return
-            data = read_json_dict_recovering(str(cache_file), default=None)
-            if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
-                return
-            keys = set(self._matching_ssot_cache_keys(data["fetchtime"], symbol, match_fn))
-            if isinstance(data.get("items"), dict):
-                item_cf = {k.casefold() for k in self._matching_ssot_cache_keys(data["items"], symbol, match_fn)}
-                keys.update(k for k in data["fetchtime"] if isinstance(k, str) and k.casefold() in item_cf)
-            for k in keys:
-                data["fetchtime"].pop(k, None)
-            if keys:
-                save_json_state(str(cache_file), data)
-        except Exception:
-            pass
+        from cacheaccount import CacheTradeManager
+
+        CacheTradeManager.invalidate_venue_fills_snapshot(
+            symbol,
+            cache_file,
+            match_fn=match_fn,
+            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
+        )
 
 
 def resolve_ssot_price_from_cache(

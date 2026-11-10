@@ -66,18 +66,18 @@ from cachepaths import (
 )
 import instrument_registry as sym
 from instrument_registry import casefold_get
-from providers.base import (
+from providers.order_ohlc_utils import (
+    _is_fresh_obs_ts,
+    _ts_ms_to_s,
+    clean_order_id,
+    extract_order_fee,
     extract_order_id,
     extract_order_price,
+    extract_order_qty,
+    extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
     normalize_side,
-)
-from providers.order_ohlc_utils import (
-    clean_order_id,
-    extract_order_fee,
-    extract_order_qty,
-    extract_order_side,
 )
 from state_io import (
     atomic_snapshot_file,
@@ -86,7 +86,9 @@ from state_io import (
     discard_generation_file,
     meta_file_path,
     read_json_dict,
+    read_json_dict_recovering,
     read_recovering_previous,
+    save_json_state,
     stage_previous_generation,
 )
 
@@ -778,6 +780,275 @@ class CacheTradeManager(CacheAccountManagerBase):
             cache["fetchtime"][s_sym] = resolved_ms
         for s_sym in list(cache.get("items", {}).keys()):
             cache["fetchtime"][s_sym] = resolved_ms
+
+    @classmethod
+    def matching_snapshot_keys(
+        cls,
+        mapping: dict,
+        symbol: str,
+        *,
+        match_fn=None,
+        candidate_keys=None,
+    ) -> list[str]:
+        """Return matching symbol keys in a venue trade snapshot ``mapping``."""
+        if callable(match_fn):
+            return [k for k in mapping if isinstance(k, str) and match_fn(symbol, k)]
+        raw_cands = candidate_keys if candidate_keys is not None else (symbol,)
+        cands = {str(c).upper() for c in raw_cands if c}
+        return [
+            k
+            for k in mapping
+            if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands)
+        ]
+
+    @classmethod
+    def read_venue_fills_snapshot(
+        cls,
+        symbol: str,
+        cache_file: str,
+        *,
+        max_stale_sec: float = 90.0,
+        match_fn=None,
+        candidate_keys=None,
+        normalize_fn=None,
+    ) -> Optional[list[dict]]:
+        """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return None
+        data = read_json_dict_recovering(str(cache_file), default=None)
+        if not isinstance(data, dict):
+            return None
+        items = data.get("items")
+        ft = data.get("fetchtime")
+        if not isinstance(items, dict) or not isinstance(ft, dict):
+            return None
+        keys = cls.matching_snapshot_keys(
+            items, symbol, match_fn=match_fn, candidate_keys=candidate_keys
+        )
+        if not keys:
+            return None
+        now_s = _now_time()
+        max_stale_s = safe_pos_float(max_stale_sec, default=90.0) or 90.0
+        sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        best_rows: Optional[list[dict]] = None
+        best_rank: Optional[tuple[float, int]] = None
+        for key in keys:
+            if not isinstance(items.get(key), list):
+                continue
+            ft_val = safe_pos_float(casefold_get(ft, key), default=None)
+            if ft_val is None or not _is_fresh_obs_ts(_ts_ms_to_s(ft_val), now_s, max_stale_s):
+                continue
+            rank = (_ts_ms_to_s(ft_val), 1 if key.strip().upper() == sym_clean else 0)
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_rows = (
+                    [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
+                    if callable(normalize_fn)
+                    else [dict(t) for t in items[key] if isinstance(t, dict)]
+                )
+        return best_rows
+
+    @classmethod
+    def write_venue_fills_snapshot(
+        cls, symbol: str, cache_file: str, fills: list[dict]
+    ) -> bool:
+        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return False
+        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        try:
+            data = read_json_dict_recovering(str(cache_file), default=None)
+            if not isinstance(data, dict):
+                data = {"items": {}, "fetchtime": {}}
+            items = data.get("items") if isinstance(data.get("items"), dict) else {}
+            ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+            items[sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
+            ft[sym_key] = int(_now_time() * 1000)
+            data["items"] = items
+            data["fetchtime"] = ft
+            save_json_state(str(cache_file), data)
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def merge_venue_fills_snapshot(cls, cache_file: str, fills_by_symbol: dict) -> bool:
+        """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file deduplicating by `orderId`."""
+        if not cache_file or not isinstance(fills_by_symbol, dict) or not fills_by_symbol:
+            return False
+        target_path = str(cache_file)
+        try:
+            loaded = read_json_dict_recovering(target_path, default=None)
+            cache_obj = (
+                loaded
+                if isinstance(loaded, dict)
+                and isinstance(loaded.get("items"), dict)
+                and isinstance(loaded.get("fetchtime"), dict)
+                else {"items": {}, "fetchtime": {}}
+            )
+            now_ms = int(_now_time() * 1000)
+            changed = False
+            for sym_raw, new_rows in fills_by_symbol.items():
+                if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
+                    continue
+                sym_key = str(sym_raw).strip().upper()
+                if not sym_key:
+                    continue
+                existing = cache_obj["items"].get(sym_key)
+                by_oid: dict[str, dict] = {}
+                for row in (existing if isinstance(existing, list) else ()):
+                    if isinstance(row, dict) and (r_oid := extract_order_id(row)):
+                        by_oid[str(r_oid)] = row
+                for row in new_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    r_oid = extract_order_id(row)
+                    if not r_oid:
+                        continue
+                    r_oid_s = str(r_oid)
+                    if by_oid.get(r_oid_s) != row:
+                        by_oid[r_oid_s] = dict(row)
+                        changed = True
+                merged = sorted(
+                    by_oid.values(),
+                    key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")),
+                )
+                cache_obj["items"][sym_key] = merged
+                old_ft = safe_pos_float(cache_obj["fetchtime"].get(sym_key), default=None)
+                if old_ft is None or (now_ms - old_ft) >= 60_000:
+                    changed = True
+                cache_obj["fetchtime"][sym_key] = now_ms
+            if changed or not os.path.exists(target_path):
+                save_json_state(target_path, cache_obj)
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def invalidate_venue_fills_snapshot(
+        cls,
+        symbol: str,
+        cache_file: str,
+        *,
+        match_fn=None,
+        candidate_keys=None,
+    ) -> None:
+        """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return
+        try:
+            if not os.path.exists(str(cache_file)):
+                return
+            data = read_json_dict_recovering(str(cache_file), default=None)
+            if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
+                return
+            keys = set(
+                cls.matching_snapshot_keys(
+                    data["fetchtime"],
+                    symbol,
+                    match_fn=match_fn,
+                    candidate_keys=candidate_keys,
+                )
+            )
+            if isinstance(data.get("items"), dict):
+                item_cf = {
+                    k.casefold()
+                    for k in cls.matching_snapshot_keys(
+                        data["items"],
+                        symbol,
+                        match_fn=match_fn,
+                        candidate_keys=candidate_keys,
+                    )
+                }
+                keys.update(
+                    k
+                    for k in data["fetchtime"]
+                    if isinstance(k, str) and k.casefold() in item_cf
+                )
+            for k in keys:
+                data["fetchtime"].pop(k, None)
+            if keys:
+                save_json_state(str(cache_file), data)
+        except Exception:
+            pass
+
+    @classmethod
+    def apply_hyperliquid_ws_user_fills(
+        cls,
+        cache_file: str,
+        symbols,
+        data: object,
+        *,
+        candidate_mids_fn,
+        ts_ms: int,
+    ) -> Optional[bool]:
+        """Merge a Hyperliquid ``userFills`` WS snapshot or incremental frame into ``cache_trade_hyperliquid.json``."""
+        raw_fills = (
+            data.get("fills")
+            if isinstance(data, dict)
+            else (data if isinstance(data, list) else None)
+        )
+        if not isinstance(raw_fills, list):
+            return None
+        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
+        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
+        cache_obj = (
+            loaded
+            if isinstance(loaded, dict)
+            and isinstance(loaded.get("items"), dict)
+            and isinstance(loaded.get("fetchtime"), dict)
+            else {"items": {}, "fetchtime": {}}
+        )
+        for s_sym in symbols or ():
+            spot_coins = {
+                k.upper()
+                for k in candidate_mids_fn(s_sym)
+                if isinstance(k, str) and (k.startswith("@") or "/" in k)
+            }
+            sym_fills = [
+                dict(f)
+                for f in raw_fills
+                if isinstance(f, dict)
+                and str(f.get("coin") or "").strip().upper() in spot_coins
+            ]
+            if is_snapshot:
+                cache_obj["items"][s_sym] = sym_fills
+                cache_obj["fetchtime"][s_sym] = ts_ms
+            elif sym_fills:
+                bucket = list(cache_obj["items"].get(s_sym) or [])
+                seen_keys = {
+                    (f.get("tid"), f.get("oid"), f.get("time"))
+                    for f in bucket
+                    if isinstance(f, dict)
+                }
+                for f in sym_fills:
+                    fk = (f.get("tid"), f.get("oid"), f.get("time"))
+                    if fk not in seen_keys:
+                        bucket.append(f)
+                        seen_keys.add(fk)
+                cache_obj["items"][s_sym] = bucket
+                cache_obj["fetchtime"][s_sym] = ts_ms
+            elif s_sym in cache_obj["items"] and s_sym in cache_obj["fetchtime"]:
+                cache_obj["fetchtime"][s_sym] = ts_ms
+        save_json_state(cache_file, cache_obj)
+        return is_snapshot
+
+    @classmethod
+    def touch_hyperliquid_ws_fetchtimes(cls, cache_file: str, symbols, ts_ms: int) -> None:
+        """Refresh ``fetchtime`` in ``cache_trade_hyperliquid.json`` while the Hyperliquid WS stream is healthy."""
+        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
+        if (
+            isinstance(loaded, dict)
+            and isinstance(loaded.get("fetchtime"), dict)
+            and isinstance(loaded.get("items"), dict)
+        ):
+            changed = False
+            for s_sym in symbols or ():
+                if s_sym in loaded["fetchtime"] and s_sym in loaded["items"]:
+                    loaded["fetchtime"][s_sym] = ts_ms
+                    changed = True
+            if changed:
+                save_json_state(cache_file, loaded)
 
     @classmethod
     def extract_venue_symbol_trades(
