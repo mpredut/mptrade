@@ -117,6 +117,15 @@ def _monotonic_time() -> float:
     return mono_fn() if callable(mono_fn) else time.monotonic()
 
 
+def _sleep_time(seconds: float) -> None:
+    t_mod = _cm_override("time", time)
+    sleep_fn = getattr(t_mod, "sleep", None)
+    if callable(sleep_fn):
+        sleep_fn(seconds)
+    else:
+        time.sleep(seconds)
+
+
 def _strict_int_field(val, *, min_value: int = 1) -> Optional[int]:
     """Validate and coerce an integer field without accepting booleans or fractional floats."""
     return strict_ascii_int(val, default=None, min_value=min_value)
