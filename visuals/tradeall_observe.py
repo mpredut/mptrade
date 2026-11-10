@@ -268,11 +268,6 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     return []
 
 
-def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
-    """Read enough sparse long-term history for a seven-day window."""
-    return _load_cachedb_price_entries(cache_sparse_price_filename(symbol), symbol, max_bytes=max_bytes)
-
-
 def _ingest_cachedb_points(points: dict, entries) -> None:
     for entry in entries or ():
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
@@ -293,7 +288,7 @@ def load_price_series_live(symbol, days_back, include_history=True):
     """
     points = {}
     if include_history:
-        _ingest_cachedb_points(points, _load_history_jsonl_tail(symbol))
+        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_sparse_price_filename(symbol), symbol))
         _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_365_price_filename(symbol), symbol))
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
@@ -382,10 +377,6 @@ def _parse_shadow_rows(rows, symbol):
 
 def load_shadow_events(symbol, days_back):
     return _parse_shadow_rows(_read_daily_pipe_rows(SHADOW_PREFIX, 9, days_back), symbol)
-
-
-def load_backtest_shadow_events(directory, symbol):
-    return _parse_shadow_rows(_read_pipe_log(os.path.join(directory, "tradeall_shadow.log"), 9), symbol)
 
 
 def build_trend_regions(events, window_start, window_end):
@@ -826,7 +817,7 @@ def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None)
     wh_val = safe_pos_float(window_hours, default=0.0)
     if not all_ts:
         window_start, window_end = time.time() - DAY_SECONDS, time.time()
-        label = "backtest (tot intervalul reluat)"
+        label = "backtest (full replayed interval)"
     elif wh_val > 0.0:
         window_end = max(all_ts)
         window_start = window_end - wh_val * 3600
@@ -838,11 +829,11 @@ def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None)
                  f"{ts_str})")
     else:
         window_start, window_end = min(all_ts), max(all_ts)
-        label = "backtest (tot intervalul reluat)"
+        label = "backtest (full replayed interval)"
 
     render_chart(symbol, label, window_start, window_end,
                  price_ts, price_vals, trend_events, order_events, out_path,
-                 shadow_events=load_backtest_shadow_events(directory, symbol))
+                 shadow_events=_parse_shadow_rows(_read_pipe_log(os.path.join(directory, "tradeall_shadow.log"), 9), symbol))
 
 
 def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):

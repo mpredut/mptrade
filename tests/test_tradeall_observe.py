@@ -91,17 +91,18 @@ def test_history_tail_keeps_first_record_when_file_is_smaller_than_tail(tmp_path
     )
     monkeypatch.setattr(observe, "ROOT", str(tmp_path))
 
-    assert observe._load_history_jsonl_tail("BTCUSDC", max_bytes=4096) == [
+    assert observe._load_cachedb_price_entries(observe.cache_sparse_price_filename("BTCUSDC"), "BTCUSDC", max_bytes=4096) == [
         [1_000, 10.0],
         [2_000, 11.0],
     ]
 
 
 def test_live_dense_price_has_priority_over_archived_sources(monkeypatch):
-    monkeypatch.setattr(observe, "_load_history_jsonl_tail", lambda _symbol: [[1_000, 1.0]])
     monkeypatch.setattr(observe, "load_price_samples", lambda _symbol, _days: ([1.0], [3.0]))
 
     def cached_entries(filename, _symbol):
+        if "sparse" in filename:
+            return [[1_000, 1.0]]
         return [[1_000, 4.0]] if filename.endswith(".json") else [[1_000, 2.0]]
 
     monkeypatch.setattr(observe, "_load_cachedb_price_entries", cached_entries)

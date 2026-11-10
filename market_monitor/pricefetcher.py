@@ -59,7 +59,7 @@ class PricePlatformInterface(ABC):
         pass
 
     def _can_refresh_symbols(self) -> bool:
-        return self._refresh_interval > 0
+        return self._refresh_interval > 0 and bool(getattr(self, "api_key", True))
 
     def _load_symbols(self):
         pass
@@ -73,18 +73,13 @@ class PricePlatformInterface(ABC):
         return getattr(self, "_supported_symbols", set()).copy()
 
     def supports_symbol(self, symbol: str) -> bool:
-        if not self._can_refresh_symbols():
+        if not self._can_refresh_symbols() or not isinstance(symbol, str) or not symbol.strip():
             return False
         self.refresh_symbols()
-        return self._supports_in_set(symbol, getattr(self, "_supported_symbols", set()))
-
-    def _supports_in_set(self, symbol: str, symbols_set: Set[str]) -> bool:
-        if not isinstance(symbol, str) or not symbol.strip():
-            return False
+        symbols_set = getattr(self, "_supported_symbols", set())
         sym_clean = symbol.strip()
         sym_up = sym_clean.upper()
         base_up = get_base_symbol(sym_up)
-        self.refresh_symbols()
         if sym_clean in symbols_set or sym_up in symbols_set or base_up in symbols_set:
             return True
         upper_set = {s.upper() for s in symbols_set if isinstance(s, str)}
@@ -367,9 +362,6 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                 self._load_symbols_from_disk_cache(max_age_s=None)
             print(f"[CMCPlatform] Warning loading symbols: {e}")
             self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval.
-
-    def _can_refresh_symbols(self) -> bool:
-        return bool(self.api_key)
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
         if not isinstance(data, dict):

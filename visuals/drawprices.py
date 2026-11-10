@@ -83,10 +83,6 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
     dt = [x[2] for x in cache_pairs]
     return ts, prices, dt
 
-def ensure_dir(path: str):
-    if path:
-        os.makedirs(path, exist_ok=True)
-
 def min_max_scale(arr: np.ndarray):
     """Scale to [0, 1] without sklearn and return (scaled, minimum, maximum)."""
     if arr is None or isinstance(arr, (bool, str, bytes)) or len(arr) == 0:
@@ -143,7 +139,8 @@ def _plot_series_and_forecast(
     forecast_label: Optional[str] = None,
     outdir: str = "plots",
 ) -> str:
-    ensure_dir(outdir)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     n = len(prices)
     future_dt = []
     if forecast is not None and len(forecast) > 0 and n >= 2:
@@ -155,13 +152,13 @@ def _plot_series_and_forecast(
     fig = plt.figure(figsize=(10, 5))
     try:
         if forecast_label is not None:
-            plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
+            plt.plot(dt, prices, marker="o", linestyle="-", label="History")
             if future_dt:
                 plt.plot(future_dt, forecast, marker="o", linestyle="--", label=forecast_label)
         else:
             plt.plot(dt, prices, marker="o", linestyle="-")
         plt.title(title)
-        plt.xlabel("Timp")
+        plt.xlabel("Time")
         plt.ylabel("Price")
         plt.grid(True)
         plt.xticks(rotation=45)
@@ -173,10 +170,6 @@ def _plot_series_and_forecast(
     finally:
         plt.close(fig)
     return fname
-
-
-def plot_history(symbol: str, dt, prices: np.ndarray, outdir="plots"):
-    return _plot_series_and_forecast(symbol, dt, prices, None, f"Price evolution - {symbol}", "history", outdir=outdir)
 
 
 # ==========================
@@ -213,13 +206,6 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     x_future = np.arange(n, n + hz, dtype=np.float64)
     y_future = a * x_future + b
     return y_future
-
-def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarray, outdir="plots"):
-    return _plot_series_and_forecast(
-        symbol, dt, prices, lin_forecast,
-        f"Forecast (linear regression) - {symbol}", "forecast_linear",
-        forecast_label="Regresie (forecast)", outdir=outdir,
-    )
 
 
 # ==========================
@@ -259,7 +245,7 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     """
     ok, tf_or_err, Sequential, LSTM, Dense = try_import_tf()
     if not ok:
-        return None, f"LSTM indisponibil: {tf_or_err}"
+        return None, f"LSTM unavailable: {tf_or_err}"
 
     window = safe_pos_int(window, 20)
     epochs = safe_pos_int(epochs, 50)
@@ -299,14 +285,7 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
         last_window = np.concatenate([last_window[:, 1:, :], pred.reshape(1, 1, 1)], axis=1)
 
     preds = min_max_inverse(np.array(preds_scaled), vmin, vmax)
-    return preds, f"LSTM antrenat: window={window}, epochs={epochs}, batch={batch_size}"
-    
-def plot_with_lstm(symbol: str, dt, prices: np.ndarray, lstm_forecast: Optional[np.ndarray], outdir="plots"):
-    return _plot_series_and_forecast(
-        symbol, dt, prices, lstm_forecast,
-        f"Forecast (LSTM) - {symbol}", "forecast_lstm",
-        forecast_label="LSTM (forecast)", outdir=outdir,
-    )
+    return preds, f"LSTM trained: window={window}, epochs={epochs}, batch={batch_size}"
 
 
 # ==========================
@@ -320,7 +299,8 @@ def run_for_symbols(symbols: List[str],
                     lstm_epochs: int = 50,
                     lstm_batch: int = 16,
                     lstm_verbose: int = 0):
-    ensure_dir(outdir)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     results = {}
     for symbol in symbols:
         pairs = get_cache_for_symbol(symbol)
@@ -330,11 +310,17 @@ def run_for_symbols(symbols: List[str],
             results[symbol] = {"error": "No data in the cache."}
             continue
 
-        hist_path = plot_history(symbol, dt, prices, outdir=outdir)
+        hist_path = _plot_series_and_forecast(
+            symbol, dt, prices, None, f"Price evolution - {symbol}", "history", outdir=outdir,
+        )
 
         # Linear regression.
         lin_pred = forecast_linear(ts, prices, horizon=horizon)
-        lin_path = plot_with_linear(symbol, dt, prices, lin_pred, outdir=outdir)
+        lin_path = _plot_series_and_forecast(
+            symbol, dt, prices, lin_pred,
+            f"Forecast (linear regression) - {symbol}", "forecast_linear",
+            forecast_label="Regression (forecast)", outdir=outdir,
+        )
 
         # LSTM, when available.
         lstm_pred, info = forecast_lstm(prices,
@@ -345,7 +331,11 @@ def run_for_symbols(symbols: List[str],
                                         verbose=lstm_verbose)
         lstm_path = None
         if lstm_pred is not None:
-            lstm_path = plot_with_lstm(symbol, dt, prices, lstm_pred, outdir=outdir)
+            lstm_path = _plot_series_and_forecast(
+                symbol, dt, prices, lstm_pred,
+                f"Forecast (LSTM) - {symbol}", "forecast_lstm",
+                forecast_label="LSTM (forecast)", outdir=outdir,
+            )
 
         results[symbol] = {
             "history_png": hist_path,
