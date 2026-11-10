@@ -2006,6 +2006,13 @@ class TestWsBridgeIntegration(unittest.TestCase):
         self.assertTrue(entries, "empty cache after load")
         self.assertEqual(entries[0][1], 58000.0)
 
+    def test_hyperliquid_price_stream_resolve_env_user_address(self):
+        from cacheprice import HyperliquidPriceStream
+
+        with unittest.mock.patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc123"}):
+            hl_ws = HyperliquidPriceStream(symbols=["HYPE"], resolve_env_user_address=True)
+        self.assertEqual(hl_ws._user_address, "0xabc123")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

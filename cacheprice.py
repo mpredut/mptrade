@@ -24,7 +24,6 @@ import builtins
 from collections import defaultdict, deque
 import concurrent.futures as _futures
 import json
-import json as _json
 import os
 import threading
 import time
@@ -41,6 +40,7 @@ from binance_api.bapi_ws import (
     WS_RECV_TIMEOUT,
 )
 from botcore import (
+    env_value,
     extract_current_price_item,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
@@ -551,13 +551,23 @@ class Cache365PriceManager(Cache24PriceManager):
     def _reload_and_merge_timestamps_locked(
         self, original_fetchtimes, original_rest_cursors
     ):
+        live_fetchtimes = dict(original_fetchtimes)
+        for s_sym, ft in self.fetchtime_per_symbol.items():
+            live_fetchtimes[s_sym] = max(
+                int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0)
+            )
+        live_rest_cursors = dict(original_rest_cursors)
+        for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
+            live_rest_cursors[s_sym] = max(
+                int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0)
+            )
         self._load_jsonl()
-        for s_sym, ft in original_fetchtimes.items():
+        for s_sym, ft in live_fetchtimes.items():
             self.fetchtime_per_symbol[s_sym] = max(
                 int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
                 int(ft or 0),
             )
-        for s_sym, cur in original_rest_cursors.items():
+        for s_sym, cur in live_rest_cursors.items():
             self._rest_sync_cursor_per_symbol[s_sym] = max(
                 int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
                 int(cur or 0),
@@ -682,18 +692,8 @@ class Cache365PriceManager(Cache24PriceManager):
                 post_delta = self._collect_live_delta_locked(
                     snap_item_ids, min_ts_ms=cutoff_ms
                 )
-                live_fetchtimes = dict(original_fetchtimes)
-                for s_sym, ft in self.fetchtime_per_symbol.items():
-                    live_fetchtimes[s_sym] = max(
-                        int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0)
-                    )
-                live_rest_cursors = dict(original_rest_cursors)
-                for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
-                    live_rest_cursors[s_sym] = max(
-                        int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0)
-                    )
                 self._reload_and_merge_timestamps_locked(
-                    live_fetchtimes, live_rest_cursors
+                    original_fetchtimes, original_rest_cursors
                 )
                 self._merge_live_delta_locked(post_delta)
                 if changed:
@@ -785,18 +785,8 @@ class Cache365PriceManager(Cache24PriceManager):
                             target.write(_jsonl_line(symbol, item))
             with self.lock:
                 post_delta = self._collect_live_delta_locked(snap_item_ids)
-                live_fetchtimes = dict(original_fetchtimes)
-                for s_sym, ft in self.fetchtime_per_symbol.items():
-                    live_fetchtimes[s_sym] = max(
-                        int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0)
-                    )
-                live_rest_cursors = dict(original_rest_cursors)
-                for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
-                    live_rest_cursors[s_sym] = max(
-                        int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0)
-                    )
                 self._reload_and_merge_timestamps_locked(
-                    live_fetchtimes, live_rest_cursors
+                    original_fetchtimes, original_rest_cursors
                 )
                 self._merge_live_delta_locked(post_delta)
                 meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
@@ -1468,8 +1458,6 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         self._fills_ws_seeded = False
         self._last_fills_touch_ms = 0
         if user_address is None and is_live_network_backfill_enabled(resolve_env_user_address):
-            from providers.base import env_value
-
             hl_dir = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "hyperliquid"
             )
@@ -1525,7 +1513,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         return resolved
 
     def _build_subscribe_payload(self) -> str:
-        return _json.dumps(
+        return json.dumps(
             {"method": "subscribe", "subscription": {"type": "allMids"}}
         )
 
@@ -1534,7 +1522,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         if not self._user_address:
             return ()
         return (
-            _json.dumps(
+            json.dumps(
                 {
                     "method": "subscribe",
                     "subscription": {
@@ -1639,7 +1627,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
-            envelope = _json.loads(raw) if isinstance(raw, str) else raw
+            envelope = json.loads(raw) if isinstance(raw, str) else raw
             if not isinstance(envelope, dict):
                 return
             ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
@@ -1730,7 +1718,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
     def _build_subscribe_payload(self) -> str:
         with self._lock:
             pairs = list(self._ws_pairs)
-        return _json.dumps(
+        return json.dumps(
             {
                 "event": "subscribe",
                 "pair": pairs,
@@ -1749,7 +1737,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
-            msg = _json.loads(raw) if isinstance(raw, str) else raw
+            msg = json.loads(raw) if isinstance(raw, str) else raw
             ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
             if isinstance(msg, dict):
                 ev = str(msg.get("event") or "").strip().lower()
@@ -1831,8 +1819,6 @@ class _NonBinanceTrendPoller:
             except Exception:
                 pass
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
-        if eff_timeout is None:
-            eff_timeout = 5.0
         total_deadline = time.monotonic() + eff_timeout
         ws_budget = min(2.0, eff_timeout)
         ws_deadline = time.monotonic() + ws_budget

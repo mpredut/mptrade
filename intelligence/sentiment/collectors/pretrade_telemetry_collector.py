@@ -1679,12 +1679,14 @@ def _collect_and_format_pretrade_recent_fills(
                 sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
             if (
                 (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None
+                and (act_avg is None or tac_avg < act_avg)
                 and not _same_px(tac_avg, act_avg)
                 and not _same_px(tac_avg, lb_px)
             ):
                 sub_parts.append(f"Tactical Sub-Cycle Avg BUY={tac_avg}")
             if (
                 (sw_avg := safe_pos_float(fills.get("swing_subcycle_avg_px"), default=None)) is not None
+                and (act_avg is None or sw_avg < act_avg)
                 and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-12) >= 0.002)
                 and not _same_px(sw_avg, tac_avg)
                 and not _same_px(sw_avg, lb_px)

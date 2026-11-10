@@ -6768,6 +6768,64 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     rvf_harvested = pt_harvested.get("Recent Venue Fills", "")
     assert "Last BUY=0.01 @ 77580.0 (by=BOT, lot_harvested)" in rvf_harvested
     assert "Open LIFO Lots=[0.01@77350.0]" in rvf_harvested
+    assert "Active Cycle Avg BUY=77465.0" in rvf_harvested
+
+    (orders_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "b1",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 75000.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 750.0,
+                            "updateTime": now_ms - int(48 * 3_600_000),
+                            "clientOrderId": "AIBTC1",
+                        },
+                        {
+                            "orderId": "s1",
+                            "side": "SELL",
+                            "status": "FILLED",
+                            "price": 76000.0,
+                            "executedQty": 0.005,
+                            "cummulativeQuoteQty": 380.0,
+                            "updateTime": now_ms - int(36 * 3_600_000),
+                            "clientOrderId": "AIBTC2",
+                        },
+                        {
+                            "orderId": "b2",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 78000.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 780.0,
+                            "updateTime": now_ms - int(24 * 3_600_000),
+                            "clientOrderId": "AIBTC3",
+                        },
+                        {
+                            "orderId": "b3",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 77600.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 776.0,
+                            "updateTime": now_ms - int(12 * 3_600_000),
+                            "clientOrderId": "AIBTC4",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_higher_sub = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
+    rvf_higher_sub = pt_higher_sub.get("Recent Venue Fills", "")
+    assert "Active Cycle Avg BUY=" in rvf_higher_sub
+    assert "Tactical Sub-Cycle Avg BUY=" not in rvf_higher_sub
+    assert "Swing Sub-Cycle Avg BUY=" not in rvf_higher_sub
 
     # 4. Bug 113: normalize_error_signature strips [file.py:line] [STDERR] tags and harvest_log_anomalies_from_dirs
     #    clears recovered transient -2015 IP/auth failover bursts once subsequent bot cycles succeed
@@ -9639,8 +9697,426 @@ def test_harvest_positions_dedup_bare_equity_pretrade_and_assetguardian_recovery
         "nvidia gets the spotlight, but this ai stock could steal the show in 2027"
     )
 
+# ============================================================================
+# Domain Regressions & Input Hygiene (Targeted Validation)
+# ============================================================================
 
 
+def test_highstakeguard_check_honors_now_and_caches_timeout_fallback_iter16_s4(monkeypatch):
+    """[ITER16 #4] HighStakeGuard.check honors `now` and caches timeout fallback decisions."""
+    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+    import llm_order_guard
+    # 4. HighStakeGuard.check honors `now` and caches timeout fallback decisions
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
+    guard = hsg_mod.HighStakeGuard(
+        min_notional_usd=700.0,
+        timeout_sec=0.05,
+        fallback_action="allow",
+        cache_ttl_sec=120,
+    )
+    call_count = {"n": 0}
 
+    def _timeout_query_json(*args, **kwargs):
+        call_count["n"] += 1
+        return None  # simulates LLM query timeout
 
+    monkeypatch.setattr(guard.gemini_client, "query_json", _timeout_query_json)
+    monkeypatch.setattr(hsg_mod, "HighStakeGuard", lambda **kw: guard)
+    margins_hs = {
+        "intelligence_guards_mode": "enforce",
+        "llm_guard_mode": "enforce",
+        "high_stake_min_notional_usd": 700.0,
+        "llm_timeout_sec": 0.05,
+        "llm_fallback": "allow",
+    }
 
+    ok1, r1, s1 = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="TAOUSDC",
+        side="BUY",
+        price=1000.0,
+        qty=1.0,
+        computed_notional=1000.0,
+        regime_context=None,
+        valid_context=False,
+        cache_key=("TAOUSDC", "BUY"),
+        margins=margins_hs,
+        bypassed=set(),
+        now=5000.0,
+    )
+    assert ok1 is True
+    assert s1 == 1.0
+    assert call_count["n"] == 1
+
+    # Second call 10s later in simulated time should hit the cached timeout fallback without calling query_json again
+    ok2, r2, s2 = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="TAOUSDC",
+        side="BUY",
+        price=1000.0,
+        qty=1.0,
+        computed_notional=1000.0,
+        regime_context=None,
+        valid_context=False,
+        cache_key=("TAOUSDC", "BUY"),
+        margins=margins_hs,
+        bypassed=set(),
+        now=5010.0,
+    )
+    assert ok2 is True
+    assert s2 == 1.0
+    assert call_count["n"] == 1
+
+def test_compositemarketintelligence_evaluate_guards_forwards_dur_sec_and_now_to_gemini_guard_iter17_s3():
+    """[ITER17 #3] CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check."""
+    import pytest
+    from intelligence.composite import CompositeMarketIntelligence
+    # 3. CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check
+    captured_gemini_kwargs = {}
+
+    class _SpyGeminiGuard:
+        min_notional_eur = 700.0
+
+        def check(self, symbol, side, price, qty, **kwargs):
+            captured_gemini_kwargs.update(kwargs)
+            from intelligence.internal.guards.guard_decision import GuardDecision
+            return GuardDecision.allow("HighStakeGuard", "spy_ok")
+
+    comp = CompositeMarketIntelligence(gemini_guard=_SpyGeminiGuard())
+    comp_dec = comp.evaluate_guards(
+        "TAOUSDC",
+        "BUY",
+        200.0,
+        qty=5.0,
+        notional_eur=1000.0,
+        trend_duration_seconds=3600.0,
+        now=12345.0,
+    )
+    assert comp_dec.allowed is True
+    assert captured_gemini_kwargs.get("dur_sec") == pytest.approx(3600.0)
+    assert captured_gemini_kwargs.get("now") == pytest.approx(12345.0)
+
+def test_highstakeguard_helpers_nan_bool_resilience_iter31_s3(monkeypatch):
+    """[ITER31 #3] HighStakeGuard & helpers NaN/bool resilience."""
+    import time
+    from types import SimpleNamespace
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, _HIGH_STAKE_DECISION_CACHE
+    # 3. HighStakeGuard & helpers NaN/bool resilience
+    m24 = compute_24h_price_metrics([
+        [1000.0, 100.0],
+        [1060.0, float("nan")],
+        [1120.0, True],
+        [2000.0, 105.0],
+    ])
+    assert m24.get("low_24h") == 100.0 and m24.get("high_24h") == 105.0
+
+    fills = extract_symbol_recent_fills([
+        {"side": "BUY", "price": float("nan"), "qty": 2.0, "cummulativeQuoteQty": 200.0, "timestamp": "bad-ts"},
+        {"side": "SELL", "price": True, "qty": 1.0, "timestamp": 1700000000000},
+    ])
+    assert fills is not None
+    assert fills["last_buy"]["price"] == 100.0
+    assert fills["last_sell"]["price"] is None
+
+    monkeypatch.setenv("DISABLE_GEMINI_LLM", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    calls = {"n": 0}
+
+    def _fake_query(*a, **kw):
+        calls["n"] += 1
+        return {"decision": "DOWNSCALE", "suggested_scale": 0.5, "reason": "test"}
+
+    hs = HighStakeGuard(
+        gemini_client=SimpleNamespace(query_json=_fake_query),
+        min_notional_usd=700.0,
+        cache_ttl_sec=600.0,
+    )
+    # NaN notional_eur must not raise ValueError on int(notional // 100.0)
+    assert hs.check("BTCUSDC", "BUY", 85000.0, 1.0, notional_eur=float("nan")).allowed is True
+    # Slash symbol variant hits the same cache entry as canonical symbol
+    d1 = hs.check("BTC/USDC", "BUY", 1000.0, 1.0, notional_eur=800.0, now=float("nan"))
+    d2 = hs.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=800.0, now=time.time())
+    assert d1.suggested_scale == 0.5 and d2.suggested_scale == 0.5
+    assert calls["n"] == 1
+
+def test_evaluate_high_stake_order_guard_with_nan_computed_notional_does_not_invoke_highstakeguard_iter34_s5(monkeypatch):
+    """[ITER34 #5] evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard."""
+    from types import SimpleNamespace
+    import llm_order_guard as log_mod
+    # 5. evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard
+    called_hs = []
+
+    class _FailIfCalledHS:
+        def __init__(self, *a, **kw):
+            pass
+
+        def check(self, *a, **kw):
+            called_hs.append((a, kw))
+            return SimpleNamespace(allowed=False, reason="veto", suggested_scale=0.0, brake_action="VETO")
+
+    import intelligence.sentiment.guards.high_stake_guard as hs_mod
+    monkeypatch.setattr(hs_mod, "HighStakeGuard", _FailIfCalledHS)
+    monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
+
+    ok_nan, r_nan, sc_nan = log_mod.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=85000.0,
+        qty=0.001,
+        computed_notional=float("nan"),
+        regime_context=None,
+        valid_context=False,
+        cache_key=("BUY", frozenset()),
+        margins={
+            "intelligence_guards_mode": "enforce",
+            "llm_guard_mode": "enforce",
+            "high_stake_min_notional_usd": 700.0,
+            "llm_timeout_sec": 3.0,
+            "llm_fallback": "allow",
+        },
+        bypassed=set(),
+        now=float("nan"),
+        notify_on_eval=False,
+    )
+    assert ok_nan is True and sc_nan == 1.0 and len(called_hs) == 0
+
+def test_triggers_sanitize_bool_nan_inf_constructor_parameters_iter54_s1():
+    """[ITER54 #1] Triggers sanitize bool/NaN/Inf constructor parameters."""
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    # 1. Triggers sanitize bool/NaN/Inf constructor parameters
+    lgt = LinearGradientTrigger(strength_threshold=True)
+    assert lgt.strength_threshold == 2.0
+    lgt_nan = LinearGradientTrigger(strength_threshold=float("nan"))
+    assert lgt_nan.strength_threshold == 2.0
+
+    mbt = MarketBreadthTrigger(
+        washout_advance_threshold=True,
+        washout_median_threshold=float("nan"),
+        blowoff_advance_threshold=1.5,
+        blowoff_median_threshold=float("inf"),
+    )
+    assert mbt.washout_advance_threshold == 0.15
+    assert mbt.washout_median_threshold == -4.0
+    assert mbt.blowoff_advance_threshold == 0.88
+    assert mbt.blowoff_median_threshold == 6.0
+
+def test_extract_symbol_recent_fills_supports_binance_isbuyer_and_kraken_type_formats_iter101_s4():
+    """[ITER101 #4] extract_symbol_recent_fills supports Binance ('isBuyer') and Kraken ('type') formats."""
+    import pytest
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    # 4. extract_symbol_recent_fills supports Binance ("isBuyer") and Kraken ("type") formats
+    fills_binance = extract_symbol_recent_fills([
+        {"isBuyer": True, "price": "100.0", "executedQty": "2.0", "time": 1000},
+        {"isBuyer": "false", "price": "110.0", "executedQty": "1.0", "time": 2000},
+    ])
+    assert fills_binance is not None
+    assert fills_binance["last_action_side"] == "SELL"
+    assert fills_binance["last_buy"]["price"] == pytest.approx(100.0)
+    assert fills_binance["last_sell"]["price"] == pytest.approx(110.0)
+    assert fills_binance["active_avg_buy_px"] == pytest.approx(100.0)
+
+    fills_kraken = extract_symbol_recent_fills([
+        {"type": "buy", "price": "50.0", "qty": "4.0", "timestamp": 1000},
+        {"type": "s", "price": "55.0", "qty": "4.0", "timestamp": 2000},
+    ])
+    assert fills_kraken is not None
+    assert fills_kraken["last_action_side"] == "SELL"
+    assert fills_kraken["last_buy"]["price"] == pytest.approx(50.0)
+    assert fills_kraken["last_sell"]["price"] == pytest.approx(55.0)
+    assert fills_kraken["active_avg_buy_px"] is None
+
+def test_feargreedcollector_parse_payload_tolerates_malformed_timestamp_and_bool_value_classification_iter103_s6():
+    """[ITER103 #6] FearGreedCollector.parse_payload tolerates malformed timestamp and bool value_classification."""
+    # 6. FearGreedCollector.parse_payload tolerates malformed timestamp and bool value_classification
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    fg_snap = FearGreedCollector.parse_payload({"data": [{"value": "82", "value_classification": True, "timestamp": "bad_ts"}]})
+    assert fg_snap is not None and fg_snap.value == 82 and fg_snap.classification == "Neutral" and fg_snap.timestamp > 0
+
+def test_marketbreadthcollector_parse_tickers_ignores_non_str_symbol_iter104_s3():
+    """[ITER104 #3] MarketBreadthCollector.parse_tickers ignores non-str symbol."""
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    # 3. MarketBreadthCollector.parse_tickers ignores non-str symbol
+    tickers = [
+        {"symbol": True, "quoteVolume": "10000000", "priceChangePercent": "5.0"},
+        {"symbol": "BTCUSDT", "quoteVolume": "10000000", "priceChangePercent": "2.0"},
+        {"symbol": "ETHUSDT", "quoteVolume": "10000000", "priceChangePercent": "3.0"},
+        {"symbol": "SOLUSDT", "quoteVolume": "10000000", "priceChangePercent": "4.0"},
+        {"symbol": "BNBUSDT", "quoteVolume": "10000000", "priceChangePercent": "1.0"},
+        {"symbol": "XRPUSDT", "quoteVolume": "10000000", "priceChangePercent": "-1.0"},
+    ]
+    mb_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=1_000_000.0, now_ts=1000.0)
+    assert mb_snap is not None and mb_snap.total_count == 5
+
+def test_collect_pretrade_telemetry_skips_nan_wall_prices_and_nan_funding_iter98_s4(tmp_path, monkeypatch):
+    """[ITER98 #4] collect_pretrade_telemetry: skips NaN wall prices and NaN funding/whale fields."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    # 4. collect_pretrade_telemetry: skips NaN wall prices and NaN funding/whale fields
+    monkeypatch.setattr(
+        "external_order_guard.get_orderbook_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                imbalance_ratio=0.6,
+                largest_ask_wall_usd=250_000.0,
+                largest_ask_wall_price=float("nan"),
+                largest_bid_wall_usd=250_000.0,
+                largest_bid_wall_price=50000.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "external_order_guard.get_derivatives_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                funding_rate=float("nan"),
+                open_interest_usd=float("inf"),
+            )
+        ),
+    )
+    tel = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert tel["Orderbook Ask Wall Ahead"] == "None detected within 2%"
+    assert "$250,000 @ $50,000.00" in tel["Orderbook Bid Wall Ahead"]
+    assert "Perpetual Funding Rate" not in tel
+    assert "Derivatives Open Interest" not in tel
+
+def test_feargreedcollector_parse_payload_normalizes_millisecond_timestamps_1e11_to_seconds_iter123_s3():
+    """[ITER123 #3] FearGreedCollector.parse_payload normalizes millisecond timestamps (> 1e11) to seconds."""
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    # 3. FearGreedCollector.parse_payload normalizes millisecond timestamps (> 1e11) to seconds
+    fg_snap = FearGreedCollector.parse_payload({"data": [{"value": "42", "value_classification": "Fear", "timestamp": "1760000000000"}]})
+    assert fg_snap is not None and fg_snap.timestamp == 1760000000.0
+
+def test_sentimentadvisor_filters_boolean_blank_key_risks_and_boolean_summary_iter123_s4(tmp_path):
+    """[ITER123 #4] SentimentAdvisor filters boolean/blank key_risks and boolean summary from disk."""
+    import json
+    import time
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    # 4. SentimentAdvisor filters boolean/blank key_risks and boolean summary from disk
+    adv_path = tmp_path / "sentiment_eval.json"
+    adv_path.write_text(
+        json.dumps({
+            "market_bias": "BULLISH",
+            "risk_level": "LOW",
+            "confidence": 0.8,
+            "summary": True,
+            "key_risks": ["Valid risk", True, "   ", None],
+            "recommended_action": "ACCUMULATE",
+            "ts": time.time(),
+        }),
+        encoding="utf-8",
+    )
+    adv = SentimentAdvisor(cache_file=str(adv_path))
+    assert adv._cached_assessment is not None
+    assert adv._cached_assessment.summary == ""
+    assert adv._cached_assessment.key_risks == ["Valid risk"]
+
+def test_geminiclient__remove_detached_thread_blocks_path_traversal_cids_iter123_s5(tmp_path):
+    """[ITER123 #5] GeminiClient._remove_detached_thread blocks path traversal cids."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+    # 5. GeminiClient._remove_detached_thread blocks path traversal cids
+    brain_dir = tmp_path / "brain" / "keep_me"
+    brain_dir.mkdir(parents=True)
+    GeminiClient._remove_detached_thread(str(tmp_path), "../brain")
+    GeminiClient._remove_detached_thread(str(tmp_path), "keep_me/..")
+    assert brain_dir.exists()
+    GeminiClient._remove_detached_thread(str(tmp_path), "keep_me")
+    assert not brain_dir.exists()
+
+def test_extremegreedguard_clamps_downscale_threshold_hard_veto_threshold_iter125_s3():
+    """[ITER125 #3] ExtremeGreedGuard clamps downscale_threshold <= hard_veto_threshold."""
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    # 3. ExtremeGreedGuard clamps downscale_threshold <= hard_veto_threshold
+    eg_guard = ExtremeGreedGuard(downscale_threshold=92, hard_veto_threshold=85)
+    assert eg_guard.downscale_threshold == 85
+    assert eg_guard.hard_veto_threshold == 85
+
+def test_evaluate_llm_guard_response_handles_boolean_decision_reason_and_deny_reject_iter125_s5():
+    """[ITER125 #5] evaluate_llm_guard_response handles boolean decision/reason and DENY/REJECT synonyms."""
+    from intelligence.sentiment.guards.high_stake_guard import evaluate_llm_guard_response
+    # 5. evaluate_llm_guard_response handles boolean decision/reason and DENY/REJECT synonyms
+    dec_llm = evaluate_llm_guard_response(
+        "HighStakeGuard",
+        "BUY",
+        {"decision": "DENIED", "reason": True, "suggested_scale": True},
+        fallback_action="allow",
+        notional_eur=1500.0,
+    )
+    assert dec_llm.allowed is False
+    assert "evaluated by LLM" in dec_llm.reason
+
+def test_meanreversiontrigger_sentimentcontrariantrigger_and_marketbreadthtrigger_normalize_inverted_thresholds_iter126_s3():
+    """[ITER126 #3] MeanReversionTrigger, SentimentContrarianTrigger, and MarketBreadthTrigger normalize inverted thresholds."""
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+    # 3. MeanReversionTrigger, SentimentContrarianTrigger, and MarketBreadthTrigger normalize inverted thresholds
+    mrt = MeanReversionTrigger(rsi_low=75.0, rsi_high=25.0, pb_low=0.9, pb_high=0.1)
+    assert mrt.rsi_low == 25.0 and mrt.rsi_high == 75.0
+    assert mrt.pb_low == 0.1 and mrt.pb_high == 0.9
+
+    sct = SentimentContrarianTrigger(extreme_fear_entry=85, extreme_greed_exit=20)
+    assert sct.extreme_fear_entry == 20 and sct.extreme_greed_exit == 85
+    sig_sc, ev_sc = sct.evaluate("BTCUSDC", 100.0, type("FG", (), {"value": 15, "classification": True, "trend_7d_change": -5, "historical_values": []})())
+    assert sig_sc == "CONTRARIAN_BUY" and "Unknown" in ev_sc.reason
+
+    mbt = MarketBreadthTrigger(
+        washout_advance_threshold=0.90,
+        blowoff_advance_threshold=0.10,
+        washout_median_threshold=6.0,
+        blowoff_median_threshold=-4.0,
+    )
+    assert mbt.washout_advance_threshold == 0.10 and mbt.blowoff_advance_threshold == 0.90
+    assert mbt.washout_median_threshold == -4.0 and mbt.blowoff_median_threshold == 6.0
+
+def test_collect_pretrade_telemetry_extracts_technical_trend_regime_from_dict_regime_context_iter174_s5():
+    """[ITER174 #5] collect_pretrade_telemetry extracts Technical Trend Regime from dict regime_context."""
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    # 5. collect_pretrade_telemetry extracts Technical Trend Regime from dict regime_context
+    telem = collect_pretrade_telemetry(
+        "BTCUSDC",
+        regime_context={"resolved_trend": "bull", "decision": {"gradient": 0.0123, "epsilon": 0.005}},
+        dur_sec=7200.0,
+    )
+    assert "bull (gradient=+0.0123, epsilon=0.0050)" in telem.get("Technical Trend Regime", "")
+
+def test_extremegreedguard_and_panicwashoutguard_accept_bid_long_and_dict_iter176_s1():
+    """[ITER176 #1] ExtremeGreedGuard and PanicWashoutGuard accept BID/LONG and dict snapshots."""
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    # 1. ExtremeGreedGuard and PanicWashoutGuard accept BID/LONG and dict snapshots
+    eg_dec = ExtremeGreedGuard().check("BTCUSDC", "BID", {"value": 92, "classification": "Extreme Greed"})
+    assert eg_dec.allowed is False and "veto_extreme_market_euphoria" in eg_dec.reason
+
+    pw_dec = PanicWashoutGuard().check(
+        "BTCUSDC",
+        "LONG",
+        fear_greed_snapshot={"value": 8, "historical_values": [8, 22]},
+    )
+    assert pw_dec.allowed is False and "defer_accelerating_panic_capitulation" in pw_dec.reason
+
+def test_geminiclient_query_text_tolerates_malformed_none_timestamp_in__cache_iter179_s2():
+    """[ITER179 #2] GeminiClient.query_text tolerates malformed/None timestamp in _cache."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+    # 2. GeminiClient.query_text tolerates malformed/None timestamp in _cache
+    client = GeminiClient(custom_runner=lambda p, m, t: "fresh_response")
+    client._cache["test_prompt"] = (None, "stale")
+    assert client.query_text("test_prompt", cache_ttl_sec=60.0) == "fresh_response"
+
+def test_resolve_llm_guard_cache_ttl_respects_explicit_ttl_custom_client_and_custom_iter183_s3():
+    """[ITER183 #3] resolve_llm_guard_cache_ttl respects explicit TTL, custom client, and custom runner."""
+    import pytest
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
+    # 3. resolve_llm_guard_cache_ttl respects explicit TTL, custom client, and custom runner
+    assert resolve_llm_guard_cache_ttl(120.0, True, SimpleNamespace(_custom_runner=True), 600.0) == pytest.approx(120.0)
+    assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(600.0)
+    assert resolve_llm_guard_cache_ttl(None, True, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(0.0)
+    assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=lambda p: {}), 600.0) == pytest.approx(0.0)
