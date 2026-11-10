@@ -3021,8 +3021,8 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
         "cacheInterface.py",
         "cacheaccount.py",
         "cacheprice.py",
+        "cachetrend.py",
         "cacheManager.py",
-        os.path.join("kraken", "kraken_cachemanager.py"),
     )
     raw_violations = []
     for rel_path in checked_files:
@@ -3068,6 +3068,65 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
     assert extracted["HYPEUSD"][0]["orderId"] == "ORD-101"
     assert extracted["HYPEUSD"][0]["side"] == "BUY"
     assert KrakenProvider.extract_ws_own_trades({"event": "heartbeat"}, pairs=["HYPEUSD"]) is None
+
+
+def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
+    """Verify _KrakenAccountTradeBridge starts in poll mode, persists fills, and stops cleanly."""
+    import cacheaccount
+    from providers.kraken_provider import KrakenProvider
+    from state_io import read_json_dict
+
+    cache_file = str(tmp_path / "cache_trade_kraken.json")
+    pulled_event = threading.Event()
+
+    class _FakeKrakenClient:
+        def _private(self, method, data=None, fresh=False):
+            pulled_event.set()
+            return {
+                "ledger": {
+                    "L1": {"refid": "R10", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000010.0},
+                    "L2": {"refid": "R10", "asset": "ZUSD", "amount": "-60.0", "type": "trade", "time": 1700000010.0},
+                }
+            }
+
+    monkeypatch.setattr(
+        KrakenProvider,
+        "resolve_cache_daemon_config",
+        classmethod(
+            lambda _cls: {
+                "pairs": ["HYPEUSD"],
+                "poll_interval": 10.0,
+                "backoff_init": 1.0,
+                "backoff_max": 5.0,
+                "mode": "poll",
+                "lookback_sec": 3600.0,
+                "ws_url": "wss://ws-auth.kraken.com/",
+                "cache_file": cache_file,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        KrakenProvider,
+        "build_cache_client",
+        classmethod(lambda _cls: (_FakeKrakenClient(), "Kraken CACHE")),
+    )
+
+    bridge = cacheaccount._KrakenAccountTradeBridge()
+    assert bridge.start() is True
+    try:
+        assert pulled_event.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not os.path.exists(cache_file):
+            time.sleep(0.02)
+        saved = read_json_dict(cache_file)
+        assert isinstance(saved, dict)
+        assert len(saved["items"]["HYPEUSD"]) == 1
+        assert saved["items"]["HYPEUSD"][0]["id"] == "R10"
+        assert saved["items"]["HYPEUSD"][0]["price"] == 30.0
+    finally:
+        bridge.stop(timeout=1.0)
+    assert not bridge.is_running
+
 
 
 

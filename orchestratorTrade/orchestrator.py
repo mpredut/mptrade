@@ -275,14 +275,14 @@ class BotManager:
         seen = set(manifest_names)
         extra_names = [n for n in self.processes.keys() if n not in seen]
         ordered = list(reversed(manifest_names + extra_names))
-        core_writers = [n for n in ("Kraken-cache", "cacheManager") if n in ordered]
+        core_writers = [n for n in ("cacheManager",) if n in ordered]
         if core_writers:
             ordered = [n for n in ordered if n not in core_writers] + core_writers
         return ordered
 
     def _ordered_bots_for_start(self) -> list[Dict[str, Any]]:
         bots_list = list(getattr(self, "bots", ()) or ())
-        priority = {"cacheManager": 0, "Kraken-cache": 1}
+        priority = {"cacheManager": 0}
         return sorted(
             bots_list,
             key=lambda b: priority.get(b.get("name") if isinstance(b, dict) else "", 2),
@@ -413,7 +413,7 @@ class BotManager:
                 # trading bots never wake up before account/price cache writers are live.
                 for bot in self._ordered_bots_for_start():
                     bname = bot.get("name")
-                    if bname in ("cacheManager", "Kraken-cache") and bname not in self.starting:
+                    if bname == "cacheManager" and bname not in self.starting:
                         proc = self.processes.get(bname)
                         if proc is None or proc.returncode is not None:
                             self.starting.add(bname)

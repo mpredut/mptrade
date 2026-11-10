@@ -30,6 +30,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    split_csv,
 )
 from .base import (
     MarketDataProvider,
@@ -71,13 +72,13 @@ from cachepaths import (
     split_symbol_assets,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, symbols_for
 from market_regime import ClosedPriceSeries
 
 _MISSING = object()
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
-# Shared cross-process fill cache produced by kraken_cachemanager.py.
+# Shared cross-process fill cache produced by cacheManager.py (_KrakenAccountWsBridge).
 _DEFAULT_KRAKEN_CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 _KRAKEN_CACHE_FILE = _DEFAULT_KRAKEN_CACHE_FILE
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
@@ -230,6 +231,71 @@ class KrakenProvider(MarketDataProvider):
                 print("[Kraken] [WARN] STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
                       " -> the account reads (balance/orders) will fail; NOT caching, retrying on the next tick.")
             return cli
+
+    @classmethod
+    def resolve_cache_daemon_config(cls) -> dict:
+        """Resolve validated Kraken trade-cache daemon configuration from instruments.conf and kraken/config.env."""
+        values = env_values_map(
+            _KRAKEN_DIR,
+            (
+                "KRAKEN_CACHE_PAIRS",
+                "KRAKEN_CACHE_POLL_S",
+                "KRAKEN_CACHE_BACKOFF_INIT_S",
+                "KRAKEN_CACHE_BACKOFF_MAX_S",
+                "KRAKEN_CACHE_MODE",
+                "KRAKEN_CACHE_LOOKBACK_H",
+            ),
+        )
+        pairs = list(
+            dict.fromkeys(
+                s
+                for sym in [
+                    *symbols_for("kraken"),
+                    *split_csv(values.get("KRAKEN_CACHE_PAIRS"), upper=True),
+                ]
+                if (s := str(sym or "").strip().upper())
+            )
+        )
+        if not pairs:
+            raise RuntimeError(
+                "No Kraken cache pairs configured in instruments.conf or KRAKEN_CACHE_PAIRS"
+            )
+
+        def _req_pos_float(key: str) -> float:
+            val = safe_pos_float(values.get(key), default=None)
+            if val is None:
+                raise ValueError(f"Missing or invalid required Kraken cache setting: {key}")
+            return float(val)
+
+        mode = str(values.get("KRAKEN_CACHE_MODE") or "").strip().lower()
+        if not mode:
+            raise ValueError("Missing required Kraken cache setting: KRAKEN_CACHE_MODE")
+        return {
+            "pairs": pairs,
+            "poll_interval": _req_pos_float("KRAKEN_CACHE_POLL_S"),
+            "backoff_init": _req_pos_float("KRAKEN_CACHE_BACKOFF_INIT_S"),
+            "backoff_max": _req_pos_float("KRAKEN_CACHE_BACKOFF_MAX_S"),
+            "mode": mode,
+            "lookback_sec": _req_pos_float("KRAKEN_CACHE_LOOKBACK_H") * 3600.0,
+            "ws_url": "wss://ws-auth.kraken.com/",
+            "cache_file": cache_path(CACHE_KRAKEN_TRADE_FILENAME),
+        }
+
+    @classmethod
+    def build_cache_client(cls):
+        """Construct an isolated KrakenClient using the dedicated ``cache`` credential profile."""
+        KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
+        values = env_values_map(
+            _KRAKEN_DIR,
+            (
+                "KRAKEN_API_KEY_CACHE",
+                "KRAKEN_API_SECRET_CACHE",
+                "KRAKEN_API_KEY_BOT",
+                "KRAKEN_API_SECRET_BOT",
+            ),
+        )
+        credentials = kraken_credentials("cache", values=values)
+        return KrakenClient(credentials.key, credentials.secret), credentials.profile
 
     def _order_query_fallback_client(self):
         """Return a KrakenClient using the BOT profile when the auto-created fleet/SPARE key lacks order-query permission."""

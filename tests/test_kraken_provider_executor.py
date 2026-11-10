@@ -663,9 +663,11 @@ class PublicCacheTest(unittest.TestCase):
             self.assertEqual(mpost.call_count, 1)
 
     def test_kraken_cachemanager_loads_mandatory_env_stack(self):
-        import kraken.kraken_cachemanager as km
-        self.assertTrue(len(km.PAIRS) > 0)
-        self.assertIn("HYPEUSD", km.PAIRS)
+        cfg = KrakenProvider.resolve_cache_daemon_config()
+        self.assertTrue(len(cfg["pairs"]) > 0)
+        self.assertIn("HYPEUSD", cfg["pairs"])
+        self.assertGreater(cfg["poll_interval"], 0.0)
+        self.assertGreater(cfg["lookback_sec"], 0.0)
 
     def test_wait_for_listing_suppresses_alert_on_transient_network_recovery(self):
         import kraken.kraken_bot as kb
@@ -753,7 +755,6 @@ def test_kraken_client__read_ttl_last_price_price_decimals_add_order_ohlc_closes
     orig_sys_path = list(sys.path)
     try:
         from kraken import kraken_client as kc
-        from kraken import kraken_cachemanager as kcm
         from kraken import kraken_xstock_watch as kxw
     finally:
         sys.path[:] = orig_sys_path
@@ -798,7 +799,6 @@ def test_kraken_xstock_watch__bot_alive_rejects_boolean_true_pid_systemd_and_ite
     orig_sys_path = list(sys.path)
     try:
         from kraken import kraken_client as kc
-        from kraken import kraken_cachemanager as kcm
         from kraken import kraken_xstock_watch as kxw
     finally:
         sys.path[:] = orig_sys_path
@@ -1237,11 +1237,11 @@ def test_krakenclient_pair_info_ticker_and_add_order_validate_false_iter116_s1(m
 
 def test_kraken_cachemanager__match_configured_pair__normalize_and__ledger_to_fills_iter116_s2():
     """[ITER116 #2] KrakenProvider.match_configured_pair, normalize_ws_trade, and ledger_to_fills."""
-    import kraken.kraken_cachemanager as kcm
     from providers.kraken_provider import KrakenProvider
+    pairs = KrakenProvider.resolve_cache_daemon_config()["pairs"]
     # 2. KrakenProvider.match_configured_pair, normalize_ws_trade, and ledger_to_fills
-    assert KrakenProvider.match_configured_pair(True, pairs=kcm.PAIRS) is None
-    assert KrakenProvider.match_configured_pair(123, pairs=kcm.PAIRS) is None
+    assert KrakenProvider.match_configured_pair(True, pairs=pairs) is None
+    assert KrakenProvider.match_configured_pair(123, pairs=pairs) is None
     assert KrakenProvider.normalize_ws_trade(None, {"pair": "XBTUSD"}) == {}
     assert KrakenProvider.normalize_ws_trade(True, {"pair": "XBTUSD"}) == {}
     assert KrakenProvider.normalize_ws_trade("tx1", "not-a-dict") == {}

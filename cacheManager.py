@@ -53,6 +53,7 @@ from cacheaccount import (
     run_kraken_trade_poll_loop,
     run_kraken_trade_ws_loop,
     start_account_cache_daemon,
+    start_kraken_account_ws_bridge,
     stop_account_ws_streams,
 )
 from cachepaths import migrate_legacy_filename_if_needed

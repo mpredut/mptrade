@@ -124,11 +124,11 @@ A failure of the audit can neither refuse nor modify an order.
 - ⚠ **Spot co-mingling** (see [OPERATIONS.md](OPERATIONS.md) §3): if DN or several owners
   are reactivated, the same HYPE spot balance can be sold by the wrong engine.
 
-## Multi-process Kraken (a replicated cacheManager)
+## Multi-process Kraken (unified in cacheManager)
 For 2-3 HYPE trading processes on Kraken (the same `HYPEUSD` symbol) on ONE account:
-- **`kraken/kraken_cachemanager.py`** is a SEPARATE process (isolation from Binance: Kraken down
-  is not Binance down) that keeps the fills in a cache with its own NAMESPACE
-  (`cachedb/cache_trade_kraken.json`); `kraken_provider.get_orders` READS from it (a correct
+- **`cacheManager.py`** (`_KrakenAccountTradeBridge` in `cacheaccount.py`) runs an isolated background thread
+  that keeps the fills in a cache with its own NAMESPACE
+  (`cachedb/trades/cache_trade_kraken.json`); `kraken_provider.get_orders` READS from it (a correct
   cross-process profit guard plus a single feed, so the rate limit is fine), falling back to
   `TradesHistory`.
   - **poll** mode (default, ~5s) / **ws** mode (`KRAKEN_CACHE_MODE=ws`, real-time `ownTrades` —

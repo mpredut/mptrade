@@ -20,7 +20,8 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
-from typing import Optional, Sequence
+import threading
+from typing import Any, Optional, Sequence
 import uuid
 
 from binance_api import bapi as api
@@ -2308,6 +2309,10 @@ def start_account_cache_daemon(
                 account_cache_name, ver, now_ms=sync_ms
             )
     _bapi_ws_bridge.initialize_ws_bridge_once()
+    if is_live_network_backfill_enabled() and _parse_bool_flag(
+        os.environ.get("BINANCE_AUTO_START_WEBSOCKETS"), default=True
+    ):
+        start_kraken_account_ws_bridge()
 
 
 def disable_account_cache_daemon_writer() -> None:
@@ -2317,25 +2322,25 @@ def disable_account_cache_daemon_writer() -> None:
 
 
 def request_stop_account_ws_streams() -> None:
-    """Signal the account user-data WebSocket bridge to stop."""
-    bridge = _bapi_ws_bridge._ws_bridge
-    if bridge is not None and hasattr(bridge, "request_stop"):
-        try:
-            bridge.request_stop()
-        except Exception:
-            pass
+    """Signal the account user-data WebSocket bridges (Binance and Kraken) to stop."""
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge):
+        if bridge is not None and hasattr(bridge, "request_stop"):
+            try:
+                bridge.request_stop()
+            except Exception:
+                pass
 
 
 def stop_account_ws_streams(shutdown_deadline: float) -> None:
-    """Join the account user-data WebSocket bridge within ``shutdown_deadline``."""
-    bridge = _bapi_ws_bridge._ws_bridge
-    if bridge is not None and hasattr(bridge, "stop"):
-        try:
-            bridge.stop(
-                timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
-            )
-        except Exception:
-            pass
+    """Join the account user-data WebSocket bridges within ``shutdown_deadline``."""
+    for bridge in (_bapi_ws_bridge._ws_bridge, _kraken_ws_bridge):
+        if bridge is not None and hasattr(bridge, "stop"):
+            try:
+                bridge.stop(
+                    timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
+                )
+            except Exception:
+                pass
 
 
 def attach_hyperliquid_user_fills_bridge(
@@ -2442,6 +2447,7 @@ def run_kraken_trade_poll_loop(
     backoff_max: float,
     lookback_sec: float,
     heartbeat_fn=None,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Run the REST Ledgers polling loop for Kraken trade cache persistence."""
     from providers.kraken_provider import KrakenProvider
@@ -2452,7 +2458,7 @@ def run_kraken_trade_poll_loop(
     backoff = float(backoff_init)
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
-    while True:
+    while not (stop_event is not None and stop_event.is_set()):
         try:
             by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
                 client, pairs=pairs, lookback_sec=lookback_sec
@@ -2468,12 +2474,20 @@ def run_kraken_trade_poll_loop(
             backoff = float(backoff_init)
             if callable(heartbeat_fn):
                 heartbeat_fn()
-            _sleep_time(poll_interval)
+            if stop_event is not None:
+                if stop_event.wait(timeout=max(0.0, float(poll_interval))):
+                    break
+            else:
+                _sleep_time(poll_interval)
         except Exception as exc:
             log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {exc}")
             if callable(heartbeat_fn):
                 heartbeat_fn()
-            _sleep_time(backoff)
+            if stop_event is not None:
+                if stop_event.wait(timeout=max(0.0, backoff)):
+                    break
+            else:
+                _sleep_time(backoff)
             backoff = min(backoff * 2.0, float(backoff_max))
 
 
@@ -2488,6 +2502,8 @@ def run_kraken_trade_ws_loop(
     lookback_sec: float,
     ws_url: str = "wss://ws-auth.kraken.com/",
     heartbeat_fn=None,
+    stop_event: Optional[threading.Event] = None,
+    ws_holder: Optional[list] = None,
 ) -> None:
     """Run the real-time Kraken ``ownTrades`` WebSocket bridge with periodic REST Ledgers reconciliation."""
     from providers.kraken_provider import KrakenProvider
@@ -2507,6 +2523,7 @@ def run_kraken_trade_ws_loop(
             backoff_max=backoff_max,
             lookback_sec=lookback_sec,
             heartbeat_fn=heartbeat_fn,
+            stop_event=stop_event,
         )
 
     cache = CacheTradeManager.load_sanitized_trade_snapshot(
@@ -2623,18 +2640,29 @@ def run_kraken_trade_ws_loop(
     def on_error(_ws, err) -> None:
         log(f"[kraken_cache][ws] error: {err}")
 
-    while True:
+    while not (stop_event is not None and stop_event.is_set()):
         try:
             ws = websocket.WebSocketApp(
                 ws_url, on_open=on_open, on_message=on_message, on_error=on_error
             )
+            if isinstance(ws_holder, list) and ws_holder:
+                ws_holder[0] = ws
             ws.run_forever(ping_interval=20, ping_timeout=10)
         except Exception as exc:
             log(f"[kraken_cache][ws] run_forever: {exc}")
+        finally:
+            if isinstance(ws_holder, list) and ws_holder:
+                ws_holder[0] = None
+        if stop_event is not None and stop_event.is_set():
+            break
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
         if callable(heartbeat_fn):
             heartbeat_fn()
-        _sleep_time(5)
+        if stop_event is not None:
+            if stop_event.wait(timeout=5.0):
+                break
+        else:
+            _sleep_time(5)
         try:
             _merge_rest()
             save_json_state(cache_file, cache, indent=1)
@@ -2643,6 +2671,111 @@ def run_kraken_trade_ws_loop(
             last_rest_sync_ms[0] = now_resync_ms
         except Exception as exc:
             log(f"[kraken_cache][ws] REST resync after disconnect failed: {exc}")
+
+
+class _KrakenAccountTradeBridge:
+    """Background daemon bridge managing Kraken ``ownTrades`` WS and ``Ledgers`` REST sync inside cacheManager."""
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._ws_holder: list[Any] = [None]
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def is_running(self) -> bool:
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._stop_event.is_set()
+        )
+
+    def start(self) -> bool:
+        from credentials import CredentialConfigurationError
+        from providers.kraken_provider import KrakenProvider
+
+        try:
+            cfg = KrakenProvider.resolve_cache_daemon_config()
+            client, profile = KrakenProvider.build_cache_client()
+        except CredentialConfigurationError as exc:
+            log(f"[kraken_cache] skipped (no Kraken cache credentials): {exc}")
+            return False
+        except Exception as exc:
+            log(f"[kraken_cache] failed to initialize daemon config: {exc}")
+            return False
+
+        self._stop_event.clear()
+        mode = cfg["mode"]
+        log(
+            f"[kraken_cache] start: mode={mode} credentials={profile} "
+            f"pairs={cfg['pairs']} poll={cfg['poll_interval']}s -> {cfg['cache_file']}"
+        )
+
+        def _runner() -> None:
+            if mode in ("ws", "auto"):
+                run_kraken_trade_ws_loop(
+                    client,
+                    cache_file=cfg["cache_file"],
+                    pairs=cfg["pairs"],
+                    poll_interval=cfg["poll_interval"],
+                    backoff_init=cfg["backoff_init"],
+                    backoff_max=cfg["backoff_max"],
+                    lookback_sec=cfg["lookback_sec"],
+                    ws_url=cfg["ws_url"],
+                    stop_event=self._stop_event,
+                    ws_holder=self._ws_holder,
+                )
+            else:
+                run_kraken_trade_poll_loop(
+                    client,
+                    cache_file=cfg["cache_file"],
+                    pairs=cfg["pairs"],
+                    poll_interval=cfg["poll_interval"],
+                    backoff_init=cfg["backoff_init"],
+                    backoff_max=cfg["backoff_max"],
+                    lookback_sec=cfg["lookback_sec"],
+                    stop_event=self._stop_event,
+                )
+
+        t = threading.Thread(
+            target=_runner,
+            name="KrakenAccountTradeBridge",
+            daemon=True,
+        )
+        self._thread = t
+        t.start()
+        return True
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+        ws = self._ws_holder[0]
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def stop(self, timeout: float = 0.3) -> None:
+        self.request_stop()
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=max(0.05, float(timeout)))
+
+
+_kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None
+_kraken_ws_bridge_lock = threading.Lock()
+
+
+def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:
+    """Idempotently start the Kraken ``ownTrades``/``Ledgers`` background bridge inside cacheManager."""
+    global _kraken_ws_bridge
+    with _kraken_ws_bridge_lock:
+        if _kraken_ws_bridge is not None and _kraken_ws_bridge.is_running:
+            return _kraken_ws_bridge
+        bridge = _KrakenAccountTradeBridge()
+        if bridge.start():
+            _kraken_ws_bridge = bridge
+            return bridge
+        return None
 
 
 

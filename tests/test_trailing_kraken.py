@@ -335,7 +335,6 @@ class TestRebuyGuardsKraken(Base):
         self.assertNotIn("metadata", res.intent)
 
     def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
-        import kraken_cachemanager as kcm
         from cacheaccount import CacheTradeManager
         from providers.kraken_provider import KrakenProvider
 
@@ -348,39 +347,37 @@ class TestRebuyGuardsKraken(Base):
                     }
                 }
 
+        cfg = KrakenProvider.resolve_cache_daemon_config()
+        pairs = ["HYPEUSD", "TAOUSD"]
+        lookback_sec = cfg["lookback_sec"]
         cache = {"items": {"TAOUSD": [{"id": "OLD"}]}, "fetchtime": {}}
-        saved_pairs = list(kcm.PAIRS)
-        try:
-            kcm.PAIRS[:] = ["HYPEUSD", "TAOUSD"]
-            by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-                FakeLedgerClient(), pairs=kcm.PAIRS, lookback_sec=kcm.LEDGER_LOOKBACK_S
-            )
-            CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
-            self.assertEqual(len(cache["items"]["HYPEUSD"]), 1)
-            self.assertEqual(cache["items"]["HYPEUSD"][0]["symbol"], "HYPEUSD")
-            self.assertEqual(cache["items"]["TAOUSD"], [])
-            self.assertIn("HYPEUSD", cache["fetchtime"])
-            self.assertIn("TAOUSD", cache["fetchtime"])
+        by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+            FakeLedgerClient(), pairs=pairs, lookback_sec=lookback_sec
+        )
+        CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
+        self.assertEqual(len(cache["items"]["HYPEUSD"]), 1)
+        self.assertEqual(cache["items"]["HYPEUSD"][0]["symbol"], "HYPEUSD")
+        self.assertEqual(cache["items"]["TAOUSD"], [])
+        self.assertIn("HYPEUSD", cache["fetchtime"])
+        self.assertIn("TAOUSD", cache["fetchtime"])
 
-            # WS incremental merge preserves existing WS fills while adding missing REST fills
-            ws_cache = {
-                "items": {
-                    "HYPEUSD": [{"id": "WS-1", "symbol": "HYPEUSD", "time": 1700000005000, "price": 52.0, "qty": 1.0}],
-                },
-                "fetchtime": {},
-            }
-            ws_by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-                FakeLedgerClient(), pairs=kcm.PAIRS, lookback_sec=kcm.LEDGER_LOOKBACK_S
-            )
-            CacheTradeManager.merge_venue_fills_into_dict(ws_cache, ws_by_sym, is_snapshot=False)
-            self.assertEqual([x["id"] for x in ws_cache["items"]["HYPEUSD"]], ["R1", "WS-1"])
-            CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
-                ws_cache, now_ms=1700000010000, symbols=kcm.PAIRS, create_missing=True
-            )
-            self.assertEqual(ws_cache["fetchtime"]["HYPEUSD"], 1700000010000)
-            self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
-        finally:
-            kcm.PAIRS[:] = saved_pairs
+        # WS incremental merge preserves existing WS fills while adding missing REST fills
+        ws_cache = {
+            "items": {
+                "HYPEUSD": [{"id": "WS-1", "symbol": "HYPEUSD", "time": 1700000005000, "price": 52.0, "qty": 1.0}],
+            },
+            "fetchtime": {},
+        }
+        ws_by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+            FakeLedgerClient(), pairs=pairs, lookback_sec=lookback_sec
+        )
+        CacheTradeManager.merge_venue_fills_into_dict(ws_cache, ws_by_sym, is_snapshot=False)
+        self.assertEqual([x["id"] for x in ws_cache["items"]["HYPEUSD"]], ["R1", "WS-1"])
+        CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+            ws_cache, now_ms=1700000010000, symbols=pairs, create_missing=True
+        )
+        self.assertEqual(ws_cache["fetchtime"]["HYPEUSD"], 1700000010000)
+        self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
 
     def test_empty_or_failed_balance_ex_does_not_wipe_peak_and_caches_per_tick(self):
         import json

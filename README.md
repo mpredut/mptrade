@@ -190,13 +190,12 @@ flowchart TD
 
 ---
 
-## 9. Supervised Fleet Process Inventory (21 Processes)
+## 9. Supervised Fleet Process Inventory (20 Processes)
 
 ```text
 PROCS.CONF
 ├── Bots (role=bot)
 │   ├── HL-bot                    (hyperliquid/hl_bot.py)
-│   ├── Kraken-cache              (kraken/kraken_cachemanager.py)
 │   ├── Kraken-HYPE               (kraken/kraken_bot.py)
 │   ├── Kraken-TAO                (kraken/kraken_bot.py --pair TAOUSD)
 │   ├── Kraken-ADA                (kraken/kraken_bot.py --pair ADAUSD)

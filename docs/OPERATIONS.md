@@ -7,7 +7,7 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 - **The Binance fleet** (8 processes): `cacheManager`, `assetguardian`, `priceAnalysis`,
   `tradeall`, `monitortrades`, `rtrade`, `market_alerts`, `order_retry_worker`. Started
   and supervised by `trade_engine/orchestrator.py`, under **systemd `binance`**.
-- **Bots running outside the fleet**: `kraken_cachemanager`, `kraken_bot`,
+- **Bots running outside the fleet**: `kraken_bot`,
   `kraken_xstock_watch`, `t212_bot`, `kraken/trailing_stop` and
   `binance_api/trailing_stop`. They are started from the `bot` roles in `procs.conf` and
   supervised by `healthcheck.sh --supervise` (cron */5).

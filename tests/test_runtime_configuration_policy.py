@@ -122,7 +122,6 @@ def test_live_launcher_env_defaults_are_location_based():
 def test_live_venue_credentials_use_complete_profile_resolver():
     files = (
         "kraken/kraken_bot.py",
-        "kraken/kraken_cachemanager.py",
         "kraken/kraken_xstock_watch.py",
         "kraken/trailing_stop.py",
         "providers/kraken_provider.py",

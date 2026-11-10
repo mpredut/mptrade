@@ -609,12 +609,13 @@ def test_monitororder_ttl_and_ordered_id_set():
 
 
 def test_kraken_cache_touch_ws_fetchtimes():
-    import kraken.kraken_cachemanager as kcm
     from cacheaccount import CacheTradeManager
+    from providers.kraken_provider import KrakenProvider
+    pairs = KrakenProvider.resolve_cache_daemon_config()["pairs"]
     cache = {"items": {"TAOUSDC": []}, "fetchtime": {}}
-    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=1700000000, symbols=kcm.PAIRS, create_missing=True)
+    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=1700000000, symbols=pairs, create_missing=True)
     assert cache["fetchtime"]["TAOUSDC"] == 1700000000
-    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms="invalid", symbols=kcm.PAIRS, create_missing=True)
+    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms="invalid", symbols=pairs, create_missing=True)
     assert cache["fetchtime"]["TAOUSDC"] > 0
 
 

@@ -2,7 +2,7 @@
 """One-shot / cron READ-ONLY: fetch the COMPLETE Kraken TradesHistory (paginated by
 `ofs`) and write verify_tools/kraken_trades_full.json plus a realized P&L summary.
 
-WHY it is separate from kraken_cachemanager: that process intentionally retains a 14-day
+WHY it is separate from cacheManager's Kraken trade bridge: that bridge intentionally retains a 14-day
 window (Kraken rate limit, expensive call), which is correct for TRADING because the reader
 filters by since_s anyway. This script is ONLY for full-history P&L ANALYSIS, decoupled from
 the fleet. It DOES NOT touch the live cache.
