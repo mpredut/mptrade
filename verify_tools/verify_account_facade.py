@@ -92,7 +92,7 @@ def main():
 
         # 1) free_balance ------------------------------------------------------
         fd = free_direct(base)
-        ff = mkt.free_balance_for("binance", base)
+        ff = mkt.provider_by_name("binance").free_balance(base)
         fd_f = safe_float(fd, default=None)
         ff_f = safe_float(ff, default=None)
         balance_available = ff_f is not None and fd_f is not None

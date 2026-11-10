@@ -2,19 +2,16 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
 from typing import Any
 
 # BINANCE
 from binance.exceptions import BinanceAPIException
 
 # MYLIB
-from .bapi_client import client
 import instrument_registry as sym
 from botcore import (
     clean_order_id,
     exact_pos_int,
-    normalize_scalar_order_id,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -34,11 +31,6 @@ from .bapi import (
     _normalize_side,
     _parse_bool_flag,
 )
-
-
-def _round_fill_val(val: float) -> float:
-    rounded = round(val, 8 if val >= 1e-8 else 12)
-    return rounded if rounded > 0 else val
 
 
 def _build_trade_order_record(order_id: Any, price: float, qty: float, timestamp_ms: int, side: str) -> dict[str, Any]:
@@ -116,75 +108,6 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         from_id = next_from_id
         time.sleep(0.2)                 # Polite towards the rate limit.
     return out
-
-
-def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False):
-    strict = _parse_bool_flag(strict, False)
-    try:
-        order_type = _normalize_side(order_type)
-        sym.validate_symbols(symbol)
-        sym.validate_ordertype(order_type)
-        start_i = safe_nonneg_int(startTime, default=None)
-        if start_i is None:
-            raise ValueError("startTime must be a valid timestamp")
-        startTime = start_i
-
-        end_time = int(time.time() * 1000)  # ms
-
-        # Pagination prevents truncation above 1,000 fills.
-        trades = paginate_my_trades(
-            client, symbol, startTime, limit, strict=strict)
-
-        filtered = []
-        for trade in trades:
-            if not isinstance(trade, dict):
-                continue
-            ts_ms = extract_timestamp_ms(trade, default=0) or 0
-            side = extract_order_side(trade)
-            px = extract_order_price(trade)
-            qty = extract_order_qty(trade)
-            if (
-                px > 0
-                and qty > 0
-                and startTime <= ts_ms <= end_time + 5_000
-                and (order_type is None or side == order_type.upper())
-            ):
-                filtered.append({
-                    'orderId': trade.get('orderId'),
-                    'price': px,
-                    'quantity': qty,
-                    'timestamp': ts_ms,
-                    'side': side,
-                })
-
-        if not filtered:
-            return []
-        
-        grouped = defaultdict(lambda: {'price_qty': 0, 'quantity': 0, 'timestamp': 0, 'side': ''})
-
-        for idx, t in enumerate(filtered):
-            key = normalize_scalar_order_id(t['orderId']) or f"_unkeyed_{idx}"
-            grouped[key]['price_qty'] += t['price'] * t['quantity']
-            grouped[key]['quantity'] += t['quantity']
-            grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])
-            grouped[key]['side'] = t['side']
-
-        result = []
-        for oid, data in grouped.items():
-            raw_qty = data['quantity']
-            qty_out = _round_fill_val(raw_qty)
-            px_out = _round_fill_val(data['price_qty'] / raw_qty) if raw_qty > 0 else 0
-            result.append(_build_trade_order_record(oid, px_out, qty_out, data['timestamp'], data['side']))
-
-        return result
-
-
-    except Exception as e:
-        print(f"Unexpected error in get_filled_orders: {e}")
-        if strict:
-            raise
-        return []
-
 
 
 def snapshot_cache_symbol_rows(manager, symbol: str) -> list[dict]:

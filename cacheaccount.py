@@ -1646,8 +1646,8 @@ class CacheOrderManager(CacheAccountManagerBase):
                 merged.update(
                     {
                         "orderId": int(existing["orderId"]),
-                        "price": apiorders._round_fill_val(aggregate_price),
-                        "quantity": apiorders._round_fill_val(total_quantity),
+                        "price": round(aggregate_price, 8) or round(aggregate_price, 16),
+                        "quantity": round(total_quantity, 8) or round(total_quantity, 16),
                         "timestamp": max(
                             int(existing["timestamp"]),
                             int(incoming["timestamp"]),

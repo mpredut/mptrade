@@ -100,7 +100,6 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
             def validate_symbol(self, s): pass
             def get_current_price(self, s): return 100.0
             def free_balance(self, a): return 100.0
-            def free_balance_for(self, name, a): return 100.0
             def supports_symbol(self, s): return True
             def execution_enabled(self): return True
             def guards_internally(self): return False

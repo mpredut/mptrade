@@ -416,8 +416,7 @@ class TestCacheOrderManager(unittest.TestCase):
     def _make(self):
         api_mock = MagicMock()
         fname = _tmp_file(self.tmp, "cache_order.json")
-        with patch("binance_api.bapi_allorders.get_filled_orders", return_value=[]):
-            return cm.CacheOrderManager(9999, ["BTC"], fname, api_client=api_mock)
+        return cm.CacheOrderManager(9999, ["BTC"], fname, api_client=api_mock)
 
     def test_order_manager_behaviors(self):
         with self.subTest(msg="order_validation"):
@@ -490,8 +489,7 @@ class TestAccountCacheHealthPublication(unittest.TestCase):
             _write_cache_file(
                 filename, {symbol: [] for symbol in symbols},
                 {symbol: 1 for symbol in symbols})
-        with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]), \
-             patch("binance_api.bapi_allorders.get_filled_orders", return_value=[]):
+        with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
             manager = manager_class(
                 3600, symbols, filename, api_client=MagicMock())
         manager._first_sleep = False
@@ -1510,7 +1508,6 @@ class TestCacheFactory(unittest.TestCase):
             ("CurrentPrice", cm.CacheCurrentPriceManager),
         )
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]), \
-             patch("binance_api.bapi_allorders.get_filled_orders", return_value=[]), \
              patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None):
             for name, expected_class in cases:
                 with self.subTest(factory=name):

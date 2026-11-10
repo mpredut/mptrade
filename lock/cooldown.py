@@ -21,7 +21,6 @@ import threading
 import time
 
 from botcore import (
-    _parse_bool_flag,
     clean_json_value,
     load_ini_config,
     register_module_aliases,
@@ -78,14 +77,6 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
     return ts is not None and ttl_f is not None and now_f is not None and 0.0 <= (now_f - ts) < ttl_f
 
 
-def _safe_list(val) -> list:
-    return list(val) if isinstance(val, (list, tuple, set, frozenset)) else []
-
-
-def _safe_dict(val) -> dict:
-    return dict(val) if isinstance(val, dict) else {}
-
-
 _INVALID_COOLDOWN_KEYS = frozenset({"", "none", "null", "nan", "inf", "-inf", "+inf"})
 
 
@@ -120,28 +111,6 @@ class Reservation:
             self._cd.update(self.key, **fields)
 
 
-class GroupReservation:
-    """Reserve one member of an atomic group.
-
-    For example, this permits exactly one BUY and one SELL from the same quote pair
-    through a symbol cooldown while rejecting duplicates and other processes/groups.
-    """
-
-    def __init__(self, cooldown, allowed, info, key, group_id, member):
-        self._cd = cooldown
-        self.allowed = allowed
-        self.info = info
-        self.key = key
-        self.group_id = group_id
-        self.member = member
-        self._committed = False
-
-    def commit(self, **fields):
-        self._committed = True
-        self._cd.commit_group_member(
-            self.key, self.group_id, self.member, **fields)
-
-
 class Cooldown:
     """Generic disk-backed rapid-fire gate shared across processes and threads."""
 
@@ -157,14 +126,6 @@ class Cooldown:
 
     def _write(self, state):
         save_json_state(self.state_path, clean_json_value(state, stringify_keys=False), indent=2)
-
-    @staticmethod
-    def _clean_group_args(key, group_id, member):
-        return (
-            _clean_cooldown_key(key),
-            _clean_cooldown_key(group_id),
-            _clean_cooldown_key(member).upper(),
-        )
 
     @staticmethod
     def _build_reservation_entry(now, key, meta, **extra):
@@ -202,131 +163,6 @@ class Cooldown:
             state[key] = entry
             self._write(state)
             return True, entry
-
-    def reserve_group_member(self, key, ttl, group_id, member, **meta):
-        """Atomically reserve a unique group member for the same key.
-
-        While cooldown is active, only other members of the same group are allowed.
-        Repeating a member or using another group is rejected. Legacy state remains
-        compatible and exclusive, so a new group cannot bypass it.
-        """
-        key, group_id, member = self._clean_group_args(key, group_id, member)
-        if not key or not group_id or not member:
-            return False, {}
-        with FileLock(self.lock_path):
-            state = self._read()
-            last = state.get(key)
-            now = time.time()
-            active = _is_active_entry(last, now, ttl)
-            if active:
-                if last.get("group_id") != group_id:
-                    return False, last
-                members = _safe_list(last.get("group_members"))
-                if member in members:
-                    return False, last
-                members.append(member)
-                last["group_members"] = members
-                pending = _safe_list(last.get("group_pending"))
-                pending.append(member)
-                last["group_pending"] = pending
-                state[key] = last
-                self._write(state)
-                return True, last
-
-            entry = self._build_reservation_entry(
-                now,
-                key,
-                meta,
-                group_id=group_id,
-                group_members=[member],
-                group_pending=[member],
-                group_committed=[],
-                group_results={},
-            )
-            state[key] = entry
-            self._write(state)
-            return True, entry
-
-    def commit_group_member(self, key, group_id, member, **fields):
-        """Confirm the reserved member and keep its result separately."""
-        key, group_id, member = self._clean_group_args(key, group_id, member)
-        if not key or not group_id or not member:
-            return
-        with FileLock(self.lock_path):
-            state = self._read()
-            entry = state.get(key)
-            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
-                return
-            pending = _safe_list(entry.get("group_pending"))
-            if member in pending:
-                pending.remove(member)
-            committed = _safe_list(entry.get("group_committed"))
-            if member not in committed:
-                committed.append(member)
-            results = _safe_dict(entry.get("group_results"))
-            results[member] = dict(fields)
-            entry.update({
-                "group_pending": pending,
-                "group_committed": committed,
-                "group_results": results,
-                "side": "PAIR",
-            })
-            state[key] = entry
-            self._write(state)
-
-    def rollback_group_member(self, key, group_id, member):
-        """Withdraw only the uncommitted member without removing the other leg."""
-        key, group_id, member = self._clean_group_args(key, group_id, member)
-        if not key or not group_id or not member:
-            return
-        with FileLock(self.lock_path):
-            state = self._read()
-            entry = state.get(key)
-            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
-                return
-            if member in _safe_list(entry.get("group_committed")):
-                return
-            members = [m for m in _safe_list(entry.get("group_members")) if m != member]
-            pending = [m for m in _safe_list(entry.get("group_pending")) if m != member]
-            if not members:
-                del state[key]
-            else:
-                entry["group_members"] = members
-                entry["group_pending"] = pending
-                state[key] = entry
-            self._write(state)
-
-    def release_group_member(self, key, group_id, member, *, keep_group=True):
-        """Explicitly release a committed member after its operation is canceled.
-
-        With ``keep_group=True``, retain the group marker until TTL expiry. The same
-        coordinator may replace the leg, but another process/group cannot exploit the
-        short interval between cancellation and replacement.
-        """
-        key, group_id, member = self._clean_group_args(key, group_id, member)
-        if not key or not group_id or not member:
-            return False
-        keep_group = _parse_bool_flag(keep_group, True)
-        with FileLock(self.lock_path):
-            state = self._read()
-            entry = state.get(key)
-            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
-                return False
-            entry["group_members"] = [
-                m for m in _safe_list(entry.get("group_members")) if m != member]
-            entry["group_pending"] = [
-                m for m in _safe_list(entry.get("group_pending")) if m != member]
-            entry["group_committed"] = [
-                m for m in _safe_list(entry.get("group_committed")) if m != member]
-            results = _safe_dict(entry.get("group_results"))
-            results.pop(member, None)
-            entry["group_results"] = results
-            if keep_group or entry["group_members"]:
-                state[key] = entry
-            else:
-                del state[key]
-            self._write(state)
-            return True
 
     def release(self, key, *, expected_timestamp=None):
         """Release a failed reservation so it no longer blocks the TTL."""
@@ -377,18 +213,6 @@ class Cooldown:
             if allowed and not res._committed:
                 exp_ts = info.get("timestamp") if isinstance(info, dict) else None
                 self.release(key, expected_timestamp=exp_ts)  # No completed operation, so roll back.
-
-    @contextlib.contextmanager
-    def group_slot(self, key, ttl, group_id, member, **meta):
-        """Provide per-member RAII and rollback for one group member."""
-        allowed, info = self.reserve_group_member(
-            key, ttl, group_id, member, **meta)
-        res = GroupReservation(self, allowed, info, key, group_id, member)
-        try:
-            yield res
-        finally:
-            if allowed and not res._committed:
-                self.rollback_group_member(key, group_id, member)
 
 
 # ---------------------------------------------------------------------------

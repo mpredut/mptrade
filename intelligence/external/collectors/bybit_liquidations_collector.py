@@ -374,13 +374,5 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
 TelemetryCollectorFactory.register(BybitLiquidationCollector.COLLECTOR_ID, BybitLiquidationCollector)
 
 
-class LiquidationSignal(BybitLiquidationCollector):
-    """Background thread holding a rolling window of Bybit liquidations."""
-
-    def start(self, name: str = "LiquidationWS", daemon: bool = True) -> "LiquidationSignal":
-        super().start(name=name, daemon=daemon)
-        return self
-
-
 register_module_aliases(__name__, "liquidation_signal")
 

@@ -1511,8 +1511,8 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
 
     monkeypatch.setattr(
         pnl_report.ao,
-        "get_filled_orders",
-        lambda side, sym, st: [
+        "paginate_my_trades",
+        lambda cl, sym, st: [
             "bad",
             {"side": "BUY", "price": "200.0", "qty": "1.5", "time": 1000},
             {"side": "BUY", "price": "-5.0", "qty": "1.0", "time": 1500},

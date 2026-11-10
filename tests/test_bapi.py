@@ -576,21 +576,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(m24.get("chg_3h_pct"), 10.0)
         self.assertEqual(m24.get("chg_1h_pct"), 4.76)
 
-        # 15. liquidation_signal and BybitLiquidationCollector normalize symbol case and reject NaN/non-positive notionals
-        import liquidation_signal as liq_mod
+        # 15. BybitLiquidationCollector normalizes symbol case and rejects NaN/non-positive notionals
         from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
-        liq_col = liq_mod.LiquidationSignal(symbols=["BTCUSDT"])
-        liq_col._ingest(json.dumps({
-            "topic": "allLiquidation.BTCUSDT",
-            "data": [
-                {"s": "btcusdt", "S": "Buy", "v": "1.5", "p": "100.0"},
-                {"s": "BTCUSDT", "S": "Buy", "v": "nan", "p": "100.0"},
-                {"s": "BTCUSDT", "S": "Buy", "v": "-1.0", "p": "100.0"},
-            ],
-        }))
-        sig = liq_col.get_signal("BTCUSDT")
-        self.assertEqual(sig["long_liq_usd"], 150.0)
-
         bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
         bybit_col._ingest(json.dumps({
             "topic": "allLiquidation.BTCUSDT",

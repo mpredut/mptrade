@@ -1501,38 +1501,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(status.ready)
         self.assertEqual(status.reason, "account_cache_writer_not_running")
 
-        # 2. bapi_allorders.get_filled_orders preserves sub-satoshi prices (< 1e-8) and ignores non-dict trades
-        sub_satoshi_fills = [
-            "not-a-dict",
-            {
-                "id": 1,
-                "orderId": 701,
-                "price": "0.000000004",
-                "qty": "1000.0",
-                "time": now_ms - 500,
-                "isBuyer": True,
-            },
-            {
-                "id": 2,
-                "orderId": 701,
-                "price": "0.000000006",
-                "qty": "1000.0",
-                "time": now_ms - 400,
-                "isBuyer": True,
-            },
-        ]
-        with (
-            unittest.mock.patch.object(bapi_allorders.sym, "validate_symbols"),
-            unittest.mock.patch.object(bapi_allorders.sym, "validate_ordertype"),
-            unittest.mock.patch.object(
-                bapi_allorders, "paginate_my_trades", return_value=sub_satoshi_fills
-            ),
-        ):
-            filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDT", now_ms - 5000)
-        self.assertEqual(len(filled), 1)
-        self.assertAlmostEqual(filled[0]["price"], 5e-9, places=14)
-        self.assertEqual(filled[0]["quantity"], 2000.0)
-
         # 4. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders guard invalid max_age_seconds and ts_ms <= 0
         fake_order_mgr = unittest.mock.MagicMock()
         fake_order_mgr.lock = threading.Lock()

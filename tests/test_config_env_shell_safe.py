@@ -179,7 +179,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     import pytest
     import active_intents
     import binance_cache_health
-    from liquidation_signal import LiquidationSignal
+    from liquidation_signal import BybitLiquidationCollector
     from providers import binance_filters, execution_audit
     from strategies.position_exit_manager import (
         PositionExitManager,
@@ -225,7 +225,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     )
     assert re_dec.should_enter is False
 
-    sig = LiquidationSignal(symbols=["BTCUSDT"])
+    sig = BybitLiquidationCollector(symbols=["BTCUSDT"])
     sig._ingest("[]")
     sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Unknown","v":"1","p":"50000"}]}')
     sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"-1","p":"-50000"}]}')
@@ -1260,7 +1260,7 @@ def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
     import cachetrend as ct
     import active_intents as ai
 
-    sig = ls.LiquidationSignal(symbols=["", "BTCUSDT"], retention_sec=float("nan"))
+    sig = ls.BybitLiquidationCollector(symbols=["", "BTCUSDT"], retention_sec=float("nan"))
     assert sig._symbols == ["BTCUSDT"] and sig._retention == ls.MAX_RETENTION_SEC
     sig._ingest(json.dumps({"topic": "allLiquidation.BTCUSDT", "data": [{"s": "BTCUSDT", "S": "Buy", "v": True, "p": "75000"}]}))
     assert sig.get_signal("BTCUSDT", window_sec=float("nan"))["long_liq_usd"] == 0.0

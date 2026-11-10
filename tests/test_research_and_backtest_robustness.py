@@ -1280,7 +1280,7 @@ def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
     # 3. verify_tools.pnl_report.binance_symbol returns 0.0 unrealized when current price is unavailable
     monkeypatch.setattr(
         pr.ao,
-        "get_filled_orders",
+        "paginate_my_trades",
         lambda _c, _s, _st: [{"price": "100.0", "executedQty": "2.0", "side": "BUY", "time": 1000}],
     )
     monkeypatch.setattr(pr.bapi, "get_current_price", lambda _s: None)
@@ -2924,8 +2924,8 @@ def test_root_modules_batch4_hardening():
     assert assetguardian._trigger_threshold_for_sell_tier(True, sell_mult=None, portfolio_growth_pct=float("nan")) >= assetguardian.SELL_REARM_GROWTH_PERCENT + 2.0
     assert assetguardian._trigger_threshold_for_buy_tier(None, buy_mult=True) >= assetguardian.RECOVERY_RESET_PERCENT + 0.5
 
-    # liquidation_signal.LiquidationSignal
-    ls = liquidation_signal.LiquidationSignal(symbols="btcusdt, ethusdt", retention_sec=True)
+    # liquidation_signal.BybitLiquidationCollector
+    ls = liquidation_signal.BybitLiquidationCollector(symbols="btcusdt, ethusdt", retention_sec=True)
     assert ls._symbols == ["BTCUSDT", "ETHUSDT"]
     ls._ingest('{"topic":"allLiquidation.BTCUSDT","data":123}')
     ls._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"1.5","p":"60000"}]}')
@@ -2978,20 +2978,9 @@ def test_batch5_hardening():
 def test_cooldown_and_market_monitor_hardening(tmp_path):
     import threading
     from types import SimpleNamespace
-    from lock.cooldown import Cooldown
     from market_monitor.new_coins_discovery import NewCoinsMonitor
     from market_monitor.pricechecker import PriceChecker
     from market_monitor.pricefetcher import CacheAllPriceFetcherManager
-
-    # 1. Cooldown group methods strip group_id and member whitespace
-    cd = Cooldown("test_cd", base_dir=str(tmp_path))
-    allowed, _ = cd.reserve_group_member("BTCUSDC", 60, "  grp1  ", "  buy  ")
-    assert allowed is True
-    cd.commit_group_member("BTCUSDC", "grp1", "BUY", order_id=101)
-    state = cd.get("BTCUSDC")
-    assert state["group_id"] == "grp1"
-    assert state["group_committed"] == ["BUY"]
-    assert cd.release_group_member("BTCUSDC", "  grp1 ", " buy ", keep_group=False) is True
 
     # 3. PriceChecker._is_dynamic_symbol rejects NaN/bool/non-positive timestamps and stop_monitoring avoids self-join
     dummy_cache = SimpleNamespace(
@@ -3362,7 +3351,6 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
 
 def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_path):
     from datetime import datetime, timezone
-    from lock.cooldown import Cooldown
     from market_monitor import new_coins_discovery as ncd
     from market_monitor import pricefetcher as pf
 
@@ -3431,34 +3419,6 @@ def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_
     mon.alert_callbacks = [lambda alerts: cb_calls.append(alerts)]
     mon._trigger_alerts([{"symbol": "   "}, None], "coinmarketcap", auto_add="false")  # type: ignore[list-item,arg-type]
     assert cb_calls == []
-
-    # 4. Cooldown group methods reject blank/bool group_id/member, handle keep_group="false", and survive non-list fields
-    cd = Cooldown(
-        "test_b15",
-        state_path=str(tmp_path / "cd.json"),
-        lock_path=str(tmp_path / "cd.lock"),
-    )
-    assert cd.reserve_group_member("BTCUSDC", 60, None, "BUY")[0] is False
-    assert cd.reserve_group_member("BTCUSDC", 60, True, "BUY")[0] is False
-    assert cd.reserve_group_member("BTCUSDC", 60, "grp1", "   ")[0] is False
-
-    ok, entry = cd.reserve_group_member("BTCUSDC", 60, "grp1", "BUY", group_members=["spoofed"], timestamp=0)
-    assert ok is True
-    assert entry["group_id"] == "grp1"
-    assert entry["group_members"] == ["BUY"]
-    assert entry["timestamp"] > 0
-
-    # Corrupt group fields on disk and verify commit & release recover cleanly
-    state = cd._read()
-    state["BTCUSDC"]["group_pending"] = 123
-    state["BTCUSDC"]["group_committed"] = 456
-    state["BTCUSDC"]["group_results"] = "not-a-dict"
-    cd._write(state)
-    cd.commit_group_member("BTCUSDC", "grp1", "BUY", order_id=99)
-    assert cd.get("BTCUSDC")["group_committed"] == ["BUY"]
-    assert cd.get("BTCUSDC")["group_results"] == {"BUY": {"order_id": 99}}
-    assert cd.release_group_member("BTCUSDC", "grp1", "BUY", keep_group="false") is True
-    assert cd.get("BTCUSDC") is None
 
 
 def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monkeypatch, tmp_path):
@@ -5719,14 +5679,6 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
     paginated = bapi_allorders.paginate_my_trades(fake_cl, "BTCUSDC", 500, limit=1)
     assert len(paginated) == 2
 
-    monkeypatch.setattr(bapi_allorders, "paginate_my_trades", lambda *_a, **_k: pages[0] + pages[1])
-    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda _s: None)
-    monkeypatch.setattr(bapi_allorders.sym, "validate_ordertype", lambda _o: None)
-    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", 500)
-    oids = {r["orderId"] for r in filled}
-    assert "555" in oids
-    assert "-9" not in oids
-
     # 3. bapi_ws_normalize: parse_order_execution_report and parse_trade_execution_report
     ev_bad = {"e": "executionReport", "x": "TRADE", "X": "FILLED", "s": "BTCUSDC", "S": "BUY", "t": 10, "i": "+0.0", "l": "1.0", "L": "100.0", "T": 1000}
     assert bapi_ws_normalize.parse_order_execution_report(ev_bad) is None
@@ -5875,8 +5827,8 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     assert cm.CacheManagerInterface._safe_pos_ts_ms("1700000000000.0") == 1700000000000
     assert cm.CacheManagerInterface._safe_pos_ts_ms("-5") == 0
 
-    # 6. LiquidationSignal._sleep and capitulation_ratio with baseline_sec < window_sec
-    sig = ls_mod.LiquidationSignal(symbols=["BTCUSDT"])
+    # 6. BybitLiquidationCollector._sleep and capitulation_ratio with baseline_sec < window_sec
+    sig = ls_mod.BybitLiquidationCollector(symbols=["BTCUSDT"])
     asyncio.run(sig._sleep(0.01, step=float("nan")))
     sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"1.0","p":"50000"}]}')
     assert sig.capitulation_ratio("BTCUSDT", window_sec=300.0, baseline_sec=60.0) == pytest.approx(1.0)
@@ -5888,7 +5840,6 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     from strategies import spot_rules as sr
     from strategies import position_exit_manager as pem
     from strategies import rtrade_pair as rp
-    from lock import cooldown as cd_mod
     from providers import execution_audit as ea_mod
 
     # 1. spot_engine.clean_order_id and _sanitize_spot_state
@@ -5932,10 +5883,10 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     assert rp.clean_order_id("+789.0") == "789"
     assert rp._parse_bool_flag("1.0") is True
 
-    # 5. lock.cooldown and botcore order_id hardening
+    # 5. botcore order_id hardening
     import botcore as bc_mod
-    assert cd_mod._parse_bool_flag("0.0", True) is False
-    assert cd_mod._parse_bool_flag("1.0", False) is True
+    assert bc_mod._parse_bool_flag("0.0", True) is False
+    assert bc_mod._parse_bool_flag("1.0", False) is True
     assert bc_mod.clean_order_id("-5") is None
     assert bc_mod.clean_order_id("+0.0") is None
     assert bc_mod.clean_order_id("+321.0") == "321"

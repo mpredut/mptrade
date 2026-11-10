@@ -87,8 +87,9 @@ def main():
               f"close={last} price={price}")
 
     print("\n==== CONT SPOT HYPE (citire) ====")
-    free_hype = mkt.free_balance_for("hyperliquid", "HYPE")
-    free_usdc = mkt.free_balance_for("hyperliquid", "USDC")
+    hl_prov = mkt.provider_by_name("hyperliquid")
+    free_hype = hl_prov.free_balance("HYPE")
+    free_usdc = hl_prov.free_balance("USDC")
     print(f"  free_balance(HYPE) = {free_hype}")
     print("  free_balance(USDC) = "
           f"{free_usdc}  (provider explicit: hyperliquid)")

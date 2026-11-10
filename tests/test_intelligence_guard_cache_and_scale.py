@@ -8478,12 +8478,12 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
     import assetguardian
     from botcore import safe_pos_float
     from credentials import CredentialProfileMissingError, resolve_credential_pair
-    from liquidation_signal import LiquidationSignal
+    from liquidation_signal import BybitLiquidationCollector
     from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
 
     # 1. liquidation_signal safe_pos_float & _ingest handle OverflowError and start() has _start_lock
     assert safe_pos_float(10**400, 42.0) == 42.0
-    sig = LiquidationSignal(symbols=["BTCUSDT"])
+    sig = BybitLiquidationCollector(symbols=["BTCUSDT"])
     assert hasattr(sig, "_start_lock")
     sig._ingest(json.dumps({
         "topic": "allLiquidation.BTCUSDT",
@@ -12317,11 +12317,9 @@ def test_iteration121_reentry_state_sync_market_regime_and_rollback_safety():
     with pytest.raises(ValueError, match="the regime interval and window must be positive"):
         svc.resolve_with_evidence(object(), "BTCUSDC", window_seconds=-10.0)
 
-    # 3. order_rollback sanitizes NaN level and non-list cancelled_orders in AtomicOrderRollbackGuard
+    # 3. order_rollback sanitizes NaN level in extract_order_restore_params
     p = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
     assert p["level"] is None
-    guard = orb.AtomicOrderRollbackGuard({"not": "a_list"}, restore_fn=lambda _x: True)
-    assert guard.cancelled_orders == []
 
     # 4. shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval
     with pytest.raises(ValueError):
@@ -12960,10 +12958,9 @@ def test_iteration129_wsevents_fake_and_backtest_execution_evaluation_safety():
 
 
 def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatch):
-    """Verify bapi_placeorder client_order_id/order print hygiene, bapi_allorders.get_filled_orders float/sentinel IDs, and bapi_trades._valid_fill_id/aggregate_trades/get_trade_orders resilience."""
-    import time
+    """Verify bapi_placeorder client_order_id/order print hygiene and bapi_trades._valid_fill_id/get_trade_orders resilience."""
     from types import SimpleNamespace
-    from binance_api import bapi_allorders, bapi_placeorder, bapi_trades
+    from binance_api import bapi_placeorder, bapi_trades
 
     # 1. bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats
     assert bapi_trades._valid_fill_id(777.0) == 777
@@ -12972,27 +12969,6 @@ def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatc
     assert bapi_trades._valid_fill_id("null") is None
     assert bapi_trades._valid_fill_id({"a": 1}) is None
     assert bapi_trades._valid_fill_id([123]) is None
-
-    # 3. bapi_allorders.get_filled_orders groups integer float and int orderIds together and separates sentinel strings
-    now_ms = int(time.time() * 1000)
-    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda _s: None)
-    monkeypatch.setattr(bapi_allorders.sym, "validate_ordertype", lambda _t: None)
-    monkeypatch.setattr(
-        bapi_allorders,
-        "paginate_my_trades",
-        lambda *_a, **_k: [
-            {"orderId": 555.0, "price": "100", "qty": "1", "time": now_ms - 1000, "isBuyer": True},
-            {"orderId": 555, "price": "100", "qty": "2", "time": now_ms - 500, "isBuyer": True},
-            {"orderId": "nan", "price": "100", "qty": "1", "time": now_ms - 400, "isBuyer": True},
-            {"orderId": "null", "price": "100", "qty": "1", "time": now_ms - 300, "isBuyer": True},
-        ],
-    )
-    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", now_ms - 5000)
-    by_oid = {row["orderId"]: row for row in filled}
-    assert 555 in by_oid
-    assert by_oid[555]["quantity"] == pytest.approx(3.0)
-    assert "nan" not in by_oid
-    assert "null" not in by_oid
 
     # 4. bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key
     captured = {}
@@ -15266,10 +15242,6 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
     monkeypatch.setattr(bapi_allorders.time, "sleep", lambda _s: None)
     all_trades = bapi_allorders.paginate_my_trades(pager, "BTCUSDC", int(time.time() * 1000) - 10000, limit=1, strict="false")
     assert len(all_trades) == 2
-
-    monkeypatch.setattr(bapi_allorders, "paginate_my_trades", lambda *a, **kw: all_trades)
-    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", int(time.time() * 1000) - 10000, strict="false")
-    assert len(filled) == 2
 
 
 def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, monkeypatch):

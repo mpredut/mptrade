@@ -778,43 +778,6 @@ def restore_cancelled_orders(
     return restored
 
 
-class AtomicOrderRollbackGuard:
-    """Context manager for atomic cancel-and-replace / exit operations."""
-
-    def __init__(
-        self,
-        cancelled_orders: list[dict],
-        restore_fn: Callable[[dict[str, Any]], Any],
-        log_fn: Callable[[str], None] = print,
-        reason: str = "",
-    ):
-        self.cancelled_orders = list(cancelled_orders) if isinstance(cancelled_orders, (list, tuple)) else []
-        self.restore_fn = restore_fn
-        self.log_fn = log_fn
-        self.reason = reason
-        self.committed = False
-        self.rolled_back = False
-
-    def commit(self) -> None:
-        self.committed = True
-
-    def rollback(self) -> int:
-        if self.rolled_back:
-            return 0
-        self.rolled_back = True
-        return restore_cancelled_orders(
-            self.cancelled_orders, self.restore_fn, log_fn=self.log_fn, reason=self.reason
-        )
-
-    def __enter__(self) -> AtomicOrderRollbackGuard:
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        if (not self.committed or exc_type is not None) and not self.rolled_back:
-            self.rollback()
-        return False
-
-
 register_module_aliases(
     __name__,
     "accepted_order_persistence",

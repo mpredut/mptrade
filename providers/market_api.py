@@ -630,19 +630,8 @@ class MarketApi:
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
-        """Preserve legacy compatibility; new code should use free_balance_for.
-
-        A bare asset is ambiguous across venues. Historical first-provider routing
-        remains only to avoid breaking old external integrations.
-        """
+        """Return free balance for asset from its routed provider."""
         return self._provider_for(asset).free_balance(asset)
-
-    def free_balance_for(self, provider_name: str, asset: str) -> Optional[float]:
-        """Read free balance explicitly from the requested unambiguous venue."""
-        provider = self.provider_by_name(provider_name)
-        if provider is None:
-            raise ValueError(f"Unknown provider: {provider_name!r}")
-        return provider.free_balance(asset)
 
     def get_orders(
         self, symbol: str, side: Optional[str], since_s: float, *, provider_name=None,

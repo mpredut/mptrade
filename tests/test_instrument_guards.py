@@ -137,17 +137,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         return lines
 
     def test_provider_balance_routing_and_disabled_execution(self):
-        with self.subTest("explicit_balance_lookup_does_not_route_by_bare_asset"):
-            first = _FakeProvider(name="First")
-            second = _FakeProvider(name="Second")
-            first.free_balance = lambda _asset: 11.0
-            second.free_balance = lambda _asset: 22.0
-            api = MarketApi([first, second])
-
-            self.assertEqual(api.free_balance_for("second", "USDC"), 22.0)
-            with self.assertRaisesRegex(ValueError, "Unknown provider"):
-                api.free_balance_for("missing", "USDC")
-
         with self.subTest("disabled_execution_never_creates_a_later_live_retry"):
             import order_retry as oq
             import order_retry_worker as worker
@@ -1828,7 +1817,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
 
 from order_lifecycle import (
-    AtomicOrderRollbackGuard,
     extract_order_restore_params,
     restore_cancelled_orders,
 )
@@ -1899,39 +1887,10 @@ class TestOrderRollback(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(any("failed restoring order" in l for l in logs))
 
-    def test_atomic_rollback_guard_committed(self):
-        cancelled = [{"side": "SELL", "limit": 100.0, "qty": 1.0}]
-        restored = []
-        with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append) as guard:
-            guard.commit()
-        self.assertEqual(len(restored), 0)
-
-    def test_atomic_rollback_guard_aborted_triggers_rollback(self):
-        cancelled = [{"side": "SELL", "limit": 100.0, "qty": 1.0}]
-        restored = []
-        try:
-            with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append, reason="crash"):
-                raise ValueError("placement exploded")
-        except ValueError:
-            pass
-        self.assertEqual(len(restored), 1)
-        self.assertEqual(restored[0]["limit"], 100.0)
-
     def test_extract_order_restore_params_prefers_remaining_qty(self):
         b_ord = {"orderId": "999", "side": "SELL", "price": "100.0", "origQty": "10.0", "remainingQty": "3.5"}
         params = extract_order_restore_params(b_ord)
         self.assertEqual(params["qty"], 3.5)
-
-    def test_atomic_rollback_guard_explicit_rollback_not_duplicated_on_exit(self):
-        cancelled = [{"side": "SELL", "limit": 100.0, "qty": 1.0}]
-        restored = []
-        try:
-            with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append, reason="explicit") as guard:
-                guard.rollback()
-                raise RuntimeError("abort after explicit rollback")
-        except RuntimeError:
-            pass
-        self.assertEqual(len(restored), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -2055,58 +2014,6 @@ class TestTradeCooldown(unittest.TestCase):
         with self.cd.slot("BTCUSDC", 180, side="SELL") as slot:
             self.assertFalse(slot.allowed)
         self.assertFalse(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-
-    def test_pair_allows_one_buy_and_one_sell_inside_same_cooldown(self):
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
-            self.assertTrue(buy.allowed)
-            buy.commit(binance_order_id=101)
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
-            self.assertTrue(sell.allowed)
-            sell.commit(binance_order_id=102)
-
-        state = self.cd.get("TAOUSDC")
-        self.assertCountEqual(state["group_committed"], ["BUY", "SELL"])
-        self.assertEqual(state["group_results"]["BUY"]["binance_order_id"], 101)
-        self.assertEqual(state["group_results"]["SELL"]["binance_order_id"], 102)
-
-    def test_pair_blocks_duplicate_side_and_unrelated_group(self):
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
-            self.assertTrue(buy.allowed)
-            buy.commit(binance_order_id=101)
-
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as duplicate:
-            self.assertFalse(duplicate.allowed)
-        with self.cd.group_slot("TAOUSDC", 180, "pair-2", "SELL") as outsider:
-            self.assertFalse(outsider.allowed)
-        self.assertFalse(self.cd.reserve("TAOUSDC", 180, side="SELL")[0])
-
-    def test_failed_second_leg_rolls_back_only_that_leg(self):
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
-            buy.commit(binance_order_id=101)
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
-            self.assertTrue(sell.allowed)
-
-        state = self.cd.get("TAOUSDC")
-        self.assertEqual(state["group_members"], ["BUY"])
-        self.assertEqual(state["group_committed"], ["BUY"])
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as retry:
-            self.assertTrue(retry.allowed)
-
-    def test_legacy_reservation_still_blocks_pair(self):
-        self.assertTrue(self.cd.reserve("TAOUSDC", 180, side="BUY")[0])
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as leg:
-            self.assertFalse(leg.allowed)
-
-    def test_canceled_pair_leg_can_be_replaced_without_opening_other_groups(self):
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
-            sell.commit(binance_order_id=102)
-        self.assertTrue(self.cd.release_group_member("TAOUSDC", "pair-1", "SELL", keep_group=True))
-
-        with self.cd.group_slot("TAOUSDC", 180, "pair-2", "SELL") as outsider:
-            self.assertFalse(outsider.allowed)
-        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as replacement:
-            self.assertTrue(replacement.allowed)
-            replacement.commit(binance_order_id=103)
 
 
 def _write_intent_file(path, payload, *, lines=False):

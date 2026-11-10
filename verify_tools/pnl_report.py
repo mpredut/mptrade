@@ -28,7 +28,7 @@ WINDOW_D = 120
 
 def binance_symbol(symbol):
     st = int((time.time() - WINDOW_D * 24 * 3600) * 1000)
-    fills = [f for f in (ao.get_filled_orders(None, symbol, st) or []) if isinstance(f, dict)]
+    fills = [f for f in (ao.paginate_my_trades(bapi.client, symbol, st) or []) if isinstance(f, dict)]
     fills.sort(key=lambda t: extract_timestamp_ms(t, default=0) or 0)
     qty = cost = realized = 0.0
     buys = sells = 0
