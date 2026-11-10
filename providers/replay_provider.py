@@ -28,10 +28,10 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset, legacy_filenames_for
-from providers.base import MarketDataProvider
-from providers.quantity import resolve_assets
-from providers.strategy_executor import PairPrecision
 from state_io import read_jsonl_dicts
+from .base import MarketDataProvider
+from .quantity import resolve_assets
+from .strategy_executor import PairPrecision, ProviderError, SubmissionRefused
 
 
 def _base_asset(symbol: str) -> str:
@@ -229,11 +229,11 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return (series, idx) if (series and idx > 0) else (None, 0)
 
     # ── Market data ─────────────────────────────────────────────────────────
-    def get_current_price(self, symbol: str) -> Optional[float]:
+    def _fetch_current_price(self, symbol: str) -> Optional[float]:
         series, idx = self._active_series_idx(symbol)
         return series[idx - 1][1] if series else None
 
-    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+    def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         series, idx = self._active_series_idx(symbol)
         if not series:
             return None
@@ -242,6 +242,12 @@ class ReplayMarketDataProvider(MarketDataProvider):
             return []
         cutoff = series[idx - 1][0] - lb_val * 3600
         return [{"timestamp": int(ts * 1000), "price": p} for ts, p in series[:idx] if ts >= cutoff]
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        return self._fetch_current_price(symbol)
+
+    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
+        return self._fetch_price_history(symbol, lookback_h)
 
     # ── Simulated offline broker account ────────────────────────────────────
     def free_balance(self, asset: str) -> Optional[float]:
@@ -383,8 +389,6 @@ class ReplayMarketDataProvider(MarketDataProvider):
         client_order_id: Optional[str] = None,
         **kwargs,
     ) -> str:
-        from .strategy_executor import ProviderError, SubmissionRefused
-
         s_norm = normalize_side(side)
         if s_norm not in {"BUY", "SELL"}:
             raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")

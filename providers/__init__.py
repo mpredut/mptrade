@@ -1,9 +1,10 @@
 """Unified market-data and execution-provider adapters.
 
-``market_api`` owns the routing facade, the Binance fallback adapter, and the shared
-``api`` instance. Kraken and Trading 212 are selected explicitly by instrument
-configuration; Hyperliquid claims its supported HYPE symbol forms. This package does
-not eagerly import ``market_api`` because provider registration would form an import
-cycle. Consumers normally import ``api`` from ``providers.market_api`` directly.
+``base`` defines the abstract ``MarketDataProvider`` contract, while concrete venue
+adapters live in ``binance_provider``, ``hyperliquid_provider``, ``kraken_provider``,
+``t212_provider``, and ``replay_provider``. ``market_api`` owns the multi-venue
+routing facade (``MarketApi``) and the shared ``api`` composition-root instance.
+This package avoids eager submodule imports to prevent circular dependencies during
+provider registration; consumers import ``api`` from ``providers.market_api``.
 """
 

@@ -11,7 +11,6 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants, canonical_symbol_key
 from instrument_registry import casefold_get
-from market_regime import ClosedPriceSeries
 
 from .base import (
     MarketDataProvider,
@@ -20,6 +19,7 @@ from .base import (
     normalize_side,
 )
 from .order_ohlc_utils import (
+    ClosedPriceSeries,
     build_open_order_entry,
     clean_order_id,
     extract_order_fee,

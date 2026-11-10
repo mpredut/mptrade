@@ -419,13 +419,16 @@ def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
 
 
 def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
-    """Enforce strict downward DAG on providers/base.py and verify unified submit_order across MarketDataProvider, MarketApi, and ReplayMarketDataProvider."""
+    """Enforce strict downward DAG across providers/ and verify unified submit_order, ClosedPriceSeries SSOT, and declarative intent tags."""
     import ast
     from pathlib import Path
     import pytest
+    import market_regime
     import order_guard
-    from providers.base import MarketDataProvider
+    from providers.base import ClosedPriceSeries as BaseClosedPriceSeries, MarketDataProvider
+    from providers.intent_execution import resolve_intent_topic_tag
     from providers.market_api import MarketApi
+    from providers.order_ohlc_utils import ClosedPriceSeries as OhlcClosedPriceSeries
     from providers.replay_provider import ReplayMarketDataProvider
     from providers.strategy_executor import StrategyExecutor, SubmissionRefused
 
@@ -436,6 +439,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "order_guard",
         "instrument",
         "strategies",
+        "market_regime",
         "cacheManager",
         "binance_api",
         "kraken",
@@ -450,6 +454,41 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             imported_roots.add(node.module.split(".")[0])
     assert not (imported_roots & forbidden_base_imports), f"DAG violation in providers/base.py: {imported_roots & forbidden_base_imports}"
+
+    non_facade_modules = (
+        "base.py",
+        "binance_provider.py",
+        "hyperliquid_provider.py",
+        "kraken_provider.py",
+        "t212_provider.py",
+        "replay_provider.py",
+        "order_ohlc_utils.py",
+        "quantity.py",
+        "strategy_executor.py",
+        "execution_audit.py",
+        "intent_state.py",
+    )
+    forbidden_upward_layers = {"market_regime", "order_guard", "instrument", "strategies"}
+    for mod_file in non_facade_modules:
+        mod_src = (root / "providers" / mod_file).read_text(encoding="utf-8")
+        mod_tree = ast.parse(mod_src, filename=f"providers/{mod_file}")
+        mod_roots = set()
+        for node in ast.walk(mod_tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    mod_roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                mod_roots.add(node.module.split(".")[0])
+        assert not (mod_roots & forbidden_upward_layers), (
+            f"Upward DAG violation in providers/{mod_file}: {mod_roots & forbidden_upward_layers}"
+        )
+
+    assert OhlcClosedPriceSeries is market_regime.ClosedPriceSeries
+    assert BaseClosedPriceSeries is OhlcClosedPriceSeries
+    assert MarketDataProvider.resolve_venue_intent_executor_tag("t212") == "[auto_sharetrade_executor]"
+    assert MarketDataProvider.resolve_venue_intent_executor_tag("binance") == "[auto_cryptotrade_executor]"
+    assert resolve_intent_topic_tag({}, "t212") == "[auto_sharetrade_executor]"
+    assert resolve_intent_topic_tag({}, "kraken") == "[auto_cryptotrade_executor]"
 
     class _BaseSubmitDummy(MarketDataProvider):
         @property

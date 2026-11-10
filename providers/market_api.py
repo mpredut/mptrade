@@ -2,15 +2,14 @@
 """Multi-venue facade for market data, account reads, and order mechanics.
 
 Symbol routing selects the first provider that claims a symbol and falls back to
-the first configured provider, Binance. ``Instrument`` uses the name registry for
-explicit venue routing when a symbol alone is ambiguous.
+the first configured provider (``BinanceProvider``). ``Instrument`` uses the name
+registry for explicit venue routing when a symbol alone is ambiguous.
 
-``place_order`` dispatches directly to adapter mechanics and live-order gates.
-``place`` constructs an ``Instrument`` and runs the shared policy pipeline before
-those mechanics. Account WebSocket streams remain outside this facade.
-
-Imports of Binance modules are lazy because ``cacheManager`` imports this module;
-eagerly importing modules that lead back to ``cacheManager`` would create a cycle.
+``place_order`` and ``submit_order`` dispatch directly to adapter mechanics and
+live-order gates. ``place`` constructs an ``Instrument`` and runs the shared policy
+pipeline before those mechanics. Concrete venue SDKs remain lazy inside their
+respective ``*_provider.py`` modules so ``cacheManager`` can import this facade
+without creating import cycles.
 """
 import time
 from collections import OrderedDict

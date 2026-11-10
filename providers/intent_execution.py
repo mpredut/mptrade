@@ -12,10 +12,8 @@ from botcore import (
     normalize_side,
     safe_pos_float,
 )
-from cachepaths import (
-    normalize_venue_name,
-    resolve_cachedb_filepath,
-)
+from cachepaths import resolve_cachedb_filepath
+from .base import MarketDataProvider
 from .intent_state import (
     _intent_order_ids,
     _record_intent_state,
@@ -56,9 +54,7 @@ def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
     src_topic = "" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip()
     if src_topic in _TOPIC_BRACKET_TAGS:
         return _TOPIC_BRACKET_TAGS[src_topic]
-    if normalize_venue_name(venue) == "t212":
-        return "[auto_sharetrade_executor]"
-    return "[auto_cryptotrade_executor]"
+    return MarketDataProvider.resolve_venue_intent_executor_tag(venue)
 
 
 def record_shadow_intent_observation(

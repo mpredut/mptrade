@@ -4,10 +4,11 @@
 responses into the explicit types below so the strategy engine can operate on one
 order lifecycle model.
 
-``submit_order`` is intentionally distinct from ``MarketDataProvider.place_order``.
-The former returns a venue order ID or raises ``ProviderError``; the latter is the
-mechanical/legacy facade entry point and may return a native payload or ``None``.
-Each adapter still applies its configured live-order gate.
+``submit_order`` shares the underlying adapter mechanics with
+``MarketDataProvider.place_order`` while enforcing a strict return contract:
+``submit_order`` returns a confirmed venue order ID string or raises ``ProviderError``,
+whereas ``place_order`` returns the native venue payload (or ``None`` in dry-run mode).
+Each adapter applies its configured live-order gate consistently across both paths.
 """
 from __future__ import annotations
 

@@ -41,7 +41,6 @@ from cachepaths import (
     split_symbol_assets,
 )
 from instrument_registry import casefold_get
-from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, read_jsonl_dicts
 from .base import MarketDataProvider
 from .intent_execution import (
@@ -80,6 +79,7 @@ from .intent_state import (
     venue_native_client_order_ids,
 )
 from .order_ohlc_utils import (
+    ClosedPriceSeries,
     _UNFILLED_ORDER_STATUSES,
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,

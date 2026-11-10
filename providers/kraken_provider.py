@@ -38,6 +38,7 @@ from .base import (
     extract_order_id,
 )
 from .order_ohlc_utils import (
+    ClosedPriceSeries,
     build_open_order_entry,
     build_price_history_points,
     derive_venue_128bit_client_order_id,
@@ -73,7 +74,6 @@ from cachepaths import (
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get, symbols_for
-from market_regime import ClosedPriceSeries
 
 _MISSING = object()
 

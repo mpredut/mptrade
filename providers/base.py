@@ -4,7 +4,6 @@ import contextlib
 import importlib
 import inspect
 import math
-import os
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -52,6 +51,7 @@ def is_in_live_price_fetch() -> bool:
 
 
 from .order_ohlc_utils import (  # noqa: E402, F401
+    ClosedPriceSeries,
     _is_fresh_obs_ts,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
@@ -120,6 +120,7 @@ class MarketDataProvider(ABC):
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
     _CLIENT_CLASS_NAME: Optional[str] = None
     _DEFAULT_QUOTE_ASSET: Optional[str] = None
+    _DEFAULT_INTENT_EXECUTOR_TAG: str = "[auto_cryptotrade_executor]"
     _USES_SSOT_MARKET_CACHE: bool = True
     _REQUIRES_CACHE_PERMIT: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
@@ -196,6 +197,13 @@ class MarketDataProvider(ABC):
             return None
         mod_path, cls_name = spec
         return getattr(importlib.import_module(mod_path), cls_name, None)
+
+    @classmethod
+    def resolve_venue_intent_executor_tag(cls, venue: Any) -> str:
+        """Resolve the canonical autonomous intent executor bracket tag for ``venue``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        tag = getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None) if prov_cls is not None else None
+        return str(tag) if isinstance(tag, str) and tag.strip() else cls._DEFAULT_INTENT_EXECUTOR_TAG
 
     @classmethod
     def resolve_provider_cached_fee_and_limits(

@@ -43,6 +43,7 @@ from .base import (
     extract_timestamp_ms,
 )
 from .order_ohlc_utils import (
+    ClosedPriceSeries,
     build_open_order_entry,
     build_price_history_points,
     derive_venue_128bit_client_order_id,
@@ -61,7 +62,6 @@ from .strategy_executor import (
     SubmissionRefused,
     candle_interval,
 )
-from market_regime import ClosedPriceSeries
 
 # Repository root and hyperliquid directory for bare common/hl_client imports.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # providers/ -> root
