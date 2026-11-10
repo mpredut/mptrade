@@ -549,13 +549,6 @@ class MarketRegimeService:
         return None
 
     @staticmethod
-    def _correlation_key(provider, symbol, horizon) -> str:
-        return (
-            f"{str(getattr(provider, 'name', 'unknown')).lower()}:"
-            f"{str(symbol).upper()}:price_trend:{horizon.value}"
-        )
-
-    @staticmethod
     def default_snapshot_max_age_seconds() -> float:
         """Return the strict freshness bound used by the evidence bundle."""
         return _DEFAULT_SNAPSHOT_MAX_AGE_SECONDS
@@ -602,7 +595,7 @@ class MarketRegimeService:
         corr_str = (
             correlation_key.strip()
             if isinstance(correlation_key, str) and correlation_key.strip()
-            else self._correlation_key(provider, symbol, horizon)
+            else f"{str(getattr(provider, 'name', 'unknown')).lower()}:{str(symbol).upper()}:price_trend:{horizon.value}"
         )
         return MarketRegimeEvidence(
             role=role_str,

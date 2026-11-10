@@ -6000,7 +6000,8 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
         summary="ok",
         code_remediation={"has_fix": "false"},
     )
-    assert AutonomousAIReconciler._is_bot_or_code_error_report(rep_false_fix) is False
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import is_bot_or_code_error_report
+    assert is_bot_or_code_error_report(rep_false_fix) is False
 
     # 5. AutonomousIntentGateway reconcile_intents with "id" fallback and whitespace
     gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled="0.5")  # type: ignore[arg-type]

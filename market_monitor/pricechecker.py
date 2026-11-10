@@ -281,12 +281,6 @@ class PriceChecker:
     def _alert_key(symbol: str, alert_type: str) -> str:
         return f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
 
-    def _monitored_symbols(self) -> List:
-        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
-        if raw_symbols is None:
-            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
-        return list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
-
     def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
         """Check whether we can send a new alert (spam prevention)."""
         key = self._alert_key(symbol, alert_type)
@@ -395,7 +389,11 @@ class PriceChecker:
     def check_all_symbols(self) -> List[PriceAlert]:
         """Check all symbols in the watchlist."""
         all_alerts = []
-        for symbol in dict.fromkeys(self._monitored_symbols()):
+        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
+        if raw_symbols is None:
+            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
+        monitored = list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
+        for symbol in dict.fromkeys(monitored):
             try:
                 alerts = self.check_symbol(symbol)
                 all_alerts.extend(alerts)

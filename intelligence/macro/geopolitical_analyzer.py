@@ -138,15 +138,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             is_fallback=fb_flag,
         )
 
-    def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
-        raw_digest = data.get("headlines_digest")
-        self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
-
-    def _serialize_for_disk(self, assessment: GeopoliticalThreatAssessment) -> Dict[str, Any]:
-        data = asdict(assessment)
-        data["headlines_digest"] = getattr(self, "_last_headlines_digest", "")
-        return data
-
     def _commit_assessment(
         self,
         assessment: GeopoliticalThreatAssessment,
@@ -177,27 +168,22 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         return ts_val
 
     @classmethod
-    def _headline_age_suffix(cls, h: Any, now: float) -> str:
+    def _headline_age_suffix(cls, h: Any, now: float, *, include_utc_time: bool = False) -> str:
+        ts_val = cls._headline_effective_ts(h, now)
+        age_sfx = ""
         raw_age = obj_attr(h, "age_min", None)
         if raw_age is not None and not isinstance(raw_age, bool):
             try:
                 age_f = float(raw_age)
                 if 0.0 <= age_f <= 2880.0:
-                    return f", age={int(round(age_f))}m"
+                    age_sfx = f", age={int(round(age_f))}m"
             except (TypeError, ValueError):
                 pass
-        ts_val = cls._headline_effective_ts(h, now)
-        if 0.0 < ts_val <= now + 300.0:
+        if not age_sfx and 0.0 < ts_val <= now + 300.0:
             age_m = max(0, int(round(max(0.0, now - ts_val) / 60.0)))
             if age_m <= 2880:
-                return f", age={age_m}m"
-        return ""
-
-    @classmethod
-    def _headline_time_and_age_suffix(cls, h: Any, now: float) -> str:
-        age_sfx = cls._headline_age_suffix(h, now)
-        ts_val = cls._headline_effective_ts(h, now)
-        if 0.0 < ts_val <= now + 300.0:
+                age_sfx = f", age={age_m}m"
+        if include_utc_time and 0.0 < ts_val <= now + 300.0:
             utc_str = datetime.fromtimestamp(ts_val, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             return f", {utc_str}{age_sfx}" if age_sfx else f", {utc_str}"
         return age_sfx
@@ -394,7 +380,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
 
         session_ctx = resolve_global_trading_session(now)
         headline_list = "\n".join(
-            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_time_and_age_suffix(h, now)})"
+            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_age_suffix(h, now, include_utc_time=True)})"
             for h in high_sev[:12]
         )
         market_reaction_line = ""

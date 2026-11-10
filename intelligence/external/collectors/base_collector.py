@@ -356,12 +356,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
         self._cache: Dict[str, tuple[float, Any]] = {}
 
-    @staticmethod
-    def _resolve_symbol_arg(symbol_or_cache_dir: str, symbol: Optional[str] = None) -> str:
-        if symbol is not None and str(symbol).strip():
-            return str(symbol)
-        return str(symbol_or_cache_dir)
-
     def _invoke_fetch_with_cache_dir(
         self,
         symbol_or_cache_dir: str,
@@ -374,7 +368,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         fetch_fn = getattr(self, "fetch", None)
         if not callable(fetch_fn):
             return None
-        eff_sym = self._resolve_symbol_arg(symbol_or_cache_dir, symbol)
+        eff_sym = str(symbol) if (symbol is not None and str(symbol).strip()) else str(symbol_or_cache_dir)
         kw_dir = (kwargs or {}).get("cache_dir") or (kwargs or {}).get("cachedb_dir")
         override_dir: Optional[str] = None
         if kw_dir is not None and str(kw_dir).strip():

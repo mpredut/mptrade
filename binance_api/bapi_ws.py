@@ -167,14 +167,11 @@ class BinanceWSBase:
             if self._stop_event.is_set():
                 break
             if time.time() - t0 >= self.STABLE_SESSION_SEC:
-                self._reset_backoff()                 # A stable session restores the short delay.
+                self._retry_delay = WS_RETRY_INITIAL  # A stable session restores the short delay.
             logger.info("WS reconnect in %.1fs", self._retry_delay)
             await self._interruptible_sleep(self._retry_delay)
             self._retry_delay = min(self._retry_delay * 2, WS_RETRY_MAX)
         logger.info("WS reconnect loop stopped")
-
-    def _reset_backoff(self) -> None:
-        self._retry_delay = WS_RETRY_INITIAL
 
     def _on_session_end(self, exc: Optional[Exception]) -> None:
         """Handle session completion; ``exc`` is None after a clean termination."""
@@ -323,16 +320,8 @@ class BinancePriceStream(PublicPriceStreamBase):
         return self
 
     # --- Helpers -------------------------------------------------------------
-    def _next_id(self) -> int:
-        self._req_id += 1
-        return self._req_id
-
     def _stream_name(self, symbol: str) -> str:
         return f"{symbol.lower()}@ticker"
-
-    def _build_url(self, symbols: Set[str]) -> str:
-        streams = "/".join(self._stream_name(s) for s in sorted(symbols))
-        return f"{WS_BASE_URL}?streams={streams}"
 
     # --- Async core ----------------------------------------------------------
     async def _main(self) -> None:
@@ -351,7 +340,8 @@ class BinancePriceStream(PublicPriceStreamBase):
             await self._interruptible_sleep(1.0)
         if self._stop_event.is_set() or not current_symbols:
             return
-        url = self._build_url(current_symbols)
+        streams = "/".join(self._stream_name(s) for s in sorted(current_symbols))
+        url = f"{WS_BASE_URL}?streams={streams}"
         logger.info("Connecting to combined stream (%d symbols)...", len(current_symbols))
         async with websockets.connect(
             url, ping_interval=WS_PING_INTERVAL, ping_timeout=WS_PING_TIMEOUT,
@@ -400,8 +390,9 @@ class BinancePriceStream(PublicPriceStreamBase):
                 cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=WS_RECV_TIMEOUT)
             except asyncio.TimeoutError:
                 continue
+            self._req_id += 1
             payload = json.dumps({
-                "method": cmd["method"], "params": [cmd["stream"]], "id": self._next_id()})
+                "method": cmd["method"], "params": [cmd["stream"]], "id": self._req_id})
             try:
                 await ws.send(payload)
                 logger.debug("%s: %s", cmd["method"], cmd["stream"])

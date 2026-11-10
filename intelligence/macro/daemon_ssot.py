@@ -670,15 +670,9 @@ class CachedTopicAssessmentAgent:
 
         return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
 
-    def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
-        pass
-
     def read_assessment(self) -> Optional[Any]:
         """Read-only consumer entrypoint: return the disk-backed cached assessment with 0 LLM/network calls."""
         return getattr(self, "_cached_assessment", None)
-
-    def _serialize_for_disk(self, assessment: Any) -> Dict[str, Any]:
-        return asdict(assessment)
 
     def _load_from_disk(self) -> None:
         path = self._effective_state_file()
@@ -694,7 +688,9 @@ class CachedTopicAssessmentAgent:
             assessment = self._build_assessment(data)  # type: ignore[attr-defined]
             self._cached_assessment = assessment
             self._last_eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
-            self._on_loaded_from_disk(data, assessment)
+            if hasattr(self, "_last_headlines_digest"):
+                raw_digest = data.get("headlines_digest")
+                self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
         except Exception as e:
             self._logger.debug("Could not load cached %s state %s: %s", self.AGENT_LABEL, path, e)
 
@@ -706,7 +702,10 @@ class CachedTopicAssessmentAgent:
             _save_fn = _resolve_daemon_helper(
                 "save_json_state", save_json_state, _default_save_json_state, self.__class__.__module__
             )
-            _save_fn(path, self._serialize_for_disk(assessment), indent=2)
+            payload = asdict(assessment)
+            if hasattr(self, "_last_headlines_digest"):
+                payload["headlines_digest"] = getattr(self, "_last_headlines_digest", "")
+            _save_fn(path, payload, indent=2)
         except Exception as e:
             self._logger.warning("Could not persist %s state to %s: %s", self.AGENT_LABEL, path, e)
 

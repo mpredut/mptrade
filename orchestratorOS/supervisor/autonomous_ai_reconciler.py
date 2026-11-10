@@ -294,16 +294,6 @@ class AutonomousAIReconciler:
             log=logger,
         )
 
-    @classmethod
-    def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:
-        """Return True strictly for trading bot exceptions, fleet/config anomalies, or code/config patches."""
-        return is_bot_or_code_error_report(report)
-
-    @classmethod
-    def _is_system_os_error_report(cls, report: SupervisorAuditReport) -> bool:
-        """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
-        return is_system_os_error_report(report)
-
     def dispatch_notification(
         self,
         report: SupervisorAuditReport,
@@ -320,8 +310,8 @@ class AutonomousAIReconciler:
             self.ntfy_topic_error,
             self.ntfy_topic_server,
             self.ntfy_topic,
-            is_bot_error=self._is_bot_or_code_error_report(report),
-            is_sys_error=self._is_system_os_error_report(report),
+            is_bot_error=is_bot_or_code_error_report(report),
+            is_sys_error=is_system_os_error_report(report),
         )
         return send_supervisor_ntfy_http(
             title,

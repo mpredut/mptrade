@@ -286,14 +286,11 @@ class BinanceProvider(MarketDataProvider):
             symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind,
             api_client=_get_bapi().client)
 
-    @staticmethod
-    def _account_cache_state(status) -> tuple[str, str]:
-        return str(status.order_cache_version), str(status.trade_cache_version)
-
     def prepare_order_state(self) -> tuple[str, str]:
         """Synchronize Binance account readers before shared policy checks."""
         from binance_api import bapi_placeorder as _po
-        return self._account_cache_state(_po.require_account_cache_for_submit())
+        status = _po.require_account_cache_for_submit()
+        return str(status.order_cache_version), str(status.trade_cache_version)
 
     def validate_order_state(self, expected_state):
         """Refuse when policy checks raced with a newer account-cache snapshot."""

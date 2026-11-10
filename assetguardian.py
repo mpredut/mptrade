@@ -1102,29 +1102,21 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     return state
 
 
-def _normalize_legacy_pending(symbol, pending, side, kind):
-    """Add generic identity fields to pending rows created before the refactor."""
-    normalized = dict(pending)
-    normalized.setdefault("intent_id", normalized.get("client_order_id"))
-    normalized.setdefault("symbol", symbol)
-    normalized.setdefault("side", side)
-    normalized.setdefault("kind", kind)
-    normalized.setdefault("requested_price", None)
-    return normalized
-
-
 def _reconcile_pending_campaign(symbol, kind, state):
     """Adapt generic tracked-order truth to BUY/SELL campaign accounting."""
-    pending = state.get("pending")
-    if not isinstance(pending, dict) or not pending:
+    raw_pending = state.get("pending")
+    if not isinstance(raw_pending, dict) or not raw_pending:
         return state, "none"
     side_label = kind.upper()
     record_terminal_fn = _record_terminal_sell if kind == "sell" else _record_terminal_buy
-    pending = _normalize_legacy_pending(
-        symbol, pending, side_label, f"ASSET_GUARDIAN_{side_label}_TIER"
-    )
+    pending = dict(raw_pending)
+    pending.setdefault("intent_id", pending.get("client_order_id"))
+    pending.setdefault("symbol", symbol)
+    pending.setdefault("side", side_label)
+    pending.setdefault("kind", f"ASSET_GUARDIAN_{side_label}_TIER")
+    pending.setdefault("requested_price", None)
     box, persist = _campaign_pending_persistor(symbol, kind, state)
-    if pending != state.get("pending"):
+    if pending != raw_pending:
         persist(pending)
     try:
         result = ORDER_LIFECYCLE.reconcile(pending, persist=persist)

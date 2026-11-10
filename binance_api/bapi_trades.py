@@ -58,19 +58,12 @@ def _dedup_trades_by_fill_id(all_trades):
     return list(latest_trades.values())
 
 
-def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, limit=1000):
+def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
-    days_val = safe_nonneg_int(days, default=default_days)
-    limit_val = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
-    return order_type, days_val, limit_val
-
-
-def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
-    order_type, days_ago, limit = _validate_trade_query_args(
-        order_type, symbol, days_ago, default_days=0, limit=limit
-    )
+    days_ago = safe_nonneg_int(days_ago, default=0)
+    limit = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
     try:
         end_time = int(time.time() * 1000) - days_ago * 24 * 60 * 60 * 1000
         start_time = end_time - 24 * 60 * 60 * 1000
