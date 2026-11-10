@@ -140,26 +140,22 @@ class PriceChecker:
 
         # Prevent spam: remember the last alert per symbol and alert type
         self._last_alert_time = defaultdict(float)
-        self._load_cooldown_state()
+        if self.state_file and os.path.exists(self.state_file):
+            try:
+                raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
+                if isinstance(raw, dict):
+                    now = time.time()
+                    for k, v in raw.items():
+                        if isinstance(k, str) and k.strip():
+                            ts = safe_nonneg_float(v, default=None)
+                            if ts is not None and 0.0 < ts <= now + 60.0:
+                                self._last_alert_time[k.strip()] = min(ts, now)
+            except Exception:
+                pass
 
         # Thread for continuous analysis
         self._thread = None
         self._running = False
-
-    def _load_cooldown_state(self) -> None:
-        if not self.state_file or not os.path.exists(self.state_file):
-            return
-        try:
-            raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
-            if isinstance(raw, dict):
-                now = time.time()
-                for k, v in raw.items():
-                    if isinstance(k, str) and k.strip():
-                        ts = safe_nonneg_float(v, default=None)
-                        if ts is not None and 0.0 < ts <= now + 60.0:
-                            self._last_alert_time[k.strip()] = min(ts, now)
-        except Exception:
-            pass
 
     def _build_cmc_url(self, symbol: str) -> str:
         try:

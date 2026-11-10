@@ -183,26 +183,6 @@ def _move_sidecars(src: str, dst: str, *, include_archives: bool = False) -> Non
                 os.replace(old_arch, new_arch)
 
 
-def _strip_sidecar_filename(name: str) -> str:
-    """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
-    s = _norm_rel_cache_path(name)
-    if "/" in s:
-        for sub in _SORTED_SUBDOMAINS:
-            if s.startswith(f"{sub}/"):
-                s = s[len(sub) + 1:]
-                break
-    if s.startswith(".") and not s.startswith(".."):
-        s = s[1:]
-    while True:
-        matched = next((sfx for sfx in _SIDECAR_SUFFIXES if s.endswith(sfx) and len(s) > len(sfx)), None)
-        if matched:
-            s = s[: -len(matched)]
-        elif ".previous." in s:
-            s = s.split(".previous.", 1)[0]
-        else:
-            return s
-
-
 def resolve_cache_subdomain(name: object) -> str | None:
     """Return the canonical thematic cachedb subdomain for ``name``, or ``None`` if unclassified."""
     raw = _norm_rel_cache_path(_clean_path_str(name), strip_cachedb_prefix=True)
@@ -215,7 +195,16 @@ def resolve_cache_subdomain(name: object) -> str | None:
         if raw.startswith("24trend/"):
             return "trends"
         raw = os.path.basename(raw)
-    cands = (_strip_sidecar_filename(raw), raw)
+    stripped = raw[1:] if raw.startswith(".") and not raw.startswith("..") else raw
+    while True:
+        matched = next((sfx for sfx in _SIDECAR_SUFFIXES if stripped.endswith(sfx) and len(stripped) > len(sfx)), None)
+        if matched:
+            stripped = stripped[: -len(matched)]
+        elif ".previous." in stripped:
+            stripped = stripped.split(".previous.", 1)[0]
+        else:
+            break
+    cands = (stripped, raw)
     for cand in cands:
         for sub, rules in CACHEDB_SUBDOMAINS.items():
             if cand in rules["exact"]:

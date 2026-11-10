@@ -48,11 +48,8 @@ RETRY_MAX_QUEUE = required_int_env("RETRY_MAX_QUEUE")
 RETRY_CLAIM_LEASE_SEC = required_float_env("RETRY_CLAIM_LEASE_SEC")
 RETRY_NOT_FOUND_MAX_AGE_SEC = required_float_env("RETRY_NOT_FOUND_MAX_AGE_SEC")
 MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")
-
-
-def _validate_retry_config():
-    """Reject unsafe retry policy before queue processing can start."""
-    checks = (
+_INVALID_RETRY_CONFIG = [
+    msg for cond, msg in (
         (RETRY_INTERVAL_SEC <= 0, "RETRY_INTERVAL_SEC must be finite and > 0"),
         (RETRY_TTL_SEC <= 0, "RETRY_TTL_SEC must be finite and > 0"),
         (RETRY_CLAIM_LEASE_SEC <= 0, "RETRY_CLAIM_LEASE_SEC must be finite and > 0"),
@@ -60,13 +57,10 @@ def _validate_retry_config():
         (not 0 <= RETRY_PRICE_TOL < 1, "RETRY_PRICE_TOL must be finite, >= 0, and < 1"),
         (RETRY_MAX_ATTEMPTS < 0, "RETRY_MAX_ATTEMPTS must be >= 0"),
         (RETRY_MAX_QUEUE < 0, "RETRY_MAX_QUEUE must be >= 0"),
-    )
-    invalid = [msg for cond, msg in checks if cond]
-    if invalid:
-        raise ValueError("Invalid order-retry configuration: " + "; ".join(invalid))
-
-
-_validate_retry_config()
+    ) if cond
+]
+if _INVALID_RETRY_CONFIG:
+    raise ValueError("Invalid order-retry configuration: " + "; ".join(_INVALID_RETRY_CONFIG))
 
 NON_FAILURE_DEFERRAL_REASONS = frozenset({
     "daily_limit", "trend_deferred", "medium_trend_deferred",
@@ -377,25 +371,6 @@ def _safe_to_evict_for_capacity(rec):
     )
 
 
-def _resolve_outbox_prefix(placement: dict, kind) -> str:
-    prefix = placement.get("prefix") or (
-        f"{placement.get('owner')}_OR" if placement.get("owner") else None
-    )
-    eff_kind = kind if kind is not None else placement.get("kind")
-    if not prefix and eff_kind:
-        kind_s = str(eff_kind).strip()
-        if "monitor_order_replace" in kind_s:
-            parent_owner = placement.get("parent_owner")
-            prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
-        elif kind_s in {"STOP", "TP"}:
-            prefix = "MT_OR"
-        elif _is_tradeall_kind(kind_s):
-            prefix = "TA_OR"
-        elif kind_s.lower().startswith("assetguardian"):
-            prefix = "AG_OR"
-    return prefix or "OR"
-
-
 def _shift_ttl_after_deferral(rec: dict, previous_reason, next_reason, prev_attempts: int, prev_last_ts, now: float) -> None:
     if is_non_failure_deferral(previous_reason) and not is_non_failure_deferral(next_reason):
         if prev_attempts == 0:
@@ -462,7 +437,22 @@ def enqueue(
     attempts, last_attempt_ts = attempts_i, last_attempt_f
     record_id = uuid.uuid4().hex
     placement = _sanitize_place_kwargs(place_kwargs)
-    prefix = _resolve_outbox_prefix(placement, kind)
+    prefix = placement.get("prefix") or (
+        f"{placement.get('owner')}_OR" if placement.get("owner") else None
+    )
+    eff_kind = kind if kind is not None else placement.get("kind")
+    if not prefix and eff_kind:
+        kind_s = str(eff_kind).strip()
+        if "monitor_order_replace" in kind_s:
+            parent_owner = placement.get("parent_owner")
+            prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
+        elif kind_s in {"STOP", "TP"}:
+            prefix = "MT_OR"
+        elif _is_tradeall_kind(kind_s):
+            prefix = "TA_OR"
+        elif kind_s.lower().startswith("assetguardian"):
+            prefix = "AG_OR"
+    prefix = prefix or "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
     raw_ttl = ttl_sec if ttl_sec is not None else (placement.get("ttl_sec") if placement else None)
     custom_ttl = safe_pos_float(raw_ttl, default=None)

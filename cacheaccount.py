@@ -38,7 +38,6 @@ from botcore import (
     normalize_side,
     resolve_now_ms,
     resolve_now_ts,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )

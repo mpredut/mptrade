@@ -151,23 +151,18 @@ class BinancePricePlatform(PricePlatformInterface):
         except Exception as e:
             print(f"[BinancePlatform] Warning loading symbols: {e}")
             if not self._supported_symbols:
-                self._fallback_symbols()
+                self._usdc_pairs = {
+                    "BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "ADAUSDC",
+                    "DOGEUSDC", "XRPUSDC", "TAOUSDC", "ARBUSDC",
+                }
+                self._supported_symbols = set(self._usdc_pairs)
+                self._symbol_mapping = {
+                    "BTC": "BTCUSDC", "ETH": "ETHUSDC", "BNB": "BNBUSDC",
+                    "SOL": "SOLUSDC", "ADA": "ADAUSDC", "DOGE": "DOGEUSDC",
+                    "XRP": "XRPUSDC", "TAO": "TAOUSDC", "ARB": "ARBUSDC",
+                    **{pair: pair for pair in self._usdc_pairs},
+                }
             self._last_refresh = time.time()
-    
-    def _fallback_symbols(self):
-        self._usdc_pairs = {
-            "BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "ADAUSDC",
-            "DOGEUSDC", "XRPUSDC", "TAOUSDC", "ARBUSDC"
-        }
-        self._supported_symbols = set(self._usdc_pairs)
-        self._symbol_mapping = {
-            "BTC": "BTCUSDC", "ETH": "ETHUSDC", "BNB": "BNBUSDC",
-            "SOL": "SOLUSDC", "ADA": "ADAUSDC", "DOGE": "DOGEUSDC",
-            "XRP": "XRPUSDC", "TAO": "TAOUSDC", "ARB": "ARBUSDC",
-            "BTCUSDC": "BTCUSDC", "ETHUSDC": "ETHUSDC", "BNBUSDC": "BNBUSDC",
-            "SOLUSDC": "SOLUSDC", "ADAUSDC": "ADAUSDC", "DOGEUSDC": "DOGEUSDC",
-            "XRPUSDC": "XRPUSDC", "TAOUSDC": "TAOUSDC", "ARBUSDC": "ARBUSDC"
-        }
 
     def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
         if not isinstance(symbol, str) or not symbol.strip():

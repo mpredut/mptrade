@@ -1021,25 +1021,6 @@ class Instrument:
                     )
         return None
 
-    @staticmethod
-    def _build_provider_submit_kwargs(ctx: _PlaceContext) -> dict:
-        provider_kwargs = {
-            **ctx.kwargs,
-            "market": ctx.is_market,
-            "force": ctx.is_market,
-            "_balance_verified": True,
-        }
-        if ctx.known_balance is not None:
-            provider_kwargs["known_balance"] = ctx.known_balance
-        if ctx.supports_biz_min:
-            provider_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
-        if ctx.cache_permit is not None:
-            provider_kwargs["permit_requested_price"] = ctx.permit_requested_price
-            provider_kwargs["cache_permit"] = ctx.cache_permit
-        if ctx.smart and ctx.defers_smart_cancel:
-            provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
-        return provider_kwargs
-
     def _dispatch_provider_order(self, ctx: _PlaceContext) -> Any:
         if ctx.prequeued_claim is not None:
             if not ctx.caller_owns_retry:
@@ -1055,7 +1036,21 @@ class Instrument:
                 )
         ctx.reason = "submit_ambiguous"
         ctx.submit_attempted = True
-        provider_kwargs = self._build_provider_submit_kwargs(ctx)
+        provider_kwargs = {
+            **ctx.kwargs,
+            "market": ctx.is_market,
+            "force": ctx.is_market,
+            "_balance_verified": True,
+        }
+        if ctx.known_balance is not None:
+            provider_kwargs["known_balance"] = ctx.known_balance
+        if ctx.supports_biz_min:
+            provider_kwargs["enforce_business_minimum"] = ctx.enforce_business_minimum
+        if ctx.cache_permit is not None:
+            provider_kwargs["permit_requested_price"] = ctx.permit_requested_price
+            provider_kwargs["cache_permit"] = ctx.cache_permit
+        if ctx.smart and ctx.defers_smart_cancel:
+            provider_kwargs["_cancel_opposite_requested_price"] = ctx.orig_price
         response = self._provider.place_order(
             self.symbol, ctx.side_u, ctx.price, ctx.qty, **provider_kwargs
         )

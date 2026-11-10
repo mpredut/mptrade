@@ -123,7 +123,21 @@ class KalmanStateTracker:
         self.compute_vol = bool(compute_vol)
         self._state: dict = {}
         if self.state_path:
-            self._port_and_load_initial_state()
+            try:
+                if (
+                    os.path.basename(self.state_path) in ("cache_kalman_trend.json", "kalman_state.json")
+                    and not os.path.exists(self.state_path)
+                ):
+                    for legacy_name in ("kalman_state.json", "shadow_state.json"):
+                        legacy_path = os.path.join(os.path.dirname(self.state_path), legacy_name)
+                        if legacy_path != self.state_path and os.path.exists(legacy_path):
+                            durable_replace_file(legacy_path, self.state_path)
+                            break
+                loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
+                if isinstance(loaded, dict):
+                    self._state = _unwrap_state_items(loaded)
+            except Exception as e:  # noqa: BLE001
+                print(f"[shadow_signals] error loading initial kalman state: {e}")
         self._last_state_write = 0.0
         self._kalman: dict = {}
         self._last_fed: dict = {}      # Last Kalman feed timestamp per symbol.
@@ -131,24 +145,6 @@ class KalmanStateTracker:
         self._fed_prices: dict = {}    # Fed prices for step-scale epsilon.
         self._last_vol_time: dict = {} # Throttling for 1h volatility computation.
         self._last_vol_fields: dict = {}
-
-    def _port_and_load_initial_state(self) -> None:
-        """Port legacy shadow_state.json to kalman_state.json if needed and load initial state."""
-        try:
-            if (
-                os.path.basename(self.state_path) in ("cache_kalman_trend.json", "kalman_state.json")
-                and not os.path.exists(self.state_path)
-            ):
-                for legacy_name in ("kalman_state.json", "shadow_state.json"):
-                    legacy_path = os.path.join(os.path.dirname(self.state_path), legacy_name)
-                    if legacy_path != self.state_path and os.path.exists(legacy_path):
-                        durable_replace_file(legacy_path, self.state_path)
-                        break
-            loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
-            if isinstance(loaded, dict):
-                self._state = _unwrap_state_items(loaded)
-        except Exception as e:  # noqa: BLE001
-            print(f"[shadow_signals] error loading initial kalman state: {e}")
 
     def _write_state(self, now: float) -> None:
         if self._last_state_write > now:

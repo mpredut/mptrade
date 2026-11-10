@@ -194,8 +194,22 @@ def main() -> int:
         log("[TEST] Done.")
         return 0
     if args.test_order:
-        return _cmd_test_order(client, args.test_order, order_price, order_qty,
-                               order_budget_ron, order_validity, order_dry, args.desktop)
+        px_f = safe_pos_float(order_price, default=None)
+        if px_f is None:
+            log("! ORDER_PRICE missing in .env")
+            return 1
+        if safe_pos_float(order_qty, default=None) is None and safe_pos_float(order_budget_ron, default=None) is None:
+            log("! ORDER_QTY or ORDER_BUDGET_RON missing from .env")
+            return 1
+        qty_f = safe_pos_float(resolve_quantity(px_f, order_qty, order_budget_ron), default=None)
+        if qty_f is None:
+            log("! invalid quantity")
+            return 1
+        ok = place_order_with_retry(
+            client, args.test_order, qty_f, px_f, order_validity,
+            order_dry, desktop=args.desktop, write_marker=False,
+        )
+        return 0 if ok else 1
     if args.test_strategy:
         log(f"[TEST STRATEGY] {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
         Strategy(client, args.test_strategy, StratParams.from_env(),
@@ -283,22 +297,6 @@ def _cmd_find_ticker(client: T212Client, query: str) -> int:
     if not hits:
         log(f"  No result for '{query}'")
     return 0
-
-
-def _cmd_test_order(client, ticker, order_price, order_qty, order_budget_ron,
-                    order_validity, order_dry, desktop) -> int:
-    px_f = safe_pos_float(order_price, default=None)
-    if px_f is None:
-        log("! ORDER_PRICE missing in .env"); return 1
-    if safe_pos_float(order_qty, default=None) is None and safe_pos_float(order_budget_ron, default=None) is None:
-        log("! ORDER_QTY or ORDER_BUDGET_RON missing from .env"); return 1
-    qty = resolve_quantity(px_f, order_qty, order_budget_ron)
-    qty_f = safe_pos_float(qty, default=None)
-    if qty_f is None:
-        log("! invalid quantity"); return 1
-    ok = place_order_with_retry(client, ticker, qty_f, px_f, order_validity,
-                                order_dry, desktop=desktop, write_marker=False)
-    return 0 if ok else 1
 
 
 if __name__ == "__main__":

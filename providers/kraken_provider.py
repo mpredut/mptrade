@@ -59,7 +59,6 @@ from .strategy_executor import (
 )
 from cachepaths import (
     CACHE_KRAKEN_TRADE_FILENAME,
-    _KRAKEN_QUOTES,
     _LEGACY_KRAKEN_X_BASES,
     _kraken_pair_key,
     _kraken_pair_matches,

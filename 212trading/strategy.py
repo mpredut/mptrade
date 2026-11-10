@@ -1203,23 +1203,6 @@ class Strategy(BaseSpotMixin):
                 )
         return True
 
-    def _check_loss_alert(self, price: float) -> None:
-        """Send an informational alert for each new unrealized-loss band."""
-        step = self.p.loss_alert_step
-        avg = self._avg()
-        if step <= 0 or not avg:
-            return
-        loss_pct = (avg - price) / avg * 100
-        band = int(loss_pct // step) if loss_pct > 0 else 0
-        if band > self.s.get("loss_band", 0):
-            log(f"  📉 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
-            notify(
-                title=f"📉 {self.yahoo_sym} -{loss_pct:.1f}%",
-                body=f"loss -{loss_pct:.1f}% (over {band*step:.0f}%) | q{self.s['qty']:.2f} a{avg:.2f} p{price:.2f}",
-                source="T212", price=price, desktop=self.desktop,
-            )
-            self.s["loss_band"] = band
-
     def _handle_sl_rebuy(self, price: float) -> None:
         """Rebuy after a catastrophic stop loss once price bounces from its low."""
         rb = self.s.get("sl_rebuy")
@@ -1257,7 +1240,19 @@ class Strategy(BaseSpotMixin):
         price = px
         held = safe_nonneg_float(self.s.get("qty"), 0.0)
         self.s["qty"] = held
-        self._check_loss_alert(price)
+        step = self.p.loss_alert_step
+        avg = self._avg()
+        if step > 0 and avg:
+            loss_pct = (avg - price) / avg * 100
+            band = int(loss_pct // step) if loss_pct > 0 else 0
+            if band > self.s.get("loss_band", 0):
+                log(f"  📉 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
+                notify(
+                    title=f"📉 {self.yahoo_sym} -{loss_pct:.1f}%",
+                    body=f"loss -{loss_pct:.1f}% (over {band*step:.0f}%) | q{self.s['qty']:.2f} a{avg:.2f} p{price:.2f}",
+                    source="T212", price=price, desktop=self.desktop,
+                )
+                self.s["loss_band"] = band
         if self.observe_only:
             if held > 1e-9:
                 avg = self._avg()

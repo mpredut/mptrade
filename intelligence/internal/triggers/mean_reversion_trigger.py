@@ -82,22 +82,6 @@ class MeanReversionTrigger:
         rs = self.avg_gain / self.avg_loss
         return 100.0 - 100.0 / (1.0 + rs)
 
-    def _calc_percent_b(self, price: float) -> float | None:
-        self.bb_buf.append(price)
-        if len(self.bb_buf) < self.bb_period:
-            return None
-
-        mean = statistics.fmean(self.bb_buf)
-        sd = statistics.pstdev(self.bb_buf, mu=mean)
-        if sd == 0.0:
-            return 0.5
-
-        upper = mean + self.bb_k * sd
-        lower = mean - self.bb_k * sd
-        if upper == lower:
-            return 0.5
-        return (price - lower) / (upper - lower)
-
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
         ts_clean = normalize_epoch_sec(timestamp, default=0.0, allow_zero=True) or 0.0
@@ -121,7 +105,18 @@ class MeanReversionTrigger:
             )
         price = price_f
         rsi = self._calc_rsi(price)
-        pb = self._calc_percent_b(price)
+        self.bb_buf.append(price)
+        if len(self.bb_buf) < self.bb_period:
+            pb = None
+        else:
+            mean = statistics.fmean(self.bb_buf)
+            sd = statistics.pstdev(self.bb_buf, mu=mean)
+            if sd == 0.0:
+                pb = 0.5
+            else:
+                upper = mean + self.bb_k * sd
+                lower = mean - self.bb_k * sd
+                pb = 0.5 if upper == lower else (price - lower) / (upper - lower)
 
         oversold = False
         overbought = False
