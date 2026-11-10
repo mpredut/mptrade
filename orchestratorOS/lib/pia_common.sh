@@ -69,20 +69,23 @@ pia_write_supervisor_state() {  # $1=mode (starting|healthy|connecting|failover|
 }
 
 pia_supervisor_owning_tunnel() {
-  local st since now age sup_ts=""
+  local st since now age sup_ts="" mpid=""
   st=$(systemctl show -p ActiveState --value pia.service 2>/dev/null || echo "")
   [ "$st" = "activating" ] && return 0
   [ "$st" = "active" ] || return 1
   if [ -r "$PIA_SUPERVISOR_STATE_FILE" ]; then
     sup_ts=$(awk -F= '$1=="SUPERVISOR_TS"{print $2}' "$PIA_SUPERVISOR_STATE_FILE" 2>/dev/null | tr -cd '0-9')
-    if [ -n "$sup_ts" ] && [ $(( $(date +%s) - sup_ts )) -lt 180 ]; then
-      return 0
-    fi
+    [ -n "$sup_ts" ] && [ $(( $(date +%s) - sup_ts )) -lt 180 ]
+    return $?
   fi
   since=$(systemctl show -p ActiveEnterTimestampMonotonic --value pia.service 2>/dev/null || echo 0)
   now=$(awk '{printf "%d", $1*1000000}' /proc/uptime 2>/dev/null || echo 0)
   age=$(( (now - ${since:-0}) / 1000000 ))
-  [ "$age" -ge 0 ] && [ "$age" -lt "${CONNECT_SETTLE:-120}" ]
+  if [ "$age" -ge 0 ] && [ "$age" -lt "${CONNECT_SETTLE:-120}" ]; then
+    return 0
+  fi
+  mpid=$(systemctl show -p MainPID --value pia.service 2>/dev/null || echo 0)
+  [ "${mpid:-0}" -gt 0 ] && [ -d "/proc/$mpid" ]
 }
 
 pia_ensure_lan_rule() {

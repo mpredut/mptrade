@@ -248,6 +248,11 @@ prewarm_dns
 # --- Main Supervisor Health Loop ---
 while true; do
     sleep "$HEALTH_INTERVAL"
+    cfg_restore=$(env_get PIA_RESTORE_INTERVAL "$RESTORE_INTERVAL")
+    if [[ "$cfg_restore" =~ ^[0-9]+$ ]] && [ "$cfg_restore" -gt 0 ] && [ "$cfg_restore" -ne "$RESTORE_INTERVAL" ]; then
+        RESTORE_INTERVAL="$cfg_restore"
+        current_restore_interval="$RESTORE_INTERVAL"
+    fi
     prewarm_dns
     pia_ensure_lan_rule
 
