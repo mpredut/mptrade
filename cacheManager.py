@@ -117,13 +117,13 @@ def get_current_price_manager(
     ws_manager=None,
     symbols=None,
     sync_ts=None,
-    start_sync=True,
+    start_sync=False,
     provider_names=None,
     read_only=None,
 ) -> CacheCurrentPriceManager:
-    """Return or lazily create the CacheCurrentPriceManager singleton."""
+    """Return or lazily create the CacheCurrentPriceManager singleton (read-only consumer by default)."""
     global _current_price_instance
-    start_sync = _parse_bool_flag(start_sync, default=True)
+    start_sync = _parse_bool_flag(start_sync, default=False)
     inst = _current_price_instance
     if (
         inst is not None
@@ -313,8 +313,24 @@ class CacheFactory:
         return value.values() if isinstance(value, dict) else (value,)
 
     @classmethod
-    def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
-        start_sync = _parse_bool_flag(start_sync, default=True)
+    def _resync_readonly_consumer_instance(cls, name: str, instance) -> None:
+        if name == "CurrentPrice" or instance is None:
+            return
+        for manager in cls._iter_managers(instance):
+            if (
+                getattr(manager, "read_only", False)
+                and not getattr(manager, "save_state", False)
+                and not getattr(manager, "_is_canonical_account_cache", lambda: False)()
+                and hasattr(manager, "resync_mem_file")
+            ):
+                try:
+                    manager.resync_mem_file()
+                except Exception:
+                    pass
+
+    @classmethod
+    def get(cls, name, symbols=None, *, start_sync=False, provider_names=None):
+        start_sync = _parse_bool_flag(start_sync, default=False)
         if isinstance(symbols, str):
             symbols = _coerce_symbol_list(symbols)
         if name == "ShortTrend":
@@ -326,6 +342,8 @@ class CacheFactory:
             and provider_names is None
             and (not start_sync or name in cls._sync_started)
         ):
+            if not start_sync and name not in cls._sync_started:
+                cls._resync_readonly_consumer_instance(name, inst)
             return inst
         with cls._lock:
             if name not in cls._CONFIG:
@@ -420,13 +438,21 @@ class CacheFactory:
 
                 cls._instances[name] = instance
 
+            if not created and not start_sync and name not in cls._sync_started:
+                cls._resync_readonly_consumer_instance(name, cls._instances[name])
+
             if (
                 start_sync
                 and not cls._CONFIG[name].get("read_only")
                 and name not in cls._sync_started
             ):
                 if sync_ts is None:
-                    sync_ts = cls._CONFIG[name]["sync_ts"]()
+                    sync_ts = (
+                        cls._instances[name].sync_ts
+                        if name == "CurrentPrice"
+                        and hasattr(cls._instances[name], "sync_ts")
+                        else cls._CONFIG[name]["sync_ts"]()
+                    )
                 for manager in cls._iter_managers(cls._instances[name]):
                     manager.periodic_sync(sync_ts, False)
                 cls._sync_started.add(name)
@@ -603,7 +629,7 @@ CacheFactory.register(
 )
 
 
-def get_cache_manager(name, symbols=None, *, start_sync=True):
+def get_cache_manager(name, symbols=None, *, start_sync=False):
     return CacheFactory.get(name, symbols, start_sync=start_sync)
 
 

@@ -1427,10 +1427,14 @@ class TestCacheFactory(unittest.TestCase):
                  patch.object(
                     cm.CacheCurrentPriceManager, "periodic_sync") as periodic:
                 singleton_manager = cm.get_current_price_manager(
-                    symbols=["BTC"], sync_ts=0.8, start_sync=False)
+                    symbols=["BTC"], sync_ts=0.8)
                 factory_manager = cm.CacheFactory.get(
                     "CurrentPrice", symbols=["BTC"])
+                periodic.assert_not_called()
+                promoted_manager = cm.CacheFactory.get(
+                    "CurrentPrice", symbols=["BTC"], start_sync=True)
             self.assertIs(factory_manager, singleton_manager)
+            self.assertIs(promoted_manager, singleton_manager)
             self.assertEqual(factory_manager.sync_ts, 0.8)
             periodic.assert_called_once_with(0.8, False)
             _reset()
@@ -2702,5 +2706,166 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     )
     assert res == "cpm-inst"
     assert len(cpm_calls) == 1 and cpm_calls[0]["sync_ts"] == 0.8 and cpm_calls[0]["start_sync"] is False
+
+
+def test_cache24pricemanager_external_ohlc_reload_and_merge(tmp_path):
+    """Verify Cache24PriceManager reloads newer external OHLC series when idle and merges when live ticks arrive."""
+    p24_file = str(tmp_path / "cache_24_price_NVDA_US_EQ.json")
+    t0 = 1700000000
+    cm.Cache24PriceManager.persist_external_ohlc_series(
+        p24_file,
+        "NVDA_US_EQ",
+        [[t0 * 1000, 175.0, 10.0]],
+        float(t0),
+    )
+    mgr = cm.Cache24PriceManager(
+        600,
+        ["NVDA_US_EQ"],
+        p24_file,
+        read_only=False,
+    )
+    mgr.save_state = True
+    assert len(mgr.cache["NVDA_US_EQ"]) == 1
+
+    # External collector writes newer pre-market bar while manager has no new in-memory ticks
+    t1 = t0 + 300
+    cm.Cache24PriceManager.persist_external_ohlc_series(
+        p24_file,
+        "NVDA_US_EQ",
+        [[t0 * 1000, 175.0, 10.0], [t1 * 1000, 176.5, 25.0]],
+        float(t1),
+    )
+    assert mgr._persist_periodic_state(False) is True
+    assert len(mgr.cache["NVDA_US_EQ"]) == 2
+    assert mgr.cache["NVDA_US_EQ"][-1] == [t1 * 1000, 176.5, 25.0]
+
+    # Now live tick arrives in memory AND external collector writes an intermediate OHLC bar
+    t2 = t1 + 60
+    t3 = t1 + 120
+    mgr.on_price_update("NVDA_US_EQ", t2 * 1000, 177.0)
+    cm.Cache24PriceManager.persist_external_ohlc_series(
+        p24_file,
+        "NVDA_US_EQ",
+        [
+            [t0 * 1000, 175.0, 10.0],
+            [t1 * 1000, 176.5, 25.0],
+            [t3 * 1000, 177.2, 30.0],
+        ],
+        float(t3),
+    )
+    assert mgr.save_state_to_file() is True
+    assert len(mgr.cache["NVDA_US_EQ"]) == 4
+
+
+def test_consumer_safe_defaults_and_auto_resync(tmp_path):
+    """Verify cache getters default to read-only consumer mode (start_sync=False) and auto-resync from disk."""
+    import inspect
+
+    assert inspect.signature(cm.get_cache_manager).parameters["start_sync"].default is False
+    assert inspect.signature(cm.CacheFactory.get).parameters["start_sync"].default is False
+    assert inspect.signature(cm.get_current_price_manager).parameters["start_sync"].default is False
+    assert inspect.signature(cm.get_short_trend_manager).parameters["writer"].default is False
+
+    cm.CacheFactory.remove("24Price")
+    try:
+        with patch("utils.cache_path", side_effect=lambda f: str(tmp_path / os.path.basename(f))):
+            p24_path = str(tmp_path / "cache_24_price_BTCUSDC.json")
+            t0 = 1700000000
+            cm.Cache24PriceManager.persist_external_ohlc_series(
+                p24_path,
+                "BTCUSDC",
+                [[t0 * 1000, 90000.0, 1.0]],
+                float(t0),
+            )
+            managers = cm.get_cache_manager("24Price", symbols=["BTCUSDC"])
+            mgr = managers["BTCUSDC"]
+            assert mgr.read_only is True
+            assert mgr.save_state is False
+            assert mgr.thread is None
+            assert "24Price" not in cm.CacheFactory._sync_started
+            assert mgr.cache["BTCUSDC"] == [[t0 * 1000, 90000.0, 1.0]]
+
+            # Producer persists newer data on disk; next get_cache_manager() call auto-resyncs
+            t1 = t0 + 60
+            cm.Cache24PriceManager.persist_external_ohlc_series(
+                p24_path,
+                "BTCUSDC",
+                [[t0 * 1000, 90000.0, 1.0], [t1 * 1000, 90500.0, 2.0]],
+                float(t1),
+            )
+            managers_again = cm.get_cache_manager("24Price")
+            assert managers_again["BTCUSDC"] is mgr
+            assert mgr.cache["BTCUSDC"][-1] == [t1 * 1000, 90500.0, 2.0]
+    finally:
+        cm.CacheFactory.remove("24Price")
+
+
+def test_ast_only_producers_enable_cache_sync_or_writer():
+    """Verify via AST that no consumer module passes start_sync=True or writer=True to cache getters."""
+    import ast
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache_getters = {
+        "get_cache_manager": "start_sync",
+        "get_current_price_manager": "start_sync",
+        "get_short_trend_manager": "writer",
+    }
+    violations = []
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".")
+            and d not in {"myenv", "venv", "__pycache__", "tests", "cachedb", "logs", "logger", "offline", "archive", "media", "models"}
+        ]
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            rel_path = os.path.relpath(os.path.join(root, fname), repo_root)
+            if rel_path == "cacheManager.py":
+                continue
+            full_path = os.path.join(root, fname)
+            try:
+                with open(full_path, "r", encoding="utf-8") as fh:
+                    tree = ast.parse(fh.read(), filename=rel_path)
+            except Exception:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func_name = None
+                is_cache_factory_get = False
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    func_name = node.func.attr
+                    if (
+                        func_name == "get"
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "CacheFactory"
+                    ):
+                        is_cache_factory_get = True
+                    elif (
+                        func_name == "get"
+                        and isinstance(node.func.value, ast.Attribute)
+                        and node.func.value.attr == "CacheFactory"
+                    ):
+                        is_cache_factory_get = True
+                target_kw = None
+                if is_cache_factory_get:
+                    target_kw = "start_sync"
+                elif func_name in cache_getters:
+                    target_kw = cache_getters[func_name]
+                if not target_kw:
+                    continue
+                for kw in node.keywords:
+                    if (
+                        kw.arg == target_kw
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is True
+                    ):
+                        violations.append(f"{rel_path}:{node.lineno} ({func_name} {target_kw}=True)")
+    assert violations == [], f"Consumer modules must not enable producer sync/writer: {violations}"
+
+
 
 
