@@ -809,7 +809,7 @@ class TrailingAdapterBase:
                 return True
         return self.rebuy_enabled_for(sym_norm or symbol)
 
-    def _trend_value(self, pair: str) -> float:
+    def trend(self, pair: str) -> float:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
@@ -827,9 +827,6 @@ class TrailingAdapterBase:
             return pw.extract_short_trend_slope(snap, pair) if snap else 0.0
         except Exception:
             return 0.0
-
-    def trend(self, pair: str) -> float:
-        return self._trend_value(pair)
 
     def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
         sync_trailing_retry_count(self._retry_counts, pair, action, persist)

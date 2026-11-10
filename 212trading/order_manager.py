@@ -102,15 +102,11 @@ def _read_marker(path: str) -> dict | None:
         raise RuntimeError(f"unreadable T212 marker {path}: {exc}") from exc
 
 
-def _safe_marker_component(value: str) -> str:
-    return sanitize_identifier(value, sep="_", allow_dots_hyphens=True, strip_chars="._")
-
-
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
-    profile = _safe_marker_component(os.environ.get("IPO_PROFILE") or "default")
+    profile = sanitize_identifier(os.environ.get("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
     raw_ticker = "" if isinstance(ticker, bool) or not isinstance(ticker, str) else ticker.strip().upper()
-    symbol = _safe_marker_component(raw_ticker)
+    symbol = sanitize_identifier(raw_ticker, sep="_", allow_dots_hyphens=True, strip_chars="._")
     suffix = ".test" if test else ""
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),

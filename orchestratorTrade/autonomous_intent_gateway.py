@@ -96,7 +96,7 @@ class AutonomousIntentGateway:
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
         self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents_state.json")
 
-        conf = self._load_conf()
+        conf = load_key_value_conf(self.workspace_dir, ROOT_DIR)
         (
             self.mode,
             self.min_notional_usd,
@@ -110,10 +110,6 @@ class AutonomousIntentGateway:
             min_confidence=min_confidence,
             notify_enabled=notify_enabled,
         )
-
-    def _load_conf(self) -> Dict[str, str]:
-        """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
-        return load_key_value_conf(self.workspace_dir, ROOT_DIR)
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -423,7 +419,7 @@ class AutonomousIntentGateway:
         )
         if intent is None:
             return None
-        self._upsert_intent(intent)
+        upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger)
         norm_max_mode = (
             "off"
             if isinstance(max_mode, bool)
@@ -433,12 +429,8 @@ class AutonomousIntentGateway:
             norm_max_mode = "off"
         mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
         processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
-        self._upsert_intent(processed)
+        upsert_durable_intent(self.intents_file, processed, reconcile_fn=self.reconcile_intents, log=logger)
         return processed
-
-    def _upsert_intent(self, intent: Dict[str, Any]) -> bool:
-        """Merge one intent into the freshly reloaded durable file under the cross-process intents lock."""
-        return upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger)
 
     def process_all_pending(self) -> List[Dict[str, Any]]:
         """Processes all pending trade intents from the durable queue."""
@@ -465,7 +457,7 @@ class AutonomousIntentGateway:
             updated = self.process_intent(intents[idx], instruments_map=instruments_map)
             intents[idx] = updated
             processed.append(updated)
-            self._upsert_intent(updated)
+            upsert_durable_intent(self.intents_file, updated, reconcile_fn=self.reconcile_intents, log=logger)
 
         return processed
 

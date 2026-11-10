@@ -40,10 +40,6 @@ from providers.replay_provider import SimClock
 from strategies.spot_replay import build_replay_summary
 
 
-def _ols_slope_pct(closes: list[float]) -> float | None:
-    return _md.compute_ols_slope_pct(closes, bars=12)
-
-
 def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
     if isinstance(value, bool) or isinstance(count, bool) or count < 0:
         raise ValueError("fx_to_usd and count must be valid non-bool values")
@@ -149,7 +145,7 @@ def _run_once(
             initial_state=_strat._new_state(),
             fx_to_usd=fx_rates[0],
             clock=clock,
-            trend_slope_provider=lambda _symbol: _ols_slope_pct(list(trend_closes)),
+            trend_slope_provider=lambda _symbol: _md.compute_ols_slope_pct(list(trend_closes), bars=12),
         )
         engine._save = lambda: None
         initial_capital = float(params.max_budget)

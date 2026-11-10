@@ -282,17 +282,14 @@ class BinanceProvider(MarketDataProvider):
     def _account_cache_state(status) -> tuple[str, str]:
         return str(status.order_cache_version), str(status.trade_cache_version)
 
-    def _require_account_cache_state(self) -> tuple[str, str]:
+    def prepare_order_state(self) -> tuple[str, str]:
+        """Synchronize Binance account readers before shared policy checks."""
         from binance_api import bapi_placeorder as _po
         return self._account_cache_state(_po.require_account_cache_for_submit())
 
-    def prepare_order_state(self):
-        """Synchronize Binance account readers before shared policy checks."""
-        return self._require_account_cache_state()
-
     def validate_order_state(self, expected_state):
         """Refuse when policy checks raced with a newer account-cache snapshot."""
-        current_state = self._require_account_cache_state()
+        current_state = self.prepare_order_state()
         if current_state != tuple(expected_state or ()):
             raise SubmissionRefused("account_cache_snapshot_changed")
         return current_state

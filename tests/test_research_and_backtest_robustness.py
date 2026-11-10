@@ -2696,7 +2696,7 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
     assert strat_dummy._buy_is_stale({"id": "2", "side": "buy", "limit": None, "ts": None}, 100.0) is False
 
     # 3. order_manager rejects unsupported validity before touching client/disk
-    assert t212_om._safe_marker_component(True) == "unknown"  # type: ignore[arg-type]
+    assert t212_om.sanitize_identifier(True, sep="_", allow_dots_hyphens=True, strip_chars="._") == "unknown"  # type: ignore[arg-type]
     assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "INVALID_VAL", dry_run=False) is False  # type: ignore[arg-type]
     assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "gtc", dry_run=True) is True  # type: ignore[arg-type]
 
@@ -4622,7 +4622,7 @@ def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_pat
     items = mgr.get_remote_items("HYPE", 0)
     assert len(items) == 1 and items[0][1] == pytest.approx(42.5)
 
-    # 3. KrakenTrailing._trend_value unwraps {"items": ...} in cache_short_trend.json
+    # 3. KrakenTrailing.trend unwraps {"items": ...} in cache_short_trend.json
     trend_file = tmp_path / "cache_short_trend.json"
     trend_file.write_text(
         json.dumps({"items": {"HYPEUSDC": {"ts": now_s - 2.0, "gradient_recent": 0.125}}, "fetchtime": {}}),
@@ -4630,7 +4630,7 @@ def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_pat
     )
     monkeypatch.setattr(k_ts, "CACHE_TREND", str(trend_file))
     kt = object.__new__(k_ts.KrakenTrailing)
-    assert kt._trend_value("HYPE/USD") == pytest.approx(0.125)
+    assert kt.trend("HYPE/USD") == pytest.approx(0.125)
 
     # 4. kraken_xstock_watch.yahoo_last prefers freshest intraday close and handles meta=None
     monkeypatch.setattr(

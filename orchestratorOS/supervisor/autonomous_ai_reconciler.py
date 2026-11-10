@@ -137,7 +137,7 @@ class AutonomousAIReconciler:
         self._intent_gateway = intent_gateway
 
         # Parse decoupled configuration strictly from config files without fallbacks
-        conf = self._load_decoupled_conf()
+        conf = load_key_value_conf(self.workspace_dir, _ROOT_DIR)
         (
             self.mode,
             self.notify_enabled,
@@ -159,10 +159,6 @@ class AutonomousAIReconciler:
         if getattr(self, "_intent_gateway", None) is None:
             self._intent_gateway = AutonomousIntentGateway(workspace_dir=self.workspace_dir)
         return self._intent_gateway
-
-    def _load_decoupled_conf(self) -> Dict[str, str]:
-        """Parses key-value pairs from order_guard.conf and .env without external imports."""
-        return load_key_value_conf(self.workspace_dir, _ROOT_DIR)
 
     def harvest_sensors_telemetry(
         self,

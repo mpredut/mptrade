@@ -254,12 +254,6 @@ class TrailingStop(TrailingAdapterBase):
             self.log(f"  [TRAIL] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
             return None
 
-    def _free_qty(self, balances: list, asset: str) -> float:
-        bal = self._find_balance_row(balances, asset)
-        if bal is None:
-            return 0.0
-        return safe_nonneg_float(bal.get("free"), default=0.0)
-
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for symbol in self.sym.symbols:
@@ -283,7 +277,10 @@ class TrailingStop(TrailingAdapterBase):
             return False
 
     def free_qty(self, asset: str) -> float:
-        return self._free_qty(self._balances, asset)
+        bal = self._find_balance_row(self._balances, asset)
+        if bal is None:
+            return 0.0
+        return safe_nonneg_float(bal.get("free"), default=0.0)
 
     def total_qty(self, asset: str) -> float:
         bal = self._find_balance_row(self._balances, asset)

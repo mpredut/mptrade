@@ -446,8 +446,8 @@ class TestRebuyGuardsKraken(Base):
             ts_mod.CACHE_TREND = trend_path
             c = FakeK(60.0)
             ts = self.ts(c)
-            self.assertAlmostEqual(ts._trend_value("TAOUSD"), -0.42)
-            self.assertAlmostEqual(ts._trend_value("TAO/USD"), -0.42)
+            self.assertAlmostEqual(ts.trend("TAOUSD"), -0.42)
+            self.assertAlmostEqual(ts.trend("TAO/USD"), -0.42)
         finally:
             ts_mod.CACHE_TREND = prev_cache
             if os.path.exists(trend_path):
@@ -457,11 +457,11 @@ class TestRebuyGuardsKraken(Base):
         c = FakeK(60.0, total=25.0, held=0.0)
         ts = self.ts(c)
         ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": "corrupt"}}
-        self.assertEqual(ts._free("HYPE"), 0.0)
+        self.assertEqual(ts.free_qty("HYPE"), 0.0)
         ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": "-5.0"}}
-        self.assertEqual(ts._free("HYPE"), 0.0)
+        self.assertEqual(ts.free_qty("HYPE"), 0.0)
         ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": True}}
-        self.assertEqual(ts._free("HYPE"), 0.0)
+        self.assertEqual(ts.free_qty("HYPE"), 0.0)
 
         cancelled = []
         c.open_orders = lambda: {
@@ -477,7 +477,7 @@ class TestRebuyGuardsKraken(Base):
         c = FakeK(60.0, total=25.0, held=0.0)
         logs = []
         ts = KrakenTrailing(c, log=logs.append, enabled=True, state_file=self.sf)
-        ts._trend_value = lambda _pair: 1.0  # short trend UP
+        ts.trend = lambda _pair: 1.0  # short trend UP
         with patch("trailing_core.time.time", return_value=2000.0):
             ts.check_once()  # peak=60.0
             c.price = 48.0   # -20% > 18% stop

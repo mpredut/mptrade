@@ -4558,7 +4558,7 @@ def test_iteration21_assetguardian_partial_sell_tier_category_revocation_and_tra
     )
     monkeypatch.setattr(kt, "CACHE_TREND", str(trend_file))
     kt_inst = object.__new__(kt.KrakenTrailing)
-    assert kt_inst._trend_value("HYPE/USD") == pytest.approx(0.42)
+    assert kt_inst.trend("HYPE/USD") == pytest.approx(0.42)
 
 
 def test_iteration22_guard_bypass_union_mt_state_clock_skew_kraken_cache_and_telemetry(tmp_path, monkeypatch):
@@ -7393,8 +7393,8 @@ def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety
         t212_rep._fx_rates(float("nan"), 3)
     with pytest.raises(ValueError):
         t212_rep._fx_rates([1.0, float("inf"), 1.0], 3)
-    assert t212_rep._ols_slope_pct([True] * 10) is None
-    assert t212_rep._ols_slope_pct([float("nan")] * 10) is None
+    assert t212_rep._md.compute_ols_slope_pct([True] * 10, bars=12) is None
+    assert t212_rep._md.compute_ols_slope_pct([float("nan")] * 10, bars=12) is None
 
 
 def test_iteration51_binance_api_and_providers_nan_bool_safety(monkeypatch):

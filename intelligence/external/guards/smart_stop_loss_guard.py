@@ -559,30 +559,6 @@ def evaluate_smart_stop_loss(
 _DEFAULT_RECOVERY_GUARD = SmartStopLossGuard()
 
 
-def clear_smart_stop_loss_if_recovered(
-    symbol: str,
-    price_decrease: float,
-    lost_threshold: float,
-    *,
-    now: Optional[float] = None,
-    provider: Optional[str] = None,
-    current_price: Optional[float] = None,
-    buy_price: Optional[float] = None,
-    batch: bool = True,
-) -> bool:
-    """Convenience recovery callback for monitortrades.py."""
-    return _DEFAULT_RECOVERY_GUARD.on_recovered(
-        symbol=symbol,
-        price_decrease=price_decrease,
-        lost_threshold=lost_threshold,
-        now=now,
-        provider=provider,
-        current_price=current_price,
-        buy_price=buy_price,
-        batch=batch,
-    )
-
-
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
     sym_key = clean_guard_symbol_key(symbol)

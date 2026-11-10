@@ -88,9 +88,6 @@ def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
     return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached)
 
 
-def _resolve_save_json_state() -> Any:
-    return resolve_save_json_state(local_fn=save_json_state)
-
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
     _ensure_cacheprice_classes_bound()
     contracts_fn = getattr(_mc.CacheAccountManagerBase, "venue_order_and_trade_cache_contracts", None)
@@ -971,7 +968,7 @@ def _harvest_tradable_positions_and_orders_impl(
             merged_bals = {**cached_bals, **updated_bals}
             if merged_bals != cached_bals:
                 os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-                _resolve_save_json_state()(bcache_path, merged_bals, indent=2)
+                resolve_save_json_state(local_fn=save_json_state)(bcache_path, merged_bals, indent=2)
         except Exception:
             pass
 

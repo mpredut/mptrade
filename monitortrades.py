@@ -1051,12 +1051,8 @@ def _execute_stop_loss(
     return False
 
 
-_CLEAR_SMART_SL_RECOVERED_FN = None
-
-
 def _handle_position_recovery(inst, snapshot: PositionSnapshot, lost_threshold: float):
     """Reset tracking structures and notify Smart-SL guard when position recovers into neutral/safe territory."""
-    global _CLEAR_SMART_SL_RECOVERED_FN
     symbol = snapshot.symbol
     if symbol in _SL_BOUNCE_STATE:
         bounce_state = _SL_BOUNCE_STATE.pop(symbol, None) or {}
@@ -1070,11 +1066,8 @@ def _handle_position_recovery(inst, snapshot: PositionSnapshot, lost_threshold: 
     _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()
     try:
-        fn = _CLEAR_SMART_SL_RECOVERED_FN
-        if fn is None:
-            from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered as fn
-            _CLEAR_SMART_SL_RECOVERED_FN = fn
-        fn(
+        from intelligence.external.guards.smart_stop_loss_guard import _DEFAULT_RECOVERY_GUARD
+        _DEFAULT_RECOVERY_GUARD.on_recovered(
             symbol, snapshot.loss_ratio, lost_threshold,
             now=snapshot.current_time_s,
             provider=snapshot.provider or _inst_provider(inst),

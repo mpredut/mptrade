@@ -208,17 +208,6 @@ class KrakenTrailing(TrailingAdapterBase):
                 return entry
         return None
 
-    def _free(self, asset: str) -> float:
-        """Return FREE balance (total minus order holds), excluding the bot position."""
-        bx = self._balance_ex_entry(asset)
-        if not bx:
-            return 0.0
-        bal_f = safe_nonneg_float(bx.get("balance"), default=None)
-        hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
-        if bal_f is None or hold_f is None:
-            return 0.0
-        return safe_nonneg_float(bal_f - hold_f, default=0.0)
-
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for asset, trail in TRAIL_PCT.items():
@@ -236,7 +225,15 @@ class KrakenTrailing(TrailingAdapterBase):
         return True
 
     def free_qty(self, asset: str) -> float:
-        return self._free(asset)
+        """Return FREE balance (total minus order holds), excluding the bot position."""
+        bx = self._balance_ex_entry(asset)
+        if not bx:
+            return 0.0
+        bal_f = safe_nonneg_float(bx.get("balance"), default=None)
+        hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
+        if bal_f is None or hold_f is None:
+            return 0.0
+        return safe_nonneg_float(bal_f - hold_f, default=0.0)
 
     def total_qty(self, asset: str) -> float | None:
         bx_map = self._balance_ex_map()
