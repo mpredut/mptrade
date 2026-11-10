@@ -404,6 +404,31 @@ class TestCacheTradeManager(unittest.TestCase):
             mgr = self._make()
             self.assertTrue(mgr.append_mode)
 
+        with self.subTest(msg="kraken_venue_remote_items_and_ws_normalization"):
+            fname = _tmp_file(self.tmp, "cache_trade_kraken.json")
+            kraken_api = MagicMock()
+            kraken_api._private.return_value = {
+                "ledger": {
+                    "L1": {"refid": "T100", "type": "trade", "asset": "HYPE", "amount": "2.0", "fee": "0.0", "time": 1700000000.0},
+                    "L2": {"refid": "T100", "type": "trade", "asset": "ZUSD", "amount": "-50.0", "fee": "0.1", "time": 1700000000.0},
+                }
+            }
+            mgr = cm.CacheTradeManager(
+                9999, ["HYPEUSD"], fname, api_client=kraken_api, venue="kraken",
+            )
+            items = mgr.get_remote_items("HYPEUSD", 0)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["id"], "T100")
+            self.assertEqual(items[0]["symbol"], "HYPEUSD")
+            self.assertTrue(items[0]["isBuyer"])
+            ws_item = cm.CacheTradeManager.normalize_kraken_ws_trade(
+                "200",
+                {"ordertxid": "O200", "pair": "HYPEUSD", "price": 26.0, "vol": 1.5, "type": "sell", "time": 1700000100.0},
+            )
+            self.assertEqual(ws_item["id"], "200")
+            self.assertEqual(ws_item["symbol"], "HYPEUSD")
+            self.assertFalse(ws_item["isBuyer"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. CacheOrderManager

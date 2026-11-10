@@ -29,7 +29,15 @@ from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_trades as _bapi_trades
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
-from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_now_ts, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    normalize_epoch_sec,
+    resolve_now_ms,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cacheInterface import (
     CacheManagerInterface,
     _CACHE_META_SCHEMA_VERSION,
@@ -52,12 +60,15 @@ from cachepaths import (
     cachedb_root_for_file,
     clean_symbol_key,
     compute_venue_nav_breakdown,
+    kraken_pair_key,
+    kraken_pair_matches,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
 import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import (
+    extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
     extract_timestamp_s,
@@ -65,6 +76,7 @@ from providers.base import (
 )
 from providers.order_ohlc_utils import (
     clean_order_id,
+    extract_order_fee,
     extract_order_qty,
     extract_order_side,
 )
@@ -525,23 +537,248 @@ class CacheTradeManager(CacheAccountManagerBase):
                     if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
                         if (ib_b := _parse_bool_flag(row_copy["isBuyer"], default=None)) is not None:
                             row_copy["isBuyer"] = ib_b
+                        elif row_copy["isBuyer"].strip().lower() == "nan":
+                            row_copy["isBuyer"] = False
                     valid_rows.append(row_copy)
                 valid_rows.sort(key=lambda t: t["time"])
                 clean_items[str(k)] = valid_rows
             clean_fetchtime = {}
             for k, v in loaded["fetchtime"].items():
-                if (
-                    (not clean_items or str(k) in clean_items)
-                    and not isinstance(v, bool)
-                    and isinstance(v, (int, float))
-                    and v >= 0
-                ):
-                    clean_fetchtime[str(k)] = float(v)
+                v_f = safe_nonneg_float(v, default=None)
+                if v_f is not None and (not clean_items or str(k) in clean_items):
+                    clean_fetchtime[str(k)] = v_f
             return {
                 "items": clean_items,
                 "fetchtime": clean_fetchtime,
             }
         return {"items": {}, "fetchtime": {}}
+
+    _KRAKEN_QUOTE_ASSETS = {
+        "ZUSD": "USD",
+        "USD": "USD",
+        "USDC": "USDC",
+        "USDG": "USDG",
+        "ZEUR": "EUR",
+        "EUR": "EUR",
+        "USDT": "USDT",
+        "ZUSDT": "USDT",
+    }
+
+    @classmethod
+    def match_kraken_configured_pair(cls, symbol: object, *, pairs=None) -> Optional[str]:
+        """Resolve a raw or WS Kraken pair to its configured ``pairs`` entry (or canonical key if ``'*'`` is enabled)."""
+        if not isinstance(symbol, str):
+            return None
+        raw = symbol.strip().upper()
+        if not raw:
+            return None
+        if pairs and "*" not in pairs:
+            for configured in pairs:
+                if configured == raw or kraken_pair_matches(configured, raw):
+                    return configured
+            return None
+        return kraken_pair_key(raw) or raw
+
+    @staticmethod
+    def build_kraken_cache_fill(
+        *,
+        symbol,
+        fill_id: str,
+        order_id,
+        price: float,
+        qty: float,
+        ts_ms: int,
+        is_buyer: Optional[bool],
+        side: Optional[str],
+        fee: Optional[float] = None,
+        fee_asset: Optional[str] = None,
+    ) -> dict:
+        """Build a normalized Kraken fill row compatible with ``CacheTradeManager``."""
+        row = {
+            "symbol": symbol,
+            "id": fill_id,
+            "orderId": order_id,
+            "price": price,
+            "qty": qty,
+            "quantity": qty,
+            "time": ts_ms,
+            "timestamp": ts_ms,
+            "isBuyer": is_buyer,
+            "side": side,
+        }
+        if fee is not None:
+            row["fee"] = fee
+            if fee_asset:
+                row["feeAsset"] = fee_asset
+        return row
+
+    @classmethod
+    def normalize_kraken_ws_trade(cls, txid: object, tr: object) -> dict:
+        """Normalize a Kraken ``TradesHistory`` / ``ownTrades`` transaction to canonical form."""
+        clean_txid = clean_order_id(txid)
+        if not isinstance(tr, dict) or clean_txid is None:
+            return {}
+        ts_ms = extract_timestamp_ms(tr, default=0) or 0
+        side = extract_order_side(tr) or None
+        is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
+        qty = extract_order_qty(tr, default=0.0)
+        price = extract_order_price(tr, default=0.0)
+        raw_oid = tr.get("ordertxid", tr.get("orderId"))
+        order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
+        raw_sym = tr.get("pair", tr.get("symbol"))
+        sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
+        fee_info = extract_order_fee(tr)
+        has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
+        return cls.build_kraken_cache_fill(
+            symbol=sym_val,
+            fill_id=clean_txid,
+            order_id=order_id,
+            price=price,
+            qty=qty,
+            ts_ms=ts_ms,
+            is_buyer=is_buyer,
+            side=side,
+            fee=fee_info["fee"] if has_fee else None,
+            fee_asset=fee_info["fee_asset"] if has_fee else None,
+        )
+
+    @classmethod
+    def kraken_ledger_to_fills(cls, ledger: object) -> list[dict]:
+        """Group Kraken ``Ledgers`` entries by ``refid`` into normalized fills."""
+        if not isinstance(ledger, dict):
+            return []
+        by_ref: dict[str, list[dict]] = {}
+        for x in ledger.values():
+            if not isinstance(x, dict):
+                continue
+            clean_refid = clean_order_id(x.get("refid"))
+            if clean_refid is not None:
+                by_ref.setdefault(clean_refid, []).append(x)
+        fills: list[dict] = []
+        for refid, legs in by_ref.items():
+            if len(legs) < 2:
+                continue
+            if any(str(leg.get("subtype") or "").strip().lower() == "dustsweeping" for leg in legs):
+                continue
+            quote_legs = [
+                leg
+                for leg in legs
+                if isinstance(leg.get("asset"), str)
+                and leg.get("asset").strip().upper() in cls._KRAKEN_QUOTE_ASSETS
+            ]
+            base_legs = [
+                leg
+                for leg in legs
+                if leg not in quote_legs
+                and isinstance(leg.get("asset"), str)
+                and leg.get("asset").strip()
+                and leg.get("asset").strip().upper() not in cls._KRAKEN_QUOTE_ASSETS
+            ]
+            if len(quote_legs) != 1 or len(base_legs) != 1:
+                continue
+            quote = quote_legs[0]
+            base = base_legs[0]
+            if str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
+                continue
+            ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
+            qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
+            if ba is None or qa is None or ba == 0.0 or qa == 0.0:
+                continue
+            raw_base = str(base["asset"]).strip().upper()
+            if raw_base.endswith("X.T") and len(raw_base) > 3:
+                raw_base = raw_base[:-3]
+            elif raw_base.endswith((".F", ".S", ".T")) and len(raw_base) > 2:
+                raw_base = raw_base[:-2]
+            quote_ccy = cls._KRAKEN_QUOTE_ASSETS[str(quote["asset"]).strip().upper()]
+            raw_symbol = raw_base + quote_ccy
+            ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
+            if ts_ms <= 0:
+                continue
+            is_buyer = ba > 0
+            px = abs(qa) / abs(ba)
+            if safe_pos_float(px, default=None) is None:
+                continue
+            q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
+            b_fee = safe_nonneg_float(base.get("fee"), 0.0)
+            fee_val = q_fee if q_fee > 0 else (b_fee if b_fee > 0 else None)
+            fee_asset = quote_ccy if q_fee > 0 else (raw_base if b_fee > 0 else None)
+            fills.append(
+                cls.build_kraken_cache_fill(
+                    symbol=raw_symbol,
+                    fill_id=str(refid),
+                    order_id=str(refid),
+                    price=px,
+                    qty=abs(ba),
+                    ts_ms=ts_ms,
+                    is_buyer=is_buyer,
+                    side="BUY" if is_buyer else "SELL",
+                    fee=fee_val,
+                    fee_asset=fee_asset,
+                )
+            )
+        return fills
+
+    @classmethod
+    def fetch_kraken_ledger_into_snapshot(
+        cls,
+        client,
+        cache: dict,
+        *,
+        pairs=None,
+        lookback_sec: float = 14 * 86400.0,
+    ) -> None:
+        """Fetch unified Kraken ``Ledgers`` data into ``cache['items']`` and ``cache['fetchtime']``."""
+        res = client._private("Ledgers", {"start": int(_now_time() - float(lookback_sec))}, fresh=True)
+        fills = cls.kraken_ledger_to_fills((res or {}).get("ledger", {}) or {})
+        now_ms = int(_now_time() * 1000)
+        by_sym = {s: [] for s in (pairs or ()) if s and s != "*"}
+        for f in fills:
+            matched_sym = cls.match_kraken_configured_pair(f.get("symbol"), pairs=pairs)
+            if matched_sym is None:
+                continue
+            f_copy = dict(f)
+            f_copy["symbol"] = matched_sym
+            by_sym.setdefault(matched_sym, []).append(f_copy)
+        for s_sym, lst in by_sym.items():
+            lst.sort(key=lambda t: t["time"])
+            cache["items"][s_sym] = lst
+            cache["fetchtime"][s_sym] = now_ms
+
+    @classmethod
+    def merge_kraken_ledger_into_snapshot(
+        cls,
+        client,
+        cache: dict,
+        *,
+        pairs=None,
+        lookback_sec: float = 14 * 86400.0,
+    ) -> None:
+        """Fetch Kraken ``Ledgers`` via REST and merge incrementally into an active WS snapshot."""
+        rest_cache: dict = {"items": {}, "fetchtime": {}}
+        cls.fetch_kraken_ledger_into_snapshot(
+            client, rest_cache, pairs=pairs, lookback_sec=lookback_sec
+        )
+        now_ms = int(_now_time() * 1000)
+        for s_sym, rest_items in rest_cache["items"].items():
+            bucket = cache["items"].setdefault(s_sym, [])
+            existing_ids = {t["id"] for t in bucket if isinstance(t, dict) and "id" in t}
+            for item in rest_items:
+                if item["id"] not in existing_ids:
+                    bucket.append(item)
+                    existing_ids.add(item["id"])
+            bucket.sort(key=lambda t: t["time"])
+            cache["fetchtime"][s_sym] = rest_cache["fetchtime"].get(s_sym, now_ms)
+
+    @staticmethod
+    def touch_kraken_ws_fetchtimes(cache: dict, now_ms=None, *, pairs=None) -> None:
+        """Refresh ``fetchtime`` across all configured pairs while the Kraken WS stream is healthy."""
+        resolved_ms = resolve_now_ms(now_ms)
+        configured = [s for s in (pairs or ()) if s and s != "*"]
+        for s_sym in configured:
+            cache["items"].setdefault(s_sym, [])
+            cache["fetchtime"][s_sym] = resolved_ms
+        for s_sym in list(cache.get("items", {}).keys()):
+            cache["fetchtime"][s_sym] = resolved_ms
 
     @classmethod
     def extract_venue_symbol_trades(
@@ -1217,6 +1454,25 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def get_remote_items(self, symbol, startTime):
         if not self.append_persist:
+            if (
+                self.venue == "kraken"
+                and self.api_client is not None
+                and callable(getattr(self.api_client, "_private", None))
+            ):
+                start_val = safe_nonneg_float(startTime, default=0.0) or 0.0
+                start_sec = (
+                    int(start_val / 1000.0)
+                    if start_val > 10_000_000_000
+                    else (int(start_val) if start_val > 0 else int(_now_time() - 14 * 86400.0))
+                )
+                snap: dict = {"items": {}, "fetchtime": {}}
+                self.fetch_kraken_ledger_into_snapshot(
+                    self.api_client,
+                    snap,
+                    pairs=[symbol],
+                    lookback_sec=max(60.0, _now_time() - float(start_sec)),
+                )
+                return list(snap["items"].get(symbol, []))
             return []
         new_trades = self._paginate_validated_trades(symbol, startTime, "trade")
         print(f"[{self.cls_name}][info] New trades: {len(new_trades)}")

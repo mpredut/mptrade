@@ -53,7 +53,11 @@ from .strategy_executor import (
 )
 from cachepaths import (
     CACHE_KRAKEN_TRADE_FILENAME,
+    _KRAKEN_QUOTES,
     _LEGACY_KRAKEN_X_BASES,
+    _kraken_pair_key,
+    _kraken_pair_matches,
+    _split_kraken_pair,
     cache_path,
     canonical_base_asset,
     clean_symbol_key,
@@ -72,10 +76,6 @@ _DEFAULT_KRAKEN_CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 _KRAKEN_CACHE_FILE = _DEFAULT_KRAKEN_CACHE_FILE
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
-_KRAKEN_QUOTES = (
-    "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
-    "BTC", "XBT", "ETH",
-)
 _KRAKEN_FALLBACK_ERR_TOKENS = (
     "permission denied",
     "invalid nonce",
@@ -83,50 +83,6 @@ _KRAKEN_FALLBACK_ERR_TOKENS = (
     "temporary lockout",
     "network error",
 )
-
-
-def _split_kraken_pair(value: str) -> tuple[str, str]:
-    """Split a Kraken pair or bare asset into ``(canonical_base, canonical_quote)``."""
-    if not isinstance(value, str):
-        return "", ""
-    raw = value.strip()
-    key = "".join(ch for ch in raw.upper() if ch.isalnum())
-    if not key:
-        return "", ""
-    quote = next(
-        (cand for cand in _KRAKEN_QUOTES if key.endswith(cand) and len(key) > len(cand)),
-        "",
-    )
-    if not quote:
-        base_raw = raw
-    elif "/" in raw:
-        base_raw = raw.split("/", 1)[0].strip()
-    elif raw.upper().endswith(quote):
-        base_raw = raw[: -len(quote)].strip(" -_/")
-    else:
-        base_raw = key[: -len(quote)]
-    base = canonical_base_asset(base_raw) or "".join(ch for ch in base_raw.upper() if ch.isalnum())
-    if quote == "XBT":
-        quote = "BTC"
-    return base, quote
-
-
-def _kraken_pair_key(value: str) -> str:
-    """Canonicalize common Kraken legacy pair wrappers for strict comparison."""
-    base, quote = _split_kraken_pair(value)
-    return base + quote
-
-
-def _kraken_pair_matches(expected: str, actual: str) -> bool:
-    if isinstance(expected, bool) or isinstance(actual, bool):
-        return False
-    b_exp, q_exp = _split_kraken_pair(expected)
-    b_act, q_act = _split_kraken_pair(actual)
-    if not b_exp or not b_act or b_exp != b_act:
-        return False
-    if q_exp and q_act:
-        return q_exp == q_act
-    return True
 
 
 def _kraken_balance_asset_candidates(asset: str) -> List[str]:

@@ -36,36 +36,21 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 from botcore import (
-    _parse_bool_flag,
     load_env_stack,
     log,
     required_env,
     required_float_env,
-    resolve_now_ms,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
     single_instance,
     split_csv,
     touch_module_heartbeat,
 )
-from kraken_client import KrakenClient
-from state_io import read_json_dict, save_json_state
-from credentials import CredentialConfigurationError, kraken_credentials
+from cacheaccount import CacheTradeManager
 from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
+from credentials import CredentialConfigurationError, kraken_credentials
 from instrument_registry import symbols_for
-from providers.base import (
-    extract_order_id,
-    extract_order_price,
-    extract_timestamp_ms,
-)
-from providers.order_ohlc_utils import (
-    clean_order_id,
-    extract_order_fee,
-    extract_order_qty,
-    extract_order_side,
-)
-from providers.kraken_provider import _kraken_pair_key, _kraken_pair_matches
+from kraken_client import KrakenClient
+from providers.order_ohlc_utils import clean_order_id
+from state_io import save_json_state
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
@@ -93,238 +78,32 @@ MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
 CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
-# USD-like and EUR quote assets map to symbol suffixes; all others (HYPE, BTC, etc.) are base assets.
-_QUOTE = {
-    "ZUSD": "USD", "USD": "USD", "USDC": "USDC", "USDG": "USDG",
-    "ZEUR": "EUR", "EUR": "EUR", "USDT": "USDT", "ZUSDT": "USDT",
-}
+_QUOTE = CacheTradeManager._KRAKEN_QUOTE_ASSETS
 
 
 def _match_configured_pair(symbol: str | None) -> str | None:
     """Resolve a raw or WS Kraken pair to its configured PAIRS entry (or canonical key if '*' is enabled)."""
-    if not isinstance(symbol, str):
-        return None
-    raw = symbol.strip().upper()
-    if not raw:
-        return None
-    if PAIRS and "*" not in PAIRS:
-        for configured in PAIRS:
-            if configured == raw or _kraken_pair_matches(configured, raw):
-                return configured
-        return None
-    return _kraken_pair_key(raw) or raw
+    return CacheTradeManager.match_kraken_configured_pair(symbol, pairs=PAIRS)
 
 
-def _build_kraken_cache_fill(
-    *,
-    symbol,
-    fill_id: str,
-    order_id,
-    price: float,
-    qty: float,
-    ts_ms: int,
-    is_buyer: bool | None,
-    side: str | None,
-    fee: float | None = None,
-    fee_asset: str | None = None,
-) -> dict:
-    row = {
-        "symbol": symbol,
-        "id": fill_id,
-        "orderId": order_id,
-        "price": price,
-        "qty": qty,
-        "quantity": qty,
-        "time": ts_ms,
-        "timestamp": ts_ms,
-        "isBuyer": is_buyer,
-        "side": side,
-    }
-    if fee is not None:
-        row["fee"] = fee
-        if fee_asset:
-            row["feeAsset"] = fee_asset
-    return row
-
-
-def _normalize(txid, tr):
-    """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    clean_txid = clean_order_id(txid)
-    if not isinstance(tr, dict) or clean_txid is None:
-        return {}
-    ts_ms = extract_timestamp_ms(tr, default=0) or 0
-    side = extract_order_side(tr) or None
-    is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
-    qty = extract_order_qty(tr, default=0.0)
-    price = extract_order_price(tr, default=0.0)
-    raw_oid = tr.get("ordertxid", tr.get("orderId"))
-    order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
-    raw_sym = tr.get("pair", tr.get("symbol"))
-    sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
-    fee_info = extract_order_fee(tr)
-    has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
-    return _build_kraken_cache_fill(
-        symbol=sym_val,
-        fill_id=clean_txid,
-        order_id=order_id,
-        price=price,
-        qty=qty,
-        ts_ms=ts_ms,
-        is_buyer=is_buyer,
-        side=side,
-        fee=fee_info["fee"] if has_fee else None,
-        fee_asset=fee_info["fee_asset"] if has_fee else None,
-    )
+_build_kraken_cache_fill = CacheTradeManager.build_kraken_cache_fill
+_normalize = CacheTradeManager.normalize_kraken_ws_trade
+_ledger_to_fills = CacheTradeManager.kraken_ledger_to_fills
 
 
 def _load_initial_cache(path):
     """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
-    try:
-        from cacheaccount import CacheTradeManager
-
-        return CacheTradeManager.load_sanitized_trade_snapshot(path, venue="kraken")
-    except Exception:
-        pass
-    loaded = read_json_dict(path, default=None, recover_previous=True)
-    if (
-        isinstance(loaded, dict)
-        and isinstance(loaded.get("items"), dict)
-        and isinstance(loaded.get("fetchtime"), dict)
-    ):
-        clean_items: dict[str, list[dict]] = {}
-        for k, v in loaded["items"].items():
-            if not isinstance(v, list):
-                continue
-            valid_rows: list[dict] = []
-            for row in v:
-                if not isinstance(row, dict):
-                    continue
-                clean_id = clean_order_id(row.get("id"))
-                if clean_id is None:
-                    continue
-                t_f = safe_pos_float(row.get("time"), None)
-                if t_f is None:
-                    continue
-                row_copy = dict(row)
-                row_copy["id"] = clean_id
-                row_copy["time"] = int(t_f)
-                if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
-                    parsed_ib = _parse_bool_flag(row_copy["isBuyer"], None)
-                    if parsed_ib is not None:
-                        row_copy["isBuyer"] = parsed_ib
-                    elif row_copy["isBuyer"].strip().lower() == "nan":
-                        row_copy["isBuyer"] = False
-                valid_rows.append(row_copy)
-            valid_rows.sort(key=lambda t: t["time"])
-            clean_items[str(k)] = valid_rows
-        clean_fetchtime = {}
-        for k, v in loaded["fetchtime"].items():
-            v_f = safe_nonneg_float(v, None)
-            if v_f is not None:
-                clean_fetchtime[str(k)] = v_f
-        return {
-            "items": clean_items,
-            "fetchtime": clean_fetchtime,
-        }
-    return {"items": {}, "fetchtime": {}}
-
-
-def _ledger_to_fills(ledger):
-    """Group Ledgers entries by refid into normalized fills.
-    Unify spot trades with instant-buy/convert receive/spend records: each has one BASE
-    leg and one USD-like QUOTE leg sharing a refid. Ignore single-leg staking, deposits,
-    and withdrawals. Price is |quote| / |base|; receiving base means isBuyer=True."""
-    if not isinstance(ledger, dict):
-        return []
-    by_ref = {}
-    for x in ledger.values():
-        if not isinstance(x, dict):
-            continue
-        clean_refid = clean_order_id(x.get("refid"))
-        if clean_refid is not None:
-            by_ref.setdefault(clean_refid, []).append(x)
-    fills = []
-    for refid, legs in by_ref.items():
-        if len(legs) < 2:
-            continue                                      # one leg means staking/deposit, not a trade
-        if any(str(l.get("subtype") or "").strip().lower() == "dustsweeping" for l in legs):
-            continue                                      # multi-asset small-balance sweep, not a pair trade
-        quote_legs = [
-            l for l in legs
-            if isinstance(l.get("asset"), str)
-            and l.get("asset").strip().upper() in _QUOTE
-        ]
-        base_legs = [
-            l for l in legs
-            if l not in quote_legs
-            and isinstance(l.get("asset"), str)
-            and l.get("asset").strip()
-            and l.get("asset").strip().upper() not in _QUOTE
-        ]
-        if len(quote_legs) != 1 or len(base_legs) != 1:
-            continue                                      # require 1 base leg and 1 quote leg for valid |qa|/|ba| price
-        quote = quote_legs[0]
-        base = base_legs[0]
-        if str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
-            continue
-        ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
-        qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
-        if ba is None or qa is None or ba == 0.0 or qa == 0.0:
-            continue
-        raw_base = str(base["asset"]).strip().upper()
-        if raw_base.endswith("X.T") and len(raw_base) > 3:
-            raw_base = raw_base[:-3]
-        elif raw_base.endswith((".F", ".S", ".T")) and len(raw_base) > 2:
-            raw_base = raw_base[:-2]
-        quote_ccy = _QUOTE[str(quote["asset"]).upper()]
-        raw_symbol = raw_base + quote_ccy
-        ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
-        if ts_ms <= 0:
-            continue
-        is_buyer = ba > 0
-        px = abs(qa) / abs(ba)
-        if safe_pos_float(px, default=None) is None:
-            continue
-        q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
-        b_fee = safe_nonneg_float(base.get("fee"), 0.0)
-        fee_val = q_fee if q_fee > 0 else (b_fee if b_fee > 0 else None)
-        fee_asset = quote_ccy if q_fee > 0 else (raw_base if b_fee > 0 else None)
-        fills.append(
-            _build_kraken_cache_fill(
-                symbol=raw_symbol,
-                fill_id=str(refid),
-                order_id=str(refid),
-                price=px,
-                qty=abs(ba),
-                ts_ms=ts_ms,
-                is_buyer=is_buyer,
-                side="BUY" if is_buyer else "SELL",
-                fee=fee_val,
-                fee_asset=fee_asset,
-            )
-        )
-    return fills
+    return CacheTradeManager.load_sanitized_trade_snapshot(path, venue="kraken")
 
 
 def _fetch_rest_into(client, cache):
-    """Fetch unified Ledgers data (spot + instant-buy/convert) into the per-symbol cache.
-    Used by both polling and the initial WS seed. Ledgers is the source of truth for every
-    execution because spot TradesHistory does not include instant buys."""
-    res = client._private("Ledgers", {"start": int(time.time() - LEDGER_LOOKBACK_S)}, fresh=True)
-    fills = _ledger_to_fills((res or {}).get("ledger", {}) or {})
-    now_ms = int(time.time() * 1000)
-    by_sym = {sym: [] for sym in (PAIRS or ()) if sym and sym != "*"}
-    for f in fills:
-        sym = _match_configured_pair(f.get("symbol"))
-        if sym is None:
-            continue
-        f_copy = dict(f)
-        f_copy["symbol"] = sym
-        by_sym.setdefault(sym, []).append(f_copy)
-    for sym, lst in by_sym.items():
-        lst.sort(key=lambda t: t["time"])                # ascending, so the last item is newest
-        cache["items"][sym] = lst
-        cache["fetchtime"][sym] = now_ms
+    """Fetch unified Ledgers data (spot + instant-buy/convert) into the per-symbol cache."""
+    CacheTradeManager.fetch_kraken_ledger_into_snapshot(
+        client,
+        cache,
+        pairs=PAIRS,
+        lookback_sec=LEDGER_LOOKBACK_S,
+    )
 
 
 def poll_loop(client):
@@ -353,29 +132,17 @@ def poll_loop(client):
 # Enable with KRAKEN_CACHE_MODE=ws; requires `websocket-client`.
 def _merge_rest_into(client, cache):
     """Fetch Ledgers via REST and merge incrementally into an active WS cache without losing WS fills."""
-    rest_cache = {"items": {}, "fetchtime": {}}
-    _fetch_rest_into(client, rest_cache)
-    now_ms = int(time.time() * 1000)
-    for sym, rest_items in rest_cache["items"].items():
-        bucket = cache["items"].setdefault(sym, [])
-        existing_ids = {t["id"] for t in bucket if isinstance(t, dict) and "id" in t}
-        for item in rest_items:
-            if item["id"] not in existing_ids:
-                bucket.append(item)
-                existing_ids.add(item["id"])
-        bucket.sort(key=lambda t: t["time"])
-        cache["fetchtime"][sym] = rest_cache["fetchtime"].get(sym, now_ms)
+    CacheTradeManager.merge_kraken_ledger_into_snapshot(
+        client,
+        cache,
+        pairs=PAIRS,
+        lookback_sec=LEDGER_LOOKBACK_S,
+    )
 
 
 def _touch_ws_fetchtimes(cache, now_ms=None):
     """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    now_ms = resolve_now_ms(now_ms)
-    configured = [sym for sym in (PAIRS or ()) if sym and sym != "*"]
-    for sym in configured:
-        cache["items"].setdefault(sym, [])
-        cache["fetchtime"][sym] = now_ms
-    for sym in list(cache.get("items", {}).keys()):
-        cache["fetchtime"][sym] = now_ms
+    CacheTradeManager.touch_kraken_ws_fetchtimes(cache, now_ms=now_ms, pairs=PAIRS)
 
 
 def ws_loop(client):

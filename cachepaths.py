@@ -712,6 +712,72 @@ def resolve_kraken_lookup_symbol(symbol: object) -> str:
     return f"{base}USD"
 
 
+_KRAKEN_QUOTES = (
+    "USDC",
+    "USDT",
+    "USD",
+    "EUR",
+    "GBP",
+    "CAD",
+    "JPY",
+    "AUD",
+    "BTC",
+    "XBT",
+    "ETH",
+)
+
+
+def split_kraken_pair(value: object) -> tuple[str, str]:
+    """Split a Kraken pair or bare asset into ``(canonical_base, canonical_quote)``."""
+    if not isinstance(value, str):
+        return "", ""
+    raw = value.strip()
+    key = "".join(ch for ch in raw.upper() if ch.isalnum())
+    if not key:
+        return "", ""
+    quote = next(
+        (cand for cand in _KRAKEN_QUOTES if key.endswith(cand) and len(key) > len(cand)),
+        "",
+    )
+    if not quote:
+        base_raw = raw
+    elif "/" in raw:
+        base_raw = raw.split("/", 1)[0].strip()
+    elif raw.upper().endswith(quote):
+        base_raw = raw[: -len(quote)].strip(" -_/")
+    else:
+        base_raw = key[: -len(quote)]
+    base = canonical_base_asset(base_raw) or "".join(ch for ch in base_raw.upper() if ch.isalnum())
+    if quote == "XBT":
+        quote = "BTC"
+    return base, quote
+
+
+def kraken_pair_key(value: object) -> str:
+    """Canonicalize common Kraken legacy pair wrappers for strict comparison."""
+    base, quote = split_kraken_pair(value)
+    return base + quote
+
+
+def kraken_pair_matches(expected: object, actual: object) -> bool:
+    """Return True when ``expected`` and ``actual`` refer to the same canonical Kraken pair."""
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return False
+    b_exp, q_exp = split_kraken_pair(expected)
+    b_act, q_act = split_kraken_pair(actual)
+    if not b_exp or not b_act or b_exp != b_act:
+        return False
+    if q_exp and q_act:
+        return q_exp == q_act
+    return True
+
+
+_split_kraken_pair = split_kraken_pair
+_kraken_pair_key = kraken_pair_key
+_kraken_pair_matches = kraken_pair_matches
+
+
+
 def resolve_cache_dir_path(cache_dir: object, *, fallback_default: bool = False) -> str | None:
     """Resolve a collector ``cache_dir`` argument (e.g. ``'cachedb'``) to its effective directory path."""
     raw = _clean_path_str(cache_dir)
