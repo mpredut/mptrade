@@ -42,7 +42,7 @@ vpn_healthy() {
 
     local binance_ip=""
     if command -v resolvectl >/dev/null 2>&1; then
-        binance_ip=$(timeout 4 resolvectl query --cache=no api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+        binance_ip=$(timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
     else
         binance_ip=$(timeout 4 getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
     fi

@@ -75,7 +75,7 @@ vpn_healthy() {
     [ "$(pia get connectionstate)" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
     if command -v resolvectl >/dev/null 2>&1; then
-        timeout 4 resolvectl query --cache=no api.binance.com >/dev/null 2>&1 || return 1
+        timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com >/dev/null 2>&1 || return 1
     fi
     curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
         --fail --silent https://api.binance.com/api/v3/time >/dev/null 2>&1 || return 1
