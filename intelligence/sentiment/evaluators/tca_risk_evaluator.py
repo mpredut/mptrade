@@ -112,24 +112,11 @@ def _resolve_venue_fee_and_limits_impl(
 
     cached_meta: Dict[str, Any] = {}
     if inst is not None:
-        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
-        if callable(inst_hook):
-            try:
-                res = inst.cached_fee_and_limits(price=px_f)
-                if isinstance(res, dict):
-                    cached_meta = res
-            except Exception:
-                cached_meta = {}
-        if not cached_meta:
-            prov = getattr(inst, "provider", None)
-            if prov is None or isinstance(prov, str):
-                prov = getattr(inst, "_provider", None)
-            if prov is not None:
-                from providers.base import MarketDataProvider
+        from instrument import Instrument
 
-                cached_meta = MarketDataProvider.resolve_provider_cached_fee_and_limits(
-                    v_norm, symbol, prov, price=px_f
-                )
+        cached_meta = Instrument.resolve_cached_fee_and_limits(
+            inst, v_norm, symbol, price=px_f
+        )
     if cached_meta:
         maker_bps = float(safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps))
         taker_bps = float(safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps))

@@ -1375,6 +1375,37 @@ class Instrument:
             price=price,
         )
 
+    @classmethod
+    def resolve_cached_fee_and_limits(
+        cls,
+        inst: Any,
+        venue: str,
+        symbol: str,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
+        """Resolve cached fee and limit metadata from an ``Instrument`` or compatible stub."""
+        if inst is None:
+            return {}
+        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
+        if callable(inst_hook):
+            try:
+                res = inst.cached_fee_and_limits(price=price)
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+        prov = getattr(inst, "provider", None)
+        if prov is None or isinstance(prov, str):
+            prov = getattr(inst, "_provider", None)
+        if prov is None:
+            return {}
+        from providers.base import MarketDataProvider
+
+        return MarketDataProvider.resolve_provider_cached_fee_and_limits(
+            venue, symbol, prov, price=price
+        )
+
     # ── params namespaced (mt.* / tradeall.* / rtrade.* / execution.*) ──────────
     def param(self, consumer: str, key: str, default: Any = None,
               cast: Optional[Callable] = None) -> Any:
