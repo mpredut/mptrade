@@ -13,7 +13,14 @@ if [ "${1:-local}" = "remote" ] || [ "${1:-}" = "trigger" ]; then
     echo "[trigger $(date '+%F %T')] 1/3 sync dev (code+data)"
     "$REPO_ROOT/offline/runners/sync_cache_to.sh" dev
     echo "[trigger $(date '+%F %T')] 2/3 running the backtest cycle on dev"
-    DEV_SSH_TIMEOUT=10 dev_ssh "PILOT_ONLY='${PILOT_ONLY:-}' ~/$DEV_PATH/offline/runners/run_backtest_cycle.sh local"
+    rc_dev=0
+    DEV_SSH_TIMEOUT=10 dev_ssh "PILOT_ONLY='${PILOT_ONLY:-}' ~/$DEV_PATH/offline/runners/run_backtest_cycle.sh local" || rc_dev=$?
+    if [ "$rc_dev" -eq 75 ]; then
+        echo "[trigger $(date '+%F %T')] DEV cycle already in progress (rc=75) -- skipping apply_proposals on PROD."
+        exit 0
+    elif [ "$rc_dev" -ne 0 ]; then
+        exit "$rc_dev"
+    fi
     echo "[trigger $(date '+%F %T')] 3/3 apply proposals on PROD (guardrails: rate-limit/average/audit)"
     "$PYTHON_BIN" offline/runners/apply_proposals.py
     echo "[trigger $(date '+%F %T')] done."
@@ -22,7 +29,7 @@ fi
 
 ONLY="${PILOT_ONLY:-}"
 exec 9>"/tmp/mptrade_backtest_cycle.lock"
-flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running — skipping"; exit 0; }
+flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running -- skipping"; exit 75; }
 
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)
@@ -48,7 +55,10 @@ if ! git -C "$REPO_ROOT" worktree list --porcelain | grep -q "worktree $WT"; the
     git -C "$REPO_ROOT" worktree add -q -b "$BRANCH" "$WT" origin/main
   fi
 else
-  timeout 30 git -C "$WT" pull -q --ff-only origin "$BRANCH" 2>/dev/null || true
+  timeout 30 git -C "$WT" fetch -q origin "$BRANCH" 2>/dev/null || true
+  if git -C "$WT" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    git -C "$WT" checkout -q -B "$BRANCH" "origin/$BRANCH"
+  fi
 fi
 
 cp "$SRC_FILE" "$WT/backtest_proposals.json"

@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
 A monitortrades.py backtest (Phase 1, step 2 of UNIFIED_BACKTEST_PLAN.md) over
-istoric REAL BTC/TAO, folosind ReplayMarketDataProvider — raspunde la
+real BTC/TAO history, using ReplayMarketDataProvider -- evaluates
 candidates #4-5 from BACKTEST_CANDIDATES.md: are the per-symbol gain/lost/maxage
-(instruments.conf) buni?
+(instruments.conf) values well calibrated?
 
-Methodology (necessary, not an artefact): monitor_price_and_trade() MANAGES an
-an EXISTING position — it never initiates the first BUY without a prior SELL to
+Methodology (necessary, not an artefact): monitor_price_and_trade() MANAGES
+an EXISTING position -- it never initiates the first BUY without a prior SELL
 to react to (verified in the code: `if not (trade_orders_buy or
-trade_orders_sell): return`). Un backtest "de la zero" ar sta degeaba tot
-time. We simulate holding a position CONTINUOUSLY: every time there is NO
-there is NO trade (BUY or SELL) at all in the age window
-(mt.maxage_days) — that is, a cycle has just closed (normal TP or HARD-TP)
-OR the previous position "expired" with nothing happening — it is re-seeded
-a new BUY at the current price, with the same fixed notional. That produces MANY
+trade_orders_sell): return`). A cold-start backtest would stay idle the entire
+time. We simulate holding a position CONTINUOUSLY: every time the position is
+flat and there is NO trade (BUY or SELL) at all in the age window
+(mt.maxage_days) -- that is, a cycle has closed and aged out -- a new BUY is
+re-seeded at the current price with the same fixed notional. That produces many
 independent cycles over 329 days (not just one), comparable as a method
 with the Kraken/tradeall sweeps from the same session.
 
 It uses the REAL values from instruments.conf (not arbitrary constants):
-  BTCUSDC: gain=7.0% lost=3.3% maxage=7z hardtp=17%/0.5/6h
-  TAOUSDC: gain=9.2% lost=4.9% maxage=17z hardtp=17%/0.5/6h
+  BTCUSDC: gain=7.0% lost=3.3% maxage=7d hardtp=17%/0.5/6h
+  TAOUSDC: gain=9.2% lost=4.9% maxage=17d hardtp=17%/0.5/6h
 
 It does NOT modify monitortrades.py or instruments.conf on disk. It never touches
 the network (ReplayMarketDataProvider reads only from cachedb/cache_price_*.jsonl).
 
-Rulare: python3 offline/research/monitortrades_backtest/run_replay_backtest.py
+Usage: python3 offline/research/monitortrades_backtest/run_replay_backtest.py
 """
 import argparse
+from bisect import bisect_left
 import math
 from multiprocessing import Pool
 import os
@@ -49,6 +49,7 @@ from providers.replay_provider import (
 )
 from providers.market_api import MarketApi
 from instrument import Instrument
+from intelligence.internal.state.volatility import calculate_volatility_1h
 import monitortrades as mt
 import pricewindow as pw
 from offline.research.monitortrades_backtest.replay_trend_source import (
@@ -301,10 +302,30 @@ def run_symbol(
         ):
             st_dict.pop(sym, None)
 
+    series_ts: list[float] | None = None
+
+    def _replay_get_vol_1h(sym):
+        nonlocal series_ts
+        if sym != symbol or not series or tick_idx < 10:
+            return None
+        if series_ts is None:
+            series_ts = [float(item[0]) for item in series]
+        hi = min(tick_idx + 1, len(series))
+        cur_t = series_ts[hi - 1]
+        lo = bisect_left(series_ts, cur_t - 3600.0, 0, hi)
+        if hi - lo < 10:
+            return None
+        dt_span = cur_t - series_ts[lo]
+        if dt_span <= 0:
+            return None
+        sample_rate = dt_span / float(hi - lo - 1)
+        win_prices = [float(series[k][1]) for k in range(lo, hi)]
+        return calculate_volatility_1h(win_prices, sample_rate_sec=sample_rate)
+
     with backtest_isolation_context(quiet=quiet):
         try:
             mt.is_trend_up = _replay_is_trend_up
-            mt.get_symbol_volatility_1h = lambda s: None
+            mt.get_symbol_volatility_1h = _replay_get_vol_1h
             mt._MT_PERSISTENCE_ENABLED = False
             mt._apply_post_stop_ai_guard = (
                 lambda sym, px, spx, st, snap, bb, bq, q, inst=None: (True, bb, bq, q)
@@ -369,6 +390,7 @@ def run_symbol(
                             if dd_ratio < min_trail_trigger_ratio:
                                 min_trail_trigger_ratio = dd_ratio
                             provider.place_order(symbol, "SELL", price, open_qty)
+                            mt._resolve_exit(symbol, inst, kind="TP")
                             trail_peak = price
                             continue
                         elif dd_ratio > max_untriggered_trail_ratio:
@@ -377,7 +399,7 @@ def run_symbol(
                     trail_peak = price
 
                 now_s = provider.now(symbol)
-                if not provider.has_orders_since(symbol, maxage_s):
+                if open_qty <= _cfg_min_qty and not provider.has_orders_since(symbol, maxage_s):
                     provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
                     trail_peak = price
                     n_seeds += 1
@@ -395,7 +417,7 @@ def run_symbol(
                 ):
                     if not _fast_has_sells:
                         if from_disk and n_ticks % 20000 == 0:
-                            sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                            sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
                         continue
                     reentry_st = mt._REENTRY_STATE.get(symbol)
                     if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
@@ -417,7 +439,7 @@ def run_symbol(
                             if price > reentry_st["peak"]:
                                 reentry_st["peak"] = price
                             if from_disk and n_ticks % 20000 == 0:
-                                sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                                sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
                             continue
 
                 mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=_now_fn)
@@ -481,7 +503,7 @@ def run_symbol(
                         _fast_ver = cur_ver
 
                 if from_disk and n_ticks % 20000 == 0:
-                    sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                    sys.stderr.write(f"[{symbol}] {n_ticks} ticks, seeds={n_seeds}\n")
             if cached_tape is None and len(recorded_tape) == len(series):
                 _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
             _LAST_HARD_TP_TOUCHED[tape_key] = hard_tp_touched
@@ -512,14 +534,14 @@ def run_symbol(
     net = total_sold - total_bought + open_value - fees
 
     bh_qty = SEED_NOTIONAL_USD / first_price
-    buy_hold_net = (last_price - first_price) * bh_qty - 2 * bh_qty * first_price * FEE_PCT / 100
+    buy_hold_net = (last_price - first_price) * bh_qty - (first_price + last_price) * bh_qty * FEE_PCT / 100
 
     result = dict(symbol=symbol, ticks=n_ticks, seeds=n_seeds, buys=len(all_buys), sells=len(all_sells),
                   net=round(net, 2), buy_hold=round(buy_hold_net, 2),
                   first_price=first_price, last_price=last_price,
                   trend_window_sec=trend_window_seconds)
     if from_disk:
-        sys.stderr.write(f"[{symbol}] REZULTAT: {result}\n")
+        sys.stderr.write(f"[{symbol}] RESULT: {result}\n")
     return result
 
 
@@ -533,10 +555,10 @@ if __name__ == "__main__":
     ap.add_argument("--symbol", choices=list(SYMBOLS._SECTIONS), default=None,
                      help="run ONLY this symbol (default: BTCUSDC + TAOUSDC)")
     ap.add_argument("--trend-window-sec", type=float, default=DEFAULT_WINDOW_SECONDS,
-                     help=f"orizontul ferestrei pt ReplayTrendSource (secunde), implicit "
-                          f"{DEFAULT_WINDOW_SECONDS:.0f}s (~instant, 3.7min, what is read by "
-                          f"is_trend_up() azi pe live). Pt teste A/B: mic 60-420 (1-7 min), "
-                          f"mediu 5400-21600 (1.5-6h, ca slope_big al lui tradeall).")
+                     help=f"window horizon for ReplayTrendSource (seconds), default "
+                          f"{DEFAULT_WINDOW_SECONDS:.0f}s (~3.7 min, matching live "
+                          f"is_trend_up()). For A/B tests: short 60-420 (1-7 min), "
+                          f"medium 5400-21600 (1.5-6h, matching tradeall slope_big).")
     args = ap.parse_args()
 
     targets = [args.symbol] if args.symbol else list(SYMBOLS._SECTIONS)

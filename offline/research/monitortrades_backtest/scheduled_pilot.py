@@ -36,6 +36,7 @@ Running it by hand (recommended before putting it on cron):
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 import concurrent.futures as _futures
 import json
 import math
@@ -220,6 +221,14 @@ def _split_series(symbol):
     path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
     series = load_price_series(path, symbol)
     mid = len(series) // 2
+    if len(series) >= 4 and isinstance(series[0], (tuple, list)) and isinstance(series[-1], (tuple, list)):
+        t0 = safe_float(series[0][0], default=None)
+        t1 = safe_float(series[-1][0], default=None)
+        if t0 is not None and t1 is not None and t1 > t0:
+            mid_ts = 0.5 * (t0 + t1)
+            ts_mid = bisect_left(series, mid_ts, key=lambda item: float(item[0]))
+            if 0 < ts_mid < len(series):
+                mid = ts_mid
     res = (series[:mid], series[mid:])
     if hasattr(rb, "prewarm_trend_series"):
         rb.prewarm_trend_series(symbol, res[0])
@@ -425,10 +434,10 @@ def _apply_config_change(section, key, old_value, new_value):
 
 
 def _restart_monitortrades():
-    """Kills the live process — the flota_start.sh supervisor restarts it
+    """Kills the live process -- the flota_start.sh supervisor restarts it
     automatically (the same mechanism used by hand throughout the session)."""
     try:
-        out = subprocess.run(["pgrep", "-f", "python monitortrades.py"],
+        out = subprocess.run(["pgrep", "-f", r"python.*monitortrades\.py"],
                               capture_output=True, text=True, timeout=5)
         pids = [p for p in out.stdout.split() if p.isdigit()]
         for pid in pids:
@@ -501,8 +510,14 @@ def main():
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
 
+    hard_tp_globally_enabled = bool(getattr(rb.mt, "HARD_TP_ENABLED", False))
+    active_keys = {
+        fk: v for fk, v in keys.items()
+        if hard_tp_globally_enabled or not v[2].startswith("mt.hardtp")
+    }
+
     # Preload price series and trend tapes once in parent process so forked workers share them via COW.
-    unique_sym_base = sorted({(sym, base) for sym, base, _key in keys.values()})
+    unique_sym_base = sorted({(sym, base) for sym, base, _key in active_keys.values()})
     for sym, _base in unique_sym_base:
         _split_series(sym)
 
@@ -545,7 +560,7 @@ def main():
             base_cd_s = safe_float(base_params.get("mt.hardtp_cooldown_h"), 6.0) * 3600.0
             base_tr = safe_float(base_params.get("trailing.pct"), 0.0)
             base_tr_r = base_tr / 100.0
-            for fk, (k_sym, _k_base, k_name) in keys.items():
+            for fk, (k_sym, _k_base, k_name) in active_keys.items():
                 if k_sym != sym:
                     continue
                 for gv in all_ranges.get(fk, ()):
@@ -585,7 +600,7 @@ def main():
     # sorted by descending series length so no single worker is left with a long tail.
     pending_tasks = []
     seen_task_cks = set()
-    for fk, (sym, base, key) in keys.items():
+    for fk, (sym, base, key) in active_keys.items():
         grid_values = all_ranges.get(fk)
         if not grid_values:
             continue
@@ -634,6 +649,14 @@ def main():
 
     entries = {}
     for fk, (sym, base, key) in keys.items():
+        if fk not in active_keys:
+            entries[fk] = {
+                "full_key": fk,
+                "symbol": sym,
+                "action": "skipped",
+                "reason": "hard_tp_disabled_globally",
+            }
+            continue
         try:
             entries[fk] = evaluate_key(fk, sym, base, key, args.dry_run, args.propose)
         except Exception as exc:  # noqa: BLE001

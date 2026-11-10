@@ -36,7 +36,7 @@ from state_io import read_text_lines
 
 _SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$')
 _BACKTEST_RE = re.compile(r'^\s*#\s*BACKTEST:\s*(.+?)\s*$')
-_KEY_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$')
+_KEY_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=\s*(.*?)\s*$')
 
 
 def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:

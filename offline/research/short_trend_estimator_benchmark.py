@@ -52,23 +52,33 @@ def _set_data_dir(path):
 
 def load_series(sym):
     """Return (ts_sec, px) from <D>/cache_365_price_<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
-    npz = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
-    if os.path.exists(npz):
-        with np.load(npz) as z:
+    npz_365 = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
+    if os.path.exists(npz_365):
+        with np.load(npz_365) as z:
             return z["ts"], z["px"]
     ts, px = [], []
     sym_cands = cache_symbol_variants(sym)
-    jsonl_path = next(
-        (
-            p
-            for cand in sym_cands
-            for prefix in ("cache_365_price_", "cache_sparse_price_")
-            if os.path.exists(p := str(resolve_cachedb_filepath(os.path.join(D, f"{prefix}{cand}.jsonl"))))
-        ),
-        None,
-    )
+    chosen_prefix = None
+    jsonl_path = None
+    for prefix in ("cache_365_price_", "cache_sparse_price_"):
+        for cand in sym_cands:
+            p = str(resolve_cachedb_filepath(os.path.join(D, f"{prefix}{cand}.jsonl")))
+            if os.path.exists(p):
+                chosen_prefix = prefix
+                jsonl_path = p
+                break
+        if jsonl_path:
+            break
     if not jsonl_path:
         return np.empty(0), np.empty(0)
+    npz_target = (
+        npz_365
+        if chosen_prefix == "cache_365_price_"
+        else str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.npz")))
+    )
+    if chosen_prefix != "cache_365_price_" and os.path.exists(npz_target):
+        with np.load(npz_target) as z:
+            return z["ts"], z["px"]
 
     valid_syms = set(sym_cands) | {sym}
     for r in read_jsonl_dicts(jsonl_path):
@@ -89,7 +99,7 @@ def load_series(sym):
     ts, px = ts[o], px[o]
     keep = np.concatenate(([True], np.diff(ts) > 0))
     ts, px = ts[keep], px[keep]
-    np.savez(npz, ts=ts, px=px)
+    np.savez(npz_target, ts=ts, px=px)
     return ts, px
 
 
@@ -148,17 +158,18 @@ def noise_gate(sig, px, win=N_WIN, k=0.25, eps=None):
     return np.where(np.abs(sig) > k * eps, sig, 0.0)
 
 
-def platt_scale(sig, thr=0.6):
-    """Parametric sigmoid confidence gating: maps normalized slope to probability."""
-    s_std = np.std(sig)
+def platt_scale(sig, thr=0.6, fit_end: int | None = None):
+    """Parametric sigmoid confidence gating: maps normalized slope to probability (fit strictly on IS)."""
+    fit_slice = sig[:fit_end] if (fit_end is not None and fit_end > 0) else sig
+    s_std = np.std(fit_slice) if len(fit_slice) > 0 else 0.0
     if s_std <= 1e-12:
         return sig
-    z = sig / s_std
+    z = np.clip(sig / s_std, -60.0, 60.0)
     prob = 1.0 / (1.0 + np.exp(-z))
     return np.where(prob >= thr, sig, np.where(prob <= 1.0 - thr, sig, 0.0))
 
 
-def build_candidates(px):
+def build_candidates(px, fit_end: int | None = None):
     """Yield (name, signal) lazily to keep memory bounded on 6.8M-tick series."""
     only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
     want = (lambda n: (not only) or n in only)
@@ -186,7 +197,7 @@ def build_candidates(px):
             if want(cname):
                 if base_sig is None:
                     base_sig = step_wols(px, p)
-                yield cname, platt_scale(base_sig, thr=p_thr)
+                yield cname, platt_scale(base_sig, thr=p_thr, fit_end=fit_end)
 
 
 def fwd_index(ts, h):
@@ -272,7 +283,7 @@ def evaluate(sym):
         return j
 
     res = {}
-    for cname, sig in build_candidates(px):
+    for cname, sig in build_candidates(px, fit_end=i_split):
         out = {}
         sgn = np.sign(sig)
         for sname, (lo, hi) in segs.items():
@@ -369,18 +380,23 @@ def main():
                 continue
             cells = []
             for s in ("IS", "OOS"):
-                comps = []
-                for ci in range(3):
-                    d = res[c][s]["raw"][ci] - res[base][s]["raw"][ci]
-                    comps.append(d)
-                point = sum(_safe_mean(d) for d in comps)
+                d_buy = res[c][s]["raw"][0] - res[base][s]["raw"][0]
+                d_sell = res[c][s]["raw"][1] - res[base][s]["raw"][1]
+                d_ride = res[c][s]["raw"][2] - res[base][s]["raw"][2]
+                point = _safe_mean(d_buy) + _safe_mean(d_sell) + _safe_mean(d_ride)
                 boots = np.zeros(2000)
-                for d in comps:
-                    if len(d) > 0:
-                        idx = rng.integers(0, len(d), size=(2000, len(d)))
-                        boots += d[idx].mean(axis=1)
-                    else:
-                        boots += np.nan
+                if len(d_buy) > 0:
+                    idx_b = rng.integers(0, len(d_buy), size=(2000, len(d_buy)))
+                    boots += d_buy[idx_b].mean(axis=1)
+                else:
+                    boots += np.nan
+                # Pair sell_sav and ride on their shared rally trigger indices to preserve covariance
+                if len(d_sell) > 0 and len(d_sell) == len(d_ride):
+                    d_rally = d_sell + d_ride
+                    idx_r = rng.integers(0, len(d_rally), size=(2000, len(d_rally)))
+                    boots += d_rally[idx_r].mean(axis=1)
+                else:
+                    boots += np.nan
                 lo, hi = np.percentile(boots, [2.5, 97.5])
                 cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
             print(f"{sym:<8} {c:<24} " + " | ".join(cells))

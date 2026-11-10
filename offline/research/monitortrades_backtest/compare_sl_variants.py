@@ -25,7 +25,7 @@ def main():
         ("PROPOSED (structural break ON)", True),
         ("BASELINE (structural break OFF)", False),
     ]
-    use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+    use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), True)
     series_map = {sym: load_archive_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
     for sym, series in series_map.items():
         if series:

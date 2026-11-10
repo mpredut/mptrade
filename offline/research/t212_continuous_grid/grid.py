@@ -23,7 +23,7 @@ if REPO not in sys.path:
 from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_module  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 rp = load_venue_module("212trading", "replay.py", "t212_replay_grid")
@@ -53,10 +53,10 @@ VARIANTS = {
     "reentry0": ({"STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
     "reentry5": ({"STRAT_REENTRY_DROP_PCT": "5", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
     "reentry_peak": ({"STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
-    "tp3": ({"STRAT_TAKEPROFIT_PCT": "3", "STRAT_TP_LADDER": ""}, 0),
-    "tp5": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": ""}, 0),
-    "tp8": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": ""}, 0),
-    "tp12": ({"STRAT_TAKEPROFIT_PCT": "12", "STRAT_TP_LADDER": ""}, 0),
+    "tp3": ({"STRAT_TAKEPROFIT_PCT": "3", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
+    "tp5": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
+    "tp8": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
+    "tp12": ({"STRAT_TAKEPROFIT_PCT": "12", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "ladder": ({"STRAT_TP_LADDER": "11:33,20:33,30:34", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "dca3": ({"STRAT_DCA_DROP_PCT": "3"}, 0),
     "dca5": ({"STRAT_DCA_DROP_PCT": "5"}, 0),
@@ -64,16 +64,16 @@ VARIANTS = {
     "sl15": ({"STRAT_STOP_LOSS_PCT": "15"}, 0),
     "trail8": ({"STRAT_TRAIL_PCT": "8", "STRAT_TRAIL_MIN_PROFIT_PCT": "9", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "trail_off": ({"STRAT_TRAIL_PCT": "0", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
-    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
-    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_STOP_LOSS_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
-    "tp5_reentry0_sl0": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "",
+    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
+    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
+    "tp5_reentry0_sl0": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false",
                           "STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0"}, 0),
 }
 # Factorial: take-profit x re-entry rule x stop-loss ("live" keeps the profile's value).
 for _tp in ("1.5", "3", "5", "8", "12", "20"):
     for _re in ("live", "0", "peak"):
         for _sl in ("live", "0"):
-            _over = {"STRAT_TAKEPROFIT_PCT": _tp, "STRAT_TP_LADDER": ""}
+            _over = {"STRAT_TAKEPROFIT_PCT": _tp, "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}
             if _re == "0":
                 _over["STRAT_REENTRY_DROP_PCT"] = "0"
                 _over["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
@@ -104,7 +104,6 @@ def load(asset, itv):
     _LOAD_CACHE[key] = res
     if res is not None:
         ohlc_list = [b[1:] for b in res]
-        prewarm_trend_series(ohlc_list, warmup=WARM, bar_minutes=60.0 if itv == "1h" else 1440.0)
         _SPLIT_CACHE[key] = (ohlc_list, [b[0] for b in res])
     else:
         _SPLIT_CACHE[key] = (None, None)

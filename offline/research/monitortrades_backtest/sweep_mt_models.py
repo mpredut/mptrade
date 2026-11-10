@@ -229,9 +229,15 @@ def compute_all_signals(
     N = len(series)
     ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=N)
     px = np.fromiter((p for _, p in series), dtype=np.float64, count=N)
-    a, sr = compute_window_bounds(ts, win_sec=win_sec)
+    eff_win_sec = win_sec
+    if symbol and np.isclose(win_sec, rrb.DEFAULT_WINDOW_SECONDS, rtol=0.0, atol=1e-6):
+        fast_w = pw.fast_trend_window_for_symbol(symbol)
+        if fast_w is not None and fast_w > 0.0:
+            eff_win_sec = float(fast_w)
+    a, sr = compute_window_bounds(ts, win_sec=eff_win_sec)
+    rec_win = pw.effective_recent_gradient_seconds(eff_win_sec)
     return compute_window_signals_from_bounds(
-        px, a, sr, symbol=symbol, recent_win_sec=None, min_valid_n=2
+        px, a, sr, symbol=symbol, recent_win_sec=rec_win, min_valid_n=2
     )
 
 

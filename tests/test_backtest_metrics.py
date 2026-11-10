@@ -664,5 +664,47 @@ class HypeCandidatesTest(unittest.TestCase):
         )
 
 
+def test_backtest_ranges_accepts_empty_valued_key(tmp_path):
+    cfg = tmp_path / "empty.env"
+    cfg.write_text("# BACKTEST: 2:50,4:50, 3:50,6:50\nSTRAT_TP_TRANCHES=\n", encoding="utf-8")
+    assert scan_backtest_ranges(str(cfg)) == {"STRAT_TP_TRANCHES": ["2:50", "4:50", "3:50", "6:50"]}
+
+
+def test_short_trend_benchmark_sparse_fallback_does_not_poison_365_npz(tmp_path, monkeypatch):
+    import numpy as np
+    import offline.research.short_trend_estimator_benchmark as st_bench
+
+    sparse_file = tmp_path / "cache_sparse_price_SPARSECOIN.jsonl"
+    sparse_file.write_text(
+        '{"s": "SPARSECOIN", "i": [1700000000000, 100.0]}\n'
+        '{"s": "SPARSECOIN", "i": [1700000300000, 101.5]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(st_bench, "D", str(tmp_path))
+    monkeypatch.setattr(st_bench, "resolve_cachedb_filepath", lambda p: p)
+    ts, px = st_bench.load_series("SPARSECOIN")
+    assert len(ts) == 2 and len(px) == 2
+    assert not (tmp_path / "cache_365_price_SPARSECOIN.npz").exists()
+    assert (tmp_path / "cache_sparse_price_SPARSECOIN.npz").exists()
+
+    # IS-only Platt scaling ignores OOS extreme spikes
+    sig = np.array([0.05, -0.05, 0.08, -0.08, 1000.0, -1000.0], dtype=np.float64)
+    gated_is = st_bench.platt_scale(sig, thr=0.60, fit_end=4)
+    assert gated_is[2] != 0.0
+
+
+def test_chop_weight_backtest_zero_trade_pf_and_asof_btc_lookup():
+    from offline.research import chop_weight_backtest as cwb
+
+    empty_stats = cwb.run_single_simulation("TAOUSDC", [], None, "CHOP_0.03")
+    assert empty_stats.profit_factor == 0.0
+
+    # Unaligned BTC timestamps (offset by 500s across 900s bucket boundary) still resolve as-of BTC regime
+    sampled_alt = [(10_000.0 + i * 900.0, 100.0 + (i % 3) * 0.1) for i in range(40)]
+    sampled_btc = [(9_800.0 + i * 900.0, 50_000.0 + i * 250.0) for i in range(40)]
+    tape = cwb._precompute_chop_bar_tape("TAOUSDC", sampled_alt, sampled_btc, step_seconds=900)
+    assert any(bar["btc_regime"] == "BULL" for bar in tape)
+
+
 if __name__ == "__main__":
     unittest.main()

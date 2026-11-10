@@ -78,7 +78,7 @@ CONFIGS = {
     # A. baselines
     "live": (LIVE, 0), "old_live_pre0923": (OLD, 0),
     # B. ablation of the 23 Sep promotion (live with ONE change reverted)
-    "abl_tp5": (R(LIVE, takeprofit_pct=5.0), 0),
+    "abl_tp5": (R(LIVE, takeprofit_pct=5.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
     "abl_spacing0": (R(LIVE, dca_spacing_growth_pct=0.0), 0),
     "abl_trail_fixed": (R(LIVE, tp_mdhtp_enabled=False, tp_trail_adaptive=False), 0),
     "abl_gate_off": (R(LIVE, tp_regime_gate=False), 0),
@@ -104,8 +104,9 @@ CONFIGS = {
     "sl0": (R(LIVE, stop_loss_pct=0.0), 0), "sl8": (R(LIVE, stop_loss_pct=8.0), 0),
     "sl25": (R(LIVE, stop_loss_pct=25.0), 0),
     # F. take profit
-    "tp3": (R(LIVE, takeprofit_pct=3.0), 0), "tp6": (R(LIVE, takeprofit_pct=6.0), 0),
-    "tp8": (R(LIVE, takeprofit_pct=8.0), 0),
+    "tp3": (R(LIVE, takeprofit_pct=3.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
+    "tp6": (R(LIVE, takeprofit_pct=6.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
+    "tp8": (R(LIVE, takeprofit_pct=8.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
     "tp_classic": (R(LIVE, tp_trend_hold=False, tp_mdhtp_enabled=False), 0),
     # G. DCA spacing
     "dca0.75": (R(LIVE, dca_drop_pct=0.75), 0), "dca1.5": (R(LIVE, dca_drop_pct=1.5), 0),
@@ -117,7 +118,7 @@ CONFIGS = {
     "dca_vol_p1": (R(LIVE, dca_vol_scale_k=1.0, dca_vol_ref=2.0), 0),
 }
 
-W30, W90, WSTEP, WARM = 180, 540, 180, 40
+W30, W90, WSTEP, WARM = 180, 540, 180, 42
 
 
 _LOAD_CACHE: dict = {}

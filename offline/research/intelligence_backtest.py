@@ -10,6 +10,7 @@ Coverage:
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import asdict, dataclass
 import logging
 import os
@@ -97,10 +98,18 @@ def _precompute_intelligence_tape(
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
 
     rolling_prices: List[float] = []
+    rolling_ts: List[float] = []
     rolling_history: List[Tuple[float, float]] = []
+    max_roll_bars = max(300, int(round(18000.0 / step_seconds)) + 4)
     current_trend = "FLAT"
     trend_start_ts: Optional[float] = None
     tape: List[dict] = []
+
+    def _price_asof(target_ts: float, fallback_first: bool = False) -> float:
+        idx = bisect_right(rolling_ts, target_ts) - 1
+        if idx >= 0:
+            return rolling_prices[idx]
+        return rolling_prices[0] if fallback_first else rolling_prices[-1]
 
     for raw_t, raw_p in sampled:
         t = safe_float(raw_t, default=None)
@@ -110,9 +119,11 @@ def _precompute_intelligence_tape(
         if trend_start_ts is None:
             trend_start_ts = t
         rolling_prices.append(p)
+        rolling_ts.append(t)
         rolling_history.append((t, p))
-        if len(rolling_prices) > 300:
+        if len(rolling_prices) > max_roll_bars:
             rolling_prices.pop(0)
+            rolling_ts.pop(0)
             rolling_history.pop(0)
 
         n_roll = len(rolling_prices)
@@ -129,10 +140,12 @@ def _precompute_intelligence_tape(
             current_trend = new_trend
             trend_start_ts = t
 
-        p_15m = rolling_prices[-3] if n_roll >= 3 else p
-        p_30m = rolling_prices[-6] if n_roll >= 6 else p
-        p_1h = rolling_prices[-12] if n_roll >= 12 else rolling_prices[0]
-        p_4h = rolling_prices[-48] if n_roll >= 48 else rolling_prices[0]
+        p_15m = _price_asof(t - 900.0, fallback_first=False)
+        p_30m = _price_asof(t - 1800.0, fallback_first=False)
+        p_1h = _price_asof(t - 3600.0, fallback_first=True)
+        p_4h = _price_asof(t - 14400.0, fallback_first=True)
+        bars_4h = max(48, int(round(14400.0 / step_seconds)))
+        prior_20 = rolling_prices[-21:-1] if n_roll >= 21 else rolling_prices[:-1]
 
         tape.append({
             "t": t,
@@ -144,8 +157,8 @@ def _precompute_intelligence_tape(
             "p_dec": p_dec,
             "current_trend": current_trend,
             "trend_duration_sec": max(0.0, t - trend_start_ts),
-            "recent_high_20": max(rolling_prices[-20:]) if n_roll >= 20 else 0.0,
-            "local_high_48": max(rolling_prices[-48:]) if n_roll >= 48 else 0.0,
+            "recent_high_20": max(prior_20) if n_roll >= 20 and prior_20 else 0.0,
+            "local_high_48": max(rolling_prices[-bars_4h:]) if n_roll >= min(48, bars_4h) else 0.0,
             "drop_15m": (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0,
             "drop_30m": (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0,
             "p_1h_pct": (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0,
@@ -247,8 +260,8 @@ def run_intelligence_backtest(
             current_trend = bar["current_trend"]
             trend_duration_sec = bar["trend_duration_sec"]
 
-            # Current equity
-            equity = usd + (asset_qty * p)
+            # Current equity (net of exit fee to match liquidation equity)
+            equity = usd + (asset_qty * p * (1.0 - fee_pct))
             if equity > peak_equity:
                 peak_equity = equity
             dd = ((peak_equity - equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
@@ -301,6 +314,7 @@ def run_intelligence_backtest(
             elif want_buy and asset_qty == 0 and usd > 50.0:
                 scale = 1.0
 
+                # Phase A: Hard-veto guards first (so downscale counters only reflect surviving orders)
                 if use_p1:
                     # 1. Noise Floor Guard (Defers momentum/trend buys during dead chop)
                     if not is_mean_reversion:
@@ -317,24 +331,9 @@ def run_intelligence_backtest(
                         parabolic_vetoes += 1
                         continue
 
-                    # 3. Weibull Trend Exhaustion Guard (Aging trend downscale)
-                    if trend_duration_sec > 0:
-                        e_dec = exhaustion_guard.check(
-                            symbol,
-                            "BUY",
-                            trend_duration_sec,
-                            p90_days=p90_days,
-                            median_days=median_days,
-                        )
-                        if not e_dec.allowed:
-                            continue
-                        if e_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            weibull_downscales += 1
-                            scale *= e_dec.suggested_scale
-
                 if use_full:
-                    # 8. Geopolitical Shock Guard (Black Swan flash dump veto)
-                    if bar["drop_30m"] >= 3.5:
+                    # 3. Geopolitical Shock Guard (Macro Black Swan / multi-hour shock circuit breaker)
+                    if bar["drop_30m"] >= 3.5 or bar["p_4h_pct"] <= -5.0:
                         geo_assessment = GeopoliticalThreatAssessment(
                             threat_level="CRITICAL_SHOCK",
                             risk_score=0.92,
@@ -347,24 +346,6 @@ def run_intelligence_backtest(
                         if not g_dec.allowed:
                             geopolitical_vetoes += 1
                             continue
-
-                    # 9. Extreme Greed Guard (Retail euphoria top downscale)
-                    if n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
-                        fg_snap = FearGreedSnapshot(
-                            value=88,
-                            classification="Extreme Greed",
-                            timestamp=t,
-                            historical_values=(88,),
-                            trend_7d_change=10,
-                            is_extreme_fear=False,
-                            is_extreme_greed=True,
-                        )
-                        s_dec = extreme_greed_guard.check(symbol, "BUY", snapshot=fg_snap)
-                        if not s_dec.allowed:
-                            continue
-                        if s_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            sentiment_downscales += 1
-                            scale *= s_dec.suggested_scale
 
                 if use_p2:
                     drop_15m = bar["drop_15m"]
@@ -409,10 +390,10 @@ def run_intelligence_backtest(
                             whale_vetoes += 1
                             continue
 
-                    # 6. Orderbook Wall & Depth Imbalance Guard (Ask resistance walls)
+                    # 6. Orderbook Wall & Depth Imbalance Guard (Unabsorbed ask resistance below local high)
                     if n_roll >= 48:
                         local_high = bar["local_high_48"]
-                        if local_high > 0 and p >= local_high * 0.996:
+                        if local_high > 0 and (local_high * 0.995) <= p < local_high and p_1h_pct < 1.2:
                             ob_snap = OrderbookSnapshot(
                                 symbol=symbol,
                                 mid_price=p,
@@ -430,7 +411,23 @@ def run_intelligence_backtest(
                                 orderbook_vetoes += 1
                                 continue
 
-                    # 7. Funding Crowding Guard (Overheated perpetual long positioning)
+                # Phase B: Sizing downscale guards on surviving buy intents
+                e_dec = None
+                if use_p1 and trend_duration_sec > 0:
+                    e_dec = exhaustion_guard.check(
+                        symbol,
+                        "BUY",
+                        trend_duration_sec,
+                        p90_days=p90_days,
+                        median_days=median_days,
+                    )
+                    if not e_dec.allowed:
+                        continue
+
+                f_dec = None
+                if use_p2:
+                    p_1h_pct = bar["p_1h_pct"]
+                    p_4h_pct = bar["p_4h_pct"]
                     if p_1h_pct >= 2.0 or (p_4h_pct >= 3.5 and p_1h_pct >= 0.8):
                         d_telemetry = DerivativesTelemetry(
                             symbol=symbol,
@@ -443,9 +440,31 @@ def run_intelligence_backtest(
                         f_dec = funding_guard.check(symbol, "BUY", telemetry=d_telemetry)
                         if not f_dec.allowed:
                             continue
-                        if f_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            funding_downscales += 1
-                            scale *= f_dec.suggested_scale
+
+                s_dec = None
+                if use_full and n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
+                    fg_snap = FearGreedSnapshot(
+                        value=88,
+                        classification="Extreme Greed",
+                        timestamp=t,
+                        historical_values=(88,),
+                        trend_7d_change=10,
+                        is_extreme_fear=False,
+                        is_extreme_greed=True,
+                    )
+                    s_dec = extreme_greed_guard.check(symbol, "BUY", snapshot=fg_snap)
+                    if not s_dec.allowed:
+                        continue
+
+                if e_dec is not None and e_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    weibull_downscales += 1
+                    scale *= e_dec.suggested_scale
+                if f_dec is not None and f_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    funding_downscales += 1
+                    scale *= f_dec.suggested_scale
+                if s_dec is not None and s_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    sentiment_downscales += 1
+                    scale *= s_dec.suggested_scale
 
                 # Execute Buy with allocated scale
                 alloc_usd = min(usd, usd * scale * 0.95)

@@ -14,6 +14,7 @@ regimes across different chop weight policies:
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 from dataclasses import asdict, dataclass
 import logging
 import os
@@ -139,13 +140,26 @@ def _precompute_chop_bar_tape(
 
     kalman = KalmanTrendTrigger(gap_reset_sec=max(1800.0, step_seconds * 3.0))
     mean_rev = MeanReversionTrigger(rsi_period=14, bb_period=20)
-    btc_dict: Dict[int, float] = {}
+    btc_ts: List[float] = []
+    btc_px: List[float] = []
     if btc_sampled:
-        for raw_bt, raw_bp in btc_sampled:
-            bt_f = safe_float(raw_bt, default=None)
-            bp_f = safe_pos_float(raw_bp, default=None)
+        btc_pairs: List[Tuple[float, float]] = []
+        for item in btc_sampled:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            bt_f = safe_float(item[0], default=None)
+            bp_f = safe_pos_float(item[1], default=None)
             if bt_f is not None and bp_f is not None:
-                btc_dict[int(bt_f // step_seconds)] = bp_f
+                btc_pairs.append((bt_f, bp_f))
+        btc_pairs.sort(key=lambda x: x[0])
+        btc_ts = [x[0] for x in btc_pairs]
+        btc_px = [x[1] for x in btc_pairs]
+
+    bars_24h = max(12, int(round(86400.0 / step_seconds)))
+    bars_6h = max(10, int(round(21600.0 / step_seconds)))
+    bars_4h = max(4, int(round(14400.0 / step_seconds)))
+    bars_3h = max(4, int(round(10800.0 / step_seconds)))
+    btc_max_staleness = max(step_seconds * 2.0, 1800.0)
 
     rolling_prices: List[float] = []
     btc_rolling: List[float] = []
@@ -166,30 +180,34 @@ def _precompute_chop_bar_tape(
         if btc_trend_start_ts is None:
             btc_trend_start_ts = t
         rolling_prices.append(p)
-        if len(rolling_prices) > 96:  # 24 hours of 15m bars
+        if len(rolling_prices) > bars_24h:
             rolling_prices.pop(0)
 
-        btc_p = btc_dict.get(int(t // step_seconds))
+        btc_p = None
+        if btc_ts:
+            b_idx = bisect_right(btc_ts, t) - 1
+            if b_idx >= 0 and (t - btc_ts[b_idx]) <= btc_max_staleness:
+                btc_p = btc_px[b_idx]
         if btc_p is not None:
             btc_rolling.append(btc_p)
-            if len(btc_rolling) > 96:
+            if len(btc_rolling) > bars_24h:
                 btc_rolling.pop(0)
 
-        # Check regime every 4 hours (16 bars)
-        if (t - last_regime_check_ts) >= 14400.0 and len(rolling_prices) >= 24:
+        # Check regime every 4 hours over a 6h-24h rolling window
+        if (t - last_regime_check_ts) >= 14400.0 and len(rolling_prices) >= bars_6h:
             last_regime_check_ts = t
             regime, _ = detect_regime_slope(np.array(rolling_prices), mk_alpha=0.05)
             if regime != current_trend:
                 current_trend = regime
                 trend_start_ts = t
 
-            if len(btc_rolling) >= 24:
+            if len(btc_rolling) >= bars_6h:
                 b_reg, _ = detect_regime_slope(np.array(btc_rolling), mk_alpha=0.05)
                 if b_reg != btc_regime:
                     btc_regime = b_reg
                     btc_trend_start_ts = t
 
-        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= 12 else 0.5
+        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= bars_3h else 0.5
         eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
 
         _, k_event = kalman.evaluate(symbol, t, p, eps)
@@ -200,8 +218,8 @@ def _precompute_chop_bar_tape(
             or (mr_event is not None and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY")
         )
         pullback_signal = False
-        if not entry_signal and current_trend == "BULL" and len(rolling_prices) >= 16:
-            recent_high = max(rolling_prices[-16:])
+        if not entry_signal and current_trend == "BULL" and len(rolling_prices) >= bars_4h + 1:
+            recent_high = max(rolling_prices[-bars_4h - 1:-1])
             pullback = (recent_high - p) / recent_high if recent_high > 0 else 0.0
             pullback_signal = pullback >= 0.012
 
@@ -264,7 +282,7 @@ def run_single_simulation(
             net_profit_usd=0.0,
             net_return_pct=0.0,
             max_drawdown_pct=0.0,
-            profit_factor=1.0,
+            profit_factor=0.0,
             win_rate_pct=0.0,
             total_trades=0,
             chop_trades=0,
@@ -290,8 +308,8 @@ def run_single_simulation(
         btc_regime = bar["btc_regime"]
         btc_trend_start_ts = bar["btc_trend_start_ts"]
 
-        # Track equity & drawdown
-        equity = usd + (asset_qty * p)
+        # Track equity & drawdown (net of exit fee)
+        equity = usd + (asset_qty * p * (1.0 - fee_pct))
         if equity > peak_equity:
             peak_equity = equity
         dd = ((peak_equity - equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
@@ -339,7 +357,7 @@ def run_single_simulation(
                 if policy == "PROXY_BTC":
                     if btc_regime == "BULL":
                         b_dur = max(0.0, (t - btc_trend_start_ts) / 86400.0)
-                        _, b_ws = get_trade_weight(T=8, trend_len=b_dur, trend="up", order_type="BUY", lindy_plateau=True)
+                        _, b_ws = get_trade_weight(T=T_days, trend_len=b_dur, trend="up", order_type="BUY", lindy_plateau=True)
                         weight = float(b_ws[0]) if len(b_ws) > 0 else 0.86
                     else:
                         weight = 0.03
@@ -383,7 +401,7 @@ def run_single_simulation(
 
     gross_profit = sum(tr["pnl"] for tr in winning)
     gross_loss = abs(sum(tr["pnl"] for tr in losing))
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 1.0)
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
 
     chop_tr = [tr for tr in trades if tr["regime"] == "CHOP"]
     trend_tr = [tr for tr in trades if tr["regime"] == "TREND"]

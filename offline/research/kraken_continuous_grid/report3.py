@@ -33,8 +33,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     for fee in ("0.26", "0.4"):
         L.append(f"\n## Fee {fee}% per leg\n")
         L.append("| config | beat live | neg | ret med % | ret min % | ret max % | DD med % | DD max % | "
-                 "ret/DD med | refused buys med |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|")
+                 "ret/DD med | refused buys med | min cash med |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|---|")
         items = []
         for cfg, d in by.items():
             if not all(a in d for a in assets):
@@ -48,14 +48,15 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             live_cfg = by.get("live", {})
             live = [safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=float("-inf")) for a in assets]
             refused = [safe_float(d[a][fee].get("refused"), default=0.0) for a in assets]
+            min_cash = [safe_float(d[a][fee].get("min_cash"), default=3900.0) for a in assets]
             score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
-            items.append((safe_float(score, default=float("-inf")), cfg, ret, dd, live, refused))
-        for score, cfg, ret, dd, live, refused in sorted(items, reverse=True):
+            items.append((safe_float(score, default=float("-inf")), cfg, ret, dd, live, refused, min_cash))
+        for score, cfg, ret, dd, live, refused, min_cash in sorted(items, reverse=True):
             if not ret:
                 continue
             L.append(f"| {cfg} | {sum(r > l for r, l in zip(ret, live))}/{len(assets)} | "
                      f"{sum(r < 0 for r in ret)} | {st.median(ret):+.1f} | {min(ret):+.1f} | {max(ret):+.1f} | "
-                     f"{st.median(dd):.1f} | {max(dd):.1f} | {score:+.2f} | {st.median(refused):.0f} |")
+                     f"{st.median(dd):.1f} | {max(dd):.1f} | {score:+.2f} | {st.median(refused):.0f} | {st.median(min_cash):.0f} |")
 
     L.append("\n## Per asset, fee 0.26% (return %, DD % in brackets)\n")
     cfgs = [c for c in ("live", "old_live_pre0923", "sl0", "ov650_t8", "ov650_t8_brake_gateoff",

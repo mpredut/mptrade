@@ -123,23 +123,27 @@ def test_detect_long_term_trend_real_data() -> None:
         timestamps = [s[0] for s in series[-2000:]]
         prices = [s[1] for s in series[-2000:]]
 
-        # Call with memoization enabled
+        # 1. Warm incremental memoization cache on prefix, then evaluate full series (warm incremental path)
         pa._trend_memo_cache.clear()
-        res_memo1 = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
-        # Second call hits memoization
-        res_memo2 = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
+        pa.detect_long_term_trend(timestamps[:-50], prices[:-50], window_hours=16, step_hours=8)
+        res_memo = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
 
-        # Verify exact identity
-        if res_memo1 is None:
-            assert res_memo2 is None
+        # 2. Clear memoization cache and evaluate full series from scratch (cold unmemoized reference)
+        pa._trend_memo_cache.clear()
+        res_cold = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
+
+        # Verify exact parity between incremental-cached and cold-computed results
+        if res_cold is None:
+            assert res_memo is None
         else:
-            assert res_memo1["direction"] == res_memo2["direction"]
-            assert res_memo1["start_timestamp"] == res_memo2["start_timestamp"]
-            assert res_memo1["duration_seconds"] == res_memo2["duration_seconds"]
-            assert res_memo1["current_slope_h"] == res_memo2["current_slope_h"]
-            assert res_memo1["blocks"] == res_memo2["blocks"]
+            assert res_memo is not None
+            assert res_memo["direction"] == res_cold["direction"]
+            assert res_memo["start_timestamp"] == res_cold["start_timestamp"]
+            assert res_memo["duration_seconds"] == res_cold["duration_seconds"]
+            assert np.isclose(res_memo["current_slope_h"], res_cold["current_slope_h"], rtol=1e-12, atol=1e-12)
+            assert res_memo["blocks"] == res_cold["blocks"]
 
-        print(f"  -> PASSED for real {sym} history: direction={res_memo1.get('direction') if res_memo1 else None}, duration={res_memo1.get('duration_seconds') if res_memo1 else 0:.0f}s")
+        print(f"  -> PASSED for real {sym} history: direction={res_cold.get('direction') if res_cold else None}, duration={res_cold.get('duration_seconds') if res_cold else 0:.0f}s")
 
 
 def test_monitortrades_position_stats_parity() -> None:

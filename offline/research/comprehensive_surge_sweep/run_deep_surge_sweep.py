@@ -136,6 +136,7 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
     bounces = [0.0, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0]
     for b in bounces:
         cid = f"BOUNCE_b{b:.1f}_with_calibrated_surge"
+        b_label = "Hard Bear Gate (block bear re-entry)" if b == 0.0 else f"Bear Bounce Re-entry {b:.1f}%"
         candidates.append({
             "id": cid,
             "category": "BearBounce",
@@ -149,14 +150,14 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
                 surge_window_hours=72.0,
                 reentry_bear_bounce_pct=b,
             ),
-            "desc": f"Bear Bounce Re-entry {b:.1f}% (Fixed Surge 18% PB 3.5% w72)",
+            "desc": f"{b_label} (Fixed Surge 18% PB 3.5% w72)",
         })
 
     return candidates
 
 
 def _asset_slices(ohlc: list[tuple[float, float, float, float]]):
-    warmup_n = min(30, len(ohlc) // 5)
+    warmup_n = min(42, len(ohlc) // 5)
     warmup_ohlc = ohlc[:warmup_n]
     run_ohlc = ohlc[warmup_n:]
     half_idx = len(run_ohlc) // 2

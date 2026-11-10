@@ -14,18 +14,26 @@ JOBS="${2:-$(nproc)}"
 OUTDIR="$REPO_ROOT/logs/backtest_parallel/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTDIR"
 
-mapfile -t CMDS < <(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$CMDFILE")
+mapfile -t CMDS < <(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$CMDFILE" || true)
 echo "[parallel] ${#CMDS[@]} commands, JOBS=$JOBS -> $OUTDIR"
+: > "$OUTDIR/manifest.tsv"
 
 idx=0
+pids=()
 for cmd in "${CMDS[@]}"; do
   idx=$((idx + 1))
   log="$OUTDIR/$(printf '%02d' "$idx").log"
   printf '%02d\t%s\n' "$idx" "$cmd" >> "$OUTDIR/manifest.tsv"
   echo "=== [$idx] $cmd ===" > "$log"
-  ( rc=0; eval "$cmd" >> "$log" 2>&1 || rc=$?; echo "[exit $rc]" >> "$log" ) &
+  ( rc=0; eval "$cmd" >> "$log" 2>&1 || rc=$?; echo "[exit $rc]" >> "$log"; exit "$rc" ) &
+  pids+=("$!")
   while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n || true; done
 done
-wait || true
-echo "[parallel] DONE. Logs in $OUTDIR"
+
+failed=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || failed=$((failed + 1))
+done
+echo "[parallel] DONE (failed=$failed/${#CMDS[@]}). Logs in $OUTDIR"
 sed 's/^/  /' "$OUTDIR/manifest.tsv"
+[ "$failed" -eq 0 ]
