@@ -335,7 +335,7 @@ class Strategy(BaseSpotMixin):
         self._state_write_failed = False
         self._state_file_mtime: float = 0.0
         raw_state = initial_state if isinstance(initial_state, dict) else self._load()
-        self.s = self._sanitize_spot_state(raw_state)
+        self.s = self._sanitize_state_dict(raw_state)
         self.exit_manager: PositionExitManager | None = (
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
@@ -373,7 +373,7 @@ class Strategy(BaseSpotMixin):
 
     # -- Persistence -----------------------------------------------------------
     @staticmethod
-    def _sanitize_spot_state(state: dict | None) -> dict:
+    def _sanitize_state_dict(state: dict | None) -> dict:
         state = sanitize_common_spot_state(
             state,
             _new_state,
@@ -397,8 +397,6 @@ class Strategy(BaseSpotMixin):
         if isinstance(pe, dict) and "soft_floor" in pe:
             pe["soft_floor"] = _parse_bool_flag(pe.get("soft_floor"), False)
         return state
-
-    _sanitize_state_dict = _sanitize_spot_state
 
     def _persist_pending_intent(self, pending: dict | None) -> None:
         self.s["pending_intent"] = None if pending is None else dict(pending)

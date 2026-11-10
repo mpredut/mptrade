@@ -52,7 +52,6 @@ from cacheInterface import (
     CacheManagerInterface,
     _CACHE_META_SCHEMA_VERSION,
     _cm_override,
-    _jsonl_line,
     _monotonic_time,
     _now_time,
     _sleep_time,
@@ -91,6 +90,7 @@ from state_io import (
     read_recovering_previous,
     save_json_state,
     stage_previous_generation,
+    format_jsonl_bucket_line,
 )
 
 
@@ -1401,7 +1401,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         for symbol, items in self.cache.items():
                             for item in items:
                                 records.append((symbol, item))
-                                handle.write(_jsonl_line(symbol, item))
+                                handle.write(format_jsonl_bucket_line(symbol, item))
 
                 def _build_trade_meta():
                     committed_bytes = os.path.getsize(self.filename)

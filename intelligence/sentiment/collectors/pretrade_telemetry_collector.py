@@ -156,29 +156,6 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         """Return a shallow dict copy of the formatted telemetry lines."""
         return dict(self.data)
 
-    def to_guard_metadata(self) -> Dict[str, Any]:
-        """Return explicit snapshot identity, source, and age metadata for GuardDecision."""
-        return {
-            "telemetry_symbol": self.canonical_symbol,
-            "telemetry_asset_scope": self.asset_scope,
-            "telemetry_source": self.source,
-            "telemetry_pillar_sources": dict(self.pillar_sources),
-            "telemetry_ts": self.ts,
-            "telemetry_age_sec": round(self.age_sec, 3) if self.age_sec is not None else None,
-            "telemetry_max_age_sec": self.max_age_sec,
-            "telemetry_fresh": self.is_fresh,
-            "telemetry_available": self.is_available,
-        }
-
-    def format_identity_header_line(self) -> str:
-        """Format explicit snapshot provenance line for LLM pre-trade context."""
-        age_str = f"{self.age_sec:.1f}s" if self.age_sec is not None else "n/a"
-        src_str = self.source or "cachedb"
-        return (
-            f"- Telemetry Snapshot: symbol={self.canonical_symbol} "
-            f"(scope={self.asset_scope}, source={src_str}, age={age_str}, fresh={self.is_fresh})"
-        )
-
     @classmethod
     def unavailable(
         cls,
@@ -1799,11 +1776,6 @@ class PretradeEvaluationContext:
         if norm_ts > 0.0:
             self.source_timestamps.append(norm_ts)
 
-    def resolve_snapshot_ts(self) -> float:
-        """Resolve the most representative recent telemetry timestamp across populated pillars."""
-        valid_ts = [t for t in self.source_timestamps if t > 0.0]
-        return max(valid_ts) if valid_ts else 0.0
-
 
 class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for pre-trade telemetry pillar collectors (Open-Closed Principle)."""
@@ -2215,7 +2187,8 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
         )
         for stage in (stages or self.stages):
             stage.evaluate(ctx)
-        snap_ts = ctx.resolve_snapshot_ts()
+        valid_ts = [t for t in ctx.source_timestamps if t > 0.0]
+        snap_ts = max(valid_ts) if valid_ts else 0.0
         return PretradeTelemetrySnapshot.from_raw(
             ctx.telemetry,
             symbol=symbol,

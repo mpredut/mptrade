@@ -63,7 +63,6 @@ from botcore import (
 from cacheInterface import (
     CacheManagerInterface,
     _cm_override,
-    _jsonl_line,
     _monotonic_time,
     _norm_symbol_keys,
     _now_time,
@@ -104,6 +103,7 @@ from state_io import (
     canonical_json_key,
     discard_generation_file,
     encode_json_payload,
+    format_jsonl_bucket_line,
     iter_jsonl_retention_lines,
     meta_file_path,
     parse_json_payload,
@@ -826,7 +826,7 @@ class Cache365PriceManager(Cache24PriceManager):
             start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
             for item in items[start:]:
                 if min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms:
-                    target.write(_jsonl_line(symbol, item))
+                    target.write(format_jsonl_bucket_line(symbol, item))
                 wrote = True
         return wrote
 
@@ -922,7 +922,7 @@ class Cache365PriceManager(Cache24PriceManager):
                     )
                     for symbol, extra_items in delta_by_sym.items():
                         for item in extra_items:
-                            target.write(_jsonl_line(symbol, item))
+                            target.write(format_jsonl_bucket_line(symbol, item))
                             changed = True
 
             with self.lock:
@@ -1004,7 +1004,7 @@ class Cache365PriceManager(Cache24PriceManager):
                     delta_by_sym = self._collect_live_delta_locked(snap_item_ids)
                     for symbol, extra_items in delta_by_sym.items():
                         for item in extra_items:
-                            target.write(_jsonl_line(symbol, item))
+                            target.write(format_jsonl_bucket_line(symbol, item))
             with self.lock:
                 post_delta = self._collect_live_delta_locked(snap_item_ids)
                 self._reload_and_merge_timestamps_locked(
@@ -1144,8 +1144,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._ws_stream_event_ts_per_symbol, symbol
         )
 
-    _real_ws_is_healthy = is_real_ws_healthy
-
     def mark_symbol_ws_event(self, symbol: str, now_ts: Optional[float] = None) -> None:
         ts_val = safe_nonneg_float(now_ts, default=None)
         if ts_val is None:
@@ -1179,8 +1177,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._notify_price_subscribers(symbol, ts_val, price_val)
 
-    _push_price = push_price
-
     @staticmethod
     def extract_price_and_ts(items):
         if not items or not isinstance(items, (list, tuple)):
@@ -1197,10 +1193,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 return price, ts_ms
         return None, None
 
-    _extract_price_and_ts = extract_price_and_ts
-
     def on_items_update(self, symbol: str, items):
-        price, ts_ms = self._extract_price_and_ts(items)
+        price, ts_ms = self.extract_price_and_ts(items)
         if price is None:
             return
         with self.lock:
@@ -1215,7 +1209,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ws_last_event_ts_per_symbol[symbol] = now
         self._ws_stream_event_ts_per_symbol[symbol] = now
         self._ws_stream_event_ts_per_symbol[str(symbol).strip().upper()] = now
-        self._push_price(symbol, price, ts_ms=ts_ms)
+        self.push_price(symbol, price, ts_ms=ts_ms)
 
     def query_remote_and_update_cache(self):
         if not self.fetchtime_per_symbol:
@@ -1239,7 +1233,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                         existing_entries = self.cache.get(symbol)
                     if (
                         existing_entries
-                        and self._extract_price_and_ts(existing_entries)[0] is not None
+                        and self.extract_price_and_ts(existing_entries)[0] is not None
                     ):
                         continue
             startTime = self.fetchtime_per_symbol.get(
@@ -1282,10 +1276,10 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return []
 
     def _persist_items(self, symbol, new_items):
-        price, ts_ms = self._extract_price_and_ts(new_items)
+        price, ts_ms = self.extract_price_and_ts(new_items)
         if price is None:
             return
-        self._push_price(symbol, price, ts_ms=ts_ms)
+        self.push_price(symbol, price, ts_ms=ts_ms)
 
     def _should_poll(self):
         return not self._ws_is_healthy()
@@ -1335,7 +1329,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             entries = casefold_get(self.cache, symbol) or casefold_get(
                 self.cache, sym_clean
             )
-            cached_price, last_ts = self._extract_price_and_ts(entries)
+            cached_price, last_ts = self.extract_price_and_ts(entries)
         if cached_price is None or last_ts is None:
             return None
         observed_at = safe_pos_float(float(last_ts) / 1000.0, default=None)
@@ -1364,7 +1358,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         return symbol
 
     def _cached_entry_for_symbol_locked(self, target_sym: str):
-        cached_price, last_ts = self._extract_price_and_ts(self.cache.get(target_sym))
+        cached_price, last_ts = self.extract_price_and_ts(self.cache.get(target_sym))
         return (
             ([last_ts, cached_price] if cached_price is not None else None),
             last_ts,
@@ -1411,7 +1405,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             age = age_ms if age_ms is not None else -1
             print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(target_sym, None)
-            if not new or self._extract_price_and_ts(new)[0] is None:
+            if not new or self.extract_price_and_ts(new)[0] is None:
                 return None
             self._persist_items(target_sym, new)
             self.save_state_to_file_if_enabled()
@@ -2226,10 +2220,7 @@ def _start_nonbinance_trend_poller(
 
     cpm_cls = type(cpm)
     has_cls_mark_ws = callable(getattr(cpm_cls, "mark_symbol_ws_event", None))
-    has_cls_ws_healthy = callable(getattr(cpm_cls, "is_real_ws_healthy", None))
-    has_cls_extract = callable(getattr(cpm_cls, "extract_price_and_ts", None))
     has_cls_rth_gate = callable(getattr(cpm_cls, "is_rth_gate_enforced", None))
-    has_cls_push_price = callable(getattr(cpm_cls, "push_price", None))
 
     def _mark_symbol_ws_ts(sym_key: str, ts_val: float) -> None:
         if has_cls_mark_ws:
@@ -2240,22 +2231,14 @@ def _start_nonbinance_trend_poller(
             ws_ts_map[sym_key] = ts_val
 
     def _is_ws_healthy(sym_key: str) -> bool:
-        fn = (
-            cpm.is_real_ws_healthy
-            if has_cls_ws_healthy
-            else getattr(cpm, "_real_ws_is_healthy", None)
-        )
+        fn = getattr(cpm, "is_real_ws_healthy", None)
         return bool(fn(sym_key)) if callable(fn) else False
 
     def run():
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
         cpm_cache = getattr(cpm, "cache", None)
-        extract_fn = (
-            cpm.extract_price_and_ts
-            if has_cls_extract
-            else getattr(cpm, "_extract_price_and_ts", None)
-        )
+        extract_fn = getattr(cpm, "extract_price_and_ts", None)
         if isinstance(cpm_cache, dict) and callable(extract_fn):
             for s in symbols:
                 try:
@@ -2309,11 +2292,7 @@ def _start_nonbinance_trend_poller(
                         rth_seeded.add(s)
                         empty_backoff_ts.pop(s, None)
                         _mark_symbol_ws_ts(s, time.time())
-                        push_fn = (
-                            cpm.push_price
-                            if has_cls_push_price
-                            else getattr(cpm, "_push_price", None)
-                        )
+                        push_fn = getattr(cpm, "push_price", None)
                         if callable(push_fn):
                             push_fn(s, pf)
                     else:

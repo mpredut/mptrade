@@ -173,20 +173,6 @@ def append_trade_from_execution_report(
     )
 
 
-def persist_ws_updated_caches(
-    event_type: str,
-    *,
-    cache_getter: Callable[..., Any] | None = None,
-) -> None:
-    """Flush caches affected by ``event_type`` when persistence is enabled."""
-    getter = cache_getter or _default_cache_getter
-    if event_type == "executionReport":
-        getter("BinanceOrder").save_state_to_file_if_enabled()
-        getter("BinanceTrade").save_state_to_file_if_enabled()
-    elif event_type in ("balanceUpdate", "outboundAccountPosition"):
-        getter("AssetValue", symbols=["TOTAL"]).save_state_to_file_if_enabled()
-
-
 def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
     """Refresh only one manager symbol efficiently for a WebSocket event."""
     try:
@@ -249,7 +235,11 @@ def handle_binance_ws_event(
                 getter(cache_name).query_remote_and_update_cache()
             should_persist = True
         if should_persist:
-            (persist_fn or (lambda et: persist_ws_updated_caches(et, cache_getter=getter)))(event_type)
+            if persist_fn is not None:
+                persist_fn(event_type)
+            else:
+                getter("BinanceOrder").save_state_to_file_if_enabled()
+                getter("BinanceTrade").save_state_to_file_if_enabled()
         return
 
     if event_type in ("balanceUpdate", "outboundAccountPosition"):

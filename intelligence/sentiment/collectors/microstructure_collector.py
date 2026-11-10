@@ -118,7 +118,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _RTH_VP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     _STALE_SHORT_24H_KEYS,
-    AssetSessionPolicy,
     _apply_24h_series_enrichment,
     _load_stitched_24h_ohlc_points,
     _parse_ts_px_row,
@@ -331,86 +330,6 @@ def _cand_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
         for full_p in (str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))),)
         for p in (full_p, *legacy_filenames_for(full_p))
     ]
-
-
-def _compute_price_series_memo_signature(
-    cachedb_dir: str,
-    cands: list[str],
-    is_eq_sym: bool,
-    current_price_items: Optional[Dict[str, Any]],
-) -> Tuple[Tuple[Any, ...], Tuple[Any, ...]]:
-    _ensure_cacheprice_classes_bound()
-    stat_list = []
-    for sp in _cand_cache_paths(
-        cachedb_dir,
-        *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
-        *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
-        *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
-        *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
-        *(f"cache_365_price_{c}.json" for c in cands),
-    ):
-        for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
-            try:
-                st = os.stat(cand_sp)
-                stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
-            except OSError:
-                pass
-    if not stat_list:
-        for w_sp in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
-            try:
-                st = os.stat(w_sp)
-                stat_list.append((w_sp, st.st_mtime_ns, st.st_size))
-            except OSError:
-                pass
-    cur_list = []
-    if isinstance(current_price_items, dict) and current_price_items:
-        for c in cands:
-            ci = casefold_get(current_price_items, c)
-            if isinstance(ci, list) and ci:
-                cur_list.append((c, len(ci), repr(ci[-1])))
-            elif ci is not None:
-                cur_list.append((c, extract_current_price_item(ci)))
-    return tuple(stat_list), tuple(cur_list)
-
-
-def _load_raw_24h_series_from_disk(
-    cachedb_dir: str,
-    symbol: str,
-    cands: list[str],
-    is_eq_sym_load: bool,
-    _rj: Any,
-    session_policy: Optional[AssetSessionPolicy] = None,
-) -> Tuple[list, float]:
-    _ensure_cacheprice_classes_bound()
-    policy = session_policy or resolve_asset_session_policy(symbol)
-    series_24h: list = []
-    span_24h_ms = 0.0
-    for cand in cands:
-        for p24_path in _cand_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
-            if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
-                continue
-            raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
-            if is_eq_sym_load and len(raw_ser) >= 2:
-                for ohlc24_path in _cand_cache_paths(cachedb_dir, f"cache_ohlc_24h_{cand}.json"):
-                    if not os.path.exists(ohlc24_path):
-                        continue
-                    ohlc24_obj = _rj(ohlc24_path)
-                    ohlc24_pts = (
-                        ohlc24_obj.get("points")
-                        if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
-                        else _extract_cached_items_series(ohlc24_obj, cands)
-                    )
-                    raw_ser = policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
-                    break
-            ser = policy.clean_raw_24h_series(raw_ser, symbol)
-            if len(ser) >= 2:
-                series_24h = list(ser) if not series_24h else prepend_older_non_diverged_points(series_24h, ser)
-                p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
-                span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
-                break
-        if series_24h and span_24h_ms >= 3600000.0 * 18:
-            break
-    return series_24h, span_24h_ms
 
 
 def _read_archive_series_file(
@@ -1842,29 +1761,6 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
             raise TypeError("Cannot instantiate abstract class PriceSeriesCacheCollectorBase")
         super().__init__(start_sync=start_sync)
 
-    @staticmethod
-    def resolve_candidate_symbols(
-        symbol: str,
-        quotes: Optional[Tuple[str, ...]] = None,
-    ) -> Tuple[List[str], Tuple[str, ...], bool, bool]:
-        sym_u = str(symbol).strip().upper()
-        policy = resolve_asset_session_policy(sym_u)
-        is_eq_sym = policy.is_equity or is_equity_symbol(sym_u)
-        is_eq_sym_load = policy.is_equity
-        eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
-        cands = [
-            c
-            for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
-            if isinstance(c, str)
-            and "/" not in c
-            and (
-                not c.upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-                if is_eq_sym
-                else not is_equity_symbol(c)
-            )
-        ]
-        return cands, eff_quotes, is_eq_sym, is_eq_sym_load
-
 
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
     """Concrete collector (Level 3) for Yahoo 5d/5m equity chart backfill and disk persistence."""
@@ -1949,7 +1845,21 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     ) -> Tuple[list, list]:
         sym_u = str(symbol).strip().upper()
         session_policy = self.resolve_session_policy(sym_u)
-        cands, eff_quotes, is_eq_sym, is_eq_sym_load = self.resolve_candidate_symbols(symbol, quotes=quotes)
+        is_eq_sym_load = session_policy.is_equity
+        is_eq_sym = is_eq_sym_load or is_equity_symbol(sym_u)
+        eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
+        cands = [
+            c
+            for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
+            if isinstance(c, str)
+            and "/" not in c
+            and (
+                not c.upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+                if is_eq_sym
+                else not is_equity_symbol(c)
+            )
+        ]
+        _ensure_cacheprice_classes_bound()
         _rj_cand = _resolve_read_json_cached()
         is_default_rj = _rj_cand is _default_read_json_cached
         _rj = read_json_recovering if is_default_rj else _rj_cand
@@ -1959,9 +1869,37 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         if is_default_rj:
             try:
                 memo_key = (os.path.abspath(str(cachedb_dir)), sym_u, bool(include_7d), tuple(eff_quotes))
-                memo_file_sig, memo_cur_sig = _compute_price_series_memo_signature(
-                    cachedb_dir, cands, is_eq_sym, current_price_items
-                )
+                stat_list = []
+                for sp in _cand_cache_paths(
+                    cachedb_dir,
+                    *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
+                    *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
+                    *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
+                    *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
+                    *(f"cache_365_price_{c}.json" for c in cands),
+                ):
+                    for cand_sp in (sp, sp + ".previous") if Cache24PriceManager.FILE_PREFIX in sp else (sp,):
+                        try:
+                            st = os.stat(cand_sp)
+                            stat_list.append((cand_sp, st.st_mtime_ns, st.st_size))
+                        except OSError:
+                            pass
+                if not stat_list:
+                    for w_sp in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
+                        try:
+                            st = os.stat(w_sp)
+                            stat_list.append((w_sp, st.st_mtime_ns, st.st_size))
+                        except OSError:
+                            pass
+                cur_list = []
+                if isinstance(current_price_items, dict) and current_price_items:
+                    for c in cands:
+                        ci = casefold_get(current_price_items, c)
+                        if isinstance(ci, list) and ci:
+                            cur_list.append((c, len(ci), repr(ci[-1])))
+                        elif ci is not None:
+                            cur_list.append((c, extract_current_price_item(ci)))
+                memo_file_sig, memo_cur_sig = tuple(stat_list), tuple(cur_list)
                 cached_entry = _PRICE_SERIES_MEMO.get(memo_key)
                 if cached_entry is not None and cached_entry[0] == memo_file_sig and cached_entry[1] == memo_cur_sig:
                     _LAST_7D_SPAN_MS_BY_SYM[sym_u] = cached_entry[4]
@@ -1969,9 +1907,33 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             except Exception:
                 memo_key = None
 
-        series_24h, span_24h_ms = _load_raw_24h_series_from_disk(
-            cachedb_dir, symbol, cands, is_eq_sym_load, _rj, session_policy=session_policy
-        )
+        series_24h: list = []
+        span_24h_ms = 0.0
+        for cand in cands:
+            for p24_path in _cand_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
+                if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
+                    continue
+                raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
+                if is_eq_sym_load and len(raw_ser) >= 2:
+                    for ohlc24_path in _cand_cache_paths(cachedb_dir, f"cache_ohlc_24h_{cand}.json"):
+                        if not os.path.exists(ohlc24_path):
+                            continue
+                        ohlc24_obj = _rj(ohlc24_path)
+                        ohlc24_pts = (
+                            ohlc24_obj.get("points")
+                            if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
+                            else _extract_cached_items_series(ohlc24_obj, cands)
+                        )
+                        raw_ser = session_policy.merge_ohlc24_into_raw_series(raw_ser, ohlc24_pts or [])
+                        break
+                ser = session_policy.clean_raw_24h_series(raw_ser, symbol)
+                if len(ser) >= 2:
+                    series_24h = list(ser) if not series_24h else prepend_older_non_diverged_points(series_24h, ser)
+                    p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
+                    span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
+                    break
+            if series_24h and span_24h_ms >= 3600000.0 * 18:
+                break
         need_24h_supplement = span_24h_ms < 3600000.0 * 18
         archive_pts, sparse_7d_pts, watcher_7d_pts, watcher_cutoff_24h = _load_raw_archive_and_watcher_series(
             cachedb_dir,

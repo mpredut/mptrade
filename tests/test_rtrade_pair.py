@@ -1963,15 +1963,15 @@ def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_q
     )
     assert len(store.active("BTCUSDC")) == 1
 
-def test_strategy__sanitize_spot_state_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
-    """[ITER155 #2] Strategy._sanitize_spot_state & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
+def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
+    """[ITER155 #2] Strategy._sanitize_state_dict & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
     import pytest
     from providers.strategy_executor import PairPrecision
     from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
     from strategies.spot_engine import StratParams, Strategy
     from strategies.spot_replay import run_replay
-    # 2. Strategy._sanitize_spot_state & Strategy init boolean flags
-    sanitized = Strategy._sanitize_spot_state({
+    # 2. Strategy._sanitize_state_dict & Strategy init boolean flags
+    sanitized = Strategy._sanitize_state_dict({
         "orders": ["not_a_dict", {"txid": "0", "side": "buy", "market": "false"}],
         "placement_backoffs": ["not_a_dict"],
         "sl_bounce_state": None,

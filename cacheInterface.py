@@ -153,9 +153,6 @@ def _coerce_symbol_list(symbols) -> list[str]:
         return []
 
 
-_jsonl_line = format_jsonl_bucket_line
-
-
 class CacheManagerInterface(ABC):
     """Independent base contract (Level 1) for transactional cache persistence and polling.
 
@@ -831,7 +828,7 @@ class CacheManagerInterface(ABC):
                     with atomic_text_writer(self.filename) as f:
                         for symbol, items in self.cache.items():
                             for item in items:
-                                f.write(_jsonl_line(symbol, item))
+                                f.write(format_jsonl_bucket_line(symbol, item))
 
                 if not self._commit_file_and_meta_locked(_write_compacted, metadata):
                     self._restore_memory_state_locked(original_state)

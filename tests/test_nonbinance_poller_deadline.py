@@ -122,7 +122,7 @@ class TestFetchDeadline(unittest.TestCase):
             def provider_name_for(self, symbol):
                 return self.bindings.get(symbol)
 
-            def _push_price(self, s, p):
+            def push_price(self, s, p):
                 pushed.append((s, p))
 
         cpm = _Cpm()
@@ -173,7 +173,7 @@ class TestFetchDeadline(unittest.TestCase):
         cpm._ws_last_event_ts_per_symbol.clear()
         cpm.cache.clear()
         for bad_price in (float("nan"), float("inf"), float("-inf"), True, False, 0.0, -1.0):
-            cpm._push_price("HYPEUSD", bad_price)
+            cpm.push_price("HYPEUSD", bad_price)
         self.assertEqual(cpm.cache, {})
 
     def test_hyperliquid_and_kraken_ws_streams_feed_cpm_and_suppress_rest_polling(self):
@@ -231,10 +231,10 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(set(krk_stream.get_all_prices().keys()), {"HYPEUSD", "TAOUSD", "ADAUSD"})
 
         # Verify WS ticks updated cpm cache and marked real WS stream healthy
-        self.assertTrue(cpm._real_ws_is_healthy("HYPEUSDC"))
-        self.assertTrue(cpm._real_ws_is_healthy("HYPEUSD"))
-        self.assertTrue(cpm._real_ws_is_healthy("TAOUSD"))
-        self.assertTrue(cpm._real_ws_is_healthy("ADAUSD"))
+        self.assertTrue(cpm.is_real_ws_healthy("HYPEUSDC"))
+        self.assertTrue(cpm.is_real_ws_healthy("HYPEUSD"))
+        self.assertTrue(cpm.is_real_ws_healthy("TAOUSD"))
+        self.assertTrue(cpm.is_real_ws_healthy("ADAUSD"))
         self.assertAlmostEqual(cpm.get_cached_price_observation("HYPEUSDC", 5.0)[1], 42.125)
         self.assertAlmostEqual(cpm.get_cached_price_observation("HYPEUSD", 5.0)[1], 42.05)
         self.assertAlmostEqual(cpm.get_cached_price_observation("TAOUSD", 5.0)[1], 355.0)
@@ -428,7 +428,7 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertIsNone(MarketDataProvider.clamp_price_to_bbo_mid(None, "10.0", "20.0"))
         self.assertAlmostEqual(MarketDataProvider.clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
 
-        # 3. _real_ws_is_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
+        # 3. is_real_ws_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
         tmp_dir = tempfile.mkdtemp()
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=9999,
@@ -442,7 +442,7 @@ class TestFetchDeadline(unittest.TestCase):
         )
         cpm._ws_last_event_ts = time.time()
         cpm._ws_stream_event_ts_per_symbol["HYPEUSD"] = 0.0
-        self.assertFalse(cpm._real_ws_is_healthy("HYPEUSD"))
+        self.assertFalse(cpm.is_real_ws_healthy("HYPEUSD"))
 
         # 4. read_ssot_fills_cache skips stale alias key and returns fresh matching key
         from providers.kraken_provider import KrakenProvider

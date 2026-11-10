@@ -106,91 +106,6 @@ def extract_rebuy_anchors(rb: object, fallback_price: object) -> tuple[float, fl
     return low_anchor, sell_price
 
 
-def build_trailing_order_intent(
-    order_lifecycle,
-    retry_counts: dict,
-    *,
-    venue_slug: str,
-    venue_label: str,
-    action: str,
-    key: str,
-    asset: str,
-    pair: str,
-    qty: float,
-    price: float,
-    **metadata,
-) -> dict:
-    """Build a deterministic TrackedOrderLifecycle intent for a trailing SELL or REBUY."""
-    raw_attempt = retry_counts.get((pair, action), 0)
-    attempt = safe_nonneg_int(raw_attempt, 0) + 1
-    qty_f = safe_float(qty, 0.0)
-    price_f = safe_float(price, 0.0)
-    anchor_f = safe_float(metadata.get("anchor", price_f), price_f)
-    intent_id = (
-        f"trailing:{venue_slug}:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
-        f"{anchor_f:.8f}"
-    )
-    if attempt > 1:
-        intent_id = f"{intent_id}:a{attempt}"
-    return order_lifecycle.new_intent(
-        intent_id=intent_id,
-        client_order_id=intent_client_order_id(venue_label, intent_id),
-        symbol=pair,
-        side="SELL" if action == "SELL" else "BUY",
-        requested_qty=qty_f,
-        requested_price=price_f,
-        kind=f"TRAIL_{action}",
-        attempt=attempt,
-        metadata={"action": action, "asset": asset, **metadata},
-    )
-
-
-def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pending, persist):
-    """Reconcile a pending trailing order and update in-memory/persisted retry counters."""
-    if not isinstance(pending, dict):
-        return None
-    result = order_lifecycle.reconcile(pending, persist=persist)
-    raw_pair = pending.get("symbol")
-    pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
-    action, _ = extract_trailing_intent_action_asset(pending)
-    retry_key = (pair, action)
-    st = getattr(persist, "st", None)
-    rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
-    rc_act = safe_nonneg_int(rc.get(action), 0)
-    att_val = safe_pos_int(pending.get("attempt"), 1)
-    cur_rc_i = safe_nonneg_int(retry_counts.get(retry_key), 0)
-    attempt_base = max(cur_rc_i, rc_act, att_val - 1)
-
-    def _bump_retry(clear_pending: bool = False):
-        new_count = attempt_base + 1
-        retry_counts[retry_key] = new_count
-        if isinstance(st, dict):
-            if not isinstance(st.get("retry_counts"), dict):
-                st["retry_counts"] = {}
-            st["retry_counts"][action] = new_count
-            if clear_pending:
-                persist(None)
-
-    if result.outcome in ("absent", "retryable", "refused"):
-        _bump_retry(clear_pending=True)
-    elif result.outcome == "terminal":
-        filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
-        req_qty = safe_nonneg_float(
-            pending.get("submitted_qty") or pending.get("requested_qty") or 0.0,
-            0.0,
-        )
-        st_name = str(getattr(result.status, "status", "") or "").lower()
-        if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
-            _bump_retry()
-        else:
-            retry_counts.pop(retry_key, None)
-            if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
-                st["retry_counts"].pop(action, None)
-                if not st["retry_counts"]:
-                    st.pop("retry_counts", None)
-    return result
-
-
 _EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost", "sell_defer_started_at")
 
 
@@ -804,24 +719,72 @@ class TrailingAdapterBase:
                 self._retry_counts[retry_key] = persisted
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        return build_trailing_order_intent(
-            self.order_lifecycle,
-            self._retry_counts,
-            venue_slug=self._VENUE_SLUG,
-            venue_label=self._VENUE_LABEL,
-            action=action,
-            key=key,
-            asset=asset,
-            pair=pair,
-            qty=qty,
-            price=price,
-            **metadata,
+        raw_attempt = self._retry_counts.get((pair, action), 0)
+        attempt = safe_nonneg_int(raw_attempt, 0) + 1
+        qty_f = safe_float(qty, 0.0)
+        price_f = safe_float(price, 0.0)
+        anchor_f = safe_float(metadata.get("anchor", price_f), price_f)
+        intent_id = (
+            f"trailing:{self._VENUE_SLUG}:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
+            f"{anchor_f:.8f}"
+        )
+        if attempt > 1:
+            intent_id = f"{intent_id}:a{attempt}"
+        return self.order_lifecycle.new_intent(
+            intent_id=intent_id,
+            client_order_id=intent_client_order_id(self._VENUE_LABEL, intent_id),
+            symbol=pair,
+            side="SELL" if action == "SELL" else "BUY",
+            requested_qty=qty_f,
+            requested_price=price_f,
+            kind=f"TRAIL_{action}",
+            attempt=attempt,
+            metadata={"action": action, "asset": asset, **metadata},
         )
 
     def reconcile_pending(self, pending, persist):
-        return reconcile_trailing_pending_order(
-            self.order_lifecycle, self._retry_counts, pending, persist,
-        )
+        if not isinstance(pending, dict):
+            return None
+        result = self.order_lifecycle.reconcile(pending, persist=persist)
+        raw_pair = pending.get("symbol")
+        pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
+        action, _ = extract_trailing_intent_action_asset(pending)
+        retry_key = (pair, action)
+        st = getattr(persist, "st", None)
+        rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+        rc_act = safe_nonneg_int(rc.get(action), 0)
+        att_val = safe_pos_int(pending.get("attempt"), 1)
+        cur_rc_i = safe_nonneg_int(self._retry_counts.get(retry_key), 0)
+        attempt_base = max(cur_rc_i, rc_act, att_val - 1)
+
+        def _bump_retry(clear_pending: bool = False):
+            new_count = attempt_base + 1
+            self._retry_counts[retry_key] = new_count
+            if isinstance(st, dict):
+                if not isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"] = {}
+                st["retry_counts"][action] = new_count
+                if clear_pending:
+                    persist(None)
+
+        if result.outcome in ("absent", "retryable", "refused"):
+            _bump_retry(clear_pending=True)
+        elif result.outcome == "terminal":
+            filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
+            req_qty = safe_nonneg_float(
+                pending.get("submitted_qty") or pending.get("requested_qty") or 0.0,
+                0.0,
+            )
+            st_name = str(getattr(result.status, "status", "") or "").lower()
+            if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
+                _bump_retry()
+            else:
+                self._retry_counts.pop(retry_key, None)
+                if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"].pop(action, None)
+                    if not st["retry_counts"]:
+                        st.pop("retry_counts", None)
+        return result
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
         price_f = safe_float(price, 0.0)
@@ -835,7 +798,7 @@ class TrailingAdapterBase:
             peak_f = safe_float(peak, price_f)
             self.log(
                 f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
-                f"(varf {peak_f:.4f}, drop >= {trail}%)  "
+                f"(peak {peak_f:.4f}, drop >= {trail}%)  "
                 f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
             )
 
@@ -859,13 +822,13 @@ class TrailingAdapterBase:
             peak_f = safe_float(peak, 0.0)
             free_f = safe_float(free, 0.0)
             self.log(
-                f"  {self._LOG_TAG} {asset}: {price_f:.4f}  varf {peak_f:.4f}  "
+                f"  {self._LOG_TAG} {asset}: {price_f:.4f}  peak {peak_f:.4f}  "
                 f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
             )
         else:
             peak_f = safe_float(peak, price_f)
             self.log(
-                f"  {self._LOG_TAG} {pair}: {price_f:.4f}  varf {peak_f:.4f}  "
+                f"  {self._LOG_TAG} {pair}: {price_f:.4f}  peak {peak_f:.4f}  "
                 f"sells below {stop_f:.4f} (-{trail}%)"
             )
 
@@ -989,9 +952,9 @@ class TrailingAdapterBase:
                 t_f = safe_nonneg_float(t, default=0.0)
                 rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
                 print(
-                    f"{a}: varf={peak} trailing={t}% "
+                    f"{a}: peak={peak} trailing={t}% "
                     + (f"sells below {peak * (1 - t_f / 100):.4f}" if peak else "(no peak yet)")
-                    + (f"  | re-buy ARMAT (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
+                    + (f"  | re-buy ARMED (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
                 )
             rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
             rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)

@@ -5478,8 +5478,8 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     assert cfg.gain_threshold == pytest.approx(0.07)
     assert cfg.tp_stagnation_max_sec == pytest.approx(1080.0)
 
-    # 5. Strategy._sanitize_spot_state normalizes corrupted numeric fields and order entries
-    st = spot_engine.Strategy._sanitize_spot_state({
+    # 5. Strategy._sanitize_state_dict normalizes corrupted numeric fields and order entries
+    st = spot_engine.Strategy._sanitize_state_dict({
         "cycle": "-3",
         "qty": None,
         "cost": "150.5",
@@ -5808,14 +5808,14 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     from strategies import rtrade_pair as rp
     from providers import execution_audit as ea_mod
 
-    # 1. spot_engine.clean_order_id and _sanitize_spot_state
+    # 1. spot_engine.clean_order_id and _sanitize_state_dict
     assert se.clean_order_id(frozenset({"a"})) is None
     assert se.clean_order_id(12.5) is None
     assert se.clean_order_id("-abc") is None
     assert se.clean_order_id("+0.0") is None
     assert se.clean_order_id("+123.0") == "123"
     assert se.clean_order_id("+123") == "123"
-    san = se.Strategy._sanitize_spot_state(
+    san = se.Strategy._sanitize_state_dict(
         {
             "orders": [
                 {"txid": "+456.0", "side": " BUY ", "vol": "1.5", "price": "100.0", "ts": None},

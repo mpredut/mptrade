@@ -144,7 +144,7 @@ class TestGaps(unittest.TestCase):
             self.assertLessEqual(r["duration_seconds"] / 3600, 50,
                                  "the trend must not stretch across the gap")
 
-    def test_date_insuficiente_da_none(self):
+    def test_insufficient_data_returns_none(self):
         ts, px = series(down(10))
         self.assertIsNone(run(ts, px))
 
@@ -157,12 +157,12 @@ class TestMannKendall(unittest.TestCase):
                 self.assertGreater(z * expected_sign, 0)
                 self.assertLess(p, 0.01)
 
-    def test_zgomot_alb_nesemnificativ(self):
+    def test_white_noise_not_significant(self):
         rng = np.random.default_rng(42)
         s, z, p = calculate_mann_kendall(100 + rng.normal(0, 1, 24))
         self.assertGreater(p, 0.1, "pure noise must not look like a trend")
 
-    def test_serie_scurta_nesemnificativa(self):
+    def test_short_series_not_significant(self):
         _, _, p = calculate_mann_kendall([1, 2, 3])
         self.assertEqual(p, 1.0)
 
@@ -183,29 +183,29 @@ class TestHurst(unittest.TestCase):
             with self.subTest(regime=label):
                 self.assertTrue(predicate(calculate_hurst_exponent(self._series(phi))))
 
-    def test_serie_scurta_da_none(self):
+    def test_short_series_returns_none(self):
         self.assertIsNone(calculate_hurst_exponent([100, 101, 102]))
 
-    def test_regimuri(self):
+    def test_regimes(self):
         self.assertEqual(classify_hurst_regime(0.65), "persistent")
         self.assertEqual(classify_hurst_regime(0.30), "mean_reverting")
         self.assertEqual(classify_hurst_regime(0.50), "random_walk")
         self.assertEqual(classify_hurst_regime(None), "unknown")
 
 
-class TestFiltruMKInDetector(unittest.TestCase):
+class TestMKFilterInDetector(unittest.TestCase):
     H = 3600.0
 
     def _mk_series(self, vals):
         return np.array([i * self.H for i in range(len(vals))]), np.array(vals, float)
 
-    def test_trend_curat_trece_de_filtru(self):
+    def test_clean_trend_passes_filter(self):
         ts, px = self._mk_series([100 - 0.3 * i for i in range(96)])
         r = detect_long_term_trend(ts, px, 24, 8, 3, 2, 5, mk_alpha=0.05)
         self.assertIsNotNone(r)
         self.assertEqual(r["direction"], "down")
 
-    def test_zgomotul_e_filtrat(self):
+    def test_noise_is_filtered(self):
         rng = np.random.default_rng(3)
         base = [100 - 0.3 * i for i in range(72)]
         noise = list(base[-1] + rng.normal(0, 0.8, 24))
@@ -235,12 +235,12 @@ def direction_at(ts, px, i, **kw):
     return (tr or {}).get("direction")
 
 
-class TestTrendLagPeDeclin(unittest.TestCase):
+class TestTrendLagOnDecline(unittest.TestCase):
     def setUp(self):
         self.ts, self.px = build_series()
         self.peak_i = int(np.argmax(self.px))
 
-    def test_arata_lagul(self):
+    def test_shows_the_lag(self):
         flip_h = None
         for i in range(self.peak_i, len(self.ts)):
             d = direction_at(self.ts, self.px, i)
@@ -248,13 +248,13 @@ class TestTrendLagPeDeclin(unittest.TestCase):
                 flip_h = i - self.peak_i
         self.assertIsNotNone(flip_h)
 
-    def test_chiar_la_varf_e_up(self):
+    def test_right_at_peak_is_up(self):
         self.assertEqual(direction_at(self.ts, self.px, self.peak_i), "up")
 
     def test_after_enough_decline_it_becomes_down(self):
         self.assertEqual(direction_at(self.ts, self.px, len(self.ts) - 1), "down")
 
-    def test_exista_lag_pe_declin(self):
+    def test_lag_exists_on_decline(self):
         i = self.peak_i + 6
         self.assertLess(self.px[i], self.px[self.peak_i], "the price really did fall")
         self.assertEqual(direction_at(self.ts, self.px, i), "up",

@@ -33,24 +33,6 @@ def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[
     return (f / 1000.0 if f > 100_000_000_000 else f) if f is not None else default
 
 
-def normalize_market_regime_snapshot(
-    snapshot: Optional[Mapping],
-) -> Optional[dict]:
-    """Return a snapshot that uses the canonical market-regime field names.
-
-    ``growth_coefficient`` is the SSOT short-trend signal; ``gradient_recent``
-    is retained as a fallback when ``growth_coefficient`` is absent.
-    """
-    if not snapshot or not isinstance(snapshot, Mapping):
-        return None
-    normalized = dict(snapshot)
-    if "growth_coefficient" not in normalized and "gradient_recent" in normalized:
-        normalized["growth_coefficient"] = normalized["gradient_recent"]
-    if "gradient_recent" not in normalized and "growth_coefficient" in normalized:
-        normalized["gradient_recent"] = normalized["growth_coefficient"]
-    return normalized
-
-
 @dataclass(frozen=True)
 class MarketRegimeDecision:
     regime: str                 # bull|bear|sideways|unknown
@@ -401,8 +383,7 @@ class MarketRegimeEvaluator:
             fresh=False, reason=reason)
 
     def evaluate(self, snapshot: Optional[Mapping]) -> MarketRegimeDecision:
-        snapshot = normalize_market_regime_snapshot(snapshot)
-        if not snapshot:
+        if not snapshot or not isinstance(snapshot, Mapping):
             return self.unknown()
         if (
             ("growth_coefficient" not in snapshot and "gradient_recent" not in snapshot)

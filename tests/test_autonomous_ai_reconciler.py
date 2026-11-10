@@ -2267,7 +2267,7 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     from cachepaths import normalize_venue_name
     from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
     from providers.execution_audit import normalize_trading_decisions
-    from providers.kraken_provider import _kraken_pair_matches
+    from providers.kraken_provider import kraken_pair_matches
 
     # 1. Venue alias normalization
     assert normalize_venue_name("trading212") == "t212"
@@ -2295,19 +2295,19 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert decs[1]["venue"] == "t212"
     assert decs[1]["decision"] == "SELL"
 
-    # 3. _kraken_pair_matches prevents substring collision (ETHUSD vs WETHUSD, BTCUSD vs WBTCUSD)
-    assert _kraken_pair_matches("ETHUSD", "WETHUSD") is False
-    assert _kraken_pair_matches("WETHUSD", "ETHUSD") is False
-    assert _kraken_pair_matches("BTCUSD", "WBTCUSD") is False
-    assert _kraken_pair_matches("HYPEUSD", "HYPE") is True
-    assert _kraken_pair_matches("HYPE", "HYPEUSD") is True
-    assert _kraken_pair_matches("DOGEUSD", "XXDGZUSD") is True
-    assert _kraken_pair_matches("BTCUSD", "XXBTZUSD") is True
-    assert _kraken_pair_matches("XTZUSD", "XTZUSD") is True
-    assert _kraken_pair_matches("XTZUSD", "XTUSD") is False
-    assert _kraken_pair_matches("CHZUSD", "CHUSD") is False
-    assert _kraken_pair_matches("XAUTUSD", "AUTUSD") is False
-    assert _kraken_pair_matches("XRPUSD", "XXRPZUSD") is True
+    # 3. kraken_pair_matches prevents substring collision (ETHUSD vs WETHUSD, BTCUSD vs WBTCUSD)
+    assert kraken_pair_matches("ETHUSD", "WETHUSD") is False
+    assert kraken_pair_matches("WETHUSD", "ETHUSD") is False
+    assert kraken_pair_matches("BTCUSD", "WBTCUSD") is False
+    assert kraken_pair_matches("HYPEUSD", "HYPE") is True
+    assert kraken_pair_matches("HYPE", "HYPEUSD") is True
+    assert kraken_pair_matches("DOGEUSD", "XXDGZUSD") is True
+    assert kraken_pair_matches("BTCUSD", "XXBTZUSD") is True
+    assert kraken_pair_matches("XTZUSD", "XTZUSD") is True
+    assert kraken_pair_matches("XTZUSD", "XTUSD") is False
+    assert kraken_pair_matches("CHZUSD", "CHUSD") is False
+    assert kraken_pair_matches("XAUTUSD", "AUTUSD") is False
+    assert kraken_pair_matches("XRPUSD", "XXRPZUSD") is True
 
     from cachepaths import canonical_base_asset, normalize_cache_base_asset
     assert canonical_base_asset("XXDGZUSD") == "DOGE"

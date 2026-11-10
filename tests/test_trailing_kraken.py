@@ -594,7 +594,7 @@ class TestRebuyGuardsKraken(Base):
         with redirect_stdout(buf):
             rc = ts.dispatch_cli(SimpleNamespace(status=True, once=False))
         self.assertEqual(rc, 0)
-        self.assertIn("HYPE: varf=60.0", buf.getvalue())
+        self.assertIn("HYPE: peak=60.0", buf.getvalue())
         self.assertIn("ENABLED=True", buf.getvalue())
 
         # 3. Shared MarketDataProvider.resolve_strategy_dry_run

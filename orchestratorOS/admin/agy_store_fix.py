@@ -115,31 +115,6 @@ def backup_file(path: str, stamp: str) -> None:
     shutil.copy2(path, os.path.join(dst, os.path.basename(path)))
 
 
-def disable_webrtc_mesh(stamp: str) -> str:
-    """Disable the Mendel flag 'remote-control-webrtc-mesh' in the agy binary so remote-control
-    stays on Boq WebChannel (HTTPS/TCP) and never upgrades to Pion WebRTC DataChannel (UDP),
-    whose hardcoded 1228-byte SCTP MTU exceeds the wgpia0 WireGuard MTU (1200) and freezes streams."""
-    if not os.path.isfile(AGY_BIN):
-        return "missing"
-    data = read_bytes_file(AGY_BIN, default=None)
-    if data is None:
-        log.warning("cannot read %s", AGY_BIN)
-        return "error"
-    if WEBRTC_FLAG_ORIG not in data:
-        return "already_disabled" if WEBRTC_FLAG_PATCHED in data else "flag_not_found"
-    try:
-        backup_dir = os.path.join(BACKUPS, stamp)
-        os.makedirs(backup_dir, exist_ok=True)
-        shutil.copy2(AGY_BIN, os.path.join(backup_dir, "agy.orig"))
-        patched = data.replace(WEBRTC_FLAG_ORIG, WEBRTC_FLAG_PATCHED)
-        atomic_write_bytes(AGY_BIN, patched, preserve_mode=True)
-        log.info("pre: patched %s to disable remote-control-webrtc-mesh (backup in %s)", AGY_BIN, backup_dir)
-        return "patched"
-    except OSError as e:
-        log.warning("failed to patch %s: %s", AGY_BIN, e)
-        return "error"
-
-
 # ---------------------------------------------------------------- pre
 def mode_pre(force: bool = False) -> int:
     force = _parse_bool_flag(force, False)
@@ -154,7 +129,24 @@ def mode_pre(force: bool = False) -> int:
     os.makedirs(D1, exist_ok=True)
     os.makedirs(D2, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    mesh_state = disable_webrtc_mesh(stamp)
+    if not os.path.isfile(AGY_BIN):
+        mesh_state = "missing"
+    elif (agy_data := read_bytes_file(AGY_BIN, default=None)) is None:
+        log.warning("cannot read %s", AGY_BIN)
+        mesh_state = "error"
+    elif WEBRTC_FLAG_ORIG not in agy_data:
+        mesh_state = "already_disabled" if WEBRTC_FLAG_PATCHED in agy_data else "flag_not_found"
+    else:
+        try:
+            backup_dir = os.path.join(BACKUPS, stamp)
+            os.makedirs(backup_dir, exist_ok=True)
+            shutil.copy2(AGY_BIN, os.path.join(backup_dir, "agy.orig"))
+            atomic_write_bytes(AGY_BIN, agy_data.replace(WEBRTC_FLAG_ORIG, WEBRTC_FLAG_PATCHED), preserve_mode=True)
+            log.info("pre: patched %s to disable remote-control-webrtc-mesh (backup in %s)", AGY_BIN, backup_dir)
+            mesh_state = "patched"
+        except OSError as e:
+            log.warning("failed to patch %s: %s", AGY_BIN, e)
+            mesh_state = "error"
     moved = unlinked = diverged = skipped = deleted = 0
 
     # Detect conversations that existed in D2 from a previous session but whose summary row was
@@ -401,36 +393,6 @@ def mode_post(timeout: int = 50) -> int:
                     log.warning("post: cannot link %s -> %s: %s", p1, p2, e)
                     bad += 1
     log.info("post: linked=%d already=%d problems=%d waited=%.0fs", linked, exists, bad, time.time() - start)
-    return 0
-
-
-# ---------------------------------------------------------------- check
-def mode_check() -> int:
-    d1 = {f for f in os.listdir(D1) if f.endswith(".db")} if os.path.isdir(D1) else set()
-    d2 = {f for f in os.listdir(D2) if f.endswith(".db")} if os.path.isdir(D2) else set()
-    linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
-    if not os.path.isfile(AGY_BIN):
-        mesh_st = "missing"
-    elif (agy_bytes := read_bytes_file(AGY_BIN, default=None)) is None:
-        mesh_st = "unreadable"
-    elif WEBRTC_FLAG_ORIG in agy_bytes:
-        mesh_st = "ENABLED (unpatched)"
-    elif WEBRTC_FLAG_PATCHED in agy_bytes:
-        mesh_st = "disabled (patched)"
-    else:
-        mesh_st = "unknown"
-    print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={mesh_st}")
-    if os.path.exists(DB):
-        c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-        try:
-            cnt = collections.Counter(
-                ((r[0] or "none")[:8], r[1] or "unset", "titled" if r[2] else "untitled")
-                for r in c.execute("select project_id, source, title from conversation_summaries")
-            )
-        finally:
-            c.close()
-        for k, v in sorted(cnt.items()):
-            print(" ", v, k)
     return 0
 
 
@@ -786,7 +748,32 @@ def main(argv) -> int:
             if mode == "post":
                 return mode_post()
             if mode == "check":
-                return mode_check()
+                d1 = {f for f in os.listdir(D1) if f.endswith(".db")} if os.path.isdir(D1) else set()
+                d2 = {f for f in os.listdir(D2) if f.endswith(".db")} if os.path.isdir(D2) else set()
+                linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
+                if not os.path.isfile(AGY_BIN):
+                    mesh_st = "missing"
+                elif (agy_bytes := read_bytes_file(AGY_BIN, default=None)) is None:
+                    mesh_st = "unreadable"
+                elif WEBRTC_FLAG_ORIG in agy_bytes:
+                    mesh_st = "ENABLED (unpatched)"
+                elif WEBRTC_FLAG_PATCHED in agy_bytes:
+                    mesh_st = "disabled (patched)"
+                else:
+                    mesh_st = "unknown"
+                print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={mesh_st}")
+                if os.path.exists(DB):
+                    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+                    try:
+                        cnt = collections.Counter(
+                            ((r[0] or "none")[:8], r[1] or "unset", "titled" if r[2] else "untitled")
+                            for r in c.execute("select project_id, source, title from conversation_summaries")
+                        )
+                    finally:
+                        c.close()
+                    for k, v in sorted(cnt.items()):
+                        print(" ", v, k)
+                return 0
             if mode == "ui-sync-check":
                 if _ROOT_DIR not in sys.path:
                     sys.path.insert(0, _ROOT_DIR)

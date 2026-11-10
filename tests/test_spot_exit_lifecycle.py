@@ -1414,11 +1414,11 @@ def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
     assert sr._parse_bool_flag("true") is True
     assert sr._parse_bool_flag(1) is True
 
-def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_spot_state_iter144_s2():
-    """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_spot_state."""
+def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_iter144_s2():
+    """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict."""
     from types import SimpleNamespace
     from strategies.spot_engine import StratParams, Strategy, clean_order_id, _parse_bool_flag
-    # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_spot_state
+    # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict
     assert _parse_bool_flag("false") is False
     assert _parse_bool_flag("0") is False
     assert _parse_bool_flag(float("nan")) is False

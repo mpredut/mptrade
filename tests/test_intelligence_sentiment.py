@@ -6866,7 +6866,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
             "get_account_assets_balances: Error reading balances: APIError(code=-2015): Invalid API-key, IP, or permissions for action.",
             f"[{clk_err}]   ! [TRAIL] empty or invalid balance snapshot — skipping the tick",
             f"[{clk_ok}] === TRAILING STOP started — ACTIVE (it really sells) ===",
-            *(f"[{clk_ok}]   [TRAIL] BTCUSDC: 80585.6600  varf 86986.5700  sells below 71763.9202 (-17.5%) {i}" for i in range(12)),
+            *(f"[{clk_ok}]   [TRAIL] BTCUSDC: 80585.6600  peak 86986.5700  sells below 71763.9202 (-17.5%) {i}" for i in range(12)),
         ]),
         encoding="utf-8",
     )

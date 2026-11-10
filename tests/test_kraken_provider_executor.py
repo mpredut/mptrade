@@ -1137,14 +1137,14 @@ def test_krakenclient_validation_on_pair_txid_and_price_decimals_non_iter94_s3(m
     with pytest.raises(ValueError, match="invalid Kraken txid"):
         kc.query_orders(True)
 
-def test_krakenprovider__kraken_pair_matches_free_balance_normalization_negative_fee_rejection_non_iter95_s2():
-    """[ITER95 #2] KrakenProvider _kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series."""
+def test_krakenprovider_kraken_pair_matches_free_balance_normalization_negative_fee_rejection_non_iter95_s2():
+    """[ITER95 #2] KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series."""
     import pytest
-    from providers.kraken_provider import KrakenProvider, _kraken_pair_matches
+    from providers.kraken_provider import KrakenProvider, kraken_pair_matches
     from providers.strategy_executor import ProviderError
-    # 2. KrakenProvider _kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
-    assert _kraken_pair_matches("", "---") is False
-    assert _kraken_pair_matches(True, "BTCUSD") is False
+    # 2. KrakenProvider kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
+    assert kraken_pair_matches("", "---") is False
+    assert kraken_pair_matches(True, "BTCUSD") is False
     kp = KrakenProvider(
         client=type(
             "KC",
@@ -1173,8 +1173,8 @@ def test_krakenprovider_iter111_s1():
     from providers.base import ProviderError
     import providers.kraken_provider as kp
     # 1. KrakenProvider
-    assert kp._kraken_pair_key(True) == ""
-    assert kp._kraken_pair_key(None) == ""
+    assert kp.kraken_pair_key(True) == ""
+    assert kp.kraken_pair_key(None) == ""
     norm = kp._normalize_kraken_fill({"side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000, "ordertxid": True})
     assert "orderId" not in norm
 

@@ -516,10 +516,6 @@ class TestArchiverLifecycle(unittest.TestCase):
                 cm.Cache365PriceManager.RETENTION_DAYS,
                 cm.CM_LONG_ARCHIVE_MONTHS * 30,
             )
-            self.assertEqual(
-                cm.PRICE_365_SYNC_INTERVAL_SEC,
-                cm.CM_LONG_ARCHIVE_FLUSH_SEC,
-            )
             now_ms = int(cm.time.time() * 1000)
             with open(target_jsonl, "w", encoding="utf-8") as handle:
                 handle.write(

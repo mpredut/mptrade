@@ -406,7 +406,17 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
             now_ts=now_ts,
             max_telemetry_age_sec=max_telemetry_age_sec,
         )
-        snap_meta = resolved_snapshot.to_guard_metadata()
+        snap_meta: Dict[str, Any] = {
+            "telemetry_symbol": resolved_snapshot.canonical_symbol,
+            "telemetry_asset_scope": resolved_snapshot.asset_scope,
+            "telemetry_source": resolved_snapshot.source,
+            "telemetry_pillar_sources": dict(resolved_snapshot.pillar_sources),
+            "telemetry_ts": resolved_snapshot.ts,
+            "telemetry_age_sec": round(resolved_snapshot.age_sec, 3) if resolved_snapshot.age_sec is not None else None,
+            "telemetry_max_age_sec": resolved_snapshot.max_age_sec,
+            "telemetry_fresh": resolved_snapshot.is_fresh,
+            "telemetry_available": resolved_snapshot.is_available,
+        }
         if not resolved_snapshot.is_available:
             unavail_reason = str(resolved_snapshot.unavailable_reason or "telemetry_unavailable").strip()
             (logger_inst or logger).warning(
@@ -419,7 +429,7 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
             safe_notional = safe_nonneg_float(notional, 0.0)
             fb_norm = str(self.fallback_action or "allow").strip().lower()
             meta: Dict[str, Any] = {
-                **(snap_meta if isinstance(snap_meta, dict) else {}),
+                **snap_meta,
                 "notional_eur": safe_notional,
                 "evaluated_notional_eur": safe_notional,
                 "telemetry_unavailable_reason": unavail_reason,
@@ -436,7 +446,12 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
 
         context_items = list(header_lines)
         if resolved_snapshot:
-            context_items.append(resolved_snapshot.format_identity_header_line())
+            age_str = f"{resolved_snapshot.age_sec:.1f}s" if resolved_snapshot.age_sec is not None else "n/a"
+            src_str = resolved_snapshot.source or "cachedb"
+            context_items.append(
+                f"- Telemetry Snapshot: symbol={resolved_snapshot.canonical_symbol} "
+                f"(scope={resolved_snapshot.asset_scope}, source={src_str}, age={age_str}, fresh={resolved_snapshot.is_fresh})"
+            )
             context_items.extend(f"- {k}: {v}" for k, v in resolved_snapshot.items())
         context_str = "\n".join(context_items)
 

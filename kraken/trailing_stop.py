@@ -65,8 +65,8 @@ from providers.order_ohlc_utils import extract_order_side
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     _kraken_balance_asset_candidates,
-    _kraken_pair_matches,
-    _split_kraken_pair,
+    kraken_pair_matches,
+    split_kraken_pair,
 )
 from order_lifecycle import (  # noqa: E402
     StrategyExecutorLifecycleApi,
@@ -251,7 +251,7 @@ class KrakenTrailing(TrailingAdapterBase):
         try:
             pair_norm = pair.strip().upper()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair)
-            asset = spec.base if spec is not None else _split_kraken_pair(pair_norm)[0]
+            asset = spec.base if spec is not None else split_kraken_pair(pair_norm)[0]
             if not asset:
                 return None
             held = self.total_qty(asset)
@@ -275,7 +275,7 @@ class KrakenTrailing(TrailingAdapterBase):
                 raw_descr = ord_info.get("descr")
                 descr = raw_descr if isinstance(raw_descr, dict) else {}
                 ord_pair = str(descr.get("pair") or ord_info.get("pair") or "")
-                if extract_order_side(ord_info) == "SELL" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
+                if extract_order_side(ord_info) == "SELL" and (ord_pair == pair or kraken_pair_matches(pair, ord_pair)):
                     try:
                         res = self.client.cancel_order(txid)
                     except Exception as cancel_err:  # noqa: BLE001

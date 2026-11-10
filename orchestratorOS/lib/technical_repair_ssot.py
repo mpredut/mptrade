@@ -669,7 +669,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"apply_weight_limit|"
         r"Started\.\s+check_interval=|"
         r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
-        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|peak|warming up)|"
+        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:peak|warming up)|"
         r"\[TRAIL-K\]\s+heartbeat|"
         r"\[FORWARD \(from the anchor\)\]|"
         r"\[STRAT\]\s+price=\d+(?:\.\d+)?|"

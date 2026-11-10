@@ -260,17 +260,6 @@ def resolve_cachedb_filepath(path: object) -> object:
     return sub_path if sub_dir_exists else raw
 
 
-def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]:
-    """Create all canonical thematic subdomain directories under ``cachedb_dir``."""
-    base = cachedb_dir or get_cachedb_dir()
-    created: list[str] = []
-    for sub in CACHEDB_SUBDOMAINS:
-        sub_path = os.path.join(base, *sub.split("/"))
-        os.makedirs(sub_path, exist_ok=True)
-        created.append(sub_path)
-    return tuple(created)
-
-
 def _clean_stale_staging_in_dir(
     target_dir: str,
     *,
@@ -317,7 +306,8 @@ def organize_cachedb_subdomains(
 ) -> dict[str, list[str]]:
     """Partition flat files in ``cachedb_dir`` into thematic subdomain subdirectories."""
     base = cachedb_dir or get_cachedb_dir()
-    ensure_cachedb_subdomains(base)
+    for sub in CACHEDB_SUBDOMAINS:
+        os.makedirs(os.path.join(base, *sub.split("/")), exist_ok=True)
     moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
     if not os.path.isdir(base):
         return moved
@@ -757,12 +747,6 @@ def kraken_pair_matches(expected: object, actual: object) -> bool:
     if q_exp and q_act:
         return q_exp == q_act
     return True
-
-
-_split_kraken_pair = split_kraken_pair
-_kraken_pair_key = kraken_pair_key
-_kraken_pair_matches = kraken_pair_matches
-
 
 
 def resolve_cache_dir_path(cache_dir: object, *, fallback_default: bool = False) -> str | None:

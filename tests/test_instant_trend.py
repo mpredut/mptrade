@@ -271,7 +271,7 @@ class TestComputation(unittest.TestCase):
         self.assertEqual(m.window_seconds[0], 60.0)
         self.assertEqual(m.window_big_sec, 3600.0)
         m.start_computation({"BTCUSDT": self.cache24}, self.cpm)
-        self.cpm._push_price("BTCUSDT", 50000.0)
+        self.cpm.push_price("BTCUSDT", 50000.0)
         for sec in (60, 600, 3600):
             self.assertIsNotNone(m.get_window("BTCUSDT", sec))
         m.evaluate_full("BTCUSDT")
@@ -320,7 +320,7 @@ class TestComputation(unittest.TestCase):
 
     def test_evaluate_full_writes_complete_snapshot(self):
         # Full calculation without trading logic yields every snapshot metric.
-        self.cpm._push_price("BTCUSDT", 50000.0)
+        self.cpm.push_price("BTCUSDT", 50000.0)
         self.m.evaluate_full("BTCUSDT")
         snap = self.m.get_snapshot("BTCUSDT")
         self.assertIsNotNone(snap)
@@ -363,7 +363,7 @@ class TestComputation(unittest.TestCase):
         cpm.get_price_value.assert_not_called()
 
     def test_valid_push_full_eval_uses_price_observation_timestamp(self):
-        self.cpm._push_price("BTCUSDT", 61234.5)
+        self.cpm.push_price("BTCUSDT", 61234.5)
         observed_at_ms = int((time.time() - 2.0) * 1000)
         with self.cpm.lock:
             self.cpm.cache["BTCUSDT"][0][0] = observed_at_ms
@@ -1348,13 +1348,13 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIsNone(tm.get_last_opposite_fill_price("BTCUSDT", None))
         self.assertEqual(tm.get_last_opposite_fill_price("BTCUSDT", "BUY"), 60000.0)
 
-        # CacheCurrentPriceManager._extract_price_and_ts / _push_price / get_sample_rate zero-span guard
+        # CacheCurrentPriceManager.extract_price_and_ts / push_price / get_sample_rate zero-span guard
         cp_file = os.path.join(self.tmp, "cache_cp_a35.json")
         cpm = cm.CacheCurrentPriceManager(60, ["BTCUSDT"], cp_file, read_only=True)
-        self.assertEqual(cpm._extract_price_and_ts([[0, 60000.0]]), (None, None))
-        self.assertEqual(cpm._extract_price_and_ts([[-5, 60000.0]]), (None, None))
-        cpm._push_price("BTCUSDT", 60000.0, ts_ms=True)
-        cpm._push_price("BTCUSDT", 60000.0, ts_ms=0)
+        self.assertEqual(cpm.extract_price_and_ts([[0, 60000.0]]), (None, None))
+        self.assertEqual(cpm.extract_price_and_ts([[-5, 60000.0]]), (None, None))
+        cpm.push_price("BTCUSDT", 60000.0, ts_ms=True)
+        cpm.push_price("BTCUSDT", 60000.0, ts_ms=0)
         self.assertEqual(cpm.cache.get("BTCUSDT", []), [])
         cpm._update_timestamps["BTCUSDT"].clear()
         cpm._update_timestamps["BTCUSDT"].extend([1000.0, 1000.0])

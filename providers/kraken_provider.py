@@ -59,15 +59,15 @@ from .strategy_executor import (
 from cachepaths import (
     CACHE_KRAKEN_TRADE_FILENAME,
     _LEGACY_KRAKEN_X_BASES,
-    _kraken_pair_key,
-    _kraken_pair_matches,
-    _split_kraken_pair,
     _strip_kraken_asset_suffixes,
     cache_path,
     canonical_base_asset,
     clean_symbol_key,
     compatible_quote_suffixes,
+    kraken_pair_key,
+    kraken_pair_matches,
     resolve_kraken_lookup_symbol,
+    split_kraken_pair,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
@@ -159,7 +159,7 @@ class KrakenProvider(MarketDataProvider):
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_MAX_STALE_S = _CACHE_MAX_STALE_S
-    _fills_match_fn = staticmethod(_kraken_pair_matches)
+    _fills_match_fn = staticmethod(kraken_pair_matches)
     _fills_normalize_fn = staticmethod(_normalize_kraken_fill)
 
     def __init__(self, client=None):
@@ -440,7 +440,7 @@ class KrakenProvider(MarketDataProvider):
         price: Optional[float],
     ) -> None:
         """Auto-convert needed USDC -> ZUSD on zero-fee USDCUSD before a live *USD BUY when cash sits in USDC."""
-        if side_norm != "BUY" or _split_kraken_pair(symbol)[1] != "USD":
+        if side_norm != "BUY" or split_kraken_pair(symbol)[1] != "USD":
             return
         try:
             cli = self._client()
@@ -485,7 +485,7 @@ class KrakenProvider(MarketDataProvider):
             pair = str(description.get("pair") or raw.get("pair") or "")
             if not pair:
                 raise ProviderError(f"open_orders({symbol}): order {order_id} without a pair")
-            if not _kraken_pair_matches(symbol, pair):
+            if not kraken_pair_matches(symbol, pair):
                 continue
             side = normalize_side(description.get("type") or raw.get("type"))
             if side not in {"BUY", "SELL"}:
@@ -525,10 +525,10 @@ class KrakenProvider(MarketDataProvider):
             return None
         if pairs and "*" not in pairs:
             for configured in pairs:
-                if configured == raw or _kraken_pair_matches(configured, raw):
+                if configured == raw or kraken_pair_matches(configured, raw):
                     return configured
             return None
-        return _kraken_pair_key(raw) or raw
+        return kraken_pair_key(raw) or raw
 
     @staticmethod
     def build_cache_fill(
@@ -758,7 +758,7 @@ class KrakenProvider(MarketDataProvider):
         return [
             _normalize_kraken_fill(tr)
             for tr in trades.values()
-            if isinstance(tr, dict) and _kraken_pair_matches(symbol, str(tr.get("pair", "")).upper())
+            if isinstance(tr, dict) and kraken_pair_matches(symbol, str(tr.get("pair", "")).upper())
         ]
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
@@ -956,7 +956,7 @@ class KrakenProvider(MarketDataProvider):
                 if not isinstance(descr, dict):
                     descr = {}
                 pair = str(descr.get("pair") or raw.get("pair") or "")
-                if pair and not _kraken_pair_matches(symbol, pair):
+                if pair and not kraken_pair_matches(symbol, pair):
                     continue
                 clean_oid = _clean_kraken_order_id(order_id, f"order_by_client_id({symbol})")
                 return {"orderId": clean_oid, "status": raw.get("status")}
