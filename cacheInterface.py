@@ -20,9 +20,7 @@ import weakref
 
 from botcore import (
     _parse_bool_flag,
-    extract_timestamp_ms,
     load_dotenv,
-    normalize_timestamp_ms,
     required_float_env,
     required_int_env,
     resolve_patched_attr,
@@ -39,6 +37,10 @@ from cachepaths import (
     migrate_legacy_filename_if_needed,
 )
 from lock import FileLock
+from providers.order_ohlc_utils import (
+    extract_timestamp_ms,
+    normalize_timestamp_ms,
+)
 from state_io import (
     atomic_gzip_file,
     atomic_snapshot_file,
