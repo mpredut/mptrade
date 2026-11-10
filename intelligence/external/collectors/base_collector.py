@@ -216,12 +216,6 @@ class TelemetryCacheCollectorInterface(ABC):
             raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
         self.start_sync = bool(start_sync)
 
-    def is_read_only_consumer(self, allow_network: Optional[bool] = None) -> bool:
-        """True when this collector instance operates in read-only consumer mode (``start_sync=False``)."""
-        if allow_network is not None:
-            return not _parse_bool_flag(allow_network, default=False)
-        return not bool(self.start_sync)
-
     @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
         from intelligence.sentiment.evaluators.price_series_evaluator import resolve_asset_session_policy

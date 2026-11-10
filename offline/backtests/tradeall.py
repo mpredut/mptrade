@@ -333,7 +333,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     broker = BacktestBroker(out_dir, clock, trend_gate=trend_gate,
                             trend_gate_timeout_sec=trend_gate_timeout_sec,
                             trend_gate_max_wait_sec=trend_gate_max_wait_sec)
-    orig_place_smart = getattr(getattr(ta, "po", None), "place_order_smart", None)
     orig_mkt_place = getattr(ta.mkt, "place", None)
     orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
     orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", None)
@@ -351,13 +350,9 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
                     _old_attempts["n"] += 1
                     return None
-                if hasattr(ta, "po"):
-                    ta.po.place_order_smart = _journal_only
                 ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: _journal_only(
                     side_, symbol_, price_, qty_, **kw)
             else:
-                if hasattr(ta, "po"):
-                    ta.po.place_order_smart = broker.place_order_smart
                 ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
                     side_, symbol_, price_, qty_, **kw)
             decision_path = os.path.join(out_dir, "tradeall_decisions.log")
@@ -506,8 +501,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             sys.stderr.write(f"[tradeall_backtest] view: "
                               f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
         finally:
-            if orig_place_smart is not None and hasattr(ta, "po"):
-                ta.po.place_order_smart = orig_place_smart
             if orig_mkt_place is not None:
                 ta.mkt.place = orig_mkt_place
             if orig_mkt_cancel is not None:

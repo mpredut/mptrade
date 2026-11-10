@@ -324,16 +324,3 @@ def initialize_ws_bridge_once(
         raise
     print("⚙️ cacheManager: WS user-data bridge started (execution reports).")
 
-
-def stop_ws_bridge() -> None:
-    """Stop the singleton user-data WebSocket bridge if active."""
-    global _ws_bridge
-    with _ws_bridge_lock:
-        bridge = _ws_bridge
-        _ws_bridge = None
-        sys.modules.pop("_cacheManager_initialized", None)
-        cm = sys.modules.get("cacheManager")
-        if cm is not None and getattr(cm, "_ws_bridge", None) is bridge:
-            cm._ws_bridge = None
-        if bridge is not None:
-            bridge.stop()

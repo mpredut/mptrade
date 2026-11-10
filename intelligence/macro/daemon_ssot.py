@@ -576,12 +576,6 @@ class CachedHttpJsonCollector:
         self._explicit_start_sync: Optional[bool] = None if start_sync is None else bool(start_sync)
         self.start_sync: bool = bool(start_sync) if start_sync is not None else False
 
-    def is_read_only_consumer(self, *, allow_network: Optional[bool] = None) -> bool:
-        """Return True when this instance is operating in read-only consumer mode (0 network I/O)."""
-        if allow_network is not None:
-            return not bool(allow_network)
-        return not bool(self.start_sync)
-
     def _parse_fetched_payload(self, data: Any, now: float) -> Any:
         raise NotImplementedError
 
@@ -664,12 +658,6 @@ class CachedTopicAssessmentAgent:
     def _init_sync_mode(self, start_sync: Optional[bool] = None) -> None:
         self._explicit_start_sync = None if start_sync is None else bool(start_sync)
         self.start_sync = bool(start_sync)
-
-    def is_read_only_consumer(self, allow_llm: Optional[bool] = None) -> bool:
-        """True when this assessment agent operates in read-only consumer mode (``start_sync=False``)."""
-        if allow_llm is not None:
-            return not bool(allow_llm)
-        return not bool(self.start_sync)
 
     def _effective_state_file(self) -> str:
         raw_f = getattr(self, self.STATE_FILE_ATTR, None) or self.DEFAULT_STATE_FILE

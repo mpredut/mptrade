@@ -335,7 +335,6 @@ import pytest
 
 from binance_api.market_data import (
     fetch_ohlc_candles,
-    interval_to_binance_str,
     parse_interval_minutes,
 )
 from strategies.spot_replay import (
@@ -377,16 +376,13 @@ def test_interval_parsing():
     assert parse_interval_minutes("1h") == 60
     assert parse_interval_minutes("4h") == 240
     assert parse_interval_minutes("1d") == 1440
-    assert interval_to_binance_str(60) == "1h"
-    assert interval_to_binance_str(240) == "4h"
-    assert interval_to_binance_str("1h") == "1h"
 
     with pytest.raises(ValueError):
         parse_interval_minutes(0)
     with pytest.raises(ValueError):
         parse_interval_minutes("invalid_interval")
     with pytest.raises(ValueError):
-        interval_to_binance_str(17)
+        fetch_ohlc_candles("BTCUSDC", interval=17)
 
 
 def test_fetch_ohlc_candles_mocked():

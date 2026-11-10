@@ -37,17 +37,6 @@ def parse_interval_minutes(interval: int | str) -> int:
     )
 
 
-def interval_to_binance_str(interval: int | str) -> str:
-    """Convert an interval in minutes or string notation into Binance interval format."""
-    _, interval_str = parse_ohlc_interval(
-        interval,
-        min_to_str=INTERVALS_MIN_TO_STR,
-        str_to_min=INTERVALS_STR_TO_MIN,
-        venue_label="Binance",
-    )
-    return interval_str
-
-
 def fetch_ohlc_candles(
     symbol: str,
     interval: int | str = 60,

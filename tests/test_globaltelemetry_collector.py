@@ -491,7 +491,7 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
     )
 
     orchestrator = PretradeTelemetryOrchestrator()
-    assert orchestrator.is_read_only_consumer() is True
+    assert orchestrator.start_sync is False
 
     # 1. Read-only snapshot extraction has explicit identity, source, and age and triggers zero network calls
     snap = read_pretrade_telemetry_snapshot("NVDA_US_EQ", cachedb_dir=temp_cache_dir, now_ts=now_ts)
@@ -868,15 +868,11 @@ def test_external_collectors_and_survival_producer_consumer_decoupling(
     wh_reader, ob_reader, dt_reader = eog.get_whale_collector(), eog.get_orderbook_collector(), eog.get_derivatives_collector()
     for col in (wh_reader, ob_reader, dt_reader):
         assert col.start_sync is False
-        assert col.is_read_only_consumer() is True
-        assert col.is_read_only_consumer(allow_network=True) is False
 
     # 2. GlobalTelemetryCollector (ExternalTelemetryMixin) initializes collectors as producers (start_sync=True)
     daemon = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=temp_cache_dir)
     for col in (daemon.orderbook_collector, daemon.derivatives_collector, daemon.whale_collector):
         assert col.start_sync is True
-        assert col.is_read_only_consumer() is False
-        assert col.is_read_only_consumer(allow_network=False) is True
 
     # 3. Read-only consumer collectors never trigger HTTP fetches or sibling disk writes on cache miss
     http_calls: list[str] = []
@@ -1072,9 +1068,9 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
     fg_ro = FearGreedCollector(start_sync=False)
     mb_ro = MarketBreadthCollector(start_sync=False)
     nf_ro = NewsFeedCollector(history_file=os.path.join(temp_cache_dir, "news_feed_collect.json"), start_sync=False)
-    assert fg_ro.is_read_only_consumer() is True
-    assert mb_ro.is_read_only_consumer() is True
-    assert nf_ro.is_read_only_consumer() is True
+    assert fg_ro.start_sync is False
+    assert mb_ro.start_sync is False
+    assert nf_ro.start_sync is False
     assert fg_ro.read_snapshot(now_ts=now_ts) is None
     assert mb_ro.read_snapshot(now_ts=now_ts) is None
     nf_snap = nf_ro.read_snapshot(now_ts=now_ts)
@@ -1092,8 +1088,8 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
     mb_consumer = TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=False)
     mb_producer = TelemetryCollectorFactory.create("macro_benchmarks_snapshot", start_sync=True)
     assert mb_consumer is not mb_producer
-    assert mb_consumer.is_read_only_consumer() is True
-    assert mb_producer.is_read_only_consumer() is False
+    assert mb_consumer.start_sync is False
+    assert mb_producer.start_sync is True
 
     # MacroBenchmarksSnapshotCollector.read_snapshot reads from disk with 0 network calls
     save_json_state(
@@ -1106,7 +1102,7 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
 
     # EquityYahoo5dChartCollector.read_snapshot returns empty tuple with 0 network calls
     yc_consumer = TelemetryCollectorFactory.get_yahoo_chart_collector(start_sync=False)
-    assert yc_consumer.is_read_only_consumer() is True
+    assert yc_consumer.start_sync is False
     assert yc_consumer.read_snapshot(temp_cache_dir, "NVDA_US_EQ") == ([], [], [], False, False, 0.0, 0)
 
     # 2. CachedTopicAssessmentAgent (GeopoliticalThreatAnalyzer & SentimentAdvisor) consumer vs producer
@@ -1138,14 +1134,14 @@ def test_telemetry_collector_factory_and_topic_agents_start_sync_contract(temp_c
 
     geo_consumer = GeopoliticalThreatAnalyzer(state_file=geo_path, start_sync=False)
     adv_consumer = SentimentAdvisor(cache_file=adv_path, start_sync=False)
-    assert geo_consumer.is_read_only_consumer() is True
-    assert adv_consumer.is_read_only_consumer() is True
+    assert geo_consumer.start_sync is False
+    assert adv_consumer.start_sync is False
     assert geo_consumer.assess(None, force_refresh=True).threat_level == "ELEVATED"
     assert adv_consumer.review(force_refresh=True).market_bias == "CAUTION"
 
     daemon = MacroAnalyzer(cache_dir=temp_cache_dir)
-    assert daemon.geopolitical_analyzer.is_read_only_consumer() is False
-    assert daemon.sentiment_advisor.is_read_only_consumer() is False
+    assert daemon.geopolitical_analyzer.start_sync is True
+    assert daemon.sentiment_advisor.start_sync is True
 
     # 3. Border cases: PretradeTelemetrySnapshot age recomputation on later guard check + corrupted explicit telemetry
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetrySnapshot
@@ -1291,8 +1287,8 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
         assert isinstance(consumer, col_cls)
         assert isinstance(producer, col_cls)
         assert consumer is not producer
-        assert consumer.is_read_only_consumer() is True
-        assert producer.is_read_only_consumer() is False
+        assert consumer.start_sync is False
+        assert producer.start_sync is True
 
     bybit_col = TelemetryCollectorFactory.create("external_bybit_liquidations", start_sync=False)
     bybit_col.record_event("BTCUSDT", "Sell", 75000.0, ts=1_750_000_000.0)

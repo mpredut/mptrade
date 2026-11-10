@@ -110,12 +110,6 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         self._seen_first_ts: Dict[str, float] = {}
         self._load_history()
 
-    def is_read_only_consumer(self, *, allow_network: Optional[bool] = None) -> bool:
-        """Return True when this collector instance operates in read-only consumer mode (0 network/disk writes)."""
-        if allow_network is not None:
-            return not bool(allow_network)
-        return not bool(self.start_sync)
-
     def _cache_dir(self) -> str:
         cdir = os.path.dirname(os.path.abspath(self._effective_history_file()))
         if os.path.basename(cdir) in (

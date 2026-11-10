@@ -117,7 +117,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         order_retry.RETRY_DEDUP = self.old_retry_dedup
         self.temp.cleanup()
 
-    def _place(self, side, qty, *, smart, legacy_safe_adapter=False,
+    def _place(self, side, qty, *, smart,
                expire_permit_before_dispatch=False):
         events = []
         client = _FakeClient(events)
@@ -161,11 +161,6 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
                     return_value=permit.expires_at + 1.0):
                 return real_consume(*args, **kwargs)
 
-        def routed_place(symbol, order_side, order_price, order_qty, **kwargs):
-            self.assertEqual(symbol, "BTCUSDC")
-            return instrument.place(
-                order_side, order_price, order_qty, **kwargs)
-
         original_price = 105.0 if side == "BUY" else 95.0
         with (
             patch.object(market_api, "_bapi", fake_bapi),
@@ -197,27 +192,18 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(order_guard, "profit_guard", return_value=True),
-            # Isolate the placement from the live short-trend cache: the legacy
-            # place_safe_order path does not pass wait_for_trend=False, so without
-            # this it defers on whatever the production trend state happens to be.
             patch("cacheManager.get_short_trend_manager",
                   return_value=Mock(should_wait=Mock(return_value=False))),
             patch.object(
                 instrument_module.order_lifecycle, "log_order_outcome"),
             patch.object(
-                market_api.api, "place", side_effect=routed_place),
-            patch.object(
                 placeorder, "_submit_binance_order",
                 wraps=placeorder._submit_binance_order) as low_level,
         ):
-            if legacy_safe_adapter:
-                result = placeorder.place_safe_order(
-                    side, "BTCUSDC", original_price, qty=qty)
-            else:
-                result = instrument.place(
-                    side, original_price, qty, smart=smart,
-                    wait_for_trend=False, caller_owns_retry=True,
-                    kind=f"integration_{side.lower()}")
+            result = instrument.place(
+                side, original_price, qty, smart=smart,
+                wait_for_trend=False, caller_owns_retry=True,
+                kind=f"integration_{side.lower()}")
 
         return {
             "result": result,
@@ -228,9 +214,8 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
             "health_calls": health_calls,
         }
 
-    def test_legacy_safe_adapter_preserves_qty_none_until_finite_decision(self):
-        observed = self._place(
-            "BUY", None, smart=False, legacy_safe_adapter=True)
+    def test_instrument_place_preserves_qty_none_until_finite_decision(self):
+        observed = self._place("BUY", None, smart=False)
 
         self.assertEqual(observed["result"]["orderId"], 501)
         self.assertEqual(observed["low_level"].call_args.args[2], 2.0)

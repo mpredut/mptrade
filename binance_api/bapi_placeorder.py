@@ -20,7 +20,6 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api
@@ -31,7 +30,6 @@ from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,
     extract_order_side,
-    extract_timestamp_ms,
     resolve_market_flag,
 )
 from providers.quantity import (
@@ -380,161 +378,6 @@ def _last_opposite_fill_price_api(symbol, order_type):
             if px > 0:
                 return px
     return None
-
-
-def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
-                        *, regime_context=None, bypass_guards=None, **kwargs):
-    """Legacy preflight safety check for Binance orders."""
-    from providers.market_api import BinanceProvider
-
-    order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol, price, qty)
-    provider = BinanceProvider()
-    allow_math_reference_sell = _parse_bool_flag(kwargs.pop("allow_math_reference_sell", False), False)
-    m = order_guard._load_margins()
-    venue_bypass = normalize_bypassed_guards(bypass_guards=m.get("binance_bypass_guards", m["default_bypass_guards"]))
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) | venue_bypass
-    bypass_all = "all" in bypassed or "*" in bypassed
-    bypass_profit_guard = "profit_guard" in bypassed or bypass_all
-    skip_math_profit_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed) or bypass_profit_guard
-    g_prof_revoked = False
-    if skip_math_profit_ref and not bypass_profit_guard and order_type != "BUY" and not allow_math_reference_sell:
-        print(f"[GUARD] {order_type} {symbol}: bypass math_profit/math_reference ignored; is allowed only for BUY")
-        revoke_guard_bypass(bypassed, "G_PROF")
-        skip_math_profit_ref = False
-        g_prof_revoked = True
-    bypass_pg = bypass_all or (
-        skip_math_profit_ref
-        and all(
-            GUARD_REGISTRY[gid].is_bypassed(bypassed)
-            for gid in ("GT_L", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3")
-        )
-    )
-
-    try:
-        price = round(order_candidate_price(order_type, price, api.get_current_price(symbol)), 8)
-        qty = round(float(qty), 8)
-        opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
-
-        ok, reason = order_guard.daily_limit_guard(provider, symbol, order_type, bypass_guards=bypassed)
-        if not ok:
-            return False, reason
-
-        if not bypass_pg:
-            caller_module = order_guard.resolve_caller_module(
-                kwargs.get("module"), prefix=kwargs.get("prefix"), client_order_id=kwargs.get("client_order_id"),
-            )
-            raw_ref_mode = kwargs.get("reference_mode")
-            profit_ref_mode = raw_ref_mode.strip() if isinstance(raw_ref_mode, str) and raw_ref_mode.strip() else None
-            eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
-                "binance", order_type, module=caller_module, reference_mode=profit_ref_mode,
-            )
-
-            if regime_context is None:
-                from providers.market_api import api as market_api
-                regime_context = market_api.market_regime_context(symbol, provider_name="binance")
-
-            window_ref = None
-            if not skip_math_profit_ref and eff_ref_mode != "off":
-                ref_window = order_guard.get_window_cfg(
-                    "binance", symbol=symbol, order_type=order_type,
-                    regime_context=regime_context, module=caller_module, reference_mode=eff_ref_mode,
-                )
-                tb_sec = safe_pos_float(time_back_in_seconds, default=0.0) or 0.0
-                ref_window = safe_pos_float(ref_window, default=None) or (
-                    tb_sec if tb_sec > 0.0 else float(PLACE_ORDER_SAFEBACK_SEC)
-                )
-                fetch_window = max(tb_sec, float(ref_window or 0))
-                time_limit = float(time.time() * 1000) - (ref_window * 1000)
-
-                def _recent_trades(t_side: str):
-                    return [
-                        trade
-                        for trade in (apiorders.get_trade_orders(t_side, symbol, max_age_seconds=fetch_window) or [])
-                        if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                        and extract_order_price(trade, default=0.0) > 0
-                    ]
-
-                recent_opposite_trades = _recent_trades(opposite_order_type)
-                if recent_opposite_trades:
-                    recent_same_trades = _recent_trades(order_type) if len(recent_opposite_trades) > 1 else None
-                    window_ref = order_guard.active_cycle_window_ref(
-                        recent_opposite_trades, recent_same_trades, order_type, reference_mode=eff_ref_mode,
-                    )
-
-            pg_kwargs = dict(
-                window_ref=window_ref, regime_context=regime_context,
-                qty=qty, reference_mode=eff_ref_mode,
-            )
-            if caller_module is not None:
-                pg_kwargs["module"] = caller_module
-            if g_prof_revoked or venue_bypass or (bypass_guards is None and bypassed):
-                pg_kwargs["bypass_guards"] = bypassed
-            elif bypass_guards is not None:
-                pg_kwargs["bypass_guards"] = bypass_guards
-
-            if not order_guard.profit_guard(
-                provider, symbol, order_type, price, order_guard.get_margin_cfg("binance"), **pg_kwargs
-            ):
-                return False, "profit_guard"
-        return True, None
-
-    except BinanceAPIException as e:
-        print(f"Error checking whether the {order_type} order is safe: {e}")
-        return False, "guard_check_api_exception"
-    except Exception as e:
-        print(f"[GUARD] {order_type} {symbol}: the check failed ({e}) -> "
-              f"{'PASSING (bypass)' if bypass_pg else 'BLOCKED (fail-closed)'}")
-        return bool(bypass_pg), (None if bypass_pg else "guard_check_failed")
-
-
-def _guarded_market_place(symbol, order_type, price, qty, **kwargs):
-    """Import lazily to avoid the bapi_placeorder/market_api cycle."""
-    from providers.market_api import api as market_api
-    return market_api.place(symbol, order_type, price, qty, **kwargs)
-
-
-def _place_via_common_pipeline(
-    order_type, symbol, price, qty=None, *, smart: bool,
-    safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
-    cancelorders=False, hours=PLACE_ORDER_HOURS, _reason_out=None, **kwargs,
-):
-    order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol, price, 1.0 if qty is None else qty)
-    call_kwargs = dict(kwargs)
-    if isinstance(_reason_out, dict) and "_outcome_context" not in call_kwargs:
-        call_kwargs["_outcome_context"] = _reason_out
-    order = _guarded_market_place(
-        symbol, order_type, price, qty, smart=smart,
-        safeback_seconds=safeback_seconds, force=force,
-        cancelorders=cancelorders, hours=hours, **call_kwargs,
-    )
-    if order is None and isinstance(_reason_out, dict) and not _reason_out.get("reason"):
-        _reason_out["reason"] = "common_pipeline_refused"
-    return order
-
-
-def place_safe_order(order_type, symbol, price, qty=None,
-                     safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
-                     cancelorders=False, hours=PLACE_ORDER_HOURS,
-                     _reason_out=None, **kwargs):
-    """Adapt the compatible safe API to the common pipeline without smart repricing."""
-    return _place_via_common_pipeline(
-        order_type, symbol, price, qty, smart=False,
-        safeback_seconds=safeback_seconds, force=force,
-        cancelorders=cancelorders, hours=hours, _reason_out=_reason_out, **kwargs,
-    )
-
-
-def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC,
-                      force=False, cancelorders=True, hours=PLACE_ORDER_HOURS,
-                      motivation=None, _reason_out=None, **kwargs):
-    return _place_via_common_pipeline(
-        order_type, symbol, price, qty, smart=True,
-        safeback_seconds=safeback_seconds, force=force,
-        cancelorders=cancelorders, hours=hours, motivation=motivation,
-        _reason_out=_reason_out, **kwargs,
-    )
 
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):

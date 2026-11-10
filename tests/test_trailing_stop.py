@@ -60,8 +60,6 @@ class FakePo:
         return OrderStatus(self.status, filled, filled * order["price"], 0.0)
     def cancel_order(self, symbol, order_id, *, provider_name=None):
         self.status = "canceled"
-    def place_safe_order(self, side, symbol, price, qty, force=False, **kw):
-        return self.place(symbol, side, price, qty, force=force, **kw)
 
 
 class FakeSym:

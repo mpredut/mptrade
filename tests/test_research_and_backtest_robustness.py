@@ -3896,11 +3896,11 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     bapi_ws_bridge.refresh_symbol_in_cache(SimpleNamespace(), "BTCUSDC")
 
     # 3. binance_api.market_data supports 43200 ("1M"), whitespace-padded and uppercase intervals (" 1M ", "1H", "1D", "1W")
-    assert b_md.interval_to_binance_str(43200) == "1M"
-    assert b_md.interval_to_binance_str(" 1M ") == "1M"
-    assert b_md.interval_to_binance_str(" 1H ") == "1h"
-    assert b_md.interval_to_binance_str("1D") == "1d"
-    assert b_md.interval_to_binance_str("1W") == "1w"
+    assert b_md.parse_interval_minutes(43200) == 43200
+    assert b_md.parse_interval_minutes(" 1M ") == 43200
+    assert b_md.parse_interval_minutes(" 1H ") == 60
+    assert b_md.parse_interval_minutes("1D") == 1440
+    assert b_md.parse_interval_minutes("1W") == 10080
     assert b_md.parse_interval_minutes(" 4H ") == 240
     assert b_md._parse_bool_flag("false", default=True) is False
     assert b_md._parse_bool_flag(float("nan"), default=True) is True

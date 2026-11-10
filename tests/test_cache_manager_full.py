@@ -2072,7 +2072,7 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertTrue(cm.CacheFactory.shutdown_all())
         self.assertIsNone(cm._short_trend_instance)
 
-        bapi_ws_bridge.stop_ws_bridge()
+        bapi_ws_bridge._ws_bridge = None
         failing_stream = MagicMock()
         failing_stream.start.side_effect = RuntimeError("stream start failed")
         ok_stream = MagicMock()
@@ -2087,7 +2087,7 @@ class TestAtomicWrite(unittest.TestCase):
             started = bapi_ws_bridge.enable_real_ws_event_sync()
             self.assertIs(started, ok_stream)
             ok_stream.start.assert_called_once()
-        bapi_ws_bridge.stop_ws_bridge()
+        bapi_ws_bridge._ws_bridge = None
 
         # Non-dict JSON root in primary file recovers from .previous on load_state / _reload_from_disk
         p = os.path.join(self.tmp, "cache_non_dict_root.json")

@@ -787,40 +787,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             check_geopolitical_order_guards("BTCUSDC", "BUY", margins=dict(base_full, geopolitical_guard_mode="1"))
 
-    def test_bapi_if_place_safe_order_respects_symmetric_reference_modes(self):
-        """Verify bapi_placeorder.if_place_safe_order resolves and forwards reference_mode symmetrically."""
-        import time as _time
-        from binance_api import bapi_placeorder as bpo
-        from binance_api import bapi_allorders as apiorders
-
-        now_ms = int(_time.time() * 1000)
-        # Two opposite BUY fills: older @ 100, newer @ 80 (strict max=100, average=90, last=80)
-        opp_buys = [
-            {"price": "100.0", "origQty": "1.0", "executedQty": "1.0", "time": now_ms - 7200_000, "side": "BUY"},
-            {"price": "80.0", "origQty": "1.0", "executedQty": "1.0", "time": now_ms - 3600_000, "side": "BUY"},
-        ]
-
-        def _fake_get_trade_orders(side, symbol, max_age_seconds=None):
-            return opp_buys if side == "BUY" else []
-
-        base_full = dict(order_guard._load_margins(), intelligence_guards_mode="off")
-        with mock.patch.object(order_guard, "_MARGINS", dict(base_full, binance_sell_reference="strict")), \
-             mock.patch.object(bpo.sym, "validate_params"), \
-             mock.patch.object(bpo.api, "get_current_price", return_value=85.0), \
-             mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)), \
-             mock.patch.object(apiorders, "get_trade_orders", side_effect=_fake_get_trade_orders):
-            # In 'strict' mode, SELL @ 85 vs max BUY 100 is blocked
-            ok_strict, reason_strict = bpo.if_place_safe_order("SELL", "TAOUSDC", 85.0, 1.0, 86400)
-            self.assertFalse(ok_strict)
-            self.assertEqual(reason_strict, "profit_guard")
-
-            # In 'last' mode (via reference_mode='last'), SELL @ 85 vs last BUY 80 (+6.25% >= 1.15%) is allowed
-            ok_last, reason_last = bpo.if_place_safe_order(
-                "SELL", "TAOUSDC", 85.0, 1.0, 86400, reference_mode="last"
-            )
-            self.assertTrue(ok_last)
-            self.assertIsNone(reason_last)
-
     def test_repository_config_sets_tradeall_symmetric_hybrid_reference(self):
         """Verify live order_guard.conf sets symmetric hybrid BUY/SELL reference for tradeall."""
         with mock.patch.object(order_guard, "_MARGINS", None):

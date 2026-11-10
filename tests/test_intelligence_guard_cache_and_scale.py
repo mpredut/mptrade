@@ -2209,27 +2209,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert dyn is not None
         assert dyn["growth_coefficient"] == pytest.approx(0.30)
 
-        # Verify bapi_placeorder.if_place_safe_order skips apiorders.get_trade_orders when G_PROF is bypassed
-        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
-        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
-        trades_called = []
-        import binance_api.bapi_allorders as apiorders
-        monkeypatch.setattr(apiorders, "get_trade_orders", lambda *a, **k: trades_called.append(a) or [])
-        pg_called = []
-        monkeypatch.setattr(
-            order_guard,
-            "profit_guard",
-            lambda *a, **k: pg_called.append(k.get("bypass_guards")) or False,
-        )
-        ok, reason = bapi_placeorder.if_place_safe_order(
-            "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
-            bypass_guards={"profit_guard"},
-        )
-        assert ok is False
-        assert reason == "profit_guard"
-        assert trades_called == []
-        assert pg_called == [{"profit_guard"}]
-
     def test_iteration5_category_bypass_revocation_resolve_assets_and_sl_episode_cleanup(self, monkeypatch):
         """Regression test for Iteration 5 fixes:
         1. Instrument.place revokes category tokens ('profit', 'qlimit', 'financial', 'gf')
@@ -2301,23 +2280,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert buy_side == "BUY"
         assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(buy_byp) is False
         assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(buy_byp) is True
-
-        # 2. bapi_placeorder.if_place_safe_order must NOT skip profit_guard if GLLM3 is still active
-        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
-        pg_calls = []
-        monkeypatch.setattr(
-            order_guard,
-            "profit_guard",
-            lambda *a, **k: pg_calls.append(k.get("bypass_guards")) or False,
-        )
-        partial_byp = {"g_prof", "g_qlimit2", "gi_obook", "gi_whale", "gi_funding", "gllm1"}
-        ok, reason = bapi_placeorder.if_place_safe_order(
-            "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
-            bypass_guards=partial_byp,
-        )
-        assert ok is False
-        assert reason == "profit_guard"
-        assert len(pg_calls) == 1
 
         # 3. resolve_assets strips separators while preserving unknown suffixes
         assert resolve_assets("HYPE/USDC") == ("HYPE", "USDC")
@@ -2688,20 +2650,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert geo._cached_assessment is not None
         assert geo._cached_assessment.threat_level == "ELEVATED"
 
-        # 4. place_safe_order forwards _reason_out as _outcome_context
-        def fake_guarded_place(symbol, order_type, price, qty, **kw):
-            ctx_out = kw.get("_outcome_context")
-            if isinstance(ctx_out, dict):
-                ctx_out["reason"] = "trend_deferred"
-            return None
-
-        monkeypatch.setattr(bapi_placeorder, "_guarded_market_place", fake_guarded_place)
-        monkeypatch.setattr(bapi_placeorder.sym, "validate_params", lambda *a, **k: None)
-        reason_box = {}
-        res_order = bapi_placeorder.place_safe_order("BUY", "BTCUSDC", 85000.0, 0.01, _reason_out=reason_box)
-        assert res_order is None
-        assert reason_box.get("reason") == "trend_deferred"
-
     def test_iteration10_gtm_scale_idempotency_claimed_qty_scale_sync_mt_reentry_and_spot_engine_submitted_qty(self, tmp_path, monkeypatch):
         """Regression test for Iteration 10 fixes:
         1. GT_M medium_trend_action='scale' respects applied_scale on retry and does not double-halve qty.
@@ -2890,46 +2838,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         import order_guard
         from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
         from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
-
-        # 1. bapi_placeorder.if_place_safe_order revokes G_PROF on SELL unless allow_math_reference_sell=True
-        monkeypatch.setattr(bapi_placeorder.sym, "validate_params", lambda *_a, **_k: None)
-        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda _s: 100.0)
-        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *_a, **_k: (True, None))
-        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *_a, **_k: "average")
-        monkeypatch.setattr(order_guard, "get_window_cfg", lambda *_a, **_k: 3600)
-        monkeypatch.setattr(order_guard, "get_margin_cfg", lambda *_a, **_k: 0.01)
-
-        pg_calls = []
-        monkeypatch.setattr(
-            order_guard,
-            "profit_guard",
-            lambda _prov, _sym, _side, _px, _m, **kw: pg_calls.append(dict(kw)) or True,
-        )
-        ok_sell, _ = bapi_placeorder.if_place_safe_order(
-            "SELL",
-            "BTCUSDC",
-            100.0,
-            1.0,
-            3600,
-            regime_context=SimpleNamespace(resolved_trend="flat"),
-            bypass_guards={"G_PROF"},
-        )
-        assert ok_sell is True
-        assert pg_calls
-        assert "G_PROF" not in (pg_calls[-1].get("bypass_guards") or set())
-
-        # Also check place_order_smart maps _reason_out -> _outcome_context
-        reason_box = {}
-        monkeypatch.setattr(
-            bapi_placeorder,
-            "_guarded_market_place",
-            lambda *_a, **kw: kw["_outcome_context"].update(reason="blocked_by_test") or None,
-        )
-        res_smart = bapi_placeorder.place_order_smart(
-            "BUY", "BTCUSDC", 100.0, 1.0, _reason_out=reason_box
-        )
-        assert res_smart is None
-        assert reason_box.get("reason") == "blocked_by_test"
 
         # 2. Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs
         enqueued_kwargs = []
@@ -4794,22 +4702,6 @@ def test_iteration22_guard_bypass_union_mt_state_clock_skew_kraken_cache_and_tel
     assert res is not None
     assert len(pg_bypasses) == 1
     assert {"g_prof", "gi_obook", "gllm3"}.issubset(pg_bypasses[0])
-
-    # 1B. bapi_placeorder.if_place_safe_order unions caller bypass_guards with binance_bypass_guards
-    pg_bapi = []
-    monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
-    monkeypatch.setattr(
-        order_guard,
-        "profit_guard",
-        lambda *a, **k: (pg_bapi.append(set(k.get("bypass_guards") or set())) or True),
-    )
-    ok_b, _ = bapi_placeorder.if_place_safe_order(
-        "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
-        bypass_guards={"G_PROF"},
-    )
-    assert ok_b is True
-    assert len(pg_bapi) == 1
-    assert {"g_prof", "gi_whale"}.issubset(pg_bapi[0])
 
     # 1C. rtrade._is_gi_whale_enforced unions caller bypass_guards with binance_bypass_guards
     assert rtrade._is_gi_whale_enforced(bypass_guards={"G_PROF"}) is False
@@ -15929,20 +15821,6 @@ def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
         sym_mod.validate_params("BUY", valid_sym, price=True, qty=1.0)
     with pytest.raises(ValueError):
         sym_mod.validate_params("BUY", valid_sym, price="nan", qty=1.0)
-
-    # 2. bapi_placeorder.if_place_safe_order with string price/qty and live cp_val
-    monkeypatch.setattr(bpo.api, "get_current_price", lambda s: 65000.0)
-    monkeypatch.setattr(bpo.order_guard, "daily_limit_guard", lambda *a, **kw: (True, None))
-    monkeypatch.setattr(bpo.order_guard, "profit_guard", lambda *a, **kw: True)
-    ok, reason = bpo.if_place_safe_order(
-        "BUY",
-        valid_sym,
-        "64000.0",
-        "0.01",
-        3600,
-        bypass_guards={"all"},
-    )
-    assert ok is True and reason is None
 
     # 3. BinancePriceStream with scalar string symbols and slash-formatted symbol methods
     ps = bws.BinancePriceStream("btc/usdc")

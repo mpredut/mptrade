@@ -931,8 +931,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=lambda: called.append(True))
             self.assertEqual(called, [True])
             self.assertTrue(sys.modules.get("_cacheManager_initialized"))
-            bapi_ws_bridge.stop_ws_bridge()
-            self.assertNotIn("_cacheManager_initialized", sys.modules)
         finally:
             if prev_init is not None:
                 sys.modules["_cacheManager_initialized"] = prev_init
