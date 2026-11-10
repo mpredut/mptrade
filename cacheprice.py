@@ -291,6 +291,20 @@ class Cache24PriceManager(CachePriceManagerBase):
     def _on_stale_memory_detected_locked(self) -> None:
         self._reload_from_disk()
 
+    def _persist_periodic_state(self, sync_complete):
+        if self.save_state and not self.append_persist:
+            with self.lock:
+                persisted_max_ts = self._persisted_max_ts()
+                mem_max_ts = self._mem_max_ts()
+                if (
+                    persisted_max_ts > mem_max_ts
+                    and mem_max_ts <= self._last_disk_sync_max_ts
+                ):
+                    self._reload_from_disk()
+                    self._publish_periodic_sync_health(sync_complete, True)
+                    return True
+        return super()._persist_periodic_state(sync_complete)
+
     def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
         if persisted_max_ts > self._last_disk_sync_max_ts:
             self._merge_newer_disk_ohlc_series_locked()
@@ -310,6 +324,11 @@ class Cache24PriceManager(CachePriceManagerBase):
             disk_items = (
                 data.get("items")
                 if isinstance(data, dict) and isinstance(data.get("items"), dict)
+                else {}
+            )
+            disk_ft = (
+                data.get("fetchtime")
+                if isinstance(data, dict) and isinstance(data.get("fetchtime"), dict)
                 else {}
             )
             for s in list(self.symbols):
@@ -355,6 +374,9 @@ class Cache24PriceManager(CachePriceManagerBase):
                         ):
                             by_ts[ts] = r
                 self.cache[s] = [by_ts[k] for k in sorted(by_ts)]
+                ft_cand = safe_pos_int(disk_ft.get(s), default=0) or 0
+                if ft_cand > int(self.fetchtime_per_symbol.get(s, 0) or 0):
+                    self.fetchtime_per_symbol[s] = ft_cand
                 if hasattr(self, "_trim_old_data"):
                     self._trim_old_data(s)
         except Exception as exc:

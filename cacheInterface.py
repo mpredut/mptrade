@@ -603,6 +603,11 @@ class CacheManagerInterface(ABC):
     def _save_state_to_file_impl(self) -> bool:
         with self.lock:
             persisted_max_ts = self._persisted_max_ts()
+            if (
+                not self.append_persist
+                and self._mem_max_ts() > self._last_disk_sync_max_ts
+            ):
+                self._before_snapshot_commit_locked(persisted_max_ts)
             if persisted_max_ts > self._mem_max_ts():
                 builtins.print(
                     f"[{self.cls_name}][resync] file newer than memory -> "
