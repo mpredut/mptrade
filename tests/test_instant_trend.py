@@ -1585,7 +1585,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
     def test_audit41_primary_window_float_precision_and_price_coercion(self):
         """Audit #41: CacheShortTrendManager primary window 222.0 exact matching, price coercion in Cache24/Sparse/CurrentPrice, and bapi_ws_health mirroring."""
         from decimal import Decimal
-        from binance_api import bapi_ws_health
+        from binance_api import bapi_ws_bridge as bapi_ws_health
 
         # 1. WINDOW_SECONDS[0] is exact 222.0 and matches both 222 and 3.7*60 without duplicate evaluation
         stm = cm.CacheShortTrendManager(

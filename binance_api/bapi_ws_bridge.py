@@ -12,7 +12,7 @@ from binance_api.bapi_ws_normalize import (
     parse_order_execution_report,
     parse_trade_execution_report,
 )
-from botcore import _parse_bool_flag, normalize_class_name, register_module_aliases, safe_pos_float
+from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float
 from instrument_registry import casefold_get
 import log  # noqa: F401 — keep print behavior aligned with the rest of the runtime
 
@@ -109,8 +109,6 @@ def should_poll_for_manager(
         effective_healthy = _parse_bool_flag(_ws_is_healthy) if ws_is_healthy is None else _parse_bool_flag(ws_is_healthy)
         return (not effective_available) or (not effective_healthy)
 
-
-register_module_aliases(__name__, "binance_api.bapi_ws_health")
 
 _ws_bridge = None
 _ws_bridge_lock = threading.Lock()

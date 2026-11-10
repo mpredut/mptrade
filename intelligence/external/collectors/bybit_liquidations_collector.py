@@ -20,7 +20,6 @@ import websockets
 from botcore import (
     async_interruptible_sleep,
     normalize_epoch_sec,
-    register_module_aliases,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -372,7 +371,4 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
 
 
 TelemetryCollectorFactory.register(BybitLiquidationCollector.COLLECTOR_ID, BybitLiquidationCollector)
-
-
-register_module_aliases(__name__, "liquidation_signal")
 

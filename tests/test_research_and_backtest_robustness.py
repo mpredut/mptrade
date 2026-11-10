@@ -170,7 +170,7 @@ def test_spot_replay_adapters_ssot():
 
 def test_sim_clock_value_and_ts_alias():
     """SimClock supports both .ts and .value property access and optional initial_ts."""
-    from providers.replay_clock import SimClock
+    from providers.replay_provider import SimClock
 
     clock = SimClock(0.0)
     assert clock.ts == 0.0
@@ -1988,7 +1988,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from instrument_registry import InstrumentSpec, select_instruments
     from orchestratorOS.agy import paths as agy_paths
     from orchestratorOS.lib import watchdog_common as wd_common
-    from shadow_runtime import require_shadow_interval
+    from botcore import require_shadow_interval
 
     df_cmc_sample = pd.DataFrame([
         {"name": "Bitcoin", "symbol": "BTC", "launch_date": pd.Timestamp("2020-01-01"), "price": 60000.0, "change_24h": 1.0, "change_7d": 2.0, "website_slug": "btc"},
@@ -2339,7 +2339,7 @@ def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
     """Verify intelligence.cli, bapi_ws_health, bapi_ws, and pricefetcher handle string booleans, whitespace symbols, and FearGreedSnapshot schema."""
     import json
     from binance_api.bapi_ws import BinancePriceStream
-    from binance_api.bapi_ws_health import mark_ws_available, should_poll_for_manager
+    from binance_api.bapi_ws_bridge import mark_ws_available, should_poll_for_manager
     from intelligence.cli import inspect_symbol_intelligence
     from market_monitor.pricefetcher import StockYahooPricePlatform
 
@@ -2858,7 +2858,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
 
 def test_root_modules_batch4_hardening():
     import assetguardian
-    import liquidation_signal
+    from intelligence.external.collectors import bybit_liquidations_collector as liquidation_signal
     import log
     import order_guard
     import priceAnalysis
@@ -4251,7 +4251,7 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
     import os
     import sys
     import types
-    from shadow_runtime import prepare_shadow_runtime
+    from botcore import prepare_shadow_runtime
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     hl_dir = os.path.join(root_dir, "hyperliquid")
@@ -5745,7 +5745,7 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
 def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     import asyncio
     import cacheManager as cm
-    import liquidation_signal as ls_mod
+    from intelligence.external.collectors import bybit_liquidations_collector as ls_mod
     from providers import order_ohlc_utils as oou
     from providers import quantity as pqty
     from providers import market_api as pmarket
@@ -6018,7 +6018,7 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
 
 def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
-    from binance_api import bapi, bapi_placeorder, bapi_ws, bapi_ws_health
+    from binance_api import bapi, bapi_placeorder, bapi_ws, bapi_ws_bridge as bapi_ws_health
     from binance_api import market_data as b_mdata
     from binance_api.trailing_stop import TrailingStop
     from kraken import backtest_trail, kraken_xstock_watch

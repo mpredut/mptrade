@@ -605,13 +605,13 @@ class TestMonitorPriceAndTradeIntegration(unittest.TestCase):
 
 class TestSimClock(unittest.TestCase):
     def test_callable_returns_ts(self):
-        from providers.replay_clock import SimClock
+        from providers.replay_provider import SimClock
         clock = SimClock()
         clock.ts = 12345.0
         self.assertEqual(clock(), 12345.0)
 
     def test_advancing_ts_reflected_immediately(self):
-        from providers.replay_clock import SimClock
+        from providers.replay_provider import SimClock
         clock = SimClock()
         clock.ts = 100.0
         self.assertEqual(clock(), 100.0)
@@ -620,7 +620,7 @@ class TestSimClock(unittest.TestCase):
 
     def test_tradeall_backtest_uses_shared_class(self):
         from offline.backtests import tradeall as tb
-        from providers.replay_clock import SimClock
+        from providers.replay_provider import SimClock
         self.assertIs(tb.SimClock, SimClock)
 
 

@@ -1742,25 +1742,15 @@ def register_module_aliases(module_name: str, *aliases: str) -> None:
                     setattr(parent_pkg, child_attr, self_mod)
 
 
-register_module_aliases(__name__, "shadow_runtime")
-
-
 _MERGED_MODULE_TARGETS = {
     "accepted_order_persistence": "order_lifecycle",
     "order_outcomes_log": "order_lifecycle",
     "order_rollback": "order_lifecycle",
-    "shadow_runtime": "botcore",
-    "liquidation_signal": "intelligence.external.collectors.bybit_liquidations_collector",
     "hyperliquid.signals": "hyperliquid.signals",
     "hyperliquid.price_analysis": "hyperliquid.signals",
     "price_analysis": "hyperliquid.signals",
     "keys": "credentials",
     "keys.apikeys": "credentials",
-    "instruments_config": "instrument_registry",
-    "binance_api.bapi_ws_health": "binance_api.bapi_ws_bridge",
-    "providers.binance_filters": "providers.quantity",
-    "providers.http_resilience": "providers.base",
-    "providers.replay_clock": "providers.replay_provider",
     "config": "botcore",
     "symbols": "instrument_registry",
 }

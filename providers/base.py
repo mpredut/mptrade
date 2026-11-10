@@ -15,7 +15,6 @@ from botcore import (
     exact_nonneg_int,
     extract_current_price_item,
     is_shared_disk_cache_enabled,
-    register_module_aliases,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -1099,7 +1098,4 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
         return True
     except Exception:  # noqa: BLE001 -- retries are best-effort; the timeout still guards
         return False
-
-
-register_module_aliases(__name__, "providers.http_resilience")
 

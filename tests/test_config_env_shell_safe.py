@@ -135,7 +135,7 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
 def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     import pytest
     import order_outcomes_log
-    import shadow_runtime
+    import botcore as shadow_runtime
     import shadow_signals
 
     monkeypatch.setenv("TEST_SHADOW_FLOAT", "nan")
@@ -179,8 +179,8 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     import pytest
     import active_intents
     import binance_cache_health
-    from liquidation_signal import BybitLiquidationCollector
-    from providers import binance_filters, execution_audit
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from providers import quantity as binance_filters, execution_audit
     from strategies.position_exit_manager import (
         PositionExitManager,
         PositionSnapshot,
@@ -1220,7 +1220,7 @@ def test_new_coins_discovery_and_pricefetcher_hardening():
 def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
     import json
     import math
-    import liquidation_signal as ls
+    from intelligence.external.collectors import bybit_liquidations_collector as ls
     import cachetrend as ct
     import active_intents as ai
 

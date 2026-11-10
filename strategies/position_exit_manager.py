@@ -360,10 +360,6 @@ def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:
     return safe_pos_float(custom_val, default=safe_pos_float(default_val, default=0.0) or 0.0)
 
 
-def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
-    return safe_nonneg_float(custom_val, default=safe_nonneg_float(default_val, default=0.0) or 0.0)
-
-
 def _same_buy_price(stored_buy_price: Any, buy_price: float) -> bool:
     ebp, cbp = safe_pos_float(stored_buy_price, default=None), safe_pos_float(buy_price, default=None)
     return ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12)
@@ -770,7 +766,7 @@ class PositionExitManager:
     ) -> Tuple[float, Dict[str, Any]]:
         """Compute dynamic peak pullback threshold tightened on out-of-pattern spikes."""
         gain_threshold = _resolve_positive_threshold(gain_threshold, self.config.gain_threshold)
-        peak_gain = _resolve_nonneg_threshold(peak_gain, 0.0)
+        peak_gain = safe_nonneg_float(peak_gain, default=0.0)
         eff_vol, _ = self._resolve_effective_vol_1h(symbol, vol_1h)
 
         anomaly_threshold = max(gain_threshold * 1.5, (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0)
@@ -1067,7 +1063,9 @@ class PositionExitManager:
                 peak=peak, pullback_ratio=pullback_ratio,
             )
 
-        drop_required = _resolve_nonneg_threshold(custom_drop_pct, self.config.reentry_drop_pct)
+        drop_required = safe_nonneg_float(
+            custom_drop_pct, default=safe_nonneg_float(self.config.reentry_drop_pct, default=0.0) or 0.0
+        )
         if drop_required > 0 and not snapshot.has_dropped(last_sell, drop_required, self.config.reentry_tolerance_pct):
             discount_target = last_sell * (1.0 - drop_required)
             return self._reentry_wait(

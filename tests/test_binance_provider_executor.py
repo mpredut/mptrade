@@ -209,7 +209,7 @@ class BinanceExecutorContractTest(unittest.TestCase):
 from decimal import Decimal
 import pytest
 
-from providers.binance_filters import (
+from providers.quantity import (
     BinanceFilterError,
     BinanceOrderRules,
     binance_filter_refusal_reason,

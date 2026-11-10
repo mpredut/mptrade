@@ -287,13 +287,6 @@ class Strategy(BaseSpotMixin):
         except OSError as e:
             log(f"  ! [STRAT] cannot save: {e}")
 
-    # -- helpers ---------------------------------------------------------------
-    def _open_pending(self) -> bool:
-        return any(o["role"] == "open" for o in self.s["orders"])
-
-    def _close_order(self) -> dict | None:
-        return next((o for o in self.s["orders"] if o["role"] == "close"), None)
-
     # -- placement -------------------------------------------------------------
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
         sz_f = safe_pos_float(sz, default=None)
@@ -327,7 +320,7 @@ class Strategy(BaseSpotMixin):
             log(f"  ! [STRAT] {role} {kind} failed: {msg}")
 
     def _cancel_close(self) -> bool:
-        o = self._close_order()
+        o = next((o for o in self.s["orders"] if o["role"] == "close"), None)
         if not o:
             return True
         oid = o.get("oid")
@@ -599,7 +592,7 @@ class Strategy(BaseSpotMixin):
         held = self.s["qty"]
         d = self.p.entry_discount_pct / 100
         if held <= 1e-12:
-            if self._open_pending(): return
+            if any(o["role"] == "open" for o in self.s["orders"]): return
             # SIGNAL GATE: do not enter against the trend or prediction.
             if self.p.signal_gate or (signal is not None and signal != "__any__"):
                 if signal is not None:
@@ -630,7 +623,7 @@ class Strategy(BaseSpotMixin):
         if self.p.enable_takeprofit and avg:
             target = avg * (1 + self.sign * self.p.takeprofit_pct/100)
             if target > 0:
-                o = self._close_order()
+                o = next((o for o in self.s["orders"] if o["role"] == "close"), None)
                 if o is None:
                     self._place("close", held, target, "TP")
                 elif abs(o["px"]-target)/target > 0.001 or abs(o["sz"]-held) > 1e-9:
@@ -651,7 +644,7 @@ class Strategy(BaseSpotMixin):
         if (self.s["dca_buys"] < self.p.max_dca_buys and self.s["last_open_price"]
                 and dca_hit
                 and self.s["spent"] + self.p.dca_amount <= self.p.max_budget
-                and not self._open_pending()):
+                and not any(o["role"] == "open" for o in self.s["orders"])):
             px = price * (1 - self.sign * d)
             if not self.replay_mode:
                 log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) — DCA")

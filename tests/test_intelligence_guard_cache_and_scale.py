@@ -6617,10 +6617,9 @@ def test_iteration38_headroom_cancel_opposite_and_provider_base_nan_bool_safety(
 def test_iteration39_binance_filters_strategy_executor_market_api_nan_bool_safety():
     from types import SimpleNamespace
     import pytest
-    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool_flag
+    from providers.quantity import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool_flag, decide_quantity
     from providers.strategy_executor import ProviderError, SubmissionOutcome
     from providers.market_api import BinanceProvider
-    from providers.quantity import decide_quantity
 
     # 1. binance_filters._decimal rejects bool and _parse_bool_flag handles string "false"
     with pytest.raises(BinanceFilterError):
@@ -6819,10 +6818,9 @@ def test_iteration43_ws_health_market_data_execution_audit_replay_and_trailing_n
     import json
     from types import SimpleNamespace
     import pytest
-    from binance_api import bapi_ws_health, market_data, trailing_stop
+    from binance_api import bapi_ws_bridge as bapi_ws_health, market_data, trailing_stop
     from providers.execution_audit import ExecutionAudit, AuditedStrategyExecutor
-    from providers.replay_provider import ReplayMarketDataProvider
-    from providers.replay_clock import SimClock
+    from providers.replay_provider import ReplayMarketDataProvider, SimClock
     from providers.strategy_executor import ProviderError
 
     # 1. bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock
@@ -8461,7 +8459,7 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
     import assetguardian
     from botcore import safe_pos_float
     from credentials import CredentialProfileMissingError, resolve_credential_pair
-    from liquidation_signal import BybitLiquidationCollector
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
 
     # 1. liquidation_signal safe_pos_float & _ingest handle OverflowError and start() has _start_lock
@@ -9530,7 +9528,7 @@ def test_iteration84_spot_rules_state_store_execution_audit_and_http_resilience(
     import requests
     from strategies import spot_rules
     from strategies.state_store import JsonStateStore, StatePersistenceError
-    from providers import execution_audit, http_resilience
+    from providers import base as http_resilience, execution_audit
 
     # 1. spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal
     assert spot_rules.entry_price("100.0", "5.0") == 95.0
@@ -9590,9 +9588,8 @@ def test_iteration84_spot_rules_state_store_execution_audit_and_http_resilience(
 def test_iteration85_decide_quantity_sell_scale_bool_env_and_binance_filters(monkeypatch):
     """Verify Iteration 85 decide_quantity never downscales SELL even with explicit scale, bool_env inline comments/tokens, and binance_filters safety."""
     import pytest
-    from providers.quantity import decide_quantity
+    from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag, decide_quantity
     from providers.base import bool_env
-    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
 
     # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
     class _DummyProvider:
@@ -11141,7 +11138,7 @@ def test_iteration107_binance_cache_health_market_regime_and_order_outcomes_safe
 
 def test_iteration108_binance_filters_bapi_ws_normalize_and_bapi_safety():
     """Iteration 108: Verify binance_filters, bapi_ws_normalize, bapi_ws_bridge, bapi, and order_id_context safety."""
-    from providers.binance_filters import BinanceFilterError, BinanceOrderRules
+    from providers.quantity import BinanceFilterError, BinanceOrderRules
     from binance_api import bapi
     from binance_api import bapi_allorders
     from binance_api import bapi_trades
@@ -11213,7 +11210,7 @@ def test_iteration109_providers_base_http_resilience_replay_and_trailing_stop_sa
     from types import SimpleNamespace
     import botcore
     from providers import base as pbase
-    from providers import http_resilience as hres
+    from providers import base as hres
     from providers import order_ohlc_utils as oou
     from providers import replay_provider as rprov
     from binance_api import trailing_stop as bts
@@ -12208,7 +12205,7 @@ def test_iteration121_reentry_state_sync_market_regime_and_rollback_safety():
     """Iteration 121: Verify PositionExitManager.evaluate_reentry external trough/peak sync and lowercase STOP kind, MarketRegimeService._age_limit/resolve_with_evidence validation, order_rollback NaN level and non-list cancelled_orders, and shadow_runtime.require_shadow_interval float/non-positive rejection."""
     import pytest
     import order_rollback as orb
-    import shadow_runtime as sr
+    import botcore as sr
     from market_regime import MarketRegimeHorizon, MarketRegimeService
     from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentrySnapshot
 
@@ -12960,7 +12957,7 @@ def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatc
 def test_iteration131_trailing_core_is_flat_ws_normalize_and_ws_health_hygiene(tmp_path):
     """Verify TrailingCore string 'false' is_flat & non-dict state root handling, bapi_ws_normalize sentinel/container ID rejection, and bapi_ws_health manager name normalization."""
     import json
-    from binance_api import bapi_ws_health, bapi_ws_normalize
+    from binance_api import bapi_ws_bridge as bapi_ws_health, bapi_ws_normalize
     from trailing_core import TrailingCore
 
     # 1. TrailingCore: string "false" in st["is_flat"] does not block peak tracking or reset warmup
@@ -14587,8 +14584,7 @@ def test_iteration154_t212_market_data_import_and_quantity_filters_base_hygiene(
     from decimal import Decimal
 
     from providers.base import aggregate_fills_by_order_id, extract_order_id
-    from providers.binance_filters import BinanceOrderRules
-    from providers.quantity import decide_quantity, remaining_average_cost
+    from providers.quantity import BinanceOrderRules, decide_quantity, remaining_average_cost
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -15505,7 +15501,7 @@ def test_iteration165_credentials_cache_manager_and_cachetrend_hygiene(tmp_path,
 def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     from types import SimpleNamespace
     import pricewindow as pw
-    from binance_api import bapi_ws_health as ws_health
+    from binance_api import bapi_ws_bridge as ws_health
     from binance_api import bapi_ws_bridge as ws_bridge
 
     # 1. PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases
@@ -15585,8 +15581,8 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     from decimal import Decimal
     import botcore as cfg_mod
     import order_outcomes_log as ool
-    from providers import binance_filters as bf
-    from providers import http_resilience as hr
+    from providers import base as hr
+    from providers import quantity as bf
     from providers import quantity as qty_mod
 
     # 1. binance_filters.decimal_places with Decimal, str, float, and invalid inputs

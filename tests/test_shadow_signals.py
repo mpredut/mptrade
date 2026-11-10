@@ -126,7 +126,7 @@ class TestShadowRuntime(unittest.TestCase):
     """Runtime setup idempotency and interval validation."""
 
     def test_prepare_shadow_runtime_is_idempotent(self):
-        from shadow_runtime import prepare_shadow_runtime
+        from botcore import prepare_shadow_runtime
         import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
@@ -146,7 +146,7 @@ class TestShadowRuntime(unittest.TestCase):
                     sys.path.remove(tmp_dir)
 
     def test_shadow_interval_validation(self):
-        from shadow_runtime import require_shadow_interval
+        from botcore import require_shadow_interval
         require_shadow_interval(240, 240, "HL shadow")
         with self.assertRaisesRegex(ValueError, "240m"):
             require_shadow_interval(60, 240, "HL shadow")

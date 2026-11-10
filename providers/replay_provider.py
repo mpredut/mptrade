@@ -22,7 +22,6 @@ from typing import Dict, List, Optional, Tuple
 from botcore import (
     exact_pos_int,
     normalize_side,
-    register_module_aliases,
     require_finite_float,
     safe_float,
     safe_nonneg_float,
@@ -368,7 +367,4 @@ class ReplayMarketDataProvider(MarketDataProvider):
         # ambiguous/fail-closed behavior. A future iteration may simulate that guard;
         # currently place_order executes directly without the additional layer.
         return True
-
-
-register_module_aliases(__name__, "providers.replay_clock")
 

@@ -13,7 +13,6 @@ from botcore import (
     clean_order_id_str,
     normalize_side,
     obj_attr,
-    register_module_aliases,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -741,5 +740,3 @@ def decimal_places(step: Decimal | str | int | float) -> int:
     parsed = _decimal(step, name="step for decimal_places", allow_zero=False)
     return max(0, -int(parsed.normalize().as_tuple().exponent))
 
-
-register_module_aliases(__name__, "providers.binance_filters")

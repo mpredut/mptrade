@@ -1028,24 +1028,12 @@ def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
 _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 
-def _read_json_recovering(path: str) -> Optional[dict]:
-    return read_json_dict_cached(path, _JSON_RECOVERING_MEMO, max_entries=32)
-
-
-def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
-    try:
-        p = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
-        data = _read_json_recovering(p)
-        if isinstance(data, dict):
-            return lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
-    except Exception:
-        pass
-    return None
-
-
 def _scan_cached_long_trend(symbol: str, parser):
     try:
-        return scan_latest_long_trend_value(_read_cached_long_trend_entries(symbol), parser)
+        p = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
+        data = read_json_dict_cached(p, _JSON_RECOVERING_MEMO, max_entries=32)
+        entries = lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True) if isinstance(data, dict) else None
+        return scan_latest_long_trend_value(entries, parser)
     except Exception:
         return None
 
@@ -1206,7 +1194,7 @@ def _read_cached_price_history(
     ))
     watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
     for p_path in (*p24_paths, watcher_path):
-        data = _read_json_recovering(p_path)
+        data = read_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
         if not isinstance(data, (dict, list)):
             continue
         try:

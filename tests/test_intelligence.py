@@ -5049,8 +5049,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
         "accepted_order_persistence",
         "order_outcomes_log",
         "order_rollback",
-        "shadow_runtime",
-        "liquidation_signal",
         "keys.apikeys",
         "hyperliquid.price_analysis",
         "price_analysis",
@@ -5063,10 +5061,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     ool = importlib.import_module("order_outcomes_log")
     assert hasattr(ool, "log_order_outcome")
     assert ool.__name__ == "order_lifecycle"
-
-    sr = importlib.import_module("shadow_runtime")
-    assert hasattr(sr, "require_shadow_interval")
-    assert sr.__name__ == "botcore"
 
     # 2. credentials reload refreshes keys.apikeys shim while preserving keys._is_credentials_shim
     sys.modules.pop("keys.apikeys", None)
@@ -5188,14 +5182,7 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
 
     # 1. Reloading host modules refreshes Package E/H aliases in sys.modules and parent packages
     ir_reloaded = importlib.reload(instrument_registry)
-    assert sys.modules.get("instruments_config") is ir_reloaded
-
-    # Lazy __getattr__ on binance_api resolves merged submodule aliases even after delattr/pop
-    sys.modules.pop("binance_api.bapi_ws_health", None)
-    binance_api.__dict__.pop("bapi_ws_health", None)
-    ws_h = binance_api.bapi_ws_health
-    assert ws_h.__name__ == "binance_api.bapi_ws_bridge"
-    assert sys.modules.get("binance_api.bapi_ws_health") is ws_h
+    assert sys.modules.get("symbols") is ir_reloaded
 
     # Monkeypatching instrument.Instrument is respected by bind_instruments
     import instrument as inst_mod

@@ -718,7 +718,7 @@ def validate_params(order_type, symbol, price=1, qty=1):
     validate_symbols(symbol)
 
 
-register_module_aliases(__name__, "instruments_config", "symbols")
+register_module_aliases(__name__, "symbols")
 
 
 if __name__ == "__main__":

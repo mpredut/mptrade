@@ -943,7 +943,7 @@ def test_canonical_package1_unified_primitives():
 class HttpResilienceTest(unittest.TestCase):
     def _retry(self, **kw):
         import requests
-        from providers.http_resilience import mount_connect_retry
+        from providers.base import mount_connect_retry
 
         session = requests.Session()
         self.assertTrue(mount_connect_retry(session, **kw))
@@ -957,7 +957,7 @@ class HttpResilienceTest(unittest.TestCase):
 
     def test_both_schemes_share_the_mounted_adapter(self):
         import requests
-        from providers.http_resilience import mount_connect_retry
+        from providers.base import mount_connect_retry
 
         session = requests.Session()
         mount_connect_retry(session)
@@ -977,7 +977,7 @@ class HttpResilienceTest(unittest.TestCase):
         self.assertNotIn("POST", {str(m).upper() for m in allowed})
 
     def test_best_effort_returns_false_without_raising(self):
-        from providers.http_resilience import mount_connect_retry
+        from providers.base import mount_connect_retry
 
         class _BadSession:
             def mount(self, *_a, **_k):
