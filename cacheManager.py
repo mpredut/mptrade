@@ -12,7 +12,7 @@ The 3-tier polymorphic cache hierarchy is split across 5 focused modules:
 4. ``cachetrend.py``     — Level 2 ``CacheTrendManagerBase(CacheManagerInterface, ABC)``
                            + Level 3 ``CacheLongTrendManager``, ``CacheShortTrendManager``
 5. ``cacheManager.py``   — ``CacheFactory`` registry, ``get_*_manager()`` accessors,
-                           Binance user-stream WS bridge wiring, and daemon entrypoint.
+                           and venue-agnostic daemon supervisor entrypoint.
 """
 
 from __future__ import annotations
@@ -24,11 +24,6 @@ import threading
 import time
 from typing import Optional
 
-from binance_api import bapi as api
-from binance_api import bapi_allorders as apiorders
-from binance_api import bapi_trades as _bapi_trades
-from binance_api import bapi_ws_bridge as _bapi_ws_bridge
-import binance_cache_health as account_cache_health
 from botcore import (
     load_dotenv,
     safe_nonneg_float,
@@ -54,14 +49,34 @@ from cacheaccount import (
     WS_EVENT_LOG_ENABLED,
     WS_LOSS_TIMEOUT_SEC,
     WS_ONLY_MODE,
+    _append_trade_from_execution_report,
+    _bapi_ws_bridge,
+    _handle_binance_ws_event,
+    _initialize_once,
     _mark_ws_available,
     _mark_ws_event_received,
     _mark_ws_unhealthy,
+    _persist_ws_updated_caches,
     _should_poll_for_manager,
+    _upsert_order_from_execution_report,
     _ws_available,
+    _ws_bridge,
+    _ws_cache_getter,
     _ws_health_lock,
     _ws_is_healthy,
     _ws_last_event_ts,
+    account_cache_health,
+    api,
+    apiorders,
+    bind_account_cache_getter,
+    clear_binance_trade_cache_hook,
+    disable_account_cache_daemon_writer,
+    enable_real_ws_event_sync,
+    ensure_account_cache_readers,
+    refresh_symbol_in_cache,
+    request_stop_account_ws_streams,
+    start_account_cache_daemon,
+    stop_account_ws_streams,
 )
 from cachepaths import migrate_legacy_filename_if_needed
 from cacheprice import (
@@ -74,6 +89,9 @@ from cacheprice import (
     KrakenPriceStream,
     _fetch_price_with_deadline,
     _start_nonbinance_trend_poller,
+    attach_default_price_ws_stream,
+    request_stop_price_ws_streams,
+    stop_price_ws_streams,
 )
 from cachetrend import (
     CM_DYNAMIC_WINDOW_MAX_SEC,
@@ -93,11 +111,6 @@ from state_io import (
 )
 
 load_dotenv()
-
-_ws_health_lock = _bapi_ws_bridge._ws_health_lock
-_ws_available = _bapi_ws_bridge._ws_available
-_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
-_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 _current_price_instance: Optional[CacheCurrentPriceManager] = None
 _current_price_lock = threading.RLock()
@@ -424,14 +437,18 @@ class CacheFactory:
             return cls._instances[name]
 
     @classmethod
-    def _clear_bapi_trade_manager_ref(cls, trade_mgr) -> None:
-        if trade_mgr is None:
+    def _run_teardown_hooks(cls, name: str, instance) -> None:
+        if instance is None:
             return
-        for hook in list(cls._teardown_hooks.get("BinanceTrade", ())):
+        for hook in list(cls._teardown_hooks.get(name, ())):
             try:
-                hook(trade_mgr)
+                hook(instance)
             except Exception:
                 pass
+
+    @classmethod
+    def _clear_bapi_trade_manager_ref(cls, trade_mgr) -> None:
+        cls._run_teardown_hooks("BinanceTrade", trade_mgr)
 
     @classmethod
     def shutdown_all(cls, timeout=5.0):
@@ -441,7 +458,7 @@ class CacheFactory:
             current_price = (
                 cls._instances.get("CurrentPrice") or _current_price_instance
             )
-            trade_mgr = cls._instances.get("BinanceTrade")
+            prior_instances = dict(cls._instances)
             short_trend = _short_trend_instance
             managers = []
             seen_ids = set()
@@ -481,7 +498,8 @@ class CacheFactory:
                 and not (callable(getattr(short_trend, "is_running", None)) and short_trend.is_running())
             ):
                 _short_trend_instance = None
-            cls._clear_bapi_trade_manager_ref(trade_mgr)
+            for inst_name, inst_val in prior_instances.items():
+                cls._run_teardown_hooks(inst_name, inst_val)
             return all(results) if results else True
 
     @classmethod
@@ -520,8 +538,8 @@ class CacheFactory:
                 and stopped
             ):
                 _current_price_instance = None
-            if name == "BinanceTrade" and stopped:
-                cls._clear_bapi_trade_manager_ref(value)
+            if stopped:
+                cls._run_teardown_hooks(name, value)
             return stopped
 
 
@@ -597,11 +615,8 @@ def get_cache_manager(name, symbols=None, *, start_sync=True):
 
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.
-CacheManagerInterface.bind_runtime_services(
-    api_client=api,
-    poll_predicate=_should_poll_for_manager,
-    ws_resync_clear_hook=_bapi_ws_bridge.clear_ws_rest_resync_for_manager,
-)
+bind_account_cache_getter(get_cache_manager)
+CacheFactory.register_teardown_hook("BinanceTrade", clear_binance_trade_cache_hook)
 CachePriceManagerBase.bind_current_price_getter(get_current_price_manager)
 CacheTrendManagerBase.bind_service_getters(
     cache24_getter=lambda: get_cache_manager("24Price"),
@@ -615,109 +630,12 @@ if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     )
 
 
-def ensure_account_cache_readers(status):
-    """Synchronize this process with both versions in a fresh health marker."""
-    try:
-        order_version = status.order_cache_version
-        trade_version = status.trade_cache_version
-        if not order_version or not trade_version:
-            raise ValueError("health marker has no durable cache versions")
-        get_cache_manager("BinanceOrder", start_sync=False).ensure_persisted_version(
-            order_version
-        )
-        get_cache_manager("BinanceTrade", start_sync=False).ensure_persisted_version(
-            trade_version
-        )
-    except account_cache_health.AccountCacheNotReady:
-        raise
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise account_cache_health.AccountCacheNotReady(
-            "account_cache_reader_not_current"
-        ) from exc
-
-
-# ── Real-time Binance user stream -> cache actions ────────────────────────────
-
-_ws_bridge = _bapi_ws_bridge._ws_bridge
-
-
-def _ws_cache_getter(name, symbols=None, *, start_sync=False):
-    """Look up caches from WebSocket callbacks without spawning rogue polling loops in consumers."""
-    try:
-        if symbols is not None:
-            return get_cache_manager(name, symbols=symbols, start_sync=start_sync)
-        return get_cache_manager(name, start_sync=start_sync)
-    except TypeError:
-        if symbols is not None:
-            return get_cache_manager(name, symbols)
-        return get_cache_manager(name)
-
-
-def _upsert_order_from_execution_report(event):
-    return _bapi_ws_bridge.upsert_order_from_execution_report(
-        event, cache_getter=_ws_cache_getter
-    )
-
-
-def _append_trade_from_execution_report(event):
-    return _bapi_ws_bridge.append_trade_from_execution_report(
-        event, cache_getter=_ws_cache_getter
-    )
-
-
-refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
-
-
-def _handle_binance_ws_event(event):
-    _bapi_ws_bridge.handle_binance_ws_event(
-        event,
-        cache_getter=_ws_cache_getter,
-        log_enabled=WS_EVENT_LOG_ENABLED,
-        upsert_order_fn=_upsert_order_from_execution_report,
-        append_trade_fn=_append_trade_from_execution_report,
-        persist_fn=lambda event_type: _bapi_ws_bridge.persist_ws_updated_caches(
-            event_type, cache_getter=_ws_cache_getter
-        ),
-    )
-
-
-def enable_real_ws_event_sync():
-    global _ws_bridge
-    _bapi_ws_bridge._ws_bridge = _ws_bridge
-    _ws_bridge = _bapi_ws_bridge.enable_real_ws_event_sync(
-        on_event=_handle_binance_ws_event,
-        on_available=_mark_ws_available,
-        on_healthy=_mark_ws_event_received,
-        on_unhealthy=_mark_ws_unhealthy,
-        loss_timeout_sec=WS_LOSS_TIMEOUT_SEC,
-    )
-    return _ws_bridge
-
-
-CacheFactory.register_teardown_hook("BinanceTrade", _bapi_trades.clear_cache_trade_manager)
-
-
 if __name__ == "__main__":
     single_instance("cacheManager")
-    account_cache_health.enable_writer()
-    for _account_cache_name in ("BinanceOrder", "BinanceTrade"):
-        _acc_mgr = get_cache_manager(_account_cache_name, start_sync=False)
-        CacheFactory._sync_started.add(_account_cache_name)
-        _ver, _sync_ms = (
-            _acc_mgr.get_persisted_sync_state()
-            if hasattr(_acc_mgr, "get_persisted_sync_state")
-            else ("", 0)
-        )
-        if (
-            _ver
-            and _sync_ms > 0
-            and (int(time.time() * 1000) - _sync_ms)
-            <= int(account_cache_health.MAX_AGE_SEC * 1000)
-        ):
-            account_cache_health.record_successful_sync(
-                _account_cache_name, _ver, now_ms=_sync_ms
-            )
-    _bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=enable_real_ws_event_sync)
+    start_account_cache_daemon(
+        cache_getter=get_cache_manager,
+        sync_started_set=CacheFactory._sync_started,
+    )
     threads = []
     _nb_poller = None
     _trend_mgr = None
@@ -730,14 +648,12 @@ if __name__ == "__main__":
 
     _trend_cpm = None
     try:
-        from binance_api import bapi_ws
-
-        _trend_cpm = get_current_price_manager(
-            ws_manager=bapi_ws.get_ws_manager(),
+        _trend_cpm = attach_default_price_ws_stream(
+            get_current_price_manager,
             sync_ts=0.8,
             start_sync=False,
         )
-        if _nb_syms:
+        if _nb_syms and _trend_cpm is not None:
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
                 _nb_syms,
@@ -774,11 +690,10 @@ if __name__ == "__main__":
 
     try:
         if _trend_cpm is None:
-            from binance_api import bapi_ws
-
-            _trend_cpm = get_current_price_manager(
-                ws_manager=bapi_ws.get_ws_manager(),
+            _trend_cpm = attach_default_price_ws_stream(
+                get_current_price_manager,
                 sync_ts=0.8,
+                start_sync=True,
             )
         _trend_cache24 = CacheFactory.get("24Price")
         _trend_cache365 = CacheFactory._instances.get("365Price") or {}
@@ -828,21 +743,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Stopped manually.")
     finally:
-        account_cache_health.disable_writer()
+        disable_account_cache_daemon_writer()
         print("Cleanup / releasing resources...")
         shutdown_deadline = time.monotonic() + 2.5
-        try:
-            from binance_api import bapi_ws as _bws
-
-            _bws_mgr = getattr(_bws, "bapi_ws_manager", None)
-        except Exception:
-            _bws_mgr = None
-        for _ws_obj in (_ws_bridge, _bws_mgr):
-            if _ws_obj is not None and hasattr(_ws_obj, "request_stop"):
-                try:
-                    _ws_obj.request_stop()
-                except Exception:
-                    pass
+        request_stop_account_ws_streams()
+        request_stop_price_ws_streams()
         if _nb_poller is not None and hasattr(_nb_poller, "request_stop"):
             _nb_poller.request_stop()
         if _trend_mgr is not None and hasattr(_trend_mgr, "request_stop"):
@@ -880,16 +785,6 @@ if __name__ == "__main__":
             _current_price_instance.shutdown(
                 timeout=min(0.3, max(0.05, shutdown_deadline - time.monotonic()))
             )
-        for _ws_obj in (_ws_bridge, _bws_mgr):
-            if _ws_obj is not None:
-                try:
-                    _ws_obj.stop(
-                        timeout=min(
-                            0.3, max(0.05, shutdown_deadline - time.monotonic())
-                        )
-                    )
-                except Exception:
-                    pass
-        from binance_api import bapi_client
+        stop_account_ws_streams(shutdown_deadline)
+        stop_price_ws_streams(shutdown_deadline)
 
-        bapi_client.stop_periodic_resync()

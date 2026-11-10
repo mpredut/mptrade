@@ -1289,14 +1289,23 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             health.disable_writer(now_ms=4000)
 
     def test_main_claims_single_writer_before_health_and_cache_touch(self):
+        import inspect
+        import cacheaccount
+
         with open(cm.__file__, encoding="utf-8") as handle:
             source = handle.read()
         main = source.split('if __name__ == "__main__":', 1)[1]
         lock_position = main.index('single_instance("cacheManager")')
-        health_position = main.index("account_cache_health.enable_writer()")
-        cache_position = main.index('get_cache_manager(_account_cache_name')
-        self.assertLess(lock_position, health_position)
+        daemon_position = main.index("start_account_cache_daemon(")
+        cache_position = main.index("get_cache_manager(")
+        self.assertLess(lock_position, daemon_position)
         self.assertLess(lock_position, cache_position)
+
+        daemon_src = inspect.getsource(cacheaccount.start_account_cache_daemon)
+        self.assertLess(
+            daemon_src.index(".enable_writer()"),
+            daemon_src.index("getter(account_cache_name"),
+        )
     def test_invalid_legacy_order_cannot_receive_a_durable_version(self):
         invalid = {**_order(1, 1000), "side": "UNKNOWN"}
         manager = self._order_manager([invalid], 1000)

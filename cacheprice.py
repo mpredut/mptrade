@@ -2147,3 +2147,62 @@ def _start_nonbinance_trend_poller(
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()
     return _NonBinanceTrendPoller(t, pool, stop_event, ws_streams=ws_streams)
+
+
+def attach_default_price_ws_stream(
+    cpm_getter=None,
+    *,
+    sync_ts: float = 0.8,
+    start_sync: bool = False,
+) -> Optional[CacheCurrentPriceManager]:
+    """Attach the default venue price WebSocket manager to ``CacheCurrentPriceManager``."""
+    from binance_api import bapi_ws
+
+    default_getter = CachePriceManagerBase._default_current_price_getter
+    getter = cpm_getter or _cm_override("get_current_price_manager", default_getter)
+    if not callable(getter):
+        return None
+    return getter(
+        ws_manager=bapi_ws.get_ws_manager(),
+        sync_ts=sync_ts,
+        start_sync=start_sync,
+    )
+
+
+def request_stop_price_ws_streams() -> None:
+    """Signal the default venue price WebSocket manager to stop."""
+    try:
+        from binance_api import bapi_ws as _bws
+
+        bws_mgr = getattr(_bws, "bapi_ws_manager", None)
+    except Exception:
+        bws_mgr = None
+    if bws_mgr is not None and hasattr(bws_mgr, "request_stop"):
+        try:
+            bws_mgr.request_stop()
+        except Exception:
+            pass
+
+
+def stop_price_ws_streams(shutdown_deadline: float) -> None:
+    """Stop the default venue price WebSocket manager and periodic clock resync thread."""
+    try:
+        from binance_api import bapi_ws as _bws
+
+        bws_mgr = getattr(_bws, "bapi_ws_manager", None)
+    except Exception:
+        bws_mgr = None
+    if bws_mgr is not None and hasattr(bws_mgr, "stop"):
+        try:
+            bws_mgr.stop(
+                timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
+            )
+        except Exception:
+            pass
+    try:
+        from binance_api import bapi_client
+
+        bapi_client.stop_periodic_resync()
+    except Exception:
+        pass
+

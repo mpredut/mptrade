@@ -2598,3 +2598,77 @@ def test_nonbinance_trade_cache_snapshot_resync_and_fetchtime_sanitization(tmp_p
     mgr.sync_account_reader_if_needed()
     assert len(mgr.cache.get("HYPEUSD", [])) == 2
 
+
+def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
+    """Verify cacheManager delegates account/price WS lifecycle to cacheaccount and cacheprice without direct binance_api imports."""
+    import ast
+    from types import SimpleNamespace
+    import cacheaccount
+    import cacheprice
+
+    with open(cm.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=cm.__file__)
+    direct_binance_imports = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("binance")
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(alias.name.startswith("binance") for alias in node.names)
+        )
+    ]
+    assert direct_binance_imports == []
+
+    now_ms = int(time.time() * 1000)
+    recorded_syncs = []
+    init_called = []
+    fake_ach = SimpleNamespace(
+        MAX_AGE_SEC=60.0,
+        enable_writer=lambda: recorded_syncs.append(("enable_writer",)),
+        disable_writer=lambda: recorded_syncs.append(("disable_writer",)),
+        record_successful_sync=lambda name, ver, now_ms=0: recorded_syncs.append(
+            ("sync", name, ver, now_ms)
+        ),
+    )
+    monkeypatch.setattr(cm, "account_cache_health", fake_ach)
+    monkeypatch.setattr(cm, "_initialize_once", lambda: init_called.append(True))
+
+    sync_set = set()
+    cacheaccount.start_account_cache_daemon(
+        cache_getter=lambda name, start_sync=False: SimpleNamespace(
+            get_persisted_sync_state=lambda: (f"v-{name}", now_ms - 1000)
+        ),
+        sync_started_set=sync_set,
+    )
+    assert sync_set == {"BinanceOrder", "BinanceTrade"}
+    assert init_called == [True]
+    assert ("enable_writer",) in recorded_syncs
+    assert ("sync", "BinanceOrder", "v-BinanceOrder", now_ms - 1000) in recorded_syncs
+    assert ("sync", "BinanceTrade", "v-BinanceTrade", now_ms - 1000) in recorded_syncs
+
+    bridge_events = []
+    fake_bridge = SimpleNamespace(
+        request_stop=lambda: bridge_events.append("request_stop"),
+        stop=lambda timeout=0.0: bridge_events.append(("stop", round(timeout, 3))),
+    )
+    monkeypatch.setattr(cm, "_ws_bridge", fake_bridge)
+    cacheaccount.request_stop_account_ws_streams()
+    cacheaccount.disable_account_cache_daemon_writer()
+    cacheaccount.stop_account_ws_streams(time.monotonic() + 1.0)
+    assert "request_stop" in bridge_events
+    assert any(isinstance(ev, tuple) and ev[0] == "stop" for ev in bridge_events)
+    assert ("disable_writer",) in recorded_syncs
+
+    cpm_calls = []
+    res = cacheprice.attach_default_price_ws_stream(
+        cpm_getter=lambda **kw: cpm_calls.append(kw) or "cpm-inst",
+        sync_ts=0.8,
+        start_sync=False,
+    )
+    assert res == "cpm-inst"
+    assert len(cpm_calls) == 1 and cpm_calls[0]["sync_ts"] == 0.8 and cpm_calls[0]["start_sync"] is False
+
+
