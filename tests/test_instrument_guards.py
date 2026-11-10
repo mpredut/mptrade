@@ -1037,15 +1037,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         prov = _FakeProvider()
         inst = self._inst(prov)
 
-        class BlockedSlot:
-            allowed = False
-            info = {"side": "BUY", "timestamp": time.time() - 5}
-            def commit(self, *a, **kw): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-
-        with patch("lock.trade_cooldown.trade_slot", return_value=BlockedSlot()) as mock_slot, \
-             patch("order_guard.daily_limit_guard", return_value=(True, "ok")), \
+        with patch("order_guard.daily_limit_guard", return_value=(True, "ok")), \
              patch("order_guard.profit_guard", return_value=True):
             res_buy = inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
             self.assertIsNotNone(res_buy)
@@ -1058,8 +1050,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
             res_all = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"all"})
             self.assertIsNotNone(res_all)
-
-            mock_slot.assert_not_called()
 
     def test_fine_grained_bypass_guards_granularity(self):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
@@ -1966,41 +1956,41 @@ class _PipePutAdapter:
 
 
 def _proc_attempt(state_file, lock_file, q):
-    tc.STATE_FILE = state_file
-    tc.LOCK_FILE = lock_file
-    ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+    cd = tc.Cooldown("trade", state_path=state_file, lock_path=lock_file)
+    ok, _ = cd.reserve("BTCUSDC", 180, side="BUY")
     q.put(ok)
 
 
 class TestTradeCooldown(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        tc.STATE_FILE = os.path.join(self.tmp, "trade_cooldown.json")
-        tc.LOCK_FILE = os.path.join(self.tmp, "trade_cooldown.lock")
+        self.state_file = os.path.join(self.tmp, "trade_cooldown.json")
+        self.lock_file = os.path.join(self.tmp, "trade_cooldown.lock")
+        self.cd = tc.Cooldown("trade", state_path=self.state_file, lock_path=self.lock_file)
 
     def test_first_allowed_second_blocked(self):
-        ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+        ok, _ = self.cd.reserve("BTCUSDC", 180, side="BUY")
         self.assertTrue(ok)
-        ok2, last = tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=180)
+        ok2, last = self.cd.reserve("BTCUSDC", 180, side="SELL")
         self.assertFalse(ok2)
         self.assertEqual(last["side"], "BUY")
 
     def test_per_symbol_independent(self):
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
-        self.assertTrue(tc.reserve_trade("BUY", "TAOUSDC", cooldown_sec=180)[0])
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
+        self.assertTrue(self.cd.reserve("TAOUSDC", 180, side="BUY")[0])
 
     def test_allowed_after_cooldown(self):
         with mock.patch("lock.cooldown.time.time") as now:
             now.return_value = 1_000.0
-            self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=1)[0])
-            self.assertFalse(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=1)[0])
+            self.assertTrue(self.cd.reserve("BTCUSDC", 1, side="BUY")[0])
+            self.assertFalse(self.cd.reserve("BTCUSDC", 1, side="SELL")[0])
             now.return_value = 1_001.1
-            self.assertTrue(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=1)[0])
+            self.assertTrue(self.cd.reserve("BTCUSDC", 1, side="SELL")[0])
 
     def test_release_unblocks(self):
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
-        tc.release_trade("BTCUSDC")
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
+        self.cd.release("BTCUSDC")
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
 
     def test_concurrent_threads_single_winner(self):
         results = []
@@ -2008,7 +1998,7 @@ class TestTradeCooldown(unittest.TestCase):
 
         def attempt():
             barrier.wait()
-            ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+            ok, _ = self.cd.reserve("BTCUSDC", 180, side="BUY")
             results.append(ok)
 
         threads = [threading.Thread(target=attempt) for _ in range(20)]
@@ -2024,7 +2014,7 @@ class TestTradeCooldown(unittest.TestCase):
         procs = [
             ctx.Process(
                 target=_proc_attempt,
-                args=(tc.STATE_FILE, tc.LOCK_FILE, _PipePutAdapter(w_conn)),
+                args=(self.state_file, self.lock_file, _PipePutAdapter(w_conn)),
             )
             for _, w_conn in pipes
         ]
@@ -2043,80 +2033,80 @@ class TestTradeCooldown(unittest.TestCase):
         self.assertEqual(sum(1 for r in results if r), 1)
 
     def test_slot_commit_keeps_reservation(self):
-        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+        with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
             self.assertTrue(slot.allowed)
-            slot.commit(999)
-        self.assertFalse(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=180)[0])
+            slot.commit(binance_order_id=999)
+        self.assertFalse(self.cd.reserve("BTCUSDC", 180, side="SELL")[0])
 
     def test_slot_no_commit_auto_releases(self):
-        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+        with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
             self.assertTrue(slot.allowed)
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
 
     def test_slot_exception_auto_releases(self):
         with self.assertRaises(RuntimeError):
-            with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+            with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
                 self.assertTrue(slot.allowed)
                 raise RuntimeError("placement crashed")
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
 
     def test_slot_blocked_does_not_release_existing(self):
-        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
-        with tc.trade_slot("SELL", "BTCUSDC", cooldown_sec=180) as slot:
+        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
+        with self.cd.slot("BTCUSDC", 180, side="SELL") as slot:
             self.assertFalse(slot.allowed)
-        self.assertFalse(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        self.assertFalse(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
 
     def test_pair_allows_one_buy_and_one_sell_inside_same_cooldown(self):
-        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
             self.assertTrue(buy.allowed)
-            buy.commit(101)
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
+            buy.commit(binance_order_id=101)
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
             self.assertTrue(sell.allowed)
-            sell.commit(102)
+            sell.commit(binance_order_id=102)
 
-        state = tc._cooldown().get("TAOUSDC")
+        state = self.cd.get("TAOUSDC")
         self.assertCountEqual(state["group_committed"], ["BUY", "SELL"])
         self.assertEqual(state["group_results"]["BUY"]["binance_order_id"], 101)
         self.assertEqual(state["group_results"]["SELL"]["binance_order_id"], 102)
 
     def test_pair_blocks_duplicate_side_and_unrelated_group(self):
-        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
             self.assertTrue(buy.allowed)
-            buy.commit(101)
+            buy.commit(binance_order_id=101)
 
-        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as duplicate:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as duplicate:
             self.assertFalse(duplicate.allowed)
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-2") as outsider:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-2", "SELL") as outsider:
             self.assertFalse(outsider.allowed)
-        self.assertFalse(tc.reserve_trade("SELL", "TAOUSDC", cooldown_sec=180)[0])
+        self.assertFalse(self.cd.reserve("TAOUSDC", 180, side="SELL")[0])
 
     def test_failed_second_leg_rolls_back_only_that_leg(self):
-        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
-            buy.commit(101)
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "BUY") as buy:
+            buy.commit(binance_order_id=101)
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
             self.assertTrue(sell.allowed)
 
-        state = tc._cooldown().get("TAOUSDC")
+        state = self.cd.get("TAOUSDC")
         self.assertEqual(state["group_members"], ["BUY"])
         self.assertEqual(state["group_committed"], ["BUY"])
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as retry:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as retry:
             self.assertTrue(retry.allowed)
 
     def test_legacy_reservation_still_blocks_pair(self):
-        self.assertTrue(tc.reserve_trade("BUY", "TAOUSDC", cooldown_sec=180)[0])
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as leg:
+        self.assertTrue(self.cd.reserve("TAOUSDC", 180, side="BUY")[0])
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as leg:
             self.assertFalse(leg.allowed)
 
     def test_canceled_pair_leg_can_be_replaced_without_opening_other_groups(self):
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
-            sell.commit(102)
-        self.assertTrue(tc.release_pair_leg("TAOUSDC", "pair-1", "SELL"))
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as sell:
+            sell.commit(binance_order_id=102)
+        self.assertTrue(self.cd.release_group_member("TAOUSDC", "pair-1", "SELL", keep_group=True))
 
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-2") as outsider:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-2", "SELL") as outsider:
             self.assertFalse(outsider.allowed)
-        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as replacement:
+        with self.cd.group_slot("TAOUSDC", 180, "pair-1", "SELL") as replacement:
             self.assertTrue(replacement.allowed)
-            replacement.commit(103)
+            replacement.commit(binance_order_id=103)
 
 
 def _write_intent_file(path, payload, *, lines=False):

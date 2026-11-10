@@ -224,9 +224,5 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)
 
-    def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
-        """Inject telemetry directly (useful for tests and synthetic feeds)."""
-        self._record_item(telemetry, save_to_disk=save_to_disk)
-
 
 TelemetryCollectorFactory.register(DerivativesTelemetryCollector.COLLECTOR_ID, DerivativesTelemetryCollector)

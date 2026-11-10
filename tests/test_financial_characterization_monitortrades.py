@@ -581,22 +581,18 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             api=PipelineApi(provider),
         )
         mt.HARD_TP_ENABLED = False
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with (
-                patch.object(mt, "is_trend_up", return_value=False),
-                patch("order_retry.RETRY_ENABLED", False),
-                patch("lock.trade_cooldown.STATE_FILE", os.path.join(temp_dir, "cooldown.json")),
-                patch("lock.trade_cooldown.LOCK_FILE", os.path.join(temp_dir, "cooldown.lock")),
-                patch("lock.trade_cooldown._cd", None),
-            ):
-                mt.monitor_price_and_trade(
-                    inst,
-                    sbs=12 * 24 * 3600,
-                    maxage_trade_s=10 * 24 * 3600,
-                    gain_threshold=0.10,
-                    lost_threshold=0.05,
-                    now_fn=lambda: real_now,
-                )
+        with (
+            patch.object(mt, "is_trend_up", return_value=False),
+            patch("order_retry.RETRY_ENABLED", False),
+        ):
+            mt.monitor_price_and_trade(
+                inst,
+                sbs=12 * 24 * 3600,
+                maxage_trade_s=10 * 24 * 3600,
+                gain_threshold=0.10,
+                lost_threshold=0.05,
+                now_fn=lambda: real_now,
+            )
         self.assertEqual(len(provider.submitted), 1)
         self.assertEqual(provider.submitted[0]["side"], "SELL")
 

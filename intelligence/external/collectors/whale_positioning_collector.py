@@ -563,9 +563,5 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         )
         return self._commit_snapshot(symbol, now, snapshot)
 
-    def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
-        """Inject snapshot directly (useful for testing and deterministic replays)."""
-        self._record_item(snapshot, save_to_disk=save_to_disk)
-
 
 TelemetryCollectorFactory.register(WhalePositioningCollector.COLLECTOR_ID, WhalePositioningCollector)

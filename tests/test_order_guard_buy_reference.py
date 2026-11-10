@@ -167,22 +167,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         p = _MockBinanceProvider()
         inst = Instrument(name="TAO", symbol="TAOUSDC", provider="binance", base="TAO", quote="USDC", api=MarketApi([p]))
 
-        class _AllowedSlot:
-            allowed = True
-            info = ""
-
-            def commit(self, *a, **kw):
-                pass
-
-        import contextlib
-
-        @contextlib.contextmanager
-        def _mock_trade_slot(*a, **kw):
-            yield _AllowedSlot()
-
         # Exercise reference routing without live trend discovery on a cold cache.
-        with mock.patch("lock.trade_cooldown.trade_slot", side_effect=_mock_trade_slot), \
-                mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
+        with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
             # With binance_buy_reference = off: BUY at 293 (above past sell 216.28) is accepted
             with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)

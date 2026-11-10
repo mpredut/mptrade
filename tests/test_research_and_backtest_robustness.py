@@ -2979,7 +2979,6 @@ def test_cooldown_and_market_monitor_hardening(tmp_path):
     import threading
     from types import SimpleNamespace
     from lock.cooldown import Cooldown
-    from lock import trade_cooldown
     from market_monitor.new_coins_discovery import NewCoinsMonitor
     from market_monitor.pricechecker import PriceChecker
     from market_monitor.pricefetcher import CacheAllPriceFetcherManager
@@ -2993,11 +2992,6 @@ def test_cooldown_and_market_monitor_hardening(tmp_path):
     assert state["group_id"] == "grp1"
     assert state["group_committed"] == ["BUY"]
     assert cd.release_group_member("BTCUSDC", "  grp1 ", " buy ", keep_group=False) is True
-
-    # 2. trade_cooldown.release_pair_leg rejects invalid pair_id and strips whitespace
-    assert trade_cooldown.release_pair_leg("BTCUSDC", None, "BUY") is False
-    assert trade_cooldown.release_pair_leg("BTCUSDC", True, "BUY") is False
-    assert trade_cooldown.release_pair_leg("BTCUSDC", "   ", "BUY") is False
 
     # 3. PriceChecker._is_dynamic_symbol rejects NaN/bool/non-positive timestamps and stop_monitoring avoids self-join
     dummy_cache = SimpleNamespace(
@@ -3202,7 +3196,7 @@ def test_batch9_hardening(tmp_path):
 
 def test_batch10_archive_hardening(tmp_path):
     from botcore import _REPO_ROOT, load_local_module
-    from market_regime import MarketRegimeEvaluator, MarketRegimeService
+    from market_regime import MarketRegimeEvaluator
 
     arch_dir = os.path.join(_REPO_ROOT, "archive")
     evaluate_forward_classifications = load_local_module(arch_dir, "market_regime_backtest").evaluate_forward_classifications
@@ -3212,9 +3206,8 @@ def test_batch10_archive_hardening(tmp_path):
 
     evaluator = MarketRegimeEvaluator()
     bull = evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
-    decision = MarketRegimeService().compose(bull, bull)
     with pytest.raises(ValueError):
-        evaluate_forward_classifications([(decision, True)])
+        evaluate_forward_classifications([(bull, True)])
 
     assert adjust_monitor_interval(20, 5, 0, -10) == 5
     with pytest.raises(ValueError):
@@ -3681,7 +3674,7 @@ def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_
     assert dt_col.fetch("BTCUSDC", allow_network="false") is None  # type: ignore[arg-type]
     assert ob_col.fetch("BTCUSDC", allow_network=float("nan")) is None  # type: ignore[arg-type]
     assert wh_col.fetch("BTCUSDC", allow_network="0") is None  # type: ignore[arg-type]
-    dt_col.record_telemetry(None)  # type: ignore[arg-type]
+    dt_col.record_snapshot(None)  # type: ignore[arg-type]
     ob_col.record_snapshot(None)  # type: ignore[arg-type]
     wh_col.record_snapshot(None)  # type: ignore[arg-type]
 
@@ -3955,7 +3948,6 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
     from market_monitor.pricechecker import PriceChecker
     from market_monitor.pricefetcher import CacheAllPriceFetcherManager
     from lock.file_lock import FileLock
-    import lock.trade_cooldown as tc
     from notify_engine.server import NotificationServer
 
     # 1. alerts_config.load_config rejects boolean/non-path inputs (preventing os.path.exists(True) fd=1 bug)
@@ -3989,23 +3981,10 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
     assert pf.remove_symbol(" BTC ") is True
     assert "BTC" not in pf.active_symbols
 
-    # 4. FileLock auto-creates parent directories and trade_cooldown normalizes shorthand sides ("b"/"BUY")
+    # 4. FileLock auto-creates parent directories
     nested_lock = tmp_path / "nested" / "sub" / "test.lock"
     with FileLock(nested_lock):
         assert nested_lock.exists()
-
-    monkeypatch.setattr(tc, "STATE_FILE", str(tmp_path / "tc.json"))
-    monkeypatch.setattr(tc, "LOCK_FILE", str(tmp_path / "tc.lock"))
-    tc._cd = None
-    with tc.trade_slot("b", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s1:
-        assert s1.allowed is True
-        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s2:
-            assert s2.allowed is False
-        with tc.trade_slot("s", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s3:
-            assert s3.allowed is True
-            s3.commit("999")
-        s1.commit("888")
-    assert tc.release_pair_leg("BTCUSDC", "pair-1", "buy") is True
 
     # 5. NotificationServer.process_line tolerates non-str line and None/bool bot_name
     srv = object.__new__(NotificationServer)
@@ -4828,10 +4807,9 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
 
 
 def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_path):
-    """Verify StratParams/Strategy, MarketRegimeService.compose, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
+    """Verify StratParams/Strategy, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
     from types import SimpleNamespace
     import pytest
-    import market_regime
     import order_retry_worker as orw
     import state_io
     import utils
@@ -4867,14 +4845,6 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
     assert strat._has_open("SELL") is False
     assert strat._find_open("BUY") == {"side": " BUY ", "id": "o1"}
     assert strat._find_open(True) is None  # type: ignore[arg-type]
-
-    # 3. MarketRegimeService.compose handles None decisions and rejects invalid benchmark tuples
-    svc = market_regime.MarketRegimeService()
-    comp = svc.compose(None, None, benchmarks=[("BTCUSDC", None, None)])
-    assert comp.regime == "unknown"
-    assert comp.actionable is False
-    with pytest.raises(ValueError, match="benchmarks must be an iterable"):
-        svc.compose(None, None, benchmarks="BTCUSDC")  # type: ignore[arg-type]
 
     # 4. order_retry_worker.safe_int handles bool, float strings, NaN, and None
     assert orw.safe_int(True, 0) == 0
@@ -5919,7 +5889,6 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     from strategies import position_exit_manager as pem
     from strategies import rtrade_pair as rp
     from lock import cooldown as cd_mod
-    from lock import trade_cooldown as tcd_mod
     from providers import execution_audit as ea_mod
 
     # 1. spot_engine.clean_order_id and _sanitize_spot_state
@@ -5963,16 +5932,17 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     assert rp.clean_order_id("+789.0") == "789"
     assert rp._parse_bool_flag("1.0") is True
 
-    # 5. lock.cooldown and lock.trade_cooldown hardening
+    # 5. lock.cooldown and botcore order_id hardening
+    import botcore as bc_mod
     assert cd_mod._parse_bool_flag("0.0", True) is False
     assert cd_mod._parse_bool_flag("1.0", False) is True
-    assert tcd_mod.clean_order_id("-5") is None
-    assert tcd_mod.clean_order_id("+0.0") is None
-    assert tcd_mod.clean_order_id("+321.0") == "321"
-    assert tcd_mod.normalize_scalar_order_id(-5) is None
-    assert tcd_mod.normalize_scalar_order_id(12.5) is None
-    assert tcd_mod.normalize_scalar_order_id("-5.0") is None
-    assert tcd_mod.normalize_scalar_order_id("+654.0") == "654"
+    assert bc_mod.clean_order_id("-5") is None
+    assert bc_mod.clean_order_id("+0.0") is None
+    assert bc_mod.clean_order_id("+321.0") == "321"
+    assert bc_mod.normalize_scalar_order_id(-5) is None
+    assert bc_mod.normalize_scalar_order_id(12.5) is None
+    assert bc_mod.normalize_scalar_order_id("-5.0") is None
+    assert bc_mod.normalize_scalar_order_id("+654.0") == "654"
 
     # 6. execution_audit._json_safe_value with Decimal and _parse_bool_flag
     assert ea_mod._json_safe_value({"d": Decimal("12.34"), "nan_d": Decimal("NaN")}) == {"d": 12.34}

@@ -532,7 +532,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
         return self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
 
-    def _record_item(self, item: Any, save_to_disk: bool = False) -> None:
+    def record_snapshot(self, item: Any, save_to_disk: bool = False) -> None:
         if isinstance(item, dict):
             item = self._SNAPSHOT_CLS.from_dict(item)
         if item is None or not isinstance(getattr(item, "symbol", None), str) or not item.symbol.strip():

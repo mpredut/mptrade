@@ -632,18 +632,6 @@ class TestArchitectureFixes4Cases:
         monkeypatch.setattr(order_guard, "profit_guard", mock_profit_guard)
         monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
 
-        class FakeSlot:
-            allowed = True
-            info = {}
-            def commit(self, order):
-                pass
-        import contextlib
-        import lock.cooldown as trade_cooldown
-        @contextlib.contextmanager
-        def fake_trade_slot(*a, **k):
-            yield FakeSlot()
-        monkeypatch.setattr(trade_cooldown, "trade_slot", fake_trade_slot)
-
         inst = Instrument("binance_btcusdc", "BTCUSDC", "binance", api=mock_api)
         res = inst.place("BUY", 4.0, 100.0, regime_context=ctx, force=True, wait_for_trend=False, caller_owns_retry=True)
 
@@ -947,16 +935,6 @@ class TestSisterArchitecturalDefects:
             return True
 
         monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
-        from contextlib import contextmanager
-
-        @contextmanager
-        def fake_trade_slot(*a, **k):
-            slot = MagicMock()
-            slot.allowed = True
-            slot.info = {}
-            yield slot
-
-        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
 
         mock_api = MagicMock()
         mock_api.provider_by_name.return_value = provider
@@ -1852,7 +1830,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             open_interest_usd=750_000.0,
             ts=now_ts,
         )
-        d_col.record_telemetry(d_snap, save_to_disk=True)
+        d_col.record_snapshot(d_snap, save_to_disk=True)
         d_col_reader = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
         loaded_d = d_col_reader.fetch("SOLUSD", allow_network=False)
         assert loaded_d is not None
@@ -2249,16 +2227,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
         monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
         monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
-        from contextlib import contextmanager
-
-        @contextmanager
-        def fake_trade_slot(*a, **k):
-            slot = MagicMock()
-            slot.allowed = True
-            slot.info = {}
-            yield slot
-
-        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
 
         mock_api = MagicMock()
         mock_api.provider_by_name.return_value = provider
@@ -2708,16 +2676,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
         monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
-        from contextlib import contextmanager
-
-        @contextmanager
-        def fake_trade_slot(*a, **k):
-            slot = MagicMock()
-            slot.allowed = True
-            slot.info = {}
-            yield slot
-
-        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
 
         mock_api = MagicMock()
         mock_api.provider_by_name.return_value = provider
@@ -4108,7 +4066,7 @@ def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propa
         save_to_disk=True,
     )
     d_col = DerivativesTelemetryCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
-    d_col.record_telemetry(
+    d_col.record_snapshot(
         DerivativesTelemetry(
             symbol="BTCUSDC",
             funding_rate=0.0001,
@@ -5449,11 +5407,6 @@ def test_iteration27_should_wait_none_fallback_price_analysis_memo_and_quantity_
 
     # 3. MarketRegimeService._evaluate_provider_source clock skew
     svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
-    up_dec = MarketRegimeDecision(
-        regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok",
-    )
-    comp = svc.compose(up_dec, up_dec)
-    assert comp.regime == "bull"
 
     calls = []
     class DummyRegimeProv:
@@ -5788,7 +5741,7 @@ def test_iteration29_candle_interval_bool_t212_get_orders_whale_funding_ts_and_c
         symbol="BTCUSDC", funding_rate=0.0001, predicted_funding_rate=0.0001,
         open_interest=100.0, open_interest_usd=8_500_000.0, ts=now_s,
     )
-    dt_col.record_telemetry(dt_snap)
+    dt_col.record_snapshot(dt_snap)
     assert dt_col.fetch("BTCUSDC", allow_network=False, now=float("nan")) is dt_snap
 
 
@@ -7237,8 +7190,6 @@ def test_iteration47_botcore_and_market_regime_nan_bool_safety():
     assert svc._snapshot_observed_at({"ts": True}) is None
     assert svc.evaluate_closes([100.0, 101.0, 102.0], interval_min=0).reason == "invalid_window_metadata"
     assert svc.evaluate_closes([100.0, 101.0, 102.0], window_seconds=float("nan")).reason == "invalid_window_metadata"
-    comp = svc.compose(dec_bool, dec_bool)
-    assert comp.regime == "unknown"
 
 
 def test_iteration48_kraken_client_cachemanager_market_data_trailing_and_xstock_nan_bool_safety(monkeypatch):
@@ -11182,12 +11133,6 @@ def test_iteration107_binance_cache_health_market_regime_and_order_outcomes_safe
     assert ctx_ok.is_valid_for(provider=True, now=1000.0) is False
 
     svc = mr.MarketRegimeService()
-    with pytest.raises(ValueError):
-        svc.compose(dec, dec, use_case=True)
-    with pytest.raises(ValueError):
-        svc.compose(dec, dec, weights={})
-    with pytest.raises(ValueError):
-        svc.compose(dec, dec, weights=True)
 
     # _closed_series rejects boolean interval_min even when interval_min == 1 (since int(True) == 1)
     bad_provider = SimpleNamespace(
@@ -15210,7 +15155,6 @@ def test_iteration158_monitortrades_tradeall_rtrade_hygiene(monkeypatch, tmp_pat
 
     venue = object.__new__(rt._LivePairVenue)
     venue.symbol = "TAOUSDC"
-    venue._known_tickets = rt.deque(maxlen=16)
     venue._recovery_blocked_pairs = set()
     venue.recovery_blocked = False
     venue.pair_store = None
@@ -15329,8 +15273,8 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
 
 
 def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, monkeypatch):
+    import botcore as bc
     from lock.cooldown import Cooldown
-    import lock.trade_cooldown as tc
     import order_outcomes_log as olog
     import binance_cache_health as bch
 
@@ -15348,14 +15292,14 @@ def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, m
     assert "group_id" not in stored
     assert stored["binance_order_id"] == "123"
 
-    # 2. trade_cooldown: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
-    assert tc.clean_order_id("None") is None
-    assert tc.clean_order_id("0") is None
-    assert tc.clean_order_id("0.0") is None
-    assert tc.clean_order_id(float("nan")) is None
-    assert tc.normalize_scalar_order_id("999.0") == "999"
-    assert tc.normalize_scalar_order_id("0") is None
-    assert tc.normalize_scalar_order_id("None") is None
+    # 2. botcore: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
+    assert bc.clean_order_id("None") is None
+    assert bc.clean_order_id("0") is None
+    assert bc.clean_order_id("0.0") is None
+    assert bc.clean_order_id(float("nan")) is None
+    assert bc.normalize_scalar_order_id("999.0") == "999"
+    assert bc.normalize_scalar_order_id("0") is None
+    assert bc.normalize_scalar_order_id("None") is None
 
     # 3. order_outcomes_log: sanitizes regime_context fields and non-numeric price/qty strings
     monkeypatch.setattr(olog, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
@@ -16397,9 +16341,9 @@ def test_iteration178_external_collectors_dict_record_and_cache_ts_hygiene():
     ob_col._cache["BTCUSDC"] = (None, ob_snap)
     assert ob_col.fetch("BTCUSDC", allow_network=False, now=1010.0) is None
 
-    # 2. DerivativesTelemetryCollector.record_telemetry accepts dict and fetch() tolerates None cache ts
+    # 2. DerivativesTelemetryCollector.record_snapshot accepts dict and fetch() tolerates None cache ts
     dt_col = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
-    dt_col.record_telemetry({"symbol": "BTCUSDC", "funding_rate": 0.0004, "open_interest_usd": 5_000_000.0, "ts": 1000.0})
+    dt_col.record_snapshot({"symbol": "BTCUSDC", "funding_rate": 0.0004, "open_interest_usd": 5_000_000.0, "ts": 1000.0})
     dt_snap = dt_col.fetch("BTCUSDC", allow_network=False, now=1010.0)
     assert dt_snap is not None and dt_snap.funding_rate == pytest.approx(0.0004)
     dt_col._cache["BTCUSDC"] = (True, dt_snap)

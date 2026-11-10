@@ -197,7 +197,7 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         from types import SimpleNamespace
         self.assertEqual(normalize_venue_name(SimpleNamespace(name="Kraken_Spot")), "kraken")
         self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
-        from lock.trade_cooldown import normalize_scalar_order_id
+        from botcore import normalize_scalar_order_id
         from order_retry import exact_int
         from state_io import exact_nonneg_int
         self.assertEqual(normalize_scalar_order_id(large_id), large_id)

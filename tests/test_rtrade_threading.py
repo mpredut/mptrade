@@ -380,8 +380,7 @@ class RTradeThreadingTest(unittest.TestCase):
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
                  patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-                 patch.object(rtrade.mkt, "place", side_effect=responses) as place, \
-                 patch("lock.trade_cooldown.release_pair_leg", return_value=True):
+                 patch.object(rtrade.mkt, "place", side_effect=responses) as place:
                 venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
                 old = venue.place_limit(
                     "SELL", 100.64, 1.0, "pair-reprice", revision=0)
@@ -973,21 +972,6 @@ class RTradeThreadingTest(unittest.TestCase):
         )
         executor.submit_order.assert_called_once()
         self.assertFalse(venue.recovery_blocked)
-
-    def test_live_pair_cancel_releases_only_its_cooldown_leg(self):
-        executor = SimpleNamespace(
-            cancel_order=lambda *_args: None,
-            free_balance=lambda _asset: 1000.0)
-        order = {"orderId": 7, "price": "99.36", "origQty": "1"}
-        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
-             patch.object(rtrade.mkt, "place", return_value=order), \
-             patch("lock.trade_cooldown.release_pair_leg", return_value=True) as release:
-            venue = rtrade._LivePairVenue("TAOUSDC")
-            venue.place_limit("BUY", 99.36, 1.0, "pair-1")
-            self.assertTrue(venue.cancel("7"))
-
-        release.assert_called_once_with("TAOUSDC", "pair-1", "BUY")
 
     def test_live_pair_adapter_rejects_insufficient_asset_before_submit(self):
         executor = SimpleNamespace(free_balance=lambda _asset: 0.0)

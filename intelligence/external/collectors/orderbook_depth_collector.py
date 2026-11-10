@@ -438,9 +438,5 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         )
         return self._commit_snapshot(symbol, now, snapshot)
 
-    def record_snapshot(self, snapshot: OrderbookSnapshot, save_to_disk: bool = False) -> None:
-        """Inject snapshot directly (useful for tests and synthetic feeds)."""
-        self._record_item(snapshot, save_to_disk=save_to_disk)
-
 
 TelemetryCollectorFactory.register(OrderbookDepthCollector.COLLECTOR_ID, OrderbookDepthCollector)

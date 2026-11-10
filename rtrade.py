@@ -3,7 +3,6 @@ import sys
 import threading
 import time
 import uuid
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from decimal import Decimal, ROUND_DOWN
 
@@ -33,7 +32,6 @@ from botcore import (
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from instrument_registry import single_symbol_for
-from lock import cooldown as trade_cooldown
 from market_regime import MarketRegimeDecision
 from order_lifecycle import (
     StrategyExecutorLifecycleApi,
@@ -159,7 +157,6 @@ class _LivePairVenue:
 
     def __init__(self, symbol, pair_store=None, *, recovery_clock=time.time):
         self.symbol = symbol
-        self._known_tickets = deque(maxlen=max(32, RTRADE_PAIR_MAX_ACTIVE_ROUNDS * 8))
         self._last_place_failures = {}
         self._recovery_blocked_pairs = set()
         self.recovery_blocked = False
@@ -271,11 +268,6 @@ class _LivePairVenue:
             pair_id, side, kind, pending, symbol=self.symbol, start_side=side, qty=requested_qty
         )
 
-    def _remember_ticket(self, ticket):
-        if ticket is not None and not any(existing.order_id == ticket.order_id for existing in self._known_tickets):
-            self._known_tickets.append(ticket)
-        return ticket
-
     def _ticket_from_pending(self, pending, pair_id, *, status=None):
         order_id = extract_order_id(pending.get("order_id"), default=None)
         if not order_id:
@@ -301,7 +293,7 @@ class _LivePairVenue:
         rev = self._limit_revision(kind)
         if rev is None:
             rev = self._hard_stop_revision_from_kind(kind) or 0
-        ticket = PairOrderTicket(
+        return PairOrderTicket(
             order_id=str(order_id),
             side=str(pending["side"]).upper(),
             price=ticket_price,
@@ -309,7 +301,6 @@ class _LivePairVenue:
             pair_id=pair_id,
             revision=rev,
         )
-        return self._remember_ticket(ticket)
 
     def _submit_limit_intent(self, side, price, qty, pair_id, *, attempt=1, cache_permit=None, revision=0):
         side = side.upper()
@@ -710,7 +701,6 @@ class _LivePairVenue:
         ticket = PairOrderTicket(
             order_id=clean_oid, side=side, price=price, qty=final_qty, pair_id=pair_id, revision=revision
         )
-        self._known_tickets.append(ticket)
         if self.pair_store is not None and pair_id:
             self.pair_store.accepted(pair_id, side, ticket.order_id, kind=store_kind)
             self._set_pair_recovery_blocked(pair_id, False)
@@ -725,10 +715,6 @@ class _LivePairVenue:
     def cancel(self, order_id):
         try:
             self.executor.cancel_order(self.symbol, str(order_id))
-            for ticket in getattr(self, "_known_tickets", []):
-                if ticket.order_id == str(order_id) and ticket.pair_id:
-                    trade_cooldown.release_pair_leg(self.symbol, ticket.pair_id, ticket.side)
-                    break
             return True
         except Exception as exc:  # noqa: BLE001 — the coordinator decides how to fail closed.
             print(f"[{self.symbol}] pair cancel {order_id} failed: {exc}")

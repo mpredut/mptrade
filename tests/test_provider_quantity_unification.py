@@ -169,8 +169,6 @@ class TestQuantityDecisionAndAvailableBalance(unittest.TestCase):
 
     def test_instrument_place_with_none_qty(self):
         """Verify Instrument.place can be called with qty=None or omitted."""
-        from lock.trade_cooldown import release_trade
-        release_trade("AVAIL_TEST_USDC")
         p = CustomProvider(decimals=2, min_qty=0.01, balance=500.0)
         placed_orders = []
         p.place_order = lambda sym, side, px, q, **kw: placed_orders.append((sym, side, px, q, kw)) or {"orderId": 123}
@@ -251,9 +249,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
     def test_instrument_place_queries_free_balance_exactly_once_on_buy(self):
         """Verify Instrument.place fetches free_balance exactly once throughout the entire BUY lifecycle."""
-        from lock.trade_cooldown import release_trade
-        release_trade("SSOT_BUY_USDC")
-
         p = CustomProvider(decimals=2, min_qty=0.01, balance=500.0)
         p.free_balance = MagicMock(return_value=500.0)
         placed_orders = []
@@ -273,9 +268,6 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
     def test_instrument_place_queries_free_balance_exactly_once_on_sell(self):
         """Verify Instrument.place fetches free_balance exactly once throughout the entire SELL lifecycle."""
-        from lock.trade_cooldown import release_trade
-        release_trade("SSOT_SELL_USDC")
-
         p = CustomProvider(decimals=2, min_qty=0.01, balance=2.5)
         p.free_balance = MagicMock(return_value=2.5)
         placed_orders = []
@@ -318,9 +310,7 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
     def test_ssot_hyperliquid_buy_and_t212_sell_clamping_in_general_pipeline(self):
         """Verify Hyperliquid 0.95 BUY reserve and T212 $6 SELL dust/remainder rules work in decide_quantity and Instrument.place."""
-        from lock.trade_cooldown import release_trade
         from providers.quantity import clamp_notional_to_wallet_balance
-        release_trade("HYPEUSDC")
 
         # 1. Hyperliquid oversized BUY via Instrument.place clamps to 0.95 * free_balance without preflight failure
         hl = HyperliquidProvider(token="HYPE", live_enabled=True)

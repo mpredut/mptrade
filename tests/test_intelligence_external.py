@@ -39,7 +39,7 @@ class TestExternalCollectors(unittest.TestCase):
             open_interest_usd=4_250_000_000.0,
             ts=t0,
         )
-        collector.record_telemetry(telem)
+        collector.record_snapshot(telem)
 
         fetched = collector.fetch("BTCUSDC")
         self.assertIsNotNone(fetched)
@@ -287,7 +287,7 @@ class TestExternalGuards(unittest.TestCase):
                 open_interest_usd=15_000_000.0,
                 ts=t0,
             )
-            d_collector.record_telemetry(d_snap, save_to_disk=True)
+            d_collector.record_snapshot(d_snap, save_to_disk=True)
 
             d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
             loaded_d = d_collector2.fetch("SOLUSDT")
@@ -433,7 +433,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         )
 
         collector = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
-        collector.record_telemetry(crowded_snap)
+        collector.record_snapshot(crowded_snap)
 
         orig_collector = external_order_guard._derivatives_collector
         orig_margins = order_guard._MARGINS

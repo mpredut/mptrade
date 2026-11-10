@@ -23,13 +23,9 @@ import time
 from botcore import (
     _parse_bool_flag,
     clean_json_value,
-    clean_order_id,
     load_ini_config,
-    normalize_scalar_order_id,
-    normalize_side,
     register_module_aliases,
     safe_float,
-    safe_pos_float,
 )
 from cachepaths import resolve_cachedb_filepath
 from state_io import read_json_dict, save_json_state
@@ -419,83 +415,6 @@ def _load_cooldown_sec() -> int:
 
 
 DEFAULT_COOLDOWN_SEC = _load_cooldown_sec()
-
-_cd = None
-
-
-def _cooldown():
-    global _cd
-    if _cd is None or _cd.state_path != STATE_FILE or _cd.lock_path != LOCK_FILE:
-        _cd = Cooldown("trade", state_path=STATE_FILE, lock_path=LOCK_FILE)
-    return _cd
-
-
-def reserve_trade(
-    side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None, pair_id=None
-):
-    """Atomically check and reserve placement rights for ``symbol``."""
-    clean_cid = normalize_scalar_order_id(client_order_id)
-    norm_side = normalize_side(side)
-    clean_pid = clean_order_id(pair_id)
-    if clean_pid is not None:
-        return _cooldown().reserve_group_member(
-            symbol, cooldown_sec, clean_pid, norm_side,
-            side="PAIR", symbol=symbol, client_order_id=clean_cid,
-        )
-    return _cooldown().reserve(
-        symbol, cooldown_sec, side=norm_side, symbol=symbol,
-        client_order_id=clean_cid, binance_order_id=None,
-    )
-
-
-def release_trade(symbol):
-    """Release a failed symbol reservation so it no longer blocks cooldown."""
-    _cooldown().release(symbol)
-
-
-def release_pair_leg(symbol, pair_id, side):
-    """Release a committed leg only after it is canceled successfully."""
-    clean_pid = clean_order_id(pair_id)
-    if clean_pid is None:
-        return False
-    return _cooldown().release_group_member(
-        symbol, clean_pid, normalize_side(side), keep_group=True)
-
-
-class _TradeReservation:
-    """Adapt positional ``commit(order_id)`` to the reservation's Binance ID field."""
-
-    def __init__(self, res):
-        self._res = res
-
-    @property
-    def allowed(self):
-        return self._res.allowed
-
-    @property
-    def info(self):
-        return self._res.info
-
-    def commit(self, binance_order_id=None):
-        self._res.commit(binance_order_id=normalize_scalar_order_id(binance_order_id))
-
-
-@contextlib.contextmanager
-def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
-               pair_id=None):
-    """Provide RAII for an exclusive cooldown or one leg of a pair."""
-    clean_cid = normalize_scalar_order_id(client_order_id)
-    norm_side = normalize_side(side)
-    clean_pid = clean_order_id(pair_id)
-    if clean_pid is not None:
-        with _cooldown().group_slot(
-                symbol, cooldown_sec, clean_pid, norm_side,
-                side="PAIR", symbol=symbol, client_order_id=clean_cid) as res:
-            yield _TradeReservation(res)
-    else:
-        with _cooldown().slot(symbol, cooldown_sec, side=norm_side, symbol=symbol,
-                              client_order_id=clean_cid, binance_order_id=None) as res:
-            yield _TradeReservation(res)
 
 
 register_module_aliases(__name__, "lock.file_lock", "lock.trade_cooldown")
