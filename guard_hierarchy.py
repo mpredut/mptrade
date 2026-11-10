@@ -40,6 +40,11 @@ _CATEGORY_BYPASS_ALIASES: dict[str, frozenset[str]] = {
 }
 
 
+def is_master_bypass(bypassed: Any) -> bool:
+    """Return True when ``bypassed`` contains a master bypass token ('all' or '*')."""
+    return bool(bypassed and ("all" in bypassed or "*" in bypassed))
+
+
 def _is_llm_category_bypass(tokens: set[str]) -> bool:
     return "gllm" in tokens or ("llm" in tokens and not bool(tokens.intersection(_GLLM1_SPECIFIC_ALIASES)))
 
@@ -92,8 +97,7 @@ class BaseGuard(ABC):
             return False
         cat_aliases = _CATEGORY_BYPASS_ALIASES.get(self.category, frozenset({self.category}))
         return bool(
-            "all" in low
-            or "*" in low
+            is_master_bypass(low)
             or bool(low.intersection(cat_aliases))
             or (self.code == "G_QLIMIT1" and "profit_guard" in low)
             or self.code.lower() in low
@@ -341,7 +345,7 @@ def normalize_bypassed_guards(
             )
 
     # Expand master bypass ('all' or '*')
-    if "all" in bypassed or "*" in bypassed:
+    if is_master_bypass(bypassed):
         bypassed.update({
             "all", "*", "profit_guard", "operational", "trend",
             "profit", "qlimit", "financial", "intelligence", "llm", "gllm",
@@ -459,6 +463,11 @@ _QLIMIT2_GROUP_TOKENS: frozenset[str] = frozenset({
     "all",
     "*",
 })
+_QLIMIT2_BASE_TOKENS: frozenset[str] = frozenset({
+    "g_qlimit2",
+    "internal_quant_limit",
+    "quantitative",
+})
 _QLIMIT2_PARABOLIC_TOKENS: frozenset[str] = frozenset({
     "parabolic_surge",
     "parabolic_guard",
@@ -480,6 +489,19 @@ def resolve_qlimit2_sub_bypasses(bypass_guards: object) -> tuple[set[str], bool,
     parabolic_only = has_parabolic and not has_weibull and not has_group
     weibull_only = has_weibull and not has_parabolic and not has_group
     return raw_bypass_tokens, parabolic_only, weibull_only
+
+
+def normalize_intel_bypass_with_qlimit2_subs(bypass_guards: Any) -> tuple[set[str], bool, bool]:
+    """Normalize ``bypass_guards`` while preserving isolated Parabolic/Weibull sub-bypasses for ``G_QLIMIT2``."""
+    _, parabolic_only, weibull_only = resolve_qlimit2_sub_bypasses(bypass_guards)
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+    if parabolic_only:
+        bypassed.difference_update(_QLIMIT2_BASE_TOKENS | _QLIMIT2_WEIBULL_TOKENS)
+        bypassed.add("parabolic_surge")
+    elif weibull_only:
+        bypassed.difference_update(_QLIMIT2_BASE_TOKENS | _QLIMIT2_PARABOLIC_TOKENS)
+        bypassed.add("weibull_exhaustion")
+    return bypassed, parabolic_only, weibull_only
 
 
 _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (

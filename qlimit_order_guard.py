@@ -17,7 +17,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import clean_scale, normalize_side, obj_attr, safe_nonneg_float, safe_pos_float
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, resolve_qlimit2_sub_bypasses
+from guard_hierarchy import (
+    GUARD_REGISTRY,
+    is_master_bypass,
+    normalize_bypassed_guards,
+    resolve_qlimit2_sub_bypasses,
+)
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
@@ -63,8 +68,7 @@ def check_qlimit2_order_guards(
     raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass = resolve_qlimit2_sub_bypasses(bypass_guards)
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
     if (
-        "all" in bypassed
-        or "*" in bypassed
+        is_master_bypass(bypassed)
         or (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
     ):
         return True, "stop_loss_exempt", 1.0

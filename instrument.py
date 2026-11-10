@@ -250,9 +250,11 @@ class Instrument:
     @staticmethod
     def _build_profit_guard_kwargs(
         profit_window_ref, regime_context, qty, bypassed_guards,
-        profit_reference_mode, caller_module
+        profit_reference_mode, caller_module, *, include_qty: bool = True
     ) -> dict:
-        pg_kwargs = {"window_ref": profit_window_ref, "regime_context": regime_context, "qty": qty}
+        pg_kwargs = {"window_ref": profit_window_ref, "regime_context": regime_context}
+        if include_qty:
+            pg_kwargs["qty"] = qty
         if bypassed_guards:
             pg_kwargs["bypass_guards"] = bypassed_guards
         if profit_reference_mode is not None:
@@ -481,7 +483,7 @@ class Instrument:
         ctx.profit_margin = safe_float(caller_profit_margin, default=None)
         ctx.retry_kwargs = {
             **ctx.kwargs,
-            "bypass_guards": sorted(list(ctx.bypassed_guards)),
+            "bypass_guards": sorted(ctx.bypassed_guards),
             "wait_for_trend": ctx.wait_for_trend,
             "smart": ctx.smart,
         }
@@ -714,8 +716,8 @@ class Instrument:
                 None,
                 ctx.profit_reference_mode,
                 ctx.caller_module,
+                include_qty=False,
             )
-            cm_kwargs.pop("qty", None)
             if not order_guard.check_math_profit_reference(
                 self._provider,
                 self.symbol,
@@ -768,10 +770,7 @@ class Instrument:
         if check_medium_trend and gt2_context is not None:
             raw_reg = obj_attr(gt2_context, "regime") or obj_attr(gt2_context, "resolved_trend")
             resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
-            adverse_medium_trend = (
-                (ctx.side_u == "BUY" and resolved_regime == "bear")
-                or (ctx.side_u == "SELL" and resolved_regime == "bull")
-            )
+            adverse_medium_trend = order_guard.is_adverse_trend(ctx.side_u, resolved_regime)
             if medium_trend_action == "defer" and adverse_medium_trend:
                 regime_label = (
                     "BEAR regime" if ctx.side_u == "BUY" else "BULL regime, riding trend"

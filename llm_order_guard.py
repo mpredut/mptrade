@@ -30,7 +30,12 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import clean_symbol_key
-from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
+from guard_hierarchy import (
+    GUARD_REGISTRY,
+    is_master_bypass,
+    make_intel_cache_key,
+    normalize_bypassed_guards,
+)
 from intelligence.internal.guards.guard_decision import BrakeAction
 
 logger = logging.getLogger("llm_order_guard")
@@ -234,8 +239,8 @@ def check_geopolitical_order_guards(
     """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3)."""
     if bypass_guards:
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-        if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed):
-            return True, "stop_loss_exempt" if ("all" in bypassed or "*" in bypassed) else "ok", 1.0
+        if GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed):
+            return True, "stop_loss_exempt" if is_master_bypass(bypassed) else "ok", 1.0
     order_side = normalize_side(side)
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
@@ -378,14 +383,14 @@ def check_llm_order_guards(
         (allowed: bool, reason: str, suggested_scale: float)
     """
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if "all" in bypassed or "*" in bypassed:
+    if is_master_bypass(bypassed):
         return True, "stop_loss_exempt", 1.0
 
     side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _is_valid_regime_context, _load_margins, is_intelligence_master_off
+    from order_guard import _is_valid_regime_context, _load_margins, is_intelligence_master_off, merge_guard_scale
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -427,9 +432,7 @@ def check_llm_order_guards(
     )
     if not hs_ok:
         return False, hs_reason, 0.0
-    if hs_scale < 1.0:
-        effective_scale = min(effective_scale, hs_scale)
-        active_reason = hs_reason
+    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
 
     # 2. GLLM3: Geopolitical & Energy Shock Guard
     skip_geo = GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed)
@@ -442,9 +445,7 @@ def check_llm_order_guards(
         )
         if not geo_ok:
             return False, geo_reason, 0.0
-        if geo_scale < 1.0 and geo_scale <= effective_scale:
-            effective_scale = geo_scale
-            active_reason = geo_reason
+        effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, geo_scale, geo_reason)
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

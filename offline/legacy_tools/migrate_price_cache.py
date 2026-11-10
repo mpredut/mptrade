@@ -5,8 +5,8 @@ Migrates cache_price_<SYM>.json (old, full rewrite) -> cache_price_<SYM>.jsonl (
 During the refactor we moved from .json to .jsonl plus .meta, but the old data in .json
 was never migrated. This script:
   • reads the points from the old .json and from the existing .jsonl (if there is one),
-  • le imbina per simbol, deduplica pe timestamp, sorteaza crescator,
-  • rescrie .jsonl atomic + regenereaza .meta,
+  • merges them per symbol, deduplicates by timestamp, and sorts ascending,
+  • rewrites .jsonl atomically and regenerates .meta,
   • renames the old .json -> .json.bak (you can delete the .bak after checking).
 
 RUN IT ONLY with the writer processes (priceAnalysis and so on) STOPPED, so there is no
@@ -70,7 +70,7 @@ def migrate_file(json_path, dry_run=False):
     added_total = 0
     for sym in symbols:
         by_ts = {}
-        for item in new.get(sym, []):          # intai noile (au prioritate la duplicat)
+        for item in new.get(sym, []):          # newer points first (they take priority on duplicate timestamps)
             ts = _entry_ts(item)
             if ts > 0:
                 by_ts[ts] = item
@@ -83,7 +83,7 @@ def migrate_file(json_path, dry_run=False):
         added_total += added
         merged[sym] = [by_ts[k] for k in sorted(by_ts)]
 
-    # scriere
+    # write output
     lines, max_ts, counts, fetchtime = [], 0, {}, {}
     for sym, items in merged.items():
         counts[sym] = len(items)
@@ -137,9 +137,9 @@ def main():
         try:
             migrate_file(f, dry_run=dry_run)
         except Exception as e:
-            print(f"[EROARE] {os.path.basename(f)}: {e}")
+            print(f"[ERROR] {os.path.basename(f)}: {e}")
     if not dry_run:
-        print("\nGata. Fisierele .json au fost redenumite in .json.bak "
+        print("\nDone. The .json files were renamed to .json.bak "
               "(delete them once you have checked the .jsonl).")
 
 

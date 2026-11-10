@@ -66,8 +66,8 @@ def main():
         total += len(lst)
         removed += len(lst) - len(keep)
         cleaned[sym] = keep
-        print(f"  {sym}: total={len(lst)} | scoase={len(lst) - len(keep)} | raman={len(keep)}")
-    print(f"TOTAL: {total} | de scos={removed} | raman={total - removed}")
+        print(f"  {sym}: total={len(lst)} | removed={len(lst) - len(keep)} | remaining={len(keep)}")
+    print(f"TOTAL: {total} | to_remove={removed} | remaining={total - removed}")
 
     if dry:
         print("[DRY] nothing was written.")

@@ -47,8 +47,10 @@ from cachepaths import (
 from guard_hierarchy import (
     GUARD_REGISTRY,
     is_category_bypassed,
+    is_master_bypass,
     make_intel_cache_key,
     normalize_bypassed_guards,
+    normalize_intel_bypass_with_qlimit2_subs,
     resolve_qlimit2_sub_bypasses,
 )
 from intelligence.macro_sentiment_ssot import (
@@ -612,6 +614,11 @@ def _is_favorable_trend(side: str, trend: str) -> bool:
     return (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear")
 
 
+def is_adverse_trend(side: str, trend: Any) -> bool:
+    """Return True when the market trend opposes the order side (BUY in bear / SELL in bull)."""
+    return (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull")
+
+
 def get_dynamic_window_sec_cfg(
     symbol=None,
     provider=None,
@@ -657,7 +664,7 @@ def get_dynamic_window_sec_cfg(
         )
     if _is_favorable_trend(side, trend):
         hours = max(4.0, min(12.0, favorable_h))
-    elif (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull"):
+    elif is_adverse_trend(side, trend):
         hours = max(48.0, min(168.0, adverse_h))
     else:  # flat, sideways, chop, or unknown
         hours = max(12.0, min(48.0, flat_h))
@@ -1321,7 +1328,7 @@ def _update_context_intel_cache(
         pass
 
 
-def _merge_guard_scale(
+def merge_guard_scale(
     effective_scale: float,
     active_reason: str,
     new_scale: float,
@@ -1332,16 +1339,8 @@ def _merge_guard_scale(
     return effective_scale, active_reason
 
 
-def _normalize_intel_bypass_with_qlimit2_subs(bypass_guards: Any) -> tuple[set[str], bool, bool]:
-    _, parabolic_only, weibull_only = resolve_qlimit2_sub_bypasses(bypass_guards)
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if parabolic_only:
-        bypassed.difference_update({"g_qlimit2", "internal_quant_limit", "quantitative", "weibull_exhaustion", "exhaustion_guard", "weibullexhaustionguard"})
-        bypassed.add("parabolic_surge")
-    elif weibull_only:
-        bypassed.difference_update({"g_qlimit2", "internal_quant_limit", "quantitative", "parabolic_surge", "parabolic_guard", "parabolicsurgeguard"})
-        bypassed.add("weibull_exhaustion")
-    return bypassed, parabolic_only, weibull_only
+_merge_guard_scale = merge_guard_scale
+_normalize_intel_bypass_with_qlimit2_subs = normalize_intel_bypass_with_qlimit2_subs
 
 
 def check_intelligence_guards(
@@ -1371,8 +1370,8 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed, parabolic_only_bypass, weibull_only_bypass = _normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
-    if "all" in bypassed or "*" in bypassed:
+    bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
+    if is_master_bypass(bypassed):
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
@@ -1533,8 +1532,8 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    bypassed, parabolic_only_bypass, weibull_only_bypass = _normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
-    if "all" in bypassed or "*" in bypassed:
+    bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
+    if is_master_bypass(bypassed):
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
@@ -1762,7 +1761,7 @@ def profit_guard(
       evaluate_intelligence=True.
     """
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if "all" in bypassed or "*" in bypassed:
+    if is_master_bypass(bypassed):
         return True
 
     # Stage 1: Deterministic Mathematical Reference Check (G_PROF)

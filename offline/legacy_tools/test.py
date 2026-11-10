@@ -15,13 +15,13 @@ from botcore import safe_nonneg_float, safe_pos_float
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
     end_time = int(datetime.datetime.now().timestamp() * 1000)
-    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Ultimele 30 de zile
+    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Last 30 days
 
     url = f'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={start_time}&endTime={end_time}'
     response = requests.get(url)
     data = response.json()
 
-    # Crearea unui DataFrame
+    # Create a DataFrame
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     print(df.head())
     print(f"Total intervals (should be close to 43200 for 30 days of minute data): {len(df)}")
@@ -32,7 +32,7 @@ def fetch_data():
 
 def analyze_drops(df):
     count_drops = 0
-    total_intervals = max(0, len(df) - 20)  # Intervale de 20 de minute
+    total_intervals = max(0, len(df) - 20)  # 20-minute intervals
     if total_intervals == 0:
         return 0, 0, 0.0
 
@@ -55,6 +55,6 @@ if __name__ == "__main__":
     df = fetch_data()
     count_drops, total_intervals, probability = analyze_drops(df)
 
-    print(f"Numar de scaderi de 5% in 20 de minute: {count_drops}")
-    print(f"Total intervale de 20 de minute in 30 de zile: {total_intervals}")
-    print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability:.2f}%")
+    print(f"Number of 5% drops in 20 minutes: {count_drops}")
+    print(f"Total 20-minute intervals in 30 days: {total_intervals}")
+    print(f"Probability of a 5% drop in 20 minutes: {probability:.2f}%")

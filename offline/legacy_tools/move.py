@@ -1,4 +1,4 @@
-"""Utilitar istoric de mutare cache; opereaza pe cai relative la CWD."""
+"""Historical cache move utility; operates on paths relative to CWD."""
 
 import os
 import shutil
@@ -6,7 +6,7 @@ import shutil
 def backup_and_replace(converted_file: str, cache_file: str):
     """
     1. Move the existing cache_file into old/ as a backup (if it exists)
-    2. Muta/redenumeste converted_file in cache_file
+    2. Move/rename converted_file into cache_file
     """
     if not os.path.exists(converted_file):
         raise FileNotFoundError(f"Converted file does not exist: {converted_file}")

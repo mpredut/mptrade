@@ -16,7 +16,7 @@ from botcore import safe_nonneg_float, safe_pos_float
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
     end_time = int(datetime.datetime.now().timestamp() * 1000)
-    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Ultimele 30 de zile
+    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Last 30 days
 
     # We adjust so the data is fetched in several requests, because Binance limits how much it returns.
     df_list = []
@@ -43,7 +43,7 @@ def fetch_data():
 
 def analyze_drops_with_distribution(df, show_plot: bool = False):
     drops = []
-    total_intervals = max(0, len(df) - 2 * 60)  # Intervale de 2*60 de minute
+    total_intervals = max(0, len(df) - 2 * 60)  # 2*60-minute intervals
     if total_intervals == 0:
         return 0, 0.0, 0, 0.0, 0, 0.0
 
@@ -56,11 +56,11 @@ def analyze_drops_with_distribution(df, show_plot: bool = False):
         drops.append(drop_percent)
 
     if show_plot and drops:
-        # Verificam distributia scaderilor
+        # Plot the drop distribution
         plt.hist(drops, bins=50, edgecolor='black')
-        plt.title('Distributia scaderilor procentuale in 2*60 de minute')
-        plt.xlabel('Procent de scadere')
-        plt.ylabel('Frecventa')
+        plt.title('Distribution of percentage drops in 2*60 minutes')
+        plt.xlabel('Drop percentage')
+        plt.ylabel('Frequency')
         plt.show()
 
     count_drops_5 = sum(1 for drop in drops if drop >= 5)
@@ -80,10 +80,10 @@ if __name__ == "__main__":
     # Analyze with distribution
     count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2 = analyze_drops_with_distribution(df, show_plot=True)
 
-    print(f"Numar de scaderi de 5% in 20 de minute: {count_drops_5}")
-    print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability_5:.2f}%")
-    print(f"Numar de scaderi de 3% in 20 de minute: {count_drops_3}")
-    print(f"Probabilitatea unei scaderi de 3% in 20 de minute: {probability_3:.2f}%")
-    print(f"Numar de scaderi de 2% in 20 de minute: {count_drops_2}")
-    print(f"Probabilitatea unei scaderi de 2% in 20 de minute: {probability_2:.2f}%")
+    print(f"Number of 5% drops in 20 minutes: {count_drops_5}")
+    print(f"Probability of a 5% drop in 20 minutes: {probability_5:.2f}%")
+    print(f"Number of 3% drops in 20 minutes: {count_drops_3}")
+    print(f"Probability of a 3% drop in 20 minutes: {probability_3:.2f}%")
+    print(f"Number of 2% drops in 20 minutes: {count_drops_2}")
+    print(f"Probability of a 2% drop in 20 minutes: {probability_2:.2f}%")
 

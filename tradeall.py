@@ -620,7 +620,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
     if (gradient > 0 and slope < 0) or (gradient < 0 and slope > 0):
         direction, action = _dir_action(gradient > 0)
         label = "DOWN" if direction == "UP" else "UP"
-        print(f"DIFERENTA MARE {win} {label}!")
+        print(f"LARGE DIFFERENCE {win} {label}!")
         if trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down():
             trend_state.confirm_trend()
             if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():

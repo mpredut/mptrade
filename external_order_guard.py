@@ -25,7 +25,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import clean_symbol_key
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from guard_hierarchy import GUARD_REGISTRY, is_master_bypass, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
 import intelligence.external.guards.whale_divergence_guard as wdg
@@ -79,7 +79,7 @@ def check_external_order_guards(
         (allowed: bool, reason: str, suggested_scale: float)
     """
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
-    if "all" in bypassed or "*" in bypassed:
+    if is_master_bypass(bypassed):
         return True, "stop_loss_exempt", 1.0
 
     order_side = normalize_side(side)
@@ -88,7 +88,7 @@ def check_external_order_guards(
 
     sym_norm = clean_symbol_key(symbol)
 
-    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
+    from order_guard import _load_margins, is_intelligence_master_off, merge_guard_scale, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -159,9 +159,7 @@ def check_external_order_guards(
             if mode == "enforce":
                 if not dec.allowed or d_scale <= 0.0:
                     return False, dec.reason, 0.0
-                if d_scale < 1.0 and d_scale <= effective_scale:
-                    effective_scale = d_scale
-                    active_reason = dec.reason
+                effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, d_scale, dec.reason)
         return None
 
     def _eval_ext_guard(
@@ -246,7 +244,7 @@ def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -
             if normalize_guard_mode(m.get(mode_key, "enforce"), default="enforce") != "enforce":
                 return False
         bypassed = resolve_effective_bypass_guards(venue, bypass_guards=bypass_guards, margins=m)
-        if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
+        if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
             return False
     except Exception:
         pass
