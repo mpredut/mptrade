@@ -68,10 +68,6 @@ CM_ROTATE_KEEP_FRACTION = required_float_env("CM_ROTATE_KEEP_FRACTION")
 CM_ROTATE_ARCHIVE_COUNT = required_int_env("CM_ROTATE_ARCHIVE_COUNT")
 CM_RESYNC_INTERVAL_SEC = required_float_env("CM_RESYNC_INTERVAL_SEC")
 CM_DEDUP_WINDOW = required_int_env("CM_DEDUP_WINDOW")
-CM_LONG_ARCHIVE_MONTHS = required_float_env("CM_LONG_ARCHIVE_MONTHS")
-CM_LONG_ARCHIVE_SAMPLE_SEC = required_float_env("CM_LONG_ARCHIVE_SAMPLE_SEC")
-CM_LONG_ARCHIVE_FLUSH_SEC = required_float_env("CM_LONG_ARCHIVE_FLUSH_SEC")
-CM_LONG_ARCHIVE_MEMORY_ROWS = required_int_env("CM_LONG_ARCHIVE_MEMORY_ROWS")
 
 if not 0 < CM_ROTATE_KEEP_FRACTION <= 1:
     raise ValueError("CM_ROTATE_KEEP_FRACTION must be in (0, 1]")
@@ -82,10 +78,6 @@ for _name, _value in (
     ("CM_ROTATE_ARCHIVE_COUNT", CM_ROTATE_ARCHIVE_COUNT),
     ("CM_RESYNC_INTERVAL_SEC", CM_RESYNC_INTERVAL_SEC),
     ("CM_DEDUP_WINDOW", CM_DEDUP_WINDOW),
-    ("CM_LONG_ARCHIVE_MONTHS", CM_LONG_ARCHIVE_MONTHS),
-    ("CM_LONG_ARCHIVE_SAMPLE_SEC", CM_LONG_ARCHIVE_SAMPLE_SEC),
-    ("CM_LONG_ARCHIVE_FLUSH_SEC", CM_LONG_ARCHIVE_FLUSH_SEC),
-    ("CM_LONG_ARCHIVE_MEMORY_ROWS", CM_LONG_ARCHIVE_MEMORY_ROWS),
 ):
     if _value <= 0:
         raise ValueError(f"{_name} must be positive")
@@ -200,16 +192,6 @@ class CacheManagerInterface(ABC):
 
     _default_api_client: Any = None
 
-    @classmethod
-    def bind_runtime_services(
-        cls,
-        *,
-        api_client: Any = None,
-    ) -> None:
-        """Bind optional runtime services (API client) from factory/daemon."""
-        if api_client is not None:
-            cls._default_api_client = api_client
-
     def __init__(
         self,
         sync_ts,
@@ -275,9 +257,6 @@ class CacheManagerInterface(ABC):
             self._first_sleep = False
         self.lock = threading.RLock()
 
-        if not hasattr(self, "_price_subscribers"):
-            self._price_subscribers = []
-
         self.fallback_time_default = (
             int(_now_time() * 1000) - self.days_back * 24 * 60 * 60 * 1000
         )
@@ -300,33 +279,6 @@ class CacheManagerInterface(ABC):
             self.mode = (
                 self.MODE_DISK_READER if self.read_only else self.MODE_LIVE_READER
             )
-
-    # ── Subscriber pattern for forwarding prices ─────────────────────────────
-
-    def subscribe_price(self, subscriber) -> None:
-        """Subscribe an object implementing ``on_price_update(symbol, ts_ms, price)``."""
-        with self.lock:
-            if subscriber not in self._price_subscribers:
-                self._price_subscribers.append(subscriber)
-        if (
-            not getattr(subscriber, "save_state", False)
-            and getattr(subscriber, "mode", None) == self.MODE_DISK_READER
-        ):
-            subscriber.mode = self.MODE_LIVE_READER
-
-    def unsubscribe_price(self, subscriber) -> None:
-        with self.lock:
-            if subscriber in self._price_subscribers:
-                self._price_subscribers.remove(subscriber)
-
-    def _notify_price_subscribers(self, symbol: str, ts_ms: int, price: float) -> None:
-        with self.lock:
-            subs = list(self._price_subscribers)
-        for sub in subs:
-            try:
-                sub.on_price_update(symbol, ts_ms, price)
-            except Exception as e:
-                print(f"[{self.cls_name}] Error notifying subscriber {sub}: {e}")
 
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""

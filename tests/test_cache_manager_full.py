@@ -1321,26 +1321,26 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 class TestWsHealthFunctions(unittest.TestCase):
 
     def setUp(self):
-        cm._ws_available = False
-        cm._ws_last_event_ts = 0.0
-        cm._ws_is_healthy = False
+        cm._bapi_ws_bridge._ws_available = False
+        cm._bapi_ws_bridge._ws_last_event_ts = 0.0
+        cm._bapi_ws_bridge._ws_is_healthy = False
 
     def test_ws_health_lifecycle_and_policies(self):
         with self.subTest("mark ws available"):
             for available in (True, False):
                 with self.subTest(available=available):
                     cm._mark_ws_available(available)
-                    with cm._ws_health_lock:
-                        self.assertEqual(cm._ws_available, available)
+                    with cm._bapi_ws_bridge._ws_health_lock:
+                        self.assertEqual(cm._bapi_ws_bridge._ws_available, available)
 
         with self.subTest("ws event and unhealthy lifecycle"):
             cm._mark_ws_event_received()
-            with cm._ws_health_lock:
-                self.assertTrue(cm._ws_is_healthy)
-                self.assertGreater(cm._ws_last_event_ts, 0)
+            with cm._bapi_ws_bridge._ws_health_lock:
+                self.assertTrue(cm._bapi_ws_bridge._ws_is_healthy)
+                self.assertGreater(cm._bapi_ws_bridge._ws_last_event_ts, 0)
             cm._mark_ws_unhealthy()
-            with cm._ws_health_lock:
-                self.assertFalse(cm._ws_is_healthy)
+            with cm._bapi_ws_bridge._ws_health_lock:
+                self.assertFalse(cm._bapi_ws_bridge._ws_is_healthy)
 
         with self.subTest("polling fallback policies"):
             cases = (
@@ -1351,11 +1351,11 @@ class TestWsHealthFunctions(unittest.TestCase):
             try:
                 for label, ws_only, available, manager_name in cases:
                     with self.subTest(case=label):
-                        cm.WS_ONLY_MODE = ws_only
-                        cm._ws_available = available
+                        cm._bapi_ws_bridge.WS_ONLY_MODE = ws_only
+                        cm._bapi_ws_bridge._ws_available = available
                         self.assertTrue(cm._should_poll_for_manager(manager_name))
             finally:
-                cm.WS_ONLY_MODE = False
+                cm._bapi_ws_bridge.WS_ONLY_MODE = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2686,13 +2686,18 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
         request_stop=lambda: bridge_events.append("request_stop"),
         stop=lambda timeout=0.0: bridge_events.append(("stop", round(timeout, 3))),
     )
-    monkeypatch.setattr(cm, "_ws_bridge", fake_bridge)
+    monkeypatch.setattr(cacheaccount._bapi_ws_bridge, "_ws_bridge", fake_bridge)
     cacheaccount.request_stop_account_ws_streams()
     cacheaccount.disable_account_cache_daemon_writer()
     cacheaccount.stop_account_ws_streams(time.monotonic() + 1.0)
     assert "request_stop" in bridge_events
     assert any(isinstance(ev, tuple) and ev[0] == "stop" for ev in bridge_events)
     assert ("disable_writer",) in recorded_syncs
+    assert not hasattr(cm, "_ws_bridge")
+    assert not hasattr(cm, "_ws_available")
+    assert hasattr(cacheprice.CachePriceManagerBase, "subscribe_price")
+    assert "subscribe_price" not in cm.CacheManagerInterface.__dict__
+    assert "bind_runtime_services" not in cm.CacheManagerInterface.__dict__
 
     from binance_api import bapi_ws
 

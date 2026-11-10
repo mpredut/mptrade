@@ -677,7 +677,7 @@ class TestSubscriberPatternInheritance(unittest.TestCase):
             )
             for label, method in cases:
                 with self.subTest(manager=label):
-                    self.assertIs(method, cm.CacheManagerInterface.subscribe_price)
+                    self.assertIs(method, cm.CachePriceManagerBase.subscribe_price)
 
         with self.subTest("inherited notify reaches subscriber"):
             mgr = self._cache24("BTCUSDT")

@@ -44,14 +44,15 @@ from botcore import (
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_rth_open,
+    load_dotenv,
+    required_float_env,
+    required_int_env,
     resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
 from cacheInterface import (
-    CM_LONG_ARCHIVE_MEMORY_ROWS,
-    CM_LONG_ARCHIVE_MONTHS,
     CacheManagerInterface,
     _cm_override,
     _jsonl_line,
@@ -103,13 +104,27 @@ import utils as u
 
 _NB_FETCH_DEADLINE_SEC = 8
 
-CacheManagerInterface.bind_runtime_services(api_client=api)
+load_dotenv()
+
+CM_LONG_ARCHIVE_MONTHS = required_float_env("CM_LONG_ARCHIVE_MONTHS")
+CM_LONG_ARCHIVE_SAMPLE_SEC = required_float_env("CM_LONG_ARCHIVE_SAMPLE_SEC")
+CM_LONG_ARCHIVE_FLUSH_SEC = required_float_env("CM_LONG_ARCHIVE_FLUSH_SEC")
+CM_LONG_ARCHIVE_MEMORY_ROWS = required_int_env("CM_LONG_ARCHIVE_MEMORY_ROWS")
+for _name, _value in (
+    ("CM_LONG_ARCHIVE_MONTHS", CM_LONG_ARCHIVE_MONTHS),
+    ("CM_LONG_ARCHIVE_SAMPLE_SEC", CM_LONG_ARCHIVE_SAMPLE_SEC),
+    ("CM_LONG_ARCHIVE_FLUSH_SEC", CM_LONG_ARCHIVE_FLUSH_SEC),
+    ("CM_LONG_ARCHIVE_MEMORY_ROWS", CM_LONG_ARCHIVE_MEMORY_ROWS),
+):
+    if _value <= 0:
+        raise ValueError(f"{_name} must be positive")
 
 
 class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
+    _default_api_client = api
     _default_current_price_getter: Optional[Callable[..., Any]] = None
 
     @classmethod
@@ -129,7 +144,35 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
             raise TypeError("Cannot instantiate abstract class CachePriceManagerBase")
         self._current_price_getter = current_price_getter
         self._current_price_mgr = current_price_mgr
+        self._price_subscribers = []
         super().__init__(*args, **kwargs)
+
+    # ── Subscriber pattern for forwarding prices ─────────────────────────────
+
+    def subscribe_price(self, subscriber) -> None:
+        """Subscribe an object implementing ``on_price_update(symbol, ts_ms, price)``."""
+        with self.lock:
+            if subscriber not in self._price_subscribers:
+                self._price_subscribers.append(subscriber)
+        if (
+            not getattr(subscriber, "save_state", False)
+            and getattr(subscriber, "mode", None) == self.MODE_DISK_READER
+        ):
+            subscriber.mode = self.MODE_LIVE_READER
+
+    def unsubscribe_price(self, subscriber) -> None:
+        with self.lock:
+            if subscriber in self._price_subscribers:
+                self._price_subscribers.remove(subscriber)
+
+    def _notify_price_subscribers(self, symbol: str, ts_ms: int, price: float) -> None:
+        with self.lock:
+            subs = list(self._price_subscribers)
+        for sub in subs:
+            try:
+                sub.on_price_update(symbol, ts_ms, price)
+            except Exception as e:
+                print(f"[{self.cls_name}] Error notifying subscriber {sub}: {e}")
 
     @staticmethod
     def extract_jsonl_series_point(
@@ -535,9 +578,7 @@ class Cache365PriceManager(Cache24PriceManager):
         if api_client is None:
             api_client = _cm_override("api", api)
         self._last_long_trim = 0.0
-        self._current_price_getter = current_price_getter
-        self._current_price_mgr = current_price_mgr
-        CacheManagerInterface.__init__(
+        CachePriceManagerBase.__init__(
             self,
             sync_ts,
             symbols,
@@ -546,6 +587,8 @@ class Cache365PriceManager(Cache24PriceManager):
             api_client=api_client,
             append_persist=True,
             read_only=read_only,
+            current_price_getter=current_price_getter,
+            current_price_mgr=current_price_mgr,
         )
         self._filter_maps_to_configured_symbols_locked()
 
@@ -925,7 +968,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._ws_last_event_ts_value = 0.0
         self._ws_last_event_ts_per_symbol: dict = {}
         self._ws_stream_event_ts_per_symbol: dict = {}
-        self._price_subscribers = []
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
         self._first_sleep = True

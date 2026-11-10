@@ -31,10 +31,6 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cacheInterface import (
-    CM_LONG_ARCHIVE_FLUSH_SEC,
-    CM_LONG_ARCHIVE_MEMORY_ROWS,
-    CM_LONG_ARCHIVE_MONTHS,
-    CM_LONG_ARCHIVE_SAMPLE_SEC,
     CacheManagerInterface,
     _CONFIG_ROOT,
     _coerce_symbol_list,
@@ -46,9 +42,6 @@ from cacheaccount import (
     CacheAssetValueManager,
     CacheOrderManager,
     CacheTradeManager,
-    WS_EVENT_LOG_ENABLED,
-    WS_LOSS_TIMEOUT_SEC,
-    WS_ONLY_MODE,
     _append_trade_from_execution_report,
     _bapi_ws_bridge,
     _handle_binance_ws_event,
@@ -57,12 +50,7 @@ from cacheaccount import (
     _mark_ws_unhealthy,
     _should_poll_for_manager,
     _upsert_order_from_execution_report,
-    _ws_available,
-    _ws_bridge,
     _ws_cache_getter,
-    _ws_health_lock,
-    _ws_is_healthy,
-    _ws_last_event_ts,
     account_cache_health,
     api,
     apiorders,
@@ -77,6 +65,10 @@ from cacheaccount import (
 )
 from cachepaths import migrate_legacy_filename_if_needed
 from cacheprice import (
+    CM_LONG_ARCHIVE_FLUSH_SEC,
+    CM_LONG_ARCHIVE_MEMORY_ROWS,
+    CM_LONG_ARCHIVE_MONTHS,
+    CM_LONG_ARCHIVE_SAMPLE_SEC,
     Cache24PriceManager,
     Cache365PriceManager,
     CacheCurrentPriceManager,

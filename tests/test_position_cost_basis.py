@@ -265,7 +265,7 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
 
     # Even if WS_ONLY_MODE is True and WS is healthy again, _should_poll_for_manager
     # must force a REST reconciliation poll after the unhealthy period:
-    monkeypatch.setattr(cm, "WS_ONLY_MODE", True)
+    monkeypatch.setattr(cm._bapi_ws_bridge, "WS_ONLY_MODE", True)
     assert cm._should_poll_for_manager("CacheTradeManager") is True
 
     # 2. Now REST poll runs: it must query from startTime=1000 (NOT 2000!),

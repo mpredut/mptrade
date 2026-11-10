@@ -1029,18 +1029,11 @@ if __name__ == "__main__":
         coordinator.run()
     finally:
         coordinator.stop()
-        for _ws_obj in (getattr(cm, "_ws_bridge", None), getattr(bapi_ws, "bapi_ws_manager", None)):
-            if _ws_obj is not None and hasattr(_ws_obj, "_stop_event"):
-                try:
-                    _ws_obj._stop_event.set()
-                except Exception:
-                    pass
+        cm.request_stop_account_ws_streams()
+        cm.request_stop_price_ws_streams()
         instant_mgr.shutdown(timeout=0.5)
         cm.CacheFactory.shutdown_all(timeout=0.5)
         current_price_mgr.shutdown(timeout=0.3)
-        for _ws_obj in (getattr(cm, "_ws_bridge", None), getattr(bapi_ws, "bapi_ws_manager", None)):
-            if _ws_obj is not None:
-                try:
-                    _ws_obj.stop(timeout=0.3)
-                except Exception:
-                    pass
+        shutdown_deadline = time.monotonic() + 0.3
+        cm.stop_account_ws_streams(shutdown_deadline)
+        cm.stop_price_ws_streams(shutdown_deadline)

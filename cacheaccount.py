@@ -96,16 +96,6 @@ from state_io import (
 
 
 # WS-only mode and health state live in ``binance_api.bapi_ws_bridge``.
-WS_ONLY_MODE = _bapi_ws_bridge.WS_ONLY_MODE
-WS_LOSS_TIMEOUT_SEC = _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC
-WS_EVENT_LOG_ENABLED = _bapi_ws_bridge.WS_EVENT_LOG_ENABLED
-
-_ws_health_lock = _bapi_ws_bridge._ws_health_lock
-_ws_available = _bapi_ws_bridge._ws_available
-_ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
-_ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
 _mark_ws_available = _bapi_ws_bridge.mark_ws_available
 _mark_ws_event_received = _bapi_ws_bridge.mark_ws_event_received
 _mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
@@ -114,18 +104,16 @@ _mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
 def _should_poll_for_manager(cls_name):
     return _bapi_ws_bridge.should_poll_for_manager(
         cls_name,
-        ws_only_mode=_cm_override("WS_ONLY_MODE", WS_ONLY_MODE),
-        ws_available=_cm_override("_ws_available", _ws_available),
-        ws_is_healthy=_cm_override("_ws_is_healthy", _ws_is_healthy),
+        ws_only_mode=_cm_override("WS_ONLY_MODE", _bapi_ws_bridge.WS_ONLY_MODE),
+        ws_available=_cm_override("_ws_available", _bapi_ws_bridge._ws_available),
+        ws_is_healthy=_cm_override("_ws_is_healthy", _bapi_ws_bridge._ws_is_healthy),
     )
-
-
-CacheManagerInterface.bind_runtime_services(api_client=api)
 
 
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for account-domain caches (``Order``, ``Trade``, ``AssetValue``)."""
 
+    _default_api_client = api
     _is_trade_account_cache = False
     _is_order_account_cache = False
     _persisted_data_version = ""
@@ -2587,9 +2575,6 @@ def ensure_account_cache_readers(status):
         ) from exc
 
 
-_ws_bridge = _bapi_ws_bridge._ws_bridge
-
-
 def _ws_cache_getter(name, symbols=None, *, start_sync=False):
     """Look up caches from WebSocket callbacks without spawning rogue polling loops in consumers."""
     getter = _resolve_account_cache_getter()
@@ -2623,7 +2608,7 @@ def _handle_binance_ws_event(event):
     _bapi_ws_bridge.handle_binance_ws_event(
         event,
         cache_getter=cache_getter,
-        log_enabled=_cm_override("WS_EVENT_LOG_ENABLED", WS_EVENT_LOG_ENABLED),
+        log_enabled=_cm_override("WS_EVENT_LOG_ENABLED", _bapi_ws_bridge.WS_EVENT_LOG_ENABLED),
         upsert_order_fn=_cm_override(
             "_upsert_order_from_execution_report",
             _upsert_order_from_execution_report,
@@ -2639,21 +2624,13 @@ def _handle_binance_ws_event(event):
 
 
 def enable_real_ws_event_sync():
-    global _ws_bridge
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None and hasattr(cm_mod, "_ws_bridge"):
-        _ws_bridge = getattr(cm_mod, "_ws_bridge")
-    _bapi_ws_bridge._ws_bridge = _ws_bridge
-    _ws_bridge = _bapi_ws_bridge.enable_real_ws_event_sync(
+    return _bapi_ws_bridge.enable_real_ws_event_sync(
         on_event=_cm_override("_handle_binance_ws_event", _handle_binance_ws_event),
         on_available=_cm_override("_mark_ws_available", _mark_ws_available),
         on_healthy=_cm_override("_mark_ws_event_received", _mark_ws_event_received),
         on_unhealthy=_cm_override("_mark_ws_unhealthy", _mark_ws_unhealthy),
-        loss_timeout_sec=_cm_override("WS_LOSS_TIMEOUT_SEC", WS_LOSS_TIMEOUT_SEC),
+        loss_timeout_sec=_cm_override("WS_LOSS_TIMEOUT_SEC", _bapi_ws_bridge.WS_LOSS_TIMEOUT_SEC),
     )
-    if cm_mod is not None:
-        cm_mod._ws_bridge = _ws_bridge
-    return _ws_bridge
 
 
 def start_account_cache_daemon(
@@ -2689,16 +2666,9 @@ def disable_account_cache_daemon_writer() -> None:
     ach.disable_writer()
 
 
-def _active_ws_bridge():
-    cm_mod = sys.modules.get("cacheManager")
-    if cm_mod is not None and getattr(cm_mod, "_ws_bridge", None) is not None:
-        return getattr(cm_mod, "_ws_bridge")
-    return _ws_bridge or _bapi_ws_bridge._ws_bridge
-
-
 def request_stop_account_ws_streams() -> None:
     """Signal the account user-data WebSocket bridge to stop."""
-    bridge = _active_ws_bridge()
+    bridge = _bapi_ws_bridge._ws_bridge
     if bridge is not None and hasattr(bridge, "request_stop"):
         try:
             bridge.request_stop()
@@ -2708,7 +2678,7 @@ def request_stop_account_ws_streams() -> None:
 
 def stop_account_ws_streams(shutdown_deadline: float) -> None:
     """Join the account user-data WebSocket bridge within ``shutdown_deadline``."""
-    bridge = _active_ws_bridge()
+    bridge = _bapi_ws_bridge._ws_bridge
     if bridge is not None and hasattr(bridge, "stop"):
         try:
             bridge.stop(
