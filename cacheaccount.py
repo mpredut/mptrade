@@ -1724,11 +1724,6 @@ class CacheOrderManager(CacheAccountManagerBase):
             )
         )
 
-    def _read_legacy_order_snapshot_strict(self, legacy_meta, *, path=None):
-        return _cache_integrity.read_legacy_order_snapshot_strict(
-            path or self.filename, legacy_meta
-        )
-
     def _load_snapshot_state(self):
         """Load Order cache state strictly when durable data or metadata exists."""
         with self._generation_lock():
@@ -1769,7 +1764,10 @@ class CacheOrderManager(CacheAccountManagerBase):
         try:
             items, fetchtime, rest_sync_cursor, counts = (
                 self._read_snapshot_recovering_previous_locked(
-                    self._read_legacy_order_snapshot_strict, legacy_meta
+                    lambda meta, path=None: _cache_integrity.read_legacy_order_snapshot_strict(
+                        path or self.filename, meta
+                    ),
+                    legacy_meta,
                 )
             )
             with self.lock:

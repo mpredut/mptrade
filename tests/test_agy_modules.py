@@ -672,7 +672,7 @@ class TestMirrorTopicThreadToUi:
             reg_path,
         )
         assert asf.mirrored_topic_cids() == {"dead-missing-cid"}
-        assert "dead-missing-cid" in asf.topic_canonical_titles()
+        assert "dead-missing-cid" in asf.get_topic_canonical_titles(asf._effective_topic_registry())
 
         _make_conv_db(os.path.join(bot_base, "conversations", "fresh-adopted-cid.db"))
         con2 = sqlite3.connect(bot_db)

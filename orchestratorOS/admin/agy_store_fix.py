@@ -282,7 +282,7 @@ def mode_pre(force: bool = False) -> int:
 def repair_summaries(mt: dict) -> int:
     if not os.path.exists(DB):
         return 0
-    topic_titles = topic_canonical_titles()
+    topic_titles = get_topic_canonical_titles(_effective_topic_registry())
     if topic_titles and os.environ.get("AGY_FIX_HOME") is None:
         try:
             bot_base = resolve_bot_cli_base()
@@ -496,11 +496,6 @@ def _effective_topic_registry() -> str:
 def mirrored_topic_cids() -> set[str]:
     """Conversation IDs owned by mirrored background topic threads (excluded from interactive idle detection)."""
     return get_active_topic_cids(_effective_topic_registry())
-
-
-def topic_canonical_titles() -> dict[str, str]:
-    """Canonical permanent titles for topic threads from cachedb/llm_topic_threads.json."""
-    return get_topic_canonical_titles(_effective_topic_registry())
 
 
 _GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")

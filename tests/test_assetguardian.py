@@ -47,7 +47,7 @@ class AssetGuardianTest(unittest.TestCase):
             env["AG_BUY_USE_CASH_RATIO"] = "   "
             with mock.patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError) as raised:
-                    ag._validate_required_config_presence()
+                    ag.validate_required_env_keys(ag.REQUIRED_CONFIG_KEYS, label="AssetGuardian")
             message = str(raised.exception)
             self.assertIn("AG_CHECK_INTERVAL_SEC", message)
             self.assertIn("AG_BUY_USE_CASH_RATIO", message)

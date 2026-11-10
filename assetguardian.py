@@ -60,14 +60,9 @@ REQUIRED_CONFIG_KEYS = (
 )
 
 
-def _validate_required_config_presence():
-    """Abort startup with the complete list of missing mandatory settings."""
-    validate_required_env_keys(REQUIRED_CONFIG_KEYS, label="AssetGuardian")
-
-
 # Every financial/operational parameter is mandatory in config.env.
 # There are deliberately no hidden code defaults: a missing key stops startup.
-_validate_required_config_presence()
+validate_required_env_keys(REQUIRED_CONFIG_KEYS, label="AssetGuardian")
 CHECK_INTERVAL_SECONDS = required_float_env("AG_CHECK_INTERVAL_SEC")
 ASSET_REFERENCE_MINUTES_BACK_DEFAULT = required_float_env("AG_REFERENCE_MINUTES_BACK")
 BUY_USE_CASH_RATIO = required_float_env("AG_BUY_USE_CASH_RATIO")

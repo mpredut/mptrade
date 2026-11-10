@@ -1039,8 +1039,9 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(order_mgr._persisted_max_ts(), 0)
         with open(order_mgr.filename, "w", encoding="utf-8") as fh:
             json.dump({"items": {"BTCUSDT": "not-a-list"}, "fetchtime": {"BTCUSDT": 1700000000000}}, fh)
+        import cacheintegrity
         with self.assertRaises(ValueError):
-            order_mgr._read_legacy_order_snapshot_strict(None)
+            cacheintegrity.read_legacy_order_snapshot_strict(order_mgr.filename, None)
 
         # BinancePriceStream._process_message rejects non-dict envelopes, bool prices, and invalid timestamps
         from binance_api import bapi_ws
