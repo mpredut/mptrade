@@ -50,6 +50,7 @@ from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
 from credentials import CredentialConfigurationError, kraken_credentials
 from instrument_registry import symbols_for
 from kraken_client import KrakenClient
+from providers.kraken_provider import KrakenProvider
 from state_io import save_json_state
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
@@ -73,17 +74,17 @@ MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
 CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
-_QUOTE = CacheTradeManager._KRAKEN_QUOTE_ASSETS
+_QUOTE = KrakenProvider._KRAKEN_QUOTE_ASSETS
 
 
 def _match_configured_pair(symbol: str | None) -> str | None:
     """Resolve a raw or WS Kraken pair to its configured PAIRS entry (or canonical key if '*' is enabled)."""
-    return CacheTradeManager.match_kraken_configured_pair(symbol, pairs=PAIRS)
+    return KrakenProvider.match_configured_pair(symbol, pairs=PAIRS)
 
 
-_build_kraken_cache_fill = CacheTradeManager.build_kraken_cache_fill
-_normalize = CacheTradeManager.normalize_kraken_ws_trade
-_ledger_to_fills = CacheTradeManager.kraken_ledger_to_fills
+_build_kraken_cache_fill = KrakenProvider.build_cache_fill
+_normalize = KrakenProvider.normalize_ws_trade
+_ledger_to_fills = KrakenProvider.ledger_to_fills
 
 
 def _load_initial_cache(path):
@@ -92,13 +93,13 @@ def _load_initial_cache(path):
 
 
 def _fetch_rest_into(client, cache):
-    """Fetch unified Ledgers data (spot + instant-buy/convert) into the per-symbol cache."""
-    CacheTradeManager.fetch_kraken_ledger_into_snapshot(
+    """Fetch unified Ledgers data via KrakenProvider and persist into the agnostic trade snapshot."""
+    by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
         client,
-        cache,
         pairs=PAIRS,
         lookback_sec=LEDGER_LOOKBACK_S,
     )
+    CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
 
 
 def _touch_kraken_heartbeat(force: bool = False) -> None:
@@ -136,18 +137,20 @@ def poll_loop(client):
 # ── Real-time ZERO-LAG `ownTrades` WS; complete but disabled by default ────────
 # Enable with KRAKEN_CACHE_MODE=ws; requires `websocket-client`.
 def _merge_rest_into(client, cache):
-    """Fetch Ledgers via REST and merge incrementally into an active WS cache without losing WS fills."""
-    CacheTradeManager.merge_kraken_ledger_into_snapshot(
+    """Fetch Ledgers via KrakenProvider and merge incrementally into an active WS cache via CacheTradeManager."""
+    by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
         client,
-        cache,
         pairs=PAIRS,
         lookback_sec=LEDGER_LOOKBACK_S,
     )
+    CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=False)
 
 
 def _touch_ws_fetchtimes(cache, now_ms=None):
     """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    CacheTradeManager.touch_kraken_ws_fetchtimes(cache, now_ms=now_ms, pairs=PAIRS)
+    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        cache, now_ms=now_ms, symbols=PAIRS, create_missing=True
+    )
 
 
 def ws_loop(client):

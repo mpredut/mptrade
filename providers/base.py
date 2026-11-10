@@ -220,6 +220,18 @@ class MarketDataProvider(ABC):
                 symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
             )
 
+    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
+        """Fetch and normalize remote fills for ``symbol`` without mutating disk caches."""
+        self.validate_symbol(symbol)
+        api_fn = getattr(self, "_fills_from_api", None)
+        if not callable(api_fn):
+            return []
+        try:
+            rows = api_fn(symbol, publish_cache=False)
+        except TypeError:
+            rows = api_fn(symbol)
+        return list(rows) if isinstance(rows, list) else []
+
     def refresh_ssot_fills_cache(self, symbol: str, fills: Optional[List[dict]] = None) -> List[dict]:
         """Authoritatively fetch (if ``fills`` not provided) and explicitly publish ``symbol`` fills to the SSOT trade cache."""
         self.validate_symbol(symbol)

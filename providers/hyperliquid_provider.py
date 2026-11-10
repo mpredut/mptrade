@@ -381,6 +381,40 @@ class HyperliquidProvider(MarketDataProvider):
                 self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
         return spot_fills
 
+    @classmethod
+    def extract_ws_user_fills(
+        cls,
+        data: object,
+        symbols,
+        *,
+        candidate_mids_fn,
+    ) -> Optional[tuple[bool, dict[str, list[dict]]]]:
+        """Parse a Hyperliquid ``userFills`` WS payload into ``(is_snapshot, {symbol: [fill_dict, ...]})`` without touching disk."""
+        raw_fills = (
+            data.get("fills")
+            if isinstance(data, dict)
+            else (data if isinstance(data, list) else None)
+        )
+        if not isinstance(raw_fills, list):
+            return None
+        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
+        fills_by_symbol: dict[str, list[dict]] = {}
+        for s_sym in symbols or ():
+            spot_coins = {
+                k.upper()
+                for k in candidate_mids_fn(s_sym)
+                if isinstance(k, str) and (k.startswith("@") or "/" in k)
+            }
+            sym_fills = [
+                dict(f)
+                for f in raw_fills
+                if isinstance(f, dict)
+                and str(f.get("coin") or "").strip().upper() in spot_coins
+            ]
+            if is_snapshot or sym_fills:
+                fills_by_symbol[s_sym] = sym_fills
+        return is_snapshot, fills_by_symbol
+
     def open_orders(self, symbol: str) -> List[dict]:
         """Return normalized resting spot orders for the resolved pair."""
         self.validate_symbol(symbol)

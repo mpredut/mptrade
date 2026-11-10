@@ -55,14 +55,11 @@ from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     CACHE_T212_TRADE_FILENAME,
-    _strip_kraken_asset_suffixes,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
     clean_symbol_key,
     compute_venue_nav_breakdown,
-    kraken_pair_key,
-    kraken_pair_matches,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
@@ -583,228 +580,18 @@ class CacheTradeManager(CacheAccountManagerBase):
             }
         return {"items": {}, "fetchtime": {}}
 
-    _KRAKEN_QUOTE_ASSETS = {
-        "ZUSD": "USD",
-        "USD": "USD",
-        "USDC": "USDC",
-        "USDG": "USDG",
-        "ZEUR": "EUR",
-        "EUR": "EUR",
-        "USDT": "USDT",
-        "ZUSDT": "USDT",
-    }
-
-    @classmethod
-    def match_kraken_configured_pair(cls, symbol: object, *, pairs=None) -> Optional[str]:
-        """Resolve a raw or WS Kraken pair to its configured ``pairs`` entry (or canonical key if ``'*'`` is enabled)."""
-        if not isinstance(symbol, str):
-            return None
-        raw = symbol.strip().upper()
-        if not raw:
-            return None
-        if pairs and "*" not in pairs:
-            for configured in pairs:
-                if configured == raw or kraken_pair_matches(configured, raw):
-                    return configured
-            return None
-        return kraken_pair_key(raw) or raw
-
     @staticmethod
-    def build_kraken_cache_fill(
-        *,
-        symbol,
-        fill_id: str,
-        order_id,
-        price: float,
-        qty: float,
-        ts_ms: int,
-        is_buyer: Optional[bool],
-        side: Optional[str],
-        fee: Optional[float] = None,
-        fee_asset: Optional[str] = None,
-    ) -> dict:
-        """Build a normalized Kraken fill row compatible with ``CacheTradeManager``."""
-        row = {
-            "symbol": symbol,
-            "id": fill_id,
-            "orderId": order_id,
-            "price": price,
-            "qty": qty,
-            "quantity": qty,
-            "time": ts_ms,
-            "timestamp": ts_ms,
-            "isBuyer": is_buyer,
-            "side": side,
-        }
-        if fee is not None:
-            row["fee"] = fee
-            if fee_asset:
-                row["feeAsset"] = fee_asset
-        return row
-
-    @classmethod
-    def normalize_kraken_ws_trade(cls, txid: object, tr: object) -> dict:
-        """Normalize a Kraken ``TradesHistory`` / ``ownTrades`` transaction to canonical form."""
-        clean_txid = clean_order_id(txid)
-        if not isinstance(tr, dict) or clean_txid is None:
-            return {}
-        ts_ms = extract_timestamp_ms(tr, default=0) or 0
-        side = extract_order_side(tr) or None
-        is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
-        qty = extract_order_qty(tr, default=0.0)
-        price = extract_order_price(tr, default=0.0)
-        raw_oid = tr.get("ordertxid", tr.get("orderId"))
-        order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
-        raw_sym = tr.get("pair", tr.get("symbol"))
-        sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
-        fee_info = extract_order_fee(tr)
-        has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
-        return cls.build_kraken_cache_fill(
-            symbol=sym_val,
-            fill_id=clean_txid,
-            order_id=order_id,
-            price=price,
-            qty=qty,
-            ts_ms=ts_ms,
-            is_buyer=is_buyer,
-            side=side,
-            fee=fee_info["fee"] if has_fee else None,
-            fee_asset=fee_info["fee_asset"] if has_fee else None,
-        )
-
-    @classmethod
-    def kraken_ledger_to_fills(cls, ledger: object) -> list[dict]:
-        """Group Kraken ``Ledgers`` entries by ``refid`` into normalized fills."""
-        if not isinstance(ledger, dict):
-            return []
-        by_ref: dict[str, list[dict]] = {}
-        for x in ledger.values():
-            if not isinstance(x, dict):
-                continue
-            clean_refid = clean_order_id(x.get("refid"))
-            if clean_refid is not None:
-                by_ref.setdefault(clean_refid, []).append(x)
-        fills: list[dict] = []
-        for refid, legs in by_ref.items():
-            if len(legs) < 2:
-                continue
-            if any(str(leg.get("subtype") or "").strip().lower() == "dustsweeping" for leg in legs):
-                continue
-            quote_legs = [
-                leg
-                for leg in legs
-                if isinstance(leg.get("asset"), str)
-                and leg.get("asset").strip().upper() in cls._KRAKEN_QUOTE_ASSETS
-            ]
-            base_legs = [
-                leg
-                for leg in legs
-                if leg not in quote_legs
-                and isinstance(leg.get("asset"), str)
-                and leg.get("asset").strip()
-                and leg.get("asset").strip().upper() not in cls._KRAKEN_QUOTE_ASSETS
-            ]
-            if len(quote_legs) != 1 or len(base_legs) != 1:
-                continue
-            quote = quote_legs[0]
-            base = base_legs[0]
-            if str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
-                continue
-            ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
-            qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
-            if ba is None or qa is None or ba == 0.0 or qa == 0.0:
-                continue
-            raw_base = _strip_kraken_asset_suffixes(str(base["asset"]).strip().upper())
-            quote_ccy = cls._KRAKEN_QUOTE_ASSETS[str(quote["asset"]).strip().upper()]
-            raw_symbol = raw_base + quote_ccy
-            ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
-            if ts_ms <= 0:
-                continue
-            is_buyer = ba > 0
-            px = abs(qa) / abs(ba)
-            if safe_pos_float(px, default=None) is None:
-                continue
-            q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
-            b_fee = safe_nonneg_float(base.get("fee"), 0.0)
-            fee_val = q_fee if q_fee > 0 else (b_fee if b_fee > 0 else None)
-            fee_asset = quote_ccy if q_fee > 0 else (raw_base if b_fee > 0 else None)
-            fills.append(
-                cls.build_kraken_cache_fill(
-                    symbol=raw_symbol,
-                    fill_id=str(refid),
-                    order_id=str(refid),
-                    price=px,
-                    qty=abs(ba),
-                    ts_ms=ts_ms,
-                    is_buyer=is_buyer,
-                    side="BUY" if is_buyer else "SELL",
-                    fee=fee_val,
-                    fee_asset=fee_asset,
-                )
-            )
-        return fills
-
-    @classmethod
-    def fetch_kraken_ledger_into_snapshot(
-        cls,
-        client,
-        cache: dict,
-        *,
-        pairs=None,
-        lookback_sec: float = 14 * 86400.0,
-    ) -> None:
-        """Fetch unified Kraken ``Ledgers`` data into ``cache['items']`` and ``cache['fetchtime']``."""
-        res = client._private("Ledgers", {"start": int(_now_time() - float(lookback_sec))}, fresh=True)
-        fills = cls.kraken_ledger_to_fills((res or {}).get("ledger", {}) or {})
-        now_ms = int(_now_time() * 1000)
-        by_sym = {s: [] for s in (pairs or ()) if s and s != "*"}
-        for f in fills:
-            matched_sym = cls.match_kraken_configured_pair(f.get("symbol"), pairs=pairs)
-            if matched_sym is None:
-                continue
-            f_copy = dict(f)
-            f_copy["symbol"] = matched_sym
-            by_sym.setdefault(matched_sym, []).append(f_copy)
-        for s_sym, lst in by_sym.items():
-            lst.sort(key=lambda t: t["time"])
-            cache["items"][s_sym] = lst
-            cache["fetchtime"][s_sym] = now_ms
-
-    @classmethod
-    def merge_kraken_ledger_into_snapshot(
-        cls,
-        client,
-        cache: dict,
-        *,
-        pairs=None,
-        lookback_sec: float = 14 * 86400.0,
-    ) -> None:
-        """Fetch Kraken ``Ledgers`` via REST and merge incrementally into an active WS snapshot."""
-        rest_cache: dict = {"items": {}, "fetchtime": {}}
-        cls.fetch_kraken_ledger_into_snapshot(
-            client, rest_cache, pairs=pairs, lookback_sec=lookback_sec
-        )
-        now_ms = int(_now_time() * 1000)
-        for s_sym, rest_items in rest_cache["items"].items():
-            bucket = cache["items"].setdefault(s_sym, [])
-            existing_ids = {t["id"] for t in bucket if isinstance(t, dict) and "id" in t}
-            for item in rest_items:
-                if item["id"] not in existing_ids:
-                    bucket.append(item)
-                    existing_ids.add(item["id"])
-            bucket.sort(key=lambda t: t["time"])
-            cache["fetchtime"][s_sym] = rest_cache["fetchtime"].get(s_sym, now_ms)
-
-    @staticmethod
-    def touch_kraken_ws_fetchtimes(cache: dict, now_ms=None, *, pairs=None) -> None:
-        """Refresh ``fetchtime`` across all configured pairs while the Kraken WS stream is healthy."""
-        resolved_ms = resolve_now_ms(now_ms)
-        configured = [s for s in (pairs or ()) if s and s != "*"]
-        for s_sym in configured:
-            cache["items"].setdefault(s_sym, [])
-            cache["fetchtime"][s_sym] = resolved_ms
-        for s_sym in list(cache.get("items", {}).keys()):
-            cache["fetchtime"][s_sym] = resolved_ms
+    def fill_dedup_key(row: object) -> Optional[tuple]:
+        """Return a venue-agnostic deduplication key for a normalized fill or order row."""
+        if not isinstance(row, dict):
+            return None
+        if row.get("id") is not None and not isinstance(row.get("id"), bool):
+            return ("id", str(row["id"]))
+        if row.get("tid") is not None or row.get("oid") is not None:
+            return ("tid_oid", row.get("tid"), row.get("oid"), row.get("time"))
+        if (r_oid := extract_order_id(row)):
+            return ("oid", str(r_oid))
+        return None
 
     @classmethod
     def matching_snapshot_keys(
@@ -908,24 +695,44 @@ class CacheTradeManager(CacheAccountManagerBase):
             return False
 
     @classmethod
-    def merge_venue_fills_snapshot(cls, cache_file: str, fills_by_symbol: dict) -> bool:
-        """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file deduplicating by `orderId`."""
-        if not cache_file or not isinstance(fills_by_symbol, dict) or not fills_by_symbol:
+    def merge_venue_fills_into_dict(
+        cls,
+        cache_obj: dict,
+        fills_by_symbol: dict,
+        *,
+        now_ms: Optional[int] = None,
+        is_snapshot: bool = False,
+        touch_symbols=None,
+    ) -> bool:
+        """Venue-agnostic in-memory merger of ``{symbol: [fill_dict, ...]}`` into ``cache_obj`` (`items` + `fetchtime`)."""
+        if not isinstance(cache_obj, dict):
             return False
-        target_path = str(cache_file)
-        try:
-            cache_obj = cls._load_venue_snapshot_dict(target_path, create=True)
-            now_ms = int(_now_time() * 1000)
-            changed = False
-            for sym_raw, new_rows in fills_by_symbol.items():
-                if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
-                    continue
-                sym_key = str(sym_raw).strip().upper()
-                if not sym_key:
-                    continue
-                existing = cache_obj["items"].get(sym_key)
+        items = cache_obj.setdefault("items", {})
+        ft = cache_obj.setdefault("fetchtime", {})
+        eff_now_ms = int(now_ms) if now_ms is not None else int(_now_time() * 1000)
+        changed = False
+        for sym_raw, new_rows in (fills_by_symbol or {}).items():
+            if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
+                continue
+            sym_key = str(sym_raw).strip().upper()
+            if not sym_key:
+                continue
+            if is_snapshot:
+                clean_rows = [dict(r) for r in new_rows if isinstance(r, dict)]
+                if items.get(sym_key) != clean_rows or ft.get(sym_key) != eff_now_ms:
+                    changed = True
+                items[sym_key] = clean_rows
+                ft[sym_key] = eff_now_ms
+                continue
+            existing = items.get(sym_key)
+            existing_list = existing if isinstance(existing, list) else []
+            has_oid_only = any(
+                isinstance(r, dict) and r.get("id") is None and r.get("tid") is None and extract_order_id(r)
+                for r in new_rows
+            )
+            if has_oid_only:
                 by_oid: dict[str, dict] = {}
-                for row in (existing if isinstance(existing, list) else ()):
+                for row in existing_list:
                     if isinstance(row, dict) and (r_oid := extract_order_id(row)):
                         by_oid[str(r_oid)] = row
                 for row in new_rows:
@@ -940,18 +747,107 @@ class CacheTradeManager(CacheAccountManagerBase):
                         changed = True
                 merged = sorted(
                     by_oid.values(),
-                    key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")),
+                    key=lambda r: (r.get("timestamp") or r.get("time") or 0, str(r.get("orderId") or "")),
                 )
-                cache_obj["items"][sym_key] = merged
-                old_ft = safe_pos_float(cache_obj["fetchtime"].get(sym_key), default=None)
-                if old_ft is None or (now_ms - old_ft) >= 60_000:
-                    changed = True
-                cache_obj["fetchtime"][sym_key] = now_ms
-            if changed or not os.path.exists(target_path):
+                items[sym_key] = merged
+            else:
+                bucket = list(existing_list)
+                seen_keys = {
+                    dk for r in bucket if (dk := cls.fill_dedup_key(r)) is not None
+                }
+                added = False
+                for row in new_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    dk = cls.fill_dedup_key(row)
+                    if dk is not None and dk not in seen_keys:
+                        bucket.append(dict(row))
+                        seen_keys.add(dk)
+                        added = True
+                        changed = True
+                if added and all(isinstance(r, dict) and "time" in r and "tid" not in r for r in bucket):
+                    bucket.sort(key=lambda r: r.get("time") or 0)
+                items[sym_key] = bucket
+            old_ft = safe_pos_float(ft.get(sym_key), default=None)
+            if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
+                changed = True
+            ft[sym_key] = eff_now_ms
+        for s_sym in touch_symbols or ():
+            if s_sym in items and s_sym in ft and ft.get(s_sym) != eff_now_ms:
+                ft[s_sym] = eff_now_ms
+                changed = True
+        return changed
+
+    @classmethod
+    def merge_venue_fills_snapshot(
+        cls,
+        cache_file: str,
+        fills_by_symbol: dict,
+        *,
+        now_ms: Optional[int] = None,
+        is_snapshot: bool = False,
+        touch_symbols=None,
+    ) -> bool:
+        """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not cache_file or not isinstance(fills_by_symbol, dict):
+            return False
+        if not fills_by_symbol and not touch_symbols and not is_snapshot:
+            return False
+        target_path = str(cache_file)
+        try:
+            cache_obj = cls._load_venue_snapshot_dict(target_path, create=True)
+            changed = cls.merge_venue_fills_into_dict(
+                cache_obj,
+                fills_by_symbol,
+                now_ms=now_ms,
+                is_snapshot=is_snapshot,
+                touch_symbols=touch_symbols,
+            )
+            if changed or is_snapshot or not os.path.exists(target_path):
                 save_json_state(target_path, cache_obj)
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def touch_venue_ws_fetchtimes_in_dict(
+        cache_obj: dict,
+        now_ms=None,
+        *,
+        symbols=None,
+        create_missing: bool = False,
+    ) -> bool:
+        """Refresh ``fetchtime`` in ``cache_obj`` across active WS symbols."""
+        if not isinstance(cache_obj, dict):
+            return False
+        items = cache_obj.setdefault("items", {})
+        ft = cache_obj.setdefault("fetchtime", {})
+        resolved_ms = resolve_now_ms(now_ms)
+        changed = False
+        for s_sym in (symbols or ()):
+            if not s_sym or s_sym == "*":
+                continue
+            if create_missing:
+                items.setdefault(s_sym, [])
+                ft[s_sym] = resolved_ms
+                changed = True
+            elif s_sym in ft and s_sym in items:
+                ft[s_sym] = resolved_ms
+                changed = True
+        if create_missing:
+            for s_sym in list(items.keys()):
+                ft[s_sym] = resolved_ms
+                changed = True
+        return changed
+
+    @classmethod
+    def touch_venue_ws_fetchtimes(cls, cache_file: str, symbols, ts_ms: int) -> None:
+        """Refresh ``fetchtime`` on disk for ``symbols`` while a venue WebSocket stream is healthy."""
+        loaded = cls._load_venue_snapshot_dict(cache_file)
+        if loaded is not None and cls.touch_venue_ws_fetchtimes_in_dict(
+            loaded, ts_ms, symbols=symbols, create_missing=False
+        ):
+            save_json_state(cache_file, loaded)
 
     @classmethod
     def invalidate_venue_fills_snapshot(
@@ -1000,73 +896,6 @@ class CacheTradeManager(CacheAccountManagerBase):
                 save_json_state(str(cache_file), data)
         except Exception:
             pass
-
-    @classmethod
-    def apply_hyperliquid_ws_user_fills(
-        cls,
-        cache_file: str,
-        symbols,
-        data: object,
-        *,
-        candidate_mids_fn,
-        ts_ms: int,
-    ) -> Optional[bool]:
-        """Merge a Hyperliquid ``userFills`` WS snapshot or incremental frame into ``cache_trade_hyperliquid.json``."""
-        raw_fills = (
-            data.get("fills")
-            if isinstance(data, dict)
-            else (data if isinstance(data, list) else None)
-        )
-        if not isinstance(raw_fills, list):
-            return None
-        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
-        cache_obj = cls._load_venue_snapshot_dict(cache_file, create=True)
-        for s_sym in symbols or ():
-            spot_coins = {
-                k.upper()
-                for k in candidate_mids_fn(s_sym)
-                if isinstance(k, str) and (k.startswith("@") or "/" in k)
-            }
-            sym_fills = [
-                dict(f)
-                for f in raw_fills
-                if isinstance(f, dict)
-                and str(f.get("coin") or "").strip().upper() in spot_coins
-            ]
-            if is_snapshot:
-                cache_obj["items"][s_sym] = sym_fills
-                cache_obj["fetchtime"][s_sym] = ts_ms
-            elif sym_fills:
-                bucket = list(cache_obj["items"].get(s_sym) or [])
-                seen_keys = {
-                    (f.get("tid"), f.get("oid"), f.get("time"))
-                    for f in bucket
-                    if isinstance(f, dict)
-                }
-                for f in sym_fills:
-                    fk = (f.get("tid"), f.get("oid"), f.get("time"))
-                    if fk not in seen_keys:
-                        bucket.append(f)
-                        seen_keys.add(fk)
-                cache_obj["items"][s_sym] = bucket
-                cache_obj["fetchtime"][s_sym] = ts_ms
-            elif s_sym in cache_obj["items"] and s_sym in cache_obj["fetchtime"]:
-                cache_obj["fetchtime"][s_sym] = ts_ms
-        save_json_state(cache_file, cache_obj)
-        return is_snapshot
-
-    @classmethod
-    def touch_hyperliquid_ws_fetchtimes(cls, cache_file: str, symbols, ts_ms: int) -> None:
-        """Refresh ``fetchtime`` in ``cache_trade_hyperliquid.json`` while the Hyperliquid WS stream is healthy."""
-        loaded = cls._load_venue_snapshot_dict(cache_file)
-        if loaded is not None:
-            changed = False
-            for s_sym in symbols or ():
-                if s_sym in loaded["fetchtime"] and s_sym in loaded["items"]:
-                    loaded["fetchtime"][s_sym] = ts_ms
-                    changed = True
-            if changed:
-                save_json_state(cache_file, loaded)
 
     @classmethod
     def extract_venue_symbol_trades(
@@ -1735,23 +1564,20 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def get_remote_items(self, symbol, startTime):
         if not self.append_persist:
-            if (
-                self.venue == "kraken"
-                and self.api_client is not None
-                and callable(getattr(self.api_client, "_private", None))
-            ):
-                start_sec = int(
-                    normalize_epoch_sec(startTime, default=None)
-                    or (_now_time() - 14 * 86400.0)
-                )
-                snap: dict = {"items": {}, "fetchtime": {}}
-                self.fetch_kraken_ledger_into_snapshot(
-                    self.api_client,
-                    snap,
-                    pairs=[symbol],
-                    lookback_sec=max(60.0, _now_time() - float(start_sec)),
-                )
-                return list(snap["items"].get(symbol, []))
+            if self.api_client is not None:
+                if (
+                    self.venue == "kraken"
+                    and callable(getattr(self.api_client, "_private", None))
+                    and "fetch_remote_trades" not in getattr(self.api_client, "__dict__", {})
+                ):
+                    from providers.kraken_provider import KrakenProvider
+
+                    return KrakenProvider().fetch_remote_trades(
+                        symbol, startTime, client=self.api_client
+                    )
+                fetch_fn = getattr(self.api_client, "fetch_remote_trades", None)
+                if callable(fetch_fn):
+                    return list(fetch_fn(symbol, startTime) or [])
             return []
         new_trades = self._paginate_validated_trades(symbol, startTime, "trade")
         print(f"[{self.cls_name}][info] New trades: {len(new_trades)}")
@@ -1853,13 +1679,7 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def get_last_opposite_fill_price(self, symbol, order_type):
         """Return the latest opposite fill price without a time limit."""
-        if self.append_persist:
-            self.sync_account_reader_if_needed()
-        elif not self.cache:
-            try:
-                self.resync_mem_file()
-            except Exception:
-                pass
+        self.sync_account_reader_if_needed()
         if not isinstance(order_type, str):
             return None
         side_u = normalize_side(order_type)

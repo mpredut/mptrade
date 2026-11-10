@@ -25,8 +25,10 @@ from botcore import (
     exact_nonneg_int,
     exact_pos_int,
     load_local_module,
+    normalize_epoch_sec,
     normalize_side,
     resolve_patched_attr,
+    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -40,6 +42,10 @@ from .order_ohlc_utils import (
     build_open_order_entry,
     build_price_history_points,
     extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
     normalize_order,
     require_clean_order_id,
     resolve_market_flag,
@@ -58,6 +64,7 @@ from cachepaths import (
     _kraken_pair_key,
     _kraken_pair_matches,
     _split_kraken_pair,
+    _strip_kraken_asset_suffixes,
     cache_path,
     canonical_base_asset,
     clean_symbol_key,
@@ -506,6 +513,209 @@ class KrakenProvider(MarketDataProvider):
                 )
             )
         return normalized
+
+    _KRAKEN_QUOTE_ASSETS = {
+        "ZUSD": "USD",
+        "USD": "USD",
+        "USDC": "USDC",
+        "USDG": "USDG",
+        "ZEUR": "EUR",
+        "EUR": "EUR",
+        "USDT": "USDT",
+        "ZUSDT": "USDT",
+    }
+
+    @classmethod
+    def match_configured_pair(cls, symbol: object, *, pairs=None) -> Optional[str]:
+        """Resolve a raw or WS Kraken pair to its configured ``pairs`` entry (or canonical key if ``'*'`` is enabled)."""
+        if not isinstance(symbol, str):
+            return None
+        raw = symbol.strip().upper()
+        if not raw:
+            return None
+        if pairs and "*" not in pairs:
+            for configured in pairs:
+                if configured == raw or _kraken_pair_matches(configured, raw):
+                    return configured
+            return None
+        return _kraken_pair_key(raw) or raw
+
+    @staticmethod
+    def build_cache_fill(
+        *,
+        symbol,
+        fill_id: str,
+        order_id,
+        price: float,
+        qty: float,
+        ts_ms: int,
+        is_buyer: Optional[bool],
+        side: Optional[str],
+        fee: Optional[float] = None,
+        fee_asset: Optional[str] = None,
+    ) -> dict:
+        """Build a normalized Kraken fill row compatible with ``CacheTradeManager``."""
+        row = {
+            "symbol": symbol,
+            "id": fill_id,
+            "orderId": order_id,
+            "price": price,
+            "qty": qty,
+            "quantity": qty,
+            "time": ts_ms,
+            "timestamp": ts_ms,
+            "isBuyer": is_buyer,
+            "side": side,
+        }
+        if fee is not None:
+            row["fee"] = fee
+            if fee_asset:
+                row["feeAsset"] = fee_asset
+        return row
+
+    @classmethod
+    def normalize_ws_trade(cls, txid: object, tr: object) -> dict:
+        """Normalize a Kraken ``TradesHistory`` / ``ownTrades`` transaction to canonical form."""
+        clean_txid = clean_order_id(txid)
+        if not isinstance(tr, dict) or clean_txid is None:
+            return {}
+        ts_ms = extract_timestamp_ms(tr, default=0) or 0
+        side = extract_order_side(tr) or None
+        is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
+        qty = extract_order_qty(tr, default=0.0)
+        price = extract_order_price(tr, default=0.0)
+        raw_oid = tr.get("ordertxid", tr.get("orderId"))
+        order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
+        raw_sym = tr.get("pair", tr.get("symbol"))
+        sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
+        fee_info = extract_order_fee(tr)
+        has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
+        return cls.build_cache_fill(
+            symbol=sym_val,
+            fill_id=clean_txid,
+            order_id=order_id,
+            price=price,
+            qty=qty,
+            ts_ms=ts_ms,
+            is_buyer=is_buyer,
+            side=side,
+            fee=fee_info["fee"] if has_fee else None,
+            fee_asset=fee_info["fee_asset"] if has_fee else None,
+        )
+
+    @classmethod
+    def ledger_to_fills(cls, ledger: object) -> List[dict]:
+        """Group Kraken ``Ledgers`` entries by ``refid`` into normalized fills."""
+        if not isinstance(ledger, dict):
+            return []
+        by_ref: dict[str, list[dict]] = {}
+        for x in ledger.values():
+            if not isinstance(x, dict):
+                continue
+            clean_refid = clean_order_id(x.get("refid"))
+            if clean_refid is not None:
+                by_ref.setdefault(clean_refid, []).append(x)
+        fills: list[dict] = []
+        for refid, legs in by_ref.items():
+            if len(legs) < 2:
+                continue
+            if any(str(leg.get("subtype") or "").strip().lower() == "dustsweeping" for leg in legs):
+                continue
+            quote_legs = [
+                leg
+                for leg in legs
+                if isinstance(leg.get("asset"), str)
+                and leg.get("asset").strip().upper() in cls._KRAKEN_QUOTE_ASSETS
+            ]
+            base_legs = [
+                leg
+                for leg in legs
+                if leg not in quote_legs
+                and isinstance(leg.get("asset"), str)
+                and leg.get("asset").strip()
+                and leg.get("asset").strip().upper() not in cls._KRAKEN_QUOTE_ASSETS
+            ]
+            if len(quote_legs) != 1 or len(base_legs) != 1:
+                continue
+            quote = quote_legs[0]
+            base = base_legs[0]
+            if str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
+                continue
+            ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
+            qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
+            if ba is None or qa is None or ba == 0.0 or qa == 0.0:
+                continue
+            raw_base = _strip_kraken_asset_suffixes(str(base["asset"]).strip().upper())
+            quote_ccy = cls._KRAKEN_QUOTE_ASSETS[str(quote["asset"]).strip().upper()]
+            raw_symbol = raw_base + quote_ccy
+            ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
+            if ts_ms <= 0:
+                continue
+            is_buyer = ba > 0
+            px = abs(qa) / abs(ba)
+            if safe_pos_float(px, default=None) is None:
+                continue
+            q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
+            b_fee = safe_nonneg_float(base.get("fee"), 0.0)
+            fee_val = q_fee if q_fee > 0 else (b_fee if b_fee > 0 else None)
+            fee_asset = quote_ccy if q_fee > 0 else (raw_base if b_fee > 0 else None)
+            fills.append(
+                cls.build_cache_fill(
+                    symbol=raw_symbol,
+                    fill_id=str(refid),
+                    order_id=str(refid),
+                    price=px,
+                    qty=abs(ba),
+                    ts_ms=ts_ms,
+                    is_buyer=is_buyer,
+                    side="BUY" if is_buyer else "SELL",
+                    fee=fee_val,
+                    fee_asset=fee_asset,
+                )
+            )
+        return fills
+
+    @classmethod
+    def fetch_ledger_fills_by_symbol(
+        cls,
+        client,
+        *,
+        pairs=None,
+        lookback_sec: float = 14 * 86400.0,
+    ) -> dict[str, list[dict]]:
+        """Query Kraken ``Ledgers`` via ``client`` and group normalized fills by configured pair without touching disk."""
+        res = client._private("Ledgers", {"start": int(time.time() - float(lookback_sec))}, fresh=True)
+        fills = cls.ledger_to_fills((res or {}).get("ledger", {}) or {})
+        by_sym: dict[str, list[dict]] = {s: [] for s in (pairs or ()) if s and s != "*"}
+        for f in fills:
+            matched_sym = cls.match_configured_pair(f.get("symbol"), pairs=pairs)
+            if matched_sym is None:
+                continue
+            f_copy = dict(f)
+            f_copy["symbol"] = matched_sym
+            by_sym.setdefault(matched_sym, []).append(f_copy)
+        for lst in by_sym.values():
+            lst.sort(key=lambda t: t["time"])
+        return by_sym
+
+    def fetch_remote_trades(
+        self, symbol: str, start_time_ms: int = 0, *, client=None
+    ) -> List[dict]:
+        """Fetch normalized Kraken fills for ``symbol`` via ``Ledgers`` (when ``client`` is provided) or ``TradesHistory``."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return []
+        if client is not None and callable(getattr(client, "_private", None)):
+            start_sec = int(
+                normalize_epoch_sec(start_time_ms, default=None)
+                or (time.time() - 14 * 86400.0)
+            )
+            by_sym = self.fetch_ledger_fills_by_symbol(
+                client,
+                pairs=[symbol],
+                lookback_sec=max(60.0, time.time() - float(start_sec)),
+            )
+            return list(by_sym.get(symbol, []))
+        return super().fetch_remote_trades(symbol, start_time_ms)
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""

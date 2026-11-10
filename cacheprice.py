@@ -1734,18 +1734,23 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
 
     def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:
         from cacheaccount import CacheTradeManager
+        from providers.hyperliquid_provider import HyperliquidProvider
 
         with self._lock:
             symbols = self._symbols
-        is_snapshot = CacheTradeManager.apply_hyperliquid_ws_user_fills(
-            self._resolve_fills_cache_file(),
-            symbols,
-            data,
-            candidate_mids_fn=self._candidate_mids_keys,
-            ts_ms=ts_ms,
+        parsed = HyperliquidProvider.extract_ws_user_fills(
+            data, symbols, candidate_mids_fn=self._candidate_mids_keys
         )
-        if is_snapshot is None:
+        if parsed is None:
             return
+        is_snapshot, fills_by_symbol = parsed
+        CacheTradeManager.merge_venue_fills_snapshot(
+            self._resolve_fills_cache_file(),
+            fills_by_symbol,
+            now_ms=ts_ms,
+            is_snapshot=is_snapshot,
+            touch_symbols=symbols,
+        )
         if is_snapshot:
             self._fills_ws_seeded = True
         self._last_fills_touch_ms = ts_ms
@@ -1761,7 +1766,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
 
             with self._lock:
                 symbols = self._symbols
-            CacheTradeManager.touch_hyperliquid_ws_fetchtimes(
+            CacheTradeManager.touch_venue_ws_fetchtimes(
                 self._resolve_fills_cache_file(), symbols, ts_ms
             )
             self._last_fills_touch_ms = ts_ms

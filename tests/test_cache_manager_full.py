@@ -421,7 +421,9 @@ class TestCacheTradeManager(unittest.TestCase):
             self.assertEqual(items[0]["id"], "T100")
             self.assertEqual(items[0]["symbol"], "HYPEUSD")
             self.assertTrue(items[0]["isBuyer"])
-            ws_item = cm.CacheTradeManager.normalize_kraken_ws_trade(
+            from providers.kraken_provider import KrakenProvider
+
+            ws_item = KrakenProvider.normalize_ws_trade(
                 "200",
                 {"ordertxid": "O200", "pair": "HYPEUSD", "price": 26.0, "vol": 1.5, "type": "sell", "time": 1700000100.0},
             )
