@@ -479,14 +479,23 @@ class CacheTradeManager(CacheAccountManagerBase):
                 for row in v:
                     if not isinstance(row, dict):
                         continue
-                    clean_id = clean_order_id(row.get("id"))
+                    raw_id = (
+                        row.get("id")
+                        if row.get("id") is not None
+                        else (row.get("tid") if row.get("tid") is not None else row.get("orderId"))
+                    )
+                    clean_id = clean_order_id(raw_id)
                     if clean_id is None:
                         continue
-                    t_f = safe_pos_float(row.get("time"), default=None)
+                    t_f = safe_pos_float(
+                        row.get("time") if row.get("time") is not None else row.get("timestamp"),
+                        default=None,
+                    )
                     if t_f is None:
                         continue
                     row_copy = dict(row)
-                    row_copy["id"] = clean_id
+                    if "id" in row_copy or ("tid" not in row_copy and "orderId" not in row_copy):
+                        row_copy["id"] = clean_id
                     row_copy["time"] = int(t_f)
                     if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
                         if (ib_b := _parse_bool_flag(row_copy["isBuyer"], default=None)) is not None:
@@ -1311,11 +1320,15 @@ class CacheTradeManager(CacheAccountManagerBase):
                     if tr_sym and sym_clean and tr_sym != sym_clean and tr_sym not in cand_clean_set:
                         continue
                     raw_ib = trade.get("isBuyer")
-                    is_buyer = raw_ib if isinstance(raw_ib, bool) else (normalize_side(trade.get("side")) == "BUY")
+                    is_buyer = (
+                        raw_ib
+                        if isinstance(raw_ib, bool)
+                        else ((extract_order_side(trade) or normalize_side(trade.get("side"))) == "BUY")
+                    )
                     if is_buyer != want_buyer:
                         continue
                     ts_ms = extract_timestamp_ms(trade, default=0) or 0
-                    raw_id = str(trade.get("id") or trade.get("orderId") or "")
+                    raw_id = str(trade.get("id") or trade.get("tid") or trade.get("orderId") or trade.get("oid") or "")
                     px_val = extract_order_price(trade, default=None) or safe_pos_float(trade.get("price"), default=None)
                     if px_val is None:
                         continue

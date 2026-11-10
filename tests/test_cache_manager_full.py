@@ -2206,13 +2206,37 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertIs(st_mgr.get_window("BTC/USDC"), st_mgr.get_window("BTCUSDC"))
         self.assertIs(st_mgr.get_analyzer("BTC/USDC"), st_mgr.get_analyzer("BTCUSDC"))
 
-        # Read-only venue trade caches (KrakenTrade, HyperliquidTrade, T212Trade) do not pass duplicate read_only or start sync
+        # Read-only venue trade caches (KrakenTrade, HyperliquidTrade, T212Trade) do not pass duplicate read_only or start sync,
+        # and resolve venue-specific filenames and default symbols
+        self.assertEqual(cm.CacheFactory._CONFIG["KrakenTrade"]["filename"], "cache_trade_kraken.json")
+        self.assertEqual(cm.CacheFactory._CONFIG["HyperliquidTrade"]["filename"], "cache_trade_hyperliquid.json")
+        self.assertEqual(cm.CacheFactory._CONFIG["T212Trade"]["filename"], "cache_trade_t212.json")
         cm.CacheFactory._instances.pop("KrakenTrade", None)
         cm.CacheFactory._sync_started.discard("KrakenTrade")
         kt_mgr = cm.get_cache_manager("KrakenTrade", symbols=["SOLUSD"], start_sync=True)
         self.assertTrue(kt_mgr.read_only)
         self.assertNotIn("KrakenTrade", cm.CacheFactory._sync_started)
         cm.CacheFactory._instances.pop("KrakenTrade", None)
+
+        hl_trd_path = os.path.join(self.tmp, "cache_trade_hyperliquid.json")
+        with open(hl_trd_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "HYPEUSDC": [
+                            {"coin": "@107", "px": "88.0", "sz": "5.68", "side": "A", "dir": "Sell", "time": 1000, "tid": 101, "oid": 201},
+                            {"coin": "@107", "px": "83.8", "sz": "5.75", "side": "B", "dir": "Buy", "time": 2000, "tid": 102, "oid": 202},
+                        ]
+                    },
+                    "fetchtime": {"HYPEUSDC": 2000},
+                },
+                fh,
+            )
+        hl_san = cm.CacheTradeManager.load_sanitized_trade_snapshot(hl_trd_path, venue="hyperliquid")
+        self.assertEqual(len(hl_san["items"].get("HYPEUSDC", [])), 2)
+        hl_mgr = cm.CacheTradeManager(filename=hl_trd_path, venue="hyperliquid", stream_format="json", start_sync=False)
+        self.assertEqual(hl_mgr.get_last_opposite_fill_price("HYPEUSDC", "BUY"), 88.0)
+        self.assertEqual(hl_mgr.get_last_opposite_fill_price("HYPEUSDC", "SELL"), 83.8)
 
         # tradeall.sanitize_pipe_field and rtrade revision/config validation
         import tradeall

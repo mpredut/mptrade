@@ -279,7 +279,12 @@ class CacheFactory:
             interval_val = sync_ts
             sync_ts = lambda _v=interval_val: _v
         if filename is None:
-            filename = getattr(manager_class, "DEFAULT_FILENAME", None)
+            venue_arg = extra_kwargs.get("venue")
+            disk_fn = getattr(manager_class, "disk_filename", None)
+            if venue_arg and callable(disk_fn):
+                filename = disk_fn(venue_arg)
+            else:
+                filename = getattr(manager_class, "DEFAULT_FILENAME", None)
         if prefix is None:
             prefix = getattr(manager_class, "FILE_PREFIX", None)
         if ext is None:
@@ -355,6 +360,8 @@ class CacheFactory:
                 }
                 cfg_read_only = bool(extra_kwargs.pop("read_only", False))
                 eff_read_only = cfg_read_only or (not start_sync)
+                venue_cfg = str(extra_kwargs.get("venue") or "").strip().lower()
+                is_non_binance_venue = bool(venue_cfg and venue_cfg != "binance")
                 if symbols is None:
                     if name == "AssetValue":
                         symbols = ["TOTAL"]
@@ -366,6 +373,8 @@ class CacheFactory:
                             and _default_providers
                         ):
                             provider_names = _default_providers
+                    elif is_non_binance_venue:
+                        symbols = None
                     else:
                         symbols = sym.symbols
 
@@ -399,7 +408,7 @@ class CacheFactory:
                         sync_ts=sync_ts,
                         filename=config["filename"],
                         symbols=symbols,
-                        api_client=api,
+                        api_client=None if is_non_binance_venue else api,
                         read_only=eff_read_only,
                         **extra_kwargs,
                     )
