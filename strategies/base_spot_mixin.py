@@ -714,8 +714,8 @@ class BaseSpotMixin:
             and tn_raw > t0_raw
         ):
             cache_key = (
-                n_sp, round(tn_raw - t0_raw, 3),
-                sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1],
+                round(tn_raw - t0_raw, 3),
+                tuple(item[1] for item in sp),
             )
             if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
                 return self._shadow_vol_cache_val
@@ -764,7 +764,8 @@ class BaseSpotMixin:
             if not sp or (n_sp := len(sp)) < 20:
                 return None
             cache_key = (
-                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1], trail_itv,
+                tuple(item[1] for item in sp),
+                trail_itv,
             )
             if getattr(self, "_trail_vol_cache_key", None) == cache_key:
                 return self._trail_vol_cache_val

@@ -66,7 +66,7 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
             lo = mid + 1
         else:
             hi = mid
-    return clean_fund[lo - 1][1] if lo > 0 else clean_fund[0][1]
+    return clean_fund[lo - 1][1] if lo > 0 else 0.0
 
 
 def run_replay(
@@ -183,6 +183,8 @@ def _run_once(
     exposure: list[bool] = []
     trade_pnls: list[float] = []
     cycle_net_start = 0.0
+    cycle_funding_start = 0.0
+    net_wins = 0
     turnover_notional = 0.0
     fills = 0
     funding = 0.0
@@ -195,15 +197,24 @@ def _run_once(
     valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
     eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
 
+    def _record_closed_cycle() -> None:
+        nonlocal cycle_net_start, cycle_funding_start, net_wins
+        cycle_pnl = (strategy.s["realized_net"] - cycle_net_start) + (funding - cycle_funding_start)
+        trade_pnls.append(cycle_pnl)
+        if cycle_pnl > 0.0:
+            net_wins += 1
+        cycle_net_start = strategy.s["realized_net"]
+        cycle_funding_start = funding
+
     for i in range(len(ohlc)):
         o, h, l, c = float(ohlc[i][0]), float(ohlc[i][1]), float(ohlc[i][2]), float(ohlc[i][3])
         t_ms = ts[i] if ts and i < len(ts) else 0
 
-        # 1. Funding on held perpetuals: shorts receive funding; longs pay it.
+        # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
         qty = strategy.s["qty"]
         if qty > 1e-12:
             rate = funding_at(fund, t_ms)
-            f = rate * qty * c * (eff_bar_minutes / 60.0)
+            f = rate * qty * o * (eff_bar_minutes / 60.0)
             funding += (f if strategy.sign < 0 else -f)
 
         # 2. Check active limit orders against the bar range
@@ -262,8 +273,7 @@ def _run_once(
                 turnover_notional += sz * px
                 fills += 1
                 if strategy.s.get("cycles_completed", 0) > cycle_before:
-                    trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
-                    cycle_net_start = strategy.s["realized_net"]
+                    _record_closed_cycle()
 
         # 3. Intrabar Stop-Loss Check (if held after limit fills)
         if strategy.s["qty"] > 1e-12 and strategy.p.stop_loss_pct > 0:
@@ -281,8 +291,7 @@ def _run_once(
                         turnover_notional += held_qty * exec_px
                         fills += 1
                         if strategy.s.get("cycles_completed", 0) > cycle_before:
-                            trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
-                            cycle_net_start = strategy.s["realized_net"]
+                            _record_closed_cycle()
 
         # 4. TTL / Runaway price cancellation
         open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
@@ -299,8 +308,7 @@ def _run_once(
         cycle_before_step = strategy.s.get("cycles_completed", 0)
         strategy.step(c, signal=signal_val)
         if strategy.s.get("cycles_completed", 0) > cycle_before_step:
-            trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
-            cycle_net_start = strategy.s["realized_net"]
+            _record_closed_cycle()
             fills += 1
 
         for o_ord in strategy.s["orders"]:
@@ -325,7 +333,7 @@ def _run_once(
     realized_net = strategy.s["realized_net"]
     final_upnl = (strategy.sign * (c - cost / qty) * qty) if qty > 1e-12 else 0.0
     cycles = strategy.s.get("cycles_completed", 0)
-    wins = strategy.s.get("wins", 0)
+    wins = net_wins
     total_fees = strategy.s["fees_total"]
     final_open_fee = 0.0
     if qty > 1e-12:

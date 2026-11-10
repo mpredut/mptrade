@@ -589,3 +589,32 @@ def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id
         with pytest.raises(ProviderError):
             MarketApi._clean_order_id_arg(bad_oid, "Binance")
     assert MarketApi._clean_order_id_arg("98765.0", "Binance") == "98765"
+
+
+def test_execution_calibration_aggregates_partial_fills_across_retries():
+    events = [
+        {
+            "ts": 100, "event": "submit_requested", "intent_id": "retry-intent-1",
+            "venue": "binance", "symbol": "BTCUSDC", "side": "buy",
+            "qty": 1.0, "price": 100.0, "market": False,
+        },
+        {"ts": 101, "event": "submit_accepted", "intent_id": "retry-intent-1", "order_id": "OID-A"},
+        {
+            "ts": 103, "event": "order_terminal_retry", "intent_id": "retry-intent-1",
+            "order_id": "OID-A", "status": "expired", "filled_qty": 0.4, "cost": 40.0, "fee": 0.04,
+        },
+        {"ts": 104, "event": "submit_accepted", "intent_id": "retry-intent-1", "order_id": "OID-B"},
+        {
+            "ts": 106, "event": "order_terminal", "intent_id": "retry-intent-1",
+            "order_id": "OID-B", "status": "closed", "filled_qty": 0.6, "cost": 60.6, "fee": 0.06,
+        },
+    ]
+    rep = calibrate_execution_events(events)
+    assert rep["summary"]["all"]["orders"] == 1
+    assert rep["summary"]["all"]["filled"] == 1
+    assert rep["summary"]["limit"]["ever_partial"] == 1
+    assert rep["orders"][0]["filled_qty"] == 1.0
+    assert rep["orders"][0]["final_fill_ratio"] == 1.0
+    assert abs(rep["orders"][0]["limit_fill_deviation_bps"] - 60.0) < 1e-9
+    assert abs(rep["orders"][0]["fee_bps"] - (0.10 / 100.6 * 10_000)) < 1e-9
+

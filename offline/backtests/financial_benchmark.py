@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import statistics
 from typing import Iterable
 
@@ -232,6 +233,74 @@ def aggregate_financial_windows(
         }
 
     sum_net_pnl = sum(net_pnls)
+    total_trade_count = sum(safe_nonneg_int(item.get("trade_count"), default=0) for item in metrics)
+
+    total_gross_profit = 0.0
+    total_gross_loss = 0.0
+    has_gp_gl = False
+    active_pfs: list[float] = []
+    weighted_exp_num = 0.0
+    weighted_exp_den = 0
+    for item in metrics:
+        tc = safe_nonneg_int(item.get("trade_count"), default=0)
+        exp_val = safe_float(item.get("expectancy"), default=None)
+        if tc > 0 and exp_val is not None:
+            weighted_exp_num += tc * exp_val
+            weighted_exp_den += tc
+        gp = safe_nonneg_float(item.get("gross_profit"), default=None)
+        gl = safe_nonneg_float(item.get("gross_loss"), default=None)
+        if gp is not None and gl is not None:
+            total_gross_profit += gp
+            total_gross_loss += gl
+            has_gp_gl = True
+        elif tc > 0 and exp_val is not None:
+            pf_raw = safe_pos_float(item.get("profit_factor"), default=None)
+            tot_pnl = tc * exp_val
+            if pf_raw is not None and abs(pf_raw - 1.0) > 1e-12:
+                gl_est = tot_pnl / (pf_raw - 1.0)
+                if gl_est > 0:
+                    total_gross_loss += gl_est
+                    total_gross_profit += pf_raw * gl_est
+                    has_gp_gl = True
+            elif tot_pnl > 0:
+                total_gross_profit += tot_pnl
+                has_gp_gl = True
+            elif tot_pnl < 0:
+                total_gross_loss += -tot_pnl
+                has_gp_gl = True
+
+        pf_val = safe_float(item.get("profit_factor"), default=None)
+        if pf_val is not None:
+            active_pfs.append(pf_val)
+        elif tc > 0:
+            if (gp is not None and gp > 0 and (gl is None or gl == 0.0)) or (exp_val is not None and exp_val > 0):
+                active_pfs.append(float("inf"))
+            elif (gp is not None and gp == 0.0) or (exp_val is not None and exp_val <= 0):
+                active_pfs.append(0.0)
+
+    aggregate_pf = (
+        total_gross_profit / total_gross_loss
+        if has_gp_gl and total_gross_loss > 0
+        else None
+    )
+    median_pf = None
+    if active_pfs:
+        active_pfs.sort()
+        n_pf = len(active_pfs)
+        mid = n_pf // 2
+        if n_pf % 2 == 1:
+            raw_med = active_pfs[mid]
+        else:
+            lo_pf, hi_pf = active_pfs[mid - 1], active_pfs[mid]
+            raw_med = float("inf") if (math.isinf(lo_pf) or math.isinf(hi_pf)) else 0.5 * (lo_pf + hi_pf)
+        median_pf = aggregate_pf if math.isinf(raw_med) else raw_med
+
+    mean_expectancy = (
+        weighted_exp_num / weighted_exp_den
+        if weighted_exp_den > 0
+        else _mean(item.get("expectancy") for item in metrics)
+    )
+
     return {
         **summary,
         "mean_buy_hold_return_pct": _mean(
@@ -252,14 +321,13 @@ def aggregate_financial_windows(
         ),
         "median_sortino": _median(item.get("sortino") for item in metrics),
         "median_calmar": _median(item.get("calmar") for item in metrics),
-        "median_profit_factor": _median(
-            item.get("profit_factor") for item in metrics
-        ),
-        "mean_expectancy_usd": _mean(item.get("expectancy") for item in metrics),
+        "median_profit_factor": median_pf,
+        "aggregate_profit_factor": aggregate_pf,
+        "mean_expectancy_usd": mean_expectancy,
         "worst_cvar_95_pct": _minimum(item.get("cvar_95_pct") for item in metrics),
         "mean_exposure_pct": _mean(item.get("exposure_pct") for item in metrics),
         "mean_turnover_pct": _mean(item.get("turnover_pct") for item in metrics),
-        "total_trade_count": sum(safe_nonneg_int(item.get("trade_count"), default=0) for item in metrics),
+        "total_trade_count": total_trade_count,
         "worst_underwater_bars": int(max(
             (safe_nonneg_int(item.get("max_underwater_periods"), default=0) for item in metrics),
             default=0,

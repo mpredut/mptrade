@@ -40,6 +40,16 @@ from providers.replay_provider import SimClock
 from strategies.spot_replay import build_replay_summary
 
 
+def equity_periods_per_year(interval_minutes: float) -> float:
+    """Return US equity annualization periods for a bar interval in minutes."""
+    im = safe_pos_float(interval_minutes, default=None)
+    if im is None:
+        raise ValueError("interval_minutes must be positive")
+    if im >= 1440:
+        return 252.0 * 1440.0 / im
+    return 252.0 * 390.0 / im
+
+
 def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
     if isinstance(value, bool) or isinstance(count, bool) or count < 0:
         raise ValueError("fx_to_usd and count must be valid non-bool values")
@@ -129,11 +139,16 @@ def _run_once(
     client = _ReplayClient()
     clock = SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
-    for row in warmup_ohlc or ():
+    warmup_rows = list(warmup_ohlc or ())
+    warmup_step = bar_minutes * 60.0 if bar_minutes else 1.0
+    base_ts = float(timestamps[0]) if timestamps else 0.0
+    warmup_shadow: list[tuple[float, float]] = []
+    for w_idx, row in enumerate(warmup_rows, start=-len(warmup_rows)):
         if isinstance(row, (list, tuple)) and len(row) >= 4:
             cf = safe_pos_float(row[3], default=None)
             if cf is not None:
                 trend_closes.append(cf)
+                warmup_shadow.append((base_ts + w_idx * warmup_step, cf))
     original_log, original_notify = _strat.log, _strat.notify
     _strat.log = _strat.notify = lambda *_args, **_kwargs: None
     try:
@@ -147,14 +162,18 @@ def _run_once(
             clock=clock,
             trend_slope_provider=lambda _symbol: _md.compute_ols_slope_pct(list(trend_closes), bars=12),
         )
+        engine._shadow_prices.extend(warmup_shadow)
         engine._save = lambda: None
         initial_capital = float(params.max_budget)
         equity_curve = [initial_capital]
         exposure = []
         trade_pnls = []
         turnover_account = realized_gross_account = realized_net_account = fees_account = 0.0
+        open_cost_account = open_buy_fee_account = 0.0
         fills = wins = ambiguous_bars = 0
         cycle0 = engine.s.get("cycle", 1)
+        prev_cycle = cycle0
+        cycle_net_start = 0.0
         side_order = execution.side_order()
 
         for bar_index, row in enumerate(ohlc):
@@ -188,22 +207,51 @@ def _run_once(
                             if complete:
                                 engine._remove(order)
                             price = execution.market_price(side, open_) if market else float(order["limit"])
-                            if side == "sell":
-                                quantity = min(quantity, engine.s["qty"])
+                            if side == "buy":
+                                buy_notional_account = quantity * price / rate
+                                open_cost_account += buy_notional_account
+                                open_buy_fee_account += (params.fx_fee_pct / 100.0) * buy_notional_account
+                            else:
+                                held_before = engine.s["qty"]
+                                quantity = min(quantity, held_before)
                                 if quantity <= 1e-12:
                                     engine._remove(order)
                                     continue
                                 fill_order["qty"] = quantity
-                                avg = engine._avg() or price
-                                _gross, _fee, net = _strat._sell_pnl(avg, price, quantity, params.fx_fee_pct)
+                                frac = min(1.0, quantity / held_before) if held_before > 1e-12 else 1.0
+                                released_cost_account = open_cost_account * frac
+                                released_buy_fee_account = open_buy_fee_account * frac
+                                open_cost_account = max(0.0, open_cost_account - released_cost_account)
+                                open_buy_fee_account = max(0.0, open_buy_fee_account - released_buy_fee_account)
+                                sell_notional_account = quantity * price / rate
+                                sell_fee_account = (params.fx_fee_pct / 100.0) * sell_notional_account
+                                gross_acc = sell_notional_account - released_cost_account
+                                fee_acc = released_buy_fee_account + sell_fee_account
+                                net_acc = gross_acc - fee_acc
                                 if complete and fill_order.get("level") is not None:
                                     engine._record_tp_sold_level(fill_order["level"])
-                                realized_gross_account += _gross / rate
-                                fees_account += _fee / rate
-                                realized_net_account += net / rate
-                                wins += int(net > 0)
-                                trade_pnls.append(net / rate)
+                                realized_gross_account += gross_acc
+                                fees_account += fee_acc
+                                realized_net_account += net_acc
+                            dust_before = max(0.0, engine.s["qty"] - quantity) if side == "sell" else 0.0
                             engine._apply_fill(fill_order, quantity, price)
+                            if side == "sell":
+                                if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
+                                    dust_val_acc = dust_before * price / rate
+                                    dust_gross = dust_val_acc - open_cost_account
+                                    realized_gross_account += dust_gross
+                                    fees_account += open_buy_fee_account
+                                    realized_net_account += dust_gross - open_buy_fee_account
+                                    open_cost_account = 0.0
+                                    open_buy_fee_account = 0.0
+                                cur_cycle = engine.s.get("cycle", 1)
+                                if cur_cycle > prev_cycle:
+                                    cycle_pnl = realized_net_account - cycle_net_start
+                                    trade_pnls.append(cycle_pnl)
+                                    if cycle_pnl > 0.0:
+                                        wins += 1
+                                    cycle_net_start = realized_net_account
+                                    prev_cycle = cur_cycle
                             fills += 1
                             turnover_account += quantity * price / rate
 
@@ -216,26 +264,27 @@ def _run_once(
             engine.step(float(close))
 
             qty = engine.s["qty"]
-            avg = engine._avg()
-            unrealized_usd = (float(close) - avg) * qty if avg and qty > 1e-9 else 0.0
-            open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-            equity_curve.append(initial_capital + realized_net_account + (unrealized_usd - open_buy_fee_usd) / rate)
+            unrealized_account = (qty * float(close) / rate - open_cost_account) if qty > 1e-9 else 0.0
+            cur_open_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
+            equity_curve.append(initial_capital + realized_net_account + unrealized_account - cur_open_fee_account)
             exposure.append(qty > 1e-9)
     finally:
         _strat.log, _strat.notify = original_log, original_notify
 
     qty = engine.s["qty"]
-    avg = engine._avg()
     final_rate = fx_rates[-1]
-    final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
-    open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-    final_upnl_account = final_upnl_usd / final_rate
-    open_buy_fee_account = open_buy_fee_usd / final_rate
+    final_upnl_account = (qty * float(ohlc[-1][3]) / final_rate - open_cost_account) if qty > 1e-9 else 0.0
+    final_open_buy_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
+    eff_periods_per_year = (
+        periods_per_year
+        if periods_per_year is not None
+        else (equity_periods_per_year(bar_minutes) if bar_minutes is not None else None)
+    )
     return build_replay_summary(
         realized=realized_gross_account,
         net=realized_net_account,
-        fees=fees_account + open_buy_fee_account,
-        total=realized_net_account + final_upnl_account - open_buy_fee_account,
+        fees=fees_account + final_open_buy_fee_account,
+        total=realized_net_account + final_upnl_account - final_open_buy_fee_account,
         final_upnl=final_upnl_account,
         cycles=engine.s.get("cycle", 1) - cycle0,
         wins=wins,
@@ -249,8 +298,8 @@ def _run_once(
         trade_pnls=trade_pnls,
         turnover_notional=turnover_account,
         bar_minutes=bar_minutes,
-        periods_per_year=periods_per_year,
-        extra_fields={"open_buy_fee": round_metric(open_buy_fee_account)},
+        periods_per_year=eff_periods_per_year,
+        extra_fields={"open_buy_fee": round_metric(final_open_buy_fee_account)},
     )
 
 

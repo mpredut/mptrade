@@ -66,8 +66,8 @@ class PerformanceMetricsTest(unittest.TestCase):
         }
         lines = format_performance_summary(m, indent="  ")
         self.assertEqual(len(lines), 2)
-        self.assertIn("RISC: maxDD 5.25%  Sharpe 1.50  Sortino 2.10  Calmar 3.00  CVaR95 -4.20%", lines[0])
-        self.assertIn("EXECUTIE: expunere 45.00%  turnover 120.00%  fills 12  profit-factor 1.80  expectancy $2.50", lines[1])
+        self.assertIn("RISK: maxDD 5.25%  Sharpe 1.50  Sortino 2.10  Calmar 3.00  CVaR95 -4.20%", lines[0])
+        self.assertIn("EXECUTION: exposure 45.00%  turnover 120.00%  fills 12  profit-factor 1.80  expectancy $2.50", lines[1])
 
     def test_validate_replay_metrics(self):
         from offline.backtests.metrics import validate_replay_metrics

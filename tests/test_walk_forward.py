@@ -595,7 +595,7 @@ def test_format_performance_summary_renders_nan_bool_non_numeric_metrics_as_iter
     assert "maxDD n/a%" in lines[0]
     assert "Sharpe n/a" in lines[0]
     assert "Sortino n/a" in lines[0]
-    assert "expunere 42.50%" in lines[1]
+    assert "exposure 42.50%" in lines[1]
 
 def test_parse_intervals_and_parse_dataset_specs_reject_non_numeric_non_positive_iter129_s4():
     """[ITER129 #4] parse_intervals and parse_dataset_specs reject non-numeric / non-positive / empty path specs."""

@@ -526,6 +526,40 @@ class BaseV2GoldenTest(unittest.TestCase):
             else:
                 self.assertEqual(got, expected, f"metrica '{key}' difera")
 
+    def test_sell_first_ambiguous_bar_closes_cycle_without_orphan_dca_market_dump(self):
+        bars = [
+            (100.0, 101.0, 99.0, 100.0),   # decide ENTRY (~99.8)
+            (100.0, 101.0, 99.0, 100.0),   # fill ENTRY, decide TP (~102.794)
+            (98.0, 100.0, 97.5, 97.5),     # dip places DCA (~97.305) while TP stays open
+            (100.0, 104.0, 96.0, 100.0),   # ambiguous bar: touches both TP and DCA
+        ]
+        res = rp.run_replay(
+            bars, _params(max_dca_buys=2), fee_pct=0.26, bar_minutes=60,
+            execution=rp.ExecutionModel(intrabar_policy="sell_first"),
+            include_decision_trace=True,
+        )
+        self.assertEqual(res["ambiguous_bars"], 1)
+        self.assertEqual(res["cycles"], 1)
+        market_sells = [
+            d for d in res["decision_trace"] if d["side"] == "sell" and d["market"]
+        ]
+        self.assertEqual(market_sells, [])
+
+    def test_resized_final_dca_reserves_buy_fee_in_cash_account(self):
+        bars = [
+            (100.0, 101.0, 99.0, 100.0),
+            (100.0, 101.0, 99.0, 100.0),  # fills ENTRY ($100 + $0.26 fee -> $49.74 cash left)
+            (96.0, 97.0, 95.0, 96.0),     # dip places resized DCA within $49.74 cash + fee
+            (96.0, 97.0, 94.0, 95.0),     # fills resized DCA cleanly without cash refusal
+        ]
+        res = rp.run_replay(
+            bars, _params(entry_amount=100.0, dca_amount=50.0, max_budget=150.0, max_dca_buys=1),
+            fee_pct=0.26, bar_minutes=60, initial_cash=150.0,
+        )
+        self.assertEqual(res["fills"], 2)
+        self.assertEqual(res["funding"]["refused_buys"], 0)
+        self.assertGreaterEqual(res["funding"]["final_cash"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

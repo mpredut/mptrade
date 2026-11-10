@@ -91,11 +91,12 @@ def build_replay_summary(
 class _ReplayClient:
     """Lightweight replay venue client without mock call-recording overhead."""
 
-    __slots__ = ("_default_balance", "_free_balance_fn")
+    __slots__ = ("_default_balance", "_free_balance_fn", "buy_fee_pct")
 
     def __init__(self, default_balance: float) -> None:
         self._default_balance = default_balance
         self._free_balance_fn = None
+        self.buy_fee_pct = 0.0
 
     def pair_precision(self, _pair: str) -> PairPrecision:
         return _REPLAY_PRECISION
@@ -228,6 +229,7 @@ def _run_once(
 
         if cash is not None:
             client._free_balance_fn = free_quote
+            client.buy_fee_pct = fee_model.rate_pct(market=False)
 
         def traced_place(side, vol, price, kind, amount=0.0, market=False):
             nonlocal cash_refusals
@@ -335,6 +337,7 @@ def _run_once(
             equity_curve.append(initial_capital + strategy.s["realized_net"] + unrealized)
             exposure.append(qty > 1e-12)
 
+        settled_end_exit = False
         for order in list(strategy.s["orders"]):
             if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
                 volume = min(float(order["vol"]), strategy.s["qty"])
@@ -349,8 +352,14 @@ def _run_once(
                 fill_count += 1
                 turnover_notional += volume * price
                 _record_sell_outcome(gross_before)
-                if equity_curve:
-                    equity_curve[-1] = initial_capital + strategy.s["realized_net"]
+                settled_end_exit = True
+        if settled_end_exit:
+            rem_qty = strategy.s["qty"]
+            rem_upnl = (float(ohlc[-1][3]) - strategy.s["cost"] / rem_qty) * rem_qty if rem_qty > 1e-12 else 0.0
+            if equity_curve:
+                equity_curve[-1] = initial_capital + strategy.s["realized_net"] + rem_upnl
+            if exposure:
+                exposure[-1] = rem_qty > 1e-12
     finally:
         _strat.notify, _strat.log = original_notify, original_log
 

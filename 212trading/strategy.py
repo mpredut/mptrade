@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -309,6 +310,7 @@ class Strategy(BaseSpotMixin):
         self.exit_manager: PositionExitManager | None = (
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
+        self._shadow_prices: deque[tuple[float, float]] = deque(maxlen=90)
         self._paper_seq = 0
 
     # -- Currency & Helpers ----------------------------------------------------
@@ -509,7 +511,7 @@ class Strategy(BaseSpotMixin):
                       f"dep{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
                 source="T212", price=price, desktop=self.desktop,
             )
-            self._cancel_open("SELL")
+            self._cancel_non_market_sells()
         else:
             qty = min(qty, self.s["qty"])
             avg = self._avg() or price
@@ -656,6 +658,12 @@ class Strategy(BaseSpotMixin):
             if not self._cancel_specific(order):
                 success = False
         return success
+
+    def _cancel_non_market_sells(self) -> None:
+        for order in [
+            x for x in list(self.s["orders"]) if str(x.get("side") or "").upper() == "SELL" and not x.get("market")
+        ]:
+            self._cancel_specific(order)
 
     def _restore_cancelled_orders(self, cancelled_orders: list[dict], reason: str = "") -> None:
         """Best-effort rollback: restore previously resting orders after a replacement or exit fails."""
@@ -963,7 +971,7 @@ class Strategy(BaseSpotMixin):
             if source_order is pending_for_fill:
                 self._persist_pending_submit(None)
             self._unconfirmed_zero_polls = 0
-            self._cancel_open("SELL")
+            self._cancel_non_market_sells()
 
         elif real_qty < prev_qty - 1e-6:
             sold = prev_qty - real_qty
@@ -1240,6 +1248,7 @@ class Strategy(BaseSpotMixin):
         if px is None:
             return None
         price = px
+        self._shadow_prices.append((self._now(), price))
         held = safe_nonneg_float(self.s.get("qty"), 0.0)
         self.s["qty"] = held
         step = self.p.loss_alert_step
@@ -1302,7 +1311,7 @@ class Strategy(BaseSpotMixin):
             if not in_tp_zone and price > 0 and avg > 0:
                 self.s["trail_peak"] = None
                 if self.s["orders"]:
-                    self._cancel_open("SELL")
+                    self._cancel_non_market_sells()
             else:
                 self._sync_mdhtp_config(
                     self.p.trail_pct if self.p.trail_pct > 0 else 1.5, trend_ride_enabled=True
@@ -1378,17 +1387,17 @@ class Strategy(BaseSpotMixin):
 
         if decision is not None and decision.reason == "not_in_tp_territory":
             self.s["trail_peak"] = None
-            self._cancel_open("SELL")
+            self._cancel_non_market_sells()
         elif decision is not None and decision.action == ExitAction.HOLD:
             if self.ticker in self.exit_manager.tp_ride_state:
                 ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
                 peak_px = safe_pos_float(ride_state.get("peak_price")) or price
                 self.s["trail_peak"] = peak_px
-                self._cancel_open("SELL")
+                self._cancel_non_market_sells()
                 log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
                 return True
             self.s["trail_peak"] = None
-            self._cancel_open("SELL")
+            self._cancel_non_market_sells()
         return False
 
     def _dispatch_take_profit(self, price: float, avg: float | None, held: float) -> bool:

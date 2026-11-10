@@ -27,7 +27,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
-from botcore import _parse_bool_flag, load_env_stack, parse_dotenv, safe_pos_float  # noqa: E402
+from botcore import _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float, safe_pos_float  # noqa: E402
 
 # Load .env + config.env so the notifications (PHONE_ALERT_URL/NTFY_TOPIC from .env)
 # work — apply runs standalone, not through the fleet (which loads them at startup).
@@ -92,11 +92,22 @@ def main():
             continue
         try:
             current_raw = sp._current_value(section, key)   # LIVE from prod (authoritative)
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as exc:
+            sp._append_audit({
+                "full_key": fk, "symbol": symbol, "source": "apply_proposals",
+                "action": "skipped_missing_key", "reason": str(exc),
+                "dev_commit": p.get("dev_commit"),
+            })
             continue
-        winner = safe_pos_float(raw_winner, default=None)
-        current = safe_pos_float(current_raw, default=None)
+        winner = safe_nonneg_float(raw_winner, default=None)
+        current = safe_nonneg_float(current_raw, default=None)
         if winner is None or current is None:
+            sp._append_audit({
+                "full_key": fk, "symbol": symbol, "source": "apply_proposals",
+                "action": "skipped_invalid_value",
+                "reason": f"winner={raw_winner!r}, current={current_raw!r}",
+                "dev_commit": p.get("dev_commit"),
+            })
             continue
         rec = {"full_key": fk, "symbol": symbol, "source": "apply_proposals",
                "winner_value": winner, "current_value": current, "dev_commit": p.get("dev_commit")}

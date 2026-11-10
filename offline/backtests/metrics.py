@@ -150,6 +150,8 @@ def calculate_performance_metrics(
         "cvar_95_pct": cvar * 100.0 if cvar is not None else None,
         "exposure_pct": exposure_pct,
         "trade_count": len(pnls),
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
         "win_rate_pct": 100.0 * winning_trades / len(pnls) if pnls else None,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
         "expectancy": statistics.fmean(pnls) if pnls else None,
@@ -158,16 +160,16 @@ def calculate_performance_metrics(
 
 
 def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
-    """Format standardized RISC and EXECUTIE summary lines across backtest harnesses."""
+    """Format standardized RISK and EXECUTION summary lines across backtest harnesses."""
     def metric(name: str, digits: int = 2) -> str:
         vf = safe_float(m.get(name) if isinstance(m, dict) else None, default=None)
         return f"{vf:.{digits}f}" if vf is not None else "n/a"
 
     lines = [
-        (f"{indent}RISC: maxDD {metric('max_drawdown_pct')}%  "
+        (f"{indent}RISK: maxDD {metric('max_drawdown_pct')}%  "
          f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
          f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%"),
-        (f"{indent}EXECUTIE: expunere {metric('exposure_pct')}%  "
+        (f"{indent}EXECUTION: exposure {metric('exposure_pct')}%  "
          f"turnover {metric('turnover_pct')}%  fills {m.get('fills', 'n/a') if isinstance(m, dict) else 'n/a'}  "
          f"profit-factor {metric('profit_factor')}  "
          f"expectancy ${metric('expectancy')}"),
@@ -239,8 +241,8 @@ def print_single_backtest_report(
     for line in format_performance_summary(m, indent="  "):
         emit(line)
     if include_funding:
-        status = "PIERZATOARE" if upnl < -1 else "ok"
-        emit(f"  buy&hold: {bh:+.2f}%   pozitie deschisa la final: {open_qty:.{open_qty_decimals}f} ({status})")
+        status = "LOSING" if upnl < -1 else "ok"
+        emit(f"  buy&hold: {bh:+.2f}%   final position: {open_qty:.{open_qty_decimals}f} ({status})")
     else:
         emit(f"  buy&hold: {bh:+.2f}%   final position: {open_qty:.{open_qty_decimals}f}")
 

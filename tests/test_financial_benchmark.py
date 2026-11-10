@@ -344,6 +344,29 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
                 self.assertIsNone(ps._load_state("HYPEUSD"))
                 self.assertEqual(ps.run_alerts([]), [])
 
+    def test_median_profit_factor_includes_zero_loss_winning_folds_and_negative_base_defensive_gate(self):
+        win_fold_1 = _window("w1", 3.0, 2.0, 0.5, 117.0)
+        win_fold_1["metrics"]["profit_factor"] = None
+        win_fold_1["metrics"]["gross_profit"] = 117.0
+        win_fold_1["metrics"]["gross_loss"] = 0.0
+        win_fold_2 = _window("w2", 2.5, 1.0, 0.4, 97.5)
+        win_fold_2["metrics"]["profit_factor"] = None
+        win_fold_2["metrics"]["gross_profit"] = 97.5
+        win_fold_2["metrics"]["gross_loss"] = 0.0
+        loss_fold = _window("w3", -1.0, -5.0, 2.0, -39.0)
+        loss_fold["metrics"]["profit_factor"] = 0.2
+        loss_fold["metrics"]["gross_profit"] = 9.75
+        loss_fold["metrics"]["gross_loss"] = 48.75
+
+        agg = aggregate_financial_windows([win_fold_1, win_fold_2, loss_fold], initial_capital=3900.0)
+        self.assertGreater(agg["median_profit_factor"], 1.0)
+        self.assertAlmostEqual(agg["aggregate_profit_factor"], (117.0 + 97.5 + 9.75) / 48.75)
+
+        baseline = _report(mean=-0.5, worst=-4.0, drawdown=6.0, returns=(-0.5,) * 20, drawdowns=(6.0,) * 20, calmar=-0.3, sortino=-0.4, cvar=-3.0, exposure=60.0)
+        candidate = _report(mean=0.8, worst=-1.5, drawdown=3.0, returns=(0.8,) * 20, drawdowns=(3.0,) * 20, calmar=1.1, sortino=1.4, cvar=-1.2, exposure=45.0)
+        res = evaluate_risk_adjusted_promotion(baseline, candidate)
+        self.assertTrue(res["promote"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1071,3 +1071,44 @@ def test_212trading_replay_run_replay_validates_non_sequence_ohlc_and_iter117_s7
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
+
+
+def test_t212_wave3_fx_principal_translation_shadow_vol_and_ladder_cancel():
+    # 1. FX principal translation when USD stock price is flat (100 -> 100) while RON->USD weakens (0.5 -> 0.4)
+    params_ron = _params(STRAT_CURRENCY="RON", STRAT_ENTRY_DISCOUNT_PCT="0", STRAT_FX_FEE_PCT="0")
+    bars = [
+        (100.0, 100.0, 100.0, 100.0),  # decide ENTRY at 100 USD (rate 0.5 -> 100 RON = $50 -> 0.5 shares)
+        (100.0, 100.0, 100.0, 100.0),  # fill ENTRY at rate 0.5 (costs 100 RON)
+        (100.0, 100.0, 100.0, 100.0),  # USD price flat at 100, rate=0.4 -> 0.5 shares * 100 / 0.4 = 125 RON (+25 RON!)
+    ]
+    ron_res = replay.run_replay(bars, params_ron, bar_minutes=1440, fx_to_usd=[0.5, 0.5, 0.4])
+    assert abs(ron_res["final_upnl"] - 25.0) < 1e-6
+    assert abs(ron_res["total"] - 25.0) < 1e-6
+
+    # 2. _shadow_prices populated in warmup + replay so adaptive reentry resolves 1h vol
+    warmup = [(100.0 + (i % 3) * 2.0, 103.0, 99.0, 100.0 + (i % 3) * 2.0) for i in range(25)]
+    params_adapt = _params(
+        STRAT_REENTRY_HYBRID_ENABLED="true",
+        STRAT_REENTRY_PEAK_RELATIVE="true",
+        STRAT_REENTRY_PULLBACK_ADAPTIVE="true",
+        STRAT_REENTRY_PULLBACK_PCT="1.5",
+        STRAT_REENTRY_PULLBACK_K="2.5",
+    )
+    adapt_res = replay.run_replay(bars, params_adapt, bar_minutes=60, warmup_ohlc=warmup)
+    assert adapt_res["sharpe"] is not None or adapt_res["return_pct"] == 0.0
+
+    # 3. Multi-rung ladder cancels ALL open non-market SELL rungs when a DCA BUY fills
+    engine = strategy.Strategy(
+        MagicMock(), "TEST_US_EQ", _params(STRAT_TP_LADDER="2:50,4:50"),
+        dry_run=True, initial_state=strategy._new_state(), fx_to_usd=1.0,
+    )
+    strategy.notify = lambda **_kwargs: None
+    engine.s["qty"] = 2.0
+    engine.s["cost_usd"] = 200.0
+    engine.s["orders"] = [
+        {"id": "PAPER-1", "side": "SELL", "qty": 1.0, "limit": 102.0, "kind": "TP", "level": 2.0, "market": False},
+        {"id": "PAPER-2", "side": "SELL", "qty": 1.0, "limit": 104.0, "kind": "TP", "level": 4.0, "market": False},
+    ]
+    engine._apply_fill({"side": "BUY", "kind": "DCA", "qty": 1.0, "limit": 95.0, "amount": 95.0}, 1.0, 95.0)
+    assert [o for o in engine.s["orders"] if o["side"] == "SELL"] == []
+

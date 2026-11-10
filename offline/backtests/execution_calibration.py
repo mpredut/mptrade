@@ -94,29 +94,52 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             None,
         )
         STATUS_EVENTS = ("order_status", "order_terminal", "order_terminal_retry")
-        statuses = [
-            event for event in history if event.get("event") in STATUS_EVENTS
-        ]
         qty = safe_float(requested.get("qty"), 0.0)
         status_rows = []
-        for status in statuses:
-            filled = safe_float(status.get("filled_qty"), 0.0)
-            cost = safe_float(status.get("cost"), 0.0)
-            fee = safe_float(status.get("fee"), 0.0)
-            status_rows.append((status, filled, cost, fee))
-        latest = max(
-            status_rows,
-            key=lambda row: (row[1], _ts_sec(row[0].get("ts"), 0.0)),
-            default=None,
-        )
-        first_fill = next((row for row in status_rows if row[1] > 0), None)
-        filled = latest[1] if latest else 0.0
-        cost = latest[2] if latest else 0.0
-        fee = latest[3] if latest else 0.0
-        fill_ratios = [
-            min(1.0, max(0.0, row[1] / qty))
-            for row in status_rows if qty > 0 and row[1] > 0
-        ]
+        by_order_id: dict[str, list[tuple[dict, float, float, float]]] = {}
+        active_oid = ""
+        for event in history:
+            if event.get("event") == "submit_accepted":
+                raw_oid = event.get("order_id")
+                if raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip():
+                    active_oid = str(raw_oid).strip()
+            elif event.get("event") in STATUS_EVENTS:
+                filled_step = safe_float(event.get("filled_qty"), 0.0)
+                cost_step = safe_float(event.get("cost"), 0.0)
+                fee_step = safe_float(event.get("fee"), 0.0)
+                raw_s_oid = event.get("order_id")
+                oid_key = (
+                    str(raw_s_oid).strip()
+                    if raw_s_oid is not None and not isinstance(raw_s_oid, bool) and str(raw_s_oid).strip()
+                    else active_oid
+                )
+                row_t = (event, filled_step, cost_step, fee_step)
+                status_rows.append((oid_key, row_t))
+                by_order_id.setdefault(oid_key, []).append(row_t)
+
+        first_fill = next((row for _, row in status_rows if row[1] > 0), None)
+        filled = 0.0
+        cost = 0.0
+        fee = 0.0
+        for bucket in by_order_id.values():
+            best = max(
+                bucket,
+                key=lambda row: (row[1], _ts_sec(row[0].get("ts"), 0.0)),
+                default=None,
+            )
+            if best is not None:
+                filled += best[1]
+                cost += best[2]
+                fee += best[3]
+
+        fill_ratios = []
+        if qty > 0:
+            running_by_oid: dict[str, float] = {}
+            for oid_key, row in status_rows:
+                running_by_oid[oid_key] = max(running_by_oid.get(oid_key, 0.0), row[1])
+                cum_filled = sum(running_by_oid.values())
+                if cum_filled > 0:
+                    fill_ratios.append(min(1.0, max(0.0, cum_filled / qty)))
         avg_fill = cost / filled if filled > 0 and cost > 0 else None
         side_norm = normalize_side(requested.get("side"))
         direction = 1.0 if side_norm == "BUY" else (-1.0 if side_norm == "SELL" else 0.0)

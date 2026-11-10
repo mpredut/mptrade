@@ -71,12 +71,16 @@ def _diff(left, right) -> float:
 
 
 def _relative_change(baseline, candidate) -> float | None:
-    """Relative change only for a positive, comparable base."""
+    """Signed relative change ``(cand - base) / |base|`` across positive, zero, or negative baselines."""
     base = safe_float(baseline, default=None)
     cand = safe_float(candidate, default=None)
-    if base is None or cand is None or base <= 0:
+    if base is None or cand is None:
         return None
-    return (cand - base) / base
+    if abs(base) <= 1e-12:
+        if abs(cand) <= 1e-12:
+            return 0.0
+        return 1.0 if cand > 0.0 else -1.0
+    return (cand - base) / abs(base)
 
 
 def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, dict]:
@@ -259,10 +263,9 @@ def evaluate_risk_adjusted_promotion(
             candidate_exposure - base_exposure
             if base_exposure is not None and candidate_exposure is not None else None
         )
-        calmar_improvement = _relative_change(
-            base_aggregate.get("median_calmar"),
-            candidate_aggregate.get("median_calmar"),
-        )
+        base_calmar = safe_float(base_aggregate.get("median_calmar"), default=None)
+        cand_calmar = safe_float(candidate_aggregate.get("median_calmar"), default=None)
+        calmar_improvement = _relative_change(base_calmar, cand_calmar)
         sortino_change = _relative_change(
             base_aggregate.get("median_sortino"),
             candidate_aggregate.get("median_sortino"),
@@ -283,6 +286,8 @@ def evaluate_risk_adjusted_promotion(
             "calmar_available": calmar_improvement is not None,
             "material_calmar_improvement": (
                 calmar_improvement is not None
+                and cand_calmar is not None
+                and cand_calmar > 0.0
                 and calmar_improvement >= limits.min_median_calmar_improvement_ratio
             ),
             "sortino_preserved": (

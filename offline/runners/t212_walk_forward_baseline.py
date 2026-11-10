@@ -45,13 +45,7 @@ parse_interval_minutes = _t212_md.parse_interval_minutes
 
 
 def periods_per_year(interval_minutes: int) -> float:
-    im = safe_pos_float(interval_minutes, default=None)
-    if im is None:
-        raise ValueError("interval_minutes must be positive")
-    # Regular US session: 6.5h and roughly 252 trading days per year.
-    if im >= 1440:
-        return 252.0 * 1440.0 / im
-    return 252.0 * 390.0 / im
+    return t212_replay.equity_periods_per_year(interval_minutes)
 
 
 def fx_quote(currency: str) -> tuple[str, bool]:

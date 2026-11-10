@@ -102,6 +102,7 @@ class BacktestBroker:
             return None
         self.last_price = price
         if order_type == "BUY":
+            exec_qty = qty
             self.n_buy += 1
             self.pos_qty += qty
             self.pos_cost += qty * price
@@ -110,6 +111,7 @@ class BacktestBroker:
             if self.pos_qty <= 1e-12:
                 return None            # Nothing to sell (spot) — refuse, as in reality.
             sell_q = min(qty, self.pos_qty)
+            exec_qty = sell_q
             avg = self.pos_cost / self.pos_qty
             self.realized += (price - avg) * sell_q
             self.fees += sell_q * price * FEE_PCT / 100
@@ -119,7 +121,7 @@ class BacktestBroker:
                 self.pos_qty = 0.0
                 self.pos_cost = 0.0
             self.n_sell += 1
-        cols = [self.clock(), symbol, order_type, price, qty, "executed", "", "backtest", motivation]
+        cols = [self.clock(), symbol, order_type, price, exec_qty, "executed", "", "backtest", motivation]
         self.write_outcome_row(cols)
         return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
 
@@ -166,6 +168,7 @@ class BacktestBroker:
         self.pending = still
 
     def sell_all(self, symbol, price, motivation):
+        self.pending = [o for o in self.pending if not (o["symbol"] == symbol and o["side"] == "BUY")]
         if self.pos_qty <= 1e-12:
             return None
         return self.place_order_smart("SELL", symbol, price, self.pos_qty, motivation=motivation)
@@ -227,9 +230,9 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
         st = os.stat(path)
         with open(path, "r", encoding="utf-8") as f:
             head_line = f.readline()
-        sig = (head_line, st.st_mtime_ns if st.st_size < 65536 else 0)
+        sig = (head_line, st.st_size, st.st_mtime_ns)
     except OSError:
-        sig = ("", 0)
+        sig = ("", 0, 0)
     file_key = (path, symbol, sig)
     cache_key = (file_key, start_ts, end_ts)
     cached = _TICK_SLICE_CACHE.get(cache_key)
@@ -489,7 +492,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             if first_price and broker.last_price:
                 bh_qty = BACKTEST_NOTIONAL_USD / first_price if first_price else 0
                 pnl["buy_hold_net"] = round((broker.last_price - first_price) * bh_qty
-                                             - 2 * bh_qty * first_price * FEE_PCT / 100, 2)
+                                             - (first_price + broker.last_price) * bh_qty * FEE_PCT / 100, 2)
             pnl["mode"] = "kalman_primary" if kalman_primary else "model_actual"
             try:
                 atomic_write_json(os.path.join(out_dir, "pnl.json"), pnl, indent=1)
@@ -545,7 +548,7 @@ def main():
     args = p.parse_args()
 
     start_ts = datetime.strptime(args.start, "%Y-%m-%d").timestamp()
-    end_ts = datetime.strptime(args.end, "%Y-%m-%d").timestamp() if args.end else None
+    end_ts = (datetime.strptime(args.end, "%Y-%m-%d").timestamp() + 86399.999) if args.end else None
     run_id = args.run_id or f"{args.symbol}_{args.start}_{int(time.time())}"
 
     run_backtest(args.symbol, start_ts, end_ts, args.speed, run_id, args.source, args.cache24_file,

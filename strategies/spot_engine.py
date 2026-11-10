@@ -857,6 +857,9 @@ class Strategy(BaseSpotMixin):
             self.s["cost"] = 0.0
         if self.s["qty"] > 1e-12:
             return
+        if self.dry_run:
+            self._cancel_orders("buy")
+            self._cancel_orders("sell", exclude_market=True)
         if self.s["orders"] or self.s.get("pending_intent"):
             pending = self.s.get("pending_exit") or {"kind": o.get("kind") or "TP"}
             pending["fill_price"] = price
@@ -1060,10 +1063,10 @@ class Strategy(BaseSpotMixin):
             and "_trend_closes" not in self.__dict__
         ):
             sp = self._shadow_prices
-            n_sp = len(sp)
             replay_key = (
-                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1],
-                self.p.trend_interval, self._regime_service.evaluator.strength_threshold,
+                tuple(item[1] for item in sp),
+                self.p.trend_interval,
+                self._regime_service.evaluator.strength_threshold,
             )
             if getattr(self, "_replay_regime_key", None) == replay_key:
                 return self._replay_regime_val
@@ -1743,7 +1746,9 @@ class Strategy(BaseSpotMixin):
         if clean_quote is None:
             log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
             return
-        available = min(clean_quote, self.p.allocated_budget() - self.s["spent"])
+        fee_rate_pct = safe_nonneg_float(getattr(self.client, "buy_fee_pct", None), default=0.0)
+        affordable_quote = clean_quote / (1.0 + fee_rate_pct / 100.0) if fee_rate_pct > 0.0 else clean_quote
+        available = min(affordable_quote, self.p.allocated_budget() - self.s["spent"])
         spend = min(effective_dca_amount, available)
         qty = self._qty_for(spend, entry_px)
         if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
