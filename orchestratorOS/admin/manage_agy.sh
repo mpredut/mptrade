@@ -45,14 +45,19 @@ is_active() {
 }
 
 is_tunnel_stuck() {
-    local log_file last_status
+    local log_file status_lines last_status last_conn_line
     log_file="$(resolve_agy_log)"
     if [ -n "$log_file" ] && [ -f "$log_file" ]; then
-        last_status="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 1 || true)"
-        if [ -n "$last_status" ] && echo "$last_status" | grep -qi "Failed before open"; then
-            local fail_count
-            fail_count="$(grep -c "Connection status: Failed before open" <(tail -n 30 "$log_file" 2>/dev/null) || true)"
-            [ "$fail_count" -ge 2 ] && return 0
+        status_lines="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 2 || true)"
+        last_status="$(printf '%s\n' "$status_lines" | tail -n 1)"
+        if [ -n "$last_status" ] && printf '%s\n' "$last_status" | grep -qi "Failed before open"; then
+            if [ "$(printf '%s\n' "$status_lines" | grep -ci "Failed before open" || true)" -ge 2 ]; then
+                return 0
+            fi
+            last_conn_line="$(grep -n "Connection status: Connected" "$log_file" 2>/dev/null | tail -n 1 | cut -d: -f1 || true)"
+            if [[ "$last_conn_line" =~ ^[0-9]+$ ]] && tail -n +"$last_conn_line" "$log_file" 2>/dev/null | grep -Eiq "inbound silence timeout|No inbound traffic from server"; then
+                return 0
+            fi
         fi
     fi
     return 1
@@ -75,7 +80,7 @@ do_restart() {
     log "Cycling daemon (stop -> start --name '${INSTANCE_NAME}')..."
     if grep -q "antigravity-cli-daemon.service" /proc/self/cgroup 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
         log "Executing inside daemon cgroup. Delegating restart to transient user systemd service..."
-        local job_unit="agy-restart-$(date +%s)"
+        local job_unit="agy-restart-$(date +%s)-$$"
         systemd-run --user --unit="$job_unit" bash -c "
             export PATH=\"\$HOME/.local/bin:\$PATH\"
             export XDG_RUNTIME_DIR=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}\"
@@ -89,7 +94,10 @@ do_restart() {
                 sleep 1
             done
             sleep 2
-            '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'
+            if ! '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'; then
+                sleep 5
+                systemctl --user is-active --quiet antigravity-cli-daemon 2>/dev/null || '$AGY_BIN' remote-control start --name '$INSTANCE_NAME' || true
+            fi
         "
         log "Transient restart service queued ($job_unit)."
     else
@@ -112,8 +120,10 @@ do_restart() {
 do_watchdog() {
     acquire_lock 0 || exit 0
 
-    if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl --user show -p ActiveState --value antigravity-cli-daemon 2>/dev/null || true)" = "activating" ]; then
-        exit 0
+    if command -v systemctl >/dev/null 2>&1; then
+        case "$(systemctl --user show -p ActiveState --value antigravity-cli-daemon 2>/dev/null || true)" in
+            activating|deactivating|reloading) exit 0 ;;
+        esac
     fi
 
     if ! is_active; then

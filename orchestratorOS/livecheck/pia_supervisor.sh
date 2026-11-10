@@ -44,11 +44,21 @@ prewarm_dns() {
     fi
 }
 
-discover_regions() {
-    ensure_dedicated_ips_registered
-    REG_DED_DE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-de-frankfurt" || true)
-    REG_DED_BE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-belgium" || true)
+query_regions() {
+    local regions_list
+    regions_list="$(pia get regions 2>/dev/null || true)"
+    REG_DED_DE=$(printf '%s\n' "$regions_list" | grep -m1 "^dedicated-de-frankfurt" || true)
+    REG_DED_BE=$(printf '%s\n' "$regions_list" | grep -m1 "^dedicated-belgium" || true)
     REG_DYN_DE="de-frankfurt"
+}
+
+discover_regions() {
+    query_regions
+    if { [ -n "${PIA_DIP_TOKEN_FRANKFURT:-}" ] && [ -z "$REG_DED_DE" ]; } \
+       || { [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ] && [ -z "$REG_DED_BE" ]; }; then
+        ensure_dedicated_ips_registered
+        query_regions
+    fi
 }
 
 connect_to_region() {
@@ -125,15 +135,24 @@ try_fallback_switch() {  # $1=region $2=desc $3=fail_title $4=fail_body $5=ok_ti
 
 establish_vpn_tunnel() {
     discover_regions
-    local cur_reg
+    local cur_reg cur_state
     cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
     if [ -n "$REG_DED_DE" ]; then
         if [ -n "$cur_reg" ] && [ "$cur_reg" != "$REG_DED_DE" ] && vpn_healthy && ! dip_endpoint_reachable "$REG_DED_DE"; then
             echo "Already connected and healthy on fallback region '$cur_reg' while Primary Frankfurt DIP ($REG_DED_DE) endpoint :1337 is unreachable; keeping '$cur_reg'."
             return 0
         fi
-        connect_to_region "$REG_DED_DE" "Frankfurt Dedicated IP" && return 0
-        echo "Frankfurt Dedicated IP ($REG_DED_DE) failed."
+        cur_state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
+        if [ -n "$cur_state" ] && [ "$cur_state" != "Disconnected" ] && ! vpn_healthy; then
+            pia disconnect >/dev/null 2>&1 || true
+            sleep 2
+        fi
+        if dip_endpoint_reachable "$REG_DED_DE"; then
+            connect_to_region "$REG_DED_DE" "Frankfurt Dedicated IP" && return 0
+            echo "Frankfurt Dedicated IP ($REG_DED_DE) failed."
+        else
+            echo "Frankfurt Dedicated IP ($REG_DED_DE) endpoint :1337 is unreachable; skipping directly to fallback."
+        fi
     fi
     try_fallback_switch "$REG_DED_BE" "Belgium Dedicated IP" \
         "PIA VPN: Frankfurt DIP Failed" "Frankfurt Dedicated IP failed. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." \
@@ -171,19 +190,21 @@ enter_isp_cooldown() {
         "Cooldown (${current_cooldown_sec}s) elapsed. Attempting PIA recovery across fallback ladder..." "default"
 }
 
-# --- Diagnostic / Manual Tool Mode ---
+# --- Diagnostic / Manual Tool Mode (strictly read-only) ---
 if [ "${1:-}" = "--check" ] || [ "${1:-}" = "-c" ] || [ "${1:-}" = "--status" ]; then
     echo "=== PIA VPN Manual Status Check ==="
     state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
     vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
     region=$(pia get region 2>/dev/null | tr -d '\r')
     port=$(pia get portforward 2>/dev/null | tr -d '\r')
-    discover_regions
+    query_regions
     echo "Connection State: ${state:-Unknown}"
     echo "VPN IP:           ${vpnip:-Unknown}"
     echo "Region:           ${region:-Unknown}"
     echo "Primary DIP:      ${REG_DED_DE:-Unknown}"
-    if [ -n "$REG_DED_DE" ] && [ "$region" = "$REG_DED_DE" ]; then
+    if [ "${state:-}" != "Connected" ]; then
+        echo "Region Role:      DISCONNECTED (No active VPN tunnel)"
+    elif [ -n "$REG_DED_DE" ] && [ "$region" = "$REG_DED_DE" ]; then
         echo "Region Role:      PRIMARY (Frankfurt Dedicated IP - Whitelisted)"
     elif [ -n "$REG_DED_BE" ] && [ "$region" = "$REG_DED_BE" ]; then
         echo "Region Role:      FALLBACK (Belgium Dedicated IP - Not Whitelisted on Binance)"
@@ -292,7 +313,10 @@ while true; do
                     current_restore_interval=$((current_restore_interval * 2))
                     [ "$current_restore_interval" -gt "$BACKOFF_MAX_SEC" ] && current_restore_interval="$BACKOFF_MAX_SEC"
                     echo "Primary Frankfurt DIP restoration attempt failed (next failback check in ${current_restore_interval}s). Re-connecting to fallback region ($prev_reg)..."
-                    connect_to_region "$prev_reg" "Fallback Region ($prev_reg)" || echo "Warning: Immediate return to fallback region failed, relying on supervisor fallback ladder."
+                    if ! connect_to_region "$prev_reg" "Fallback Region ($prev_reg)"; then
+                        echo "Warning: Immediate return to fallback region ($prev_reg) failed; invoking full fallback ladder..."
+                        establish_vpn_tunnel || failures="$FAILURE_LIMIT"
+                    fi
                 fi
             fi
         fi
@@ -310,6 +334,8 @@ while true; do
         recovered=0
 
         if [ -n "$REG_DED_DE" ] && [ "$current_reg" = "$REG_DED_DE" ]; then
+            pia disconnect >/dev/null 2>&1 || true
+            sleep 2
             if dip_endpoint_reachable "$REG_DED_DE" && connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP" 5; then
                 echo "Primary Frankfurt Dedicated IP ($REG_DED_DE) recovered via in-place session reset."
                 send_ntfy "PIA VPN: Frankfurt DIP Reset OK" "Primary Frankfurt Dedicated IP ($REG_DED_DE) recovered after in-place session reset." "default"

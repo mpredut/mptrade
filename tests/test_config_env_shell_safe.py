@@ -1535,6 +1535,162 @@ def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
     assert r_cap.returncode == 0 and 1.5 <= elapsed < 4.5
 
 
+def test_pia_audit_fixes_readonly_check_dip_priority_tunnel_stuck_and_notify_bypass(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    piactl_calls = tmp_path / "piactl_calls.log"
+
+    def write_stub(name: str, body: str) -> None:
+        p = fake_bin / name
+        p.write_text("#!/usr/bin/env bash\n" + body + "\n", encoding="utf-8")
+        p.chmod(0o755)
+
+    # Alphabetical regions list where dedicated-belgium appears BEFORE dedicated-de-frankfurt
+    write_stub(
+        "piactl",
+        f'printf "%s\\n" "$*" >> "{piactl_calls}"\n'
+        'case "${1:-} ${2:-}" in\n'
+        '  "get regions") printf "dedicated-belgium-212.102.35.157\\ndedicated-de-frankfurt-192.109.159.105\\nde-frankfurt\\n" ;;\n'
+        '  "get connectionstate") echo Disconnected ;;\n'
+        '  "get vpnip") echo Unknown ;;\n'
+        '  "get region") echo dedicated-belgium-212.102.35.157 ;;\n'
+        '  "get portforward") echo Inactive ;;\n'
+        '  "-v ") echo 3.7.2 ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac',
+    )
+    write_stub("ip", "exit 1")
+    write_stub("curl", "exit 1")
+
+    # 1. pia_preferred_dedicated_region selects Frankfurt DIP over Belgium DIP despite alphabetical sort
+    dip_cmd = (
+        f'export PATH="{fake_bin}:/usr/bin:/bin"; '
+        f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh")}"; '
+        f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh")}"; '
+        f'pia_preferred_dedicated_region'
+    )
+    r_dip = subprocess.run(["/bin/bash", "-c", dip_cmd], cwd=ROOT, capture_output=True, text=True, timeout=10)
+    assert r_dip.returncode == 0
+    assert r_dip.stdout.strip() == "dedicated-de-frankfurt-192.109.159.105"
+
+    # 2. pia_supervisor.sh --check is strictly read-only (never calls dedicatedip add or login) and reports DISCONNECTED
+    write_stub(
+        "piactl",
+        f'printf "%s\\n" "$*" >> "{piactl_calls}"\n'
+        'case "${1:-} ${2:-}" in\n'
+        '  "get regions") printf "de-frankfurt\\n" ;;\n'
+        '  "get connectionstate") echo Disconnected ;;\n'
+        '  "get vpnip") echo Unknown ;;\n'
+        '  "get region") echo de-frankfurt ;;\n'
+        '  "get portforward") echo Inactive ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac',
+    )
+    piactl_calls.write_text("", encoding="utf-8")
+    sup_script = os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh")
+    r_sup = subprocess.run(
+        ["/bin/bash", sup_script, "--check"],
+        cwd=ROOT,
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "PIA_DIP_TOKEN_FRANKFURT": "FAKE_TOKEN",
+            "PIA_USER": "u",
+            "PIA_PASS": "p",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert r_sup.returncode == 1
+    assert "Region Role:      DISCONNECTED" in r_sup.stdout
+    calls_text = piactl_calls.read_text(encoding="utf-8")
+    assert "dedicatedip" not in calls_text and "login" not in calls_text
+
+    # 3. manage_agy.sh is_tunnel_stuck handles 80-line file_watcher.go bursts and post-silence-timeout 1st failure
+    fake_home = tmp_path / "agy_home"
+    agy_cli_dir = fake_home / ".gemini" / "antigravity-cli"
+    agy_cli_dir.mkdir(parents=True)
+    log_file = agy_cli_dir / "cli.log"
+    write_stub("agy", "echo 'Antigravity CLI 1.4.0'")
+    write_stub("systemctl", "exit 1")
+
+    manage_agy = os.path.join(ROOT, "orchestratorOS", "admin", "manage_agy.sh")
+    noise = "".join(f"E1110 20:20:01.{i:06d} 89 file_watcher.go:194] skipping empty or temp file:\n" for i in range(80))
+
+    def check_stuck() -> int:
+        snippet = (
+            f'export HOME="{fake_home}" PATH="{fake_bin}:/usr/bin:/bin" XDG_RUNTIME_DIR="{tmp_path}"; '
+            f'eval "$(sed \'/^_MANAGE_AGY_LOCKED=0/,$d\' "{manage_agy}")"; '
+            f'is_tunnel_stuck'
+        )
+        return subprocess.run(["/bin/bash", "-c", snippet, manage_agy], cwd=ROOT, capture_output=True, text=True, timeout=10).returncode
+
+    # Single startup failure without prior Connected -> not stuck yet
+    log_file.write_text("W1110 20:00:01.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n" + noise, encoding="utf-8")
+    assert check_stuck() != 0
+
+    # Two consecutive failures diluted by 80 file_watcher.go lines -> stuck!
+    log_file.write_text(
+        "W1110 20:00:01.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        + noise
+        + "W1110 20:00:50.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        + noise,
+        encoding="utf-8",
+    )
+    assert check_stuck() == 0
+
+    # Connected -> inbound silence timeout (VPN IP switch) -> 1st Failed before open + 80 noise lines -> stuck immediately!
+    log_file.write_text(
+        "I1110 20:10:00.000000 1 remote_control_v2.go:1] Connection status: Connected\n"
+        "W1110 20:16:41.000000 1 client.go:478] No inbound traffic from server for 1m0s; assuming dead tunnel and closing\n"
+        "W1110 20:17:29.000000 1 remote_control_v2.go:1] Connection status: Failed before open\n"
+        + noise,
+        encoding="utf-8",
+    )
+    assert check_stuck() == 0
+
+    # Recovered to Connected -> healthy!
+    log_file.write_text(
+        log_file.read_text(encoding="utf-8")
+        + "I1110 20:20:10.000000 1 remote_control_v2.go:1] Connection status: Connected\n",
+        encoding="utf-8",
+    )
+    assert check_stuck() != 0
+
+    # 4. os_notify.sh bypasses active topic gate on mixed-case recovery titles ("PIA VPN: Recovered", "PIA VPN: Restored...")
+    notify_out = tmp_path / "notify_out.txt"
+    notify_cmd = f"""
+set -euo pipefail
+ROOT="{tmp_path}"
+mkdir -p "$ROOT/logs"
+env_get() {{ echo "${{2:-}}"; }}
+source "{os.path.join(ROOT, "orchestratorOS", "lib", "os_notify.sh")}"
+send_os_email() {{ :; }}
+curl() {{
+    local title=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -H)
+                case "$2" in Title:\\ *) title="${{2#Title: }}" ;; esac
+                shift 2 ;;
+            -d) shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf '%s\\n' "$title" >> "{notify_out}"
+    return 0
+}}
+export OS_NOTIFY_DEDUP_SECONDS=900 OS_NOTIFY_GATE_SECONDS=300 OS_NOTIFY_TOPIC_BULK_SECONDS=300
+send_os_ntfy "PIA VPN: Frankfurt DIP Failed" "Falling back to Belgium" "high" "ntfy-error-test"
+send_os_ntfy "PIA VPN: Restored to Primary DIP" "Frankfurt DIP back" "default" "ntfy-error-test"
+"""
+    subprocess.run(["/bin/bash", "-c", notify_cmd], cwd=ROOT, check=True, timeout=10)
+    sent_titles = notify_out.read_text(encoding="utf-8").splitlines()
+    assert "PIA VPN: Frankfurt DIP Failed" in sent_titles
+    assert "PIA VPN: Restored to Primary DIP" in sent_titles
+
+
+
 
 
 

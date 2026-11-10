@@ -163,12 +163,13 @@ def mode_pre(force: bool = False) -> int:
         except sqlite3.Error as e:
             log.warning("cannot read summary IDs from %s: %s", DB, e)
 
+    topic_cids = mirrored_topic_cids()
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
             name = os.path.basename(p2)
             cid = name[:-3]
-            if cid in known_cids:
+            if cid in known_cids or cid in topic_cids:
                 continue
             p1 = os.path.join(D1, name)
             checkpoint_db(p2)
@@ -241,6 +242,17 @@ def mode_pre(force: bool = False) -> int:
         mt[cid] = sec
 
     rows_fixed = repair_summaries(mt)
+    if os.path.isdir(ANN):
+        orphan_ann_dir = os.path.join(BACKUPS, stamp, "orphan_annotations")
+        for ann_path in sorted(glob.glob(os.path.join(glob.escape(ANN), "*.pbtxt"))):
+            ann_name = os.path.basename(ann_path)
+            ann_cid = ann_name[:-6]
+            if ann_cid not in mt and ann_cid not in topic_cids:
+                try:
+                    os.makedirs(orphan_ann_dir, exist_ok=True)
+                    shutil.move(ann_path, os.path.join(orphan_ann_dir, ann_name))
+                except OSError:
+                    pass
     log.info("pre: moved=%d unlinked=%d deleted=%d diverged=%d skipped=%d rows_fixed=%d visible_files=%d webrtc_mesh=%s",
              moved, unlinked, deleted, diverged, skipped, rows_fixed, len(mt), mesh_state)
     return 0
@@ -470,6 +482,36 @@ def topic_canonical_titles() -> dict[str, str]:
     return get_topic_canonical_titles(_effective_topic_registry())
 
 
+_GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
+_DAEMON_LOG_NOISE_MARKERS = (
+    "file_watcher.go",
+    "LoadTrajectory",
+    "GetSlashCommands",
+    "ensure trajectory",
+    "Monitor sir_flash_lite SKIPPED",
+    "Monitor severe_internal_risks_agy SKIPPED",
+)
+_DAEMON_ACTIVE_STREAM_MARKERS = (
+    "SEND_USER_CASCADE_MESSAGE",
+    "streamGenerateContent",
+    "LLM Monitor",
+    "Monitor agy_tool_safety",
+)
+
+
+def _glog_rel_ts(line: str) -> float | None:
+    m = _GLOG_TS_RE.match(line)
+    if not m:
+        return None
+    try:
+        from datetime import datetime, timezone
+        mo, dy, hh, mm, ss, us_raw = m.groups()
+        us = int((us_raw or "0")[:6].ljust(6, "0"))
+        return datetime(2024, int(mo), int(dy), int(hh), int(mm), int(ss), us, tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
 def last_store_activity() -> float:
     """Newest mtime of interactive conversation content, active WAL writes, daemon Web UI stream, or brain artifacts."""
     ignored = mirrored_topic_cids()
@@ -525,22 +567,31 @@ def last_store_activity() -> float:
     if os.path.isdir(LOGS):
         try:
             cli_logs = sorted(glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")), key=os.path.getmtime, reverse=True)
-            if cli_logs:
-                latest_log = cli_logs[0]
-                txt = read_text_file(latest_log, default="", errors="ignore")
+            for candidate_log in cli_logs[:10]:
+                txt = read_text_file(candidate_log, default="", errors="ignore")
+                if not txt or ("Connection status:" not in txt and "summary store: reconciliation complete" not in txt):
+                    continue
                 conn_idx = txt.rfind("Connection status: Connected")
                 if conn_idx >= 0:
-                    tail = txt[conn_idx:]
-                    recent_tail = "\n".join(tail.splitlines()[-2:])
-                    if any(
-                        marker in recent_tail
-                        for marker in (
-                            "SEND_USER_CASCADE_MESSAGE",
-                            "streamGenerateContent",
-                            "LLM Monitor",
-                        )
-                    ):
-                        newest = max(newest, os.stat(latest_log).st_mtime)
+                    all_lines = txt[conn_idx:].splitlines()
+                    meaningful = [ln for ln in all_lines if not any(n in ln for n in _DAEMON_LOG_NOISE_MARKERS)]
+                    recent_lines = meaningful[-2:]
+                    matched_line = next(
+                        (ln for ln in reversed(recent_lines) if any(mk in ln for mk in _DAEMON_ACTIVE_STREAM_MARKERS)),
+                        None,
+                    )
+                    if matched_line is not None:
+                        log_mtime = os.stat(candidate_log).st_mtime
+                        t_match = _glog_rel_ts(matched_line)
+                        t_last = next((t for ln in reversed(all_lines) if (t := _glog_rel_ts(ln)) is not None), None)
+                        if t_match is not None and t_last is not None:
+                            delta = t_last - t_match
+                            if delta < -86400 * 180:
+                                delta += 86400 * 366
+                            if 0.0 <= delta <= 86400 * 30:
+                                log_mtime -= delta
+                        newest = max(newest, log_mtime)
+                break
         except OSError:
             pass
     brain = os.path.join(CLI, "brain")

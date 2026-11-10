@@ -29,8 +29,6 @@ REINSTALL_MARK="$STATE_DIR/last_reinstall"
 SPOOL_MAX_BYTES="${PIA_SPOOL_MAX_BYTES:-262144}"
 LOCK="/tmp/pia_selfheal.lock"
 
-pia_ensure_ipv6_disabled "ens18"
-
 TRADING_USER="${TRADING_USER:-$(stat -c %U "$ROOT")}"
 id "$TRADING_USER" >/dev/null 2>&1 || { echo "invalid repository owner/trading user: $TRADING_USER" >&2; exit 1; }
 TRADING_USER_HOME="$(getent passwd "$TRADING_USER" | cut -d: -f6)"
@@ -90,7 +88,8 @@ resolved_cpu_percent() {
 check_resolved_cpu() {
     local cpu count_file="$STATE_DIR/resolved_high_cpu_count" count=0
     cpu=$(resolved_cpu_percent) || { log "WARNING: cannot sample systemd-resolved CPU"; return 0; }
-    [ -f "$count_file" ] && read -r count < "$count_file"
+    [ -f "$count_file" ] && { read -r count < "$count_file" || true; }
+    [[ "${count:-}" =~ ^[0-9]+$ ]] || count=0
     if awk -v cpu="$cpu" -v threshold="$PIA_RESOLVED_CPU_THRESHOLD" 'BEGIN { exit !(cpu >= threshold) }'; then
         count=$((count + 1)); printf '%s\n' "$count" > "$count_file"
         log "systemd-resolved CPU high: ${cpu}% (${count}/${PIA_RESOLVED_CPU_CONSECUTIVE})"
@@ -209,8 +208,8 @@ will return -2015. Generate a new token from the PIA account (the Dedicated IP s
         fi
     fi
 
-    local dedicated
-    dedicated=$(pia get regions | grep -m1 '^dedicated-')
+    local dedicated=""
+    dedicated=$(pia_preferred_dedicated_region || true)
     pia set protocol wireguard >/dev/null
     pia set region "${dedicated:-$FALLBACK_REGION}" >/dev/null
     pia set requestportforward true >/dev/null
@@ -229,9 +228,11 @@ rung_relogin() {
     sleep 2
     ensure_dedicated_ips_registered >/dev/null 2>&1 || true
 
-    local dedicated
-    dedicated=$(pia get regions | grep -m1 '^dedicated-de-frankfurt' || pia get regions | grep -m1 '^dedicated-belgium' || pia get regions | grep -m1 '^dedicated-')
+    local dedicated=""
+    dedicated=$(pia_preferred_dedicated_region || true)
+    pia set protocol wireguard >/dev/null 2>&1 || true
     pia set region "${dedicated:-${PIA_FALLBACK_REGION:-auto}}" >/dev/null
+    pia set requestportforward true >/dev/null 2>&1 || true
     pia connect >/dev/null
     return 0
 }
@@ -248,6 +249,7 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
     fi
     local last=0
     [ -f "$REINSTALL_MARK" ] && last=$(cat "$REINSTALL_MARK" 2>/dev/null || echo 0)
+    [[ "${last:-}" =~ ^[0-9]+$ ]] || last=0
     local age=$(( $(date +%s) - last ))
     if [ "$age" -lt "$REINSTALL_COOLDOWN" ]; then
         log "rung 5: SKIPPED (reinstalled $((age/3600))h ago, cooldown $((REINSTALL_COOLDOWN/3600))h)"
@@ -301,8 +303,6 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
 }
 
 # ===== EXECUTION ==========================================================
-mkdir -p "$STATE_DIR" 2>/dev/null
-
 if [ "$CHECK_ONLY" = 1 ]; then
     echo "=== vpn_watchdog --check (read-only) ==="
     echo "  PIA version    : $(pia -v)"
@@ -311,13 +311,16 @@ if [ "$CHECK_ONLY" = 1 ]; then
     echo "  region         : $(pia get region)"
     echo "  vpnip          : $(pia get vpnip)"
     echo "  vpn iface      : $(ip -brief addr show "$VPN_IF" 2>&1 | head -1)"
-    echo "  dedicated IP   : $(pia get regions | grep -m1 '^dedicated-' || echo 'NOT REGISTERED')"
+    echo "  dedicated IP   : $(pia_preferred_dedicated_region || echo 'NOT REGISTERED')"
     echo "  raw internet   : $(net_raw_ok && echo OK || echo DOWN)"
     echo "  vpn_healthy    : $(vpn_healthy && echo YES || echo NO)"
     echo "  resolved CPU   : $(resolved_cpu_percent 2>/dev/null || echo unavailable)%"
     echo "  spooled alerts : $([ -f "$SPOOL" ] && wc -l < "$SPOOL" || echo 0)"
     exit 0
 fi
+
+mkdir -p "$STATE_DIR" 2>/dev/null
+pia_ensure_ipv6_disabled "${PIA_UPLINK_IF:-ens18}"
 
 exec 9>"$LOCK"
 flock -n 9 || { log "already running (lock $LOCK) — exiting"; exit 0; }
@@ -338,7 +341,9 @@ fi
 
 if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
     if [ -f "$OUTAGE_MARK" ]; then
-        mins=$(( ( $(date +%s) - $(cat "$OUTAGE_MARK") ) / 60 ))
+        outage_ts=$(cat "$OUTAGE_MARK" 2>/dev/null || true)
+        [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
+        mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
         rm -f "$OUTAGE_MARK"
         alert "PIA restored ($(hostname))" \
 "The tunnel works again after ${mins} min of downtime.
@@ -375,8 +380,12 @@ fi
 BACKOFF_FILE="$STATE_DIR/pia_backoff"
 NOW=$(date +%s)
 if [ "$FORCE" = 0 ] && [ -f "$BACKOFF_FILE" ]; then
-    . "$BACKOFF_FILE"
-    if [ "$NOW" -lt "${NEXT_RETRY:-0}" ]; then
+    CURRENT_BACKOFF=30
+    NEXT_RETRY=0
+    . "$BACKOFF_FILE" 2>/dev/null || true
+    [[ "${NEXT_RETRY:-}" =~ ^[0-9]+$ ]] || NEXT_RETRY=0
+    [[ "${CURRENT_BACKOFF:-}" =~ ^[0-9]+$ ]] && [ "$CURRENT_BACKOFF" -gt 0 ] || CURRENT_BACKOFF=30
+    if [ "$NOW" -lt "$NEXT_RETRY" ]; then
         wait_mins=$(( (NEXT_RETRY - NOW) / 60 ))
         log "VPN UNHEALTHY but in exponential backoff. Next retry in ${wait_mins}m. Deferring to polling."
         exit 0
@@ -389,6 +398,16 @@ fi
 
 [ -f "$OUTAGE_MARK" ] || date +%s > "$OUTAGE_MARK"
 log "VPN UNHEALTHY (state=$(pia get connectionstate) daemon=$(daemon_responsive && echo ok || echo wedged)) — starting the recovery ladder"
+
+_ensure_pia_service_restarted() {
+    local st
+    st=$(systemctl show -p ActiveState --value pia.service 2>/dev/null || echo "")
+    if [ "$st" != "active" ] && [ "$st" != "activating" ]; then
+        systemctl reset-failed pia.service >/dev/null 2>&1 || true
+        systemctl start pia.service >/dev/null 2>&1 || true
+    fi
+}
+trap '_ensure_pia_service_restarted' EXIT
 
 systemctl stop pia.service >/dev/null 2>&1
 
@@ -406,7 +425,9 @@ fi
 for rung in $LADDER; do
     "$rung" || continue
     if wait_healthy; then
-        mins=$(( ( $(date +%s) - $(cat "$OUTAGE_MARK" 2>/dev/null || date +%s) ) / 60 ))
+        outage_ts=$(cat "$OUTAGE_MARK" 2>/dev/null || true)
+        [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
+        mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
         rm -f "$OUTAGE_MARK" "$BACKOFF_FILE"
         log "RECOVERED at $rung (vpnip=$(pia get vpnip))"
         alert "PIA repaired automatically ($(hostname))" \

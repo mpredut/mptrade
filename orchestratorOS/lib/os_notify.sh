@@ -98,13 +98,15 @@ send_os_ntfy() {
                     should_buffer=1
                 fi
             fi
-            case "$title" in
-                *RECOVERED*|*repaired*|*RESTORED*)
+            case "${title,,}" in
+                *recovered*|*repaired*|*restored*|*reconnected*|*revived*)
                     should_buffer=0
                     local rec_prefix="${title% RECOVERED*}"
                     rec_prefix="${rec_prefix% RESTORED*}"
+                    rec_prefix="${rec_prefix%: Recovered*}"
+                    rec_prefix="${rec_prefix%: Restored*}"
                     if [ -n "$rec_prefix" ] && [ "$rec_prefix" != "$title" ] && [ -f "$bulk_file" ]; then
-                        if grep -vF "${rec_prefix} FAILED:" "$bulk_file" > "${bulk_file}.tmp" 2>/dev/null; then
+                        if grep -viF "${rec_prefix}" "$bulk_file" > "${bulk_file}.tmp" 2>/dev/null; then
                             mv -f "${bulk_file}.tmp" "$bulk_file"
                         else
                             rm -f "$bulk_file" "${bulk_file}.tmp"

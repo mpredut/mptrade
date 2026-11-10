@@ -41,9 +41,9 @@ vpn_healthy() {
 
   local binance_ip=""
   if command -v resolvectl >/dev/null 2>&1; then
-    binance_ip=$(timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+    binance_ip=$(timeout 4 resolvectl query --cache=no --type=A -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
   else
-    binance_ip=$(timeout 4 getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
+    binance_ip=$(timeout 4 getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}' || true)
   fi
   [ -n "$binance_ip" ] || return 1
 
@@ -74,7 +74,7 @@ pia_supervisor_owning_tunnel() {
   [ "$st" = "activating" ] && return 0
   [ "$st" = "active" ] || return 1
   if [ -r "$PIA_SUPERVISOR_STATE_FILE" ]; then
-    sup_ts=$(awk -F= '$1=="SUPERVISOR_TS"{print $2}' "$PIA_SUPERVISOR_STATE_FILE" 2>/dev/null | tr -cd '0-9')
+    sup_ts=$(awk -F= '$1=="SUPERVISOR_TS"{print $2}' "$PIA_SUPERVISOR_STATE_FILE" 2>/dev/null | tr -cd '0-9' || true)
     [ -n "$sup_ts" ] && [ $(( $(date +%s) - sup_ts )) -lt 180 ]
     return $?
   fi
@@ -145,4 +145,18 @@ pia_register_dip_if_needed() {  # $1=token $2=region_prefix $3=label
 ensure_dedicated_ips_registered() {
   pia_register_dip_if_needed "${PIA_DIP_TOKEN_FRANKFURT:-}" "dedicated-de-frankfurt" "Frankfurt"
   pia_register_dip_if_needed "${PIA_DIP_TOKEN_BELGIUM:-}" "dedicated-belgium" "Belgium"
+}
+
+pia_preferred_dedicated_region() {
+  local regions match=""
+  regions="$(pia get regions 2>/dev/null || true)"
+  [ -n "$regions" ] || return 1
+  for prefix in "^dedicated-de-frankfurt" "^dedicated-belgium" "^dedicated-"; do
+    match="$(printf '%s\n' "$regions" | grep -m1 "$prefix" || true)"
+    if [ -n "$match" ]; then
+      printf '%s\n' "$match"
+      return 0
+    fi
+  done
+  return 1
 }

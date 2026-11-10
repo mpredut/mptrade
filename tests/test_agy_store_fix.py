@@ -479,6 +479,95 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
 
 
+def test_mode_pre_protects_topic_cids_and_archives_orphan_annotations(store, tmp_path, monkeypatch):
+    import json
+
+    cli, d1, d2 = store
+    ann = cli / "annotations"
+    ann.mkdir(parents=True, exist_ok=True)
+    backups = tmp_path / "backups"
+    monkeypatch.setattr(asf, "ANN", str(ann))
+    monkeypatch.setattr(asf, "BACKUPS", str(backups))
+    monkeypatch.setattr(asf, "AGY_BIN", str(tmp_path / "nonexistent_agy"))
+    monkeypatch.setenv("AGY_FIX_HOME", str(tmp_path))
+
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DROP TABLE conversation_summaries")
+    conn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, title text, source text, status text, "
+        "not_fully_idle integer, raw_summary blob)"
+    )
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES ('kept-ui', 'UI Chat', '', 'CASCADE_RUN_STATUS_IDLE', 0, ?)",
+        (b"\x0a\x01t",),
+    )
+    conn.commit()
+    conn.close()
+
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps({"auto_cryptotrade_executor": {"conversation_id": "topic-perm"}}),
+        encoding="utf-8",
+    )
+    (d2 / "kept-ui.db").write_text("ui")
+    (d2 / "topic-perm.db").write_text("topic")
+    (d2 / "deleted-ui.db").write_text("deleted")
+    (ann / "kept-ui.pbtxt").write_text('title:"UI Chat"\n')
+    (ann / "topic-perm.pbtxt").write_text('title:"Topic"\n')
+    (ann / "stale-orphan.pbtxt").write_text('title:"Orphan"\n')
+
+    assert asf.mode_pre(force=True) == 0
+    # Kept UI conversation and permanent topic thread stay in D2; UI-deleted conversation is archived
+    assert (d2 / "kept-ui.db").exists()
+    assert (d2 / "topic-perm.db").exists()
+    assert not (d2 / "deleted-ui.db").exists()
+    # Orphan annotation without .db is archived into orphan_annotations, while active/topic annotations remain
+    assert (ann / "kept-ui.pbtxt").exists()
+    assert (ann / "topic-perm.pbtxt").exists()
+    assert not (ann / "stale-orphan.pbtxt").exists()
+    assert list(backups.rglob("orphan_annotations/stale-orphan.pbtxt"))
+
+
+def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(store):
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1500)
+
+    log_dir = cli / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    daemon_log = log_dir / "cli-20261110_202010.log"
+    noise = "".join(
+        f"E1110 21:06:58.{500000 + i:06d} 89 file_watcher.go:194] skipping empty or temp file:\n"
+        for i in range(40)
+    )
+    daemon_log.write_text(
+        "I1110 20:20:11.000000 1 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I1110 21:06:58.300000 2 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n"
+        + noise,
+        encoding="utf-8",
+    )
+    # Newer non-daemon CLI log (e.g. `agy remote-control status`) must NOT mask the active daemon stream
+    oneshot_log = log_dir / "cli-20261110_210659.log"
+    oneshot_log.write_text("I1110 21:06:59.000000 1 status.go:10] Remote-control status queried\n", encoding="utf-8")
+    now = time.time()
+    os.utime(daemon_log, (now - 1, now - 1))
+    os.utime(oneshot_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # If file_watcher.go appends noise 20 minutes AFTER streamGenerateContent (updating daemon_log mtime to now),
+    # the intra-log glog timestamp delta recognizes streamGenerateContent happened 20m ago -> UI_SYNC_READY!
+    daemon_log.write_text(
+        daemon_log.read_text(encoding="utf-8")
+        + "E1110 21:26:58.300000 89 file_watcher.go:194] skipping empty or temp file:\n",
+        encoding="utf-8",
+    )
+    os.utime(daemon_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+
 
 
 

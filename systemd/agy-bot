@@ -12,9 +12,12 @@ mkdir -p "$BOT_CLI" "$BOT_HOME/.gemini/config/projects" "$BOT_HOME/.config/antig
 [ -f "$BOT_CLI/settings.json" ] || cp -p "$REAL_CLI/settings.json" "$BOT_CLI/" 2>/dev/null
 cp -au "$REAL_HOME/.gemini/config/." "$BOT_HOME/.gemini/config/" 2>/dev/null
 cp -au "$REAL_HOME/.config/antigravity/." "$BOT_HOME/.config/antigravity/" 2>/dev/null
-# give the bot home the same login whenever the main one is newer (or missing)
+# give the bot home the same login whenever the main one is newer (or missing), atomically
 if [ -f "$REAL_CLI/antigravity-oauth-token" ] && { [ ! -f "$BOT_CLI/antigravity-oauth-token" ] || [ "$REAL_CLI/antigravity-oauth-token" -nt "$BOT_CLI/antigravity-oauth-token" ]; }; then
-  cp -p "$REAL_CLI/antigravity-oauth-token" "$BOT_CLI/antigravity-oauth-token" && chmod 600 "$BOT_CLI/antigravity-oauth-token"
+  _tmp_tok="$BOT_CLI/.antigravity-oauth-token.tmp.$$"
+  if cp -p "$REAL_CLI/antigravity-oauth-token" "$_tmp_tok" 2>/dev/null; then
+    chmod 600 "$_tmp_tok" && mv -f "$_tmp_tok" "$BOT_CLI/antigravity-oauth-token" || rm -f "$_tmp_tok"
+  fi
 fi
 export HOME="$BOT_HOME"
 exec "$REAL_HOME/.local/bin/agy" "$@"
