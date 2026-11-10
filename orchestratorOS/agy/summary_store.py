@@ -381,19 +381,6 @@ def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
     }
 
 
-def daemon_loaded_cids(cli_base: str) -> Set[str]:
-    """Return conversation IDs currently held in memory by the Web UI daemon (persisted in agyhub_summaries_proto.pb)."""
-    if not cli_base or not isinstance(cli_base, str):
-        return set()
-    data = read_bytes_file(os.path.join(cli_base, SUMMARIES_PB_FILES[0]), default=None)
-    if not data:
-        return set()
-    try:
-        return list_entry_cids(data)
-    except ValueError:
-        return set()
-
-
 def daemon_loaded_titles(cli_base: str) -> dict[str, str]:
     """Map conversation IDs held in memory by the Web UI daemon to their persisted annotation titles."""
     out: dict[str, str] = {}
@@ -479,7 +466,14 @@ def delete_threads(
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return (0, 0)
-    deferred_cids = (clean_cids & daemon_loaded_cids(cli_base)) if defer_ui else set()
+    loaded_cids: Set[str] = set()
+    if defer_ui and cli_base and isinstance(cli_base, str):
+        if pb_data := read_bytes_file(os.path.join(cli_base, SUMMARIES_PB_FILES[0]), default=None):
+            try:
+                loaded_cids = list_entry_cids(pb_data)
+            except ValueError:
+                loaded_cids = set()
+    deferred_cids = (clean_cids & loaded_cids) if defer_ui else set()
     immediate_cids = clean_cids - deferred_cids
     vis_dir = _visible_dir_if_cli_store(cli_base)
     freed = 0

@@ -76,7 +76,6 @@ from .intent_state import (
     save_durable_intents_state,
     upsert_durable_intent,
     validate_and_build_intent_dict,
-    venue_native_client_order_ids,
 )
 from .order_ohlc_utils import (
     ClosedPriceSeries,

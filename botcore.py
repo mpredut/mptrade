@@ -898,15 +898,12 @@ def _urlopen_json(req: urllib.request.Request, timeout: float) -> object:
         return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
 
 
-def _fetch_public_json_impl(
+def fetch_public_json(
     url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> object:
     """Fetch and decode a JSON payload from a public HTTP GET endpoint."""
     req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
     return _urlopen_json(urllib.request.Request(url, headers=req_headers), timeout)
-
-
-fetch_public_json = globals().get("fetch_public_json") or _fetch_public_json_impl
 
 
 def fetch_json_post(

@@ -121,9 +121,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
 
-    def _save_dual_cache(self, prefix: str, payload: Dict[str, Any]) -> None:
-        save_json_state(os.path.join(self.cache_dir, f"{prefix}_collect.json"), payload, indent=2)
-
     def _resolve_step_now(self, now: Optional[float] = None) -> Optional[float]:
         if now is not None:
             return safe_pos_float(now, default=None)
@@ -166,8 +163,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             )
             if snap:
                 idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
-                self._save_dual_cache(
-                    "fear_greed",
+                save_json_state(
+                    os.path.join(self.cache_dir, "fear_greed_collect.json"),
                     {
                         "value": snap.value,
                         "sentiment": snap.classification,
@@ -179,6 +176,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "index_timestamp": idx_ts,
                         "ts": now_val,
                     },
+                    indent=2,
                 )
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
                 return True
@@ -224,7 +222,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 ):
                     if (rot_v := getattr(breadth, rot_k, None)) is not None:
                         mb_payload[rot_k] = rot_v
-                self._save_dual_cache("market_breadth", mb_payload)
+                save_json_state(os.path.join(self.cache_dir, "market_breadth_collect.json"), mb_payload, indent=2)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:

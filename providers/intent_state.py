@@ -90,16 +90,11 @@ def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
     return f"AI_{cid_body}"
 
 
-def venue_native_client_order_ids(client_order_id: Any) -> set[str]:
-    """Return the lowercase venue-native forms of one durable client ID (Binance raw, Kraken UUID hex, HL cloid)."""
-    return all_venue_native_client_order_ids(client_order_id)
-
-
 def intent_venue_client_order_ids(intent: Any) -> set[str]:
     """Return all lowercase venue-native client IDs an autonomous intent's order may carry on any venue."""
     if not isinstance(intent, dict):
         return set()
-    return venue_native_client_order_ids(ai_intent_client_order_id(_extract_intent_id(intent)))
+    return all_venue_native_client_order_ids(ai_intent_client_order_id(_extract_intent_id(intent)))
 
 
 def _intent_order_ids(item: dict[str, Any]) -> set[str]:
@@ -561,5 +556,4 @@ __all__ = [
     "save_durable_intents_state",
     "upsert_durable_intent",
     "validate_and_build_intent_dict",
-    "venue_native_client_order_ids",
 ]

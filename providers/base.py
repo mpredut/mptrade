@@ -614,9 +614,6 @@ class MarketDataProvider(ABC):
             return getattr(prov_cls, attr)
         return getattr(self, attr, default)
 
-    def _resolve_capability_flag(self, attr: str) -> bool:
-        return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
-
     def default_quote_asset(self) -> Optional[str]:
         """Return default quote asset when a venue symbol omits explicit quote suffix."""
         val = MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None)
@@ -624,15 +621,15 @@ class MarketDataProvider(ABC):
 
     def requires_cache_permit(self) -> bool:
         """Return whether this provider enforces account-cache submit permits."""
-        return self._resolve_capability_flag("_REQUIRES_CACHE_PERMIT")
+        return bool(MarketDataProvider._resolve_provider_attr(self, "_REQUIRES_CACHE_PERMIT", False))
 
     def defers_smart_cancellation(self) -> bool:
         """Return whether opposing order cancellation is deferred until dispatch."""
-        return self._resolve_capability_flag("_DEFERS_SMART_CANCELLATION")
+        return bool(MarketDataProvider._resolve_provider_attr(self, "_DEFERS_SMART_CANCELLATION", False))
 
     def supports_business_minimum(self) -> bool:
         """Return whether this provider enforces venue business minimum rules."""
-        return self._resolve_capability_flag("_SUPPORTS_BUSINESS_MINIMUM")
+        return bool(MarketDataProvider._resolve_provider_attr(self, "_SUPPORTS_BUSINESS_MINIMUM", False))
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""

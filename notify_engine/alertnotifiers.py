@@ -935,14 +935,6 @@ def _is_provider_daily_limit(response: Any) -> bool:
     return "42908" in body or "daily" in body
 
 
-def _webhook_json_default(obj: Any) -> Any:
-    if hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    return str(obj)
-
-
 def _emit_orchestrator_intent(payload: dict[str, Any], *, default: Any = None) -> bool:
     sys.stdout.write(json.dumps(payload, default=default) + "\n")
     sys.stdout.flush()
@@ -1209,7 +1201,11 @@ class AlertNotifier:
                         for a in alerts
                     ],
                 },
-                default=_webhook_json_default,
+                default=lambda obj: (
+                    obj.to_dict()
+                    if hasattr(obj, "to_dict")
+                    else (obj.isoformat() if isinstance(obj, datetime) else str(obj))
+                ),
             )
         from notify_engine.server import NotificationServer
         return NotificationServer().dispatch_alerts(list(alerts), webhook_url=webhook_url)

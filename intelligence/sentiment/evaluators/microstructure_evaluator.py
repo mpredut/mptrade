@@ -56,7 +56,7 @@ def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any
     return next((val for cand in variants if isinstance((val := casefold_get(mapping, cand)), dict)), default)
 
 
-def _scope_cand_keys(sym: str, raw_cands: Any) -> Tuple[str, ...]:
+def _scope_candidate_keys(sym: str, raw_cands: Any) -> Tuple[str, ...]:
     """Filter symbol candidate variants so US equities (`_EQ`/`_US_EQ`) and crypto pairs never cross-contaminate."""
     is_eq_sym = str(sym or "").strip().upper().endswith(("_EQ", "_US_EQ"))
     return tuple(
@@ -992,7 +992,7 @@ def enrich_cross_venue_trends(
         if not isinstance(entry, dict):
             continue
         sym_quotes = compatible_quote_suffixes(sym)
-        cand_keys = _scope_cand_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True))
+        cand_keys = _scope_candidate_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True))
         has_slopes = any(entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
 
         if not has_slopes and trends_items_map:
@@ -1215,7 +1215,7 @@ def sync_sibling_symbol_telemetry(
         if not isinstance(pinfo, dict):
             continue
         sym_quotes = compatible_quote_suffixes(sym)
-        for cand in _scope_cand_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True)):
+        for cand in _scope_candidate_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True)):
             if cand == sym:
                 continue
             cand_same_quote_family = compatible_quote_suffixes(cand) == sym_quotes
@@ -1306,7 +1306,7 @@ def sync_sibling_symbol_telemetry(
         msym_quotes = compatible_quote_suffixes(msym)
         p_match = _first_variant_dict(
             prices_and_trends,
-            _scope_cand_keys(
+            _scope_candidate_keys(
                 msym,
                 cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
             ),

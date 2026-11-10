@@ -535,25 +535,6 @@ class NotificationServer:
             return lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
         return "\n".join(lines)
 
-    @staticmethod
-    def _decode_intent_payload(line: str) -> dict | None:
-        intent_pos = line.find("__orchestrator_intent__")
-        brace_idx = line.rfind("{", 0, intent_pos)
-        payload = None
-        if brace_idx != -1:
-            try:
-                payload, _ = json.JSONDecoder().raw_decode(line, brace_idx)
-            except json.JSONDecodeError:
-                payload = None
-        if payload is None:
-            start_idx = line.find("{")
-            end_idx = line.rfind("}")
-            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                payload = json.loads(line[start_idx:end_idx + 1])
-            else:
-                payload = json.loads(line)
-        return payload if isinstance(payload, dict) else None
-
     def process_line(self, line: str, bot_name: str):
         if not isinstance(line, str) or isinstance(line, bool):
             return
@@ -599,7 +580,23 @@ class NotificationServer:
         # 1. Check for Explicit AlertNotifier Intent (JSON)
         if "__orchestrator_intent__" in line:
             try:
-                payload = self._decode_intent_payload(line)
+                intent_pos = line.find("__orchestrator_intent__")
+                brace_idx = line.rfind("{", 0, intent_pos)
+                payload = None
+                if brace_idx != -1:
+                    try:
+                        payload, _ = json.JSONDecoder().raw_decode(line, brace_idx)
+                    except json.JSONDecodeError:
+                        payload = None
+                if payload is None:
+                    start_idx = line.find("{")
+                    end_idx = line.rfind("}")
+                    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                        payload = json.loads(line[start_idx:end_idx + 1])
+                    else:
+                        payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    payload = None
                 intent = payload.get("__orchestrator_intent__") if payload else None
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload

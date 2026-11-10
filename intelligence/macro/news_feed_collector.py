@@ -293,25 +293,6 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
-    def _save_history(self) -> None:
-        hist_file = self._effective_history_file()
-        try:
-            payload = [
-                {
-                    "title": h.title,
-                    "source": h.source,
-                    "pub_date": h.pub_date,
-                    "url": h.url,
-                    "matched_keywords": list(h.matched_keywords),
-                    "is_high_severity": h.is_high_severity,
-                    "first_seen_ts": ts,
-                }
-                for _, (ts, h) in self._aggregated_pool.items()
-            ]
-            save_json_state(hist_file, payload, indent=2)
-        except Exception as e:
-            logger.debug("Could not save news history to %s: %s", hist_file, e)
-
     def _CacheDirOrNone(self) -> Optional[str]:
         try:
             return self._cache_dir()
@@ -572,7 +553,23 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                         ),
                     )
 
-        self._save_history()
+        hist_file = self._effective_history_file()
+        try:
+            payload = [
+                {
+                    "title": h.title,
+                    "source": h.source,
+                    "pub_date": h.pub_date,
+                    "url": h.url,
+                    "matched_keywords": list(h.matched_keywords),
+                    "is_high_severity": h.is_high_severity,
+                    "first_seen_ts": ts,
+                }
+                for _, (ts, h) in self._aggregated_pool.items()
+            ]
+            save_json_state(hist_file, payload, indent=2)
+        except Exception as e:
+            logger.debug("Could not save news history to %s: %s", hist_file, e)
         return self._build_pool_snapshot(self._aggregated_pool.values(), now, cache_dir)
 
     def get_pool_snapshot(self, now_ts: Optional[float] = None) -> NewsFeedSnapshot:

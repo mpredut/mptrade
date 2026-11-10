@@ -1604,7 +1604,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         if not isinstance(snap, dict):
             return None
         try:
-            return pw.eval_short_trend_direction(snap)
+            if pw.eval_short_trend_upward(snap):
+                return "up"
+            inv_snap = dict(snap)
+            for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
+                val = safe_float(inv_snap.get(key), default=None)
+                if val is not None:
+                    inv_snap[key] = -val
+            return "down" if pw.eval_short_trend_upward(inv_snap) else "flat"
         except Exception:
             return None
 

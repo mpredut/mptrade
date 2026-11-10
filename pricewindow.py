@@ -91,23 +91,6 @@ def eval_short_trend_upward(
     return eps == 0.0 and gradient > 0
 
 
-def eval_short_trend_direction(
-    snap: object, *, upward_epsilon_k: float = UPWARD_EPSILON_K
-) -> str | None:
-    """Evaluate short-trend direction ('up', 'down', or 'flat') from a trend snapshot dict."""
-    if not isinstance(snap, dict):
-        return None
-    if eval_short_trend_upward(snap, upward_epsilon_k=upward_epsilon_k):
-        return "up"
-    inv_snap = dict(snap)
-    for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
-        val = safe_float(inv_snap.get(key), default=None)
-        if val is not None:
-            inv_snap[key] = -val
-    if eval_short_trend_upward(inv_snap, upward_epsilon_k=upward_epsilon_k):
-        return "down"
-    return "flat"
-
 # -- Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) --
 # Direct Step-WOLS estimator on raw price increments:
 #   growth_coefficient = sum(k^p * dy_k) / sum(k^p)

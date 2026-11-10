@@ -229,7 +229,7 @@ class HLClient:
         return (c,) if base.casefold() == c.casefold() else (c, base)
 
     @classmethod
-    def _coin_cand_cfs(cls, coin: str) -> set[str]:
+    def _coin_candidate_cfs(cls, coin: str) -> set[str]:
         return {c.casefold() for c in cls._coin_candidates(coin)}
 
     def sz_decimals(self, coin: str) -> int:
@@ -307,7 +307,7 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return 0.0, 0.0
         coin = coin.strip()
-        cand_cfs = self._coin_cand_cfs(coin)
+        cand_cfs = self._coin_candidate_cfs(coin)
         p = next(
             (
                 pos
@@ -349,7 +349,7 @@ class HLClient:
         if coin is not None:
             if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
                 return []
-            cand_cfs = self._coin_cand_cfs(coin)
+            cand_cfs = self._coin_candidate_cfs(coin)
         oo = self.info.open_orders(self.address)
         if not isinstance(oo, list):
             raise HLError(f"Invalid open_orders payload: {type(oo).__name__}")
@@ -406,7 +406,7 @@ class HLClient:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return None
-        cand_cfs = self._coin_cand_cfs(coin)
+        cand_cfs = self._coin_candidate_cfs(coin)
         try:
             meta, ctxs = self.info.meta_and_asset_ctxs()
             universe = (meta.get("universe") or []) if isinstance(meta, dict) else []

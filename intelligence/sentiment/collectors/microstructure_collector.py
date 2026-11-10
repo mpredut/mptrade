@@ -323,7 +323,7 @@ def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
     )
 
 
-def _cand_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
+def _candidate_cache_paths(cachedb_dir: str, *basenames: str) -> list[str]:
     return [
         p
         for bn in basenames
@@ -399,7 +399,7 @@ def _load_raw_archive_and_watcher_series(
             else (f_365, f_365_legacy, f_sparse)
         )
         cand_arch: list = []
-        for arch_path in _cand_cache_paths(cachedb_dir, *primary_names):
+        for arch_path in _candidate_cache_paths(cachedb_dir, *primary_names):
             if rows := _read_archive_series_file(arch_path, cands, cands_upper, cands_upper_tup, _rj, is_default_rj):
                 cand_arch = rows
                 break
@@ -408,7 +408,7 @@ def _load_raw_archive_and_watcher_series(
             a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
             arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
             if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
-                for sp_path in _cand_cache_paths(
+                for sp_path in _candidate_cache_paths(
                     cachedb_dir,
                     f_sparse,
                     f_365,
@@ -433,7 +433,7 @@ def _load_raw_archive_and_watcher_series(
     watcher_cutoff_24h: Optional[float] = None
     watcher_7d_pts: list = []
     if not archive_pts and need_24h_supplement and not has_series_24h:
-        for w_path in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
+        for w_path in _candidate_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
             if not os.path.exists(w_path):
                 continue
             w_raw = lookup_symbol_cache_items(
@@ -1819,7 +1819,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             try:
                 memo_key = (os.path.abspath(str(cachedb_dir)), sym_u, bool(include_7d), tuple(eff_quotes))
                 stat_list = []
-                for sp in _cand_cache_paths(
+                for sp in _candidate_cache_paths(
                     cachedb_dir,
                     *(Cache24PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
@@ -1834,7 +1834,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                         except OSError:
                             pass
                 if not stat_list:
-                    for w_sp in _cand_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
+                    for w_sp in _candidate_cache_paths(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME):
                         try:
                             st = os.stat(w_sp)
                             stat_list.append((w_sp, st.st_mtime_ns, st.st_size))
@@ -1859,12 +1859,12 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         series_24h: list = []
         span_24h_ms = 0.0
         for cand in cands:
-            for p24_path in _cand_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
+            for p24_path in _candidate_cache_paths(cachedb_dir, Cache24PriceManager.disk_filename_for_symbol(cand)):
                 if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                     continue
                 raw_ser = sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
                 if is_eq_sym_load and len(raw_ser) >= 2:
-                    for ohlc24_path in _cand_cache_paths(cachedb_dir, f"cache_ohlc_24h_{cand}.json"):
+                    for ohlc24_path in _candidate_cache_paths(cachedb_dir, f"cache_ohlc_24h_{cand}.json"):
                         if not os.path.exists(ohlc24_path):
                             continue
                         ohlc24_obj = _rj(ohlc24_path)
