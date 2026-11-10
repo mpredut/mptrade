@@ -656,6 +656,11 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                     cron_active = False
                     sched_task_id = ""
                     sched_calls = 0
+                elif re.search(r"\(iteration\s+\d+\)\s*$", content):
+                    cron_active = True
+                    m_sender = re.search(r"\bsender=(\S+)", content)
+                    if m_sender:
+                        sched_task_id = m_sender.group(1).strip()
                 else:
                     m_sender = re.search(r"\bsender=(\S+)", content)
                     sender_id = m_sender.group(1).strip() if m_sender else ""
@@ -706,9 +711,9 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                         sched_task_id = ""
                         awaiting_sched_task_id = True
         if cron_active or now < oneshot_until:
-            # Autonomous repeating loops (multiple schedule calls or user input > 30m ago) must not permanently block UI sync
+            # Autonomous repeating loops (multiple schedule calls or user input > 30m ago on one-shot timers) must not permanently block UI sync
             is_repeating_loop = sched_calls >= 2
-            is_stale_user_input = latest_user_input_ts > 0.0 and (now - latest_user_input_ts) > 1800.0
+            is_stale_user_input = not cron_active and latest_user_input_ts > 0.0 and (now - latest_user_input_ts) > 1800.0
             if is_repeating_loop or is_stale_user_input:
                 continue
             return True

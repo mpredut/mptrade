@@ -461,6 +461,24 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
             os.utime(os.path.join(root, f), (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
 
+    # Even after the original schedule call scrolls past the 80-record tail, a cron SYSTEM_MESSAGE '(iteration N)' keeps cron_active=True
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 200,
+                "type": "SYSTEM_MESSAGE",
+                "content": "[Message] timestamp=2026-11-10T12:17:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 8)",
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+
 
 
 
