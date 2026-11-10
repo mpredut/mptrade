@@ -19,7 +19,15 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.agy.paths import visible_conversations_dir
-from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
+from orchestratorOS.agy.protobuf import (
+    drop_entries,
+    entry_cid,
+    list_entry_cids,
+    parse_fields,
+    replace_summary_entry,
+    summary_annotation_title,
+    summary_ui_visible,
+)
 from botcore import _parse_bool_flag, safe_nonneg_int
 from state_io import (
     atomic_write_bytes,
@@ -377,7 +385,57 @@ def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
     }
 
 
-def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
+def daemon_loaded_cids(cli_base: str) -> Set[str]:
+    """Return conversation IDs currently held in memory by the Web UI daemon (persisted in agyhub_summaries_proto.pb)."""
+    if not cli_base or not isinstance(cli_base, str):
+        return set()
+    data = read_bytes_file(os.path.join(cli_base, SUMMARIES_PB_FILES[0]), default=None)
+    if not data:
+        return set()
+    try:
+        return list_entry_cids(data)
+    except ValueError:
+        return set()
+
+
+def daemon_loaded_titles(cli_base: str) -> dict[str, str]:
+    """Map conversation IDs held in memory by the Web UI daemon to their persisted annotation titles."""
+    out: dict[str, str] = {}
+    if not cli_base or not isinstance(cli_base, str):
+        return out
+    data = read_bytes_file(os.path.join(cli_base, SUMMARIES_PB_FILES[0]), default=None)
+    if not data:
+        return out
+    try:
+        fields = parse_fields(data)
+    except ValueError:
+        return out
+    for tag, wt, val in fields:
+        if tag != 1 or wt != 2:
+            continue
+        cid = entry_cid(val).strip()
+        if not cid:
+            continue
+        title = ""
+        try:
+            sub = dict((t, v) for t, _, v in parse_fields(val))
+            raw_sum = sub.get(2, b"")
+            if isinstance(raw_sum, (bytes, bytearray)):
+                title = summary_annotation_title(bytes(raw_sum)).strip()
+        except ValueError:
+            title = ""
+        if not title:
+            title = read_annotation_title(cli_base, cid)
+        out[cid] = title
+    return out
+
+
+def _drop_summaries(
+    cli_base: str,
+    cids: Set[str],
+    *,
+    keep_proto_cids: Optional[Set[str]] = None,
+) -> None:
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return
@@ -395,24 +453,42 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
                 conn.close()
         except sqlite3.Error:
             pass
+    proto_drop = clean_cids - _clean_cid_set(keep_proto_cids or ())
+    if not proto_drop:
+        return
     for name in SUMMARIES_PB_FILES:
         path = os.path.join(cli_base, name)
         if os.path.exists(path):
-            buf, removed = drop_entries(read_bytes_file(path, default=b""), clean_cids)
+            buf, removed = drop_entries(read_bytes_file(path, default=b""), proto_drop)
             if removed:
                 atomic_write_bytes(path, buf)
 
 
-def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tuple[int, int]:
-    """Delete conversations (content, sidecars, annotations, presence, brain, summaries). Returns (count, bytes)."""
+def delete_threads(
+    cids: Set[str],
+    cli_base: str,
+    dry_run: bool = False,
+    *,
+    defer_active_ui_files: bool = False,
+) -> Tuple[int, int]:
+    """Delete conversations (content, sidecars, annotations, presence, brain, summaries). Returns (count, bytes).
+
+    When ``defer_active_ui_files=True``, conversations still held in memory by the running Web UI daemon
+    (present in ``agyhub_summaries_proto.pb``) have their ``conversation_summaries.db`` row removed so
+    ``pending_ui_sync()`` queues ``gone:<cid>``, while their on-disk ``.db`` and ``brain/`` files stay
+    readable in the Web UI until ``agy_store_fix.py pre`` reaps them cleanly on the next daemon restart.
+    """
     dry_run = _parse_bool_flag(dry_run, False)
+    defer_ui = _parse_bool_flag(defer_active_ui_files, False)
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return (0, 0)
+    deferred_cids = (clean_cids & daemon_loaded_cids(cli_base)) if defer_ui else set()
+    immediate_cids = clean_cids - deferred_cids
     vis_dir = _visible_dir_if_cli_store(cli_base)
     freed = 0
     seen_inodes: set[Tuple[int, int]] = set()
-    for cid in clean_cids:
+    for cid in immediate_cids:
         db = conversation_db(cli_base, cid)
         files = [db, db + "-shm", db + "-wal",
                  os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
@@ -446,7 +522,7 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
             if not dry_run:
                 shutil.rmtree(brain, ignore_errors=True)
     if not dry_run:
-        _drop_summaries(cli_base, clean_cids)
+        _drop_summaries(cli_base, clean_cids, keep_proto_cids=deferred_cids)
     return (len(clean_cids), freed)
 
 

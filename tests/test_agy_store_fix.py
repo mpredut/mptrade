@@ -567,6 +567,101 @@ def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(sto
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
 
+def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store, tmp_path, monkeypatch):
+    import json
+    from orchestratorOS.agy.protobuf import summary_ui_visible
+    from orchestratorOS.agy.topics import topic_spec
+    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
+
+    cli, d1, d2 = store
+    ann = cli / "annotations"
+    ann.mkdir(parents=True, exist_ok=True)
+    backups = tmp_path / "backups"
+    monkeypatch.setattr(asf, "ANN", str(ann))
+    monkeypatch.setattr(asf, "BACKUPS", str(backups))
+    monkeypatch.setattr(asf, "AGY_BIN", str(tmp_path / "nonexistent_agy"))
+    monkeypatch.setenv("AGY_FIX_HOME", str(tmp_path))
+    monkeypatch.setenv("AGY_UI_CLI_BASE", str(cli))
+
+    old_cid = "6a3d50d3-f1d2-411f-925e-73412ad73434"
+    new_cid = "fa9827b7-92b9-40a4-962b-aea3a159aca4"
+    topic_title = topic_spec("auto_cryptotrade_executor").title
+    raw_old = summary_ui_visible(b"\x0a\x03old", topic_title)
+
+    # Running Web UI daemon currently holds old_cid in memory (agyhub_summaries_proto.pb)
+    pb_entry = asf.enc_fields([(1, 2, old_cid.encode()), (2, 2, raw_old)])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(asf.enc_fields([(1, 2, pb_entry)]))
+
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DROP TABLE conversation_summaries")
+    conn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, title text, source text, status text, "
+        "project_id text, step_count integer, not_fully_idle integer, raw_summary blob)"
+    )
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, '', 'CASCADE_RUN_STATUS_IDLE', 'autonommptrade', 120, 0, ?)",
+        (old_cid, topic_title, raw_old),
+    )
+    conn.commit()
+    conn.close()
+
+    # Bot store rotates to new_cid with fresh steps
+    bot_base = tmp_path / "bot_home" / ".gemini" / "antigravity-cli"
+    (bot_base / "conversations").mkdir(parents=True, exist_ok=True)
+    bot_conv_db = bot_base / "conversations" / f"{new_cid}.db"
+    bconn = sqlite3.connect(str(bot_conv_db))
+    bconn.execute("CREATE TABLE trajectory_meta (trajectory_id text primary key, cascade_id text, trajectory_type integer, source integer)")
+    bconn.execute("CREATE TABLE steps (idx integer primary key, step_payload blob)")
+    bconn.execute("INSERT INTO trajectory_meta VALUES ('traj-1', ?, 4, 17)", (new_cid,))
+    bconn.execute("INSERT INTO steps VALUES (0, ?)", (f"turn:{new_cid}:HOLD".encode("utf-8"),))
+    bconn.commit()
+    bconn.close()
+
+    bot_sum_db = bot_base / "conversation_summaries.db"
+    bsconn = sqlite3.connect(str(bot_sum_db))
+    bsconn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, title text, source text, status text, "
+        "project_id text, step_count integer, not_fully_idle integer, raw_summary blob)"
+    )
+    bsconn.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, 'CORTEX_TRAJECTORY_SOURCE_CLI', 'CASCADE_RUN_STATUS_IDLE', 'autonommptrade', 4, 0, ?)",
+        (new_cid, topic_title, b"\x0a\x03new"),
+    )
+    bsconn.commit()
+    bsconn.close()
+
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps({"auto_cryptotrade_executor": {"conversation_id": new_cid, "title": topic_title}}),
+        encoding="utf-8",
+    )
+
+    assert mirror_topic_thread_to_ui(new_cid, topic_title, bot_cli_base=str(bot_base), ui_cli_base=str(cli)) is True
+
+    # Before daemon restart: ghost old_cid.db exists in D1 with cascade_id rewritten to old_cid so Web UI opens it cleanly!
+    ghost_db = d1 / f"{old_cid}.db"
+    assert ghost_db.exists()
+    gconn = sqlite3.connect(str(ghost_db))
+    try:
+        assert gconn.execute("SELECT cascade_id FROM trajectory_meta").fetchone()[0] == old_cid
+        assert gconn.execute("SELECT step_payload FROM steps WHERE idx=0").fetchone()[0] == f"turn:{old_cid}:HOLD".encode("utf-8")
+    finally:
+        gconn.close()
+
+    # Meanwhile pending_ui_sync still queues both gone:<old_cid> and new:<new_cid>
+    pending = asf.pending_ui_sync()
+    assert f"gone:{old_cid}" in pending
+    assert f"new:{new_cid}" in pending
+
+    # On the next daemon restart, mode_pre reaps ghost old_cid.db and promotes new_cid.db cleanly into D2
+    assert asf.mode_pre(force=True) == 0
+    assert not (d1 / f"{old_cid}.db").exists()
+    assert not (d2 / f"{old_cid}.db").exists()
+    assert (d2 / f"{new_cid}.db").exists()
+    assert asf.daemon_known_cids() == {new_cid}
+
+
 
 
 

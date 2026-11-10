@@ -276,7 +276,9 @@ def prune_old_cli_threads(
 
     count, freed = delete_threads(candidates, base, dry_run=dry_run) if candidates else (0, 0)
     if ui_candidates and ui_base:
-        u_cnt, u_freed = delete_threads(ui_candidates, ui_base, dry_run=dry_run)
+        u_cnt, u_freed = delete_threads(
+            ui_candidates, ui_base, dry_run=dry_run, defer_active_ui_files=True
+        )
         count += u_cnt
         freed += u_freed
     logger.info("%s %d automated threads (cutoff %s UTC, max_threads=%s), %.2f MB.",

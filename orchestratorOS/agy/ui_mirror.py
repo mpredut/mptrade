@@ -29,6 +29,7 @@ from orchestratorOS.agy.summary_store import (
     _clean_cid_set,
     checkpoint_db,
     conversation_db,
+    daemon_loaded_titles,
     delete_threads,
     drop_wal_sidecars,
     get_thread_step_count,
@@ -124,6 +125,89 @@ def sync_topic_thread_from_ui(
                 pass
 
 
+def _clone_trajectory_for_ghost_cid(src_db: str, ghost_db: str, src_cid: str, ghost_cid: str) -> bool:
+    """Clone ``src_db`` into ``ghost_db``, rewriting equal-length ``src_cid`` -> ``ghost_cid`` across tables.
+
+    When a permanent topic rotates while the Web UI daemon is still running (e.g. ``ui-sync`` deferred by
+    active interactive sessions), the daemon's in-memory list still points ``clean_title`` at ``ghost_cid``.
+    Materializing ``ghost_db`` with ``cascade_id = ghost_cid`` allows clicking the topic in the Web UI to
+    open the live rotated turns immediately without waiting for a daemon restart; ``agy_store_fix.py pre``
+    reaps ``ghost_db`` automatically on the next restart because ``ghost_cid`` has no summary row in SQLite.
+    """
+    src_b = src_cid.encode("utf-8")
+    dst_b = ghost_cid.encode("utf-8")
+    if not src_b or len(src_b) != len(dst_b) or src_cid == ghost_cid or not os.path.exists(src_db):
+        return False
+    tmp_db = ghost_db + ".tmp"
+    os.makedirs(os.path.dirname(ghost_db), exist_ok=True)
+    if os.path.exists(ghost_db):
+        checkpoint_db(ghost_db)
+    shutil.copy2(src_db, tmp_db)
+    conn = sqlite3.connect(tmp_db)
+    try:
+        tables = [
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
+        ]
+        for tbl in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
+            if not cols:
+                continue
+            col_sql = ",".join(f"`{c}`" for c in cols)
+            rows = conn.execute(f"SELECT rowid, {col_sql} FROM `{tbl}`").fetchall()
+            for row in rows:
+                rid = row[0]
+                vals = list(row[1:])
+                changed = False
+                for idx, val in enumerate(vals):
+                    if isinstance(val, str) and src_cid in val:
+                        vals[idx] = val.replace(src_cid, ghost_cid)
+                        changed = True
+                    elif isinstance(val, (bytes, bytearray, memoryview)):
+                        raw_v = bytes(val)
+                        if src_b in raw_v:
+                            vals[idx] = raw_v.replace(src_b, dst_b)
+                            changed = True
+                if changed:
+                    set_sql = ",".join(f"`{c}`=?" for c in cols)
+                    conn.execute(f"UPDATE `{tbl}` SET {set_sql} WHERE rowid=?", vals + [rid])
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    drop_wal_sidecars(tmp_db, force=True)
+    drop_wal_sidecars(ghost_db, force=True)
+    durable_replace_file(tmp_db, ghost_db)
+    return True
+
+
+def _mirror_to_daemon_ghost_cids(
+    dst_base: str,
+    dst_db: str,
+    src_brain: str,
+    active_cid: str,
+    clean_title: str,
+) -> None:
+    """Keep any retired daemon-loaded conversation IDs for ``clean_title`` readable with latest topic turns."""
+    if not clean_title or not os.path.exists(dst_db):
+        return
+    loaded_titles = daemon_loaded_titles(dst_base)
+    if not loaded_titles:
+        return
+    for ghost_cid, ghost_title in loaded_titles.items():
+        if ghost_cid == active_cid or (ghost_title or "").strip() != clean_title:
+            continue
+        if read_summary_row(dst_base, ghost_cid) is not None:
+            continue
+        try:
+            if _clone_trajectory_for_ghost_cid(dst_db, conversation_db(dst_base, ghost_cid), active_cid, ghost_cid):
+                if src_brain and os.path.isdir(src_brain):
+                    shutil.copytree(src_brain, os.path.join(dst_base, "brain", ghost_cid), dirs_exist_ok=True)
+        except (OSError, sqlite3.Error) as exc:
+            logger.debug("Failed updating ghost topic trajectory %s -> %s: %s", active_cid, ghost_cid, exc)
+
+
 def mirror_topic_thread_to_ui(
     cid: str,
     title: str,
@@ -203,9 +287,10 @@ def mirror_topic_thread_to_ui(
                 finally:
                     sconn.close()
                 if dup_cids:
-                    delete_threads(dup_cids, dst_base)
+                    delete_threads(dup_cids, dst_base, defer_active_ui_files=True)
             except sqlite3.Error:
                 pass
+            _mirror_to_daemon_ghost_cids(dst_base, dst_db, src_brain, cid, clean_title)
         return True
     except (OSError, sqlite3.Error) as e:
         logger.warning("Failed mirroring topic thread %s to the UI store: %s", cid, e)

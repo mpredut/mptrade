@@ -154,6 +154,7 @@ def mode_pre(force: bool = False) -> int:
     # they are not resurrected into D1 on post.
     known_cids: set[str] = set()
     if os.path.exists(DB):
+        checkpoint_db(DB)
         try:
             con = sqlite3.connect(DB, timeout=15)
             try:
@@ -189,6 +190,26 @@ def mode_pre(force: bool = False) -> int:
                     shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
                 except OSError:
                     pass
+            shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
+            deleted += 1
+        for p1 in sorted(glob.glob(os.path.join(glob.escape(D1), "*.db"))):
+            if os.path.islink(p1):
+                continue
+            name = os.path.basename(p1)
+            cid = name[:-3]
+            if cid in known_cids or cid in topic_cids:
+                continue
+            checkpoint_db(p1)
+            os.makedirs(del_dir, exist_ok=True)
+            shutil.move(p1, os.path.join(del_dir, name))
+            drop_wal_sidecars(p1, force=False)
+            ann_file = os.path.join(ANN, cid + ".pbtxt")
+            if os.path.exists(ann_file):
+                try:
+                    shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
+                except OSError:
+                    pass
+            shutil.rmtree(os.path.join(CLI, "brain", cid), ignore_errors=True)
             deleted += 1
 
     for name in sorted(os.listdir(D1)):

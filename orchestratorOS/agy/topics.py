@@ -38,6 +38,7 @@ from orchestratorOS.agy.paths import (
     visible_conversations_dir,
 )
 from orchestratorOS.agy.summary_store import (
+    daemon_loaded_titles,
     delete_threads,
     get_thread_step_count,
     read_summary_row,
@@ -222,6 +223,7 @@ def sync_all_topic_titles(
     reg = load_topic_registry(registry_path)
     updated = 0
     changed_reg = False
+    ui_loaded_titles = daemon_loaded_titles(ui_base) if ui_base and os.path.isdir(ui_base) else {}
     for key, entry in reg.items():
         if not isinstance(entry, dict) or key not in TOPIC_SPECS:
             continue
@@ -242,9 +244,19 @@ def sync_all_topic_titles(
                 or os.path.exists(os.path.join(visible_conversations_dir(ui_base), f"{cid}.db"))
             )
         )
+        missing_ghost_db = bool(
+            ui_base
+            and any(
+                gcid != cid
+                and (gtitle or "").strip() == canonical
+                and read_summary_row(ui_base, gcid) is None
+                and not os.path.exists(os.path.join(ui_base, "conversations", f"{gcid}.db"))
+                for gcid, gtitle in ui_loaded_titles.items()
+            )
+        )
         bot_steps = safe_nonneg_int((bot_row or {}).get("step_count"), 0)
         ui_steps = safe_nonneg_int((ui_row or {}).get("step_count"), 0)
-        if ui_row is not None and ui_has_db and ui_steps >= bot_steps and ui_steps > 0:
+        if ui_row is not None and ui_has_db and ui_steps >= bot_steps and ui_steps > 0 and not missing_ghost_db:
             if bot_row is not None and str(bot_row.get("title") or "").strip() != canonical:
                 try:
                     upsert_ui_visible_summary(base, bot_row, canonical)
@@ -317,7 +329,7 @@ def _delete_topic_thread_everywhere(base: str, cid: str) -> None:
     try:
         ui_base = resolve_ui_cli_base()
         if ui_base and os.path.abspath(ui_base) != os.path.abspath(base):
-            delete_threads({clean_cid}, ui_base)
+            delete_threads({clean_cid}, ui_base, defer_active_ui_files=True)
     except Exception:
         pass
 
