@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
 from botcore import safe_pos_int, strict_ascii_int
-from state_io import read_json_dict
+from state_io import format_jsonl_bucket_line, read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -345,6 +345,115 @@ def read_trade_snapshot_strict(
     if actual != nonzero_counts(metadata["counts"]):
         raise account_cache_health.AccountCacheNotReady(reader_reason)
     return cache, dict(metadata["counts"])
+
+
+def append_versioned_trade_jsonl(
+    path: str,
+    cache: dict[str, list[dict[str, Any]]],
+    previous_counts: dict[str, int],
+    *,
+    previous_version: str,
+    previous_boundary: int,
+    is_valid_item_fn: Callable[[dict[str, Any]], bool],
+    on_rollback_fn: Callable[[int], None] | None = None,
+) -> tuple[int, int, dict[str, int], bool, list[tuple[str, dict[str, Any]]]]:
+    """Durably append validated Trade JSONL rows from ``previous_counts`` at ``previous_boundary``."""
+    initial_size: int | None = None
+    try:
+        exists = os.path.exists(path)
+        mode = "r+b" if exists else "w+b"
+        with open(path, mode) as handle:
+            actual_size = os.fstat(handle.fileno()).st_size
+            if previous_version:
+                if actual_size < previous_boundary:
+                    raise OSError("Trade cache is shorter than its committed boundary")
+                initial_size = previous_boundary
+                if actual_size != previous_boundary:
+                    handle.truncate(previous_boundary)
+            else:
+                initial_size = actual_size
+            handle.seek(initial_size)
+            candidate_counts = dict(previous_counts)
+            wrote_rows = False
+            appended_records: list[tuple[str, dict[str, Any]]] = []
+            for symbol, items in cache.items():
+                start = previous_counts.get(symbol, 0)
+                for item in items[start:]:
+                    if (
+                        not is_valid_item_fn(item)
+                        or str(item["symbol"]).upper() != str(symbol).upper()
+                    ):
+                        raise ValueError("invalid Trade row in append delta")
+                    handle.write(format_jsonl_bucket_line(symbol, item).encode("utf-8"))
+                    wrote_rows = True
+                    appended_records.append((symbol, item))
+                candidate_counts[symbol] = len(items)
+            handle.flush()
+            os.fsync(handle.fileno())
+            committed_bytes = handle.tell()
+        return initial_size, committed_bytes, candidate_counts, wrote_rows, appended_records
+    except BaseException:
+        if initial_size is not None and on_rollback_fn is not None:
+            on_rollback_fn(initial_size)
+        raise
+
+
+def read_legacy_trade_jsonl_strict(
+    path: str,
+    legacy_metadata: dict[str, Any],
+    *,
+    is_valid_item_fn: Callable[[dict[str, Any]], bool],
+    reader_reason: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read and deduplicate a pre-v2 legacy Trade JSONL file, recovering clean trailing partial writes."""
+    cache: dict[str, list[dict[str, Any]]] = {}
+    seen_trade_items: defaultdict[str, dict[str, tuple[Any, ...]]] = defaultdict(dict)
+    if not os.path.exists(path):
+        return cache
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+                if (
+                    not isinstance(rec, dict)
+                    or not isinstance(rec.get("s"), str)
+                    or not isinstance(rec.get("i"), dict)
+                    or not is_valid_item_fn(rec["i"])
+                    or str(rec["i"]["symbol"]).upper() != str(rec["s"]).upper()
+                ):
+                    raise ValueError("invalid legacy Trade row")
+                trade_id = str(int(rec["i"]["id"]))
+                signature = trade_semantic_signature(rec["i"])
+                symbol_items = seen_trade_items[str(rec["s"]).upper()]
+                if trade_id in symbol_items:
+                    if symbol_items[trade_id] != signature:
+                        raise ValueError(f"conflicting legacy Trade rows for immutable ID {trade_id}")
+                    continue
+                symbol_items[trade_id] = signature
+                cache.setdefault(rec["s"], []).append(rec["i"])
+            except Exception as exc:
+                expected_counts = legacy_metadata.get("counts")
+                actual_counts = {symbol: len(items) for symbol, items in cache.items()}
+                recoverable_tail = (
+                    isinstance(exc, json.JSONDecodeError)
+                    and not any(value.strip() for value in handle)
+                    and isinstance(expected_counts, dict)
+                    and all(
+                        isinstance(symbol, str)
+                        and not isinstance(count, bool)
+                        and isinstance(count, int)
+                        and count >= 0
+                        for symbol, count in expected_counts.items()
+                    )
+                    and nonzero_counts(expected_counts) == actual_counts
+                )
+                if recoverable_tail:
+                    break
+                raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+    return cache
 
 
 def _validate_order_items_map(

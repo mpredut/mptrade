@@ -45,6 +45,7 @@ from cacheaccount import (
     CacheTradeManager,
     account_cache_health,
     api,
+    attach_hyperliquid_user_fills_bridge,
     bind_account_cache_getter,
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
@@ -89,6 +90,7 @@ from state_io import (
 )
 
 load_dotenv()
+HyperliquidPriceStream.register_stream_init_hook(attach_hyperliquid_user_fills_bridge)
 
 
 _resolve_data_sync_mode = CacheManagerInterface.resolve_data_sync_mode
@@ -104,85 +106,15 @@ def get_current_price_manager(
     data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
 ) -> CacheCurrentPriceManager:
     """Return or lazily create the CacheCurrentPriceManager singleton (disk_reader by default)."""
-    resolved_mode, save_state_flag, start_periodic = _resolve_data_sync_mode(
-        data_sync_mode
+    return CacheFactory.get(
+        "CurrentPrice",
+        symbols=symbols,
+        data_sync_mode=data_sync_mode,
+        provider_names=provider_names,
+        ws_manager=ws_manager,
+        sync_ts=sync_ts,
+        read_only=read_only,
     )
-    if ws_manager is not None and resolved_mode == CacheManagerInterface.MODE_DISK_READER:
-        resolved_mode = CacheManagerInterface.MODE_LIVE_READER
-    inst = CacheFactory._instances.get("CurrentPrice")
-    if (
-        inst is not None
-        and sync_ts is None
-        and not provider_names
-        and ws_manager is None
-        and not save_state_flag
-        and (
-            not start_periodic
-            or (
-                (thread := inst.thread) is not None
-                and thread.is_alive()
-                and not inst.read_only
-            )
-        )
-    ):
-        if (
-            resolved_mode == CacheManagerInterface.MODE_LIVE_READER
-            and not getattr(inst, "save_state", False)
-        ):
-            inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
-        return inst
-    with CacheFactory._lock:
-        inst = CacheFactory._instances.get("CurrentPrice")
-        if inst is not None:
-            if sync_ts is not None:
-                inst.sync_ts = sync_ts
-            if provider_names:
-                inst.bind_providers(provider_names)
-            if ws_manager is not None:
-                inst.attach_ws_manager(ws_manager)
-            if save_state_flag:
-                inst.save_state = True
-                inst.read_only = False
-                inst.data_sync_mode = CacheManagerInterface.MODE_PRODUCER
-            elif (
-                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
-                and not inst.save_state
-            ):
-                inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
-            if start_periodic:
-                inst.periodic_sync(save_state=save_state_flag)
-                CacheFactory._sync_started.add("CurrentPrice")
-            return inst
-        if symbols is None:
-            _syms, _, _default_providers = tracked_price_instruments()
-            if provider_names is None and _default_providers:
-                provider_names = _default_providers
-        else:
-            _syms = (
-                _coerce_symbol_list(symbols) if isinstance(symbols, str) else symbols
-            )
-        instance = CacheCurrentPriceManager(
-            sync_ts=(
-                sync_ts
-                if sync_ts is not None
-                else CURRENT_PRICE_SYNC_INTERVAL_SEC
-            ),
-            symbols=_syms,
-            filename=CacheCurrentPriceManager.DEFAULT_FILENAME,
-            ws_manager=ws_manager,
-            provider_names=provider_names,
-            read_only=(
-                (not start_periodic and not save_state_flag)
-                if read_only is None
-                else _parse_bool_flag(read_only, default=False)
-            ),
-            data_sync_mode=resolved_mode,
-        )
-        if start_periodic:
-            instance.periodic_sync(save_state=save_state_flag)
-            CacheFactory._sync_started.add("CurrentPrice")
-        CacheFactory._instances["CurrentPrice"] = instance
-    return instance
 
 
 def get_short_trend_manager(
@@ -192,42 +124,12 @@ def get_short_trend_manager(
     data_sync_mode: Optional[str] = None,
 ):
     """Return the CacheShortTrendManager singleton."""
-    resolved_mode = _resolve_data_sync_mode(data_sync_mode)[0]
-    is_writer = resolved_mode == CacheManagerInterface.MODE_PRODUCER
-    inst = CacheFactory._instances.get("ShortTrend")
-    if inst is not None and not is_writer:
-        if (
-            resolved_mode == CacheManagerInterface.MODE_LIVE_READER
-            and not getattr(inst, "writer", False)
-        ):
-            inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
-        return inst
-    with CacheFactory._lock:
-        inst = CacheFactory._instances.get("ShortTrend")
-        if inst is not None:
-            if is_writer:
-                inst.become_writer()
-            elif (
-                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
-                and not getattr(inst, "writer", False)
-            ):
-                inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
-            return inst
-        if symbols is None:
-            _syms = tracked_price_instruments()[0]
-        else:
-            _syms = (
-                _coerce_symbol_list(symbols) if isinstance(symbols, str) else symbols
-            )
-        inst = CacheShortTrendManager(
-            _syms,
-            filename,
-            data_sync_mode=resolved_mode,
-            cache24_getter=lambda: get_cache_manager("24Price"),
-            current_price_getter=get_current_price_manager,
-        )
-        CacheFactory._instances["ShortTrend"] = inst
-    return inst
+    return CacheFactory.get(
+        "ShortTrend",
+        symbols=symbols,
+        data_sync_mode=data_sync_mode,
+        filename=filename,
+    )
 
 
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
@@ -246,6 +148,7 @@ _PRICE_TREND_CACHES = frozenset(
         "365Price",
         "SparsePrice",
         "LongTrend",
+        "ShortTrend",
     }
 )
 
@@ -309,7 +212,7 @@ class CacheFactory:
     def _resync_readonly_consumer_instance(
         cls, name: str, instance, symbols=None
     ) -> None:
-        if name == "CurrentPrice" or instance is None:
+        if name in ("CurrentPrice", "ShortTrend") or instance is None:
             return
         if isinstance(instance, dict) and symbols is not None:
             wanted = {str(s).strip().upper() for s in symbols if s}
@@ -347,12 +250,16 @@ class CacheFactory:
             return
         for manager in cls._iter_managers(instance):
             if save_state_flag or resolved_mode == CacheManagerInterface.MODE_PRODUCER:
-                manager.save_state = True
-                manager.read_only = False
-                manager.data_sync_mode = CacheManagerInterface.MODE_PRODUCER
+                if hasattr(manager, "become_writer"):
+                    manager.become_writer()
+                else:
+                    manager.save_state = True
+                    manager.read_only = False
+                    manager.data_sync_mode = CacheManagerInterface.MODE_PRODUCER
             elif (
                 resolved_mode == CacheManagerInterface.MODE_LIVE_READER
                 and not getattr(manager, "save_state", False)
+                and not getattr(manager, "writer", False)
             ):
                 manager.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
 
@@ -364,24 +271,41 @@ class CacheFactory:
         *,
         data_sync_mode: Optional[str] = CacheManagerInterface.MODE_DISK_READER,
         provider_names=None,
+        ws_manager=None,
+        sync_ts=None,
+        read_only=None,
+        filename=None,
     ):
         resolved_mode, save_state_flag, start_periodic = _resolve_data_sync_mode(
             data_sync_mode
         )
+        if (
+            name == "CurrentPrice"
+            and ws_manager is not None
+            and resolved_mode == CacheManagerInterface.MODE_DISK_READER
+        ):
+            resolved_mode = CacheManagerInterface.MODE_LIVE_READER
         if isinstance(symbols, str):
             symbols = _coerce_symbol_list(symbols)
-        if name == "ShortTrend":
-            return get_short_trend_manager(
-                symbols=symbols,
-                data_sync_mode=resolved_mode,
-            )
         inst = cls._instances.get(name)
         if (
             inst is not None
             and symbols is None
-            and provider_names is None
+            and not provider_names
+            and ws_manager is None
+            and sync_ts is None
             and not save_state_flag
-            and (not start_periodic or name in cls._sync_started)
+            and (
+                not start_periodic
+                or name in cls._sync_started
+                or name == "ShortTrend"
+                or (
+                    name == "CurrentPrice"
+                    and (thread := getattr(inst, "thread", None)) is not None
+                    and thread.is_alive()
+                    and not getattr(inst, "read_only", True)
+                )
+            )
         ):
             if resolved_mode == CacheManagerInterface.MODE_LIVE_READER:
                 cls._apply_mode_to_instance(inst, resolved_mode, False)
@@ -397,13 +321,21 @@ class CacheFactory:
             if provider_names is not None and name != "CurrentPrice":
                 raise ValueError("provider_names is supported only for CurrentPrice")
 
-            cfg_read_only = bool(cls._CONFIG[name].get("read_only", False))
+            cfg_read_only = bool(cls._CONFIG[name].get("read_only", False)) and name != "ShortTrend"
             resolved_mode, save_state_flag, start_periodic = _resolve_data_sync_mode(
                 data_sync_mode,
                 config_read_only=cfg_read_only,
             )
+            if (
+                name == "CurrentPrice"
+                and ws_manager is not None
+                and resolved_mode == CacheManagerInterface.MODE_DISK_READER
+            ):
+                resolved_mode = CacheManagerInterface.MODE_LIVE_READER
+            if name == "ShortTrend":
+                start_periodic = False
 
-            if name in cls._instances and symbols is not None:
+            if name in cls._instances and symbols is not None and name not in ("CurrentPrice", "ShortTrend"):
                 inst = cls._instances[name]
                 existing = (
                     set(inst.keys())
@@ -420,23 +352,32 @@ class CacheFactory:
                         + ". Singleton per name — the first instance is used."
                     )
             if name == "CurrentPrice" and name in cls._instances:
-                cls._instances[name].bind_providers(provider_names)
+                inst = cls._instances[name]
+                if sync_ts is not None:
+                    inst.sync_ts = sync_ts
+                if provider_names:
+                    inst.bind_providers(provider_names)
+                if ws_manager is not None:
+                    inst.attach_ws_manager(ws_manager)
 
             created = name not in cls._instances
-            sync_ts = None
+            eff_sync_ts = sync_ts
             if created:
                 cls._sync_started.discard(name)
                 config = cls._CONFIG[name]
                 manager_class = config["class"]
-                sync_ts = config["sync_ts"]()
+                if eff_sync_ts is None:
+                    eff_sync_ts = config["sync_ts"]()
                 extra_kwargs = {
                     key: value
                     for key, value in config.items()
                     if key not in {"class", "filename", "sync_ts", "prefix", "ext"}
                 }
                 extra_kwargs.pop("read_only", None)
-                eff_read_only = cfg_read_only or (
-                    not save_state_flag and not start_periodic
+                eff_read_only = (
+                    _parse_bool_flag(read_only, default=False)
+                    if read_only is not None
+                    else (cfg_read_only or (not save_state_flag and not start_periodic))
                 )
                 venue_cfg = str(extra_kwargs.get("venue") or "").strip().lower()
                 is_non_binance_venue = bool(venue_cfg and venue_cfg != "binance")
@@ -456,20 +397,31 @@ class CacheFactory:
                     else:
                         symbols = sym.symbols
 
+                eff_filename = filename if filename is not None else config["filename"]
                 if name == "CurrentPrice":
-                    instance = get_current_price_manager(
+                    instance = manager_class(
+                        sync_ts=eff_sync_ts,
                         symbols=symbols,
-                        sync_ts=sync_ts,
+                        filename=eff_filename,
+                        ws_manager=ws_manager,
                         provider_names=provider_names,
                         read_only=eff_read_only,
                         data_sync_mode=resolved_mode,
                     )
-                    sync_ts = instance.sync_ts
+                    eff_sync_ts = instance.sync_ts
+                elif name == "ShortTrend":
+                    instance = manager_class(
+                        symbols,
+                        eff_filename,
+                        data_sync_mode=resolved_mode,
+                        cache24_getter=lambda: get_cache_manager("24Price"),
+                        current_price_getter=get_current_price_manager,
+                    )
                 elif "prefix" in config:
                     prefix, ext = config["prefix"], config["ext"]
                     instance = {
                         s: manager_class(
-                            sync_ts=sync_ts,
+                            sync_ts=eff_sync_ts,
                             filename=f"{prefix}{s}.{ext}",
                             symbols=[s],
                             read_only=eff_read_only,
@@ -480,19 +432,20 @@ class CacheFactory:
                     }
                 else:
                     instance = manager_class(
-                        sync_ts=sync_ts,
-                        filename=config["filename"],
+                        sync_ts=eff_sync_ts,
+                        filename=eff_filename,
                         symbols=symbols,
                         read_only=eff_read_only,
                         data_sync_mode=resolved_mode,
                         **extra_kwargs,
                     )
 
-                for manager in cls._iter_managers(instance):
-                    manager.data_sync_mode = resolved_mode
-                    if save_state_flag:
-                        manager.save_state = True
-                        manager.read_only = False
+                if name != "ShortTrend":
+                    for manager in cls._iter_managers(instance):
+                        manager.data_sync_mode = resolved_mode
+                        if save_state_flag:
+                            manager.save_state = True
+                            manager.read_only = False
 
                 cls._instances[name] = instance
             else:
@@ -516,17 +469,17 @@ class CacheFactory:
             if (
                 start_periodic
                 and not cfg_read_only
-                and (name not in cls._sync_started or save_state_flag)
+                and (name not in cls._sync_started or save_state_flag or sync_ts is not None)
             ):
-                if sync_ts is None:
-                    sync_ts = (
+                if eff_sync_ts is None:
+                    eff_sync_ts = (
                         cls._instances[name].sync_ts
                         if name == "CurrentPrice"
                         and hasattr(cls._instances[name], "sync_ts")
                         else cls._CONFIG[name]["sync_ts"]()
                     )
                 for manager in cls._iter_managers(cls._instances[name]):
-                    manager.periodic_sync(sync_ts, save_state_flag)
+                    manager.periodic_sync(eff_sync_ts, save_state_flag)
                 cls._sync_started.add(name)
 
             return cls._instances[name]

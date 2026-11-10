@@ -463,6 +463,135 @@ def truncate_file_bytes(path: str, size: int) -> None:
         os.fsync(handle.fileno())
 
 
+def format_jsonl_bucket_line(symbol: str, item: Any) -> str:
+    """Serialize one ``(symbol, item)`` pair as a compact JSONL line."""
+    return json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
+
+
+def canonical_json_key(item: Any) -> str:
+    """Return a deterministic sort-keyed JSON string for deduplicating cache items."""
+    return json.dumps(item, sort_keys=True)
+
+
+def parse_json_payload(raw: str | bytes, *, default: Any = _MISSING) -> Any:
+    """Parse a JSON string or bytes payload, returning ``default`` (if provided) on decode failure."""
+    try:
+        text = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray, memoryview)) else raw
+        return json.loads(text)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
+def encode_json_payload(payload: Any) -> str:
+    """Serialize ``payload`` to a JSON string."""
+    return json.dumps(payload)
+
+
+def append_jsonl_bucket_delta(
+    path: str,
+    cache: dict[str, list[Any]],
+    persisted_counts: dict[str, int],
+    *,
+    on_rollback_fn: Callable[[int], None] | None = None,
+) -> dict[str, int]:
+    """Durably append unpersisted ``(symbol, item)`` rows to ``path`` and return updated counts."""
+    target_path = _resolve_target_path(path)
+    candidate_counts = dict(persisted_counts)
+    initial_size: int | None = None
+    try:
+        with open(target_path, "a+", encoding="utf-8") as handle:
+            initial_size = os.fstat(handle.fileno()).st_size
+            for symbol, items in cache.items():
+                start = persisted_counts.get(symbol, 0)
+                if start > len(items):
+                    start = 0
+                for item in items[start:]:
+                    handle.write(format_jsonl_bucket_line(symbol, item))
+                candidate_counts[symbol] = len(items)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return candidate_counts
+    except BaseException:
+        if initial_size is not None:
+            if on_rollback_fn is not None:
+                on_rollback_fn(initial_size)
+            else:
+                with contextlib.suppress(Exception):
+                    truncate_file_bytes(target_path, initial_size)
+        raise
+
+
+def read_jsonl_bucket_map(path: str) -> tuple[dict[str, list[Any]], bool]:
+    """Read a JSONL file of ``{'s': symbol, 'i': item}`` records into ``(cache_map, had_invalid_line)``."""
+    target_path = _resolve_target_path(path)
+    cache: dict[str, list[Any]] = {}
+    had_invalid_line = False
+    with open(target_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+                if (
+                    not isinstance(rec, dict)
+                    or not isinstance(rec.get("s"), str)
+                    or rec.get("i") is None
+                ):
+                    raise ValueError("invalid JSONL record")
+                cache.setdefault(rec["s"], []).append(rec["i"])
+            except Exception:
+                had_invalid_line = True
+                continue
+    return cache, had_invalid_line
+
+
+def iter_jsonl_retention_lines(
+    path: str,
+    keep_record_fn: Callable[[dict[str, Any]], bool],
+    *,
+    yield_every: int = 4096,
+) -> Iterator[tuple[str, bool]]:
+    """Stream a JSONL file line by line, yielding ``(line_with_newline, keep_flag)``."""
+    target_path = _resolve_target_path(path)
+    with open(target_path, encoding="utf-8") as source:
+        for line_idx, line in enumerate(source, 1):
+            if yield_every > 0 and line_idx % yield_every == 0:
+                time.sleep(0)
+            try:
+                rec = json.loads(line)
+                keep = isinstance(rec, dict) and bool(keep_record_fn(rec))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                keep = False
+            yield (line if line.endswith("\n") else line + "\n"), keep
+
+
+def read_tail_complete_lines_text(path: str, keep_bytes: int) -> str:
+    """Read up to the last ``keep_bytes`` of ``path`` aligned to a complete line boundary."""
+    target_path = _resolve_target_path(path)
+    archive_size = os.path.getsize(target_path)
+    eff_keep = max(1, int(keep_bytes))
+    with open(target_path, "rb") as source:
+        source.seek(max(0, archive_size - eff_keep))
+        if source.tell() > 0:
+            source.readline()
+        tail = source.read()
+        if not tail.strip() and archive_size > 0:
+            source.seek(0)
+            lines = [
+                line
+                for line in source.read().splitlines(keepends=True)
+                if line.strip()
+            ]
+            tail = lines[-1] if lines else b""
+    decoded = tail.decode("utf-8", errors="ignore")
+    if decoded and not decoded.endswith("\n"):
+        decoded += "\n"
+    return decoded
+
+
 def prune_rotated_archives(base_filename: str, keep_count: int) -> list[str]:
     """Retain the newest ``keep_count`` ``<base_filename>.*.archive*`` files."""
     if not base_filename or isinstance(base_filename, (bool, int, float)):

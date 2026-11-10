@@ -40,7 +40,6 @@ from binance_api.bapi_ws import (
 )
 from botcore import (
     _parse_bool_flag,
-    env_value,
     extract_current_price_item,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
@@ -65,7 +64,6 @@ from cachepaths import (
     CACHE_24_PRICE_PREFIX,
     CACHE_365_PRICE_PREFIX,
     CACHE_CURRENT_PRICE_FILENAME,
-    CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
     _is_eq_suffix,
     cache_path,
@@ -91,9 +89,14 @@ from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_jsonl,
+    canonical_json_key,
     discard_generation_file,
+    encode_json_payload,
+    iter_jsonl_retention_lines,
+    parse_json_payload,
     read_json_dict,
     read_json_dict_recovering,
+    read_tail_complete_lines_text,
     read_tail_lines,
     save_json_state,
     write_meta_json,
@@ -615,16 +618,13 @@ class Cache365PriceManager(Cache24PriceManager):
                 for raw_line in self._tail_lines(
                     self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS
                 ):
-                    try:
-                        rec = json.loads(raw_line)
-                        if (
-                            isinstance(rec, dict)
-                            and rec.get("s") in self.symbols
-                            and rec.get("i") is not None
-                        ):
-                            self.cache.setdefault(rec["s"], []).append(rec["i"])
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                    rec = parse_json_payload(raw_line, default=None)
+                    if (
+                        isinstance(rec, dict)
+                        and rec.get("s") in self.symbols
+                        and rec.get("i") is not None
+                    ):
+                        self.cache.setdefault(rec["s"], []).append(rec["i"])
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             metaf = self.filename + ".meta"
             if os.path.exists(metaf):
@@ -730,11 +730,11 @@ class Cache365PriceManager(Cache24PriceManager):
                 continue
             bucket = self.cache.setdefault(symbol, [])
             seen = {
-                json.dumps(it, sort_keys=True)
+                canonical_json_key(it)
                 for it in bucket[-self.DEDUP_WINDOW :]
             }
             for item in extra_items:
-                key = json.dumps(item, sort_keys=True)
+                key = canonical_json_key(item)
                 if key not in seen:
                     seen.add(key)
                     bucket.append(item)
@@ -774,24 +774,16 @@ class Cache365PriceManager(Cache24PriceManager):
             backup_path = self.filename + ".maint_backup"
             snapshot_fn = _cm_override("atomic_snapshot_file", atomic_snapshot_file)
             snapshot_fn(self.filename, backup_path)
-            with (
-                atomic_text_writer(self.filename) as target,
-                open(backup_path, encoding="utf-8") as source,
-            ):
-                for line_idx, line in enumerate(source, 1):
-                    if line_idx % 4096 == 0:
-                        time.sleep(0)
-                    try:
-                        rec = json.loads(line)
-                        keep = (
-                            isinstance(rec, dict)
-                            and isinstance(rec.get("s"), str)
-                            and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
-                        )
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        keep = False
+            with atomic_text_writer(self.filename) as target:
+                for line_out, keep in iter_jsonl_retention_lines(
+                    backup_path,
+                    lambda rec: (
+                        isinstance(rec.get("s"), str)
+                        and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
+                    ),
+                ):
                     if keep:
-                        target.write(line if line.endswith("\n") else line + "\n")
+                        target.write(line_out)
                     else:
                         changed = True
                 if self._write_unpersisted_memory_tail_locked(
@@ -879,24 +871,9 @@ class Cache365PriceManager(Cache24PriceManager):
         try:
             archive_size = os.path.getsize(archive)
             keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
-            with open(archive, "rb") as source:
-                source.seek(max(0, archive_size - keep_bytes))
-                if source.tell() > 0:
-                    source.readline()
-                tail = source.read()
-                if not tail.strip() and archive_size > 0:
-                    source.seek(0)
-                    lines = [
-                        line
-                        for line in source.read().splitlines(keepends=True)
-                        if line.strip()
-                    ]
-                    tail = lines[-1] if lines else b""
+            decoded_tail = read_tail_complete_lines_text(archive, keep_bytes)
             with atomic_text_writer(self.filename) as target:
-                decoded_tail = tail.decode("utf-8", errors="ignore")
                 target.write(decoded_tail)
-                if decoded_tail and not decoded_tail.endswith("\n"):
-                    target.write("\n")
                 self._write_unpersisted_memory_tail_locked(
                     target, original_cache, original_persisted_counts
                 )
@@ -1473,9 +1450,8 @@ def resolve_cached_symbol_price(
                 if not os.path.exists(jsonl_path):
                     continue
                 for line in reversed(read_tail_lines(jsonl_path, max_bytes=64 * 1024)):
-                    try:
-                        rec = json.loads(line)
-                    except Exception:
+                    rec = parse_json_payload(line, default=None)
+                    if rec is None:
                         continue
                     pt = CachePriceManagerBase.extract_jsonl_series_point(rec, cands_upper)
                     if pt is not None and (px_f := safe_pos_float(pt[1], default=None)) is not None:
@@ -1524,12 +1500,37 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
     """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
 
     MIN_SAME_PRICE_EMIT_MS = 1000
+    _stream_init_hooks: list[Callable[..., None]] = []
 
     def __init__(self, symbols=None, *, ws_url: str):
         super().__init__(symbols=symbols)
         self.ws_url = ws_url
         self._last_emit_ts_ms: dict[str, int] = {}
         self._last_emit_price: dict[str, float] = {}
+        self._extra_subscribe_builders: list[Callable[[], tuple[str, ...]]] = []
+        self._channel_handlers: dict[str, Callable[[object, int], None]] = {}
+        self._tick_listeners: list[Callable[[int], None]] = []
+
+    @classmethod
+    def register_stream_init_hook(cls, hook: Callable[..., None]) -> None:
+        if "_stream_init_hooks" not in cls.__dict__:
+            cls._stream_init_hooks = []
+        if hook not in cls._stream_init_hooks:
+            cls._stream_init_hooks.append(hook)
+
+    def register_channel_handler(
+        self,
+        channel: str,
+        handler: Callable[[object, int], None],
+        *,
+        subscribe_builder: Optional[Callable[[], tuple[str, ...]]] = None,
+        on_tick: Optional[Callable[[int], None]] = None,
+    ) -> None:
+        self._channel_handlers[str(channel)] = handler
+        if callable(subscribe_builder):
+            self._extra_subscribe_builders.append(subscribe_builder)
+        if callable(on_tick):
+            self._tick_listeners.append(on_tick)
 
     def remove_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
@@ -1614,14 +1615,19 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
         raise NotImplementedError
 
     def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
-        return ()
+        payloads: list[str] = []
+        for builder in self._extra_subscribe_builders:
+            built = builder()
+            if built:
+                payloads.extend(p for p in built if p)
+        return tuple(payloads)
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         raise NotImplementedError
 
 
 class HyperliquidPriceStream(_VenuePriceStreamBase):
-    """Real-time Hyperliquid WebSocket stream (``allMids`` + optional ``userFills``)."""
+    """Real-time Hyperliquid WebSocket price stream (``allMids`` + registered channel extensions)."""
 
     DEFAULT_WS_URL = "wss://api.hyperliquid.xyz/ws"
     _KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
@@ -1632,24 +1638,13 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         *,
         market_api=None,
         ws_url: str = DEFAULT_WS_URL,
-        user_address: Optional[str] = None,
-        fills_cache_path: Optional[str] = None,
-        resolve_env_user_address: Optional[bool] = None,
+        **extension_kwargs,
     ):
         super().__init__(symbols=symbols, ws_url=ws_url)
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
-        self._fills_cache_path = fills_cache_path
-        self._fills_ws_seeded = False
-        self._last_fills_touch_ms = 0
-        if user_address is None and is_live_network_backfill_enabled(resolve_env_user_address):
-            hl_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "hyperliquid"
-            )
-            user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(
-                hl_dir, "HL_ACCOUNT_ADDRESS"
-            )
-        self._user_address = str(user_address or "").strip() or None
+        for hook in getattr(self, "_stream_init_hooks", ()):
+            hook(self, **extension_kwargs)
 
     def remove_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
@@ -1709,83 +1704,20 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         return resolved
 
     def _build_subscribe_payload(self) -> str:
-        return json.dumps(
+        return encode_json_payload(
             {"method": "subscribe", "subscription": {"type": "allMids"}}
         )
 
-    def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
-        self._fills_ws_seeded = False
-        if not self._user_address:
-            return ()
-        return (
-            json.dumps(
-                {
-                    "method": "subscribe",
-                    "subscription": {
-                        "type": "userFills",
-                        "user": self._user_address,
-                    },
-                }
-            ),
-        )
-
-    def _resolve_fills_cache_file(self) -> str:
-        return (
-            str(self._fills_cache_path)
-            if self._fills_cache_path
-            else cache_path(CACHE_HYPERLIQUID_TRADE_FILENAME)
-        )
-
-    def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:
-        from cacheaccount import CacheTradeManager
-        from providers.hyperliquid_provider import HyperliquidProvider
-
-        with self._lock:
-            symbols = self._symbols
-        parsed = HyperliquidProvider.extract_ws_user_fills(
-            data, symbols, candidate_mids_fn=self._candidate_mids_keys
-        )
-        if parsed is None:
-            return
-        is_snapshot, fills_by_symbol = parsed
-        CacheTradeManager.merge_venue_fills_snapshot(
-            self._resolve_fills_cache_file(),
-            fills_by_symbol,
-            now_ms=ts_ms,
-            is_snapshot=is_snapshot,
-            touch_symbols=symbols,
-        )
-        if is_snapshot:
-            self._fills_ws_seeded = True
-        self._last_fills_touch_ms = ts_ms
-
-    def _touch_fills_cache_if_needed(self, ts_ms: int) -> None:
-        if (
-            not self._fills_ws_seeded
-            or (ts_ms - self._last_fills_touch_ms) < 15_000
-        ):
-            return
-        try:
-            from cacheaccount import CacheTradeManager
-
-            with self._lock:
-                symbols = self._symbols
-            CacheTradeManager.touch_venue_ws_fetchtimes(
-                self._resolve_fills_cache_file(), symbols, ts_ms
-            )
-            self._last_fills_touch_ms = ts_ms
-        except Exception:
-            pass
-
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
-            envelope = json.loads(raw) if isinstance(raw, str) else raw
+            envelope = parse_json_payload(raw) if isinstance(raw, str) else raw
             if not isinstance(envelope, dict):
                 return
             ts_ms = resolve_now_ms(now_ms)
             channel = envelope.get("channel")
-            if channel == "userFills":
-                self._handle_user_fills(envelope.get("data"), ts_ms=ts_ms)
+            handler = self._channel_handlers.get(str(channel or ""))
+            if handler is not None:
+                handler(envelope.get("data"), ts_ms=ts_ms)
                 return
             if channel != "allMids":
                 return
@@ -1807,7 +1739,8 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
                     with self._lock:
                         self._prices[s_sym] = px
                     self._notify_subscribers(s_sym, [[ts_ms, px]])
-            self._touch_fills_cache_if_needed(ts_ms)
+            for tick_fn in self._tick_listeners:
+                tick_fn(ts_ms)
         except Exception:
             return
 
@@ -1870,7 +1803,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
     def _build_subscribe_payload(self) -> str:
         with self._lock:
             pairs = list(self._ws_pairs)
-        return json.dumps(
+        return encode_json_payload(
             {
                 "event": "subscribe",
                 "pair": pairs,
@@ -1889,7 +1822,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
-            msg = json.loads(raw) if isinstance(raw, str) else raw
+            msg = parse_json_payload(raw) if isinstance(raw, str) else raw
             ts_ms = resolve_now_ms(now_ms)
             if isinstance(msg, dict):
                 ev = str(msg.get("event") or "").strip().lower()

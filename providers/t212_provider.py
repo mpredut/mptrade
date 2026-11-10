@@ -484,12 +484,14 @@ class T212Provider(MarketDataProvider):
         if side is not None:
             if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
                 return []
-        rows = None if (authoritative or publish_cache) else self._fills_from_cache(symbol)
-        if rows is None and (authoritative or publish_cache or self._fills_cache_file()):
-            rows = self._fills_from_api(symbol, publish_cache=publish_cache)
-        if rows:
-            cutoff_ms = (time.time() - since_val) * 1000.0
-            cached_orders = aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
+        if authoritative or publish_cache or self._fills_cache_file():
+            cached_orders = super().get_orders(
+                symbol,
+                side,
+                since_val,
+                authoritative=authoritative,
+                publish_cache=publish_cache,
+            )
             if cached_orders:
                 return cached_orders
         if side is not None and normalize_side(side) != "BUY":

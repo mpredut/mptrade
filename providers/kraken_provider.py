@@ -595,6 +595,35 @@ class KrakenProvider(MarketDataProvider):
         )
 
     @classmethod
+    def extract_ws_own_trades(
+        cls, data: object, *, pairs=None
+    ) -> Optional[dict[str, list[dict]]]:
+        """Extract normalized fills grouped by configured symbol from a Kraken ``ownTrades`` WS frame."""
+        if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
+            return None
+        fills_by_sym: dict[str, list[dict]] = {}
+        for entry in (data[0] if isinstance(data[0], list) else ()):
+            if not isinstance(entry, dict):
+                continue
+            for txid, tr in entry.items():
+                if not isinstance(tr, dict):
+                    continue
+                n = cls.normalize_ws_trade(txid, tr)
+                if (
+                    n.get("side") not in {"BUY", "SELL"}
+                    or n.get("price", 0.0) <= 0
+                    or n.get("qty", 0.0) <= 0
+                    or n.get("time", 0) <= 0
+                ):
+                    continue
+                sym = cls.match_configured_pair(n.get("symbol"), pairs=pairs)
+                if sym is None:
+                    continue
+                n["symbol"] = sym
+                fills_by_sym.setdefault(sym, []).append(n)
+        return fills_by_sym
+
+    @classmethod
     def ledger_to_fills(cls, ledger: object) -> List[dict]:
         """Group Kraken ``Ledgers`` entries by ``refid`` into normalized fills."""
         if not isinstance(ledger, dict):

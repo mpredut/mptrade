@@ -26,7 +26,6 @@ Run: cd kraken && python kraken_cachemanager.py
 """
 import os
 import sys
-import json
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,7 +50,7 @@ from credentials import CredentialConfigurationError, kraken_credentials
 from instrument_registry import symbols_for
 from kraken_client import KrakenClient
 from providers.kraken_provider import KrakenProvider
-from state_io import save_json_state
+from state_io import encode_json_payload, parse_json_payload, save_json_state
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
@@ -85,6 +84,7 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 _build_kraken_cache_fill = KrakenProvider.build_cache_fill
 _normalize = KrakenProvider.normalize_ws_trade
 _ledger_to_fills = KrakenProvider.ledger_to_fills
+_extract_ws_own_trades = KrakenProvider.extract_ws_own_trades
 
 
 def _load_initial_cache(path):
@@ -183,7 +183,7 @@ def ws_loop(client):
             token = "" if not isinstance(res, dict) or isinstance(res.get("token"), bool) else str(res.get("token") or "").strip()
             if not token:
                 raise RuntimeError("Kraken GetWebSocketsToken returned no token")
-            ws.send(json.dumps({
+            ws.send(encode_json_payload({
                 "event": "subscribe",
                 "subscription": {"name": "ownTrades", "token": token},
             }))
@@ -196,13 +196,13 @@ def ws_loop(client):
                 pass
 
     def on_message(ws, msg):
-        try:
-            data = json.loads(msg)
-        except ValueError:
+        data = parse_json_payload(msg)
+        if data is None:
             return
         now_ms = resolve_now_ms()
         # ownTrades: [ [ {txid: {...}}, ... ], "ownTrades", {"sequence": N} ]
-        if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
+        fills_by_sym = _extract_ws_own_trades(data, pairs=PAIRS)
+        if fills_by_sym is None:
             # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
             if isinstance(data, dict):
                 ev = str(data.get("event") or "").strip().lower()
@@ -230,26 +230,9 @@ def ws_loop(client):
                         last_flush_ms[0] = now_ms
                     _touch_kraken_heartbeat()
             return
-        changed = False
-        for entry in (data[0] if isinstance(data[0], list) else ()):
-            if not isinstance(entry, dict):
-                continue
-            for txid, tr in entry.items():
-                if not isinstance(tr, dict):
-                    continue
-                n = _normalize(txid, tr)
-                if n.get("side") not in {"BUY", "SELL"} or n["price"] <= 0 or n["qty"] <= 0 or n["time"] <= 0:
-                    continue
-                sym = _match_configured_pair(n.get("symbol"))
-                if sym is None:
-                    continue
-                n["symbol"] = sym
-                bucket = cache["items"].setdefault(sym, [])
-                if not any(t["id"] == n["id"] for t in bucket):
-                    bucket.append(n)
-                    bucket.sort(key=lambda t: t["time"])
-                    cache["fetchtime"][sym] = now_ms
-                    changed = True
+        changed = CacheTradeManager.merge_venue_fills_into_dict(
+            cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
+        )
         if changed or (now_ms - last_flush_ms[0]) >= 15_000:
             _touch_ws_fetchtimes(cache, now_ms)
             save_json_state(CACHE_FILE, cache, indent=1)  # immediate fill write for zero lag

@@ -20,7 +20,9 @@ import weakref
 
 from botcore import (
     _parse_bool_flag,
+    extract_timestamp_ms,
     load_dotenv,
+    normalize_timestamp_ms,
     required_float_env,
     required_int_env,
     resolve_patched_attr,
@@ -37,22 +39,22 @@ from cachepaths import (
     migrate_legacy_filename_if_needed,
 )
 from lock import FileLock
-from providers.order_ohlc_utils import (
-    extract_timestamp_ms,
-    normalize_timestamp_ms,
-)
 from state_io import (
+    append_jsonl_bucket_delta,
     atomic_gzip_file,
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json,
+    canonical_json_key,
     commit_file_and_meta,
     discard_generation_file,
+    format_jsonl_bucket_line,
     generation_lock_path,
     meta_file_path,
     previous_generation_path,
     prune_rotated_archives,
     read_json_dict,
+    read_jsonl_bucket_map,
     restore_previous_generation,
     truncate_file_bytes,
 )
@@ -143,9 +145,7 @@ def _coerce_symbol_list(symbols) -> list[str]:
         return []
 
 
-def _jsonl_line(symbol, item) -> str:
-    """Serialize one ``(symbol, item)`` pair as a compact JSONL line."""
-    return json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
+_jsonl_line = format_jsonl_bucket_line
 
 
 class CacheManagerInterface(ABC):
@@ -717,31 +717,21 @@ class CacheManagerInterface(ABC):
     def _save_jsonl_append(self):
         """Append only items added since the last flush without rewriting the file."""
         previous_counts = {}
-        candidate_counts = {}
-        initial_size = None
         try:
             with self.lock:
                 if self._should_compact_before_append_locked():
                     return self.compact_jsonl()
                 previous_counts = dict(self._persisted_counts)
-                candidate_counts = dict(previous_counts)
-                with open(self.filename, "a+", encoding="utf-8") as f:
-                    initial_size = os.fstat(f.fileno()).st_size
-                    for symbol, items in self.cache.items():
-                        start = self._persisted_counts.get(symbol, 0)
-                        if start > len(items):
-                            start = 0
-                        for item in items[start:]:
-                            f.write(_jsonl_line(symbol, item))
-                        candidate_counts[symbol] = len(items)
-                    f.flush()
-                    os.fsync(f.fileno())
+                candidate_counts = append_jsonl_bucket_delta(
+                    self.filename,
+                    self.cache,
+                    previous_counts,
+                    on_rollback_fn=self._truncate_failed_jsonl_append,
+                )
                 self._persisted_counts = candidate_counts
                 return self._write_meta(self._build_basic_meta_locked(candidate_counts))
         except Exception as e:
             self._persisted_counts = previous_counts
-            if initial_size is not None:
-                self._truncate_failed_jsonl_append(initial_size)
             print(f"[{self.cls_name}][Error] append JSONL {self.filename}: {e}")
             return False
 
@@ -787,23 +777,7 @@ class CacheManagerInterface(ABC):
                 except OSError:
                     pass
             if os.path.exists(self.filename):
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                            if (
-                                not isinstance(rec, dict)
-                                or not isinstance(rec.get("s"), str)
-                                or rec.get("i") is None
-                            ):
-                                raise ValueError("invalid JSONL record")
-                            self.cache.setdefault(rec["s"], []).append(rec["i"])
-                        except Exception:
-                            had_invalid_line = True
-                            continue
+                self.cache, had_invalid_line = read_jsonl_bucket_map(self.filename)
             self._legacy_jsonl_needs_rewrite = had_invalid_line
             if not self.read_only and not had_invalid_line and os.path.exists(backup_path):
                 discard_generation_file(backup_path)
@@ -824,7 +798,7 @@ class CacheManagerInterface(ABC):
                     seen = set()
                     deduped = []
                     for item in items:
-                        k = json.dumps(item, sort_keys=True)
+                        k = canonical_json_key(item)
                         if k not in seen:
                             seen.add(k)
                             deduped.append(item)
@@ -961,10 +935,10 @@ class CacheManagerInterface(ABC):
         """Fetch remote items; subclasses must implement this method."""
 
     def filter_new_items(self, cache_items, new_items):
-        seen = {json.dumps(it, sort_keys=True) for it in cache_items}
+        seen = {canonical_json_key(it) for it in cache_items}
         unique_new = []
         for item in new_items:
-            key = json.dumps(item, sort_keys=True)
+            key = canonical_json_key(item)
             if key not in seen:
                 seen.add(key)
                 unique_new.append(item)

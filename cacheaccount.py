@@ -32,8 +32,14 @@ from botcore import (
     _parse_bool_flag,
     _ts_ms_to_s,
     clean_order_id,
+    env_value,
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    is_live_network_backfill_enabled,
     normalize_epoch_sec,
     normalize_side,
     resolve_now_ms,
@@ -70,17 +76,12 @@ from cachepaths import (
 import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
-from providers.order_ohlc_utils import (
-    extract_order_id,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-)
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json,
     discard_generation_file,
+    encode_json_payload,
     meta_file_path,
     read_json_dict,
     read_json_dict_recovering,
@@ -1105,41 +1106,22 @@ class CacheTradeManager(CacheAccountManagerBase):
             previous_revision = self._persisted_revision
             previous_boundary = self._persisted_committed_bytes
             previous_digest = self._persisted_content_digest
-            initial_size = None
             try:
-                exists = os.path.exists(self.filename)
-                mode = "r+b" if exists else "w+b"
-                with open(self.filename, mode) as handle:
-                    actual_size = os.fstat(handle.fileno()).st_size
-                    if previous_version:
-                        if actual_size < previous_boundary:
-                            raise OSError(
-                                "Trade cache is shorter than its committed boundary"
-                            )
-                        initial_size = previous_boundary
-                        if actual_size != previous_boundary:
-                            handle.truncate(previous_boundary)
-                    else:
-                        initial_size = actual_size
-                    handle.seek(initial_size)
-                    candidate_counts = dict(previous_counts)
-                    wrote_rows = False
-                    appended_records = []
-                    for symbol, items in self.cache.items():
-                        start = previous_counts.get(symbol, 0)
-                        for item in items[start:]:
-                            if (
-                                not self._is_valid_item(item)
-                                or str(item["symbol"]).upper() != str(symbol).upper()
-                            ):
-                                raise ValueError("invalid Trade row in append delta")
-                            handle.write(_jsonl_line(symbol, item).encode("utf-8"))
-                            wrote_rows = True
-                            appended_records.append((symbol, item))
-                        candidate_counts[symbol] = len(items)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                    committed_bytes = handle.tell()
+                (
+                    initial_size,
+                    committed_bytes,
+                    candidate_counts,
+                    wrote_rows,
+                    appended_records,
+                ) = _cache_integrity.append_versioned_trade_jsonl(
+                    self.filename,
+                    self.cache,
+                    previous_counts,
+                    previous_version=previous_version,
+                    previous_boundary=previous_boundary,
+                    is_valid_item_fn=self._is_valid_item,
+                    on_rollback_fn=self._truncate_failed_jsonl_append,
+                )
 
                 content_digest = self._trade_records_digest(
                     appended_records, previous_digest
@@ -1176,8 +1158,6 @@ class CacheTradeManager(CacheAccountManagerBase):
                 self._persisted_revision = previous_revision
                 self._persisted_committed_bytes = previous_boundary
                 self._persisted_content_digest = previous_digest
-                if initial_size is not None:
-                    self._truncate_failed_jsonl_append(initial_size)
                 print(f"[{self.cls_name}][Error] append JSONL {self.filename}: {exc}")
                 return False
 
@@ -1365,62 +1345,12 @@ class CacheTradeManager(CacheAccountManagerBase):
                 legacy_metadata = {}
 
         with self.lock:
-            self.cache = {}
-            seen_trade_items = defaultdict(dict)
-            if os.path.exists(self.filename):
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                            if (
-                                not isinstance(rec, dict)
-                                or not isinstance(rec.get("s"), str)
-                                or not isinstance(rec.get("i"), dict)
-                                or not self._is_valid_item(rec["i"])
-                                or str(rec["i"]["symbol"]).upper()
-                                != str(rec["s"]).upper()
-                            ):
-                                raise ValueError("invalid legacy Trade row")
-                            trade_id = str(int(rec["i"]["id"]))
-                            signature = self._trade_semantic_signature(rec["i"])
-                            symbol_items = seen_trade_items[str(rec["s"]).upper()]
-                            if trade_id in symbol_items:
-                                if symbol_items[trade_id] != signature:
-                                    raise ValueError(
-                                        "conflicting legacy Trade rows for "
-                                        f"immutable ID {trade_id}"
-                                    )
-                                continue
-                            symbol_items[trade_id] = signature
-                            self.cache.setdefault(rec["s"], []).append(rec["i"])
-                        except Exception as exc:
-                            expected_counts = legacy_metadata.get("counts")
-                            actual_counts = {
-                                symbol: len(items)
-                                for symbol, items in self.cache.items()
-                            }
-                            recoverable_tail = (
-                                isinstance(exc, json.JSONDecodeError)
-                                and not any(value.strip() for value in f)
-                                and isinstance(expected_counts, dict)
-                                and all(
-                                    isinstance(symbol, str)
-                                    and not isinstance(count, bool)
-                                    and isinstance(count, int)
-                                    and count >= 0
-                                    for symbol, count in expected_counts.items()
-                                )
-                                and self._nonzero_counts(expected_counts)
-                                == actual_counts
-                            )
-                            if recoverable_tail:
-                                break
-                            raise account_cache_health.AccountCacheNotReady(
-                                self._account_reader_reason()
-                            ) from exc
+            self.cache = _cache_integrity.read_legacy_trade_jsonl_strict(
+                self.filename,
+                legacy_metadata,
+                is_valid_item_fn=self._is_valid_item,
+                reader_reason=self._account_reader_reason(),
+            )
             self._legacy_jsonl_needs_rewrite = True
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             self._hydrate_fetchtimes_from_mapping_locked(
@@ -2420,5 +2350,99 @@ def stop_account_ws_streams(shutdown_deadline: float) -> None:
             )
         except Exception:
             pass
+
+
+def attach_hyperliquid_user_fills_bridge(
+    ws_stream,
+    *,
+    user_address: Optional[str] = None,
+    fills_cache_path: Optional[str] = None,
+    resolve_env_user_address: Optional[bool] = None,
+    **_unused_kwargs,
+) -> None:
+    """Attach the account-domain ``userFills`` WebSocket bridge onto a Hyperliquid stream instance."""
+    ws_stream._fills_cache_path = fills_cache_path
+    ws_stream._fills_ws_seeded = False
+    ws_stream._last_fills_touch_ms = 0
+    if user_address is None and is_live_network_backfill_enabled(resolve_env_user_address):
+        hl_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "hyperliquid"
+        )
+        user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(
+            hl_dir, "HL_ACCOUNT_ADDRESS"
+        )
+    ws_stream._user_address = str(user_address or "").strip() or None
+
+    def _resolve_fills_cache_file() -> str:
+        return (
+            str(ws_stream._fills_cache_path)
+            if ws_stream._fills_cache_path
+            else cache_path(CACHE_HYPERLIQUID_TRADE_FILENAME)
+        )
+
+    def _build_user_fills_subscribe_payloads() -> tuple[str, ...]:
+        ws_stream._fills_ws_seeded = False
+        if not ws_stream._user_address:
+            return ()
+        return (
+            encode_json_payload(
+                {
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "userFills",
+                        "user": ws_stream._user_address,
+                    },
+                }
+            ),
+        )
+
+    def _handle_user_fills(data: object, *, ts_ms: int) -> None:
+        from providers.hyperliquid_provider import HyperliquidProvider
+
+        with ws_stream._lock:
+            symbols = ws_stream._symbols
+        parsed = HyperliquidProvider.extract_ws_user_fills(
+            data, symbols, candidate_mids_fn=ws_stream._candidate_mids_keys
+        )
+        if parsed is None:
+            return
+        is_snapshot, fills_by_symbol = parsed
+        CacheTradeManager.merge_venue_fills_snapshot(
+            _resolve_fills_cache_file(),
+            fills_by_symbol,
+            now_ms=ts_ms,
+            is_snapshot=is_snapshot,
+            touch_symbols=symbols,
+        )
+        if is_snapshot:
+            ws_stream._fills_ws_seeded = True
+        ws_stream._last_fills_touch_ms = ts_ms
+
+    def _touch_fills_cache_if_needed(ts_ms: int) -> None:
+        if (
+            not ws_stream._fills_ws_seeded
+            or (ts_ms - ws_stream._last_fills_touch_ms) < 15_000
+        ):
+            return
+        try:
+            with ws_stream._lock:
+                symbols = ws_stream._symbols
+            CacheTradeManager.touch_venue_ws_fetchtimes(
+                _resolve_fills_cache_file(), symbols, ts_ms
+            )
+            ws_stream._last_fills_touch_ms = ts_ms
+        except Exception:
+            pass
+
+    ws_stream._resolve_fills_cache_file = _resolve_fills_cache_file
+    ws_stream._handle_user_fills = _handle_user_fills
+    ws_stream._touch_fills_cache_if_needed = _touch_fills_cache_if_needed
+    if hasattr(ws_stream, "register_channel_handler"):
+        ws_stream.register_channel_handler(
+            "userFills",
+            _handle_user_fills,
+            subscribe_builder=_build_user_fills_subscribe_payloads,
+            on_tick=_touch_fills_cache_if_needed,
+        )
 
 

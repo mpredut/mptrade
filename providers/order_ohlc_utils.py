@@ -6,14 +6,24 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
+    _COST_EXEC_KEY_PAIRS,
+    _ORDER_ID_KEYS,
+    _PRICE_KEYS,
+    _QTY_KEYS,
     _TIMESTAMP_KEYS,
     _first_mapped,
     _is_fresh_obs_ts,
+    _nonneg_abs_float,
     _parse_bool_flag,
     _parse_epoch_or_iso_s,
+    _pos_abs_float,
     _ts_ms_to_s,
     clean_order_id,
     exact_pos_int,
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
     normalize_epoch_sec,
@@ -32,12 +42,6 @@ class ProviderError(Exception):
     """Venue-neutral error raised by strict strategy-execution adapters."""
 
 
-_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
-_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
-_QTY_KEYS = (
-    "qty", "quantity", "executedQty", "executed_qty", "filledQuantity", "filledQty", "filled_qty", "vol_exec",
-    "sz", "vol", "origQty", "origSz", "orig_qty", "requested_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
-)
 _ORIG_QTY_KEYS = (
     "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty", "requested_qty",
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
@@ -51,118 +55,9 @@ _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
 
-def _pos_abs_float(value: Any) -> Optional[float]:
-    val = abs(safe_float(value, default=0.0))
-    return val if val > 0.0 else None
-
-
-def _nonneg_abs_float(value: Any) -> Optional[float]:
-    val = safe_float(value, default=None)
-    return abs(val) if val is not None else None
-
-
-def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
-    """Extract and normalize a venue order ID from any response shape."""
-    if order is None or isinstance(order, bool):
-        return default
-    if isinstance(order, (list, tuple)):
-        for item in order:
-            if (cleaned := extract_order_id(item)) is not None:
-                return cleaned
-        return default
-    if hasattr(order, "order_id") and hasattr(order, "state"):
-        cleaned = clean_order_id(getattr(order, "order_id", None))
-        return cleaned if cleaned is not None else default
-    if isinstance(order, dict):
-        return _first_mapped(order, _ORDER_ID_KEYS, extract_order_id, default)
-    cleaned = clean_order_id(order)
-    return cleaned if cleaned is not None else default
-
-
 def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bool:
     """Return True when any market/force flag in args or kwargs is truthy."""
     return any(_parse_bool_flag(v, False) for v in (force, market, kwargs.get("market"), kwargs.get("force")))
-
-
-def extract_order_side(order: Any) -> str:
-    """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
-    if not isinstance(order, dict):
-        return ""
-    s_norm = _first_mapped(order, ("side", "S", "dir"), lambda v: normalize_side(v) or None)
-    if s_norm:
-        return s_norm
-    descr = order.get("descr")
-    for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
-        if (t_norm := normalize_side(raw_type)) in ("BUY", "SELL"):
-            return t_norm
-    raw_buyer = order.get("isBuyer")
-    if raw_buyer is not None:
-        parsed_b = _parse_bool_flag(raw_buyer, None)
-        if parsed_b is not None:
-            return "BUY" if parsed_b else "SELL"
-        if isinstance(raw_buyer, str) and (b_norm := raw_buyer.strip().lower()) in ("b", "buy", "s", "sell"):
-            return "BUY" if b_norm.startswith("b") else "SELL"
-    for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
-        sq = safe_float(order.get(sq_key), default=0.0)
-        if sq < 0.0:
-            return "SELL"
-        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order):
-            return "BUY"
-    return ""
-
-
-_COST_EXEC_KEY_PAIRS = (
-    ("cummulativeQuoteQty", "executedQty"),
-    ("cummulativeQuoteQty", "qty"),
-    ("cummulativeQuoteQty", "quantity"),
-    ("quoteQty", "qty"),
-    ("quoteQty", "quantity"),
-    ("cost", "vol_exec"),
-    ("cost", "vol"),
-    ("filledValue", "filledQuantity"),
-    ("Y", "l"),
-    ("Z", "z"),
-)
-
-
-def extract_order_price(order: Any, default: float = 0.0) -> float:
-    """Extract order/fill price from any venue shape."""
-    if not isinstance(order, dict):
-        return default
-    val = _first_mapped(order, _PRICE_KEYS, lambda v: safe_pos_float(v, default=None))
-    if val is not None:
-        return val
-    descr = order.get("descr")
-    if isinstance(descr, dict) and (val := safe_pos_float(descr.get("price"), default=None)) is not None:
-        return val
-    for cost_key, exec_key in _COST_EXEC_KEY_PAIRS:
-        if cost_key in order and exec_key in order:
-            cost_val = _pos_abs_float(order.get(cost_key))
-            exec_val = _pos_abs_float(order.get(exec_key))
-            if cost_val and exec_val and (res := safe_pos_float(cost_val / exec_val, default=None)) is not None:
-                return res
-    fills = order.get("fills")
-    if isinstance(fills, list) and fills:
-        total_quote, total_qty = 0.0, 0.0
-        for f in fills:
-            if isinstance(f, dict):
-                f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
-                f_qty = _pos_abs_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))))
-                if f_px is not None and f_qty is not None:
-                    total_quote += f_px * f_qty
-                    total_qty += f_qty
-        if total_qty > 0 and (res := safe_pos_float(total_quote / total_qty, default=None)) is not None:
-            return res
-    msg_str = order.get("msg")
-    if isinstance(msg_str, str) and "@" in msg_str and msg_str.strip().lower().startswith("filled "):
-        if (msg_px := safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)) is not None:
-            return msg_px
-    return default
-
-
-def extract_order_qty(order: Any, default: float = 0.0) -> float:
-    """Extract order/fill quantity from any venue shape."""
-    return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
 
 
 def extract_executed_qty(order: Any, default: float = 0.0) -> float:
