@@ -113,6 +113,50 @@ _current_price_instance: Optional[CacheCurrentPriceManager] = None
 _current_price_lock = threading.RLock()
 
 
+def _resolve_cache_mode(
+    mode: Optional[str] = None,
+    *,
+    sync_to_file: Optional[bool] = None,
+    start_sync: Optional[bool] = None,
+    config_read_only: bool = False,
+) -> tuple[str, bool, bool]:
+    """Resolve ``(mode, sync_to_file, start_periodic_sync)`` across the 3 cache operating models:
+
+    1. ``writer`` (``sync_to_file=True``): starts from persistent disk state, updates memory, and persists to disk.
+    2. ``live_reader`` (``mode='live_reader'`` or ``start_sync=True, sync_to_file=False``): starts from persistent disk
+       state once and increments data in memory without writing to disk or repeatedly re-checking disk state.
+    3. ``disk_reader`` (default, ``mode='disk_reader'``, ``sync_to_file=False``): passive reader that never increments
+       data in memory on its own and always resynchronizes with the persistent disk state.
+    """
+    if mode is not None:
+        norm_mode = str(mode).strip().lower()
+        if norm_mode not in CacheManagerInterface.VALID_MODES:
+            raise ValueError(
+                f"Invalid cache mode {mode!r}; expected one of {sorted(CacheManagerInterface.VALID_MODES)}"
+            )
+    else:
+        norm_mode = None
+
+    sync_file_flag = (
+        _parse_bool_flag(sync_to_file, default=False)
+        if sync_to_file is not None
+        else (norm_mode == CacheManagerInterface.MODE_WRITER)
+    )
+    start_sync_flag = (
+        _parse_bool_flag(start_sync, default=False)
+        if start_sync is not None
+        else False
+    )
+
+    if config_read_only:
+        return CacheManagerInterface.MODE_DISK_READER, False, False
+    if sync_file_flag or norm_mode == CacheManagerInterface.MODE_WRITER:
+        return CacheManagerInterface.MODE_WRITER, True, True
+    if norm_mode == CacheManagerInterface.MODE_LIVE_READER or start_sync_flag:
+        return CacheManagerInterface.MODE_LIVE_READER, False, start_sync_flag
+    return CacheManagerInterface.MODE_DISK_READER, False, False
+
+
 def get_current_price_manager(
     ws_manager=None,
     symbols=None,
@@ -120,18 +164,28 @@ def get_current_price_manager(
     start_sync=False,
     provider_names=None,
     read_only=None,
+    *,
+    sync_to_file=False,
+    mode=None,
 ) -> CacheCurrentPriceManager:
-    """Return or lazily create the CacheCurrentPriceManager singleton (read-only consumer by default)."""
+    """Return or lazily create the CacheCurrentPriceManager singleton (disk_reader by default)."""
     global _current_price_instance
-    start_sync = _parse_bool_flag(start_sync, default=False)
+    resolved_mode, sync_file_flag, start_periodic = _resolve_cache_mode(
+        mode,
+        sync_to_file=sync_to_file,
+        start_sync=start_sync,
+    )
+    if ws_manager is not None and resolved_mode == CacheManagerInterface.MODE_DISK_READER:
+        resolved_mode = CacheManagerInterface.MODE_LIVE_READER
     inst = _current_price_instance
     if (
         inst is not None
         and sync_ts is None
         and not provider_names
         and ws_manager is None
+        and not sync_file_flag
         and (
-            not start_sync
+            not start_periodic
             or (
                 (thread := inst.thread) is not None
                 and thread.is_alive()
@@ -139,6 +193,11 @@ def get_current_price_manager(
             )
         )
     ):
+        if (
+            resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+            and not getattr(inst, "save_state", False)
+        ):
+            inst.mode = CacheManagerInterface.MODE_LIVE_READER
         return inst
     with _current_price_lock:
         if _current_price_instance is not None:
@@ -148,8 +207,15 @@ def get_current_price_manager(
                 _current_price_instance.bind_providers(provider_names)
             if ws_manager is not None:
                 _current_price_instance.attach_ws_manager(ws_manager)
-            if start_sync:
-                _current_price_instance.periodic_sync(save_state=False)
+            if sync_file_flag:
+                _current_price_instance.sync_to_file = True
+            elif (
+                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+                and not _current_price_instance.save_state
+            ):
+                _current_price_instance.mode = CacheManagerInterface.MODE_LIVE_READER
+            if start_periodic:
+                _current_price_instance.periodic_sync(save_state=sync_file_flag)
             return _current_price_instance
         if symbols is None:
             _syms, _, _default_providers = tracked_price_instruments()
@@ -171,13 +237,16 @@ def get_current_price_manager(
             provider_names=provider_names,
             api_client=api,
             read_only=(
-                (not start_sync)
+                (not start_periodic and not sync_file_flag)
                 if read_only is None
                 else _parse_bool_flag(read_only, default=False)
             ),
         )
-        if start_sync:
-            instance.periodic_sync(save_state=False)
+        instance.mode = resolved_mode
+        if sync_file_flag:
+            instance.sync_to_file = True
+        if start_periodic:
+            instance.periodic_sync(save_state=sync_file_flag)
         _current_price_instance = instance
     return _current_price_instance
 
@@ -318,7 +387,9 @@ class CacheFactory:
             return
         for manager in cls._iter_managers(instance):
             if (
-                getattr(manager, "read_only", False)
+                getattr(manager, "mode", CacheManagerInterface.MODE_DISK_READER)
+                == CacheManagerInterface.MODE_DISK_READER
+                and getattr(manager, "read_only", False)
                 and not getattr(manager, "save_state", False)
                 and not getattr(manager, "_is_canonical_account_cache", lambda: False)()
                 and hasattr(manager, "resync_mem_file")
@@ -329,20 +400,62 @@ class CacheFactory:
                     pass
 
     @classmethod
-    def get(cls, name, symbols=None, *, start_sync=False, provider_names=None):
-        start_sync = _parse_bool_flag(start_sync, default=False)
+    def _apply_mode_to_instance(
+        cls,
+        instance,
+        resolved_mode: str,
+        sync_file_flag: bool,
+        *,
+        cfg_read_only: bool = False,
+    ) -> None:
+        if instance is None or cfg_read_only:
+            return
+        for manager in cls._iter_managers(instance):
+            if sync_file_flag or resolved_mode == CacheManagerInterface.MODE_WRITER:
+                manager.sync_to_file = True
+            elif (
+                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+                and not getattr(manager, "save_state", False)
+            ):
+                manager.mode = CacheManagerInterface.MODE_LIVE_READER
+
+    @classmethod
+    def get(
+        cls,
+        name,
+        symbols=None,
+        *,
+        sync_to_file=False,
+        mode=None,
+        start_sync=False,
+        provider_names=None,
+    ):
+        resolved_mode, sync_file_flag, start_periodic = _resolve_cache_mode(
+            mode,
+            sync_to_file=sync_to_file,
+            start_sync=start_sync,
+        )
         if isinstance(symbols, str):
             symbols = _coerce_symbol_list(symbols)
         if name == "ShortTrend":
-            return get_short_trend_manager(symbols=symbols)
+            return get_short_trend_manager(
+                symbols=symbols,
+                writer=(resolved_mode == CacheManagerInterface.MODE_WRITER),
+            )
         inst = cls._instances.get(name)
         if (
             inst is not None
             and symbols is None
             and provider_names is None
-            and (not start_sync or name in cls._sync_started)
+            and not sync_file_flag
+            and (not start_periodic or name in cls._sync_started)
         ):
-            if not start_sync and name not in cls._sync_started:
+            if resolved_mode == CacheManagerInterface.MODE_LIVE_READER:
+                cls._apply_mode_to_instance(inst, resolved_mode, False)
+            elif (
+                resolved_mode == CacheManagerInterface.MODE_DISK_READER
+                and name not in cls._sync_started
+            ):
                 cls._resync_readonly_consumer_instance(name, inst)
             return inst
         with cls._lock:
@@ -350,6 +463,14 @@ class CacheFactory:
                 raise ValueError(f"Unknown cache type: {name}")
             if provider_names is not None and name != "CurrentPrice":
                 raise ValueError("provider_names is supported only for CurrentPrice")
+
+            cfg_read_only = bool(cls._CONFIG[name].get("read_only", False))
+            resolved_mode, sync_file_flag, start_periodic = _resolve_cache_mode(
+                mode,
+                sync_to_file=sync_to_file,
+                start_sync=start_sync,
+                config_read_only=cfg_read_only,
+            )
 
             if name in cls._instances and symbols is not None:
                 inst = cls._instances[name]
@@ -381,8 +502,10 @@ class CacheFactory:
                     for key, value in config.items()
                     if key not in {"class", "filename", "sync_ts", "prefix", "ext"}
                 }
-                cfg_read_only = bool(extra_kwargs.pop("read_only", False))
-                eff_read_only = cfg_read_only or (not start_sync)
+                extra_kwargs.pop("read_only", None)
+                eff_read_only = cfg_read_only or (
+                    not sync_file_flag and not start_periodic
+                )
                 venue_cfg = str(extra_kwargs.get("venue") or "").strip().lower()
                 is_non_binance_venue = bool(venue_cfg and venue_cfg != "binance")
                 if symbols is None:
@@ -411,6 +534,8 @@ class CacheFactory:
                         start_sync=False,
                         provider_names=provider_names,
                         read_only=eff_read_only,
+                        sync_to_file=sync_file_flag,
+                        mode=resolved_mode,
                     )
                     sync_ts = instance.sync_ts
                 elif "prefix" in config:
@@ -436,15 +561,32 @@ class CacheFactory:
                         **extra_kwargs,
                     )
 
-                cls._instances[name] = instance
+                for manager in cls._iter_managers(instance):
+                    manager.mode = resolved_mode
+                    if sync_file_flag:
+                        manager.sync_to_file = True
 
-            if not created and not start_sync and name not in cls._sync_started:
+                cls._instances[name] = instance
+            else:
+                cls._apply_mode_to_instance(
+                    cls._instances[name],
+                    resolved_mode,
+                    sync_file_flag,
+                    cfg_read_only=cfg_read_only,
+                )
+
+            if (
+                not created
+                and resolved_mode == CacheManagerInterface.MODE_DISK_READER
+                and not start_periodic
+                and name not in cls._sync_started
+            ):
                 cls._resync_readonly_consumer_instance(name, cls._instances[name])
 
             if (
-                start_sync
-                and not cls._CONFIG[name].get("read_only")
-                and name not in cls._sync_started
+                start_periodic
+                and not cfg_read_only
+                and (name not in cls._sync_started or sync_file_flag)
             ):
                 if sync_ts is None:
                     sync_ts = (
@@ -454,7 +596,7 @@ class CacheFactory:
                         else cls._CONFIG[name]["sync_ts"]()
                     )
                 for manager in cls._iter_managers(cls._instances[name]):
-                    manager.periodic_sync(sync_ts, False)
+                    manager.periodic_sync(sync_ts, sync_file_flag)
                 cls._sync_started.add(name)
 
             return cls._instances[name]
@@ -629,8 +771,21 @@ CacheFactory.register(
 )
 
 
-def get_cache_manager(name, symbols=None, *, start_sync=False):
-    return CacheFactory.get(name, symbols, start_sync=start_sync)
+def get_cache_manager(
+    name,
+    symbols=None,
+    *,
+    sync_to_file=False,
+    mode=None,
+    start_sync=False,
+):
+    return CacheFactory.get(
+        name,
+        symbols,
+        sync_to_file=sync_to_file,
+        mode=mode,
+        start_sync=start_sync,
+    )
 
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.
@@ -701,9 +856,9 @@ if __name__ == "__main__":
             for idx, manager in enumerate(cache.values()):
                 if name == "365Price":
                     manager._maint_stagger_sec = float(idx * 300)
-                threads.append(manager.periodic_sync(interval))
+                threads.append(manager.periodic_sync(interval, sync_to_file=True))
         else:
-            threads.append(cache.periodic_sync(interval))
+            threads.append(cache.periodic_sync(interval, sync_to_file=True))
         CacheFactory._sync_started.add(name)
 
     try:

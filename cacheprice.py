@@ -1281,6 +1281,18 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             or age_ms > stale_threshold_ms
             or age_ms < -5_000
         ):
+            if getattr(self, "mode", None) == self.MODE_DISK_READER and not self.save_state:
+                self.resync_mem_file()
+                with self.lock:
+                    target_sym = self._resolve_target_symbol_locked(symbol)
+                    entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
+                age_ms = (now_ms - last_ts) if last_ts else None
+        if (
+            entry is None
+            or age_ms is None
+            or age_ms > stale_threshold_ms
+            or age_ms < -5_000
+        ):
             age = age_ms if age_ms is not None else -1
             print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(target_sym, None)
@@ -1303,6 +1315,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._ws_manager = ws_manager
         if ws_manager not in self._ws_managers:
             self._ws_managers.append(ws_manager)
+        if not self.save_state and getattr(self, "mode", None) == self.MODE_DISK_READER:
+            self.mode = self.MODE_LIVE_READER
         ws_manager.subscribe(self)
 
 

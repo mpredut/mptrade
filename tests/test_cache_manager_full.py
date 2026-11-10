@@ -2762,9 +2762,12 @@ def test_cache24pricemanager_external_ohlc_reload_and_merge(tmp_path):
 
 
 def test_consumer_safe_defaults_and_auto_resync(tmp_path):
-    """Verify cache getters default to read-only consumer mode (start_sync=False) and auto-resync from disk."""
+    """Verify the 3 cache operating models (writer, live_reader, disk_reader) and sync_to_file semantics."""
     import inspect
 
+    assert inspect.signature(cm.get_cache_manager).parameters["sync_to_file"].default is False
+    assert inspect.signature(cm.CacheFactory.get).parameters["sync_to_file"].default is False
+    assert inspect.signature(cm.get_current_price_manager).parameters["sync_to_file"].default is False
     assert inspect.signature(cm.get_cache_manager).parameters["start_sync"].default is False
     assert inspect.signature(cm.CacheFactory.get).parameters["start_sync"].default is False
     assert inspect.signature(cm.get_current_price_manager).parameters["start_sync"].default is False
@@ -2774,15 +2777,18 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
     try:
         with patch("utils.cache_path", side_effect=lambda f: str(tmp_path / os.path.basename(f))):
             p24_path = str(tmp_path / "cache_24_price_BTCUSDC.json")
-            t0 = 1700000000
+            t0 = int(time.time()) - 300
             cm.Cache24PriceManager.persist_external_ohlc_series(
                 p24_path,
                 "BTCUSDC",
                 [[t0 * 1000, 90000.0, 1.0]],
                 float(t0),
             )
+            # 1. Model 3 (default): disk_reader -> starts from disk, never increments on its own, auto-resyncs from disk
             managers = cm.get_cache_manager("24Price", symbols=["BTCUSDC"])
             mgr = managers["BTCUSDC"]
+            assert mgr.mode == cm.CacheManagerInterface.MODE_DISK_READER
+            assert mgr.sync_to_file is False
             assert mgr.read_only is True
             assert mgr.save_state is False
             assert mgr.thread is None
@@ -2800,19 +2806,60 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
             managers_again = cm.get_cache_manager("24Price")
             assert managers_again["BTCUSDC"] is mgr
             assert mgr.cache["BTCUSDC"][-1] == [t1 * 1000, 90500.0, 2.0]
+
+            # 2. Model 2: live_reader -> starts from disk, increments in memory, never writes to disk or reloads from disk
+            cm.CacheFactory.remove("24Price")
+            live_managers = cm.get_cache_manager(
+                "24Price",
+                symbols=["BTCUSDC"],
+                sync_to_file=False,
+                mode="live_reader",
+            )
+            live_mgr = live_managers["BTCUSDC"]
+            assert live_mgr.mode == cm.CacheManagerInterface.MODE_LIVE_READER
+            assert live_mgr.sync_to_file is False
+            t_live = t1 + 15
+            live_mgr.on_price_update("BTCUSDC", t_live * 1000, 90800.0)
+            assert live_mgr.cache["BTCUSDC"][-1] == [t_live * 1000, 90800.0]
+
+            # Even if disk advances, live_reader does not reload from disk and lose its in-memory state
+            t2 = t1 + 120
+            cm.Cache24PriceManager.persist_external_ohlc_series(
+                p24_path,
+                "BTCUSDC",
+                [[t0 * 1000, 90000.0, 1.0], [t2 * 1000, 91000.0, 3.0]],
+                float(t2),
+            )
+            live_mgr.resync_mem_file()
+            cm.get_cache_manager("24Price")
+            assert [pt[1] for pt in live_mgr.cache["BTCUSDC"]] == [90000.0, 90500.0, 90800.0]
+
+            # 3. Model 1: writer (sync_to_file=True) -> persists state to disk
+            with patch.object(cm.Cache24PriceManager, "periodic_sync") as periodic_mock:
+                writer_managers = cm.get_cache_manager(
+                    "24Price",
+                    symbols=["BTCUSDC"],
+                    sync_to_file=True,
+                )
+                writer_mgr = writer_managers["BTCUSDC"]
+                assert writer_mgr.mode == cm.CacheManagerInterface.MODE_WRITER
+                assert writer_mgr.sync_to_file is True
+                assert writer_mgr.save_state is True
+                assert writer_mgr.read_only is False
+                periodic_mock.assert_called_once_with(cm.PRICE_24_SYNC_INTERVAL_SEC, True)
     finally:
         cm.CacheFactory.remove("24Price")
 
 
 def test_ast_only_producers_enable_cache_sync_or_writer():
-    """Verify via AST that no consumer module passes start_sync=True or writer=True to cache getters."""
+    """Verify via AST that no consumer module passes sync_to_file=True, mode='writer', start_sync=True, or writer=True."""
     import ast
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cache_getters = {
-        "get_cache_manager": "start_sync",
-        "get_current_price_manager": "start_sync",
-        "get_short_trend_manager": "writer",
+        "get_cache_manager": {"start_sync", "sync_to_file"},
+        "get_current_price_manager": {"start_sync", "sync_to_file"},
+        "get_short_trend_manager": {"writer"},
     }
     violations = []
     for root, dirs, files in os.walk(repo_root):
@@ -2854,20 +2901,26 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
                         and node.func.value.attr == "CacheFactory"
                     ):
                         is_cache_factory_get = True
-                target_kw = None
+                target_kws = None
                 if is_cache_factory_get:
-                    target_kw = "start_sync"
+                    target_kws = {"start_sync", "sync_to_file"}
                 elif func_name in cache_getters:
-                    target_kw = cache_getters[func_name]
-                if not target_kw:
+                    target_kws = cache_getters[func_name]
+                if not target_kws:
                     continue
                 for kw in node.keywords:
                     if (
-                        kw.arg == target_kw
+                        kw.arg in target_kws
                         and isinstance(kw.value, ast.Constant)
                         and kw.value.value is True
                     ):
-                        violations.append(f"{rel_path}:{node.lineno} ({func_name} {target_kw}=True)")
+                        violations.append(f"{rel_path}:{node.lineno} ({func_name} {kw.arg}=True)")
+                    elif (
+                        kw.arg == "mode"
+                        and isinstance(kw.value, ast.Constant)
+                        and str(kw.value.value).strip().lower() == "writer"
+                    ):
+                        violations.append(f"{rel_path}:{node.lineno} ({func_name} mode='writer')")
     assert violations == [], f"Consumer modules must not enable producer sync/writer: {violations}"
 
 

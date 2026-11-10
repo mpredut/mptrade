@@ -157,7 +157,22 @@ def _jsonl_line(symbol, item) -> str:
 
 
 class CacheManagerInterface(ABC):
-    """Independent base contract (Level 1) for transactional cache persistence and polling."""
+    """Independent base contract (Level 1) for transactional cache persistence and polling.
+
+    Supports three explicit operating modes:
+    - ``MODE_WRITER`` (``"writer"``, ``sync_to_file=True``): starts from persistent disk state,
+      updates/increments data in memory, and persists state to disk.
+    - ``MODE_LIVE_READER`` (``"live_reader"``, ``sync_to_file=False``): starts from persistent disk
+      state once and updates/increments data in memory without writing to disk or repeatedly
+      re-checking persistent disk state.
+    - ``MODE_DISK_READER`` (``"disk_reader"``, ``sync_to_file=False``): passive reader that never
+      updates/increments data in memory on its own and always resynchronizes with persistent disk state.
+    """
+
+    MODE_WRITER = "writer"
+    MODE_LIVE_READER = "live_reader"
+    MODE_DISK_READER = "disk_reader"
+    VALID_MODES = frozenset({MODE_WRITER, MODE_LIVE_READER, MODE_DISK_READER})
 
     _live_instances = weakref.WeakSet()
     _filter_fetchtimes_to_symbols = False
@@ -212,6 +227,9 @@ class CacheManagerInterface(ABC):
         api_client=None,
         append_persist=False,
         read_only=False,
+        *,
+        sync_to_file: Optional[bool] = None,
+        mode: Optional[str] = None,
     ):
         self._live_instances.add(self)
         self.cls_name = self.__class__.__name__
@@ -225,7 +243,28 @@ class CacheManagerInterface(ABC):
             else _cm_override("api", self._default_api_client)
         )
         self.append_persist = _parse_bool_flag(append_persist, default=False)
-        self.read_only = _parse_bool_flag(read_only, default=False)
+        norm_mode = str(mode).strip().lower() if mode is not None else None
+        if norm_mode is not None and norm_mode not in self.VALID_MODES:
+            raise ValueError(
+                f"Invalid cache mode {mode!r}; expected one of {sorted(self.VALID_MODES)}"
+            )
+        sync_file_flag = (
+            _parse_bool_flag(sync_to_file, default=False)
+            if sync_to_file is not None
+            else (norm_mode == self.MODE_WRITER)
+        )
+        if norm_mode == self.MODE_WRITER or sync_file_flag:
+            self.mode = self.MODE_WRITER
+            self.read_only = False
+        elif norm_mode == self.MODE_DISK_READER:
+            self.mode = self.MODE_DISK_READER
+            self.read_only = True
+        elif norm_mode == self.MODE_LIVE_READER:
+            self.mode = self.MODE_LIVE_READER
+            self.read_only = _parse_bool_flag(read_only, default=True)
+        else:
+            self.read_only = _parse_bool_flag(read_only, default=False)
+            self.mode = self.MODE_DISK_READER
         self._persisted_counts = {}
         self._persisted_data_version = ""
         self._persisted_stream_id = ""
@@ -252,7 +291,7 @@ class CacheManagerInterface(ABC):
 
         self.thread = None
         self._stop_event = threading.Event()
-        self.save_state = False
+        self.save_state = bool(sync_file_flag)
         if not hasattr(self, "_first_sleep"):
             self._first_sleep = False
         self.lock = threading.RLock()
@@ -266,6 +305,23 @@ class CacheManagerInterface(ABC):
 
         self.load_state()
 
+    @property
+    def sync_to_file(self) -> bool:
+        """Return True when this manager persists state to disk (writer mode)."""
+        return bool(self.save_state)
+
+    @sync_to_file.setter
+    def sync_to_file(self, value: bool) -> None:
+        flag = _parse_bool_flag(value, default=False)
+        self.save_state = flag
+        if flag:
+            self.read_only = False
+            self.mode = self.MODE_WRITER
+        elif getattr(self, "mode", None) == self.MODE_WRITER:
+            self.mode = (
+                self.MODE_DISK_READER if self.read_only else self.MODE_LIVE_READER
+            )
+
     # ── Subscriber pattern for forwarding prices ─────────────────────────────
 
     def subscribe_price(self, subscriber) -> None:
@@ -273,6 +329,11 @@ class CacheManagerInterface(ABC):
         with self.lock:
             if subscriber not in self._price_subscribers:
                 self._price_subscribers.append(subscriber)
+        if (
+            not getattr(subscriber, "save_state", False)
+            and getattr(subscriber, "mode", None) == self.MODE_DISK_READER
+        ):
+            subscriber.mode = self.MODE_LIVE_READER
 
     def unsubscribe_price(self, subscriber) -> None:
         with self.lock:
@@ -677,7 +738,9 @@ class CacheManagerInterface(ABC):
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
 
     def resync_mem_file(self):
-        """Periodically reload newer disk state or persist newer memory state."""
+        """Periodically reload newer disk state (disk_reader/writer) or persist newer memory state (writer)."""
+        if getattr(self, "mode", None) == self.MODE_LIVE_READER and not self.save_state:
+            return
         file_ts = self._persisted_max_ts()
         mem_ts = self._mem_max_ts()
         if file_ts > mem_ts:
@@ -1098,15 +1161,19 @@ class CacheManagerInterface(ABC):
         self._publish_periodic_sync_health(sync_complete, persisted)
         return persisted
 
-    def periodic_sync(self, sync_ts=None, save_state=True):
-        save_state = _parse_bool_flag(save_state, default=True)
+    def periodic_sync(self, sync_ts=None, save_state=True, *, sync_to_file=None):
+        eff_sync_to_file = (
+            _parse_bool_flag(sync_to_file, default=True)
+            if sync_to_file is not None
+            else _parse_bool_flag(save_state, default=True)
+        )
         thread = self.thread
         if (
             thread is not None
             and thread.is_alive()
             and not self.read_only
             and sync_ts is None
-            and (not save_state or self.save_state)
+            and (not eff_sync_to_file or self.save_state)
         ):
             return thread
         with self.lock:
@@ -1115,11 +1182,13 @@ class CacheManagerInterface(ABC):
                 self.sync_ts = sync_ts
 
             if self.thread is not None and self.thread.is_alive():
-                if save_state:
+                if eff_sync_to_file:
                     self.save_state = True
+                    self.mode = self.MODE_WRITER
                 return self.thread
 
-            self.save_state = save_state
+            self.save_state = eff_sync_to_file
+            self.mode = self.MODE_WRITER if eff_sync_to_file else self.MODE_LIVE_READER
             self._stop_event.clear()
 
             def run():
@@ -1141,7 +1210,10 @@ class CacheManagerInterface(ABC):
                         else:
                             self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
                         self._persist_periodic_state(sync_complete)
-                        if (_now_time() - last_resync) > self.RESYNC_INTERVAL_SEC:
+                        if (
+                            self.save_state
+                            and (_now_time() - last_resync) > self.RESYNC_INTERVAL_SEC
+                        ):
                             self.resync_mem_file()
                             last_resync = _now_time()
                         if (
