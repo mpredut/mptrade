@@ -158,14 +158,6 @@ def _ensure_symbol_trend_caches() -> tuple[dict[str, float], dict[str, float]]:
     return mapping, fast_win_map
 
 
-def _load_symbol_power_map() -> dict[str, float]:
-    return _ensure_symbol_trend_caches()[0]
-
-
-def _load_symbol_fast_window_map() -> dict[str, float]:
-    return _ensure_symbol_trend_caches()[1]
-
-
 def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> float | None:
     if not (isinstance(symbol, str) and symbol.strip() and param_map):
         return None
@@ -195,7 +187,7 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     """
     if "MPTRADE_FAST_TREND_WINDOW_SEC" in os.environ:
         return safe_pos_float(float_env("MPTRADE_FAST_TREND_WINDOW_SEC"), default=None)
-    return _lookup_symbol_param(symbol, _load_symbol_fast_window_map())
+    return _lookup_symbol_param(symbol, _ensure_symbol_trend_caches()[1])
 
 
 def resolve_dynamic_trend_snapshot(snap, symbol: str | None = None):
@@ -256,7 +248,7 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
         return override
     if STEP_WOLS_POWER != DEFAULT_STEP_WOLS_POWER:
         return max(0.0, float(STEP_WOLS_POWER))
-    found = _lookup_symbol_param(symbol, _load_symbol_power_map())
+    found = _lookup_symbol_param(symbol, _ensure_symbol_trend_caches()[0])
     return found if found is not None else float(STEP_WOLS_POWER)
 
 

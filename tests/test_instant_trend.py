@@ -15,8 +15,7 @@ sys.modules.setdefault("bapi", mock_api)
 sys.modules.setdefault("bapi_trades", MagicMock())
 sys.modules.setdefault("bapi_allorders", MagicMock())
 
-with patch("cacheManager._initialize_once", return_value=None):
-    import cacheManager as cm
+import cacheManager as cm
 
 
 def _make_cache24(symbol, entries, tmp):

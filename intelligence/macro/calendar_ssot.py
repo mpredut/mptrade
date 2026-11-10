@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
@@ -210,40 +210,6 @@ def did_cross_session_checkpoint(
     return crossed_label
 
 
-def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
-    """Load weekday macro economic & liquidity calendar windows from ``macro_intelligence.conf``."""
-    parsed: List[Tuple[int, int, str, str]] = []
-    for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
-        parts = [p.strip() for p in item.split("|")]
-        if len(parts) >= 3 and ":" in parts[0]:
-            try:
-                hh_s, mm_s = parts[0].split(":", 1)
-                parsed.append((int(hh_s), int(mm_s), parts[1], parts[2]))
-            except ValueError:
-                continue
-    return tuple(parsed)
-
-
-def get_macro_calendar_routine_labels() -> Dict[str, str]:
-    """Load optional routine session fallback labels (4th pipe field) keyed by event code from ``macro_intelligence.conf``."""
-    labels: Dict[str, str] = {}
-    for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
-        parts = [p.strip() for p in item.split("|")]
-        if len(parts) >= 4 and parts[1] and parts[3]:
-            labels[parts[1]] = parts[3]
-    return labels
-
-
-def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
-    """Load macro economic calendar keywords from ``macro_intelligence.conf``."""
-    return split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
-
-
-def get_fomc_decision_dates() -> Set[str]:
-    """Load official Federal Reserve FOMC rate decision dates (YYYY-MM-DD) from ``macro_intelligence.conf``."""
-    return set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
-
-
 def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -> List[Dict[str, Any]]:
     """Extract live Actual vs. Consensus/Forecast vs. Prior macro prints and compute Surprise Z-Score."""
     if not breaking_news:
@@ -334,14 +300,25 @@ def resolve_macro_economic_calendar(
     session_ctx = resolve_global_trading_session(ts)
     dt_eet = _primary_eet_dt(ts)
     tz_abbr = dt_eet.strftime("%Z") or "EET"
-    windows = get_macro_calendar_windows_eet()
-    routine_labels = get_macro_calendar_routine_labels()
-    fomc_dates = get_fomc_decision_dates()
+    parsed_windows: List[Tuple[int, int, str, str]] = []
+    routine_labels: Dict[str, str] = {}
+    for item in split_csv(_ssot._cfg_str("sessions", "macro_calendar_windows_eet")):
+        parts = [p.strip() for p in item.split("|")]
+        if len(parts) >= 3 and ":" in parts[0]:
+            try:
+                hh_s, mm_s = parts[0].split(":", 1)
+                parsed_windows.append((int(hh_s), int(mm_s), parts[1], parts[2]))
+            except ValueError:
+                pass
+        if len(parts) >= 4 and parts[1] and parts[3]:
+            routine_labels[parts[1]] = parts[3]
+    windows = tuple(parsed_windows)
+    fomc_dates = set(split_csv(_ssot._cfg_str("sessions", "fomc_decision_dates")))
     today_iso = dt_eet.date().isoformat()
     is_fomc_today = today_iso in fomc_dates
     next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_iso), None)
 
-    macro_kws = get_macro_calendar_headline_keywords()
+    macro_kws = split_csv(_ssot._cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
     detected_macro_headlines: List[str] = []
     if breaking_news and macro_kws:
         for item in breaking_news:

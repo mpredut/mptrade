@@ -1179,11 +1179,6 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
     )
 
 
-def get_excluded_reference_sources() -> Tuple[str, ...]:
-    """Load static encyclopedia/dictionary reference sources excluded from live breaking news."""
-    return split_csv(_cfg_str("feeds", "excluded_reference_sources"), lower=True)
-
-
 def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:
     """Return True if a headline originates from a static reference/encyclopedia domain or first-person advice column."""
     title_s = str(title or "").strip()
@@ -1199,7 +1194,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     if ("yahoo! finance" in src_l or "feeds.finance.yahoo.com" in url_l) and title_s:
         if not has_tracked_equity_entity(title_s) and not match_high_severity_keywords(title_s):
             return True
-    excluded = get_excluded_reference_sources()
+    excluded = split_csv(_cfg_str("feeds", "excluded_reference_sources"), lower=True)
     if not excluded:
         return False
     pub_sfx = ""

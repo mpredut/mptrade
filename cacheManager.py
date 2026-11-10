@@ -665,12 +665,6 @@ def _append_trade_from_execution_report(event):
     )
 
 
-def _persist_ws_updated_caches(event_type):
-    _bapi_ws_bridge.persist_ws_updated_caches(
-        event_type, cache_getter=_ws_cache_getter
-    )
-
-
 refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
 
 
@@ -681,7 +675,9 @@ def _handle_binance_ws_event(event):
         log_enabled=WS_EVENT_LOG_ENABLED,
         upsert_order_fn=_upsert_order_from_execution_report,
         append_trade_fn=_append_trade_from_execution_report,
-        persist_fn=_persist_ws_updated_caches,
+        persist_fn=lambda event_type: _bapi_ws_bridge.persist_ws_updated_caches(
+            event_type, cache_getter=_ws_cache_getter
+        ),
     )
 
 
@@ -699,10 +695,6 @@ def enable_real_ws_event_sync():
 
 
 CacheFactory.register_teardown_hook("BinanceTrade", _bapi_trades.clear_cache_trade_manager)
-
-
-def _initialize_once():
-    _bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=enable_real_ws_event_sync)
 
 
 if __name__ == "__main__":
@@ -725,7 +717,7 @@ if __name__ == "__main__":
             account_cache_health.record_successful_sync(
                 _account_cache_name, _ver, now_ms=_sync_ms
             )
-    _initialize_once()
+    _bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=enable_real_ws_event_sync)
     threads = []
     _nb_poller = None
     _trend_mgr = None

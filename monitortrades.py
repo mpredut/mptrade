@@ -101,14 +101,6 @@ def _print_trade_order_counts(header: str, fetch_fn, maxage_trade_s):
         print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
 
 
-def print_number_of_trades(maxage_trade_s):
-    _print_trade_order_counts("TRADE COUNT", apitrades.get_trade_orders, maxage_trade_s)
-
-
-def print_number_of_orders(maxage_trade_s):
-    _print_trade_order_counts("ORDER COUNT", apiorders.get_trade_orders, maxage_trade_s)
-
-
 _notified_trade_ids = _FifoTradeIdTracker()
 _trades_monitor_initialized = False
 _trades_monitor_warmup_failed_symbols: set[str] = set()
@@ -1677,8 +1669,8 @@ def main():
     _touch_mt_hb(force=True)
     while True:
         try:
-            print_number_of_orders(maxage_trade_s)
-            print_number_of_trades(maxage_trade_s)
+            _print_trade_order_counts("ORDER COUNT", apiorders.get_trade_orders, maxage_trade_s)
+            _print_trade_order_counts("TRADE COUNT", apitrades.get_trade_orders, maxage_trade_s)
             check_and_notify_executed_trades(maxage_trade_s)
         except Exception as _e:
             print(f"[MONITORTRADES] Error in loop pre-checks: {_e}")

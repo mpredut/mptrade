@@ -40,15 +40,8 @@ PRICE_WEBHOOK_URL = format_ntfy_url(_price_topic)
 
 CMC_API_KEY = required_env("CMC_API_KEY")
 TIME_INTERVAL_CLEANUP = 6 * 60 * 60  # 6 hours in seconds
-REQUIRED_ENV_VARS = ("CMC_API_KEY", "NTFY_TOPIC_PRICE")
 ENABLED_SOURCES = ["coinmarketcap", "coingecko", "binance", "dexscreener"]
 
-def validate_required_env():
-    for key in REQUIRED_ENV_VARS:
-        required_env(key)
-    return True
-
-validate_required_env()
 
 def print_notification_channels_status():
     print("ENV CONFIGURATION:")
@@ -88,9 +81,6 @@ def print_notification_channels_status():
 
 print_notification_channels_status()
 
-
-def alert_handler(alert):
-    AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL)
 
 def new_coin_alerts_handler(alerts):
     if not alerts:
@@ -268,7 +258,7 @@ def main():
     print("⏳ Starting the price-threshold checker...")
     price_checker = start_price_alert_checker(
         cachePriceAll=cachePriceAll,
-        alert_callback=alert_handler,
+        alert_callback=lambda alert: AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL),
         check_interval_seconds=cfg["price_scan_seconds"],
         config=ac,
         state_file=cache_path("cache_watcher_all_price.cooldowns.json"),

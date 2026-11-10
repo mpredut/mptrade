@@ -47,9 +47,7 @@ _BINANCE_CHILDREN = ("bapi", "bapi_trades", "bapi_allorders", "bapi_placeorder")
 sys.modules.update(_IMPORT_MOCKS)
 
 try:
-    # cacheManager starts a WS thread at import — we block it
-    with patch("cacheManager._initialize_once", return_value=None):
-        import cacheManager as cm
+    import cacheManager as cm
     import tradeall as ta
 finally:
     # pytest collection imports every file before running the tests. Without
@@ -71,6 +69,10 @@ finally:
         import cacheaccount as _ca_mod
         if getattr(_ca_mod, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
             _ca_mod.apiorders = _real_bapi_allorders
+    if getattr(cm, "_bapi_trades", None) is _IMPORT_MOCKS["binance_api.bapi_trades"]:
+        from binance_api import bapi_trades as _real_bapi_trades
+        cm._bapi_trades = _real_bapi_trades
+        cm.CacheFactory.register_teardown_hook("BinanceTrade", _real_bapi_trades.clear_cache_trade_manager)
 
 mock_bapi = _mock_bapi
 
