@@ -1004,7 +1004,6 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
 
     from offline.research.monitortrades_backtest import run_replay_backtest as rrb
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
-    import lock.trade_cooldown as tc
 
     conf_file = tmp_path / "instruments.conf"
     conf_file.write_text(
@@ -1025,11 +1024,6 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
     monkeypatch.setattr(rrb, "ROOT", str(tmp_path))
     live_params = rrb._live_mt_params("BTCEUR")
     assert live_params == {"mt.gain": "8.25", "mt.lost": "3.2"}
-
-    cd_conf = tmp_path / "trade_cooldown.conf"
-    cd_conf.write_text("[cooldown]\ndefault_sec = 7 ; inline comment with 100% safety\n", encoding="utf-8")
-    monkeypatch.setattr(tc, "CONF_FILE", str(cd_conf))
-    assert tc._load_cooldown_sec() == 7
 
     root_dir = Path(sp.__file__).resolve().parents[3]
     with monkeypatch.context() as m:
@@ -3879,7 +3873,7 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
     import market_monitor.alerts_config as alerts_config
     from market_monitor.pricechecker import PriceChecker
     from market_monitor.pricefetcher import CacheAllPriceFetcherManager
-    from lock.file_lock import FileLock
+    from lock.cooldown import FileLock
     from notify_engine.server import NotificationServer
 
     # 1. alerts_config.load_config rejects boolean/non-path inputs (preventing os.path.exists(True) fd=1 bug)

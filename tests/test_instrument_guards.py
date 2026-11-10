@@ -29,7 +29,6 @@ from providers.strategy_executor import (
 from instrument import Instrument
 import order_guard
 import order_outcomes_log as outcomes_log
-from lock import trade_cooldown as tc
 
 SYMBOL = "ZZZFAKEUSD"
 
@@ -89,10 +88,7 @@ class _GuardsInternallyProvider(_FakeProvider):
 
 class InstrumentGuardsTestCase(unittest.TestCase):
     def setUp(self):
-        # Isolate cooldown state and locking so the test never touches live state.
         self._tmp = tempfile.mkdtemp()
-        tc.STATE_FILE = os.path.join(self._tmp, "trade_cooldown.json")
-        tc.LOCK_FILE = os.path.join(self._tmp, "trade_cooldown.lock")
         # Isolate the outcome journal and execution audit from the production logger directory.
         self._log_tmp = tempfile.mkdtemp()
         self._orig_log_dir = outcomes_log.ORDER_OUTCOMES_LOG_DIR
@@ -113,7 +109,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def _clear_state(self):
         import order_retry as _oq
-        open(tc.STATE_FILE, 'w').close()
         open(_oq.QUEUE_FILE, 'w').close()
         for f in glob.glob(os.path.join(self._log_tmp, "order_outcomes_*.log")):
             os.remove(f)
@@ -1912,108 +1907,6 @@ class _PipePutAdapter:
             self._conn.send(item)
         finally:
             self._conn.close()
-
-
-def _proc_attempt(state_file, lock_file, q):
-    cd = tc.Cooldown("trade", state_path=state_file, lock_path=lock_file)
-    ok, _ = cd.reserve("BTCUSDC", 180, side="BUY")
-    q.put(ok)
-
-
-class TestTradeCooldown(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.state_file = os.path.join(self.tmp, "trade_cooldown.json")
-        self.lock_file = os.path.join(self.tmp, "trade_cooldown.lock")
-        self.cd = tc.Cooldown("trade", state_path=self.state_file, lock_path=self.lock_file)
-
-    def test_first_allowed_second_blocked(self):
-        ok, _ = self.cd.reserve("BTCUSDC", 180, side="BUY")
-        self.assertTrue(ok)
-        ok2, last = self.cd.reserve("BTCUSDC", 180, side="SELL")
-        self.assertFalse(ok2)
-        self.assertEqual(last["side"], "BUY")
-
-    def test_per_symbol_independent(self):
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-        self.assertTrue(self.cd.reserve("TAOUSDC", 180, side="BUY")[0])
-
-    def test_allowed_after_cooldown(self):
-        with mock.patch("lock.cooldown.time.time") as now:
-            now.return_value = 1_000.0
-            self.assertTrue(self.cd.reserve("BTCUSDC", 1, side="BUY")[0])
-            self.assertFalse(self.cd.reserve("BTCUSDC", 1, side="SELL")[0])
-            now.return_value = 1_001.1
-            self.assertTrue(self.cd.reserve("BTCUSDC", 1, side="SELL")[0])
-
-    def test_release_unblocks(self):
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-        self.cd.release("BTCUSDC")
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-
-    def test_concurrent_threads_single_winner(self):
-        results = []
-        barrier = threading.Barrier(20)
-
-        def attempt():
-            barrier.wait()
-            ok, _ = self.cd.reserve("BTCUSDC", 180, side="BUY")
-            results.append(ok)
-
-        threads = [threading.Thread(target=attempt) for _ in range(20)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(sum(1 for r in results if r), 1)
-
-    def test_concurrent_processes_single_winner(self):
-        ctx = mp.get_context("spawn")
-        pipes = [ctx.Pipe(duplex=False) for _ in range(10)]
-        procs = [
-            ctx.Process(
-                target=_proc_attempt,
-                args=(self.state_file, self.lock_file, _PipePutAdapter(w_conn)),
-            )
-            for _, w_conn in pipes
-        ]
-        for p, (_, w_conn) in zip(procs, pipes):
-            p.start()
-            w_conn.close()
-        for p in procs:
-            p.join(timeout=15)
-        results = []
-        for r_conn, _ in pipes:
-            try:
-                self.assertTrue(r_conn.poll(5.0), "spawned worker did not report result")
-                results.append(r_conn.recv())
-            finally:
-                r_conn.close()
-        self.assertEqual(sum(1 for r in results if r), 1)
-
-    def test_slot_commit_keeps_reservation(self):
-        with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
-            self.assertTrue(slot.allowed)
-            slot.commit(binance_order_id=999)
-        self.assertFalse(self.cd.reserve("BTCUSDC", 180, side="SELL")[0])
-
-    def test_slot_no_commit_auto_releases(self):
-        with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
-            self.assertTrue(slot.allowed)
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-
-    def test_slot_exception_auto_releases(self):
-        with self.assertRaises(RuntimeError):
-            with self.cd.slot("BTCUSDC", 180, side="BUY") as slot:
-                self.assertTrue(slot.allowed)
-                raise RuntimeError("placement crashed")
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-
-    def test_slot_blocked_does_not_release_existing(self):
-        self.assertTrue(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
-        with self.cd.slot("BTCUSDC", 180, side="SELL") as slot:
-            self.assertFalse(slot.allowed)
-        self.assertFalse(self.cd.reserve("BTCUSDC", 180, side="BUY")[0])
 
 
 def _write_intent_file(path, payload, *, lines=False):

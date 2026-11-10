@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binance_api import bapi_placeorder as placeorder
 from binance_cache_health import CacheHealthStatus
 from instrument import Instrument
-from lock import trade_cooldown
 import instrument as instrument_module
 import order_guard
 import order_retry
@@ -91,12 +90,6 @@ class _FakeBapi:
 class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.old_state = trade_cooldown.STATE_FILE
-        self.old_lock = trade_cooldown.LOCK_FILE
-        trade_cooldown.STATE_FILE = os.path.join(
-            self.temp.name, "cooldown.json")
-        trade_cooldown.LOCK_FILE = os.path.join(
-            self.temp.name, "cooldown.lock")
         self.old_retry_queue = order_retry.QUEUE_FILE
         self.old_retry_lock = order_retry.LOCK_FILE
         self.old_retry_enabled = order_retry.RETRY_ENABLED
@@ -109,8 +102,6 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         order_retry.RETRY_DEDUP = True
 
     def tearDown(self):
-        trade_cooldown.STATE_FILE = self.old_state
-        trade_cooldown.LOCK_FILE = self.old_lock
         order_retry.QUEUE_FILE = self.old_retry_queue
         order_retry.LOCK_FILE = self.old_retry_lock
         order_retry.RETRY_ENABLED = self.old_retry_enabled

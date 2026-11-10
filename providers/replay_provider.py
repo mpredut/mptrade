@@ -40,10 +40,6 @@ def _base_asset(symbol: str) -> str:
     return resolve_assets(symbol)[0]
 
 
-def _default_precision(base: str) -> PairPrecision:
-    return PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
-
-
 _BT_ENV_KEYS = (
     "BACKTEST_MODE",
     "REPLAY_MODE",
@@ -162,7 +158,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
             canon = canonical_base_asset(base)
             if canon:
                 self._asset_to_symbol.setdefault(canon, s)
-            self._precisions[s] = _default_precision(base)
+            self._precisions[s] = PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
 
     @property
     def name(self) -> str:
@@ -194,7 +190,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         prec = self._precisions.get(sym)
         if prec is None:
             base = _base_asset(sym).upper()
-            prec = self._precisions[sym] = _default_precision(base)
+            prec = self._precisions[sym] = PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
             self._asset_to_symbol.setdefault(base, sym)
         return prec
 

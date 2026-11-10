@@ -432,9 +432,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     def _effective_cache_dir(self) -> Optional[str]:
         return resolve_cache_dir_path(self.cache_dir)
 
-    def _disk_path(self, symbol: str) -> Optional[str]:
-        return telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, symbol)
-
     def _candidate_variants(self, symbol: str) -> List[Any]:
         if self._QUOTE_ISOLATED:
             quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD"))
@@ -472,7 +469,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         sym_clean = symbol.strip().upper()
         cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
         for cand in cands:
-            p = self._disk_path(cand)
+            p = telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, cand)
             if not p:
                 continue
             try:
@@ -506,7 +503,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         return None
 
     def _save_to_disk(self, snapshot: Any) -> None:
-        if p := self._disk_path(snapshot.symbol):
+        if p := telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, snapshot.symbol):
             try:
                 save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
                 save_fn(p, snapshot.to_dict(), indent=2)
@@ -543,7 +540,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             self._save_to_disk(item)
 
     def _sync_existing_sibling_disk_file(self, sym_clean: str, snapshot: Any) -> None:
-        if not (p_exact := self._disk_path(sym_clean)):
+        if not (p_exact := telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, sym_clean)):
             return
         try:
             import os as _os

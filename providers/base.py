@@ -216,9 +216,6 @@ class MarketDataProvider(ABC):
         except Exception:
             return None
 
-    def _resolve_venue_instrument_spec(self, symbol: str) -> Any:
-        return self.resolve_venue_instrument_spec(getattr(self, "name", ""), symbol)
-
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = safe_pos_float(since_s, default=None)
@@ -231,7 +228,7 @@ class MarketDataProvider(ABC):
         if rows is None:
             return None
         sym_u = symbol.strip().upper()
-        spec = self._resolve_venue_instrument_spec(sym_u)
+        spec = self.resolve_venue_instrument_spec(getattr(self, "name", ""), sym_u)
         base_asset = spec.base if spec is not None else ""
         quote_asset = spec.quote if spec is not None else ""
         if not base_asset and (parts := split_symbol_assets(sym_u)) is not None:

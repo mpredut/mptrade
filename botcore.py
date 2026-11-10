@@ -1758,8 +1758,6 @@ _MERGED_MODULE_TARGETS = {
     "keys.apikeys": "credentials",
     "instruments_config": "instrument_registry",
     "binance_api.bapi_ws_health": "binance_api.bapi_ws_bridge",
-    "lock.file_lock": "lock.cooldown",
-    "lock.trade_cooldown": "lock.cooldown",
     "providers.binance_filters": "providers.quantity",
     "providers.http_resilience": "providers.base",
     "providers.replay_clock": "providers.replay_provider",

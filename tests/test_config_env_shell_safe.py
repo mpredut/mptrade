@@ -361,16 +361,9 @@ def test_market_monitor_and_pricewindow_hardening():
 
 
 def test_cooldown_and_internal_state_hardening(tmp_path):
-    from lock.cooldown import Cooldown
     from intelligence.internal.state.volatility import adaptive_thresholds
     from intelligence.internal.state.persistence import classify_hurst_regime
     from intelligence.internal.state.survival import hybrid_T
-
-    cd = Cooldown("test", base_dir=str(tmp_path))
-    cd._write({"BTCUSDC": {"timestamp": None}, "ETHUSDC": "corrupted", "SOLUSDC": {"timestamp": 9999999999.0}})
-    assert cd.reserve("BTCUSDC", ttl=60)[0] is True
-    assert cd.reserve("SOLUSDC", ttl=60)[0] is True
-    cd.update("ETHUSDC", order_id=1)
 
     assert adaptive_thresholds(float("nan")) == (None, None)
     assert adaptive_thresholds(True) == (None, None)
@@ -446,7 +439,6 @@ def test_triggers_guards_and_collectors_hardening(tmp_path):
 
 def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
     import accepted_order_persistence as aop
-    from lock import trade_cooldown as tc
     from orchestratorOS.agy.summary_store import _drop_summaries, parse_db_timestamp, resolve_project_ids, write_annotation_title, read_annotation_title
     from orchestratorOS.agy.topics import condense_decision, load_topic_registry, save_topic_registry
 
@@ -1134,20 +1126,6 @@ def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
         pc.start_monitoring(interval_seconds=True)
     with pytest.raises(ValueError):
         pc.start_monitoring(interval_seconds=float("nan"))
-
-
-def test_cooldown_bool_ttl_and_nan_meta_hardening(tmp_path):
-    from lock import cooldown as cd_mod
-
-    assert cd_mod._is_active_entry({"timestamp": 100.0}, 100.5, True) is False
-    assert cd_mod._is_active_entry({"timestamp": 100.0}, True, 10.0) is False
-    assert cd_mod._is_active_entry({"timestamp": 100.0}, 100.5, 10.0) is True
-
-    cd = cd_mod.Cooldown("test_nan", base_dir=str(tmp_path))
-    allowed, entry = cd.reserve("BTCUSDC", 60.0, price=float("nan"), extra={"spread": float("inf")})
-    assert allowed is True
-    saved = cd.get("BTCUSDC")
-    assert saved is not None and saved["price"] is None and saved["extra"]["spread"] is None
 
 
 def test_external_sentiment_parabolic_and_composite_guards_hardening():

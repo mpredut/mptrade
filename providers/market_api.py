@@ -183,7 +183,7 @@ class BinanceProvider(MarketDataProvider):
             return None
         symbol = symbol.strip().upper()
         sym_canon = canonical_symbol_key(symbol)
-        spec = self._resolve_venue_instrument_spec(symbol)
+        spec = self.resolve_venue_instrument_spec(self.name, symbol)
         if spec is None:
             return None
         status = health.require_fresh_account_cache()

@@ -233,9 +233,6 @@ class Instrument:
             except Exception:
                 pass
 
-    def _round_provider_qty(self, qty: float) -> float:
-        return round_provider_qty(self._provider, self.symbol, qty)
-
     def _resolve_regime_context(self):
         try:
             resolve_context = getattr(self._api, "market_regime_context", None)
@@ -287,7 +284,7 @@ class Instrument:
         app_f = 1.0 if isinstance(applied_scale, bool) else safe_pos_float(applied_scale, default=None)
         if qty_f is None or scale_f is None or app_f is None or not (0.0 < scale_f < app_f):
             return qty, applied_scale, None
-        scaled_qty = self._round_provider_qty(qty_f * (scale_f / app_f))
+        scaled_qty = round_provider_qty(self._provider, self.symbol, qty_f * (scale_f / app_f))
         refusal = check_order_filter_refusal(
             self._provider, self.symbol, side_u, price, scaled_qty,
             market=is_market, enforce_business_minimum=enforce_business_minimum,
@@ -834,8 +831,10 @@ class Instrument:
                 if scale_factor <= 0.0:
                     return "medium_trend_qty_zero"
                 if scale_factor < float(ctx.applied_scale):
-                    ctx.qty = self._round_provider_qty(
-                        max(0.0, ctx.qty * (scale_factor / float(ctx.applied_scale)))
+                    ctx.qty = round_provider_qty(
+                        self._provider,
+                        self.symbol,
+                        max(0.0, ctx.qty * (scale_factor / float(ctx.applied_scale))),
                     )
                     print(
                         f"[{self.symbol}] {ctx.side_u} scaled by medium-term trend "
@@ -1377,23 +1376,19 @@ class Instrument:
         return f"<Instrument {self.name} {self.symbol}@{self.provider_name} {'on' if self.enabled else 'off'}>"
 
 
-def _resolve_instrument_cls():
-    return resolve_patched_attr("Instrument", Instrument, modules=(__name__,), require_callable=True)
-
-
 def _is_instrument_spec(item) -> bool:
     return isinstance(item, InstrumentSpec) or type(item).__name__ == "InstrumentSpec"
 
 
 def bind_instruments(specs: dict, api=None) -> dict:
     """Bind a mapping of ``InstrumentSpec`` records to executable ``Instrument`` instances."""
-    cls = _resolve_instrument_cls()
+    cls = resolve_patched_attr("Instrument", Instrument, modules=(__name__,), require_callable=True)
     out = {}
     for name, item in (specs or {}).items():
         if _is_instrument_spec(item):
             out[name] = (
                 cls.from_spec(item, api=api)
-                if cls is Instrument
+                if callable(getattr(cls, "from_spec", None))
                 else cls(
                     name=item.name,
                     symbol=item.symbol,

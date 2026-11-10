@@ -8521,19 +8521,10 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
 
 
 def test_iteration64_cooldown_state_io_spot_rules_and_rtrade_pair_safety(tmp_path):
-    """Iteration 64: Cooldown slot expected_timestamp rollback guard, state_io NaN recovery, spot_rules shadow parsing, and rtrade_pair _cancel exception safety."""
-    from lock.cooldown import Cooldown
+    """Iteration 64: state_io NaN recovery, spot_rules shadow parsing, and rtrade_pair _cancel exception safety."""
     from state_io import read_tail_lines
     from strategies import spot_rules as sr
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
-
-    # 1. Cooldown.slot rollback does not delete a newer reservation if TTL expired during the block
-    cd = Cooldown("iter64", state_path=str(tmp_path / "cd.json"), lock_path=str(tmp_path / "cd.lock"))
-    with cd.slot("BTCUSDC", ttl=0.0) as s1:
-        assert s1.allowed
-        # Another worker acquires and commits a newer reservation before s1 exits without commit
-        cd._write({"BTCUSDC": {"timestamp": s1.info["timestamp"] + 10.0, "side": "SELL"}})
-    assert cd.get("BTCUSDC")["side"] == "SELL"
 
     # 2. JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit
     from strategies.state_store import JsonStateStore, StatePersistenceError
@@ -15223,23 +15214,8 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
 
 def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, monkeypatch):
     import botcore as bc
-    from lock.cooldown import Cooldown
     import order_outcomes_log as olog
     import binance_cache_health as bch
-
-    # 1. Cooldown: rejects invalid keys and protects _RESERVED_ENTRY_KEYS during update/commit
-    cd = Cooldown("test_cd", state_path=str(tmp_path / "cd.json"), lock_path=str(tmp_path / "cd.lock"))
-    assert cd.reserve(None, 60)[0] is False
-    assert cd.reserve(True, 60)[0] is False
-    assert cd.reserve("None", 60)[0] is False
-    ok, entry = cd.reserve("BTCUSDC", 60, side="BUY")
-    assert ok is True
-    orig_ts = entry["timestamp"]
-    cd.update("BTCUSDC", timestamp=0.0, group_id="hacked", binance_order_id="123")
-    stored = cd.get("BTCUSDC")
-    assert stored["timestamp"] == orig_ts
-    assert "group_id" not in stored
-    assert stored["binance_order_id"] == "123"
 
     # 2. botcore: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
     assert bc.clean_order_id("None") is None

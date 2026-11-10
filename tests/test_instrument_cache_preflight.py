@@ -21,7 +21,6 @@ import order_retry
 import order_retry_worker
 import order_lifecycle as accepted_order_persistence
 import priceAnalysis as pa
-from lock import trade_cooldown
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
 
@@ -154,11 +153,6 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         self._temp_dir = tempfile.TemporaryDirectory()
         root = self._temp_dir.name
 
-        self._old_cooldown_state = trade_cooldown.STATE_FILE
-        self._old_cooldown_lock = trade_cooldown.LOCK_FILE
-        trade_cooldown.STATE_FILE = os.path.join(root, "trade_cooldown.json")
-        trade_cooldown.LOCK_FILE = os.path.join(root, "trade_cooldown.lock")
-
         self._old_outcome_dir = order_outcomes_log.ORDER_OUTCOMES_LOG_DIR
         order_outcomes_log.ORDER_OUTCOMES_LOG_DIR = os.path.join(root, "outcomes")
 
@@ -170,8 +164,6 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         order_retry.RETRY_ENABLED = True
 
     def tearDown(self):
-        trade_cooldown.STATE_FILE = self._old_cooldown_state
-        trade_cooldown.LOCK_FILE = self._old_cooldown_lock
         order_outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._old_outcome_dir
         order_retry.QUEUE_FILE = self._old_queue_file
         order_retry.LOCK_FILE = self._old_queue_lock

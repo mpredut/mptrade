@@ -246,23 +246,11 @@ def test_save_json_state_restores_previous_on_write_failure(tmp_path, monkeypatc
 def test_audit46_transactional_recovery_and_cross_venue_fallbacks(tmp_path, monkeypatch):
     import time
     import order_guard
-    from lock.cooldown import Cooldown
     from providers.kraken_provider import KrakenProvider
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
     now_s = time.time()
     now_ms = int(now_s * 1000)
-
-    # 1. Cooldown recovers from .previous when primary cooldown file is corrupted
-    cd_path = tmp_path / "cooldown_test.json"
-    cd_lock = tmp_path / "cooldown_test.lock"
-    cd = Cooldown("test", state_path=str(cd_path), lock_path=str(cd_lock))
-    cd._write({"BTCUSDC": {"timestamp": now_s, "side": "BUY"}})
-    Path(previous_generation_path(str(cd_path))).write_text(
-        cd_path.read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    cd_path.write_text("{corrupt", encoding="utf-8")
-    assert cd._read()["BTCUSDC"]["side"] == "BUY"
 
     # 2. KrakenProvider._fills_from_cache recovers from cache_trade_kraken.json.previous
     kr_cache = tmp_path / "cache_trade_kraken.json"

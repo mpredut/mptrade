@@ -575,9 +575,6 @@ class Cache365PriceManager(Cache24PriceManager):
                 wrote = True
         return wrote
 
-    def _write_current_meta_locked(self) -> bool:
-        return self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
-
     def _collect_live_delta_locked(
         self, snap_item_ids: set[int], *, min_ts_ms: int = 0
     ) -> dict[str, list]:
@@ -700,7 +697,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 )
                 self._merge_live_delta_locked(post_delta)
                 if changed:
-                    if not self._write_current_meta_locked():
+                    if not self._write_meta(self._build_basic_meta_locked(self._persisted_counts)):
                         self._restore_memory_state_locked(original_state)
                         self._merge_live_delta_locked(post_delta)
                         self._restore_previous_generation(backup_path)
@@ -802,7 +799,7 @@ class Cache365PriceManager(Cache24PriceManager):
                     live_fetchtimes, live_rest_cursors
                 )
                 self._merge_live_delta_locked(post_delta)
-                meta_ok = self._write_current_meta_locked()
+                meta_ok = self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
         except Exception as exc:
             builtins.print(
                 f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}"

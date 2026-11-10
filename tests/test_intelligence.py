@@ -5183,8 +5183,6 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     from types import SimpleNamespace
     import binance_api
     import instrument_registry
-    import lock
-    import lock.cooldown as lock_cooldown
     from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
     from verify_tools import inspect_prod_fleet
 
@@ -5192,20 +5190,14 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     ir_reloaded = importlib.reload(instrument_registry)
     assert sys.modules.get("instruments_config") is ir_reloaded
 
-    lc_reloaded = importlib.reload(lock_cooldown)
-    assert sys.modules.get("lock.file_lock") is lc_reloaded
-    assert sys.modules.get("lock.trade_cooldown") is lc_reloaded
-    assert lock.file_lock is lc_reloaded
-    assert lock.trade_cooldown is lc_reloaded
-
-    # Lazy __getattr__ on binance_api and lock resolves merged submodule aliases even after delattr/pop
+    # Lazy __getattr__ on binance_api resolves merged submodule aliases even after delattr/pop
     sys.modules.pop("binance_api.bapi_ws_health", None)
     binance_api.__dict__.pop("bapi_ws_health", None)
     ws_h = binance_api.bapi_ws_health
     assert ws_h.__name__ == "binance_api.bapi_ws_bridge"
     assert sys.modules.get("binance_api.bapi_ws_health") is ws_h
 
-    # Monkeypatching instrument.Instrument is respected by _resolve_instrument_cls / bind_instruments
+    # Monkeypatching instrument.Instrument is respected by bind_instruments
     import instrument as inst_mod
     spec = ir_reloaded.InstrumentSpec(
         name="BINANCE_BTC",
@@ -5223,7 +5215,7 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     assert bound.spec is spec and bound.symbol == "BTCUSDC"
     sentinel_cls = lambda **kw: SimpleNamespace(**kw)
     monkeypatch.setattr(inst_mod, "Instrument", sentinel_cls, raising=False)
-    assert inst_mod._resolve_instrument_cls() is sentinel_cls
+    assert inst_mod.bind_instruments({"BINANCE_BTC": spec})["BINANCE_BTC"].symbol == "BTCUSDC"
 
     # 2. inspect_prod_fleet translates local workspace cachedb paths to /home/predut/mptrade on SSH fallback
     #    and tolerates non-dict / None fields without AttributeError

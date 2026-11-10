@@ -263,13 +263,10 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
                 pass
         return None
 
-    def _retention_window_sec(self) -> float:
-        return max(self.rolling_window_sec * 8.0, 172800.0)
-
     def _load_history(self, now_ts: Optional[float] = None) -> None:
         hist_file = self._effective_history_file()
         now = resolve_now_ts(now_ts)
-        retention_sec = self._retention_window_sec()
+        retention_sec = max(self.rolling_window_sec * 8.0, 172800.0)
         try:
             data = read_json_file(hist_file, default=None, recover_previous=True)
             if isinstance(data, dict):
@@ -463,7 +460,7 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         now = resolve_now_ts(now)
         cache_dir = self._CacheDirOrNone()
-        retention_cutoff = now - self._retention_window_sec()
+        retention_cutoff = now - max(self.rolling_window_sec * 8.0, 172800.0)
         self._seen_first_ts = {
             k: ts
             for k, ts in getattr(self, "_seen_first_ts", {}).items()
