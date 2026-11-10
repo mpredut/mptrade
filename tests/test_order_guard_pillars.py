@@ -2212,10 +2212,10 @@ def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
 
     fake_kraken = type("KrakenProv", (), {"name": " kraken "})()
     assert og.get_margin_cfg(fake_kraken) == og.get_margin_cfg("kraken")
-    assert og.get_weight_proxy_cfg(fake_kraken) == og.get_weight_proxy_cfg("kraken")
+    assert og._venue_cfg(fake_kraken, "_weight_proxy") == og._venue_cfg("kraken", "_weight_proxy")
     assert og.get_chop_weight_cfg(fake_kraken) == og.get_chop_weight_cfg("kraken")
-    assert og.get_max_daily_trades_cfg(fake_kraken) == og.get_max_daily_trades_cfg("kraken")
-    assert og.get_safeback_sec_cfg(fake_kraken) == og.get_safeback_sec_cfg("kraken")
+    assert og._venue_cfg(fake_kraken, "_max_daily_trades") == og._venue_cfg("kraken", "_max_daily_trades")
+    assert og._venue_cfg(fake_kraken, "_safeback_sec") == og._venue_cfg("kraken", "_safeback_sec")
     assert og.get_margin_cfg(True) == og.get_margin_cfg("default")
 
     assert og.compute_weight_capped_qty(0.5, 100.0, float("inf"), 10.0, 0.0) == 5.0

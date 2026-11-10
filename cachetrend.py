@@ -40,6 +40,7 @@ from botcore import (
     required_float_env,
     resolve_now_ts,
     resolve_patched_attr,
+    resolve_sustained_sample_rate,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -542,7 +543,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
         # Keep PriceWindow sampling rate synchronized with sustained live cadence.
         try:
-            actual_rate = pw.resolve_sustained_sample_rate(
+            actual_rate = resolve_sustained_sample_rate(
                 self.current_price_mgr, symbol, min_span_sec=5.0
             )
             if actual_rate is not None and actual_rate >= 0.1:

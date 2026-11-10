@@ -419,15 +419,11 @@ class T212Client:
             "extendedHours": ext_flag,
         })
 
-    _extract_history_matches = staticmethod(T212Provider._extract_history_matches)
-    _aggregate_history_fills = staticmethod(T212Provider._aggregate_history_fills)
-    normalize_history_items = staticmethod(T212Provider.normalize_history_items)
-
     def _sync_trade_cache(self, items: list) -> None:
         explicit_path = getattr(self, "_trade_cache_path", None)
         if not explicit_path and not is_shared_disk_cache_enabled(getattr(self, "_enable_shared_disk_cache", None)):
             return
-        by_symbol = self.normalize_history_items(items)
+        by_symbol = T212Provider.normalize_history_items(items)
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path(CACHE_T212_TRADE_FILENAME))
@@ -450,18 +446,18 @@ class T212Client:
         with self._lock:
             hc = getattr(self, "_hist_cache", None)
             if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
-                matches = self._extract_history_matches(hc[1], target_oid)
+                matches = T212Provider._extract_history_matches(hc[1], target_oid)
         if not matches:
             with self._fetch_lock:
                 with self._shared_cache_file_lock():
                     with self._lock:
                         hc = getattr(self, "_hist_cache", None)
                         if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
-                            matches = self._extract_history_matches(hc[1], target_oid)
+                            matches = T212Provider._extract_history_matches(hc[1], target_oid)
                     if not matches:
                         s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
                         if s_hit and isinstance(s_val, list):
-                            s_matches = self._extract_history_matches(s_val, target_oid)
+                            s_matches = T212Provider._extract_history_matches(s_val, target_oid)
                             if s_matches:
                                 with self._lock:
                                     self._hist_cache = (time.monotonic() - s_age, s_val)
@@ -473,22 +469,22 @@ class T212Client:
                             s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache("_hist_cache", 600.0)
                             if s_fb_hit and isinstance(s_fb_val, list):
                                 self._record_shared_cache_fail("_hist_cache")
-                                matches = self._extract_history_matches(s_fb_val, target_oid)
+                                matches = T212Provider._extract_history_matches(s_fb_val, target_oid)
                             if not matches:
                                 with self._lock:
                                     hc = getattr(self, "_hist_cache", None)
                                     if hc and (time.monotonic() - hc[0]) < 600.0:
-                                        matches = self._extract_history_matches(hc[1], target_oid)
+                                        matches = T212Provider._extract_history_matches(hc[1], target_oid)
                             if not matches:
                                 return None
                         else:
-                            matches = self._extract_history_matches(items, target_oid)
+                            matches = T212Provider._extract_history_matches(items, target_oid)
         if not matches:
             return False
 
         # History uses {order, fill}, and one order may have several fills. Return
         # the client's order shape enriched with actual aggregate execution data.
-        result = self._aggregate_history_fills(matches)
+        result = T212Provider._aggregate_history_fills(matches)
         result.pop("_timestamp_ms", None)
         return result
 
@@ -563,7 +559,7 @@ class T212Client:
         if not isinstance(items, list):
             s_hit, s_val, _ = self._read_shared_cache("_hist_cache", 86400.0)
             items = s_val if (s_hit and isinstance(s_val, list)) else []
-        by_sym = self.normalize_history_items(items)
+        by_sym = T212Provider.normalize_history_items(items)
         sym_orders = by_sym.get(tkr)
         if not sym_orders:
             base_prefix = tkr.split("_", 1)[0]

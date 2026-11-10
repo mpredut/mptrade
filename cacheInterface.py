@@ -433,17 +433,13 @@ class CacheManagerInterface(ABC):
                     self._rest_sync_cursor_per_symbol.setdefault(s_sym, rebuilt_ft)
 
     # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
-    @staticmethod
-    def _safe_pos_ts_ms(val) -> int:
-        return safe_pos_int(val, default=0)
-
     def _mem_max_ts(self):
         """Return memory freshness as the latest fetch time in milliseconds."""
         if not self.fetchtime_per_symbol:
             return 0
         try:
             return max(
-                (self._safe_pos_ts_ms(v) for v in self.fetchtime_per_symbol.values()),
+                (safe_pos_int(v, default=0) for v in self.fetchtime_per_symbol.values()),
                 default=0,
             )
         except Exception:
@@ -453,7 +449,7 @@ class CacheManagerInterface(ABC):
         """Read file freshness cheaply from the ``.meta`` sidecar."""
         try:
             meta = read_json_dict(meta_file_path(self.filename))
-            return self._safe_pos_ts_ms(meta.get("max_ts", 0))
+            return safe_pos_int(meta.get("max_ts", 0), default=0)
         except Exception:
             return 0
 
@@ -550,7 +546,7 @@ class CacheManagerInterface(ABC):
             fetchtime_map = payload.get("fetchtime")
             payload["max_ts"] = (
                 max(
-                    (self._safe_pos_ts_ms(v) for v in fetchtime_map.values()),
+                    (safe_pos_int(v, default=0) for v in fetchtime_map.values()),
                     default=0,
                 )
                 if isinstance(fetchtime_map, dict)

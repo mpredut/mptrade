@@ -417,9 +417,6 @@ class NotificationServer:
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 
-    _format_price_alerts_batch_title = staticmethod(AlertNotifier._format_price_alerts_batch_title)
-    _format_new_coins_batch_title = staticmethod(AlertNotifier._format_new_coins_batch_title)
-
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
         if not isinstance(alerts, (list, tuple)) or not alerts:
             return False
@@ -442,7 +439,7 @@ class NotificationServer:
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
-                    title = self._format_price_alerts_batch_title(alerts)
+                    title = AlertNotifier._format_price_alerts_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
                 source = obj_attr(first, "source") or "price_alert"
             elif alert_type == "new_coin_discovered":
@@ -450,7 +447,7 @@ class NotificationServer:
                     sym = obj_attr(first, "symbol", "N/A")
                     title = f"New Coin: {sym}"
                 else:
-                    title = self._format_new_coins_batch_title(alerts)
+                    title = AlertNotifier._format_new_coins_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
                 source = obj_attr(first, "source") or "price_alert"
             else:

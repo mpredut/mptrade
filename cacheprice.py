@@ -45,7 +45,6 @@ from botcore import (
     required_int_env,
     resolve_now_ms,
     resolve_now_ts,
-    resolve_sustained_sample_rate,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -1337,8 +1336,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (len(samples) - 1))
 
-    resolve_sustained_sample_rate = staticmethod(resolve_sustained_sample_rate)
-
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         max_age = safe_pos_float(max_age_sec, default=None)
         if max_age is None:
@@ -1715,9 +1712,6 @@ def resolve_cached_symbol_price(
             pass
 
     return float("nan")
-
-
-CacheCurrentPriceManager.resolve_cached_price = staticmethod(resolve_cached_symbol_price)
 
 
 # ── Non-Binance Venue WebSocket Price Streams & Fallback Poller ───────────────

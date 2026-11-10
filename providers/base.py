@@ -16,7 +16,6 @@ from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
     bool_env,
-    clamp_price_to_bbo_mid,
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
     load_env_file_defaults,
@@ -922,8 +921,6 @@ class MarketDataProvider(ABC):
         """Return True when a venue error message indicates a permanent order rejection."""
         text = str(error or "").lower()
         return any(token in text for token in cls._DEFINITIVE_REFUSAL_TOKENS)
-
-    clamp_price_to_bbo_mid = staticmethod(clamp_price_to_bbo_mid)
 
     def _allow_ssot_price_cache(self) -> bool:
         """Return True when this provider should consult cacheManager SSOT before venue HTTP."""

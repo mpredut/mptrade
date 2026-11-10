@@ -29,6 +29,7 @@ import instrument_registry as sym
 import utils as u
 from botcore import (
     _parse_bool_flag,
+    clamp_price_to_bbo_mid,
     safe_float,
     safe_pos_float,
     safe_nonneg_float,
@@ -36,7 +37,6 @@ from botcore import (
 )
 from providers.base import (
     AsyncReconnectStreamBase,
-    MarketDataProvider,
     PublicPriceStreamBase,
     WS_CLOSE_TIMEOUT,
     WS_PING_INTERVAL,
@@ -198,7 +198,7 @@ class BinancePriceStream(PublicPriceStreamBase):
                 raise ValueError(f"invalid ticker price: {data['c']!r}")
             raw_b = data.get("b")
             raw_a = data.get("a")
-            price = MarketDataProvider.clamp_price_to_bbo_mid(price, raw_b, raw_a)
+            price = clamp_price_to_bbo_mid(price, raw_b, raw_a)
             if price is None:
                 raise ValueError(f"invalid ticker price: {data['c']!r}")
             raw_ts = (

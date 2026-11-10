@@ -263,14 +263,6 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         """Synchronize in-memory state with ``required_version``; subclasses override."""
         raise account_cache_health.AccountCacheNotReady(self._account_reader_reason())
 
-    _snapshot_data_version = staticmethod(_cache_integrity.snapshot_data_version)
-    _trade_data_version = staticmethod(_cache_integrity.trade_data_version)
-    _trade_records_digest = staticmethod(_cache_integrity.trade_records_digest)
-    _trade_semantic_signature = staticmethod(_cache_integrity.trade_semantic_signature)
-    _dedupe_trade_items_by_id = staticmethod(_cache_integrity.dedupe_trade_items_by_id)
-    _counts_for_records = staticmethod(_cache_integrity.counts_for_records)
-    _nonzero_counts = staticmethod(_cache_integrity.nonzero_counts)
-
     def _account_meta_snapshot(
         self,
         *,
@@ -1085,7 +1077,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                     on_rollback_fn=self._truncate_failed_jsonl_append,
                 )
 
-                content_digest = self._trade_records_digest(
+                content_digest = _cache_integrity.trade_records_digest(
                     appended_records, previous_digest
                 )
                 stream_id = previous_stream or uuid.uuid4().hex
@@ -1093,7 +1085,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 if wrote_rows or not previous_version:
                     revision += 1
                 revision = max(1, revision)
-                version = self._trade_data_version(stream_id, revision)
+                version = _cache_integrity.trade_data_version(stream_id, revision)
                 fetchtime = dict(self.fetchtime_per_symbol)
                 rest_sync_cursor = dict(self._rest_sync_cursor_per_symbol)
                 metadata = self._account_meta_snapshot(
@@ -1200,7 +1192,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                             ):
                                 raise ValueError("duplicate immutable Trade ID in suffix")
                             suffix_ids[normalized_symbol].add(trade_id)
-                        delta_counts = self._counts_for_records(records)
+                        delta_counts = _cache_integrity.counts_for_records(records)
                         candidate_counts = dict(old_counts)
                         for symbol, count in delta_counts.items():
                             candidate_counts[symbol] = (
@@ -1209,7 +1201,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         if candidate_counts != metadata["counts"]:
                             raise ValueError("Trade suffix counts differ from manifest")
                         if (
-                            self._trade_records_digest(records, old_digest)
+                            _cache_integrity.trade_records_digest(records, old_digest)
                             != metadata["content_digest"]
                         ):
                             raise ValueError("Trade suffix digest differs from manifest")
@@ -1252,7 +1244,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                             and self._loaded_content_digest == old_digest
                             and self._loaded_counts == old_counts
                             and {s: len(v) for s, v in self.cache.items()}
-                            == self._nonzero_counts(old_counts)
+                            == _cache_integrity.nonzero_counts(old_counts)
                         )
                         if append_still_valid:
                             for symbol, item in records:
@@ -1341,7 +1333,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                             or str(item["symbol"]).upper() != symbol.upper()
                         ):
                             raise ValueError("invalid Trade cache row")
-                    candidate_cache[symbol] = self._dedupe_trade_items_by_id(items)
+                    candidate_cache[symbol] = _cache_integrity.dedupe_trade_items_by_id(items)
                 self.cache = candidate_cache
                 self._validate_account_rows_locked()
 
@@ -1362,10 +1354,10 @@ class CacheTradeManager(CacheAccountManagerBase):
 
                 def _build_trade_meta():
                     committed_bytes = os.path.getsize(self.filename)
-                    content_digest = self._trade_records_digest(records)
+                    content_digest = _cache_integrity.trade_records_digest(records)
                     stream_id = uuid.uuid4().hex
                     revision = 1
-                    version = self._trade_data_version(stream_id, revision)
+                    version = _cache_integrity.trade_data_version(stream_id, revision)
                     committed_metadata["value"] = self._account_meta_snapshot(
                         data_version=version,
                         stream_id=stream_id,
@@ -1507,7 +1499,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 ):
                     raise RuntimeError("invalid Trade row already in memory")
                 trade_id = str(int(item["id"]))
-                signature = self._trade_semantic_signature(item)
+                signature = _cache_integrity.trade_semantic_signature(item)
                 if trade_id in existing:
                     raise RuntimeError("duplicate immutable Trade ID in memory")
                 existing[trade_id] = (signature, idx, item)
@@ -1521,7 +1513,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 ):
                     raise RuntimeError("invalid incoming Trade row")
                 trade_id = str(int(item["id"]))
-                signature = self._trade_semantic_signature(item)
+                signature = _cache_integrity.trade_semantic_signature(item)
                 if trade_id in existing:
                     prev_sig, prev_idx, prev_item = existing[trade_id]
                     if prev_sig != signature:
@@ -1788,7 +1780,7 @@ class CacheOrderManager(CacheAccountManagerBase):
                     base_meta["rest_sync_cursor"],
                     base_meta["counts"],
                 )
-                data_version = self._snapshot_data_version(self.cache)
+                data_version = _cache_integrity.snapshot_data_version(self.cache)
                 payload = {
                     "items": self.cache,
                     "fetchtime": fetchtime,

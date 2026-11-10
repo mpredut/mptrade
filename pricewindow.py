@@ -24,7 +24,6 @@ from botcore import (
     are_close,
     diff_percent,
     float_env,
-    resolve_sustained_sample_rate,
     safe_float,
     safe_int,
     safe_nonneg_float,

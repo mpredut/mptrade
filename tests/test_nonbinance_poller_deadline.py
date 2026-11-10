@@ -426,8 +426,9 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertNotIn("HYPEUSDC", hl_stream._resolved_spot_keys)
 
         # 2. clamp_price_to_bbo_mid must not fabricate mid from wide (>5%) spread when price is None
-        self.assertIsNone(MarketDataProvider.clamp_price_to_bbo_mid(None, "10.0", "20.0"))
-        self.assertAlmostEqual(MarketDataProvider.clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
+        from botcore import clamp_price_to_bbo_mid
+        self.assertIsNone(clamp_price_to_bbo_mid(None, "10.0", "20.0"))
+        self.assertAlmostEqual(clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
 
         # 3. is_real_ws_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
         tmp_dir = tempfile.mkdtemp()

@@ -707,13 +707,6 @@ def get_window_cfg(
     return float(_venue_cfg(name, "_window_h")) * 3600.0
 
 
-def get_weight_proxy_cfg(provider_name):
-    """Return the trend/Gaussian-weight proxy symbol from order_guard.conf when the current symbol lacks
-    its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
-    or `default_weight_proxy`."""
-    return _venue_cfg(provider_name, "_weight_proxy")
-
-
 def _order_ts_qty_price(o):
     if not isinstance(o, dict):
         return 0.0, 0.0, 0.0
@@ -936,7 +929,7 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
     weight = _gauss(symbol)
     if weight is None:
-        proxy = get_weight_proxy_cfg(provider_name)
+        proxy = _venue_cfg(provider_name, "_weight_proxy")
         if proxy and proxy != symbol:
             try:
                 pw = _gauss(proxy)
@@ -1012,16 +1005,6 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     return adjusted
 
 
-def get_max_daily_trades_cfg(provider_name):
-    """Return the venue's 24h trade cap strictly from order_guard.conf."""
-    return int(_venue_cfg(provider_name, "_max_daily_trades"))
-
-
-def get_safeback_sec_cfg(provider_name):
-    """Return the per-venue historical lookback window in seconds for the profit guard reference."""
-    return safe_nonneg_float(_venue_cfg(provider_name, "_safeback_sec"), 120.0)
-
-
 DAILY_LIMIT_WINDOW_SEC = 86400.0
 
 
@@ -1043,7 +1026,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     max_daily_trades = (
         resolved_max_trades
         if resolved_max_trades is not None
-        else get_max_daily_trades_cfg(name)
+        else int(_venue_cfg(name, "_max_daily_trades"))
     )
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
@@ -1674,7 +1657,7 @@ def check_math_profit_reference(
     ):
         try:
             window_ref = window_reference(
-                provider, symbol, side, get_safeback_sec_cfg(provider_name),
+                provider, symbol, side, safe_nonneg_float(_venue_cfg(provider_name, "_safeback_sec"), 120.0),
                 reference_mode=mode, module=module,
             )
         except Exception:

@@ -1644,9 +1644,10 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             cm.atomic_snapshot_file(
                 writer.filename, writer._previous_generation_path()
             )
+            import cacheintegrity
             v2_items = {"BTCUSDC": [first_order, second_order]}
             v2_ft = {"BTCUSDC": now_ms + 1000}
-            v2_version = writer._snapshot_data_version(v2_items)
+            v2_version = cacheintegrity.snapshot_data_version(v2_items)
             with cm.atomic_text_writer(writer.filename) as handle:
                 json.dump(
                     {
