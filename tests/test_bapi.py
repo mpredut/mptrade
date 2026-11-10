@@ -513,7 +513,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(dyn["ts"], hist_now)
 
         mgr._mem[SYMBOL] = {"symbol": SYMBOL, "ts_fast": time.time(), "ts": None}
-        self.assertFalse(mgr.is_snapshot_fresh(symbol=None))
+        self.assertIsNone(mgr.get_fresh_snapshot(SYMBOL))
 
     def test_if_place_safe_order_fetches_full_ref_window_and_pricewindow_edge_cases(self):
         import pricewindow as pw

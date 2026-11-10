@@ -352,12 +352,6 @@ class HLClient:
             log(f"  ! position({coin}) failed: {e}")
         return 0.0, 0.0
 
-    def withdrawable(self) -> float:
-        try:
-            return safe_nonneg_float(self._user_state().get("withdrawable"), 0.0)
-        except Exception:  # noqa: BLE001
-            return 0.0
-
     def open_orders_strict(self, coin: str | None = None) -> list[dict]:
         """Return open orders while propagating API errors."""
         if not self.address:

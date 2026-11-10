@@ -1280,15 +1280,6 @@ def notify(title: str, body: str, source: str, symbol: str,
             AlertNotifier.send_email_batch([alert], subject=title)
 
 
-def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
-    """Dispatches a trade alert notification if condition is met."""
-    if _parse_bool_flag(condition, False):
-        try:
-            notify("Trade Alert", str(message), "tradeall", symbol)
-        except Exception:
-            pass
-
-
 def bind_notify(symbol_env_keys: tuple, default_symbol: str):
     def bound_notify(title: str, body: str, source: str, price: float = None, desktop: bool = False, symbol: str = None, email: bool = None):
         sym_clean = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None

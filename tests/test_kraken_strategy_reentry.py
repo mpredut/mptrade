@@ -522,58 +522,6 @@ class StratRulesTest(unittest.TestCase):
                 self.assertEqual(sr.are_close(a, b, tol), botcore.are_close(a, b, tol),
                                  f"divergence at are_close({a},{b},{tol})")
 
-    def test_reentry_hybrid_blocked_behavior(self):
-        # Case 1: No last sell -> always unblocked
-        blocked, reason = sr.reentry_hybrid_blocked(100.0, None, None, True, 2.0, 1.5)
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "no_last_sell")
-
-        # Case 2: TTL expired -> unblocked
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=120.0, last_sell=100.0, post_sell_peak=120.0,
-            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
-            elapsed_sec=86400 * 15, ttl_sec=86400 * 14,
-        )
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "ttl_expired")
-
-        # Case 3: State B (TREND_CONFIRMED, is_bull=True)
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=129.0, last_sell=100.0, post_sell_peak=130.0,
-            is_bull=True, drop_pct=2.0, pullback_pct=1.5,
-        )
-        self.assertTrue(blocked)
-        self.assertEqual(reason, "bull_pullback_pending")
-
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=127.5, last_sell=100.0, post_sell_peak=130.0,
-            is_bull=True, drop_pct=2.0, pullback_pct=1.5,
-        )
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "bull_pullback_met")
-
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=135.0, last_sell=100.0, post_sell_peak=135.0,
-            is_bull=True, drop_pct=2.0, pullback_pct=0.0,
-        )
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "bull_immediate")
-
-        # Case 4: State C (NO_CONFIRMED_TREND, is_bull=False)
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=105.0, last_sell=100.0, post_sell_peak=105.0,
-            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
-        )
-        self.assertTrue(blocked)
-        self.assertEqual(reason, "range_drop_pending")
-
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=97.0, last_sell=100.0, post_sell_peak=100.0,
-            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
-        )
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "range_drop_met")
-
     def test_effective_reentry_pullback_pct(self):
         st = _make_strategy("TESTPAIR_PULLBACK")
         st.p.reentry_pullback_pct = 1.5
@@ -1053,40 +1001,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             self.assertEqual(sr.dynamic_surge_gain_pct(2.7), 27.0)
             self.assertEqual(sr.dynamic_surge_gain_pct(4.0), 32.0)
             self.assertEqual(sr.dynamic_surge_gain_pct(None), 25.0)
-
-    def test_reentry_hybrid_bear_bounce_rule(self):
-        import strategies.spot_rules as sr
-        # In non-bull regime:
-        # last_sell = 100.0, drop_pct = 2.0% -> drop threshold is 98.0
-        # Price drops to 95.0 -> meets drop threshold.
-        # But trough is 94.0, bounce_pct = 2.0% -> required price is 94.0 * 1.02 = 95.88
-        # At price 95.0, it hasn't bounced enough off the trough yet:
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=95.0,
-            last_sell=100.0,
-            post_sell_peak=100.0,
-            drop_pct=2.0,
-            pullback_pct=1.0,
-            is_bull=False,
-            post_sell_trough=94.0,
-            bounce_pct=2.0,
-        )
-        self.assertTrue(blocked)
-        self.assertEqual(reason, "range_bounce_pending")
-
-        # Now price bounces to 96.0 (> 95.88):
-        blocked, reason = sr.reentry_hybrid_blocked(
-            price=96.0,
-            last_sell=100.0,
-            post_sell_peak=100.0,
-            drop_pct=2.0,
-            pullback_pct=1.0,
-            is_bull=False,
-            post_sell_trough=94.0,
-            bounce_pct=2.0,
-        )
-        self.assertFalse(blocked)
-        self.assertEqual(reason, "range_bounce_met")
 
     def test_strategy_tracks_post_sell_trough_and_blocks_falling_knife(self):
         st = _make_strategy("TESTPAIR_TROUGH_BOUNCE")

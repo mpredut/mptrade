@@ -67,7 +67,6 @@ from market_regime import (
     MarketRegimeContext,
     MarketRegimeDecision,
     MarketRegimeEvaluator,
-    MarketRegimeBundle,
     MarketRegimeResolution,
     MarketRegimeService,
 )
@@ -948,102 +947,6 @@ class MarketApi:
             ohlc_max_age_seconds=ohlc_max_age_seconds,
             strength_threshold=strength_threshold, allow_fallback=allow_fallback,
         ).decision
-
-    def market_regime_bundle(
-        self,
-        symbol: str,
-        *,
-        benchmarks=(),
-        provider_name=None,
-        benchmark_provider_name=None,
-        use_case="balanced",
-        weights=None,
-        snapshot=None,
-        snapshot_source="snapshot",
-        snapshot_max_age_seconds=None,
-        ohlc_max_age_seconds=None,
-        strength_threshold=None,
-        allow_fallback=True,
-        include_alternates=False,
-        now=None,
-    ) -> MarketRegimeBundle:
-        """Collect evidence and select only fresh, usable directional sources."""
-        allow_fallback = _parse_bool_flag(allow_fallback, True)
-        include_alternates = _parse_bool_flag(include_alternates, False)
-        service = self._regime_service_for(strength_threshold)
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        evaluated_at = time.time() if now is None else require_finite_float(now, "now")
-        if snapshot_max_age_seconds is None:
-            snapshot_max_age_seconds = (
-                service.default_snapshot_max_age_seconds())
-        if ohlc_max_age_seconds is None:
-            ohlc_max_age_seconds = service.default_ohlc_max_age_seconds()
-
-        if isinstance(benchmarks, str):
-            benchmark_candidates = (benchmarks,)
-        else:
-            benchmark_candidates = tuple(benchmarks or ())
-        normalized_benchmarks = []
-        seen_benchmarks = set()
-        for item in benchmark_candidates:
-            if isinstance(item, bool) or not isinstance(item, str):
-                raise ValueError("benchmark symbols must be non-empty")
-            benchmark = item.strip()
-            if not benchmark:
-                raise ValueError("benchmark symbols must be non-empty")
-            identity = canonical_symbol_key(benchmark)
-            if identity not in seen_benchmarks:
-                normalized_benchmarks.append(benchmark)
-                seen_benchmarks.add(identity)
-
-        def resolve(
-            source_provider,
-            target,
-            horizon,
-            role,
-            source_snapshot=None,
-        ):
-            return service.resolve_with_evidence(
-                source_provider,
-                target,
-                horizon=horizon,
-                snapshot=source_snapshot,
-                snapshot_source=snapshot_source,
-                snapshot_max_age_seconds=snapshot_max_age_seconds,
-                ohlc_max_age_seconds=ohlc_max_age_seconds,
-                allow_fallback=allow_fallback,
-                include_alternates=include_alternates,
-                role=role,
-                now=evaluated_at,
-            )
-
-        asset_short = resolve(provider, symbol, "short", "asset_short", snapshot)
-        asset_long = resolve(provider, symbol, "long", "asset_long")
-        benchmark_resolutions = []
-        for benchmark in normalized_benchmarks:
-            if benchmark_provider_name is not None:
-                benchmark_provider = self._provider_explicit_or_routed(benchmark, benchmark_provider_name)
-            elif provider_name is not None:
-                benchmark_provider = provider
-            else:
-                benchmark_provider = self._provider_explicit_or_routed(benchmark, None)
-            short = resolve(benchmark_provider, benchmark, "short", "benchmark_short")
-            long = resolve(benchmark_provider, benchmark, "long", "benchmark_long")
-            benchmark_resolutions.append((benchmark, short, long))
-
-        all_evidence = (
-            tuple(asset_short.evidence)
-            + tuple(asset_long.evidence)
-            + tuple(
-                item
-                for _benchmark, short, long in benchmark_resolutions
-                for item in (*short.evidence, *long.evidence)
-            )
-        )
-        composite = service.compose_evidence(
-            all_evidence, asset_symbol=symbol, use_case=use_case, weights=weights
-        )
-        return MarketRegimeBundle(composite, asset_short, asset_long, tuple(benchmark_resolutions))
 
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price=None, *, market: bool = False,

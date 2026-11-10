@@ -274,7 +274,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
         self._threshold_fn = self._build_threshold_fn(thresholds)
         self._live_windows = {}
-        self._hist_windows = {}
         self._trend_buffers = {}
         self._active_dynamic_windows = set()
         self._disk_c24_cache = {}
@@ -372,15 +371,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     def window_big_sec(self):
         return self.window_seconds[-1]
 
-    def _trend_symbol_file(self, prefix: str, symbol: str) -> str:
-        safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
-        return os.path.join(self.trend_dir, f"{prefix}_{safe_sym}.json")
-
     def _live_trend_file(self, symbol: str) -> str:
-        return self._trend_symbol_file("live", symbol)
-
-    def _hist_trend_file(self, symbol: str) -> str:
-        return self._trend_symbol_file("hist", symbol)
+        safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
+        return os.path.join(self.trend_dir, f"live_{safe_sym}.json")
 
     def _get_trend_buffer(self, symbol: str):
         buf = self._trend_buffers.get(symbol)
@@ -430,12 +423,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             return lambda sym, sec: tbl.get(round(float(sec), 6), per_window_default(sec))
 
         return lambda sym, sec: per_window_default(sec)
-
-    def threshold_for(self, symbol, seconds):
-        """Return the percentage threshold for one symbol window."""
-        sf = safe_pos_float(seconds, default=None)
-        sec_val = round(sf, 6) if sf is not None else self.window_seconds[0]
-        return self._threshold_fn(symbol, sec_val)
 
     # ── Writer: build windows and subscribe to Cache24 ───────────────────────
     def start_computation(
@@ -1061,9 +1048,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     def _read_live_symbol_file(self, symbol: str) -> dict:
         return read_json_dict(self._live_trend_file(symbol), default={}, recover_previous=True)
 
-    def _read_hist_symbol_file(self, symbol: str) -> dict:
-        return read_json_dict(self._hist_trend_file(symbol), default={}, recover_previous=True)
-
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
         norm = self._normalize_dynamic_window_request(
@@ -1137,94 +1121,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     return fresh
 
         return None
-
-    # ── Historical fixed subslice [t1, t2] with immutable persistence ─────────
-    def get_trend_for_slice(self, symbol: str, start_ts: float, end_ts: float):
-        """Return trend metrics for a fixed historical interval [start_ts, end_ts].
-
-        Serves directly from cachedb/24trend/hist_<SYMBOL>.json on cache hit; otherwise
-        computes in O(1) from IncrementalTrendBuffer prefix sums and persists the result.
-        Accepts timestamps in either seconds or milliseconds.
-        """
-        t1_ms = normalize_timestamp_ms(start_ts)
-        t2_ms = normalize_timestamp_ms(end_ts)
-        if t1_ms is None or t2_ms is None or t2_ms <= t1_ms:
-            return None
-        slice_key = f"{t1_ms}_{t2_ms}"
-
-        variants = _short_trend_symbol_variants(symbol)
-        with self._lock:
-            for cand in variants:
-                sym_hist = self._hist_windows.setdefault(cand, {})
-                if isinstance(sym_hist.get(slice_key), dict):
-                    return dict(sym_hist[slice_key])
-                loaded = self._read_hist_symbol_file(cand)
-                if isinstance(loaded, dict):
-                    for k, v in loaded.items():
-                        if isinstance(v, dict):
-                            sym_hist[k] = v
-                    if isinstance(sym_hist.get(slice_key), dict):
-                        return dict(sym_hist[slice_key])
-
-        # Cache miss: resolve raw entries from memory Cache24 or disk Cache24
-        entries = []
-        matched_sym = symbol
-        if self._cache24_managers is not None:
-            for cand in variants:
-                c24 = casefold_get(self._cache24_managers, cand)
-                if c24 is not None:
-                    matched_sym = cand
-                    if hasattr(c24, "cache") and hasattr(c24, "lock"):
-                        with c24.lock:
-                            entries = list(casefold_get(c24.cache, cand, []))
-                    elif hasattr(c24, "entries"):
-                        entries = list(c24.entries)
-                    if entries:
-                        break
-        if not entries:
-            entries = self._load_disk_cache24_entries(symbol)
-        if len(entries) < 3:
-            return None
-
-        a = bisect.bisect_left(entries, t1_ms, key=lambda e: e[0])
-        b = bisect.bisect_right(entries, t2_ms, key=lambda e: e[0]) - 1
-        if a < 0 or b >= len(entries) or (b - a + 1) < 3:
-            return None
-
-        slice_win_sec = (t2_ms - t1_ms) / 1000.0
-        ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            matched_sym, entries, a, b, window_seconds=slice_win_sec
-        )
-        res = dict(
-            t1_ms=t1_ms,
-            t2_ms=t2_ms,
-            final_trend=ft,
-            growth_coefficient=gc,
-            slope_full=sf,
-            gradient_recent=gr,
-            epsilon=eps,
-            n_samples=b - a + 1,
-            window_seconds=round((t2_ms - t1_ms) / 1000.0, 3),
-            sample_rate_sec=sample_rate,
-        )
-        with self._lock:
-            sym_hist = self._hist_windows.setdefault(symbol, {})
-            hist_path = self._hist_trend_file(symbol)
-            loaded = self._read_hist_symbol_file(symbol)
-            if isinstance(loaded, dict):
-                for k, v in loaded.items():
-                    if isinstance(v, dict) and k not in sym_hist:
-                        sym_hist[k] = v
-            sym_hist[slice_key] = res
-            try:
-                save_json_state(
-                    hist_path,
-                    sym_hist,
-                    write_fn=_cm_attr("atomic_write_json", atomic_write_json),
-                )
-            except Exception as e:
-                print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
-        return dict(res)
 
     @staticmethod
     def _eval_upward_formula(data) -> bool:
@@ -1499,23 +1395,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         age = now_f - observed_at
         return -5.0 <= age <= max_age_f
 
-    def is_snapshot_fresh(self, symbol=None, max_age_sec=None):
-        """Return whether memory or file state is fresh enough to trust the writer."""
-        max_age_sec = (
-            max_age_sec if max_age_sec is not None else self.TREND_STALE_SEC
-        )
-        now = time.time()
-        if symbol is not None:
-            snap = self.get_snapshot(symbol)
-            return self._snapshot_is_usable(snap, now, max_age_sec)
-        allt = self.get_all_snapshots()
-        if not allt:
-            return False
-        return any(
-            self._snapshot_is_usable(s, now, max_age_sec)
-            for s in allt.values()
-        )
-
     def become_writer(self):
         """Promote a calculating reader to writer when the previous writer is stale."""
         self.writer = True
@@ -1540,7 +1419,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self.fetchtime_per_symbol.clear()
             self._rest_sync_cursor_per_symbol.clear()
             self._live_windows.clear()
-            self._hist_windows.clear()
             self._trend_buffers.clear()
             self._active_dynamic_windows.clear()
             self._disk_c24_cache.clear()
@@ -1554,7 +1432,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 )
                 if os.path.isdir(self.trend_dir):
                     for fn in os.listdir(self.trend_dir):
-                        if fn.startswith(("live_", "hist_")) and fn.endswith(
+                        if fn.startswith("live_") and fn.endswith(
                             ".json"
                         ):
                             os.remove(os.path.join(self.trend_dir, fn))
@@ -1649,43 +1527,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             use_noise_gate=use_noise_gate,
             allow_zero_eps=is_dyn,
         )
-
-    def wait_for_favorable_entry(
-        self,
-        side,
-        symbol,
-        max_wait_sec=10.0,
-        poll_sec=0.2,
-        sleep_fn=time.sleep,
-        mode="full",
-        window_seconds=None,
-    ):
-        """Wait while trend favors delay, bounded by ``max_wait_sec``.
-
-        Emit a visual heartbeat roughly once per second and return elapsed seconds.
-        Forward ``window_seconds`` to ``should_wait`` for primary or dynamic evaluation.
-        """
-        max_wait_f = safe_pos_float(max_wait_sec, default=None)
-        poll_f = safe_pos_float(poll_sec, default=None)
-        if max_wait_f is None or poll_f is None:
-            return 0.0
-        deadline = time.time() + max_wait_f
-        waited = 0.0
-        next_dot = 1.0
-        while time.time() < deadline and self.should_wait(
-            side,
-            symbol,
-            window_seconds=window_seconds,
-            fast=(str(mode or "").strip().lower() == "gradient"),
-        ):
-            sleep_fn(poll_f)
-            waited += poll_f
-            if waited >= next_dot:
-                print(".", end="", flush=True)
-                next_dot += 1.0
-        if waited > 0:
-            print()
-        return waited
 
 
 __all__ = [

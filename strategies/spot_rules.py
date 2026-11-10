@@ -72,59 +72,6 @@ def progressive_dca_drop_pct(
     return max(0.0, base_f) + growth * completed
 
 
-def reentry_hybrid_blocked(
-    price: float,
-    last_sell: float | None,
-    post_sell_peak: float | None,
-    is_bull: bool,
-    drop_pct: float,
-    pullback_pct: float,
-    tol_pct: float = 0.05,
-    elapsed_sec: float | None = None,
-    ttl_sec: float | None = None,
-    post_sell_trough: float | None = None,
-    bounce_pct: float = 0.0,
-) -> tuple[bool, str]:
-    """Hybrid re-entry decision separating trend confirmation from execution trigger."""
-    sell_f = safe_float(last_sell, default=None)
-    if sell_f is None or sell_f <= 0:
-        return False, "no_last_sell"
-
-    ttl_f, elapsed_f = safe_float(ttl_sec, default=None), safe_float(elapsed_sec, default=None)
-    if ttl_f is not None and ttl_f > 0 and elapsed_f is not None and elapsed_f >= ttl_f:
-        return False, "ttl_expired"
-
-    px_f = safe_float(price, default=None)
-    if px_f is None or px_f <= 0:
-        return True, "invalid_price"
-
-    if _parse_bool_flag(is_bull):
-        peak_cand = safe_float(post_sell_peak, default=None)
-        peak = max(sell_f, peak_cand if (peak_cand is not None and peak_cand > 0) else px_f, px_f)
-        pullback_f = safe_float(pullback_pct, 0.0)
-        if pullback_f <= 0:
-            return False, "bull_immediate"
-        threshold = peak * (1.0 - pullback_f / 100.0)
-        blocked = px_f > threshold and not are_close(px_f, threshold, tol_pct)
-        return blocked, ("bull_pullback_pending" if blocked else "bull_pullback_met")
-
-    drop_f = safe_float(drop_pct, 0.0)
-    if drop_f <= 0:
-        return False, "range_immediate"
-    threshold = sell_f * (1.0 - drop_f / 100.0)
-    if px_f > threshold and not are_close(px_f, threshold, tol_pct):
-        return True, "range_drop_pending"
-    bounce_f = safe_float(bounce_pct, 0.0)
-    if bounce_f > 0:
-        trough_cand = safe_float(post_sell_trough, default=None)
-        trough = min(sell_f, trough_cand if (trough_cand is not None and trough_cand > 0) else px_f, px_f)
-        bounce_threshold = trough * (1.0 + bounce_f / 100.0)
-        if px_f < bounce_threshold and not are_close(px_f, bounce_threshold, tol_pct):
-            return True, "range_bounce_pending"
-        return False, "range_bounce_met"
-    return False, "range_drop_met"
-
-
 def dynamic_surge_gain_pct(
     hourly_volatility_pct: float | None,
     min_gain_pct: float = 24.0,

@@ -4962,12 +4962,11 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
     assert d_snap.funding_rate == pytest.approx(0.0)
     assert d_snap.open_interest_usd == pytest.approx(0.0)
 
-    # 4. CacheShortTrendManager slash sanitization & cross-venue get_trend_for_slice
+    # 4. CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution
     st_file = tmp_path / "cache_short_trend.json"
     (tmp_path / "24trend").mkdir(parents=True, exist_ok=True)
     stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=True)
     assert "/" not in os.path.basename(stm._live_trend_file("TAO/USD"))
-    assert "/" not in os.path.basename(stm._hist_trend_file("TAO/USD"))
     c24_path = tmp_path / "cache_24_price_TAOUSDC.json"
     c24_path.write_text(
         json.dumps({
@@ -4982,9 +4981,9 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
         }),
         encoding="utf-8",
     )
-    slice_res = stm.get_trend_for_slice("TAO/USD", 1_700_000_000.0, 1_700_000_030.0)
-    assert slice_res is not None
-    assert slice_res["growth_coefficient"] > 0
+    dyn_res = stm.get_short_trend_for_window("TAO/USD", 30, now=1_700_000_030.0)
+    assert dyn_res is not None
+    assert dyn_res["growth_coefficient"] > 0
 
     # 5. order_retry.enqueue serializes set/frozenset in place_kwargs cleanly
     q_file = tmp_path / "order_retry_queue.jsonl"
@@ -5817,10 +5816,6 @@ def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_m
 
     with pytest.raises(ValueError):
         mapi.latest_fill_price("TAOUSD", "BUY", True, provider_name="kraken")
-    with pytest.raises(ValueError):
-        mapi.market_regime_bundle("TAOUSD", provider_name="kraken", now=True)
-    with pytest.raises(ValueError):
-        mapi.market_regime_bundle("TAOUSD", provider_name="kraken", now=float("nan"))
 
 
 def test_iteration29_candle_interval_bool_t212_get_orders_whale_funding_ts_and_collector_nan(tmp_path):
@@ -7491,7 +7486,6 @@ def test_iteration49_hyperliquid_client_market_data_price_analysis_strategy_and_
     assert dummy.mid("HYPE") is None
     assert dummy.mid("BTC") is None
     assert dummy.mid("ETH") == 2500.5
-    assert dummy.withdrawable() == 0.0
     with pytest.raises(hlc.HLError):
         dummy.position_strict("HYPE")
 
@@ -11789,16 +11783,6 @@ def test_iteration112_market_api_spot_rules_and_spot_replay_safety(monkeypatch):
         ma.api.market_regime_context("BTCUSDC", now="bad")
 
     # 5. spot_rules string 'false' boolean flag handling
-    blocked, reason = sr.reentry_hybrid_blocked(
-        price=99.0,
-        last_sell=100.0,
-        post_sell_peak=105.0,
-        is_bull="false",
-        drop_pct=5.0,
-        pullback_pct=1.0,
-    )
-    assert blocked is True
-    assert reason == "range_drop_pending"
     assert sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
 
     # 6. spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash
@@ -11894,14 +11878,10 @@ def test_iteration114_order_retry_worker_botcore_and_alertnotifiers_safety(tmp_p
     assert bc.required_bool_env("FLAG", {"FLAG": True}) is True
     assert bc.required_bool_env("FLAG", {"FLAG": False}) is False
 
-    # 3. alertnotifiers: utf8_header strips CR/LF and rejects bool/None; check_alert ignores 'false'
+    # 3. alertnotifiers: utf8_header strips CR/LF and rejects bool/None
     assert an.AlertNotifier.utf8_header(None) == ""
     assert an.AlertNotifier.utf8_header(True) == ""
     assert an.AlertNotifier.utf8_header("Line1\r\nLine2") == "Line1 Line2"
-    called = []
-    monkeypatch.setattr(an, "notify", lambda *a, **kw: called.append((a, kw)))
-    an.check_alert("false", "should not fire")
-    assert called == []
 
 
 def test_iteration115_venue_clients_placeorder_and_strategy_state_safety(tmp_path, monkeypatch):
@@ -15756,14 +15736,9 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     _, w_decay = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="false")
     assert w_plateau[0] > w_decay[0]
 
-    # 3. alertnotifiers: _parse_bool_flag default preservation, check_alert(nan), and save_to_file empty filename fallback
+    # 3. alertnotifiers: _parse_bool_flag default preservation
     assert an._parse_bool_flag("invalid_token", default=True) is True
     assert an._parse_bool_flag("false", default=True) is False
-    called_notify = []
-    monkeypatch.setattr(an, "notify", lambda *a, **kw: called_notify.append((a, kw)))
-    an.check_alert(float("nan"), "should not fire")
-    an.check_alert("false", "should not fire")
-    assert called_notify == []
 
     # 4. log: configure rejects empty/boolean log_folder
     with pytest.raises(ValueError):

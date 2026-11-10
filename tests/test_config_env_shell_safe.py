@@ -370,7 +370,6 @@ def test_cooldown_and_internal_state_hardening(tmp_path):
     cd._write({"BTCUSDC": {"timestamp": None}, "ETHUSDC": "corrupted", "SOLUSDC": {"timestamp": 9999999999.0}})
     assert cd.reserve("BTCUSDC", ttl=60)[0] is True
     assert cd.reserve("SOLUSDC", ttl=60)[0] is True
-    assert cd.last_age("ETHUSDC") is None
     cd.update("ETHUSDC", order_id=1)
 
     assert adaptive_thresholds(float("nan")) == (None, None)
@@ -627,8 +626,7 @@ def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
     assert blocked is True
     assert "aggressive_shorting_divergence" in reason
 
-    # 3. spot_rules reentry barriers fail closed on NaN price and reject bool/None in exhaustion checks
-    assert sr.reentry_hybrid_blocked(float("nan"), 100.0, 105.0, True, 2.0, 1.0)[0] is True
+    # 3. spot_rules reject bool/None in exhaustion checks
     assert sr.dynamic_surge_gain_pct(True, fallback_gain_pct=25.0) == 25.0
     assert sr.dynamic_flat_tp_pct(True, base_tp_pct=5.0) == 5.0
     assert sr.dynamic_trend_trail_pct(float("nan"), base_trail_pct=8.0) == 8.0
@@ -1279,8 +1277,6 @@ def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
         sync_ts=float("nan"),
     )
     assert len(mgr.window_seconds) == 2 and all(w > 0 for w in mgr.window_seconds)
-    assert math.isfinite(mgr.threshold_for("BTCUSDC", float("nan")))
-    assert math.isfinite(mgr.threshold_for("BTCUSDC", True))
 
     summary_txt = ai.format_summary(
         {

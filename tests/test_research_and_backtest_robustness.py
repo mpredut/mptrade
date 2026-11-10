@@ -5499,8 +5499,8 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
         filename=str(tmp_path / "cache_short_trend.json"),
         thresholds={"bad_key": 1.0, "222": "invalid_val", "900": "2.5"},
     )
-    assert stm.threshold_for("BTCUSDC", 900) == pytest.approx(2.5)
-    assert stm.threshold_for("BTCUSDC", 222) == pytest.approx(stm.PRICE_CHANGE_THRESHOLD_SMALL)
+    assert stm._threshold_fn("BTCUSDC", 900) == pytest.approx(2.5)
+    assert stm._threshold_fn("BTCUSDC", 222) == pytest.approx(stm.PRICE_CHANGE_THRESHOLD_SMALL)
     now_s = time.time()
     now_ms = int(now_s * 1000)
     stm._cache24_managers = {

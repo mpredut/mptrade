@@ -402,24 +402,6 @@ class MarketRegimeResolution:
         return self.evidence[index]
 
 
-@dataclass(frozen=True)
-class MarketRegimeBundle:
-    """Asset horizons, optional benchmark context, and their full evidence."""
-
-    composite: CompositeMarketRegimeDecision
-    asset_short: MarketRegimeResolution
-    asset_long: MarketRegimeResolution
-    benchmarks: tuple
-
-    @property
-    def evidence(self) -> tuple[MarketRegimeEvidence, ...]:
-        items = list(self.asset_short.evidence) + list(self.asset_long.evidence)
-        for _name, short, long in self.benchmarks:
-            items.extend(short.evidence)
-            items.extend(long.evidence)
-        return tuple(items)
-
-
 class MarketRegimeEvaluator:
     """Transform a common snapshot into a deterministic decision."""
 

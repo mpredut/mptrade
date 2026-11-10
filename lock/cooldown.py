@@ -367,19 +367,6 @@ class Cooldown:
             return None
         return self._read().get(key)
 
-    def last_age(self, key):
-        """Return the latest reservation age in seconds, or None."""
-        key = _clean_cooldown_key(key)
-        if not key:
-            return None
-        last = self._read().get(key)
-        if not isinstance(last, dict):
-            return None
-        ts = safe_pos_float(last.get("timestamp"), default=None)
-        if ts is None:
-            return None
-        return max(0.0, time.time() - ts)
-
     @contextlib.contextmanager
     def slot(self, key, ttl, **meta):
         """Reserve on entry and roll back automatically when exiting without commit.

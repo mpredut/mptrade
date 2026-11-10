@@ -81,11 +81,11 @@ class TestStore(unittest.TestCase):
             m.update_snapshot(
                 "BTCUSDT", gradient_recent=0.1,
                 current_price=60000.0, ts=time.time())
-            self.assertTrue(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
+            self.assertIsNotNone(m.get_fresh_snapshot("BTCUSDT"))
             m.update_snapshot(
                 "BTCUSDT", gradient_recent=0.1,
                 current_price=60000.0, ts=time.time() - 100)
-            self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
+            self.assertIsNone(m.get_fresh_snapshot("BTCUSDT"))
 
         with self.subTest(msg="zero price not fresh"):
             m = cm.CacheShortTrendManager(
@@ -93,12 +93,11 @@ class TestStore(unittest.TestCase):
             m.update_snapshot(
                 "BTCUSDT", gradient_recent=0.1,
                 current_price=0.0, ts=time.time())
-            self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
             self.assertIsNone(m.get_fresh_snapshot("BTCUSDT"))
 
         with self.subTest(msg="no data not fresh"):
             m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "g.json"))
-            self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
+            self.assertIsNone(m.get_fresh_snapshot("BTCUSDT"))
 
         with self.subTest(msg="become writer failover"):
             fname = os.path.join(self.tmp, "fail.json")
@@ -212,27 +211,6 @@ class TestGate(unittest.TestCase):
             self._pub(gradient_recent=5.0, epsilon=1.0)
             self.assertFalse(self.m.should_wait("BUY", "BTCUSDT"))
 
-    def test_wait_for_favorable_entry(self):
-        with self.subTest(msg="returns immediately when favorable"):
-            self._pub(gradient_recent=0.5)   # A rising trend does not delay BUY.
-            calls = []
-            waited = self.m.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=10,
-                                                     sleep_fn=lambda s: calls.append(s))
-            self.assertEqual(waited, 0.0)
-            self.assertEqual(calls, [])
-            
-        with self.subTest(msg="stops when flips"):
-            self._pub(gradient_recent=-0.5, epsilon=1e-12)
-            st = {"n": 0}
-            def fake_sleep(_):
-                st["n"] += 1
-                if st["n"] >= 2:
-                    self._pub(gradient_recent=0.5, epsilon=1e-12)
-            waited = self.m.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=60,
-                                                     poll_sec=1.0, sleep_fn=fake_sleep)
-            self.assertGreaterEqual(waited, 2.0)
-            self.assertLess(waited, 60.0)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Calculation API and fast channel (start_computation / on_price_update).
@@ -311,30 +289,30 @@ class TestComputation(unittest.TestCase):
         with self.subTest(msg="default per window"):
             m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thd.json"),
                                             window_seconds=[60, 3600])
-            self.assertEqual(m.threshold_for("BTCUSDT", 60), m.PRICE_CHANGE_THRESHOLD_SMALL)
-            self.assertEqual(m.threshold_for("BTCUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 60), m.PRICE_CHANGE_THRESHOLD_SMALL)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
 
         with self.subTest(msg="per window dict"):
             m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thw.json"),
                                             window_seconds=[60, 3600],
                                             thresholds={60: 0.3, 3600: 1.5})
-            self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.3)
-            self.assertEqual(m.threshold_for("BTCUSDT", 3600), 1.5)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 60), 0.3)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 3600), 1.5)
 
         with self.subTest(msg="per symbol"):
             m = cm.CacheShortTrendManager(["BTCUSDT", "TAOUSDT"], os.path.join(self.tmp, "ths.json"),
                                             window_seconds=[60, 3600],
                                             thresholds={"BTCUSDT": {60: 0.3}, "TAOUSDT": {60: 1.2}})
-            self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.3)
-            self.assertEqual(m.threshold_for("TAOUSDT", 60), 1.2)
-            self.assertEqual(m.threshold_for("TAOUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 60), 0.3)
+            self.assertEqual(m._threshold_fn("TAOUSDT", 60), 1.2)
+            self.assertEqual(m._threshold_fn("TAOUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
 
         with self.subTest(msg="callable"):
             m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thc.json"),
                                             window_seconds=[60, 3600],
                                             thresholds=lambda sym, sec: 0.9 if sec < 100 else 2.0)
-            self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.9)
-            self.assertEqual(m.threshold_for("BTCUSDT", 3600), 2.0)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 60), 0.9)
+            self.assertEqual(m._threshold_fn("BTCUSDT", 3600), 2.0)
 
     def test_start_computation_idempotent(self):
         w1 = self.m.get_window("BTCUSDT")
@@ -499,15 +477,6 @@ class TestDynamicWindow(unittest.TestCase):
             self.assertTrue(m.should_wait("SELL", "BTCUSDT", window_seconds=60, use_noise_gate=False))
             self.assertFalse(m.should_wait("BUY", "BTCUSDT", window_seconds=60, use_noise_gate=False))
 
-        with self.subTest(msg="wait forwards window seconds"):
-            m = self._mgr_with_cache24(self._cache24_up(delta=-5.0))
-            calls = []
-            waited = m.wait_for_favorable_entry(
-                "BUY", "BTCUSDT", max_wait_sec=2, poll_sec=0.5, window_seconds=60,
-                sleep_fn=lambda s: calls.append(s))
-            self.assertGreater(waited, 0.0)
-            self.assertTrue(calls)
-
 
 class TestCache24RecentEntriesBisect(unittest.TestCase):
     """Verify bisect produces the former O(n) filter's exact output.
@@ -616,25 +585,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         for forbidden_root_key in ("ts", "current_price", "final_trend", "gradient_recent", "windows"):
             self.assertNotIn(forbidden_root_key, live_payload)
 
-        # Historical fixed slice [t1, t2] persisted in hist_BTCUSDT.json
-        t1_ms = entries[20][0]
-        t2_ms = entries[150][0]
-        slice_res = writer.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
-        self.assertIsNotNone(slice_res)
-        self.assertTrue(writer._eval_upward_formula(slice_res))
-
-        hist_path = os.path.join(self.tmp, "24trend", "hist_BTCUSDT.json")
-        self.assertTrue(os.path.exists(hist_path))
-        with open(hist_path, encoding="utf-8") as fh:
-            hist_payload = json.load(fh)
-        self.assertIn(f"{t1_ms}_{t2_ms}", hist_payload)
-
-        # Reader process without start_computation can serve hist slice from disk and compute new window from cache_24_price
+        # Reader process without start_computation can compute dynamic window from cache_24_price
         reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
-        cached_slice = reader.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
-        self.assertIsNotNone(cached_slice)
-        self.assertEqual(cached_slice["final_trend"], slice_res["final_trend"])
-
         dyn120 = reader.get_short_trend_for_window("BTCUSDT", 120, now=now_entry)
         self.assertIsNotNone(dyn120)
         self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120, now=now_entry))
@@ -874,39 +826,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             self.assertIsNone(cm._short_trend_instance)
         finally:
             cm._short_trend_instance = prev_st
-
-    def test_get_trend_for_slice_preserves_concurrent_disk_slices(self):
-        trend_file = os.path.join(self.tmp, "cache_short_trend.json")
-        c24_file = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
-        entries = _entries_now(40, interval_ms=1000, start=60000.0, delta=5.0)
-        with open(c24_file, "w", encoding="utf-8") as fh:
-            json.dump({"items": {"BTCUSDT": entries}, "fetchtime": {"BTCUSDT": entries[-1][0]}}, fh)
-
-        r1 = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
-        r2 = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
-
-        t1_a, t2_a = entries[0][0], entries[15][0]
-        t1_b, t2_b = entries[10][0], entries[30][0]
-
-        res_a = r1.get_trend_for_slice("BTCUSDT", t1_a, t2_a)
-        self.assertIsNotNone(res_a)
-
-        # Inject a corrupt non-dict entry alongside res_a on disk before r2 computes slice B
-        hist_path = r1._hist_trend_file("BTCUSDT")
-        with open(hist_path, "r", encoding="utf-8") as fh:
-            disk_hist = json.load(fh)
-        disk_hist["corrupt_key"] = "not_a_dict"
-        with open(hist_path, "w", encoding="utf-8") as fh:
-            json.dump(disk_hist, fh)
-
-        res_b = r2.get_trend_for_slice("BTCUSDT", t1_b, t2_b)
-        self.assertIsNotNone(res_b)
-
-        with open(hist_path, "r", encoding="utf-8") as fh:
-            merged_hist = json.load(fh)
-        self.assertIn(f"{t1_a}_{t2_a}", merged_hist)
-        self.assertIn(f"{t1_b}_{t2_b}", merged_hist)
-        self.assertNotIn("corrupt_key", merged_hist)
 
     def test_shutdown_unsubscribes_price_windows_from_cache24(self):
         c24 = cm.Cache24PriceManager(
@@ -1543,17 +1462,14 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         pw.process_price(60001.0)
         self.assertEqual(list(pw.prices), [60000.5, 60001.0])
 
-        # 6. CacheShortTrendManager._snapshot_is_usable and wait_for_favorable_entry guard bool/non-positive args
+        # 6. CacheShortTrendManager._snapshot_is_usable guards bool/non-positive args
         st = cm.CacheShortTrendManager(
             ["BTCUSDT"], filename=os.path.join(self.tmp, "st_audit38.json"), writer=True
         )
         st._set_mem("BTCUSDT", ts=time.time(), current_price=64000.0, gradient_recent=-1.0)
-        self.assertFalse(st.is_snapshot_fresh("BTCUSDT", max_age_sec=True))
-        self.assertFalse(st.is_snapshot_fresh("BTCUSDT", max_age_sec=0))
+        self.assertFalse(st._snapshot_is_usable(st.get_snapshot("BTCUSDT"), time.time(), True))
+        self.assertFalse(st._snapshot_is_usable(st.get_snapshot("BTCUSDT"), time.time(), 0))
         self.assertIsNone(st.get_fresh_snapshot("BTCUSDT", now=True))
-        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=0), 0.0)
-        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=True), 0.0)
-        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", poll_sec=0), 0.0)
 
     def test_audit39_health_pid_overflow_and_sub_satoshi_aggregation_and_ws_classify(self):
         """Audit #39: _pid_is_alive overflow guard, sub-satoshi get_filled_orders/aggregate_trades, and _classify non-dict inner event."""
@@ -1862,17 +1778,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         recovered_live = stm._read_live_symbol_file("BTCUSDT")
         self.assertIn("222", recovered_live)
         self.assertFalse(os.path.exists(live_path + ".previous"))
-
-        # 2. _read_hist_symbol_file recovers from .previous so get_trend_for_slice preserves prior slices
-        hist_path = stm._hist_trend_file("BTCUSDT")
-        with open(hist_path, "w", encoding="utf-8") as fh:
-            fh.write("{corrupt")
-        with open(hist_path + ".previous", "w", encoding="utf-8") as fh:
-            json.dump({"1000_2000": {"final_trend": 0.25, "t1_ms": 1000, "t2_ms": 2000}}, fh)
-        slice_res = stm.get_trend_for_slice("BTCUSDT", 1000, 2000)
-        self.assertIsNotNone(slice_res)
-        self.assertEqual(slice_res["final_trend"], 0.25)
-        self.assertFalse(os.path.exists(hist_path + ".previous"))
 
         # 3. priceAnalysis.write_all_trends restores .previous if atomic_write_json fails
         pa_file = os.path.join(self.tmp, "priceanalysis.json")
