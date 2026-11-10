@@ -1006,7 +1006,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     remaining_value = max(0.0, max_trade_value - traded_value)
     print(f"[WEIGHT] {side} {symbol}: weight={weight} traded24h={traded_value:.2f} "
           f"avail={available:.6f} max={max_trade_value:.2f} remaining={remaining_value:.2f} "
-          f"cerut={req_clean:.6f} -> {adjusted:.6f}")
+          f"requested={req_clean:.6f} -> {adjusted:.6f}")
     return adjusted
 
 

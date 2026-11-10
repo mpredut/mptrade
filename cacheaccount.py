@@ -88,21 +88,9 @@ _ws_last_event_ts = _bapi_ws_bridge._ws_last_event_ts
 _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
 
 
-def _mark_ws_available(value):
-    global _ws_available
-    _ws_available = _bapi_ws_bridge.mark_ws_available(value)
-
-
-def _mark_ws_event_received():
-    global _ws_last_event_ts, _ws_is_healthy
-    _ws_last_event_ts = _bapi_ws_bridge.mark_ws_event_received()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
-
-
-def _mark_ws_unhealthy():
-    global _ws_is_healthy
-    _bapi_ws_bridge.mark_ws_unhealthy()
-    _ws_is_healthy = _bapi_ws_bridge._ws_is_healthy
+_mark_ws_available = _bapi_ws_bridge.mark_ws_available
+_mark_ws_event_received = _bapi_ws_bridge.mark_ws_event_received
+_mark_ws_unhealthy = _bapi_ws_bridge.mark_ws_unhealthy
 
 
 def _should_poll_for_manager(cls_name):
