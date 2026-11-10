@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import builtins
+import contextlib
 import math
 import os
 import threading
@@ -26,6 +27,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
+    _is_fresh_obs_ts,
     _parse_bool_flag,
     diff_percent,
     extract_timestamp_s,
@@ -36,6 +38,7 @@ from botcore import (
     normalize_timestamp_ms,
     required_env,
     required_float_env,
+    resolve_now_ts,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -64,6 +67,7 @@ from state_io import (
     meta_file_path,
     previous_generation_path,
     read_json_dict,
+    read_json_dict_recovering,
     read_recovering_previous,
     save_json_state,
 )
@@ -1486,6 +1490,119 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     return dict(cleaned_snap)
             return None
         return snap
+
+    @staticmethod
+    def read_ssot_short_trend_file(
+        trend_path: str,
+        candidates: tuple[str, ...] | List[str],
+        max_age_sec: float = 15.0,
+        *,
+        now_s: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
+        if not trend_path:
+            return None
+        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        try:
+            data = read_json_dict_recovering(trend_path)
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            eff_now = resolve_now_ts(now_s)
+            for cand in candidates:
+                if not cand:
+                    continue
+                snap = casefold_get(items, cand)
+                if not isinstance(snap, dict):
+                    continue
+                raw_ts = extract_timestamp_s(snap, default=None)
+                if raw_ts is not None and raw_ts > 0 and _is_fresh_obs_ts(raw_ts, eff_now, max_age):
+                    return dict(snap)
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def resolve_ssot_snapshot(
+        cls,
+        candidates: tuple[str, ...] | List[str],
+        max_age_sec: float = 15.0,
+        *,
+        custom_path: Optional[str] = None,
+        memory_manager: Any = None,
+        now_s: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Resolve a fresh short-trend snapshot from in-memory ``CacheShortTrendManager`` or ``cache_short_trend.json``."""
+        if not candidates:
+            return None
+        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        eff_now = resolve_now_ts(now_s)
+        if custom_path is None:
+            stm = memory_manager
+            if stm is None:
+                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+                instances = getattr(cf, "_instances", None)
+                if isinstance(instances, dict):
+                    stm = instances.get("ShortTrend")
+            if stm is not None:
+                if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
+                    for cand in candidates:
+                        with contextlib.suppress(Exception):
+                            snap = stm.get_cached_memory_snapshot(cand, max_age_sec=max_age, now_s=eff_now)
+                            if isinstance(snap, dict):
+                                return snap
+                else:
+                    stm_mem = getattr(stm, "_mem", None)
+                    if isinstance(stm_mem, dict):
+                        lock_ctx = (
+                            getattr(stm, "_lock", None)
+                            or getattr(stm, "lock", None)
+                            or contextlib.nullcontext()
+                        )
+                        with contextlib.suppress(Exception), lock_ctx:
+                            for cand in candidates:
+                                snap = casefold_get(stm_mem, cand)
+                                if isinstance(snap, dict) and _is_fresh_obs_ts(
+                                    extract_timestamp_s(snap, default=None), eff_now, max_age
+                                ):
+                                    return dict(snap)
+                    elif hasattr(stm, "get_fresh_snapshot"):
+                        for cand in candidates:
+                            with contextlib.suppress(Exception):
+                                snap = stm.get_fresh_snapshot(cand)
+                                if isinstance(snap, dict):
+                                    raw_ts = extract_timestamp_s(snap, default=None)
+                                    if raw_ts is None or _is_fresh_obs_ts(raw_ts, eff_now, max_age):
+                                        return dict(snap)
+        trend_path = str(custom_path) if custom_path else cache_path(CACHE_SHORT_TREND_FILENAME)
+        return cls.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=eff_now)
+
+    @staticmethod
+    def extract_slope(snap: Optional[dict], symbol: Optional[str] = None) -> float:
+        """Extract instant-trend slope (>0 up, <0 down, 0.0 neutral/unknown) from a short-trend snapshot."""
+        if not isinstance(snap, dict):
+            return 0.0
+        try:
+            slope = safe_float(pw.extract_short_trend_slope(snap, symbol), default=0.0)
+            if slope != 0.0:
+                return slope
+        except Exception:
+            pass
+        for key in ("trend", "final_trend", "growth_coefficient", "gradient_recent", "slope_small"):
+            val = safe_float(snap.get(key), default=None)
+            if val is not None and val != 0.0:
+                return val
+        return 0.0
+
+    @staticmethod
+    def extract_direction(snap: Optional[dict]) -> Optional[str]:
+        """Extract short-trend direction ('up', 'down', or 'flat') from a short-trend snapshot, or None."""
+        if not isinstance(snap, dict):
+            return None
+        try:
+            return pw.eval_short_trend_direction(snap)
+        except Exception:
+            return None
 
     def _should_wait_on_snap(
         self,

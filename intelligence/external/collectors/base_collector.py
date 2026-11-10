@@ -41,7 +41,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
     resolve_now_ts,
 )
-from providers.base import resolve_ssot_price_from_cache
+from cacheprice import resolve_ssot_price_from_cache
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.base_collector")

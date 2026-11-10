@@ -39,16 +39,23 @@ from binance_api.bapi_ws import (
     WS_RECV_TIMEOUT,
 )
 from botcore import (
+    _is_fresh_obs_ts,
     _parse_bool_flag,
+    _ts_ms_to_s,
     clamp_price_to_bbo_mid,
     extract_current_price_item,
+    extract_timestamp_ms,
+    extract_timestamp_s,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_rth_open,
     load_dotenv,
+    normalize_timestamp_ms,
     required_float_env,
     required_int_env,
     resolve_now_ms,
+    resolve_now_ts,
+    resolve_patched_attr,
     resolve_sustained_sample_rate,
     safe_nonneg_float,
     safe_pos_float,
@@ -68,12 +75,17 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
     _is_eq_suffix,
+    cache_24_price_filename,
+    cache_path,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    get_cachedb_dir,
     normalize_venue_name,
+    resolve_cache_dir_path,
+    resolve_cachedb_filepath,
     split_symbol_assets,
     telemetry_cache_file_path,
 )
@@ -196,6 +208,43 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
             item = rec if isinstance(rec, list) else None
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             return [item[0], item[1]]
+        return None
+
+    @staticmethod
+    def parse_ssot_price_point(
+        entry: Any, fallback_ts: Optional[float] = None
+    ) -> Optional[tuple[int, float]]:
+        """Parse a cached price entry (dict, ``[ts, px]``, or nested list) into ``(ts_ms, price)``."""
+        if isinstance(entry, dict):
+            ts_ms = extract_timestamp_ms(entry, default=None)
+            if ts_ms is None and fallback_ts is not None:
+                ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
+            px_f = extract_current_price_item(entry)
+            if px_f is None:
+                raw_px = entry.get("price") if entry.get("price") is not None else entry.get("px")
+                px_f = safe_pos_float(raw_px, default=None)
+            if ts_ms is not None and ts_ms > 0 and px_f is not None:
+                return ts_ms, px_f
+            return None
+        if isinstance(entry, (list, tuple)):
+            if len(entry) >= 2 and not isinstance(entry[0], (list, tuple, dict)):
+                ts_ms = normalize_timestamp_ms(entry[0], default=None)
+                px_f = safe_pos_float(entry[1], default=None)
+                if ts_ms is not None and ts_ms > 0 and px_f is not None:
+                    return ts_ms, px_f
+                return None
+            for sub in reversed(entry):
+                if not isinstance(sub, (list, tuple, dict)):
+                    continue
+                parsed = CachePriceManagerBase.parse_ssot_price_point(sub, fallback_ts=fallback_ts)
+                if parsed is not None:
+                    return parsed
+            return None
+        px_f = extract_current_price_item(entry)
+        if px_f is not None and fallback_ts is not None:
+            ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
+            if ts_ms is not None and ts_ms > 0:
+                return ts_ms, px_f
         return None
 
     def rebuild_fetchtimes(self):
@@ -537,6 +586,78 @@ class Cache24PriceManager(CachePriceManagerBase):
                 "saved_at": int(_now_time() * 1000),
             },
         )
+
+    @staticmethod
+    def read_ssot_24price_entries(c24_path: str, cand: str) -> tuple[Optional[dict], Optional[list]]:
+        """Read raw 24-hour price entries for ``cand`` from ``c24_path``."""
+        if not c24_path or not os.path.exists(c24_path):
+            return None, None
+        raw = read_json_dict_recovering(c24_path)
+        if not isinstance(raw, dict):
+            return None, None
+        items = raw.get("items")
+        entries = (
+            items
+            if isinstance(items, list)
+            else casefold_get(items if isinstance(items, dict) else raw, cand)
+        )
+        return (raw, entries) if isinstance(entries, list) and entries else (raw, None)
+
+    @classmethod
+    def read_ssot_price_history(
+        cls,
+        candidates: tuple[str, ...] | list[str],
+        lookback_hours: float,
+        max_latest_age_sec: float = 120.0,
+        *,
+        custom_dir: Optional[str] = None,
+    ) -> Optional[list[dict]]:
+        """Read 24h tick history from ``cache_24_price_<SYM>.json`` when fresh and covering ``lookback_hours``."""
+        lh_f = safe_pos_float(lookback_hours, default=None)
+        if lh_f is None or lh_f > 24.0 or not candidates:
+            return None
+        max_latest_age = safe_pos_float(max_latest_age_sec, default=120.0) or 120.0
+        now_s = _now_time()
+        cutoff_ms = int((now_s - lh_f * 3600.0) * 1000)
+        for cand in candidates:
+            c24_fname = cache_24_price_filename(cand)
+            c24_path = (
+                str(resolve_cachedb_filepath(os.path.join(str(custom_dir), c24_fname)))
+                if custom_dir
+                else cache_path(c24_fname)
+            )
+            try:
+                _, entries = cls.read_ssot_24price_entries(c24_path, cand)
+                if not entries or len(entries) < 2:
+                    continue
+                valid = [
+                    p
+                    for e in entries
+                    if (p := cls.parse_ssot_price_point(e)) is not None
+                ]
+                if len(valid) < 2:
+                    continue
+                valid.sort(key=lambda pt: pt[0])
+                if not _is_fresh_obs_ts(valid[-1][0] / 1000.0, now_s, max_latest_age):
+                    continue
+                out = [
+                    {"timestamp": ts, "price": px}
+                    for ts, px in valid
+                    if ts >= cutoff_ms
+                ]
+                if len(out) < 2:
+                    continue
+                if (
+                    custom_dir is None
+                    and lh_f > 0.25
+                    and (out[-1]["timestamp"] - out[0]["timestamp"])
+                    < (lh_f * 3600.0 * 1000.0 * 0.75)
+                ):
+                    continue
+                return out
+            except Exception:
+                continue
+        return None
 
 
 class Cache365PriceManager(Cache24PriceManager):
@@ -1314,6 +1435,132 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ):
             self.data_sync_mode = self.MODE_LIVE_READER
         ws_manager.subscribe(self)
+
+    @classmethod
+    def read_ssot_current_price_candidates(
+        cls,
+        candidates: tuple[str, ...] | list[str],
+        price_path: str,
+        max_age_sec: float,
+        *,
+        now_s: Optional[float] = None,
+        use_memory_manager: bool = True,
+        memory_manager: Any = None,
+    ) -> Optional[float]:
+        """Resolve a fresh current price for ``candidates`` from in-memory ``CacheCurrentPriceManager`` or ``price_path``."""
+        max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
+        if use_memory_manager:
+            cpm = memory_manager
+            if cpm is None:
+                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+                instances = getattr(cf, "_instances", None)
+                if isinstance(instances, dict):
+                    cpm = instances.get("CurrentPrice")
+            cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
+            cpm_matches_path = (
+                not isinstance(cpm_file, str)
+                or not cpm_file
+                or os.path.abspath(str(resolve_cachedb_filepath(cpm_file)))
+                == os.path.abspath(str(resolve_cachedb_filepath(price_path)))
+            )
+            if cpm is not None and cpm_matches_path and hasattr(cpm, "get_cached_price_observation"):
+                for cand in candidates:
+                    try:
+                        obs = cpm.get_cached_price_observation(cand, max_age)
+                        if obs is not None:
+                            px = safe_pos_float(obs[1], default=None)
+                            if px is not None:
+                                return px
+                    except Exception:
+                        continue
+        if not price_path or not os.path.exists(price_path):
+            return None
+        try:
+            data = read_json_dict_recovering(price_path)
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+            file_ts = extract_timestamp_s(data, default=None)
+            eff_now = resolve_now_ts(now_s)
+            for cand in candidates:
+                raw_entry = casefold_get(items, cand)
+                if raw_entry is None:
+                    continue
+                fb_ts = casefold_get(fetchtime_map, cand)
+                if fb_ts is None:
+                    fb_ts = file_ts
+                parsed = cls.parse_ssot_price_point(raw_entry, fallback_ts=fb_ts)
+                if parsed is None:
+                    continue
+                ts_ms, px = parsed
+                if _is_fresh_obs_ts(_ts_ms_to_s(ts_ms), eff_now, max_age):
+                    return px
+        except Exception:
+            pass
+        return None
+
+
+def resolve_ssot_price_from_cache(
+    symbol: str,
+    cache_dir: Optional[str] = None,
+    max_age_sec: float = 60.0,
+    *,
+    quote_isolated: bool = True,
+    now_ts: Optional[float] = None,
+) -> Optional[float]:
+    """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    sym_u = symbol.strip().upper()
+    sym_clean = clean_symbol_key(sym_u)
+    if not sym_clean:
+        return None
+    max_age = safe_pos_float(max_age_sec, default=60.0) or 60.0
+    now_s = resolve_now_ts(now_ts)
+    quotes = (
+        compatible_quote_suffixes(sym_clean, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+        if quote_isolated
+        else ("USDC", "USDT", "USD", "EUR")
+    )
+    cands = list(
+        dict.fromkeys(
+            c
+            for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean, quotes=quotes))
+            if isinstance(c, str) and c and "/" not in c
+        )
+    )
+    is_default_dir = not cache_dir or str(cache_dir).strip() in ("", "cachedb")
+    eff_dir = resolve_cache_dir_path(cache_dir) or get_cachedb_dir()
+    price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, CACHE_CURRENT_PRICE_FILENAME)))
+    px = CacheCurrentPriceManager.read_ssot_current_price_candidates(
+        cands,
+        price_path,
+        max_age,
+        now_s=now_s,
+        use_memory_manager=is_default_dir,
+    )
+    if px is not None:
+        return px
+
+    for cand in cands:
+        c24_path = str(
+            resolve_cachedb_filepath(os.path.join(eff_dir, cache_24_price_filename(cand)))
+        )
+        try:
+            raw, entries = Cache24PriceManager.read_ssot_24price_entries(c24_path, cand)
+            if not entries or raw is None:
+                continue
+            parsed = CachePriceManagerBase.parse_ssot_price_point(
+                entries[-1], fallback_ts=extract_timestamp_s(raw, default=None)
+            )
+            if parsed is not None:
+                ts_ms, px = parsed
+                if _is_fresh_obs_ts(_ts_ms_to_s(ts_ms), now_s, max_age):
+                    return px
+        except Exception:
+            continue
+    return None
 
 
 def resolve_cached_symbol_price(

@@ -84,7 +84,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_short_trend_item,
 )
 from instrument_registry import casefold_get
-from providers.base import extract_timestamp_s, resolve_ssot_price_from_cache
+from cacheprice import resolve_ssot_price_from_cache
+from providers.base import extract_timestamp_s
 from providers.execution_audit import (
     build_last_cycle_execution_status,
     summarize_recent_ai_intents,
