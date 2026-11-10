@@ -164,7 +164,7 @@ def mode_pre(force: bool = False) -> int:
         except sqlite3.Error as e:
             log.warning("cannot read summary IDs from %s: %s", DB, e)
 
-    topic_cids = mirrored_topic_cids()
+    topic_cids = get_active_topic_cids(_effective_topic_registry())
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
         for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
@@ -468,7 +468,7 @@ def pending_ui_sync() -> list[str]:
         if os.path.isdir(d):
             disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
     active_rows = rows & disk_cids
-    topic_cids = mirrored_topic_cids()
+    topic_cids = get_active_topic_cids(_effective_topic_registry())
     entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
     if os.path.isdir(D1):
         for name in os.listdir(D1):
@@ -491,11 +491,6 @@ TOPIC_REGISTRY = _DEFAULT_TOPIC_REGISTRY
 
 def _effective_topic_registry() -> str:
     return TOPIC_REGISTRY if TOPIC_REGISTRY != _DEFAULT_TOPIC_REGISTRY else get_topic_registry_path()
-
-
-def mirrored_topic_cids() -> set[str]:
-    """Conversation IDs owned by mirrored background topic threads (excluded from interactive idle detection)."""
-    return get_active_topic_cids(_effective_topic_registry())
 
 
 _GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
@@ -530,7 +525,7 @@ def _glog_rel_ts(line: str) -> float | None:
 
 def last_store_activity() -> float:
     """Newest mtime of interactive conversation content, active WAL writes, daemon Web UI stream, or brain artifacts."""
-    ignored = mirrored_topic_cids()
+    ignored = get_active_topic_cids(_effective_topic_registry())
     newest = 0.0
     if os.path.exists(DB):
         try:

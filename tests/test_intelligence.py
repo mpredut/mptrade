@@ -1583,7 +1583,9 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
         "read_json_cached",
         lambda p: {"BTCUSDC": {"peak": 71234.5}} if str(p).endswith("trailing_state.json") and "kraken" not in str(p) else None,
     )
-    t_map, _ = pc_mod.load_venue_trailing_maps(str(tmp_path), str(tmp_path))
+    t_map, _ = pc_mod.VenueTrailingMapsCollector().collect(
+        str(tmp_path), "*", workspace_dir=str(tmp_path)
+    )
     assert t_map.get("BTCUSDC", {}).get("peak") == 71234.5
 
     # 3. daemon_ssot honours monkeypatches on intelligence.macro_sentiment_ssot

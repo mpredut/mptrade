@@ -388,7 +388,7 @@ class TestNewCoinsDiscovery(unittest.TestCase):
 
         monitor = NewCoinsMonitor(factory=factory)
         received_alerts = []
-        monitor.register_alerts_callback(received_alerts.extend)
+        monitor.alert_callbacks.append(received_alerts.extend)
 
         test_coins = [
             {

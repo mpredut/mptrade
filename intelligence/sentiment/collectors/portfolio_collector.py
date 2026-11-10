@@ -1741,18 +1741,6 @@ def harvest_kraken_xstocks(
     )
 
 
-def load_venue_trailing_maps(
-    cache_dir: str, workspace_dir: str, read_json_fn: Any = None,
-) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
-    """Load trailing peak maps from cachedb/trailing_state.json and kraken/trailing_state.json."""
-    return TelemetryCollectorFactory.create("portfolio_trailing_maps").collect(
-        cache_dir,
-        "*",
-        workspace_dir=workspace_dir,
-        read_json_fn=read_json_fn,
-    )
-
-
 def harvest_tradable_positions_and_orders(
     inst_map: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
@@ -1871,7 +1859,6 @@ __all__ = [
     "harvest_tradable_positions_and_orders",
     "harvest_venue_cycles",
     "load_symbol_best_recent_fills",
-    "load_venue_trailing_maps",
     "parse_venue_cycle_state",
     "reconcile_venue_cycles_with_recent_orders",
 ]

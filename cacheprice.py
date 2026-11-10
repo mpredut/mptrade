@@ -1178,9 +1178,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             ts_val = _now_time()
         self._ws_last_event_ts_per_symbol[symbol] = ts_val
 
-    def is_rth_gate_enforced(self) -> Optional[bool]:
-        return getattr(self, "_enforce_rth_gate", None)
-
     def push_price(
         self, symbol: str, price: float, ts_ms: Optional[int] = None
     ) -> None:
@@ -2205,7 +2202,6 @@ def _start_nonbinance_trend_poller(
 
     cpm_cls = type(cpm)
     has_cls_mark_ws = callable(getattr(cpm_cls, "mark_symbol_ws_event", None))
-    has_cls_rth_gate = callable(getattr(cpm_cls, "is_rth_gate_enforced", None))
 
     def _mark_symbol_ws_ts(sym_key: str, ts_val: float) -> None:
         if has_cls_mark_ws:
@@ -2243,13 +2239,8 @@ def _start_nonbinance_trend_poller(
                     break
                 if _is_ws_healthy(s):
                     continue
-                rth_gate_flag = (
-                    cpm.is_rth_gate_enforced()
-                    if has_cls_rth_gate
-                    else getattr(cpm, "_enforce_rth_gate", None)
-                )
                 rth_gate_active = is_rth_gate_enabled(
-                    rth_gate_flag, rth_fn=is_us_rth_open
+                    getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
                 now_ts = time.time()
                 if rth_gate_active and not is_symbol_market_open(s, now_ts):

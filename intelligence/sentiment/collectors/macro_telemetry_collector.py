@@ -50,13 +50,13 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     save_microstructure_cycle_history,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
+    VenueTrailingMapsCollector,
     _load_cached_ai_intents_list,
     harvest_bot_runtime_states,
     harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
-    load_venue_trailing_maps,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     MACRO_BENCHMARK_SPECS,
@@ -975,7 +975,9 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         t_trend_data = _rj(os.path.join(cache_dir, _mc.CacheLongTrendManager.T_TREND_FILENAME))
         kalman_data = _rj(os.path.join(cache_dir, _mc.CacheShortTrendManager.KALMAN_TREND_FILENAME))
         watcher_all_price_data = _rj(os.path.join(cache_dir, CACHE_WATCHER_ALL_PRICE_FILENAME))
-        trailing_map, trailing_by_venue = load_venue_trailing_maps(cache_dir, workspace_dir, _rj)
+        trailing_map, trailing_by_venue = VenueTrailingMapsCollector().collect(
+            cache_dir, "*", workspace_dir=workspace_dir, read_json_fn=_rj
+        )
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
         snapshot.prices_and_trends = _harvest_initial_prices_and_trends_impl(cache_dir, prices_data, trends_data, _rj)
@@ -1118,9 +1120,18 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if persist and allow_network and cycle_history != orig_cycle_history:
             save_microstructure_cycle_history(cache_dir, cycle_history)
 
-        kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
-            cache_dir, workspace_dir, logs_dirs, snapshot.portfolio_summary, snapshot.prices_and_trends,
-            snapshot.microstructure, watcher_price_items, inst_by_sym, _rj, now_ts=now_ts,
+        kraken_cycles, hyperliquid_cycles, t212_cycles = PortfolioAndVenueCyclesCollector(start_sync=False).collect(
+            cache_dir,
+            "*",
+            workspace_dir=workspace_dir,
+            logs_dirs=logs_dirs,
+            portfolio_summary=snapshot.portfolio_summary,
+            prices_and_trends=snapshot.prices_and_trends,
+            microstructure=snapshot.microstructure,
+            watcher_price_items=watcher_price_items,
+            inst_by_sym=inst_by_sym,
+            read_json_fn=_rj,
+            now_ts=now_ts,
         )
 
         try:
@@ -1335,35 +1346,6 @@ def harvest_macro_and_news_sensors(
     )
 
 
-def harvest_portfolio_and_venue_cycles(
-    cache_dir: str,
-    workspace_dir: str,
-    logs_dirs: List[str],
-    portfolio_summary: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    watcher_price_items: Any,
-    inst_by_sym: Dict[str, Any],
-    read_json_fn: Any = None,
-    *,
-    now_ts: Optional[float] = None,
-) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
-    return TelemetryCollectorFactory.create("macro_portfolio_venue_cycles", start_sync=False).collect(
-        cache_dir,
-        "*",
-        workspace_dir=workspace_dir,
-        logs_dirs=logs_dirs,
-        portfolio_summary=portfolio_summary,
-        prices_and_trends=prices_and_trends,
-        microstructure=microstructure,
-        watcher_price_items=watcher_price_items,
-        inst_by_sym=inst_by_sym,
-        read_json_fn=read_json_fn,
-        now_ts=now_ts,
-    )
-
-
 def populate_market_and_portfolio_snapshot(
     snapshot: Any,
     *,
@@ -1413,7 +1395,6 @@ __all__ = [
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_macro_benchmarks_summary_line",
     "harvest_macro_and_news_sensors",
-    "harvest_portfolio_and_venue_cycles",
     "populate_market_and_portfolio_snapshot",
     "reconcile_live_venue_equity_summary",
 ]

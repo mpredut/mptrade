@@ -73,53 +73,6 @@ else:
     print(f"   ❌ Email: DISABLED (missing: {', '.join(_missing_em)})")
 
 
-def new_coin_alerts_handler(alerts):
-    if not alerts:
-        return
-
-    print("\n" + "=" * 70)
-    print(f"🆕 {len(alerts)} NEW COINS DISCOVERED")
-    print("=" * 70)
-
-    for coin_info in alerts:
-        if not isinstance(coin_info, dict):
-            continue
-        source = coin_info.get('source', 'unknown')
-        has_price = coin_info.get('has_price', False)
-        auto_added = coin_info.get('auto_added', False)
-        added_at = AlertNotifier.format_human_readable_time(
-            coin_info.get('added_at')
-        )
-
-        print(
-            f"🆕 {coin_info.get('symbol', 'N/A')} - "
-            f"{coin_info.get('name', 'N/A')}"
-        )
-        print(f"   📡 Source: {source}")
-        print(f"   📅 Added: {added_at}")
-
-        if has_price:
-            px_val = safe_nonneg_float(coin_info.get('price'), default=0.0)
-            print(f"   💰 Price: ${px_val:.8f}")
-            print(f"   ✅ Auto-added: {auto_added}")
-        else:
-            print("   ⚠️ Informational only")
-
-        if coin_info.get('url'):
-            print(f"   🔗 {coin_info['url']}")
-
-        print()
-
-    print("=" * 70)
-
-    # Send one notification containing the whole coin batch.
-    AlertNotifier.send(
-        alerts,
-        enable_phone_webhook=True,
-        webhook_url=PRICE_WEBHOOK_URL
-    )
-
-
 def periodic_cleanup(cachePriceAll, new_coins_checker):
     """Run price cleanup every six hours and coin cleanup when a monitor is supplied."""
     while True:
@@ -155,9 +108,55 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
                            max_new_coins=MAX_NEW_COINS_TO_TRACK, sources=None):
     print("\n⏳ Initializing new coin checker...")
 
+    def _on_new_coin_alerts(alerts):
+        if not alerts:
+            return
+
+        print("\n" + "=" * 70)
+        print(f"🆕 {len(alerts)} NEW COINS DISCOVERED")
+        print("=" * 70)
+
+        for coin_info in alerts:
+            if not isinstance(coin_info, dict):
+                continue
+            source = coin_info.get('source', 'unknown')
+            has_price = coin_info.get('has_price', False)
+            auto_added = coin_info.get('auto_added', False)
+            added_at = AlertNotifier.format_human_readable_time(
+                coin_info.get('added_at')
+            )
+
+            print(
+                f"🆕 {coin_info.get('symbol', 'N/A')} - "
+                f"{coin_info.get('name', 'N/A')}"
+            )
+            print(f"   📡 Source: {source}")
+            print(f"   📅 Added: {added_at}")
+
+            if has_price:
+                px_val = safe_nonneg_float(coin_info.get('price'), default=0.0)
+                print(f"   💰 Price: ${px_val:.8f}")
+                print(f"   ✅ Auto-added: {auto_added}")
+            else:
+                print("   ⚠️ Informational only")
+
+            if coin_info.get('url'):
+                print(f"   🔗 {coin_info['url']}")
+
+            print()
+
+        print("=" * 70)
+
+        # Send one notification containing the whole coin batch.
+        AlertNotifier.send(
+            alerts,
+            enable_phone_webhook=True,
+            webhook_url=PRICE_WEBHOOK_URL
+        )
+
     factory = NewCoinsFactory(enabled_sources=sources or ENABLED_SOURCES, cmc_api_key=CMC_API_KEY)
     new_coins_checker = NewCoinsMonitor(cachePriceAll, factory=factory)
-    new_coins_checker.register_alerts_callback(new_coin_alerts_handler)
+    new_coins_checker.alert_callbacks.append(_on_new_coin_alerts)
     new_coins_checker.start_monitoring(interval_seconds=interval_seconds)
     print(f"New coin checker started! Active sources: {factory.get_available_sources()}")
 

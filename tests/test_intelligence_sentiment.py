@@ -6621,7 +6621,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
         has_financial_or_geopolitical_context,
         is_off_topic_general_news_title,
     )
-    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_portfolio_and_venue_cycles
+    from intelligence.sentiment.collectors.macro_telemetry_collector import PortfolioAndVenueCyclesCollector
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     # 1. Bug 110: cache_asset_value.jsonl inner "i.timestamp" extracts total_value_usdc_age_min
@@ -6644,15 +6644,16 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
         encoding="utf-8",
     )
     ps: dict = {}
-    harvest_portfolio_and_venue_cycles(
+    PortfolioAndVenueCyclesCollector(start_sync=False).collect(
         str(cdir),
-        str(tmp_path),
-        [],
-        ps,
-        {},
-        {},
-        {},
-        {},
+        "*",
+        workspace_dir=str(tmp_path),
+        logs_dirs=[],
+        portfolio_summary=ps,
+        prices_and_trends={},
+        microstructure={},
+        watcher_price_items={},
+        inst_by_sym={},
         now_ts=now_s,
     )
     assert ps["total_value_usdc"] == 11330.48

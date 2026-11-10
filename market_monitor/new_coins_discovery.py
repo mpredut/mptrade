@@ -448,9 +448,6 @@ class NewCoinsMonitor:
                     print(f"[NewCoinsMonitor] Ignored invalid symbol: {raw_symbol} (from {source_name})")
                     continue
 
-    def register_alerts_callback(self, callback: Callable):
-        self.alert_callbacks.append(callback)
-
     def _trigger_alerts(self, new_coins: List[Dict], source_name: str, auto_add: bool = True):
         if not new_coins:
             return

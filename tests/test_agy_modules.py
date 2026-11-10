@@ -671,7 +671,7 @@ class TestMirrorTopicThreadToUi:
             },
             reg_path,
         )
-        assert asf.mirrored_topic_cids() == {"dead-missing-cid"}
+        assert asf.get_active_topic_cids(asf._effective_topic_registry()) == {"dead-missing-cid"}
         assert "dead-missing-cid" in asf.get_topic_canonical_titles(asf._effective_topic_registry())
 
         _make_conv_db(os.path.join(bot_base, "conversations", "fresh-adopted-cid.db"))
