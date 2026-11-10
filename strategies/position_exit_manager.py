@@ -458,23 +458,6 @@ class PositionExitManager:
             self.sl_bounce_state.pop(sym_clean, None)
             self.sl_episode_state.pop(sym_clean, None)
 
-    def _lock_episode_disaster_floor(
-        self, symbol: str, candidate_floor: float, buy_price: float, now: float,
-    ) -> Tuple[float, bool]:
-        """Monotonic ratchet: the disaster floor armed for an SL episode can only tighten."""
-        sym_clean = _clean_symbol_str(symbol)
-        episode = _sanitize_position_state(self.sl_episode_state, sym_clean, buy_price)
-        if episode is None or episode.get("buy_price") is None:
-            self.sl_episode_state[sym_clean] = {
-                "started_at": now, "buy_price": buy_price, "disaster_floor": candidate_floor
-            }
-            return candidate_floor, False
-        armed_f = safe_pos_float(episode.get("disaster_floor"), default=None)
-        if armed_f is not None and armed_f < candidate_floor:
-            return armed_f, True
-        episode["disaster_floor"] = candidate_floor
-        return candidate_floor, False
-
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
         sym_clean = _clean_symbol_str(symbol)
@@ -580,9 +563,20 @@ class PositionExitManager:
             symbol=symbol, lost_threshold=lost_threshold,
             vol_1h=snapshot.vol_1h, vol_source=snapshot.vol_source,
         )
-        disaster_floor, floor_locked = self._lock_episode_disaster_floor(
-            symbol, lost_threshold + disaster_buffer, buy_price, now
-        )
+        candidate_floor = lost_threshold + disaster_buffer
+        episode = _sanitize_position_state(self.sl_episode_state, symbol, buy_price)
+        if episode is None or episode.get("buy_price") is None:
+            self.sl_episode_state[symbol] = {
+                "started_at": now, "buy_price": buy_price, "disaster_floor": candidate_floor,
+            }
+            disaster_floor, floor_locked = candidate_floor, False
+        else:
+            armed_f = safe_pos_float(episode.get("disaster_floor"), default=None)
+            if armed_f is not None and armed_f < candidate_floor:
+                disaster_floor, floor_locked = armed_f, True
+            else:
+                episode["disaster_floor"] = candidate_floor
+                disaster_floor, floor_locked = candidate_floor, False
         if floor_locked:
             disaster_buffer = max(0.0, disaster_floor - lost_threshold)
             disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}

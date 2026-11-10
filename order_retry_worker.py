@@ -88,7 +88,13 @@ class _PersistentQuarantineSet(set):
         except Exception:
             pass
 
-    def persist_to_disk(self) -> None:
+    def __contains__(self, element) -> bool:
+        self.sync_from_disk()
+        return super().__contains__(element)
+
+    def add(self, element) -> None:
+        self.sync_from_disk()
+        super().add(element)
         path = self._path()
         self._loaded_path = path
         try:
@@ -105,15 +111,6 @@ class _PersistentQuarantineSet(set):
             save_json_state(path, data, separators=(",", ":"))
         except Exception:
             pass
-
-    def __contains__(self, element) -> bool:
-        self.sync_from_disk()
-        return super().__contains__(element)
-
-    def add(self, element) -> None:
-        self.sync_from_disk()
-        super().add(element)
-        self.persist_to_disk()
 
     def clear(self) -> None:
         super().clear()
@@ -357,7 +354,20 @@ def _process_accepted_claim(mkt, r: dict, symbol, provider_name, now: float) -> 
     if not transition.status_changed:
         return 0, 0, 0
     _audit_status_event(r, "order_terminal", status, retry=False)
-    _alert_terminal(r, status)
+    terminal_key = (
+        str(r.get("id") or ""), safe_int(r.get("revision"), 0),
+        str(r.get("order_id") or ""), str(status.venue_status or status.status or ""),
+    )
+    _send_quarantine_alert(
+        _ALERTED_TERMINALS, terminal_key, r,
+        "🛑 order terminal",
+        (
+            f"Order {r.get('order_id')} became "
+            f"{status.venue_status or status.status}; filled={status.filled_qty}, "
+            "the rest is NOT resent automatically after a cancel."
+        ),
+        label="the terminal",
+    )
     return 0, 0, 1
 
 
@@ -838,24 +848,6 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
         _ALERTED_RECONCILIATION_QUARANTINES, fingerprint, rec,
         "🛑 order submission quarantined", detail_msg,
         label="reconciliation-quarantine",
-    )
-
-
-def _alert_terminal(rec, status):
-    """Alert on a canceled intent whose remainder is deliberately not replayed."""
-    terminal_key = (
-        str(rec.get("id") or ""), safe_int(rec.get("revision"), 0),
-        str(rec.get("order_id") or ""), str(status.venue_status or status.status or ""),
-    )
-    _send_quarantine_alert(
-        _ALERTED_TERMINALS, terminal_key, rec,
-        "🛑 order terminal",
-        (
-            f"Order {rec.get('order_id')} became "
-            f"{status.venue_status or status.status}; filled={status.filled_qty}, "
-            "the rest is NOT resent automatically after a cancel."
-        ),
-        label="the terminal",
     )
 
 

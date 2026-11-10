@@ -464,17 +464,6 @@ class PairCoordinator:
         self.tickets.append(ticket)
         return ticket
 
-    def _cancel(self, ticket: OrderTicket) -> bool:
-        if not ticket.active:
-            return True
-        try:
-            ok = bool(self.venue.cancel(ticket.order_id))
-        except Exception:
-            return False
-        if ok:
-            ticket.active = False
-        return ok
-
     @staticmethod
     def _intent_revision(kind: str, prefix: str) -> Optional[int]:
         kind = str(kind)
@@ -895,7 +884,12 @@ class PairCoordinator:
 
         if now - self.started_at >= self.policy.quote_ttl_sec:
             for ticket in self.tickets:
-                self._cancel(ticket)
+                if ticket.active:
+                    try:
+                        if self.venue.cancel(ticket.order_id):
+                            ticket.active = False
+                    except Exception:
+                        pass
             self._refresh()
             bq, _bc, _bf, sq, _sc, _sf = self._totals()
             if bq > 0 or sq > 0:

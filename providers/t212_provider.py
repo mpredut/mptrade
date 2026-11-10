@@ -30,7 +30,6 @@ from botcore import (
 from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset
 from .base import (
     MarketDataProvider,
-    aggregate_fills_by_order_id,
     extract_order_id,
 )
 from .order_ohlc_utils import (

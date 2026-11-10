@@ -66,7 +66,6 @@ from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     CACHE_SPARSE_PRICE_PREFIX,
     _is_eq_suffix,
-    cache_path,
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,

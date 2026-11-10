@@ -853,14 +853,6 @@ def read_csv_dicts(
     return _read_with_policy(path, _read_strict, default=eff_default)
 
 
-def _is_active_staged_backup(target_path: str, target_backup: str) -> bool:
-    """Return True when ``target_backup`` is hard-linked to ``target_path`` by an in-flight writer."""
-    try:
-        return os.path.samefile(target_path, target_backup)
-    except OSError:
-        return False
-
-
 def read_recovering_previous(
     path: str, read_fn: Callable[[str], T] = json.loads, *,
     backup_path: str | None = None,
@@ -887,8 +879,13 @@ def read_recovering_previous(
         _invoke = read_fn
     try:
         result = _invoke(target_path)
-        if os.path.exists(target_backup) and not _is_active_staged_backup(target_path, target_backup):
-            discard_generation_file(target_backup)
+        if os.path.exists(target_backup):
+            try:
+                is_staged = os.path.samefile(target_path, target_backup)
+            except OSError:
+                is_staged = False
+            if not is_staged:
+                discard_generation_file(target_backup)
         return result
     except Exception as primary_exc:
         if not os.path.exists(target_backup):

@@ -887,23 +887,6 @@ _TERMINAL_UNFILLED_REFUSALS = _TERMINAL_QTY_OR_LIMIT_REFUSALS | frozenset({
 })
 
 
-def _validate_coordinator_config() -> None:
-    if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
-        raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
-    if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
-        raise ValueError("RTRADE_PAIR_START_INTERVAL_SEC must be > 0")
-    if not RTRADE_PAIR_DIRECTIONS or any(s not in {"BUY", "SELL"} for s in RTRADE_PAIR_DIRECTIONS):
-        raise ValueError("RTRADE_PAIR_DIRECTIONS accepts only BUY,SELL")
-    if RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC <= 0:
-        raise ValueError("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC must be > 0")
-    if RTRADE_PLACE_FAILURE_BACKOFF_SEC <= 0:
-        raise ValueError("RTRADE_PLACE_FAILURE_BACKOFF_SEC must be > 0")
-    if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live", "emergency_only"}:
-        raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live|emergency_only")
-    if not RTRADE_HARD_STOP_PCT <= RTRADE_EMERGENCY_HARD_STOP_PCT < 1:
-        raise ValueError("RTRADE_EMERGENCY_HARD_STOP_PCT must be >= hard-stop and < 1")
-
-
 class TradingBot:
     def __init__(self, symbol, qty, DEFAULT_ADJUSTMENT_PERCENT):
         self.symbol = symbol
@@ -969,25 +952,6 @@ class TradingBot:
                     pending.clear()
             cond.notify_all()
 
-    def _pair_abort_if(self, side, opposite_filled_fn):
-        cond = self._get_pair_cond()
-        with cond:
-            if opposite_filled_fn():
-                return False
-            if getattr(self, "_round_aborted", False):
-                return True
-            pending = getattr(self, "_pair_precheck_pending", None)
-            if isinstance(pending, set):
-                pending.discard(side)
-                cond.notify_all()
-                deadline = time.monotonic() + 10.0
-                while pending and not getattr(self, "_round_aborted", False) and not opposite_filled_fn():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    cond.wait(timeout=remaining)
-            return bool(getattr(self, "_round_aborted", False) and not opposite_filled_fn())
-
     def _place_legacy_side_order(
         self, side: str, is_buy: bool, is_opp_filled, target_price: float, target_qty: float,
         adjustment_percent: float, failure_count: int, desp_hours_base: float, normal_hours: float,
@@ -1008,7 +972,25 @@ class TradingBot:
             )
         extra_place_kwargs = {}
         if isinstance(getattr(self, "_pair_precheck_pending", None), set):
-            abort_fn = lambda: self._pair_abort_if(side, is_opp_filled)
+            def abort_fn():
+                cond = self._get_pair_cond()
+                with cond:
+                    if is_opp_filled():
+                        return False
+                    if getattr(self, "_round_aborted", False):
+                        return True
+                    pending = getattr(self, "_pair_precheck_pending", None)
+                    if isinstance(pending, set):
+                        pending.discard(side)
+                        cond.notify_all()
+                        deadline = time.monotonic() + 10.0
+                        while pending and not getattr(self, "_round_aborted", False) and not is_opp_filled():
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            cond.wait(timeout=remaining)
+                    return bool(getattr(self, "_round_aborted", False) and not is_opp_filled())
+
             abort_fn.is_aborted = lambda: bool(getattr(self, "_round_aborted", False) and not is_opp_filled())
             extra_place_kwargs["abort_if"] = abort_fn
         if not is_buy:
@@ -1022,23 +1004,6 @@ class TradingBot:
             cache_permit=submit_cache_permit, _outcome_context=outcome_context,
             **extra_place_kwargs,
         )
-
-    def _should_exit_on_legacy_refusal(
-        self, side: str, opp_side: str, is_buy: bool, is_opp_filled, refusal_reason
-    ) -> bool:
-        if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
-            print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
-            return True
-        if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
-            print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
-            return True
-        if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
-            print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
-            return True
-        if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
-            print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
-            return True
-        return False
 
     def _repetitive_side_loop(self, side: str, current_price, filled_opp_price):
         is_buy = side == "BUY"
@@ -1137,7 +1102,17 @@ class TradingBot:
                     self._finish_side_precheck(
                         side, aborted=bool(is_term_refusal and not is_opp_filled())
                     )
-                    if self._should_exit_on_legacy_refusal(side, opp_side, is_buy, is_opp_filled, refusal_reason):
+                    if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
+                        print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
+                        print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
+                        print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
+                        print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
                         return _complete_followup()
                     print(f"[{self.symbol}] Order {side} failed, retryed {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
@@ -1369,7 +1344,20 @@ class TradingBot:
         pair_store = getattr(self, "pair_store", None) or RTradePairStore()
         venue = _LivePairVenue(self.symbol, pair_store=pair_store)
         policy = self._build_pair_policy()
-        _validate_coordinator_config()
+        if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
+            raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
+        if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
+            raise ValueError("RTRADE_PAIR_START_INTERVAL_SEC must be > 0")
+        if not RTRADE_PAIR_DIRECTIONS or any(s not in {"BUY", "SELL"} for s in RTRADE_PAIR_DIRECTIONS):
+            raise ValueError("RTRADE_PAIR_DIRECTIONS accepts only BUY,SELL")
+        if RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC <= 0:
+            raise ValueError("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC must be > 0")
+        if RTRADE_PLACE_FAILURE_BACKOFF_SEC <= 0:
+            raise ValueError("RTRADE_PLACE_FAILURE_BACKOFF_SEC must be > 0")
+        if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live", "emergency_only"}:
+            raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live|emergency_only")
+        if not RTRADE_HARD_STOP_PCT <= RTRADE_EMERGENCY_HARD_STOP_PCT < 1:
+            raise ValueError("RTRADE_EMERGENCY_HARD_STOP_PCT must be >= hard-stop and < 1")
 
         active = []
         recovery_blocked = False

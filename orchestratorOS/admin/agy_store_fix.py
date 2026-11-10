@@ -115,14 +115,6 @@ def backup_file(path: str, stamp: str) -> None:
     shutil.copy2(path, os.path.join(dst, os.path.basename(path)))
 
 
-def unit_active() -> bool:
-    try:
-        r = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() == "active"
-    except Exception:
-        return False
-
-
 def disable_webrtc_mesh(stamp: str) -> str:
     """Disable the Mendel flag 'remote-control-webrtc-mesh' in the agy binary so remote-control
     stays on Boq WebChannel (HTTPS/TCP) and never upgrades to Pion WebRTC DataChannel (UDP),
@@ -151,9 +143,14 @@ def disable_webrtc_mesh(stamp: str) -> str:
 # ---------------------------------------------------------------- pre
 def mode_pre(force: bool = False) -> int:
     force = _parse_bool_flag(force, False)
-    if not force and os.environ.get("AGY_FIX_HOME") is None and unit_active():
-        log.error("daemon is active; refusing to run 'pre' (use --force to override)")
-        return 2
+    if not force and os.environ.get("AGY_FIX_HOME") is None:
+        try:
+            active = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True, timeout=10).stdout.strip() == "active"
+        except Exception:
+            active = False
+        if active:
+            log.error("daemon is active; refusing to run 'pre' (use --force to override)")
+            return 2
     os.makedirs(D1, exist_ok=True)
     os.makedirs(D2, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -717,23 +714,6 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
     return False
 
 
-def daemon_started_at() -> float:
-    """Epoch timestamp when the current remote-control daemon instance started (ignoring one-shot CLI logs)."""
-    if not os.path.isdir(LOGS):
-        return 0.0
-    candidates = sorted(
-        ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
-        reverse=True,
-    )
-    for ts, lf in candidates:
-        if ts <= 0.0:
-            break
-        txt = read_text_file(lf, default=None, errors="ignore")
-        if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
-            return ts
-    return 0.0
-
-
 def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
     idle_sec_f = safe_pos_float(idle_sec, default=None)
     if idle_sec_f is None:
@@ -748,7 +728,18 @@ def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
     now = time.time()
     min_itv_f = safe_pos_float(min_interval_sec, default=0.0) or 0.0
     if min_itv_f > 0.0:
-        started_ts = daemon_started_at()
+        started_ts = 0.0
+        if os.path.isdir(LOGS):
+            for ts, lf in sorted(
+                ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
+                reverse=True,
+            ):
+                if ts <= 0.0:
+                    break
+                txt = read_text_file(lf, default=None, errors="ignore")
+                if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
+                    started_ts = ts
+                    break
         uptime_for = now - started_ts if started_ts > 0.0 else min_itv_f
         if 0.0 <= uptime_for < max(0.0, min_itv_f - 60.0):
             log.info("ui-sync-check: %d pending, daemon uptime %.0fs (< %gs cadence); waiting", len(entries), uptime_for, min_itv_f)

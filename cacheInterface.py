@@ -11,7 +11,6 @@ from __future__ import annotations
 import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
-import json
 import os
 import threading
 import time

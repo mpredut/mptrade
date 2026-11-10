@@ -11,7 +11,6 @@ from typing import Any, Callable, Optional
 from botcore import (
     _parse_bool_flag,
     clean_json_value,
-    clean_order_id,
     clean_scale,
     conf_or_override,
     normalize_side,

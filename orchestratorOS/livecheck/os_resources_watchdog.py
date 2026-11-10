@@ -105,11 +105,6 @@ def _restart_managed(proc, state, now):
     return True
 
 
-def _system_ticks():
-    fields = read_text_file("/proc/stat").splitlines()[0].split()[1:]
-    return sum(int(value) for value in fields)
-
-
 def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
     """Parse (comm, start_time, total_ticks, rss_pages) from /proc/<pid>/stat safely.
 
@@ -185,7 +180,8 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
     now = safe_float(now, 0.0)
     if now <= 0.0:
         now = time.time()
-    total_ticks = _system_ticks() if total_ticks is None else total_ticks
+    if total_ticks is None:
+        total_ticks = sum(int(v) for v in read_text_file("/proc/stat").splitlines()[0].split()[1:])
     processes = _processes() if processes is None else processes
     cpu_count = (os.cpu_count() or 1) if cpu_count is None else safe_pos_int(cpu_count, default=1)
     state = wc.load_state(STATE_FILE)

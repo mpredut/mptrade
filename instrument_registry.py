@@ -680,22 +680,6 @@ def _normalize_ordertype(order_type):
     return order_type
 
 
-def _normalize_symbol(symbol, cur_symbols: list | None = None):
-    if isinstance(symbol, str):
-        s = symbol.strip().upper()
-        if cur_symbols is None:
-            cur_symbols = _resolve_cur_symbols()
-        if s in cur_symbols:
-            return s
-        s_clean = s.replace("/", "")
-        if s_clean in cur_symbols:
-            return s_clean
-        for cfg_sym in cur_symbols:
-            if isinstance(cfg_sym, str) and cfg_sym.upper() in (s, s_clean):
-                return cfg_sym
-    return symbol
-
-
 def validate_ordertype(order_type):
     norm_type = _normalize_ordertype(order_type)
     if norm_type not in (None, "BUY", "SELL"):
@@ -704,7 +688,20 @@ def validate_ordertype(order_type):
 
 def validate_symbols(symbol):
     cur_symbols = _resolve_cur_symbols()
-    if _normalize_symbol(symbol, cur_symbols) not in cur_symbols:
+    norm_sym = symbol
+    if isinstance(symbol, str):
+        s = symbol.strip().upper()
+        s_clean = s.replace("/", "")
+        if s in cur_symbols:
+            norm_sym = s
+        elif s_clean in cur_symbols:
+            norm_sym = s_clean
+        else:
+            for cfg_sym in cur_symbols:
+                if isinstance(cfg_sym, str) and cfg_sym.upper() in (s, s_clean):
+                    norm_sym = cfg_sym
+                    break
+    if norm_sym not in cur_symbols:
         raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {cur_symbols}.")
 
 

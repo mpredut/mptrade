@@ -13,7 +13,6 @@ strict and always sends a real request; its caller's dry-run policy is the contr
 gate. Importing this module does not eagerly initialize the Kraken client.
 """
 import os
-import re
 import threading
 import time
 from typing import Optional, List
