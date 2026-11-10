@@ -284,6 +284,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 or owner
             )
 
+        if rc.order_matches_owner(cid, "monitororder"):
+            _derived_replacement_order_ids.add(oid_str)
         already_notified = oid_str in _notified_placed_order_ids
         _notified_placed_order_ids.add(oid_str)
         if (
@@ -333,7 +335,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
         init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
         if init_px_f is None:
-            for alt_k in (oid_str, int(oid_str) if oid_str.isdigit() else None):
+            cid_base = cid.rsplit("_", 1)[0] if cid and "_" in cid else None
+            for alt_k in (oid_str, int(oid_str) if oid_str.isdigit() else None, cid or None, cid_base):
                 if alt_k is not None and alt_k in initial_prices:
                     init_px_f = safe_pos_float(initial_prices.pop(alt_k, None), default=None)
                     if init_px_f is not None:
@@ -358,12 +361,15 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # Build and validate the exact replacement before canceling the live
             # order. Instrument.place repeats this check immediately before submit
             # to close the time-of-check/time-of-use window.
+            # NOTE (Design Consideration): Replacement submission keeps
+            # wait_for_trend=True active so GT_S short-trend protection cannot be
+            # bypassed. A future refinement to evaluate is pre-checking short-trend
+            # deferral before canceling the live venue order so an active order is
+            # not pulled from the book when GT_S would immediately defer re-placement.
             if order_type == "SELL":
-                new_price = current_price * 1.001 if current_price <= 1.0 else current_price * 1.001 + 1
+                new_price = current_price * 1.001
             else:
-                new_price = current_price * 0.999 - 1
-                if new_price <= 0:
-                    new_price = current_price * 0.999
+                new_price = current_price * 0.999
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):

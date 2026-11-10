@@ -142,7 +142,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
         }
 
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.5), \
              patch.object(monitororder.order_retry, "enqueue", return_value="rep-1") as mock_enqueue, \
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
@@ -170,7 +170,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
         }
 
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.5), \
              patch.object(monitororder.order_retry, "enqueue", return_value="rep-2") as mock_enqueue, \
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
@@ -305,7 +305,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             },
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.5), \
              patch.object(monitororder.order_retry, "get_accepted_order_owner_map", return_value={"701": "tradeall"}), \
              patch.object(monitororder.order_retry, "enqueue", return_value="rep-701") as mock_enqueue, \
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_TA_cid"}}]), \

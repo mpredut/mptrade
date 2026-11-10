@@ -1134,11 +1134,12 @@ class TestLogicSmall(unittest.TestCase):
         with patch.object(ta, "track_and_place_order", return_value=[123]) as mock_order:
             ta.logic_small("SMALL", True, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
             mock_order.assert_called_once_with(
-                "BUY", "BTCUSDT", 0, 60000.0, 60000.0,
+                "BUY", "BTCUSDT", 1, 60000.0, 60000.0,
                 reason="small_window_surge_up",
                 safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
                 cancelorders=True, hours=0.3, regime_context=None
             )
+            self.assertEqual(trend_state.state, "UP")
             self.assertEqual(trend_state._confirmed_count_up, 1)
 
     def test_logic_small_fires_sell_on_negative_plunge(self):
@@ -1146,11 +1147,12 @@ class TestLogicSmall(unittest.TestCase):
         with patch.object(ta, "track_and_place_order", return_value=[456]) as mock_order:
             ta.logic_small("SMALL", True, "BTCUSDT", -1, -4.0, trend_state, 60000.0)
             mock_order.assert_called_once_with(
-                "SELL", "BTCUSDT", 0, 60000.0, 60000.0,
+                "SELL", "BTCUSDT", 1, 60000.0, 60000.0,
                 reason="small_window_plunge_down",
                 safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
                 cancelorders=True, hours=0.3, regime_context=None
             )
+            self.assertEqual(trend_state.state, "DOWN")
             self.assertEqual(trend_state._confirmed_count_down, 1)
 
     def test_logic_small_respects_enable_and_threshold(self):
@@ -1170,12 +1172,44 @@ class TestLogicSmall(unittest.TestCase):
         with patch.object(ta, "track_and_place_order", return_value=[789]) as mock_order:
             ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.25, trend_state, 275.0, price_window=pw)
             mock_order.assert_called_once_with(
-                "SELL", "TAOUSDC", 0, 275.0, 275.0,
+                "SELL", "TAOUSDC", 1, 275.0, 275.0,
                 reason="accel_plunge_down",
                 safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
                 cancelorders=True, hours=0.3, regime_context=None
             )
+            self.assertEqual(trend_state.state, "DOWN")
             self.assertEqual(trend_state._confirmed_count_down, 1)
+
+    def test_logic_small_resets_fire_limit_after_trend_expiration_or_direction_flip(self):
+        clock = [1000.0]
+        trend_state = ta.TrendState(21.0, 222.0, now_fn=lambda: clock[0])
+        pw = MagicMock()
+        pw.calculate_acceleration.return_value = (-0.45, -0.35)
+        with patch.object(ta, "track_and_place_order", return_value=[789]) as mock_order:
+            # First DOWN acceleration impulse fires
+            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.25, trend_state, 218.0, price_window=pw)
+            self.assertEqual(mock_order.call_count, 1)
+            self.assertEqual(trend_state._confirmed_count_down, 1)
+
+            # Same impulse 5s later (< 21s expiration) is throttled by FIRE_MAX_PER_TREND
+            clock[0] = 1005.0
+            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.25, trend_state, 217.9, price_window=pw)
+            self.assertEqual(mock_order.call_count, 1)
+            self.assertEqual(trend_state.confirm_count, 2)
+
+            # New impulse 30s later (> 21s expiration) starts a fresh DOWN trend and fires again
+            clock[0] = 1036.0
+            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.25, trend_state, 218.3, price_window=pw)
+            self.assertEqual(mock_order.call_count, 2)
+            self.assertEqual(trend_state.confirm_count, 1)
+            self.assertEqual(trend_state._confirmed_count_down, 1)
+
+            # Immediate direction flip to UP starts a fresh UP trend and fires
+            clock[0] = 1040.0
+            ta.logic_small("SMALL", True, "TAOUSDC", 1, 4.0, trend_state, 219.0)
+            self.assertEqual(mock_order.call_count, 3)
+            self.assertEqual(trend_state.state, "UP")
+            self.assertEqual(trend_state._confirmed_count_up, 1)
 
 
 if __name__ == "__main__":

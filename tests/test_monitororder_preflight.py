@@ -80,7 +80,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
                 self.filter_check.assert_called_once_with(
                     "BTCUSDC",
                     "SELL",
-                    101.1,
+                    100.1,
                     2.0,
                     market=False,
                     enforce_business_minimum=True,
@@ -113,7 +113,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
         preflight.assert_called_once_with(
-            "BTCUSDC", "SELL", 2.0, 101.1,
+            "BTCUSDC", "SELL", 2.0, 100.1,
             market=False, kind="monitor_order_replace")
         cancel.assert_not_called()
         place.assert_not_called()
@@ -196,11 +196,11 @@ class MonitorOrderPreflightTest(unittest.TestCase):
 
         self.assertEqual([event[0] for event in events], [
             "preflight", "cancel", "place"])
-        self.assertEqual(events[0][1], ("BTCUSDC", "SELL", 2.0, 101.1))
+        self.assertEqual(events[0][1], ("BTCUSDC", "SELL", 2.0, 100.1))
         self.assertEqual(events[0][2], {
             "market": False, "kind": "monitor_order_replace"})
         self.assertEqual(events[2][1], (
-            "BTCUSDC", "SELL", 101.1, 2.0))
+            "BTCUSDC", "SELL", 100.1, 2.0))
         place_kwargs = events[2][2]
         self.assertFalse(place_kwargs["smart"])
         self.assertEqual(place_kwargs["kind"], "monitor_order_replace")

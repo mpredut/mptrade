@@ -73,7 +73,7 @@ def test_accepted_replacement_transfers_original_anchor_to_new_order_id():
 
     with (
         patch.object(monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(monitororder.api, "get_current_price", return_value=100.1),
+        patch.object(monitororder.api, "get_current_price", return_value=100.5),
         patch.object(
             monitororder.mkt, "preflight_order", return_value=object()),
         patch.object(monitororder.api, "cancel_order", return_value=True),
@@ -108,7 +108,7 @@ def test_transient_accepted_replacement_tracking_failure_is_retried():
         patch.object(
             monitororder.api, "get_open_orders", return_value=open_orders),
         patch.object(
-            monitororder.api, "get_current_price", return_value=100.1),
+            monitororder.api, "get_current_price", return_value=100.5),
         patch.object(
             monitororder.mkt, "preflight_order", return_value=object()),
         patch.object(monitororder.api, "cancel_order", return_value=True),
@@ -151,7 +151,7 @@ def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
 
     with (
         patch.object(monitororder.api, "get_open_orders", return_value=open_orders),
-        patch.object(monitororder.api, "get_current_price", return_value=100.1),
+        patch.object(monitororder.api, "get_current_price", return_value=100.5),
         patch.object(monitororder.mkt, "preflight_order", return_value=object()),
         patch.object(monitororder.api, "cancel_order", return_value=True),
         patch.object(
@@ -290,6 +290,56 @@ class TestMonitororderNotifications(unittest.TestCase):
                  patch.object(monitororder.api, "get_current_price", return_value=90.0):
                 monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
                 mock_notify.assert_not_called()
+
+    def test_cross_process_mo_replacement_cid_does_not_trigger_notification(self):
+        with patch.object(monitororder.api, "get_open_orders", return_value={}):
+            monitororder.warmup_open_orders()
+
+        worker_replacement_order = {
+            722771030: {
+                "price": 218.10,
+                "quantity": 3.4837,
+                "remainingQty": 3.4837,
+                "clientOrderId": "MO_TA_OR_792991389d4643e492179ab8_0",
+            }
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=worker_replacement_order), \
+             patch.object(monitororder.api, "get_current_price", return_value=210.0), \
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+            mock_notify.assert_not_called()
+            self.assertIn("722771030", monitororder._derived_replacement_order_ids)
+
+    def test_above_dollar_sell_and_buy_repricing_moves_toward_market_without_dollar_offset(self):
+        with patch.object(monitororder.api, "get_open_orders", return_value={}):
+            monitororder.warmup_open_orders()
+
+        sell_orders = {
+            722760714: {
+                "price": 218.30,
+                "quantity": 3.4837,
+                "remainingQty": 3.4837,
+                "clientOrderId": "TA_OR_22325fc5bb814a21b54cdca8b6_0",
+            }
+        }
+        placed = []
+
+        def fake_place(symbol, side, price, qty, **kw):
+            placed.append((symbol, side, price, qty))
+            return {"orderId": 722760715}
+
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=217.90), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+
+        self.assertEqual(len(placed), 1)
+        self.assertAlmostEqual(placed[0][2], 217.90 * 1.001, places=6)
 
 
 class TestMonitororderTTLResolution:
@@ -553,7 +603,7 @@ class TestOrderRetryTTL:
         with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
              patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
              patch.object(monitororder.api, "get_open_orders", return_value=active_orders), \
-             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.5), \
              patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
              patch.object(monitororder.api, "cancel_order", return_value=True), \
              patch.object(monitororder.mkt, "order_status", return_value=OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \

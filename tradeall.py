@@ -565,12 +565,21 @@ def _resolve_regime_ctx(symbol: str, caller_tag: str = "TRADEALL"):
 
 def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None, price_window=None):
     """Evaluate fast-momentum and short-term acceleration impulses on the small price window."""
+    trend_state.check_trend_expiration()
+
+    def _advance_small_trend(direction: str) -> None:
+        if trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down():
+            trend_state.confirm_trend()
+        else:
+            trend_state.start_trend(direction)
+
     if (gradient > 0 and slope > SMALL_SLOPE_THRESHOLD) or (gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD):
         is_up = gradient > 0
         direction, action = _dir_action(is_up)
         cmp_str = f"> {SMALL_SLOPE_THRESHOLD}" if is_up else f"< -{SMALL_SLOPE_THRESHOLD}"
         reason = "small_window_surge_up" if is_up else "small_window_plunge_down"
         print(f"[SMALL-WINDOW] Momentum {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope} {cmp_str}")
+        _advance_small_trend(direction)
         return _fire_trend_order(enable, symbol, trend_state, direction, action, current_price, reason, regime_ctx=regime_ctx)
 
     if ACCEL_ENABLED and price_window is not None and (
