@@ -1220,16 +1220,6 @@ class TradingBot:
         wait((buy_future, sell_future))
         return buy_future.result(), sell_future.result()
 
-    def _build_pair_policy(self, adjustment_fraction: float | None = None) -> PairPolicy:
-        return PairPolicy(
-            adjustment_fraction=(
-                self.DEFAULT_ADJUSTMENT_PERCENT if adjustment_fraction is None else adjustment_fraction
-            ),
-            quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
-            fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
-            shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
-        )
-
     @staticmethod
     def _clear_venue_blocked_pair(venue, pid):
         unblock = getattr(venue, "_set_pair_recovery_blocked", None)
@@ -1312,7 +1302,12 @@ class TradingBot:
     def _run_coordinator_forever(self):
         pair_store = getattr(self, "pair_store", None) or RTradePairStore()
         venue = _LivePairVenue(self.symbol, pair_store=pair_store)
-        policy = self._build_pair_policy()
+        policy = PairPolicy(
+            adjustment_fraction=self.DEFAULT_ADJUSTMENT_PERCENT,
+            quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
+            fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
+            shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
+        )
         if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
             raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
         if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
@@ -1468,7 +1463,12 @@ class TradingBot:
                         round_policy = (
                             policy
                             if eff_adjustment == self.DEFAULT_ADJUSTMENT_PERCENT
-                            else self._build_pair_policy(eff_adjustment)
+                            else PairPolicy(
+                                adjustment_fraction=eff_adjustment,
+                                quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
+                                fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
+                                shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
+                            )
                         )
                         coordinator = PairCoordinator(venue, round_qty, round_policy, start_side=start_side)
                         outcome = coordinator.start(current_price, pair_id=reserved_pair_id)

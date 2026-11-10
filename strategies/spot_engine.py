@@ -342,7 +342,7 @@ class Strategy(BaseSpotMixin):
         self._paper_seq = 0
         self._shadow_prices = deque(maxlen=90)
         self._surge_replay_closes = (
-            deque(maxlen=self._surge_window_bars() + 1)
+            deque(maxlen=max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0))) + 1)
             if self.replay_mode and params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
             else None
         )
@@ -1005,9 +1005,6 @@ class Strategy(BaseSpotMixin):
             fallback_gain_pct=self.p.surge_gain_pct,
         )
 
-    def _surge_window_bars(self) -> int:
-        return max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0)))
-
     def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
         """Calculate the configured-window move, or None when unavailable."""
         if not self.p.surge_window_hours or self.p.surge_window_hours <= 0:
@@ -1016,7 +1013,8 @@ class Strategy(BaseSpotMixin):
             closes = self._surge_replay_closes if self._surge_replay_closes is not None else self._trend_closes()
         if not closes:
             return None
-        idx = -self._surge_window_bars() - (1 if self.replay_mode else 0)
+        window_bars = max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0)))
+        idx = -window_bars - (1 if self.replay_mode else 0)
         if abs(idx) > len(closes):
             return None
         past_price = safe_pos_float(closes[idx], None)

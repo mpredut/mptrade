@@ -143,10 +143,6 @@ def _visible_dir_if_cli_store(cli_base: str) -> str:
     return ""
 
 
-def _sanitize_title_str(title: Any) -> str:
-    return ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
-
-
 def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     """(content file exists, step_count, run status) of a conversation in ``cli_base``."""
     if not cid or not isinstance(cid, str) or not cid.strip():
@@ -182,7 +178,7 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     if not clean_cids:
         return
     clean_cid = next(iter(clean_cids))
-    title_str = _sanitize_title_str(title)
+    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
     path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
@@ -223,7 +219,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     if not clean_cids:
         return
     clean_cid = next(iter(clean_cids))
-    title_str = _sanitize_title_str(title)
+    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)

@@ -225,10 +225,6 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         print(f"[MONITORORDER] Notification failed for order {order_id}: {exc}")
 
 
-def _remember_initial_price(cache, order_id, price):
-    lru_dict_put(cache, order_id, price, MAX_TRACKED_ORDER_IDS)
-
-
 def resolve_dynamic_reprice_bounds(
     symbol: str,
     current_price: float,
@@ -446,7 +442,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if init_px_f is not None:
             initial_prices[order_id] = init_px_f
         else:
-            _remember_initial_price(initial_prices, order_id, float(price))
+            lru_dict_put(initial_prices, order_id, float(price), MAX_TRACKED_ORDER_IDS)
 
         difference_percent = abs(current_price - price) / price * 100
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
@@ -706,7 +702,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     orig_init_px = safe_pos_float(initial_prices.pop(oid_str, None), default=None)
                 if orig_init_px is None:
                     orig_init_px = float(price)
-                _remember_initial_price(initial_prices, raw_new_id, orig_init_px)
+                lru_dict_put(initial_prices, raw_new_id, orig_init_px, MAX_TRACKED_ORDER_IDS)
                 print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             else:
                 failure_reason = str(

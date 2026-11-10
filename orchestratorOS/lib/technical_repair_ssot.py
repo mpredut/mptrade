@@ -994,13 +994,6 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
 
 
-def _report_has_action_in(report: Any, allowed_actions: FrozenSet[str]) -> bool:
-    return any(
-        isinstance(act, dict) and normalize_repair_action(act, "").get("action") in allowed_actions
-        for act in (obj_attr(report, "venue_actions") or [])
-    )
-
-
 def _iter_actionable_issue_categories(report: Any) -> List[str]:
     return [
         cat
@@ -1018,14 +1011,20 @@ def is_bot_or_code_error_report(report: Any) -> bool:
     code_rem = obj_attr(report, "code_remediation")
     if (isinstance(code_rem, dict) and _parse_bool_flag(code_rem.get("has_fix"), False)) or obj_attr(report, "tests_passed") is False:
         return True
-    return _report_has_action_in(report, BOT_OR_FLEET_ERROR_ACTIONS)
+    return any(
+        isinstance(act, dict) and normalize_repair_action(act, "").get("action") in BOT_OR_FLEET_ERROR_ACTIONS
+        for act in (obj_attr(report, "venue_actions") or [])
+    )
 
 
 def is_system_os_error_report(report: Any) -> bool:
     """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
     if any(cat in SYSTEM_OS_ERROR_CATEGORIES or cat not in BOT_AND_ORDER_ERROR_CATEGORIES for cat in _iter_actionable_issue_categories(report)):
         return True
-    return _report_has_action_in(report, SYSTEM_OS_ERROR_ACTIONS)
+    return any(
+        isinstance(act, dict) and normalize_repair_action(act, "").get("action") in SYSTEM_OS_ERROR_ACTIONS
+        for act in (obj_attr(report, "venue_actions") or [])
+    )
 
 
 def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[str]:

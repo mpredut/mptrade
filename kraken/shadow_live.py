@@ -198,10 +198,6 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     return out
 
 
-def _save_history(pair: str, interval: int, bars) -> None:
-    atomic_write_json(_history_path(pair, interval), bars, separators=(",", ":"))
-
-
 def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
     """Merge retained bars with the current fetch and detect missing history."""
     cached = [bar for bar in _load_history(pair, interval) if bar[0] >= anchor]
@@ -222,7 +218,7 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
         raise RuntimeError(
             f"the forward anchor {anchor} is no longer available in the local/Kraken history"
         )
-    _save_history(pair, interval, merged)
+    atomic_write_json(_history_path(pair, interval), merged, separators=(",", ":"))
     return merged
 
 

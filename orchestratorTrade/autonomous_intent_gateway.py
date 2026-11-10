@@ -263,9 +263,11 @@ class AutonomousIntentGateway:
                 require_notional_match=replace_open,
             )
         if mode == "enforce" and (replace_open or cancel_bot_open):
-            canceled_ids = self._cancel_existing_ai_open_orders(
+            canceled_ids = cancel_existing_ai_open_orders(
                 inst,
                 decision,
+                log=logger,
+                intents=self.load_all_intents(),
                 include_bot_orders=cancel_bot_open,
                 any_side=cancel_bot_open,
                 exclude_order_ids={dup_oid} if dup_oid else None,
@@ -302,9 +304,11 @@ class AutonomousIntentGateway:
         ):
             # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
             # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
-            unlocked_ids = self._cancel_existing_ai_open_orders(
+            unlocked_ids = cancel_existing_ai_open_orders(
                 inst,
                 decision,
+                log=logger,
+                intents=self.load_all_intents(),
                 include_bot_orders=True,
                 any_side=False,
             )
@@ -378,26 +382,6 @@ class AutonomousIntentGateway:
             is_limit=is_limit,
             dispatch_notify_fn=self._dispatch_notify,
             log=logger,
-        )
-
-    def _cancel_existing_ai_open_orders(
-        self,
-        inst: Any,
-        side: str,
-        *,
-        include_bot_orders: bool = False,
-        any_side: bool = False,
-        exclude_order_ids: Optional[set[str]] = None,
-    ) -> List[str]:
-        """Cancel any prior unfilled AI-placed (or bot-placed when requested) open orders on the symbol."""
-        return cancel_existing_ai_open_orders(
-            inst,
-            side,
-            log=logger,
-            intents=self.load_all_intents(),
-            include_bot_orders=include_bot_orders,
-            any_side=any_side,
-            exclude_order_ids=exclude_order_ids,
         )
 
     def submit(

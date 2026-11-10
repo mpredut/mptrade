@@ -738,10 +738,6 @@ class MarketRegimeService:
             raise ValueError("invalid closed-candle timestamp")
         return val_f
 
-    @staticmethod
-    def _window_sample_count(interval_min: int, window_seconds: float) -> int:
-        return max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
-
     def _ttl_for(self, decision) -> float:
         return self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec
 
@@ -774,7 +770,7 @@ class MarketRegimeService:
             series = self._closed_series(provider, symbol, interval_min)
             closes = tuple(series.closes)
             timestamps = tuple(series.timestamps or ())
-            needed = self._window_sample_count(interval_min, window_seconds)
+            needed = max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
             if not timestamps or len(timestamps) == len(closes):
                 closes = closes[-needed:]
                 timestamps = timestamps[-needed:]
@@ -832,7 +828,7 @@ class MarketRegimeService:
         _parsed, interval, window_seconds = cls._resolve_horizon_window(
             horizon, interval_min=interval_min
         )
-        return cls._window_sample_count(interval, window_seconds)
+        return max(3, int(math.ceil(window_seconds / (interval * 60.0))))
 
     _EVAL_CLOSES_CACHE: dict = {}
     _EVAL_CLOSES_CACHE_MAX = 262144
@@ -860,7 +856,7 @@ class MarketRegimeService:
         if im_i is None or win is None:
             return self.evaluator.unknown("invalid_window_metadata")
         itv = im_i
-        needed = self._window_sample_count(itv, win)
+        needed = max(3, int(math.ceil(win / (itv * 60.0))))
         try:
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]

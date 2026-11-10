@@ -235,17 +235,13 @@ class AuditedStrategyExecutor:
             return ""
         return canonical_symbol_key(symbol) or clean_symbol_key(symbol)
 
-    @staticmethod
-    def _lru_put(cache: OrderedDict, key: Any, value: Any) -> None:
-        lru_dict_put(cache, key, value, _CACHE_MAX)
-
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         oid_key = clean_order_id_str(order_id)
         if not oid_key:
             return
         sym_key = self._norm_symbol_key(symbol)
         with self._lock:
-            self._lru_put(self._intent_by_order, (sym_key, oid_key), intent_id)
+            lru_dict_put(self._intent_by_order, (sym_key, oid_key), intent_id, _CACHE_MAX)
 
     def _intent(self, symbol: str, order_id: str, explicit: Optional[str] = None) -> str:
         clean_exp = clean_order_id_str(explicit)
@@ -349,7 +345,7 @@ class AuditedStrategyExecutor:
         key = (self._norm_symbol_key(symbol), oid_key)
         with self._lock:
             changed = self._last_status.get(key) != fingerprint
-            self._lru_put(self._last_status, key, fingerprint)
+            lru_dict_put(self._last_status, key, fingerprint, _CACHE_MAX)
         if changed:
             self.audit.record(
                 "order_status", intent_id=intent_id, venue=self.name, symbol=symbol,

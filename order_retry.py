@@ -166,13 +166,9 @@ class RetryQueueCorruptionError(RuntimeError):
         )
 
 
-def _ensure_dir():
-    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
-
-
 @contextmanager
 def _locked_queue(*, validate: bool = False):
-    _ensure_dir()
+    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
     with FileLock(LOCK_FILE):
         yield _read_nolock(validate=validate)
 
@@ -1361,7 +1357,7 @@ def _write_nolock(items):
 
 def rewrite(items):
     """Replace the queue with ``items`` atomically while holding the lock."""
-    _ensure_dir()
+    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
     with FileLock(LOCK_FILE):
         _write_nolock(items)
 

@@ -65,10 +65,6 @@ _WRITE_METHODS = ("AddOrder", "CancelOrder", "CancelAll")
 _INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders", "OpenOrders")
 
 
-def _params_key(params: dict) -> tuple:
-    return tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce"))
-
-
 def _read_ttl(method: str, params: dict) -> float | None:
     """Return an interval-aware TTL for cacheable reads."""
     ttl = _READ_TTL.get(method)
@@ -81,7 +77,7 @@ def _read_ttl(method: str, params: dict) -> float | None:
 def _cache_get(method: str, params: dict):
     with _CACHE_LOCK:
         now = time.time()
-        key = (method, _params_key(params))
+        key = (method, tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce")))
         hit = _CACHE.get(key)
         if hit and hit[0] > now:
             return True, hit[1]
@@ -97,7 +93,7 @@ def _cache_put(method: str, params: dict, ttl: float, result) -> None:
         if len(_CACHE) >= _CACHE_MAX:
             oldest = min(_CACHE, key=lambda key: _CACHE[key][0])
             _CACHE.pop(oldest, None)
-        _CACHE[(method, _params_key(params))] = (now + ttl, result)
+        _CACHE[(method, tuple(sorted((str(k), str(v)) for k, v in params.items() if k != "nonce")))] = (now + ttl, result)
 
 
 def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | None:

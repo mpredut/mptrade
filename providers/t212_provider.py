@@ -657,12 +657,8 @@ class T212Provider(MarketDataProvider):
         self._invalidate_fills_cache(symbol)
         return order_id
 
-    @staticmethod
-    def _require_oid(order_id: object, caller: str) -> str:
-        return require_clean_order_id(order_id, f"{caller}({order_id})")
-
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        clean_oid = self._require_oid(order_id, "order_status")
+        clean_oid = require_clean_order_id(order_id, f"order_status({order_id})")
         try:
             raw = self._client().get_order_status(clean_oid)
         except Exception as e:  # noqa: BLE001
@@ -737,7 +733,7 @@ class T212Provider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        clean_oid = self._require_oid(order_id, "cancel_order")
+        clean_oid = require_clean_order_id(order_id, f"cancel_order({order_id})")
         if not self.execution_enabled():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:

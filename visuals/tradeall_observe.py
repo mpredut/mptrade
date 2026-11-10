@@ -77,10 +77,6 @@ WEEK_SECONDS = 7 * DAY_SECONDS
 MEMORY_TRIM_SECONDS = 300
 
 
-def _daily_log_path(prefix, date):
-    return os.path.join(LOGGER_DIR, f"{prefix}{date.isoformat()}.log")
-
-
 _PIPE_LOG_CACHE_MAX_FILES = 32
 _PIPE_LOG_CACHE = OrderedDict()
 # path -> (bytes consumed, ncols, rows, device, inode, observed size, mtime_ns)
@@ -198,7 +194,7 @@ def sample_current_prices(symbols):
         return
 
     os.makedirs(LOGGER_DIR, exist_ok=True)
-    path = _daily_log_path(PRICE_SAMPLES_PREFIX, datetime.now().date())
+    path = os.path.join(LOGGER_DIR, f"{PRICE_SAMPLES_PREFIX}{datetime.now().date().isoformat()}.log")
     try:
         lines = []
         for symbol, sample_ts, current_price in pending:
@@ -233,7 +229,7 @@ def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
 def _read_daily_pipe_rows(prefix, ncols, days_back):
     rows = []
     for d in reversed(_log_dates(days_back)):
-        rows.extend(_read_pipe_log(_daily_log_path(prefix, d), ncols))
+        rows.extend(_read_pipe_log(os.path.join(LOGGER_DIR, f"{prefix}{d.isoformat()}.log"), ncols))
     return rows
 
 
