@@ -271,8 +271,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         *,
         cache24_getter=None,
         current_price_getter=None,
+        data_sync_mode: Optional[str] = None,
     ):
-        self.writer = _parse_bool_flag(writer, default=False)   # Only the writer process persists the file.
+        resolved_mode = (
+            self.MODE_PRODUCER
+            if _parse_bool_flag(writer, default=False)
+            else self.resolve_data_sync_mode(data_sync_mode)[0]
+        )
+        self.writer = resolved_mode == self.MODE_PRODUCER   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
         if isinstance(window_seconds, (int, float, str)) and not isinstance(window_seconds, bool):
             secs = [window_seconds]
@@ -318,6 +324,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             append_mode=False,
             api_client=api_client,
             read_only=effective_read_only,
+            data_sync_mode=resolved_mode,
         )
         self._live_instances.add(self)
         self.save_state = self.writer
@@ -493,6 +500,8 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     "Binance is unaffected"
                 )
         self._computing = True
+        if not self.writer:
+            self.data_sync_mode = self.MODE_LIVE_READER
         self._start_flush_loop()        # Decouple file I/O into a background thread.
         if run_full_eval:
             self._start_full_eval_loop()
@@ -1439,6 +1448,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self.writer = True
         self.read_only = False
         self.save_state = True
+        self.data_sync_mode = self.MODE_PRODUCER
         self._start_flush_loop()
 
     def clear(self):
@@ -1482,6 +1492,25 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         snap = self.get_snapshot(symbol)
         now = now if now is not None else time.time()
         if not self._snapshot_is_usable(snap, now, self.TREND_STALE_SEC):
+            if (
+                not self.writer
+                and not self._computing
+                and getattr(self, "data_sync_mode", self.MODE_DISK_READER)
+                == self.MODE_DISK_READER
+            ):
+                _, val = _find_by_symbol_variant(
+                    self._read_file(), symbol, expected_type=dict
+                )
+                if isinstance(val, dict) and self._snapshot_is_usable(
+                    val, now, self.TREND_STALE_SEC
+                ):
+                    with self._lock:
+                        cleaned_snap = {
+                            k: v for k, v in val.items() if k not in _LEGACY_SNAP_KEYS
+                        }
+                        self._mem[symbol] = cleaned_snap
+                        self._sync_symbol_cursor_from_snap(symbol, val)
+                    return dict(cleaned_snap)
             return None
         return snap
 

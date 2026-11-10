@@ -1801,6 +1801,121 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
         cache_module.ensure_account_cache_readers.assert_called_once_with(
             requested)
 
+    def test_data_sync_mode_reader_resync_regressions(self):
+        import time
+        from unittest.mock import patch
+
+        with self.subTest("non_append_trade_cache_get_last_opposite_fill_price_resyncs_disk_state"):
+            tmp_dir = tempfile.mkdtemp()
+            trade_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
+            t1_ms = int((time.time() - 600) * 1000)
+            t2_ms = int((time.time() - 60) * 1000)
+            initial_snap = {
+                "items": {
+                    "BTC": [
+                        {
+                            "symbol": "BTCUSDC",
+                            "id": "k-1",
+                            "orderId": "o-1",
+                            "price": "60000.0",
+                            "qty": "0.1",
+                            "time": t1_ms,
+                            "isBuyer": True,
+                            "side": "BUY",
+                        }
+                    ]
+                },
+                "fetchtime": {"BTC": int(t1_ms / 1000)},
+            }
+            with open(trade_file, "w", encoding="utf-8") as fh:
+                json.dump(initial_snap, fh)
+            mgr = cm.CacheTradeManager(
+                9999,
+                ["BTC"],
+                trade_file,
+                venue="kraken",
+                append_persist=False,
+                data_sync_mode="disk_reader",
+            )
+            self.assertEqual(mgr.get_last_opposite_fill_price("BTC", "SELL"), 60000.0)
+            updated_snap = {
+                "items": {
+                    "BTC": [
+                        initial_snap["items"]["BTC"][0],
+                        {
+                            "symbol": "BTCUSDC",
+                            "id": "k-2",
+                            "orderId": "o-2",
+                            "price": "61500.0",
+                            "qty": "0.1",
+                            "time": t2_ms,
+                            "isBuyer": True,
+                            "side": "BUY",
+                        },
+                    ]
+                },
+                "fetchtime": {"BTC": int(t2_ms / 1000)},
+            }
+            with open(trade_file, "w", encoding="utf-8") as fh:
+                json.dump(updated_snap, fh)
+            self.assertEqual(mgr.get_last_opposite_fill_price("BTC", "SELL"), 61500.0)
+
+        with self.subTest("short_trend_disk_reader_refreshes_stale_mem_from_disk_and_tracks_mode"):
+            tmp_dir = tempfile.mkdtemp()
+            st_file = os.path.join(tmp_dir, "cache_short_trend.json")
+            now_ts = time.time()
+            stale_ts = now_ts - 120.0
+            with open(st_file, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "BTC": {
+                            "direction": "UP",
+                            "score": 0.4,
+                            "current_price": 60000.0,
+                            "ts": stale_ts,
+                            "updated_at": stale_ts,
+                        }
+                    },
+                    fh,
+                )
+            st_mgr = cm.CacheShortTrendManager(
+                ["BTC"], st_file, data_sync_mode="disk_reader"
+            )
+            self.assertEqual(st_mgr.data_sync_mode, "disk_reader")
+            self.assertTrue(st_mgr.read_only)
+            self.assertFalse(st_mgr.save_state)
+            st_mgr.resync_mem_file()
+            self.assertIsNone(st_mgr.get_fresh_snapshot("BTC", now=now_ts))
+            with open(st_file, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "BTC": {
+                            "direction": "DOWN",
+                            "score": -0.7,
+                            "current_price": 59500.0,
+                            "ts": now_ts - 2.0,
+                            "updated_at": now_ts - 2.0,
+                        }
+                    },
+                    fh,
+                )
+            fresh = st_mgr.get_fresh_snapshot("BTC", now=now_ts)
+            self.assertIsNotNone(fresh)
+            self.assertEqual(fresh["direction"], "DOWN")
+            self.assertEqual(fresh["current_price"], 59500.0)
+
+        with self.subTest("factory_discards_stale_sync_started_when_recreating_popped_instance"):
+            cm.CacheFactory.shutdown_all()
+            cm.CacheFactory._sync_started.add("BinanceOrder")
+            with patch.object(cm.CacheOrderManager, "load_state", return_value=None), \
+                 patch.object(cm.CacheOrderManager, "periodic_sync") as periodic:
+                mgr = cm.CacheFactory.get(
+                    "BinanceOrder", symbols=["BTC"], data_sync_mode="live_reader"
+                )
+                self.assertEqual(mgr.data_sync_mode, "live_reader")
+                periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
+            cm.CacheFactory.shutdown_all()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

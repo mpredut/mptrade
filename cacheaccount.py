@@ -382,7 +382,11 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     def sync_account_reader_if_needed(self):
         """Refresh a read-only account cache when durable disk state advances."""
-        if not self._is_account_cache() or self.save_state:
+        if (
+            not self._is_account_cache()
+            or self.save_state
+            or getattr(self, "data_sync_mode", None) == self.MODE_LIVE_READER
+        ):
             return
         for _attempt in range(2):
             try:

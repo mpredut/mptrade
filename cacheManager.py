@@ -187,18 +187,37 @@ def get_current_price_manager(
 
 
 def get_short_trend_manager(
-    symbols=None, filename=CacheShortTrendManager.DEFAULT_FILENAME, writer=False
+    symbols=None,
+    filename=CacheShortTrendManager.DEFAULT_FILENAME,
+    writer=False,
+    *,
+    data_sync_mode: Optional[str] = None,
 ):
     """Return the CacheShortTrendManager singleton."""
-    writer = _parse_bool_flag(writer, default=False)
+    resolved_mode = (
+        CacheManagerInterface.MODE_PRODUCER
+        if _parse_bool_flag(writer, default=False)
+        else _resolve_data_sync_mode(data_sync_mode)[0]
+    )
+    is_writer = resolved_mode == CacheManagerInterface.MODE_PRODUCER
     inst = CacheFactory._instances.get("ShortTrend")
-    if inst is not None and not writer:
+    if inst is not None and not is_writer:
+        if (
+            resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+            and not getattr(inst, "writer", False)
+        ):
+            inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
         return inst
     with CacheFactory._lock:
         inst = CacheFactory._instances.get("ShortTrend")
         if inst is not None:
-            if writer:
+            if is_writer:
                 inst.become_writer()
+            elif (
+                resolved_mode == CacheManagerInterface.MODE_LIVE_READER
+                and not getattr(inst, "writer", False)
+            ):
+                inst.data_sync_mode = CacheManagerInterface.MODE_LIVE_READER
             return inst
         if symbols is None:
             _syms = tracked_price_instruments()[0]
@@ -209,7 +228,8 @@ def get_short_trend_manager(
         inst = CacheShortTrendManager(
             _syms,
             filename,
-            writer=writer,
+            writer=is_writer,
+            data_sync_mode=resolved_mode,
             cache24_getter=lambda: get_cache_manager("24Price"),
             current_price_getter=get_current_price_manager,
         )
@@ -293,10 +313,21 @@ class CacheFactory:
         return value.values() if isinstance(value, dict) else (value,)
 
     @classmethod
-    def _resync_readonly_consumer_instance(cls, name: str, instance) -> None:
+    def _resync_readonly_consumer_instance(
+        cls, name: str, instance, symbols=None
+    ) -> None:
         if name == "CurrentPrice" or instance is None:
             return
-        for manager in cls._iter_managers(instance):
+        if isinstance(instance, dict) and symbols is not None:
+            wanted = {str(s).strip().upper() for s in symbols if s}
+            managers = [
+                mgr
+                for sym_key, mgr in instance.items()
+                if str(sym_key).strip().upper() in wanted
+            ]
+        else:
+            managers = cls._iter_managers(instance)
+        for manager in managers:
             if (
                 getattr(manager, "data_sync_mode", CacheManagerInterface.MODE_DISK_READER)
                 == CacheManagerInterface.MODE_DISK_READER
@@ -349,7 +380,7 @@ class CacheFactory:
         if name == "ShortTrend":
             return get_short_trend_manager(
                 symbols=symbols,
-                writer=(resolved_mode == CacheManagerInterface.MODE_PRODUCER),
+                data_sync_mode=resolved_mode,
             )
         inst = cls._instances.get(name)
         if (
@@ -401,6 +432,7 @@ class CacheFactory:
             created = name not in cls._instances
             sync_ts = None
             if created:
+                cls._sync_started.discard(name)
                 config = cls._CONFIG[name]
                 manager_class = config["class"]
                 sync_ts = config["sync_ts"]()
@@ -484,7 +516,9 @@ class CacheFactory:
                 and not start_periodic
                 and name not in cls._sync_started
             ):
-                cls._resync_readonly_consumer_instance(name, cls._instances[name])
+                cls._resync_readonly_consumer_instance(
+                    name, cls._instances[name], symbols=symbols
+                )
 
             if (
                 start_periodic
