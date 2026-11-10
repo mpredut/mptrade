@@ -54,13 +54,9 @@ from .intent_execution import (
     resolve_intent_topic_tag,
 )
 from .intent_state import (
-    _CURRENCY_STRIP_RE,
-    _INTENTS_LOCK_LOCAL,
-    _NOTIONAL_KEYS,
     _extract_intent_id,
     _intent_order_ids,
     _intent_venue_symbol_side_key,
-    _parse_currency_pos_float,
     _record_intent_state,
     _resolve_clamped_intent_notional,
     ai_intent_client_order_id,
@@ -163,15 +159,21 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     return format_venue_intent_client_order_id(normalized_venue, token)
 
 
+_DEFAULT_AUDIT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logger", "execution_audit"
+)
+
+
+def _resolve_audit_dir(directory: Optional[str] = None) -> str:
+    return directory or os.environ.get("EXECUTION_AUDIT_DIR") or _DEFAULT_AUDIT_DIR
+
+
 class ExecutionAudit:
     """Best-effort JSONL writer shared by Kraken, T212, HL, and Binance."""
 
     def __init__(self, directory: Optional[str] = None,
                  clock: Callable[[], float] = time.time):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.directory = directory or os.environ.get(
-            "EXECUTION_AUDIT_DIR", os.path.join(root, "logger", "execution_audit")
-        )
+        self.directory = _resolve_audit_dir(directory)
         self._clock = clock
 
     def record(self, event: str, *, intent_id: str, venue: str, symbol: str,
@@ -416,8 +418,7 @@ class AuditedStrategyExecutor:
 
     def preflight_order(self, symbol: str, side: str, qty: float, price=None, *, market: bool = False, kind: Optional[str] = None) -> Any:
         """Run the adapter's optional preflight before a submit is audited."""
-        preflight = getattr(self._executor, "preflight_order", None)
-        return preflight(symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind) if callable(preflight) else None
+        return self._call_opt("preflight_order", symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind)
 
     def ohlc_closes(self, symbol: str, interval_min: int):
         return self._executor.ohlc_closes(symbol, interval_min)
@@ -542,11 +543,7 @@ def find_order_audit_record(
     target_cid = clean_order_id(client_order_id)
     if not target_oid and not target_cid:
         return None
-    eff_dir = (
-        audit_dir
-        or os.environ.get("EXECUTION_AUDIT_DIR")
-        or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logger", "execution_audit")
-    )
+    eff_dir = _resolve_audit_dir(audit_dir)
     if not os.path.isdir(eff_dir):
         return None
     target_sym = canonical_symbol_key(symbol) if symbol and not isinstance(symbol, bool) else ""
@@ -1174,6 +1171,23 @@ def _is_open_resting_detail(det: dict[str, Any]) -> bool:
     return bool(det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"))
 
 
+def _attach_intent_age_fields(
+    target: dict[str, Any],
+    det: dict[str, Any],
+    now_ts: float,
+    *,
+    unit_sec: float,
+    ndigits: int,
+    suffix: str,
+) -> None:
+    ts_val = det["ts_val"]
+    eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or ts_val
+    if eff_ts > 0 and now_ts >= eff_ts:
+        target[f"age_{suffix}"] = round((now_ts - eff_ts) / unit_sec, ndigits)
+    if ts_val > 0 and eff_ts > ts_val + 60.0 and now_ts >= ts_val:
+        target[f"placed_age_{suffix}"] = round((now_ts - ts_val) / unit_sec, ndigits)
+
+
 def summarize_recent_ai_intents(
     intents_data: list[dict[str, Any]],
     scope: str,
@@ -1206,11 +1220,7 @@ def summarize_recent_ai_intents(
                 intent_summary[k] = det[k]
         if det.get("reason"):
             intent_summary["reason"] = det["reason"]
-        eff_ts_val = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
-        if eff_ts_val > 0 and now_ts >= eff_ts_val:
-            intent_summary["age_h"] = round((now_ts - eff_ts_val) / 3600.0, 2)
-        if det["ts_val"] > 0 and eff_ts_val > det["ts_val"] + 60.0 and now_ts >= det["ts_val"]:
-            intent_summary["placed_age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
+        _attach_intent_age_fields(intent_summary, det, now_ts, unit_sec=3600.0, ndigits=2, suffix="h")
         return intent_summary
 
     recent_rev: list[dict[str, Any]] = []
@@ -1305,7 +1315,7 @@ def build_last_cycle_execution_status(
                 or ep.get("filled_at") is not None
                 or ep.get("filled_ts") is not None
             )
-            if has_fill and ep_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+            if has_fill and ep_st not in _TERMINAL_CANCEL_STATUSES:
                 for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
                     ft = _parse_epoch_or_iso_s(ep.get(k))
                     if ft is not None and ft > 0:
@@ -1343,11 +1353,7 @@ def build_last_cycle_execution_status(
                 rec[k] = det[k]
         if det.get("reason"):
             rec["reason"] = det["reason"]
-        eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
-        if eff_ts > 0 and now_ts >= eff_ts:
-            rec["age_min"] = round((now_ts - eff_ts) / 60.0, 1)
-        if det["ts_val"] > 0 and eff_ts > det["ts_val"] + 60.0 and now_ts >= det["ts_val"]:
-            rec["placed_age_min"] = round((now_ts - det["ts_val"]) / 60.0, 1)
+        _attach_intent_age_fields(rec, det, now_ts, unit_sec=60.0, ndigits=1, suffix="min")
         return rec
 
     out: list[dict[str, Any]] = []

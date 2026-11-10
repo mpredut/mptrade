@@ -601,17 +601,17 @@ class MarketDataProvider(ABC):
             return inst_dict[attr]
         if attr in type(self).__dict__:
             return getattr(self, attr, default)
-        prov_cls = self.resolve_venue_provider_class(getattr(self, "name", ""))
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(getattr(self, "name", ""))
         if prov_cls is not None and hasattr(prov_cls, attr):
             return getattr(prov_cls, attr)
         return getattr(self, attr, default)
 
     def _resolve_capability_flag(self, attr: str) -> bool:
-        return bool(self._resolve_provider_attr(attr, False))
+        return bool(MarketDataProvider._resolve_provider_attr(self, attr, False))
 
     def default_quote_asset(self) -> Optional[str]:
         """Return default quote asset when a venue symbol omits explicit quote suffix."""
-        val = self._resolve_provider_attr("_DEFAULT_QUOTE_ASSET", None)
+        val = MarketDataProvider._resolve_provider_attr(self, "_DEFAULT_QUOTE_ASSET", None)
         return str(val).strip().upper() if isinstance(val, str) and val.strip() else None
 
     def requires_cache_permit(self) -> bool:

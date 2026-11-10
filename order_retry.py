@@ -783,7 +783,7 @@ def infer_record_owner(rec: dict) -> str:
     raw_place_kw = rec.get("place_kwargs")
     placement = dict(raw_place_kw) if isinstance(raw_place_kw, dict) else {}
     parent_owner = (_clean_str(rec.get("parent_owner")) or _clean_str(placement.get("parent_owner"))).lower()
-    if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
+    if _is_concrete_owner(parent_owner):
         return parent_owner
     owner = "unspecified"
     cid = (
@@ -840,8 +840,8 @@ def get_accepted_order_owner_map() -> dict:
     for r in _safe_load_all():
         if not _is_active_accepted_or_unassigned(r):
             continue
-        inferred = infer_record_owner(r)
-        if not _is_concrete_owner(inferred):
+        inferred = infer_concrete_record_owner(r)
+        if not inferred:
             continue
         for k in _record_order_and_client_ids(r):
             res[k] = inferred

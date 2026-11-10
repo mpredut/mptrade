@@ -54,15 +54,12 @@ from market_regime import (
     MarketRegimeService,
 )
 
-
 from .binance_provider import (  # noqa: F401
-    _BINANCE_NOT_FOUND_RELIABLE_FOR_SECONDS,
     BinanceProvider,
     _allorders,
     _bapi,
     _get_allorders,
     _get_bapi,
-    _parse_nonneg_order_field,
 )
 
 
@@ -603,7 +600,7 @@ class MarketApi:
             default_quote = (
                 default_quote_fn()
                 if callable(default_quote_fn)
-                else getattr(MarketDataProvider.resolve_venue_provider_class(prov_name), "_DEFAULT_QUOTE_ASSET", None)
+                else MarketDataProvider.default_quote_asset(provider)
             )
             quote = quote or res_quote or default_quote
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,

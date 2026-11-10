@@ -580,14 +580,12 @@ def complete_accepted_claim(
     claim_dict = claim if isinstance(claim, dict) else {}
     client_order_id = _claim_client_order_id(claim_dict)
     owner = ""
-    if hasattr(order_retry_module, "infer_concrete_record_owner"):
+    infer_fn = getattr(order_retry_module, "infer_concrete_record_owner", None) or getattr(
+        order_retry_module, "infer_record_owner", None
+    )
+    if callable(infer_fn):
         try:
-            owner = str(order_retry_module.infer_concrete_record_owner(claim_dict) or "").strip()
-        except Exception:
-            owner = ""
-    elif hasattr(order_retry_module, "infer_record_owner"):
-        try:
-            owner = str(order_retry_module.infer_record_owner(claim_dict) or "").strip()
+            owner = str(infer_fn(claim_dict) or "").strip()
         except Exception:
             owner = ""
     owner_tag, _ = alert.format_owner_tags(owner)

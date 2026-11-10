@@ -657,18 +657,10 @@ def _format_ts(ts):
         return "N/A"
 
 
-_fmt_num = format_notify_qty
-
-
 def _concrete_record_owner(rec) -> str:
-    if hasattr(oq, "infer_concrete_record_owner"):
-        return str(oq.infer_concrete_record_owner(rec) or "").strip()
-    if not isinstance(rec, dict):
-        return ""
-    owner = str(oq.infer_record_owner(rec) or "").strip()
-    if not owner or owner in ("unknown", "unspecified", "order_retry") or owner.startswith("alt:"):
-        return ""
-    return owner
+    fn = getattr(oq, "infer_concrete_record_owner", None) or getattr(oq, "infer_record_owner", None)
+    _, owner_body = alert.format_owner_tags(fn(rec) if callable(fn) and isinstance(rec, dict) else None)
+    return owner_body.strip(" ()")
 
 
 def _format_record_context(rec, *, include_lease=False):
@@ -689,9 +681,9 @@ def _format_record_context(rec, *, include_lease=False):
 
     effective_px = req_px if req_px is not None else ref_px
     if req_px is not None and ref_px is not None and abs(req_px - ref_px) > 1e-9:
-        price_str = f"@ ${_fmt_num(req_px)} (ref ${_fmt_num(ref_px)})"
+        price_str = f"@ ${format_notify_qty(req_px)} (ref ${format_notify_qty(ref_px)})"
     elif effective_px is not None:
-        price_str = f"@ ${_fmt_num(effective_px)}"
+        price_str = f"@ ${format_notify_qty(effective_px)}"
     else:
         price_str = "@ market"
 
@@ -719,7 +711,7 @@ def _format_record_context(rec, *, include_lease=False):
     owner = _concrete_record_owner(rec)
     owner_part = f" · {owner}" if owner else ""
     return (
-        f"Order: {side} {_fmt_num(qty_val)} {base_asset} ({symbol} · {provider}{owner_part}) {price_str} | Value: {value_str}\n"
+        f"Order: {side} {format_notify_qty(qty_val)} {base_asset} ({symbol} · {provider}{owner_part}) {price_str} | Value: {value_str}\n"
         f"Time: {time_line}\n"
         f"ID: {client_order_id}"
     )
@@ -1002,8 +994,8 @@ def _alert_giveups(records, now):
             kind = labels.get("kind")
             kind_str = f" [{kind}]" if kind and kind != "unspecified" else ""
             owner = str(labels.get("owner") or "")
-            owner_sfx = f" [{owner}]" if owner and owner != "unknown" else ""
-            owner_body_sfx = f" · {owner}" if owner and owner != "unknown" else ""
+            owner_sfx, _ = alert.format_owner_tags(owner)
+            owner_body_sfx = f" · {owner}" if owner_sfx else ""
 
             px_val = report.get("last_price")
             tot_notional = float(report.get("notional") or 0.0)
@@ -1012,7 +1004,7 @@ def _alert_giveups(records, now):
                 if (cnt > 0 and tot_notional > 0)
                 else ((unit_qty * float(px_val)) if px_val else None)
             )
-            price_part = f" @ ${_fmt_num(float(px_val))}" if px_val else ""
+            price_part = f" @ ${format_notify_qty(float(px_val))}" if px_val else ""
             value_part = f", Value: ~${unit_notional:.2f} {quote_asset}" if unit_notional is not None else ""
             time_parts = [
                 f"{lbl}: {val}"
@@ -1039,7 +1031,7 @@ def _alert_giveups(records, now):
                     title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}{owner_sfx}",
                     body=(
                         f"{side} {sym} ({prov}{owner_body_sfx}){kind_str}: {cnt} intent(s) expired "
-                        f"(size ~{_fmt_num(unit_qty)} {base_asset}{price_part}{value_part}{attempts_str}). "
+                        f"(size ~{format_notify_qty(unit_qty)} {base_asset}{price_part}{value_part}{attempts_str}). "
                         f"{time_info}Blocked by {reason} (expiry={expiry_detail}). "
                         f"No order submitted to exchange."
                     ),
