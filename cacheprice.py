@@ -102,6 +102,8 @@ import utils as u
 
 _NB_FETCH_DEADLINE_SEC = 8
 
+CacheManagerInterface.bind_runtime_services(api_client=api)
+
 
 class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
@@ -1600,16 +1602,23 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
                     not hasattr(prov, "supports_symbol")
                     or prov.supports_symbol(symbol)
                 ):
+                    spot_pair = None
                     spot_pair_fn = getattr(prov, "spot_pair", None)
                     if callable(spot_pair_fn):
-                        spot_pair = spot_pair_fn(symbol)
-                    else:
+                        cand_pair = spot_pair_fn(symbol)
+                        if isinstance(cand_pair, str):
+                            spot_pair = cand_pair
+                    if not isinstance(spot_pair, str):
                         pair_fn = getattr(prov, "_pair", None)
-                        spot_pair = (
+                        cand_pair = (
                             pair_fn()
                             if callable(pair_fn)
                             else getattr(prov, "_spot_pair", None)
                         )
+                        if isinstance(cand_pair, str):
+                            spot_pair = cand_pair
+                        else:
+                            spot_pair = getattr(prov, "_spot_pair", None)
                     if isinstance(spot_pair, str) and spot_pair.strip():
                         keys.append(spot_pair.strip())
             except Exception:
@@ -1922,15 +1931,22 @@ class _NonBinanceTrendPoller:
         self.stop_event = stop_event
         self.ws_streams = tuple(ws_streams or ())
 
-    def stop(self, timeout=5.0):
+    def request_stop(self) -> None:
         self.stop_event.set()
         for ws in self.ws_streams:
             try:
-                stop_ev = getattr(ws, "_stop_event", None)
-                if stop_ev is not None:
-                    stop_ev.set()
+                req_stop = getattr(ws, "request_stop", None)
+                if callable(req_stop):
+                    req_stop()
+                else:
+                    stop_ev = getattr(ws, "_stop_event", None)
+                    if stop_ev is not None:
+                        stop_ev.set()
             except Exception:
                 pass
+
+    def stop(self, timeout=5.0):
+        self.request_stop()
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
         total_deadline = time.monotonic() + eff_timeout
         ws_budget = min(2.0, eff_timeout)
@@ -2025,18 +2041,26 @@ def _start_nonbinance_trend_poller(
     )
     stop_event = threading.Event()
 
+    cpm_cls = type(cpm)
+    has_cls_mark_ws = callable(getattr(cpm_cls, "mark_symbol_ws_event", None))
+    has_cls_ws_healthy = callable(getattr(cpm_cls, "is_real_ws_healthy", None))
+    has_cls_extract = callable(getattr(cpm_cls, "extract_price_and_ts", None))
+    has_cls_rth_gate = callable(getattr(cpm_cls, "is_rth_gate_enforced", None))
+    has_cls_push_price = callable(getattr(cpm_cls, "push_price", None))
+
     def _mark_symbol_ws_ts(sym_key: str, ts_val: float) -> None:
-        mark_fn = getattr(cpm, "mark_symbol_ws_event", None)
-        if callable(mark_fn):
-            mark_fn(sym_key, ts_val)
+        if has_cls_mark_ws:
+            cpm.mark_symbol_ws_event(sym_key, ts_val)
             return
         ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
         if isinstance(ws_ts_map, dict):
             ws_ts_map[sym_key] = ts_val
 
     def _is_ws_healthy(sym_key: str) -> bool:
-        fn = getattr(cpm, "is_real_ws_healthy", None) or getattr(
-            cpm, "_real_ws_is_healthy", None
+        fn = (
+            cpm.is_real_ws_healthy
+            if has_cls_ws_healthy
+            else getattr(cpm, "_real_ws_is_healthy", None)
         )
         return bool(fn(sym_key)) if callable(fn) else False
 
@@ -2044,8 +2068,10 @@ def _start_nonbinance_trend_poller(
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
         cpm_cache = getattr(cpm, "cache", None)
-        extract_fn = getattr(cpm, "extract_price_and_ts", None) or getattr(
-            cpm, "_extract_price_and_ts", None
+        extract_fn = (
+            cpm.extract_price_and_ts
+            if has_cls_extract
+            else getattr(cpm, "_extract_price_and_ts", None)
         )
         if isinstance(cpm_cache, dict) and callable(extract_fn):
             for s in symbols:
@@ -2066,10 +2092,9 @@ def _start_nonbinance_trend_poller(
                     break
                 if _is_ws_healthy(s):
                     continue
-                rth_gate_fn = getattr(cpm, "is_rth_gate_enforced", None)
                 rth_gate_flag = (
-                    rth_gate_fn()
-                    if callable(rth_gate_fn)
+                    cpm.is_rth_gate_enforced()
+                    if has_cls_rth_gate
                     else getattr(cpm, "_enforce_rth_gate", None)
                 )
                 rth_gate_active = is_rth_gate_enabled(
@@ -2101,8 +2126,10 @@ def _start_nonbinance_trend_poller(
                         rth_seeded.add(s)
                         empty_backoff_ts.pop(s, None)
                         _mark_symbol_ws_ts(s, time.time())
-                        push_fn = getattr(cpm, "push_price", None) or getattr(
-                            cpm, "_push_price", None
+                        push_fn = (
+                            cpm.push_price
+                            if has_cls_push_price
+                            else getattr(cpm, "_push_price", None)
                         )
                         if callable(push_fn):
                             push_fn(s, pf)

@@ -95,8 +95,11 @@ class BinanceWSBase:
         logger.info("%s started", eff_name)
         return self
 
-    def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
+    def request_stop(self) -> None:
         self._stop_event.set()
+
+    def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
+        self.request_stop()
         loop = getattr(self, "_loop", None)
         task = getattr(self, "_main_task", None)
         if loop is not None and task is not None and not loop.is_closed():

@@ -20,13 +20,13 @@ from __future__ import annotations
 import builtins
 import json
 import os
-import sys
 import threading
 import time
 from typing import Optional
 
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
+from binance_api import bapi_trades as _bapi_trades
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
@@ -437,12 +437,6 @@ class CacheFactory:
                 hook(trade_mgr)
             except Exception:
                 pass
-        _bapi_tr = sys.modules.get("binance_api.bapi_trades")
-        if (
-            _bapi_tr is not None
-            and getattr(_bapi_tr, "cache_trade_manager", None) is trade_mgr
-        ):
-            _bapi_tr.cache_trade_manager = None
 
     @classmethod
     def shutdown_all(cls, timeout=5.0):
@@ -470,9 +464,9 @@ class CacheFactory:
             cls._instances = {}
             cls._sync_started = set()
             for manager in managers:
-                ev = getattr(manager, "_stop_event", None)
-                if ev is not None:
-                    ev.set()
+                req_stop = getattr(manager, "request_stop", None)
+                if callable(req_stop):
+                    req_stop()
             eff_timeout = safe_nonneg_float(timeout, default=5.0)
             if eff_timeout is None:
                 eff_timeout = 5.0
@@ -484,14 +478,12 @@ class CacheFactory:
             ]
             if (
                 current_price is _current_price_instance
-                and getattr(current_price, "thread", None) is None
+                and not (callable(getattr(current_price, "is_running", None)) and current_price.is_running())
             ):
                 _current_price_instance = None
             if (
                 short_trend is _short_trend_instance
-                and getattr(short_trend, "_full_eval_thread", None) is None
-                and getattr(short_trend, "_flush_thread", None) is None
-                and getattr(short_trend, "thread", None) is None
+                and not (callable(getattr(short_trend, "is_running", None)) and short_trend.is_running())
             ):
                 _short_trend_instance = None
             cls._clear_bapi_trade_manager_ref(trade_mgr)
@@ -711,6 +703,9 @@ def enable_real_ws_event_sync():
     return _ws_bridge
 
 
+CacheFactory.register_teardown_hook("Trade", _bapi_trades.clear_cache_trade_manager)
+
+
 def _initialize_once():
     _bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=enable_real_ws_event_sync)
 
@@ -721,27 +716,10 @@ if __name__ == "__main__":
     for _account_cache_name in ("Order", "Trade"):
         _acc_mgr = get_cache_manager(_account_cache_name, start_sync=False)
         CacheFactory._sync_started.add(_account_cache_name)
-        _ver = str(
-            getattr(_acc_mgr, "_persisted_data_version", "")
-            or getattr(_acc_mgr, "_loaded_data_version", "")
-            or ""
-        )
-        _cursors = (
-            getattr(_acc_mgr, "_rest_sync_cursor_per_symbol", None)
-            or getattr(_acc_mgr, "fetchtime_per_symbol", None)
-            or {}
-        )
-        _sync_ms = (
-            min(
-                (
-                    int(v)
-                    for v in _cursors.values()
-                    if isinstance(v, (int, float)) and v > 0
-                ),
-                default=0,
-            )
-            if isinstance(_cursors, dict)
-            else 0
+        _ver, _sync_ms = (
+            _acc_mgr.get_persisted_sync_state()
+            if hasattr(_acc_mgr, "get_persisted_sync_state")
+            else ("", 0)
         )
         if (
             _ver
@@ -866,21 +844,15 @@ if __name__ == "__main__":
         except Exception:
             _bws_mgr = None
         for _ws_obj in (_ws_bridge, _bws_mgr):
-            if _ws_obj is not None and hasattr(_ws_obj, "_stop_event"):
+            if _ws_obj is not None and hasattr(_ws_obj, "request_stop"):
                 try:
-                    _ws_obj._stop_event.set()
+                    _ws_obj.request_stop()
                 except Exception:
                     pass
-        if _nb_poller is not None and hasattr(_nb_poller, "stop_event"):
-            _nb_poller.stop_event.set()
-            for _nb_ws in getattr(_nb_poller, "ws_streams", ()):
-                if hasattr(_nb_ws, "_stop_event"):
-                    try:
-                        _nb_ws._stop_event.set()
-                    except Exception:
-                        pass
-        if _trend_mgr is not None and hasattr(_trend_mgr, "_stop_event"):
-            _trend_mgr._stop_event.set()
+        if _nb_poller is not None and hasattr(_nb_poller, "request_stop"):
+            _nb_poller.request_stop()
+        if _trend_mgr is not None and hasattr(_trend_mgr, "request_stop"):
+            _trend_mgr.request_stop()
         _c365_Shutdown_managers = list(
             CacheFactory._iter_managers(
                 CacheFactory._instances.get("365Price") or {}
@@ -888,12 +860,12 @@ if __name__ == "__main__":
         )
         for _inst in list(CacheFactory._instances.values()):
             for _mgr in CacheFactory._iter_managers(_inst):
-                if hasattr(_mgr, "_stop_event"):
-                    _mgr._stop_event.set()
+                if hasattr(_mgr, "request_stop"):
+                    _mgr.request_stop()
         if _current_price_instance is not None and hasattr(
-            _current_price_instance, "_stop_event"
+            _current_price_instance, "request_stop"
         ):
-            _current_price_instance._stop_event.set()
+            _current_price_instance.request_stop()
         if _nb_poller is not None:
             _nb_poller.stop(
                 timeout=min(0.5, max(0.05, shutdown_deadline - time.monotonic()))

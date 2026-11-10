@@ -3,7 +3,6 @@
 import contextlib
 import math
 import os
-import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -179,9 +178,17 @@ class MarketDataProvider(ABC):
         custom = getattr(self, "_ssot_fills_cache_path", None)
         if custom:
             return str(custom)
-        mod = sys.modules.get(type(self).__module__)
-        mod_path = getattr(mod, self._FILLS_CACHE_PATH_MODULE_ATTR, None) if (mod and self._FILLS_CACHE_PATH_MODULE_ATTR) else None
-        def_path = getattr(mod, self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None) if (mod and self._FILLS_CACHE_DEFAULT_MODULE_ATTR) else None
+        mod_name = type(self).__module__
+        mod_path = (
+            resolve_patched_attr(self._FILLS_CACHE_PATH_MODULE_ATTR, None, modules=(mod_name,))
+            if self._FILLS_CACHE_PATH_MODULE_ATTR
+            else None
+        )
+        def_path = (
+            resolve_patched_attr(self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None, modules=(mod_name,))
+            if self._FILLS_CACHE_DEFAULT_MODULE_ATTR
+            else None
+        )
         if mod_path and def_path and mod_path != def_path:
             return str(mod_path)
         if self._allow_ssot_price_cache():
@@ -196,8 +203,7 @@ class MarketDataProvider(ABC):
         cache_file = self._fills_cache_file()
         if not cache_file:
             return None
-        mod = sys.modules.get(type(self).__module__)
-        stale_s = getattr(mod, "_CACHE_MAX_STALE_S", None) if mod is not None else None
+        stale_s = resolve_patched_attr("_CACHE_MAX_STALE_S", None, modules=(type(self).__module__,))
         return self.read_ssot_fills_cache(
             symbol,
             cache_file,
@@ -299,7 +305,7 @@ class MarketDataProvider(ABC):
         try:
             import instrument_registry as _default_ir
 
-            ir = getattr(sys.modules.get("providers.market_api"), "instrument_registry", None) or _default_ir
+            ir = resolve_patched_attr("instrument_registry", _default_ir, modules=("providers.market_api",)) or _default_ir
             specs = list(ir.select_instruments(normalize_venue_name(getattr(venue, "name", venue) or "")).values())
             for item in specs:
                 item_sym = str(getattr(item, "symbol", "") or "").strip().upper()

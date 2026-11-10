@@ -106,6 +106,36 @@ def _cache_invalidate(methods) -> None:
             _CACHE.pop(k, None)
 
 
+def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | None:
+    """Return cached AssetPairs metadata for the first matching candidate without network I/O."""
+    store = cache_dict if isinstance(cache_dict, dict) else _CACHE
+    if not isinstance(store, dict):
+        return None
+    cands = tuple(c for c in (candidates or ()) if isinstance(c, str) and c)
+    if not cands:
+        return None
+
+    def _cache_val(ckey: object) -> object:
+        hit = store.get(ckey)
+        return hit[1] if isinstance(hit, tuple) and len(hit) >= 2 else None
+
+    p_meta = next((m for kc in cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
+    if p_meta is None:
+        p_meta = next(
+            (
+                v
+                for kc in cands
+                if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict)
+                for v in ap_res.values()
+                if isinstance(v, dict)
+            ),
+            None,
+        )
+    if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
+        p_meta = next((ap_all_res[kc] for kc in cands if isinstance(ap_all_res.get(kc), dict)), None)
+    return p_meta if isinstance(p_meta, dict) else None
+
+
 def _format_kraken_number(value: float, max_decimals: int) -> str:
     s = f"{value}"
     if "e" in s.lower():
@@ -241,6 +271,11 @@ class KrakenClient:
     def pair_info(self, pair: str) -> dict | None:
         """Return pair price/volume precision and minimum order, or None if absent."""
         return self._public_first_dict("AssetPairs", pair)
+
+    def cached_pair_info(self, candidates) -> dict | None:
+        """Return in-memory cached pair metadata for ``candidates`` without network I/O."""
+        own_cache = getattr(self, "_CACHE", None)
+        return get_cached_pair_info(candidates, own_cache if isinstance(own_cache, dict) else None)
 
     def ticker(self, pair: str) -> dict | None:
         return self._public_first_dict("Ticker", pair)

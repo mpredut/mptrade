@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from abc import ABC
 import math
-import sys as _sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import (
@@ -12,7 +11,6 @@ from cachepaths import (
     compatible_quote_suffixes,
     compute_venue_nav_breakdown,
     normalize_venue_name,
-    resolve_kraken_lookup_symbol,
     split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
@@ -21,7 +19,6 @@ from botcore import (
     safe_nonneg_float,
 )
 from intelligence.macro_sentiment_ssot import (
-    clean_symbol_key,
     safe_float,
     safe_pos_float,
 )

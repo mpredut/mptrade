@@ -130,6 +130,32 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     def _is_account_cache(self):
         return bool(self._is_trade_account_cache or self._is_order_account_cache)
 
+    def get_persisted_sync_state(self) -> tuple[str, int]:
+        """Return ``(data_version, min_cursor_ms)`` from loaded/persisted account cache state."""
+        version = str(
+            getattr(self, "_persisted_data_version", "")
+            or getattr(self, "_loaded_data_version", "")
+            or ""
+        )
+        cursors = (
+            getattr(self, "_rest_sync_cursor_per_symbol", None)
+            or getattr(self, "fetchtime_per_symbol", None)
+            or {}
+        )
+        sync_ms = (
+            min(
+                (
+                    int(v)
+                    for v in cursors.values()
+                    if isinstance(v, (int, float)) and v > 0
+                ),
+                default=0,
+            )
+            if isinstance(cursors, dict)
+            else 0
+        )
+        return version, sync_ms
+
     def _is_canonical_account_cache(self):
         sym_mod = _cm_override("sym", sym)
         return self._is_account_cache() and set(self.symbols) == set(sym_mod.symbols)

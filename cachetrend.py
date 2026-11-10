@@ -1341,6 +1341,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         )
         self._flush_thread.start()
 
+    def is_running(self) -> bool:
+        """Return True if any evaluation, flush, or base sync thread is active."""
+        return (
+            super().is_running()
+            or (self._full_eval_thread is not None and getattr(self._full_eval_thread, "is_alive", lambda: False)())
+            or (self._flush_thread is not None and getattr(self._flush_thread, "is_alive", lambda: False)())
+        )
+
     def shutdown(self, timeout=5.0):
         """Stop evaluation, flush, and base sync loops, then unsubscribe Cache24 sources."""
         eff_timeout = safe_nonneg_float(timeout, default=5.0)

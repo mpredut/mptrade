@@ -13,7 +13,6 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 import json
 import os
-import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -1152,9 +1151,18 @@ class CacheManagerInterface(ABC):
             self.thread = thread
             return self.thread
 
+    def request_stop(self) -> None:
+        """Signal the synchronization loop to stop without blocking."""
+        self._stop_event.set()
+
+    def is_running(self) -> bool:
+        """Return True if a background synchronization thread is active."""
+        thread = self.thread
+        return thread is not None and thread.is_alive()
+
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
-        self._stop_event.set()
+        self.request_stop()
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
         if eff_timeout is None:
             eff_timeout = 5.0
@@ -1170,9 +1178,7 @@ class CacheManagerInterface(ABC):
     def shutdown_all_instances(cls, timeout=5.0):
         instances = list(cls._live_instances)
         for manager in instances:
-            ev = getattr(manager, "_stop_event", None)
-            if ev is not None:
-                ev.set()
+            manager.request_stop()
         eff_timeout = safe_nonneg_float(timeout, default=5.0)
         if eff_timeout is None:
             eff_timeout = 5.0
