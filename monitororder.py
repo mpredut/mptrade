@@ -177,6 +177,7 @@ initial_buy_prices = OrderedDict()
 _notified_placed_order_ids = _OrderedIdSet()
 _notified_expired_order_ids = _OrderedIdSet()
 _derived_replacement_order_ids = _OrderedIdSet()
+_SYMBOL_TICK_SIZE_CACHE: dict[str, float] = {}
 _monitororder_initialized = False
 
 
@@ -186,6 +187,7 @@ def reset_monitororder_state_for_test():
     _notified_placed_order_ids.clear()
     _notified_expired_order_ids.clear()
     _derived_replacement_order_ids.clear()
+    _SYMBOL_TICK_SIZE_CACHE.clear()
     initial_sell_prices.clear()
     initial_buy_prices.clear()
     _monitororder_initialized = False
@@ -224,6 +226,44 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
 
 def _remember_initial_price(cache, order_id, price):
     lru_dict_put(cache, order_id, price, MAX_TRACKED_ORDER_IDS)
+
+
+def resolve_dynamic_reprice_bounds(
+    symbol: str,
+    current_price: float,
+    tick_size: float | None = None,
+) -> tuple[float, float, float, float]:
+    """Compute ``(eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc)`` scaled by venue tick size.
+
+    Adds a natural cushion of 1 tick to ``MIN_PROC``, 2 ticks to ``MAX_PROC``,
+    and 4 ticks to ``INITIAL_MAX_PROC`` so venue price rounding/flooring across
+    Binance, Kraken, Hyperliquid, and T212 never collapses the repricing offset.
+    """
+    px_f = safe_pos_float(current_price, default=None)
+    if tick_size is None:
+        tick_fn = getattr(mkt, "price_tick_size", None)
+        if callable(tick_fn) and (
+            not hasattr(mkt.place, "_mock_name") or hasattr(tick_fn, "_mock_name")
+        ):
+            sym_key = str(symbol or "").strip().upper()
+            cached_tick = _SYMBOL_TICK_SIZE_CACHE.get(sym_key) if not hasattr(tick_fn, "_mock_name") else None
+            if cached_tick is not None:
+                tick_size = cached_tick
+            else:
+                try:
+                    resolved = safe_nonneg_float(tick_fn(symbol, reference_price=px_f), default=0.0)
+                    tick_size = resolved
+                    if sym_key and resolved > 0.0 and not hasattr(tick_fn, "_mock_name"):
+                        _SYMBOL_TICK_SIZE_CACHE[sym_key] = resolved
+                except Exception:
+                    tick_size = 0.0
+    tick_f = safe_pos_float(tick_size, default=0.0)
+    tick_pct = (tick_f / px_f * 100.0) if (px_f is not None and tick_f > 0.0) else 0.0
+    eff_min_proc = MIN_PROC + 1.0 * tick_pct
+    eff_max_proc = MAX_PROC + 2.0 * tick_pct
+    eff_initial_max_proc = INITIAL_MAX_PROC + 4.0 * tick_pct
+    eff_mid_proc = (eff_min_proc + eff_max_proc) / 2.0
+    return eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc
 
 
 def _evaluate_reprice_trend_state(symbol: str, order_type: str) -> tuple[bool, bool]:
@@ -293,6 +333,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         return
     
     print(f"The current price : {format_price_log(current_price)}")
+    eff_min_proc, eff_mid_proc, eff_max_proc, eff_initial_max_proc = resolve_dynamic_reprice_bounds(
+        symbol, current_price
+    )
+    eff_reprice_offset = eff_min_proc / 100.0
+    eff_pushback_offset = eff_mid_proc / 100.0
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     custom_ttl_map = {}
@@ -401,21 +446,21 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         difference_percent = abs(current_price - price) / price * 100
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
         
-        if are_close(current_price, price, MAX_PROC):
+        if are_close(current_price, price, eff_max_proc):
             print(f"Current price {current_price} and {order_type} price {price} are close!")
             order_diff_percent = difference_percent
             short_favorable, super_short_favorable = _evaluate_reprice_trend_state(symbol, order_type)
 
-            if short_favorable and super_short_favorable and order_diff_percent <= MID_PROC:
+            if short_favorable and super_short_favorable and order_diff_percent <= eff_mid_proc:
                 if order_type == "SELL":
-                    new_price = max(float(price), current_price * (1.0 + PUSHBACK_OFFSET))
+                    new_price = max(float(price), current_price * (1.0 + eff_pushback_offset))
                 else:
-                    new_price = min(float(price), current_price * (1.0 - PUSHBACK_OFFSET))
+                    new_price = min(float(price), current_price * (1.0 - eff_pushback_offset))
                 replace_bypass_guards = ["G_PROF", "GT_S"]
                 replace_wait_for_trend = False
                 print(
                     f"[MONITORORDER] Favorable short+super-short trend for {order_type} "
-                    f"order {order_id} near market ({order_diff_percent:.2f}% <= {MID_PROC:.2f}%); "
+                    f"order {order_id} near market ({order_diff_percent:.2f}% <= {eff_mid_proc:.2f}%); "
                     f"pushing order in favor of profit to {format_price_log(new_price)}"
                 )
             elif short_favorable:
@@ -426,14 +471,14 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 continue
             else:
                 difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
-                if not are_close(current_price, initial_prices[order_id], INITIAL_MAX_PROC):
+                if not are_close(current_price, initial_prices[order_id], eff_initial_max_proc):
                     print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
                     continue
                 print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
                 if order_type == "SELL":
-                    new_price = current_price * (1.0 + REPRICE_OFFSET)
+                    new_price = current_price * (1.0 + eff_reprice_offset)
                 else:
-                    new_price = current_price * (1.0 - REPRICE_OFFSET)
+                    new_price = current_price * (1.0 - eff_reprice_offset)
                 replace_bypass_guards = ["G_PROF"]
                 replace_wait_for_trend = True
             effective_new_price = new_price

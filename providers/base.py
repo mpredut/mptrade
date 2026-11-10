@@ -538,6 +538,21 @@ class MarketDataProvider(ABC):
         dec = exact_nonneg_int(self._pair_precision_attr(symbol, "price_decimals"), default=None)
         return round(price_f, min(dec, 18)) if dec is not None else price_f
 
+    def price_tick_size(self, symbol: str, reference_price: Optional[float] = None) -> float:
+        """Return venue price tick size for ``symbol`` across all providers (0.0 if unknown)."""
+        try:
+            meta = self.resolve_cached_fee_and_limits(symbol, price=reference_price)
+            if isinstance(meta, dict):
+                tick = safe_pos_float(meta.get("tick_size"), default=None)
+                if tick is not None:
+                    return tick
+        except Exception:
+            pass
+        dec = exact_nonneg_int(self._pair_precision_attr(symbol, "price_decimals"), default=None)
+        if dec is not None:
+            return float(round(10.0 ** (-min(dec, 18)), 18))
+        return 0.0
+
     def min_order_qty(self, symbol: str) -> float:
         """Return venue minimum order quantity; 0.0 means no known minimum."""
         return safe_pos_float(self._pair_precision_attr(symbol, "order_min", 0.0), default=0.0)

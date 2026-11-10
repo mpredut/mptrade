@@ -484,6 +484,12 @@ class AuditedStrategyExecutor:
         fn = getattr(self._executor, "round_price", None)
         return fn(symbol, price) if callable(fn) else MarketDataProvider.round_price(self, symbol, price)
 
+    def price_tick_size(self, symbol: str, reference_price: Optional[float] = None) -> float:
+        fn = getattr(self._executor, "price_tick_size", None)
+        if callable(fn):
+            return safe_nonneg_float(fn(symbol, reference_price=reference_price), default=0.0) or 0.0
+        return MarketDataProvider.price_tick_size(self, symbol, reference_price=reference_price)
+
     def min_order_qty(self, symbol: str) -> float:
         fn = getattr(self._executor, "min_order_qty", None)
         if callable(fn):

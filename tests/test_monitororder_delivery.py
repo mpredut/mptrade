@@ -429,6 +429,54 @@ class TestMonitororderNotifications(unittest.TestCase):
             mock_cancel.assert_not_called()
             mock_place.assert_not_called()
 
+    def test_dynamic_reprice_bounds_scale_with_venue_tick_size(self):
+        # Fine-tick asset (BTC: px=73780, tick=0.01 -> tick_pct ~ 0.000014%)
+        b_min, b_mid, b_max, b_init = monitororder.resolve_dynamic_reprice_bounds(
+            "BTCUSDC", 73780.0, tick_size=0.01
+        )
+        self.assertAlmostEqual(b_min, monitororder.MIN_PROC + (0.01 / 73780.0 * 100.0), places=6)
+        self.assertAlmostEqual(b_max, monitororder.MAX_PROC + 2.0 * (0.01 / 73780.0 * 100.0), places=6)
+        self.assertAlmostEqual(b_init, monitororder.INITIAL_MAX_PROC + 4.0 * (0.01 / 73780.0 * 100.0), places=6)
+        self.assertAlmostEqual(b_mid, (b_min + b_max) / 2.0, places=6)
+
+        # Coarse-tick asset (TAO: px=200.0, tick=0.10 -> tick_pct = 0.05%)
+        t_min, t_mid, t_max, t_init = monitororder.resolve_dynamic_reprice_bounds(
+            "TAOUSDC", 200.0, tick_size=0.10
+        )
+        self.assertAlmostEqual(t_min, monitororder.MIN_PROC + 0.05, places=6)
+        self.assertAlmostEqual(t_max, monitororder.MAX_PROC + 0.10, places=6)
+        self.assertAlmostEqual(t_init, monitororder.INITIAL_MAX_PROC + 0.20, places=6)
+        self.assertAlmostEqual(t_mid, (t_min + t_max) / 2.0, places=6)
+
+        # Verify monitor_open_orders_by_type uses mkt.price_tick_size dynamically
+        sell_orders = {
+            9010: {
+                "price": 200.80,
+                "quantity": 1.0,
+                "remainingQty": 1.0,
+                "clientOrderId": "TA_OR_tick_0",
+            }
+        }
+        placed = []
+
+        def fake_place(symbol, side, price, qty, **kw):
+            placed.append(price)
+            return {"orderId": 9011}
+
+        with patch.object(monitororder.api, "get_open_orders", return_value=sell_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=200.00), \
+             patch.object(monitororder.mkt, "price_tick_size", return_value=0.10), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
+             patch.object(monitororder.order_lifecycle, "complete_accepted_claim", return_value=True), \
+             patch("notify_engine.alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+
+        self.assertEqual(len(placed), 1)
+        self.assertAlmostEqual(placed[0], 200.00 * (1.0 + t_min / 100.0), places=6)
+
     def test_cumulative_initial_max_proc_allows_sequential_step_up_to_one_percent(self):
         # Initial anchor was 100.0; order was already stepped to 99.20.
         # Current price is 98.60 (0.60% from 99.20 <= MAX_PROC=0.77%, and 1.40% from

@@ -1011,6 +1011,12 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return provider.round_price(symbol, price) if hasattr(provider, "round_price") else safe_pos_float(price, default=0.0)
 
+    def price_tick_size(self, symbol: str, reference_price: Optional[float] = None, provider_name=None) -> float:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if hasattr(provider, "price_tick_size"):
+            return safe_nonneg_float(provider.price_tick_size(symbol, reference_price=reference_price), default=0.0)
+        return 0.0
+
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use
