@@ -750,11 +750,6 @@ class Cache365PriceManager(Cache24PriceManager):
     def _should_compact_before_append_locked(self) -> bool:
         return False
 
-    @staticmethod
-    def _tail_lines(path, limit, block_size=1024 * 1024):
-        """Read at most the last complete ``limit`` lines without scanning the file."""
-        return read_tail_lines(path, limit, chunk_size=block_size)
-
     def _load_jsonl(self):
         """Load only a recent working set; the JSONL file remains the full archive."""
         with self.lock:
@@ -766,7 +761,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 except OSError:
                     pass
             if os.path.exists(self.filename):
-                for raw_line in self._tail_lines(
+                for raw_line in read_tail_lines(
                     self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS
                 ):
                     rec = parse_json_payload(raw_line, default=None)

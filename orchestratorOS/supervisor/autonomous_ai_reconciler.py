@@ -254,15 +254,6 @@ class AutonomousAIReconciler:
 
         return resp
 
-    def _execute_venue_or_fleet_action(self, act: Dict[str, Any]) -> bool:
-        """Executes a single repair action (bot/module/fleet/VPN/DNS restart, system reboot, or order sync/cancel) in enforce mode."""
-        return execute_venue_or_fleet_repair_action(
-            act,
-            self.workspace_dir,
-            resolve_instrument_fn=lambda sym, venue=None: self.intent_gateway.resolve_instrument(sym, venue=venue),
-            log=logger,
-        )
-
     def apply_reconciliation(
         self, plan: Dict[str, Any], *, allow_code_remediation: bool = True
     ) -> Tuple[bool, Optional[bool]]:
@@ -272,7 +263,12 @@ class AutonomousAIReconciler:
             self.workspace_dir,
             is_enforce=(self.mode == "enforce"),
             allow_code_remediation=allow_code_remediation,
-            execute_action_fn=self._execute_venue_or_fleet_action,
+            execute_action_fn=lambda act: execute_venue_or_fleet_repair_action(
+                act,
+                self.workspace_dir,
+                resolve_instrument_fn=lambda sym, venue=None: self.intent_gateway.resolve_instrument(sym, venue=venue),
+                log=logger,
+            ),
             apply_patch_fn=self._apply_code_patch_safely,
             log=logger,
         )

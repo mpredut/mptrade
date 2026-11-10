@@ -59,6 +59,7 @@ from botcore import (  # noqa: E402
 )
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
+from strategies import spot_replay as rp  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
 DEFAULT_ENV = os.path.join(HERE, ".env")
@@ -218,13 +219,7 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
     return merged
 
 
-def _get_replay_module():
-    from strategies import spot_replay as rp
-    return rp
-
-
 def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False):
-    rp = _get_replay_module()
     with contextlib.redirect_stdout(io.StringIO()):
         m = rp.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
@@ -254,7 +249,6 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
-    rp = _get_replay_module()
     variants = _variants(interval)
     cur_params = variants.get("current")
     if hasattr(rp, "prewarm_trend_series") and hasattr(cur_params, "surge_guard"):

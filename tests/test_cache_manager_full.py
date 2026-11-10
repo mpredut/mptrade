@@ -2267,9 +2267,9 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertEqual(tradeall.sanitize_pipe_field("a|b\rc\nd"), "a/b c d")
         self.assertEqual(tradeall.sanitize_pipe_field(None), "")
         with self.assertRaises(ValueError):
-            rtrade._LivePairVenue._limit_kind(True)
+            rtrade._LivePairVenue._kind_for_revision("limit", True, label="limit")
         with self.assertRaises(ValueError):
-            rtrade._LivePairVenue._limit_kind(1.5)
+            rtrade._LivePairVenue._kind_for_revision("limit", 1.5, label="limit")
         with self.assertRaises(ValueError):
             rtrade._validate_intent_recovery_config(poll_sec=True)
 

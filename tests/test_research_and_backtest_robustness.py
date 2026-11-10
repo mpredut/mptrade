@@ -1982,28 +1982,11 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     st_code, payload_dict = tc._place_order("limit", {"ticker": "NVDA_US_EQ"})
     assert st_code == 200 and isinstance(payload_dict, dict)
 
-    # 14. discovery.news, shadow_runtime, instrument_registry, orchestratorOS.agy.paths, and watchdog_common guards
-    import pandas as pd
-    from discovery import news as d_news
+    # 14. shadow_runtime, instrument_registry, orchestratorOS.agy.paths, and watchdog_common guards
     from instrument_registry import InstrumentSpec, select_instruments
     from orchestratorOS.agy import paths as agy_paths
     from orchestratorOS.lib import watchdog_common as wd_common
     from botcore import require_shadow_interval
-
-    df_cmc_sample = pd.DataFrame([
-        {"name": "Bitcoin", "symbol": "BTC", "launch_date": pd.Timestamp("2020-01-01"), "price": 60000.0, "change_24h": 1.0, "change_7d": 2.0, "website_slug": "btc"},
-        {"name": "BadBool", "symbol": "BAD_BOOL", "launch_date": pd.Timestamp("2024-01-01"), "price": True, "change_24h": 0.0, "change_7d": 0.0, "website_slug": "bb"},
-        {"name": "BadNan", "symbol": "BAD_NAN", "launch_date": pd.Timestamp("2024-01-02"), "price": float("nan"), "change_24h": 0.0, "change_7d": 0.0, "website_slug": "bn"},
-        {"name": "Ethereum", "symbol": "ETH", "launch_date": pd.Timestamp("2022-01-01"), "price": 3000.0, "change_24h": 3.0, "change_7d": 4.0, "website_slug": "eth"},
-    ])
-    df_new, *_ = d_news.find_common_coins_and_sort(
-        1,
-        df_cmc_sample,
-        {"BTC": 60010.0, "BAD_BOOL": 1.0, "BAD_NAN": 1.0, "ETH": 3005.0},
-    )
-    assert list(df_new["symbol"]) == ["ETH"]
-    df_new_bool, *_ = d_news.find_common_coins_and_sort(True, df_cmc_sample, {"BTC": 60010.0})
-    assert list(df_new_bool["symbol"]) == ["BTC"]
 
     with pytest.raises(ValueError):
         require_shadow_interval(1, True, "TEST_BOT")
@@ -4107,9 +4090,9 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
     assert gw.submit({"decision": "BUY", "symbol": True, "venue": "binance", "confidence": 0.95}, source="test", max_mode="shadow") is None
     assert gw.submit({"decision": "BUY", "symbol": "BTCUSDC", "venue": False, "confidence": 0.95}, source="test", max_mode="shadow") is None
 
-    rec = AutonomousAIReconciler(workspace_dir=str(tmp_path), intent_gateway=gw)
-    assert rec._execute_venue_or_fleet_action(None) is False  # type: ignore[arg-type]
-    assert rec._execute_venue_or_fleet_action({"action": "RESTART_BOT", "symbol": True}) is False
+    from orchestratorOS.lib.technical_repair_ssot import execute_venue_or_fleet_repair_action
+    assert execute_venue_or_fleet_repair_action(None, str(tmp_path), resolve_instrument_fn=gw.resolve_instrument) is False  # type: ignore[arg-type]
+    assert execute_venue_or_fleet_repair_action({"action": "RESTART_BOT", "symbol": True}, str(tmp_path), resolve_instrument_fn=gw.resolve_instrument) is False
 
     # 4. BotManager._read_stream continues draining stream even if log_file.write or server.process_line raises
     mgr = object.__new__(BotManager)

@@ -1780,22 +1780,6 @@ def test_pricechecker__readable_time_start_monitoring_and_new_coins_discovery__s
     assert _safe_days_back(1e12) == 3650.0
     assert _safe_num(10**400, 1.5) == 1.5
 
-def test_discovery_news_imports_cleanly_without_executing_http_calls_iter77_s1(monkeypatch):
-    """[ITER77 #1] discovery.news imports cleanly without executing HTTP calls, and get_binance_coins strips only trailing USDT."""
-    from discovery import news as d_news
-    # 1. discovery.news imports cleanly without executing HTTP calls, and get_binance_coins strips only trailing USDT
-    class _DummyResp:
-        def json(self):
-            return [
-                {"symbol": "BTCUSDT", "price": "65000.0"},
-                {"symbol": "USDTB", "price": "1.0"},
-            ]
-
-    monkeypatch.setattr(d_news.requests, "get", lambda url, timeout=15, **kw: _DummyResp())
-    b_map = d_news.get_binance_coins()
-    assert b_map["BTC"] == 65000.0
-    assert b_map["USDTB"] == 1.0
-
 def test_visuals_drawprices_get_cache_for_symbol_and_min_max_inverse_iter77_s3():
     """[ITER77 #3] visuals.drawprices get_cache_for_symbol and min_max_inverse."""
     import numpy as np

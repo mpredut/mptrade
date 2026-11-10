@@ -249,10 +249,6 @@ class _LivePairVenue:
         )
         return prefix if rev == 0 else f"{prefix}_{rev}"
 
-    @classmethod
-    def _limit_kind(cls, revision):
-        return cls._kind_for_revision("limit", revision, label="limit")
-
     def _persist_callback(self, pair_id, side, kind, requested_qty):
         if self.pair_store is None:
             return lambda _pending: None
@@ -297,7 +293,7 @@ class _LivePairVenue:
     def _submit_limit_intent(self, side, price, qty, pair_id, *, attempt=1, cache_permit=None, revision=0):
         side = side.upper()
         hours = RTRADE_BUY_NORMAL_HOURS if side == "BUY" else RTRADE_SELL_NORMAL_HOURS
-        store_kind = self._limit_kind(revision)
+        store_kind = self._kind_for_revision("limit", revision, label="limit")
         client_id = rtrade_client_order_id(pair_id, side, store_kind)
         intent = self.order_lifecycle.new_intent(
             intent_id=self._intent_id(pair_id, side, store_kind),
@@ -557,7 +553,7 @@ class _LivePairVenue:
 
     def place_limit(self, side, price, qty, pair_id, *, cache_permit=None, revision=0):
         side = side.upper()
-        store_kind = self._limit_kind(revision)
+        store_kind = self._kind_for_revision("limit", revision, label="limit")
         self._last_place_failures.pop(side, None)
         existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
         if existing_state == "recovered":
