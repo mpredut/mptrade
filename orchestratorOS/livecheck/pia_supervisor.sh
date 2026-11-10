@@ -59,8 +59,8 @@ dip_endpoint_reachable() {
     local region="$1" dip_ip http_code
     dip_ip=$(printf '%s' "$region" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)
     [ -n "$dip_ip" ] || return 0
-    http_code=$(curl -4 -k -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 4 "https://${dip_ip}:1337/" 2>/dev/null || echo "000")
-    [ "$http_code" != "000" ]
+    http_code=$(curl -4 -k -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 4 "https://${dip_ip}:1337/" 2>/dev/null || true)
+    [ -n "$http_code" ] && [ "$http_code" != "000" ]
 }
 
 prewarm_dns() {
