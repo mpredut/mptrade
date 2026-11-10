@@ -41,11 +41,13 @@ from botcore import (
     log,
     required_env,
     required_float_env,
+    resolve_now_ms,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
     single_instance,
+    split_csv,
     touch_module_heartbeat,
 )
 from kraken_client import KrakenClient
@@ -72,12 +74,8 @@ load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 def _resolve_kraken_cache_pairs() -> list[str]:
     """Combine enabled Kraken instruments from instruments.conf with optional KRAKEN_CACHE_PAIRS."""
     pairs: list[str] = []
-    for sym in symbols_for("kraken"):
+    for sym in [*symbols_for("kraken"), *split_csv(os.environ.get("KRAKEN_CACHE_PAIRS"), upper=True)]:
         s = str(sym or "").strip().upper()
-        if s and s not in pairs:
-            pairs.append(s)
-    for item in (os.environ.get("KRAKEN_CACHE_PAIRS") or "").split(","):
-        s = item.strip().upper()
         if s and s not in pairs:
             pairs.append(s)
     if not pairs:
@@ -380,7 +378,7 @@ def _merge_rest_into(client, cache):
 
 def _touch_ws_fetchtimes(cache, now_ms=None):
     """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    now_ms = safe_pos_int(now_ms, None) or int(time.time() * 1000)
+    now_ms = resolve_now_ms(now_ms)
     configured = [sym for sym in (PAIRS or ()) if sym and sym != "*"]
     for sym in configured:
         cache["items"].setdefault(sym, [])

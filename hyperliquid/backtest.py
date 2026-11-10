@@ -92,7 +92,7 @@ def run(coin, ohlc, ts, fund, sig, P, direction, budget):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backtester complet DCA+TP pe Hyperliquid.")
+    ap = argparse.ArgumentParser(description="Complete DCA+TP backtester on Hyperliquid.")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--coin", default=None)
     ap.add_argument("--days", type=int, default=45)
@@ -130,7 +130,7 @@ def main() -> int:
     ts = [r["timestamp"] * 1000 for r in records]
     closes = [x[3] for x in ohlc]
     if len(ohlc) < 50:
-        log("! prea putine lumanari"); return 1
+        log("! too few candles"); return 1
     if budget <= 0:
         log("! budget must be > 0"); return 1
     fund = fetch_funding_history(coin, ts[0])
@@ -143,7 +143,7 @@ def main() -> int:
     if args.mode == "single":
         _total, m, _wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)
         print_single_backtest_report(
-            f"=== BACKTEST COMPLET {coin} {args.days}z {direction} semnal={args.signal} ===",
+            f"=== COMPLETE BACKTEST {coin} {args.days}d {direction} signal={args.signal} ===",
             f"entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}",
             m,
             budget=budget,
@@ -154,7 +154,7 @@ def main() -> int:
         )
         return 0
 
-    log(f"=== SWEEP {coin} {args.days}z {direction} semnal={args.signal} (buy&hold {bh:+.1f}%) ===")
+    log(f"=== SWEEP {coin} {args.days}d {direction} signal={args.signal} (buy&hold {bh:+.1f}%) ===")
     run_tp_drop_sl_sweep(
         base,
         lambda p: run_replay(ohlc, ts, fund, sig, p, direction=direction),

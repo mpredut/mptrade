@@ -32,7 +32,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag, load_env_stack, safe_pos_int
+from botcore import _parse_bool_flag, load_env_stack, optional_env, safe_pos_int
 from notify_engine.alertnotifiers import (
     _GATE_ACCEPTED_REASONS,
     _canonical_topic_key,
@@ -55,7 +55,7 @@ def email_mirrored_topics() -> set[str]:
     if not os.environ.get("NTFY_TOPIC_ERROR"):
         load_env_stack()
     topics = {
-        os.environ.get(f"NTFY_TOPIC_{cat}", "").split("#", 1)[0].strip()
+        optional_env(f"NTFY_TOPIC_{cat}")
         for cat in EMAIL_MIRRORED_CATEGORIES
     }
     topics.discard("")
@@ -74,11 +74,11 @@ def _config() -> dict | None:
     if not os.environ.get("SMTP_USERNAME") or not os.environ.get("ALERT_TO_EMAIL"):
         load_env_stack()
     cfg = {
-        "server": os.environ.get("SMTP_SERVER", "").split("#", 1)[0].strip() or "smtp.gmail.com",
-        "port": os.environ.get("SMTP_PORT", "").split("#", 1)[0].strip() or "587",
-        "username": os.environ.get("SMTP_USERNAME", "").split("#", 1)[0].strip(),
+        "server": optional_env("SMTP_SERVER", "smtp.gmail.com"),
+        "port": optional_env("SMTP_PORT", "587"),
+        "username": optional_env("SMTP_USERNAME"),
         "password": os.environ.get("SMTP_PASSWORD", "").strip(),
-        "to": os.environ.get("ALERT_TO_EMAIL", "").split("#", 1)[0].strip(),
+        "to": optional_env("ALERT_TO_EMAIL"),
     }
     missing = [k for k in ("username", "password", "to") if not cfg[k]]
     if missing:

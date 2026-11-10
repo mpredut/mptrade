@@ -11,6 +11,7 @@ from botcore import (
     are_close,
     normalize_epoch_sec,
     safe_float,
+    safe_pos_float,
 )
 
 
@@ -21,8 +22,8 @@ def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]
     for item in shadow_prices:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        tf, pf = safe_float(item[0], default=None), safe_float(item[1], default=None)
-        if tf is not None and pf is not None and pf > 0:
+        tf, pf = safe_float(item[0], default=None), safe_pos_float(item[1], default=None)
+        if tf is not None and pf is not None:
             if tf >= 1e11:
                 tf /= 1000.0
             out.append((tf, pf))
@@ -45,16 +46,16 @@ def tp_price(avg: float, tp_pct: float) -> float:
 
 def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
     """Return whether unrealized long loss reaches stop loss."""
-    avg_f, px_f, sl_f = safe_float(avg, default=None), safe_float(price, default=None), safe_float(sl_pct, default=None)
-    if avg_f is None or avg_f <= 0 or px_f is None or px_f <= 0 or sl_f is None or sl_f <= 0:
+    avg_f, px_f, sl_f = safe_pos_float(avg, default=None), safe_pos_float(price, default=None), safe_pos_float(sl_pct, default=None)
+    if avg_f is None or px_f is None or sl_f is None:
         return False
     return (avg_f - px_f) / avg_f * 100 >= sl_f
 
 
 def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float) -> bool:
     """Return whether price is `drop_pct`%% below the latest buy, including tolerance."""
-    px_f, lb_f, drop_f = safe_float(price, default=None), safe_float(last_buy, default=None), safe_float(drop_pct, default=None)
-    if px_f is None or px_f <= 0 or lb_f is None or lb_f <= 0 or drop_f is None:
+    px_f, lb_f, drop_f = safe_pos_float(price, default=None), safe_pos_float(last_buy, default=None), safe_float(drop_pct, default=None)
+    if px_f is None or lb_f is None or drop_f is None:
         return False
     threshold = lb_f * (1 - drop_f / 100)
     return px_f <= threshold or are_close(px_f, threshold, tol_pct)
@@ -139,9 +140,9 @@ def check_fast_profit_reversal(
     current_time: float | None = None,
 ) -> tuple[bool, float, float]:
     """Return (triggered, current_gain_pct, micro_drop_pct) for fast 2X profit reversal guard."""
-    avg_f, px_f = safe_float(avg_cost, default=None), safe_float(current_price, default=None)
-    tp_f, mult_f, drop_f = safe_float(base_tp_pct, default=None), safe_float(mult, default=None), safe_float(drop_pct, default=None)
-    if any(v is None or v <= 0 for v in (avg_f, px_f, tp_f, mult_f, drop_f)):
+    avg_f, px_f = safe_pos_float(avg_cost, default=None), safe_pos_float(current_price, default=None)
+    tp_f, mult_f, drop_f = safe_pos_float(base_tp_pct, default=None), safe_pos_float(mult, default=None), safe_pos_float(drop_pct, default=None)
+    if any(v is None for v in (avg_f, px_f, tp_f, mult_f, drop_f)):
         return False, 0.0, 0.0
     current_gain_pct = (px_f - avg_f) / avg_f * 100.0
     if not (current_gain_pct >= tp_f * mult_f):
@@ -187,9 +188,9 @@ def check_parabolic_surge_exhaustion(
     min_profit_pct: float = 1.0,
 ) -> tuple[bool, str]:
     """Return (triggered, reason) for 2-3 day parabolic surge exhaustion."""
-    avg_f, px_f, peak_f = safe_float(avg_cost, default=None), safe_float(current_price, default=None), safe_float(surge_peak, default=None)
-    sg_f, ep_f, mp_f = safe_float(surge_gain_pct, default=None), safe_float(exit_pullback_pct, default=None), safe_float(min_profit_pct, default=None)
-    if mp_f is None or any(v is None or v <= 0 for v in (avg_f, px_f, peak_f, sg_f, ep_f)):
+    avg_f, px_f, peak_f = safe_pos_float(avg_cost, default=None), safe_pos_float(current_price, default=None), safe_pos_float(surge_peak, default=None)
+    sg_f, ep_f, mp_f = safe_pos_float(surge_gain_pct, default=None), safe_pos_float(exit_pullback_pct, default=None), safe_float(min_profit_pct, default=None)
+    if mp_f is None or any(v is None for v in (avg_f, px_f, peak_f, sg_f, ep_f)):
         return False, ""
     current_gain_pct = (px_f - avg_f) / avg_f * 100.0
     peak_gain_pct = (peak_f - avg_f) / avg_f * 100.0
@@ -200,8 +201,8 @@ def check_parabolic_surge_exhaustion(
         return False, ""
 
     pos_surge = sg_f > 0 and (current_gain_pct >= sg_f or peak_gain_pct >= sg_f)
-    wm_f, sm_f = safe_float(window_move_pct, default=None), safe_float(surge_move_pct, default=None)
-    win_surge = wm_f is not None and sm_f is not None and sm_f > 0 and wm_f >= sm_f and current_gain_pct >= sg_f * 0.8
+    wm_f, sm_f = safe_float(window_move_pct, default=None), safe_pos_float(surge_move_pct, default=None)
+    win_surge = wm_f is not None and sm_f is not None and wm_f >= sm_f and current_gain_pct >= sg_f * 0.8
     if not (_parse_bool_flag(surge_active) or pos_surge or win_surge):
         return False, ""
     pullback = (peak_f - px_f) / peak_f * 100.0
@@ -225,12 +226,12 @@ def check_slow_grind_exhaustion(
     sma_value: float | None = None,
 ) -> tuple[bool, str]:
     """Return (triggered, reason) for 1-3 week slow-grind accumulation exit."""
-    avg_f, px_f = safe_float(avg_cost, default=None), safe_float(current_price, default=None)
+    avg_f, px_f = safe_pos_float(avg_cost, default=None), safe_pos_float(current_price, default=None)
     ent_f = normalize_epoch_sec(entry_ts, default=None, allow_zero=True)
     cur_t_f = normalize_epoch_sec(current_ts, default=None, allow_zero=True)
-    md_f, mg_f = safe_float(min_days, default=None), safe_float(min_gain_pct, default=None)
+    md_f, mg_f = safe_pos_float(min_days, default=None), safe_pos_float(min_gain_pct, default=None)
     if (
-        any(v is None or v <= 0 for v in (avg_f, px_f, md_f, mg_f))
+        any(v is None for v in (avg_f, px_f, md_f, mg_f))
         or ent_f is None or cur_t_f is None or ent_f < 0 or cur_t_f < 0
     ):
         return False, ""
@@ -241,19 +242,19 @@ def check_slow_grind_exhaustion(
     win_s = safe_float(flash_window_sec, 0.0)
     cutoff = cur_t_f - max(0.0, win_s)
     recent = [pf for tf, pf in _iter_valid_shadow_prices(shadow_prices) if cutoff <= tf <= cur_t_f]
-    fd_f = safe_float(flash_drop_pct, default=None)
-    if fd_f is not None and fd_f > 0 and win_s > 0 and recent:
+    fd_f = safe_pos_float(flash_drop_pct, default=None)
+    if fd_f is not None and win_s > 0 and recent:
         local_flash_peak = max(max(recent), px_f)
         if local_flash_peak > 0:
             flash_drop = (local_flash_peak - px_f) / local_flash_peak * 100.0
             if flash_drop >= fd_f:
                 return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{fd_f:.2f}%"
-    sd_f, rp_f = safe_float(structural_drop_pct, default=None), safe_float(recent_peak, default=None)
-    if sd_f is not None and sd_f > 0 and rp_f is not None and rp_f > 0:
+    sd_f, rp_f = safe_pos_float(structural_drop_pct, default=None), safe_pos_float(recent_peak, default=None)
+    if sd_f is not None and rp_f is not None:
         struct_drop = (rp_f - px_f) / rp_f * 100.0
         if struct_drop >= sd_f:
             return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{sd_f:.2f}%"
-    sma_f = safe_float(sma_value, default=None)
-    if sma_f is not None and sma_f > 0 and px_f < sma_f:
+    sma_f = safe_pos_float(sma_value, default=None)
+    if sma_f is not None and px_f < sma_f:
         return True, f"slow_grind_sma_break_{px_f:.4f}_lt_{sma_f:.4f}"
     return False, ""

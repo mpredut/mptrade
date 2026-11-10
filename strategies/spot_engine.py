@@ -1820,21 +1820,21 @@ class Strategy(BaseSpotMixin):
     # -- Main Loop -------------------------------------------------------------
     def run(self) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI")
-        log(f"  === STRATEGIE {self.venue_label.upper()} PORNITA ===")
-        log(f"      pereche    : {self.pair}   {exec_banner}")
-        log(f"      mod        : {mode}")
-        log(f"      intrare    : {self.p.effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
-        log(f"      DCA        : {self.p.effective_dca_amount_base():.0f} {self.ccy} la -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
+        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — MONEY")
+        log(f"  === {self.venue_label.upper()} STRATEGY STARTED ===")
+        log(f"      pair       : {self.pair}   {exec_banner}")
+        log(f"      mode       : {mode}")
+        log(f"      entry      : {self.p.effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
+        log(f"      DCA        : {self.p.effective_dca_amount_base():.0f} {self.ccy} at -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
         if self.p.pct_sizing_on():
-            log(f"      SIZING %   : felie {self.p.alloc_pct}% × total {self.p.total_budget:.0f} "
+            log(f"      SIZING %   : slice {self.p.alloc_pct}% × total {self.p.total_budget:.0f} "
                 f"= {self.p.allocated_budget():.0f} {self.ccy} (entry {self.p.entry_pct}%, DCA {self.p.dca_pct}%)")
         if self.p.dca_spacing_growth_pct > 0:
             log(f"      DCA growth : +{self.p.dca_spacing_growth_pct}pp after each executed DCA")
         if self.p.dca_vol_scale_k:
             log(f"      DCA vol    : k={self.p.dca_vol_scale_k}, reference={self.p.dca_vol_ref}%, OHLC={self.p.dca_vol_interval}m")
         log(f"      take-profit: +{self.p.takeprofit_pct}%" if self.p.enable_takeprofit else "      take-profit: off")
-        log(f"      PLAFON     : {self.p.allocated_budget():.0f} {self.ccy} / ciclu")
+        log(f"      BUDGET CAP : {self.p.allocated_budget():.0f} {self.ccy} / cycle")
         if self.fee_note:
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()

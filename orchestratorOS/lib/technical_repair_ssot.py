@@ -685,7 +685,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"apply_weight_limit|"
         r"Started\.\s+check_interval=|"
         r"\[Cache(?:CurrentPrice|24Price|365Price|Order|Trade)Manager\]\[info\]\s+(?:New order fills:|Save cache to file|[A-Z0-9_]+:\s+Added \d+ new items)|"
-        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up)|"
+        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|peak|warming up)|"
         r"\[TRAIL-K\]\s+heartbeat|"
         r"\[FORWARD \(from the anchor\)\]|"
         r"\[STRAT\]\s+price=\d+(?:\.\d+)?|"
@@ -695,7 +695,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
-        r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|===\s*TRAILING STOP started|\[STRAT\]\s+state loaded|"
+        r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP started|\[STRAT\]\s+state loaded|"
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
         r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
         r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"

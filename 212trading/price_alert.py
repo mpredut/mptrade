@@ -22,6 +22,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     ensure_local_module_priority,
     format_price_log,
@@ -33,10 +34,11 @@ from ipo_common import load_t212_environment  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
+from strategies.state_store import safe_state_token  # noqa: E402
 
 
 def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
-    if isinstance(raw_armed, str) and raw_armed.strip().lower() in {"", "none", "null", "nan"}:
+    if isinstance(raw_armed, str) and (not raw_armed.strip() or raw_armed.strip().lower() in INVALID_SCALAR_STRINGS):
         return False
     return bool(_parse_bool_flag(raw_armed, default))
 
@@ -82,7 +84,7 @@ def main() -> int:
     if price is None:
         log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
-    safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
+    safe_sym = safe_state_token(args.symbol, "unknown", allow_equals=True)
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
 
     st = read_json_dict(state_path, default={}, recover_previous=True)

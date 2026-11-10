@@ -144,7 +144,7 @@ def main() -> int:
                     help="Test a single order on the given ticker and exit")
     ap.add_argument("--test-strategy",     metavar="T212_TICKER",
                     help="Run the strategy NOW on the given ticker (paper if STRAT_EXECUTE!=true)")
-    ap.add_argument("--find-ticker",       metavar="NUME",
+    ap.add_argument("--find-ticker",       metavar="NAME",
                     help="Search for an instrument on T212 by name or symbol")
     args = ap.parse_args()
     # The one-shot lifecycle marker is namespaced by profile. Preserve the CLI

@@ -854,7 +854,7 @@ class BaseSpotMixin:
         if vol is None:
             return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
         adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
-        return (adapt_drop if adapt_drop is not None else k_re * vol), f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
+        return (adapt_drop if adapt_drop is not None else k_re * vol), f"adaptive (vol_1h {vol:.2f}% x k={k_re})"
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
@@ -881,7 +881,7 @@ class BaseSpotMixin:
         try:
             vol = self._trail_vol_1h()
         except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            self._log_msg(f"  [STRAT] trailing adaptiv: OHLC indisponibil ({e}) — fallback pe fix")
+            self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) — fallback to fixed")
             vol = None
         if vol is None:
             return self.p.tp_trail_pct

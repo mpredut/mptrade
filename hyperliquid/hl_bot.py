@@ -56,7 +56,7 @@ def main() -> int:
     env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
 
-    ap = argparse.ArgumentParser(description="base v2 (spot_dca) pe Hyperliquid HYPE.")
+    ap = argparse.ArgumentParser(description="base v2 (spot_dca) on Hyperliquid HYPE.")
     ap.add_argument("--env-file", default=env_file)
     ap.add_argument("--paper", action="store_true", help="Force PAPER (no money)")
     ap.add_argument("--token", default=None, help="Token to trade (defaults to HL_SPOT_TOKEN)")
@@ -76,7 +76,7 @@ def main() -> int:
         HyperliquidProvider(token=token), venue="Hyperliquid",
     )
     log("=== HL base v2 bot (spot_engine) ===")
-    log(f"    token      : {token} (HYPE spot pe Hyperliquid)")
+    log(f"    token      : {token} (HYPE spot on Hyperliquid)")
     log(f"    execution  : {format_strategy_execution_mode(observe_only, strat_dry)}")
     log("    engine     : strategies.spot_engine (IDENTICAL to kraken_bot)")
     Strategy(

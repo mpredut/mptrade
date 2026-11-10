@@ -16,6 +16,7 @@ from typing import Any, Optional
 # Import your modules
 from lock import FileLock
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _is_unmodified_root_key,
     _parse_bool_flag,
     exact_pos_int,
@@ -1034,7 +1035,7 @@ class AlertNotifier:
         elif (
             isinstance(raw_price, str)
             and raw_price.strip()
-            and raw_price.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
+            and raw_price.strip().lower() not in INVALID_SCALAR_STRINGS
             and safe_float(raw_price, default=None) is None
         ):
             price_str = f"Price: {raw_price}"

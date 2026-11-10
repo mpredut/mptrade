@@ -293,13 +293,13 @@ class Strategy(BaseSpotMixin):
         px_f = safe_pos_float(px, default=None)
         if sz_f is None or px_f is None:
             if not self.replay_mode:
-                log("  ! [STRAT] invalid sz/px — sar")
+                log("  ! [STRAT] invalid sz/px — skipping")
             return
         sz = round(sz_f, self.sz_dec)
         px = px_f
         if sz <= 0:
             if not self.replay_mode:
-                log("  ! [STRAT] sz 0 — sar")
+                log("  ! [STRAT] sz 0 — skipping")
             return
         side = self.open_side if role == "open" else self.close_side
         reduce_only = (role == "close")
@@ -363,7 +363,7 @@ class Strategy(BaseSpotMixin):
         try:
             szi_raw, entry_raw = pos_fn(self.coin)
         except Exception as e:
-            log(f"  [STRAT] pozitie indisponibila ({e})")
+            log(f"  [STRAT] position unavailable ({e})")
             return False
         szi = safe_float(szi_raw, default=None)
         entry = safe_nonneg_float(entry_raw, default=None)
@@ -605,13 +605,13 @@ class Strategy(BaseSpotMixin):
                 want = "up" if self.sign > 0 else "down"   # long requires up; short requires down
                 if trend != "__any__" and trend != want:
                     if not self.replay_mode:
-                        log(f"  [STRAT] semnal={trend} != {want} for {self.p.direction} — NOT entering (waiting for a favourable trend)")
+                        log(f"  [STRAT] signal={trend} != {want} for {self.p.direction} — NOT entering (waiting for a favourable trend)")
                     return
                 if not self.replay_mode:
-                    log(f"  [STRAT] semnal={trend} favorabil pt {self.p.direction} — intru")
+                    log(f"  [STRAT] signal={trend} favorable for {self.p.direction} — entering")
             if self.s["spent"] + self.p.entry_amount > self.p.max_budget:
                 if not self.replay_mode:
-                    log(f"  [STRAT] plafon {self.p.max_budget} {self.ccy} reached")
+                    log(f"  [STRAT] budget cap {self.p.max_budget} {self.ccy} reached")
                 return
             px = price * (1 - self.sign * d)
             self._place("open", self._qty_for(self.p.entry_amount, px), px, "ENTRY", self.p.entry_amount)
@@ -656,13 +656,13 @@ class Strategy(BaseSpotMixin):
         if not self.dry_run and self.client is not None and self.client.exchange:
             self.client.set_leverage(self.coin, self.leverage)
         fee_hl = getattr(self.p, "fee_pct", HL_FEE_PCT)
-        log("  === STRATEGIE HYPERLIQUID PORNITA ===")
-        log(f"      coin       : {self.coin} perp  DIRECTIE={self.p.direction.upper()} levier {self.leverage}x  {'[PAPER]' if self.dry_run else '⚠ REAL'}")
-        log(f"      mod        : {mode}")
-        log(f"      intrare    : {self.p.entry_amount} {self.ccy} @ market{'-' if self.sign>0 else '+'}{self.p.entry_discount_pct}%")
-        log(f"      DCA        : {self.p.dca_amount} {self.ccy} la {self.p.dca_drop_pct}% contra (max {self.p.max_dca_buys})")
-        log(f"      take-profit: {self.p.takeprofit_pct}% in favoare" if self.p.enable_takeprofit else "      TP: off")
-        log(f"      PLAFON     : {self.p.max_budget} {self.ccy} / ciclu  |  fee HL ~{fee_hl}%/leg")
+        log("  === HYPERLIQUID STRATEGY STARTED ===")
+        log(f"      coin       : {self.coin} perp  DIRECTION={self.p.direction.upper()} leverage {self.leverage}x  {'[PAPER]' if self.dry_run else '⚠ REAL'}")
+        log(f"      mode       : {mode}")
+        log(f"      entry      : {self.p.entry_amount} {self.ccy} @ market{'-' if self.sign>0 else '+'}{self.p.entry_discount_pct}%")
+        log(f"      DCA        : {self.p.dca_amount} {self.ccy} at {self.p.dca_drop_pct}% against (max {self.p.max_dca_buys})")
+        log(f"      take-profit: {self.p.takeprofit_pct}% in favor" if self.p.enable_takeprofit else "      TP: off")
+        log(f"      BUDGET CAP : {self.p.max_budget} {self.ccy} / cycle  |  fee HL ~{fee_hl}%/leg")
         sleep_sec = max(1.0, safe_pos_float(self.p.check_minutes, default=1.0) * 60.0)
         try:
             while True:
@@ -676,7 +676,7 @@ class Strategy(BaseSpotMixin):
                     avg = self._avg()
                     pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
                     log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
-                        f"NET={self.s['realized_net']:+.2f} (brut {self.s['realized_gross']:+.2f}, fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
+                        f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:  # noqa: BLE001

@@ -125,7 +125,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Backtester DCA+TP Kraken (OHLC).")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--pair", default="HYPEUSD")
-    ap.add_argument("--interval", type=int, default=60, help="minute: 60=1h, 240=4h, 1440=1z")
+    ap.add_argument("--interval", type=int, default=60, help="minutes: 60=1h, 240=4h, 1440=1d")
     ap.add_argument("--entry", type=float, default=100); ap.add_argument("--dca", type=float, default=50)
     ap.add_argument("--disc", type=float, default=0.2); ap.add_argument("--drop", type=float, default=2.0)
     ap.add_argument("--tp", type=float, default=1.9); ap.add_argument("--maxdca", type=int, default=10)

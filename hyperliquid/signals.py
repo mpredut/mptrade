@@ -92,10 +92,10 @@ def analyze(client, coin: str) -> dict | None:
     for c in candles or []:
         if not isinstance(c, dict):
             continue
-        t_ms = safe_pos_float(c.get("t"), default=None)
+        t_s = normalize_epoch_sec(c.get("t"), default=None)
         c_v = safe_pos_float(c.get("c"), default=None)
-        if t_ms is not None and c_v is not None:
-            pts.append((t_ms / 1000.0 if t_ms >= 1e11 else t_ms, c_v))
+        if t_s is not None and c_v is not None:
+            pts.append((t_s, c_v))
     if len(pts) < window_hours:
         return None
     return detect_long_term_trend([p[0] for p in pts], [p[1] for p in pts], window_hours, step_hours)
@@ -120,8 +120,8 @@ def signal(client, coin: str) -> dict:
         "source": "analysis",
         "estimated_future_hours": round(res["estimated_future_hours"], 1),
         "detail": (
-            f"durata {dur_h:.0f}h, est. continuare ~{res['estimated_future_hours']:.0f}h, "
-            f"panta {res['current_slope_h']:+.4f}/h ({slope_pct_h:.2f}%/h)"
+            f"duration {dur_h:.0f}h, est. continuation ~{res['estimated_future_hours']:.0f}h, "
+            f"slope {res['current_slope_h']:+.4f}/h ({slope_pct_h:.2f}%/h)"
         ),
     }
 
@@ -137,14 +137,14 @@ def _builtin_trend(client, coin: str) -> dict:
     band = required_float_env("SIGNAL_BAND_PCT") / 100
     band_f = safe_nonneg_float(band, default=None)
     if fast <= 0 or slow <= 0 or band_f is None:
-        return {**NEUTRAL, "source": "builtin(insuf. date)"}
+        return {**NEUTRAL, "source": "builtin(insuf. data)"}
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
     closes = [
         v for c in (candles or [])
         if isinstance(c, dict) and (v := safe_pos_float(c.get("c"), 0.0)) > 0
     ]
     if len(closes) < max(fast, slow):
-        return {**NEUTRAL, "source": "builtin(insuf. date)"}
+        return {**NEUTRAL, "source": "builtin(insuf. data)"}
     mf = statistics.fmean(closes[-fast:])
     ms = statistics.fmean(closes[-slow:])
     diff = (mf - ms) / ms if ms else 0.0
