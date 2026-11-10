@@ -13,6 +13,7 @@ from botcore import (
     required_float_env,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_ts,
     safe_pos_float,
 )
 import instrument_registry as sym
@@ -68,8 +69,6 @@ def update_price(symbol):
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         raw_px = ticker["price"] if isinstance(ticker, dict) else None
-        if isinstance(raw_px, bool):
-            raise TypeError(f"invalid boolean ticker price: {raw_px!r}")
         price = safe_pos_float(raw_px, default=None)
         if price is None:
             raise ValueError(f"invalid ticker price: {raw_px!r}")
@@ -197,15 +196,11 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 else:
                     continue
             original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
-            raw_exec_qty = order.get('executedQty')
-            if raw_exec_qty is None:
-                raw_exec_qty = order.get('z')
-            if raw_exec_qty is None:
-                raw_exec_qty = order.get('vol_exec')
+            raw_exec_qty = next((order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None), None)
             executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
-            ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+            ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
             raw_time = safe_nonneg_float(order.get('time'), default=None)
             if raw_time is not None:
                 ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time

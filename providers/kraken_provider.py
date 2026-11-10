@@ -81,7 +81,6 @@ _KRAKEN_FALLBACK_ERR_TOKENS = (
     "invalid nonce",
     "rate limit",
     "temporary lockout",
-    "eroare retea",
     "network error",
 )
 

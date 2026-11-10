@@ -16,6 +16,7 @@ import time
 from typing import Callable, Optional
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     exact_pos_int,
     load_dotenv,
     normalize_class_name,
@@ -170,14 +171,11 @@ def _publish_locked() -> None:
     atomic_write_json(_writer_path, _writer_state, separators=(",", ":"), sort_keys=True)
 
 
-_INVALID_VERSION_STRINGS = frozenset({"", "nan", "null", "none", "inf", "-inf", "+inf"})
-
-
 def _clean_version_str(value: object) -> str:
     if not isinstance(value, str):
         return ""
     s = value.strip()
-    return "" if s.lower() in _INVALID_VERSION_STRINGS else s
+    return "" if (not s or s.lower() in INVALID_SCALAR_STRINGS) else s
 
 
 def _record_cache_version(

@@ -4,7 +4,15 @@ from __future__ import annotations
 import builtins
 from typing import Any
 
-from botcore import clean_order_id, exact_pos_int, resolve_now_ms, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    INVALID_SCALAR_STRINGS,
+    clean_order_id,
+    exact_pos_int,
+    resolve_now_ms,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from providers.order_ohlc_utils import (
     extract_client_order_id,
     extract_order_price,
@@ -178,7 +186,7 @@ def parse_trade_execution_report(
         raw_trade_id = _strip_int_str(raw_trade_id)
         if raw_trade_id is not None and (
             raw_trade_id.startswith("-")
-            or raw_trade_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+            or raw_trade_id.lower() in INVALID_SCALAR_STRINGS
         ):
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
             return None

@@ -41,8 +41,9 @@ def init_cache_trade_manager():
             import cacheManager as cm
             # Trading processes are read-only consumers. Only the central
             # cacheManager process may poll Binance and publish cache versions.
-            if hasattr(cm.CacheFactory, "register_teardown_hook"):
-                cm.CacheFactory.register_teardown_hook("Trade", clear_cache_trade_manager)
+            factory = getattr(cm, "CacheFactory", None)
+            if hasattr(factory, "register_teardown_hook"):
+                factory.register_teardown_hook("Trade", clear_cache_trade_manager)
             cache_trade_manager = cm.get_cache_manager("Trade", start_sync=False)
     return cache_trade_manager
 

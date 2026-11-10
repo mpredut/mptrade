@@ -33,7 +33,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
-from state_io import atomic_write_json, previous_generation_path, read_json_dict
+from state_io import load_json_state, save_json_state
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
 from providers.t212_provider import _t212_tickers_match
@@ -90,15 +90,9 @@ def resolve_quantity(order_price: float,
 # Duplicate-prevention marker
 # ---------------------------------------------------------------------------
 def _read_marker(path: str) -> dict | None:
-    target = os.fspath(path)
-    backup = previous_generation_path(target)
-    if not os.path.exists(target) and not os.path.exists(backup):
-        return None
     try:
-        return read_json_dict(target, backup_path=backup, recover_previous=True)
-    except FileNotFoundError:
-        return None
-    except (OSError, TypeError, ValueError) as exc:
+        return load_json_state(path, default_factory=lambda: None, fail_closed=True, label="T212 marker")
+    except RuntimeError as exc:
         raise RuntimeError(f"unreadable T212 marker {path}: {exc}") from exc
 
 
@@ -116,7 +110,7 @@ def _marker_path(ticker: str, *, test: bool = False) -> str:
 
 def _persist_marker(record: dict, path: str) -> None:
     try:
-        atomic_write_json(path, record, indent=2, sort_keys=True)
+        save_json_state(path, record, indent=2, sort_keys=True)
     except (OSError, TypeError, ValueError) as exc:
         raise RuntimeError(f"cannot persist the T212 intent in {path}: {exc}") from exc
 

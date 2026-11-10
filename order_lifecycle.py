@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     check_cooldown_gate,
     clean_order_id,
@@ -631,7 +632,6 @@ def complete_accepted_claim(
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
-_INVALID_LOG_STRINGS = frozenset({"nan", "null", "none", "inf", "-inf", "+inf"})
 
 
 def _sanitize_outcome_field(value):
@@ -641,7 +641,7 @@ def _sanitize_outcome_field(value):
     if isinstance(value, float) and safe_float(value, default=None) is None:
         return ""
     text = sanitize_pipe_field(value).strip()
-    return "" if text.lower() in _INVALID_LOG_STRINGS else text
+    return "" if text.lower() in INVALID_SCALAR_STRINGS else text
 
 
 def _clean_numeric_field(value):
@@ -650,7 +650,7 @@ def _clean_numeric_field(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
     s = str(value).strip()
-    return s if s.lower() not in _INVALID_LOG_STRINGS else ""
+    return s if s.lower() not in INVALID_SCALAR_STRINGS else ""
 
 
 def _clean_bool_field(value) -> str:
@@ -733,7 +733,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     raw_kind = order.get("kind")
     kind = (
         raw_kind.strip()
-        if isinstance(raw_kind, str) and raw_kind.strip() and raw_kind.strip().lower() not in _INVALID_LOG_STRINGS
+        if isinstance(raw_kind, str) and raw_kind.strip() and raw_kind.strip().lower() not in INVALID_SCALAR_STRINGS
         else ("TP" if side == "SELL" else "ENTRY")
     )
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0

@@ -191,7 +191,7 @@ class KrakenClient:
                 if method not in _WRITE_METHODS and attempt < max_attempts - 1:
                     time.sleep(0.15 * (attempt + 1))
                     continue
-                raise KrakenError(f"eroare retea/raspuns gol la {method} (HTTP {status})")
+                raise KrakenError(f"network error/empty response in {method} (HTTP {status})")
             try:
                 result = self._parse(status, body)
                 break
@@ -249,9 +249,9 @@ class KrakenClient:
         try:
             payload = json.loads(body or b"{}")
         except ValueError:
-            raise KrakenError(f"raspuns invalid (HTTP {status})")
+            raise KrakenError(f"invalid response (HTTP {status})")
         if not isinstance(payload, dict):
-            raise KrakenError(f"raspuns invalid (HTTP {status})")
+            raise KrakenError(f"invalid response (HTTP {status})")
         if payload.get("error"):
             err_val = payload["error"]
             raise KrakenError(", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val))

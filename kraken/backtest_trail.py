@@ -75,14 +75,14 @@ def run_compare(pairs, intervals):
     P = base_params()
     print(f"params: entry={P['entry']} dca={P['dca']} drop={P['drop']}% sl={P['sl']}% | "
           f"FIX tp={P['tp']}% | TRAIL act={P['tp']}% trail={P['trail']}%  (fee {P['fee']}%/leg)")
-    print(f"{'pereche':<9} {'intv':<5} {'bare':<5} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  castigator")
+    print(f"{'pair':<9} {'intv':<5} {'bars':<5} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
     fixw = trailw = 0
     for pair in pairs:
         for iv in intervals:
             try:
                 ohlc = fetch_candles(pair, iv)
             except Exception as e:  # noqa: BLE001
-                print(f"{pair:<9} {iv:<5} EROARE: {e}"); continue
+                print(f"{pair:<9} {iv:<5} ERROR: {e}"); continue
             if len(ohlc) < 30:
                 print(f"{pair:<9} {iv:<5} not enough data ({len(ohlc)})"); continue
             P_iv = {**P, "interval": iv}
@@ -92,7 +92,7 @@ def run_compare(pairs, intervals):
             win = "trailing" if t > f else "TP-fix"
             (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
             print(f"{pair:<9} {iv:<5} {len(ohlc):<5} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING bate TP-fix in {trailw}/{trailw+fixw} cazuri")
+    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw} cases")
 
 
 def run_wf(pair, interval, segments=4):
@@ -102,10 +102,10 @@ def run_wf(pair, interval, segments=4):
     try:
         ohlc = fetch_candles(pair, interval)
     except Exception as e:  # noqa: BLE001
-        print(f"EROARE: {e}"); return
+        print(f"ERROR: {e}"); return
     n = len(ohlc); seg = max(1, n // segments)
-    print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bare, {segments} segmente) ===")
-    print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  castigator")
+    print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bars, {segments} segments) ===")
+    print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
     fixw = trailw = 0
     for i in range(segments):
         s = ohlc[i*seg:(i+1)*seg] if i < segments-1 else ohlc[i*seg:]
@@ -117,7 +117,7 @@ def run_wf(pair, interval, segments=4):
         win = "trailing" if t > f else "TP-fix"
         (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
         print(f"#{i+1:<8} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING bate TP-fix in {trailw}/{trailw+fixw} segmente (out-of-sample secvential)")
+    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw} segments (sequential out-of-sample)")
 
 
 def run_intraday(pair, tz_offset=3):
@@ -131,7 +131,7 @@ def run_intraday(pair, tz_offset=3):
     try:
         rows = fetch_with_time(pair, 60)
     except Exception as e:  # noqa: BLE001
-        print(f"EROARE: {e}"); return
+        print(f"ERROR: {e}"); return
     by_hour = collections.defaultdict(list)
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 5:
@@ -144,7 +144,7 @@ def run_intraday(pair, tz_offset=3):
             continue
         hr = (ts_i // 3600 + tz_offset) % 24
         by_hour[hr].append((c_f - o_f) / o_f * 100)
-    print(f"=== INTRADAY {pair} (ora LOCALA UTC+{tz_offset}, {len(rows)} bare orare) ===")
+    print(f"=== INTRADAY {pair} (LOCAL hour UTC+{tz_offset}, {len(rows)} hourly bars) ===")
     print(f"{'hour':<5} {'n':<5} {'avg.return/hour':>14} {'% positive bars':>16}")
     for hr in range(24):
         v = by_hour.get(hr, [])
@@ -158,13 +158,13 @@ def run_intraday(pair, tz_offset=3):
     morn = [x for hr in range(6, 13) for x in by_hour.get(hr, [])]
     rest = [x for hr in list(range(0, 6)) + list(range(13, 24)) for x in by_hour.get(hr, [])]
     if morn and rest:
-        print(f"\n  dimineata 06-12: medie {statistics.fmean(morn):+.3f}%/ora ({len(morn)} obs)")
-        print(f"  restul zilei   : medie {statistics.fmean(rest):+.3f}%/ora ({len(rest)} obs)")
+        print(f"\n  morning 06-12  : avg {statistics.fmean(morn):+.3f}%/hour ({len(morn)} obs)")
+        print(f"  rest of day    : avg {statistics.fmean(rest):+.3f}%/hour ({len(rest)} obs)")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wf", metavar="PAIR", help="walk-forward pe o pereche")
+    ap.add_argument("--wf", metavar="PAIR", help="walk-forward on a single pair")
     ap.add_argument("--intraday", metavar="PAIR", help="the pattern by hour of day")
     ap.add_argument("--interval", type=int, default=60)
     args = ap.parse_args()

@@ -1499,11 +1499,11 @@ _TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
 _TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
 _BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
 _SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
-_INVALID_OID_STRINGS = frozenset((
-    "0", "0.0", "-0", "+0", "+0.0", "-0.0",
+INVALID_SCALAR_STRINGS = frozenset((
     "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
     "none", "null",
 ))
+_INVALID_OID_STRINGS = INVALID_SCALAR_STRINGS | frozenset(("0", "0.0", "-0", "+0", "+0.0", "-0.0"))
 
 
 def normalize_side(side: object) -> str:

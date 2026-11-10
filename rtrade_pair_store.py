@@ -7,6 +7,7 @@ import threading
 import time
 
 from botcore import (
+    _INVALID_OID_STRINGS,
     _parse_bool_flag,
     clean_order_id_str,
     normalize_side,
@@ -27,7 +28,7 @@ def rtrade_client_order_id(pair_id, side, kind="limit"):
     return "RT_" + hashlib.blake2s(raw, digest_size=16).hexdigest()
 
 
-_INVALID_STORE_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
+_INVALID_STORE_STRINGS = _INVALID_OID_STRINGS | frozenset({""})
 _REQUIRED_PAIR_KEYS = {
     "symbol", "pair_id", "start_side", "qty", "phase",
     "terminal", "intents", "state", "created_ts", "updated_ts",

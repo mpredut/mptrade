@@ -273,7 +273,7 @@ class TrailingStop(TrailingAdapterBase):
             self._balances = balances
             return True
         except Exception as e:  # noqa: BLE001
-            self.log(f"  ! [TRAIL] balante indisponibile ({e}) — skipping the tick")
+            self.log(f"  ! [TRAIL] balances unavailable ({e}) — skipping the tick")
             return False
 
     def free_qty(self, asset: str) -> float:

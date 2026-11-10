@@ -184,10 +184,9 @@ def get_total_traded_stats(symbol, period_seconds=86400):
             continue
         side = _normalize_side(t.get('side'))
         if side in stats:
-            px_f = safe_pos_float(t.get('price'), default=None)
-            raw_qty = t.get('quantity') if t.get('quantity') is not None else t.get('qty')
-            qty_f = safe_pos_float(raw_qty, default=None)
-            if px_f is None or qty_f is None:
+            px_f = extract_order_price(t, default=0.0)
+            qty_f = extract_order_qty(t, default=0.0)
+            if px_f <= 0.0 or qty_f <= 0.0:
                 continue
             stats[side]['total_quantity'] += qty_f
             stats[side]['total_value'] += px_f * qty_f

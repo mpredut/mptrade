@@ -34,6 +34,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     exact_pos_int,
     load_env_stack,
@@ -105,7 +106,7 @@ def _load_state() -> dict:
         raw_pair is None
         or isinstance(raw_pair, (bool, dict, list, tuple, set))
         or not str(raw_pair).strip()
-        or str(raw_pair).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
+        or str(raw_pair).strip().lower() in INVALID_SCALAR_STRINGS
     ):
         merged["pair"] = None
     else:

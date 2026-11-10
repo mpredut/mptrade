@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from botcore import (
+    INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     clean_order_id,
     normalize_side,
@@ -48,7 +49,6 @@ _TERMINAL = frozenset({
     "closed", "filled", "canceled", "cancelled", "expired",
     "rejected", "refused", "refused_before_submit",
 })
-_INVALID_SCALAR_STRINGS = frozenset({"nan", "null", "none", "inf", "-inf", "+inf"})
 _STATUS_FIELDS = ("last_status", "status", "lifecycle", "submission_outcome", "submit_status")
 
 
@@ -66,7 +66,7 @@ def _first(row: dict, *names):
             continue
         if isinstance(value, str):
             s = value.strip()
-            if not s or s.lower() in _INVALID_SCALAR_STRINGS:
+            if not s or s.lower() in INVALID_SCALAR_STRINGS:
                 continue
         return value
     return None
