@@ -26,7 +26,7 @@ ntfy_server_topic() {
 ntfy_load_auth_hdr() {
     local token="${NTFY_TOKEN:-$(env_get NTFY_TOKEN)}"
     AUTH_HDR=()
-    [ -n "$token" ] && AUTH_HDR=(-H "Authorization: Bearer $token")
+    [ -n "$token" ] && AUTH_HDR=(-H "Authorization: Bearer $token") || true
 }
 
 # Email copy via the Python mailer (single SMTP choke point + mirror policy).
