@@ -1599,7 +1599,7 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[st
 
         monitor = FleetHealthMonitor(workspace_dir=workspace_dir)
         fleet_processes = [asdict(p) for p in monitor.check_processes()]
-        base_res = dict(monitor.gather_system_resources() or {})
+        base_res = dict(gather_basic_os_resources(workspace_dir) or {})
     except Exception:
         base_res = {}
     return fleet_processes, gather_system_and_vpn_telemetry(workspace_dir, base_resources=base_res)

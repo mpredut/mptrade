@@ -1024,7 +1024,7 @@ class BaseSpotMixin:
                 except Exception:
                     regime = None
             trend_up = self._is_trend_up(regime) if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0) else False
-            trend_down = self._is_trend_down(regime) if needs_reentry_regime else False
+            trend_down = self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend")) if needs_reentry_regime else False
         else:
             last_kind = "STOP" if is_stop_exit else "TP"
             mgr.config.reentry_sl_bounce_pct = (

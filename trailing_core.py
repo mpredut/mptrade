@@ -708,12 +708,6 @@ class TrailingAdapterBase:
             min_profit_pct=min_profit_pct,
         )
 
-    def _load(self) -> dict:
-        return self.core.load()
-
-    def _save(self, state: dict) -> None:
-        self.core.save(state)
-
     @classmethod
     def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip() or not isinstance(mapping, dict):
@@ -999,7 +993,7 @@ class TrailingAdapterBase:
         self.core.check_once()
 
     def print_status(self) -> None:
-        state = self._load()
+        state = self.core.load()
         if self._VENUE_SLUG == "kraken":
             trail_map = self._module_attr("TRAIL_PCT")
             rows = (

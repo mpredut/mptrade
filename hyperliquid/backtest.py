@@ -83,13 +83,8 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     return out
 
 
-def simulate(ohlc, ts, fund, sig, P, direction):
-    """Replay the strategy over OHLC bars and millisecond timestamps; return metrics."""
-    return run_replay(ohlc, ts, fund, sig, P, direction=direction)
-
-
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):
-    m = simulate(ohlc, ts, fund, sig, P, direction)
+    m = run_replay(ohlc, ts, fund, sig, P, direction=direction)
     b_val = safe_pos_float(budget, default=None)
     total_pct = m["total"] / b_val * 100 if b_val is not None else 0.0  # TRUE result: realized + funding + open position
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
@@ -162,7 +157,7 @@ def main() -> int:
     log(f"=== SWEEP {coin} {args.days}z {direction} semnal={args.signal} (buy&hold {bh:+.1f}%) ===")
     run_tp_drop_sl_sweep(
         base,
-        lambda p: simulate(ohlc, ts, fund, sig, p, direction),
+        lambda p: run_replay(ohlc, ts, fund, sig, p, direction=direction),
         budget=budget,
         tp_values=(0.5, 0.8, 1.0, 1.5, 2.0, 3.0),
         drop_values=(1.0, 2.0, 3.0, 5.0),

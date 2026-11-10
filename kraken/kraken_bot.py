@@ -64,11 +64,6 @@ def _build_client() -> KrakenClient:
     return KrakenClient(credentials.key, credentials.secret)
 
 
-def _build_executor(client: KrakenClient) -> AuditedStrategyExecutor:
-    """Return a strict Kraken executor decorated only with observational JSONL audit."""
-    return AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken")
-
-
 def main() -> int:
     env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
@@ -124,7 +119,7 @@ def main() -> int:
         log(
             f"[TEST] strategy for {test_pair}  "
             f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
-        Strategy(_build_executor(client), test_pair, StratParams.from_env(),
+        Strategy(AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken"), test_pair, StratParams.from_env(),
                  dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
         return 0
 
@@ -147,7 +142,7 @@ def main() -> int:
 
     # --- start the strategy ---
     try:
-        Strategy(_build_executor(client), pair, StratParams.from_env(), dry_run=strat_dry,
+        Strategy(AuditedStrategyExecutor(KrakenProvider(client=client), venue="Kraken"), pair, StratParams.from_env(), dry_run=strat_dry,
                  desktop=args.desktop, observe_only=observe_only).run()
         return 0
     except KeyboardInterrupt:

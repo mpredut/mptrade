@@ -337,7 +337,7 @@ class TestPerCoinRebuy(Base):
                 self.assertIn("rebuy", state)
                 api.free = 0.0
                 api.price = 150.0; ts.check_once()
-                self.assertEqual(ts._load()["TAOUSDC"]["rebuy"]["low"], 150.0)
+                self.assertEqual(ts.core.load()["TAOUSDC"]["rebuy"]["low"], 150.0)
                 self.assertFalse(any(o["side"] == "BUY" for o in self.po.orders))
                 ts._long_trend_up = lambda symbol: True
                 api.price = 160.0; ts.check_once()
@@ -423,14 +423,14 @@ class TestPerCoin(Base):
                               SimpleNamespace(symbols=["ARBUSDC"]), enabled=True,
                               state_file=self.sf, min_profit_pct=5, log=lambda *_args: None)
             ts.check_once()
-            state = ts._load()["ARBUSDC"]
+            state = ts.core.load()["ARBUSDC"]
             self.assertAlmostEqual(state["warmup_at"], 0.17 * 1.05)
             self.assertEqual(self.po.orders, [])
             saved = {"ARBUSDC": {"peak": 0.174}}
-            ts._save(saved)
+            ts.core.save(saved)
             restarted = TrailingStop(ts.api, self.po, ts.sym, enabled=True,
                                      state_file=self.sf, min_profit_pct=5, log=lambda *_args: None)
-            self.assertEqual(restarted._load(), saved)
+            self.assertEqual(restarted.core.load(), saved)
 
         with self.subTest(msg="per_coin_threshold"):
             import instrument_registry as ic
@@ -463,9 +463,9 @@ class TestMinProfit(Base):
                     self.tearDown(); self.setUp()
                     ts = self.ts(FakeApi(250), min_profit_pct=5)
                     ts.cost_basis = lambda _pair: basis
-                    ts._save({})
+                    ts.core.save({})
                     ts.check_once()
-                    self.assertAlmostEqual(ts._load()["TAOUSDC"]["warmup_at"], 262.5)
+                    self.assertAlmostEqual(ts.core.load()["TAOUSDC"]["warmup_at"], 262.5)
 
         with self.subTest(msg="cost_basis_uses_total_balance_and_preserves_existing_warmup"):
             self.tearDown(); self.setUp()
@@ -475,11 +475,11 @@ class TestMinProfit(Base):
             self.po.position_cost_basis = Mock(return_value=200)
             self.assertEqual(ts.cost_basis("TAOUSDC"), 200)
             self.assertEqual(self.po.position_cost_basis.call_args.args[1], 5)
-            ts._save({"TAOUSDC": {"peak": 250, "warmup_at": 262.5}})
+            ts.core.save({"TAOUSDC": {"peak": 250, "warmup_at": 262.5}})
             self.po.position_cost_basis.reset_mock()
             ts.check_once()
             self.po.position_cost_basis.assert_not_called()
-            self.assertEqual(ts._load()["TAOUSDC"]["warmup_at"], 262.5)
+            self.assertEqual(ts.core.load()["TAOUSDC"]["warmup_at"], 262.5)
 
         with self.subTest(msg="warming_up_does_not_sell_on_normal_dips_but_sells_on_crash"):
             self.tearDown(); self.setUp()
@@ -824,10 +824,10 @@ class TestMinProfit(Base):
                     "rebuy": {"qty": 2.0, "sell_price": 155.0, "low": 150.0},
                 }
             }
-            ts._save(seeded)
+            ts.core.save(seeded)
             api.price = 153.0  # triggers dry-run rebuy (+2% > 1.2%) and dry-run sell (-23.5% > 22%)
             ts.check_once()
-            st = ts._load()["TAOUSDC"]
+            st = ts.core.load()["TAOUSDC"]
             self.assertIn("rebuy", st, "dry-run must not pop armed rebuy state")
             self.assertIn("warmup_at", st, "dry-run must not pop warmup_at state")
             self.assertNotIn("target_exit_qty", st, "dry-run must not persist target_exit_qty")
@@ -943,10 +943,10 @@ class TestMinProfit(Base):
                     "exit_sold_cost": 190.0,
                 }
             }
-            ts._save(seeded)
+            ts.core.save(seeded)
             api.price = 260.0  # New peak > 250.0
             ts.check_once()
-            st = ts._load()["TAOUSDC"]
+            st = ts.core.load()["TAOUSDC"]
             self.assertEqual(st["peak"], 260.0)
             self.assertNotIn("target_exit_qty", st)
             self.assertNotIn("exit_sold_qty", st)
@@ -1001,9 +1001,9 @@ class TestMinProfit(Base):
 
             api = FakeApi(250.0, free=2.0)
             ts = self.ts(api)
-            ts._save({"TAOUSDC": {"peak": None, "warmup_at": None}})
+            ts.core.save({"TAOUSDC": {"peak": None, "warmup_at": None}})
             ts.check_once()
-            st = ts._load()["TAOUSDC"]
+            st = ts.core.load()["TAOUSDC"]
             self.assertEqual(st["peak"], 250.0)
             self.assertNotIn("warmup_at", st)
 

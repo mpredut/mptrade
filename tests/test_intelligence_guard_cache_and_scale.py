@@ -9403,8 +9403,9 @@ def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_pat
         "tradeall.py|$ROOT|python tradeall.py|tradeall|logs/tradeall.log|180.5|bot\n",
         encoding="utf-8",
     )
+    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
     mon = FleetHealthMonitor(workspace_dir=str(tmp_path))
-    parsed = mon.parse_process_manifest()
+    parsed = parse_procs_manifest(mon.workspace_dir)
     assert len(parsed) == 1
     assert parsed[0]["hb_stale_s"] == 180.5
 

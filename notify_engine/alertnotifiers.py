@@ -392,11 +392,6 @@ def _config_notification_int(key: str, default: int) -> int:
     return cfg_val if (cfg_val is not None and cfg_val >= 0) else default
 
 
-def _common_gate_seconds() -> int:
-    """Return the central single-gate dispatcher minimum interval in seconds (default 180s = 3 min)."""
-    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
-
-
 def _topic_bulk_seconds() -> int:
     """Return the per-topic batching/bulk interval in seconds (default 300s = 5 min)."""
     raw_topic = os.environ.get("NOTIFICATION_TOPIC_BULK_SECONDS")
@@ -414,11 +409,6 @@ def _topic_bulk_seconds() -> int:
     ):
         return min(300, _positive_int_env("NOTIFICATION_GATE_SECONDS", 300))
     return _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
-
-
-def _topic_bulk_max_items() -> int:
-    """Maximum notifications buffered per topic before dropping lower/equal priority overflow."""
-    return max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10))
 
 
 def _queue_max_items() -> int:
@@ -797,7 +787,7 @@ def pass_common_gate(
     t_key = _canonical_topic_key(topic)
     fingerprint = _delivery_fingerprint(alerts_list)
     sim_key = _similarity_signature(title, body, topic, alerts_list)
-    gate_sec = _common_gate_seconds()
+    gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
     topic_bulk_sec = _topic_bulk_seconds()
     sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
 
@@ -865,7 +855,11 @@ def pass_common_gate(
 
         if central_gate_closed or topic_window_closed or has_due_other_topic:
             enqueued, q_reason = _enqueue_bounded_bulk(
-                pending_bulk, new_item, _topic_bulk_max_items(), _queue_max_items(), last_map
+                pending_bulk,
+                new_item,
+                max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10)),
+                _queue_max_items(),
+                last_map,
             )
             if enqueued:
                 last_map[fingerprint] = now_ts
@@ -900,7 +894,7 @@ def pop_due_bulk_batch(
     path = _delivery_state_path()
     if not path.exists() and not path.with_name(path.name + ".previous").exists():
         return None
-    gate_sec = _common_gate_seconds()
+    gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
     topic_bulk_sec = _topic_bulk_seconds()
     with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)

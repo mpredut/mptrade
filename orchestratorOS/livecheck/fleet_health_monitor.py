@@ -97,10 +97,6 @@ class FleetHealthMonitor:
         self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
         self.dev_user = str(dev_user or "predut").strip() or "predut"
 
-    def parse_process_manifest(self) -> List[Dict[str, Any]]:
-        """Parses the single source of truth process definitions from procs.conf."""
-        return parse_procs_manifest(self.workspace_dir)
-
     def _is_process_running(self, pattern: str) -> bool:
         """Checks if a process pattern is active using pgrep."""
         try:
@@ -115,7 +111,7 @@ class FleetHealthMonitor:
         now_ts = safe_pos_float(now, default=None) or time.time()
         results: List[ProcessHealth] = []
 
-        for p in self.parse_process_manifest():
+        for p in parse_procs_manifest(self.workspace_dir):
             running = self._is_process_running(p["pattern"])
             hb_log = p.get("hb_log", "")
             stale_threshold = p.get("hb_stale_s", 0.0)
@@ -205,10 +201,6 @@ class FleetHealthMonitor:
 
         return status
 
-    def gather_system_resources(self) -> Dict[str, Any]:
-        """Reads local system resource utilization."""
-        return gather_basic_os_resources(self.workspace_dir)
-
     def run_cycle(self, persist: bool = True) -> FleetHealthReport:
         """Executes one comprehensive audit cycle and saves report."""
         now = time.time()
@@ -220,7 +212,7 @@ class FleetHealthMonitor:
         sensors = self.gather_sensor_status()
         modes = self.get_autonomous_modes()
         dev_status = self.check_dev_backtest_progress()
-        resources = self.gather_system_resources()
+        resources = gather_basic_os_resources(self.workspace_dir)
 
         report = FleetHealthReport(
             ts=now,

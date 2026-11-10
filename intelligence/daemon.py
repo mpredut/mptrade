@@ -78,7 +78,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self.skip_macro = _parse_bool_flag(skip_macro, False)
         self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
-        self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
+        self.symbols = parse_symbol_list(symbols) or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=False)
 
         self._init_external_collectors(logger)
         self.news_collector = NewsFeedCollector(
@@ -97,10 +97,6 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self._last_thread_prune_ts: float = 0.0
         self._last_stdout_hb_ts: float = 0.0
         self.heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
-
-    def _detect_active_symbols(self) -> List[str]:
-        """Detect enabled symbols from instruments.conf or default to core pairs."""
-        return detect_active_binance_symbols(self.cache_dir, include_kraken_cache=False)
 
     def update_macro(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""

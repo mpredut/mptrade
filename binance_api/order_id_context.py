@@ -103,13 +103,10 @@ def get_process_name():
     return PROCESS_NAME
 
 
-def get_thread_name():
-    return _sanitize_name(threading.current_thread().name, default="MainThread")
-
-
 def create_client_order_id(process_name=None):
     pname = _sanitize_name(process_name, default=get_process_name()) if process_name else get_process_name()
-    prefix = _sanitize_name(f"{pname}_{get_thread_name()}", default=pname)
+    tname = _sanitize_name(threading.current_thread().name, default="MainThread")
+    prefix = _sanitize_name(f"{pname}_{tname}", default=pname)
     counter = next(_CLIENT_ORDER_COUNTER) % (36 * 36)
     suffix = f"_{_base36(int(time.time() * 1000))[-8:]}{_base36(counter).zfill(2)}"
     max_prefix_len = CLIENT_ORDER_ID_MAX_LEN - len(suffix)

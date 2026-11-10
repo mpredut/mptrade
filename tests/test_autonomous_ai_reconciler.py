@@ -410,8 +410,9 @@ def mock_workspace(tmp_path):
 
 
 def test_monitor_procs_inventory_parsing(mock_workspace):
+    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
     monitor = FleetHealthMonitor(workspace_dir=str(mock_workspace))
-    procs = monitor.parse_process_manifest()
+    procs = parse_procs_manifest(monitor.workspace_dir)
     assert len(procs) == 2
     assert procs[0]["name"] == "bot1"
     assert procs[1]["name"] == "fleet1"

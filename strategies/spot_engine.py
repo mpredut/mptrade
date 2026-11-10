@@ -904,10 +904,6 @@ class Strategy(BaseSpotMixin):
         """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
         return bool(self.s.get("trend_mode")) or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
 
-    def _is_trend_down(self, regime: MarketRegimeDecision | None = None) -> bool:
-        """Return True if a downtrend is identified via regime or venue client."""
-        return self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend"))
-
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if (self.s.get("pending_exit") or {}).get("kind") == "STOP":

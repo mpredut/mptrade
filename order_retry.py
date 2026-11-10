@@ -307,11 +307,6 @@ def _same_deferred_stream(left, right):
     )
 
 
-def _record_has_claim(rec):
-    """Return whether a durable record contains any lease ownership state."""
-    return any(key in rec for key in ("claim_token", "claim_revision", "claim_until"))
-
-
 _PRIOR_VENUE_EVIDENCE_KEYS = (
     "order_id", "accepted_ts", "submit_status", "venue_status",
     "status_error", "order_history", "replaces_order_id", "replaces_original_qty",
@@ -366,7 +361,9 @@ def _set_safe_to_discard(rec, eligible):
 
 def _safe_to_evict_for_capacity(rec):
     """Return whether capacity pressure may safely discard this record."""
-    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending" or _record_has_claim(rec):
+    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending" or any(
+        key in rec for key in ("claim_token", "claim_revision", "claim_until")
+    ):
         return False
     if any(
         rec.get(key) not in (None, "")

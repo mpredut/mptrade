@@ -91,7 +91,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.running = False
         parsed_syms = parse_symbol_list(symbols)
         self._explicit_symbols = bool(parsed_syms)
-        self.symbols = parsed_syms or self._detect_active_symbols()
+        self.symbols = parsed_syms or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True)
         self._auto_detected_symbols = list(self.symbols)
 
         self._init_external_collectors(logger)
@@ -120,10 +120,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_stdout_hb_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
-
-    def _detect_active_symbols(self) -> List[str]:
-        """Detect enabled symbols from instruments.conf plus Kraken reference cache pairs."""
-        return detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True)
 
     def _save_dual_cache(self, prefix: str, payload: Dict[str, Any]) -> None:
         save_json_state(os.path.join(self.cache_dir, f"{prefix}_collect.json"), payload, indent=2)
@@ -272,7 +268,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         force = _parse_bool_flag(force, False)
         current_ts = resolve_now_ts(now)
         if not getattr(self, "_explicit_symbols", False) and self.symbols == getattr(self, "_auto_detected_symbols", None):
-            if detected_syms := self._detect_active_symbols():
+            if detected_syms := detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True):
                 self.symbols = detected_syms
                 self._auto_detected_symbols = list(detected_syms)
         results: Dict[str, Any] = {

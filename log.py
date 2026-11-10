@@ -44,10 +44,6 @@ _CALLER_PREFIXES = ("WARNING", "ERR", "CRITICAL", "DEBUG", "EXCEP", "TRACEBACK",
 _CALLER_PREFIXES += tuple(prefix.lower() for prefix in _CALLER_PREFIXES)
 
 
-def _needs_caller_info(message: str) -> bool:
-    return message.startswith(_CALLER_PREFIXES)
-
-
 _original_print        = builtins.print
 _original_stderr_write = sys.stderr.write
 
@@ -360,7 +356,7 @@ def _patched_print(*args, **kwargs) -> None:
     )
     clean_body = clean[10:].lstrip(" ") if has_leading_ts else clean
 
-    if _needs_caller_info(clean):
+    if clean.startswith(_CALLER_PREFIXES):
         caller = _get_caller_info()
         with _print_lock:
             _original_print(

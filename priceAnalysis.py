@@ -106,16 +106,11 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
 _draw_fig = {}  # Reused symbol-to-(figure, axis) mapping; see drawPriceLst.
 
 
-def _draw_point_limit() -> int:
-    """Return the renderer point limit; it does not affect trend calculations."""
-    return max(2, PRICEANALYSIS_DRAW_MAX_POINTS)
-
-
 def _bounded_plot_indices(length: int, max_points: Optional[int] = None) -> np.ndarray:
     """Return uniform plot indices with retained endpoints and bounded memory."""
     if length <= 0:
         return np.empty(0, dtype=np.intp)
-    limit = _draw_point_limit() if max_points is None else max(2, int(max_points))
+    limit = max(2, PRICEANALYSIS_DRAW_MAX_POINTS if max_points is None else int(max_points))
     if length <= limit:
         return np.arange(length, dtype=np.intp)
     return np.linspace(0, length - 1, num=limit, dtype=np.intp)
