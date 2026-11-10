@@ -119,9 +119,6 @@ class _SnapshotLock:
 
 
 class BapiTradesReaderTest(unittest.TestCase):
-    def tearDown(self):
-        bapi_trades.cache_trade_manager = None
-
     def test_bapi_trades_reader_behaviors(self):
         with self.subTest(msg="lazy manager is created without private synchronization"):
             manager = types.SimpleNamespace()

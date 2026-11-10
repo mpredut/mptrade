@@ -199,24 +199,16 @@ class CacheManagerInterface(ABC):
     DEDUP_WINDOW = CM_DEDUP_WINDOW
 
     _default_api_client: Any = None
-    _poll_predicate: Optional[Callable[[str], bool]] = None
-    _ws_resync_clear_hook: Optional[Callable[[str], None]] = None
 
     @classmethod
     def bind_runtime_services(
         cls,
         *,
         api_client: Any = None,
-        poll_predicate: Optional[Callable[[str], bool]] = None,
-        ws_resync_clear_hook: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Bind optional runtime services (API client, poll predicate, WS resync clear hook) from factory/daemon."""
+        """Bind optional runtime services (API client) from factory/daemon."""
         if api_client is not None:
             cls._default_api_client = api_client
-        if callable(poll_predicate):
-            cls._poll_predicate = staticmethod(poll_predicate)
-        if callable(ws_resync_clear_hook):
-            cls._ws_resync_clear_hook = staticmethod(ws_resync_clear_hook)
 
     def __init__(
         self,
@@ -266,21 +258,8 @@ class CacheManagerInterface(ABC):
             self.read_only = _parse_bool_flag(read_only, default=False)
             self.mode = self.MODE_DISK_READER
         self._persisted_counts = {}
-        self._persisted_data_version = ""
-        self._persisted_stream_id = ""
-        self._persisted_revision = 0
-        self._persisted_committed_bytes = 0
-        self._persisted_content_digest = ""
-        self._loaded_data_version = ""
-        self._loaded_stream_id = ""
-        self._loaded_revision = 0
-        self._loaded_committed_bytes = 0
-        self._loaded_content_digest = ""
-        self._loaded_counts = {}
         self._reader_reload_lock = threading.Lock()
         self._legacy_jsonl_needs_rewrite = False
-        self._account_cache_dirty = False
-        self._last_complete_sync_at_ms = 0
         self._last_disk_sync_max_ts = 0
 
         self.days_back = 30
@@ -501,12 +480,6 @@ class CacheManagerInterface(ABC):
             return self._safe_pos_ts_ms(meta.get("max_ts", 0))
         except Exception:
             return 0
-
-    def _is_account_cache(self):
-        return False
-
-    def _is_canonical_account_cache(self):
-        return False
 
     def _mark_account_cache_dirty_locked(self):
         pass
@@ -733,7 +706,6 @@ class CacheManagerInterface(ABC):
                     self._last_disk_sync_max_ts = max(
                         self._persisted_max_ts(), self._mem_max_ts()
                     )
-                    self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
 
@@ -941,7 +913,6 @@ class CacheManagerInterface(ABC):
         changed = False
         with self.lock:
             original_state = self._snapshot_memory_state_locked()
-            original_dirty = self._account_cache_dirty
             for symbol, items in list(self.cache.items()):
                 kept = [
                     it for it in items if self._entry_timestamp_ms(it) >= cutoff_ms
@@ -964,7 +935,6 @@ class CacheManagerInterface(ABC):
                 if not persisted:
                     with self.lock:
                         self._restore_memory_state_locked(original_state)
-                        self._account_cache_dirty = original_dirty
                     return False
         if not self.append_persist or not self.save_state:
             return
@@ -1107,11 +1077,6 @@ class CacheManagerInterface(ABC):
     ) -> None:
         pass
 
-    def _clear_ws_rest_resync(self) -> None:
-        hook = self._ws_resync_clear_hook
-        if callable(hook):
-            hook(self.cls_name)
-
     def query_remote_and_update_cache(self):
         self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
 
@@ -1137,7 +1102,6 @@ class CacheManagerInterface(ABC):
                 self._persist_items(symbol, new_items)
             self._on_symbol_remote_sync_completed(symbol, request_high_water)
         self._on_complete_remote_sync_cycle(account_cycle_high_water)
-        self._clear_ws_rest_resync()
         return True
 
     def on_items_update(self, symbol, items):
@@ -1147,9 +1111,6 @@ class CacheManagerInterface(ABC):
 
     def _should_poll(self):
         """Decide whether the synchronization loop polls the API."""
-        poll_fn = _cm_override("_should_poll_for_manager", self._poll_predicate)
-        if callable(poll_fn):
-            return bool(poll_fn(self.cls_name))
         return True
 
     def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:

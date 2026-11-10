@@ -1393,7 +1393,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     self._mem[symbol] = cleaned_snap
                     self._sync_symbol_cursor_from_snap(symbol, snap)
             self.cache = self._mem
-            self._account_cache_dirty = False
         return len(self._mem)
 
     def _reload_from_disk(self):

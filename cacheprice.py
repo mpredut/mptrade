@@ -1128,7 +1128,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if is_rth_sym:
                     self._rth_empty_backoff_ts.pop(symbol, None)
                 self._persist_items(symbol, new_items)
-        self._clear_ws_rest_resync()
         return True
 
     def get_remote_items(self, symbol, startTime):

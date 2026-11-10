@@ -109,9 +109,6 @@ from state_io import (
 
 load_dotenv()
 
-_current_price_instance: Optional[CacheCurrentPriceManager] = None
-_current_price_lock = threading.RLock()
-
 
 def _resolve_cache_mode(
     mode: Optional[str] = None,
@@ -169,7 +166,6 @@ def get_current_price_manager(
     mode=None,
 ) -> CacheCurrentPriceManager:
     """Return or lazily create the CacheCurrentPriceManager singleton (disk_reader by default)."""
-    global _current_price_instance
     resolved_mode, sync_file_flag, start_periodic = _resolve_cache_mode(
         mode,
         sync_to_file=sync_to_file,
@@ -177,7 +173,7 @@ def get_current_price_manager(
     )
     if ws_manager is not None and resolved_mode == CacheManagerInterface.MODE_DISK_READER:
         resolved_mode = CacheManagerInterface.MODE_LIVE_READER
-    inst = _current_price_instance
+    inst = CacheFactory._instances.get("CurrentPrice")
     if (
         inst is not None
         and sync_ts is None
@@ -199,24 +195,26 @@ def get_current_price_manager(
         ):
             inst.mode = CacheManagerInterface.MODE_LIVE_READER
         return inst
-    with _current_price_lock:
-        if _current_price_instance is not None:
+    with CacheFactory._lock:
+        inst = CacheFactory._instances.get("CurrentPrice")
+        if inst is not None:
             if sync_ts is not None:
-                _current_price_instance.sync_ts = sync_ts
+                inst.sync_ts = sync_ts
             if provider_names:
-                _current_price_instance.bind_providers(provider_names)
+                inst.bind_providers(provider_names)
             if ws_manager is not None:
-                _current_price_instance.attach_ws_manager(ws_manager)
+                inst.attach_ws_manager(ws_manager)
             if sync_file_flag:
-                _current_price_instance.sync_to_file = True
+                inst.sync_to_file = True
             elif (
                 resolved_mode == CacheManagerInterface.MODE_LIVE_READER
-                and not _current_price_instance.save_state
+                and not inst.save_state
             ):
-                _current_price_instance.mode = CacheManagerInterface.MODE_LIVE_READER
+                inst.mode = CacheManagerInterface.MODE_LIVE_READER
             if start_periodic:
-                _current_price_instance.periodic_sync(save_state=sync_file_flag)
-            return _current_price_instance
+                inst.periodic_sync(save_state=sync_file_flag)
+                CacheFactory._sync_started.add("CurrentPrice")
+            return inst
         if symbols is None:
             _syms, _, _default_providers = tracked_price_instruments()
             if provider_names is None and _default_providers:
@@ -247,42 +245,40 @@ def get_current_price_manager(
             instance.sync_to_file = True
         if start_periodic:
             instance.periodic_sync(save_state=sync_file_flag)
-        _current_price_instance = instance
-    return _current_price_instance
-
-
-_short_trend_instance = None
-_short_trend_lock = threading.RLock()
+            CacheFactory._sync_started.add("CurrentPrice")
+        CacheFactory._instances["CurrentPrice"] = instance
+    return instance
 
 
 def get_short_trend_manager(
     symbols=None, filename=CacheShortTrendManager.DEFAULT_FILENAME, writer=False
 ):
     """Return the CacheShortTrendManager singleton."""
-    global _short_trend_instance
     writer = _parse_bool_flag(writer, default=False)
-    inst = _short_trend_instance
+    inst = CacheFactory._instances.get("ShortTrend")
     if inst is not None and not writer:
         return inst
-    with _short_trend_lock:
-        if _short_trend_instance is not None:
+    with CacheFactory._lock:
+        inst = CacheFactory._instances.get("ShortTrend")
+        if inst is not None:
             if writer:
-                _short_trend_instance.become_writer()
-            return _short_trend_instance
+                inst.become_writer()
+            return inst
         if symbols is None:
             _syms = tracked_price_instruments()[0]
         else:
             _syms = (
                 _coerce_symbol_list(symbols) if isinstance(symbols, str) else symbols
             )
-        _short_trend_instance = CacheShortTrendManager(
+        inst = CacheShortTrendManager(
             _syms,
             filename,
             writer=writer,
             cache24_getter=lambda: get_cache_manager("24Price"),
             current_price_getter=get_current_price_manager,
         )
-    return _short_trend_instance
+        CacheFactory._instances["ShortTrend"] = inst
+    return inst
 
 
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
@@ -312,17 +308,6 @@ class CacheFactory:
     _instances = {}
     _sync_started = set()
     _CONFIG = {}
-    _teardown_hooks: dict = {}
-
-    @classmethod
-    def register_teardown_hook(cls, name: str, callback) -> None:
-        """Register an optional teardown callback invoked when ``name`` is removed or shut down."""
-        if not isinstance(name, str) or not name.strip() or not callable(callback):
-            return
-        with cls._lock:
-            hooks = cls._teardown_hooks.setdefault(name, [])
-            if callback not in hooks:
-                hooks.append(callback)
 
     @classmethod
     def register(
@@ -515,12 +500,9 @@ class CacheFactory:
                         symbols = sym.symbols
 
                 if name == "CurrentPrice":
-                    current_price_sync_ts = (
-                        None if _current_price_instance is not None else sync_ts
-                    )
                     instance = get_current_price_manager(
                         symbols=symbols,
-                        sync_ts=current_price_sync_ts,
+                        sync_ts=sync_ts,
                         start_sync=False,
                         provider_names=provider_names,
                         read_only=eff_read_only,
@@ -592,25 +574,9 @@ class CacheFactory:
             return cls._instances[name]
 
     @classmethod
-    def _run_teardown_hooks(cls, name: str, instance) -> None:
-        if instance is None:
-            return
-        for hook in list(cls._teardown_hooks.get(name, ())):
-            try:
-                hook(instance)
-            except Exception:
-                pass
-
-    @classmethod
     def shutdown_all(cls, timeout=5.0):
         """Stop every factory-owned synchronization loop and clear the registry."""
-        global _current_price_instance, _short_trend_instance
         with cls._lock:
-            current_price = (
-                cls._instances.get("CurrentPrice") or _current_price_instance
-            )
-            prior_instances = dict(cls._instances)
-            short_trend = _short_trend_instance
             managers = []
             seen_ids = set()
             for value in cls._instances.values():
@@ -618,12 +584,6 @@ class CacheFactory:
                     if id(manager) not in seen_ids:
                         seen_ids.add(id(manager))
                         managers.append(manager)
-            if current_price is not None and id(current_price) not in seen_ids:
-                seen_ids.add(id(current_price))
-                managers.append(current_price)
-            if short_trend is not None and id(short_trend) not in seen_ids:
-                seen_ids.add(id(short_trend))
-                managers.append(short_trend)
             cls._instances = {}
             cls._sync_started = set()
             for manager in managers:
@@ -639,41 +599,13 @@ class CacheFactory:
                 for manager in managers
                 if hasattr(manager, "shutdown")
             ]
-            if (
-                current_price is _current_price_instance
-                and not (callable(getattr(current_price, "is_running", None)) and current_price.is_running())
-            ):
-                _current_price_instance = None
-            if (
-                short_trend is _short_trend_instance
-                and not (callable(getattr(short_trend, "is_running", None)) and short_trend.is_running())
-            ):
-                _short_trend_instance = None
-            for inst_name, inst_val in prior_instances.items():
-                cls._run_teardown_hooks(inst_name, inst_val)
             return all(results) if results else True
 
     @classmethod
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
-        global _current_price_instance, _short_trend_instance
         with cls._lock:
-            if name == "ShortTrend":
-                inst = _short_trend_instance
-                cls._sync_started.discard("ShortTrend")
-                if inst is None:
-                    return True
-                stopped = (
-                    bool(inst.shutdown(timeout=timeout))
-                    if hasattr(inst, "shutdown")
-                    else True
-                )
-                if stopped and inst is _short_trend_instance:
-                    _short_trend_instance = None
-                return stopped
-            value = cls._instances.pop(name, None)
-            if name == "CurrentPrice" and value is None:
-                value = _current_price_instance
+            value = cls._instances.get(name)
             cls._sync_started.discard(name)
             if value is None:
                 return True
@@ -683,14 +615,8 @@ class CacheFactory:
                 if hasattr(manager, "shutdown")
             ]
             stopped = all(results) if results else True
-            if (
-                name == "CurrentPrice"
-                and value is _current_price_instance
-                and stopped
-            ):
-                _current_price_instance = None
-            if stopped:
-                cls._run_teardown_hooks(name, value)
+            if stopped and cls._instances.get(name) is value:
+                cls._instances.pop(name, None)
             return stopped
 
 
@@ -729,6 +655,12 @@ CacheFactory.register(
     "LongTrend",
     CacheLongTrendManager,
     sync_ts=lambda: LONG_TREND_SYNC_INTERVAL_SEC,
+)
+CacheFactory.register(
+    "ShortTrend",
+    CacheShortTrendManager,
+    sync_ts=0,
+    read_only=True,
 )
 CacheFactory.register(
     "AssetValue",
@@ -788,8 +720,8 @@ CacheTrendManagerBase.bind_service_getters(
 )
 if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     MarketDataProvider.bind_ssot_cache_readers(
-        current_price_reader=lambda: _current_price_instance or CacheFactory._instances.get("CurrentPrice"),
-        short_trend_reader=lambda: _short_trend_instance,
+        current_price_reader=lambda: CacheFactory._instances.get("CurrentPrice"),
+        short_trend_reader=lambda: CacheFactory._instances.get("ShortTrend"),
     )
 
 
@@ -924,10 +856,6 @@ if __name__ == "__main__":
             for _mgr in CacheFactory._iter_managers(_inst):
                 if hasattr(_mgr, "request_stop"):
                     _mgr.request_stop()
-        if _current_price_instance is not None and hasattr(
-            _current_price_instance, "request_stop"
-        ):
-            _current_price_instance.request_stop()
         if _nb_poller is not None:
             _nb_poller.stop(
                 timeout=min(0.5, max(0.05, shutdown_deadline - time.monotonic()))
@@ -944,10 +872,6 @@ if __name__ == "__main__":
                 _c365_mgr.save_state_to_file_if_enabled()
             except Exception:
                 pass
-        if _current_price_instance is not None:
-            _current_price_instance.shutdown(
-                timeout=min(0.3, max(0.05, shutdown_deadline - time.monotonic()))
-            )
         stop_account_ws_streams(shutdown_deadline)
         stop_price_ws_streams(shutdown_deadline)
 

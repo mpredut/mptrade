@@ -706,7 +706,9 @@ class MarketDataProvider(ABC):
                 except Exception:
                     cpm = None
             if cpm is None:
-                cpm = resolve_patched_attr("_current_price_instance", None, modules=("cacheManager",))
+                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+                if cf is not None and hasattr(cf, "_instances"):
+                    cpm = cf._instances.get("CurrentPrice")
             cpm_file = getattr(cpm, "filename", None) if cpm is not None else None
             cpm_matches_path = (
                 not isinstance(cpm_file, str)
@@ -872,7 +874,9 @@ class MarketDataProvider(ABC):
                 except Exception:
                     stm = None
             if stm is None:
-                stm = resolve_patched_attr("_short_trend_instance", None, modules=("cacheManager",))
+                cf = resolve_patched_attr("CacheFactory", None, modules=("cacheManager",))
+                if cf is not None and hasattr(cf, "_instances"):
+                    stm = cf._instances.get("ShortTrend")
             if stm is not None:
                 if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
                     for cand in candidates:

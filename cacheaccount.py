@@ -120,11 +120,7 @@ def _should_poll_for_manager(cls_name):
     )
 
 
-CacheManagerInterface.bind_runtime_services(
-    api_client=api,
-    poll_predicate=_should_poll_for_manager,
-    ws_resync_clear_hook=_bapi_ws_bridge.clear_ws_rest_resync_for_manager,
-)
+CacheManagerInterface.bind_runtime_services(api_client=api)
 
 
 class CacheAccountManagerBase(CacheManagerInterface, ABC):
@@ -132,9 +128,64 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     _is_trade_account_cache = False
     _is_order_account_cache = False
+    _persisted_data_version = ""
+    _persisted_stream_id = ""
+    _persisted_revision = 0
+    _persisted_committed_bytes = 0
+    _persisted_content_digest = ""
+    _loaded_data_version = ""
+    _loaded_stream_id = ""
+    _loaded_revision = 0
+    _loaded_committed_bytes = 0
+    _loaded_content_digest = ""
+    _loaded_counts: dict = {}
+    _account_cache_dirty = False
+    _last_complete_sync_at_ms = 0
+
+    def __init__(self, *args, **kwargs):
+        self._persisted_data_version = ""
+        self._persisted_stream_id = ""
+        self._persisted_revision = 0
+        self._persisted_committed_bytes = 0
+        self._persisted_content_digest = ""
+        self._loaded_data_version = ""
+        self._loaded_stream_id = ""
+        self._loaded_revision = 0
+        self._loaded_committed_bytes = 0
+        self._loaded_content_digest = ""
+        self._loaded_counts = {}
+        self._account_cache_dirty = False
+        self._last_complete_sync_at_ms = 0
+        super().__init__(*args, **kwargs)
 
     def _is_account_cache(self):
         return bool(self._is_trade_account_cache or self._is_order_account_cache)
+
+    def _should_poll(self):
+        poll_fn = _cm_override("_should_poll_for_manager", _should_poll_for_manager)
+        if callable(poll_fn):
+            return bool(poll_fn(self.cls_name))
+        return True
+
+    def _reload_from_disk(self):
+        super()._reload_from_disk()
+        with self.lock:
+            self._account_cache_dirty = False
+
+    def _snapshot_memory_state_locked(self):
+        return (
+            *super()._snapshot_memory_state_locked(),
+            self._account_cache_dirty,
+        )
+
+    def _restore_memory_state_locked(self, state) -> None:
+        if state is None:
+            return
+        if len(state) == 5:
+            *base_state, self._account_cache_dirty = state
+            super()._restore_memory_state_locked(tuple(base_state))
+        else:
+            super()._restore_memory_state_locked(state)
 
     def get_persisted_sync_state(self) -> tuple[str, int]:
         """Return ``(data_version, min_cursor_ms)`` from loaded/persisted account cache state."""
@@ -197,6 +248,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         if self._is_account_cache():
             with self.lock:
                 self._last_complete_sync_at_ms = account_cycle_high_water or 0
+        _bapi_ws_bridge.clear_ws_rest_resync_for_manager(self.cls_name)
 
     def _publish_periodic_sync_health(self, sync_complete, persisted) -> None:
         with self.lock:

@@ -6927,7 +6927,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     """Verify:
     1. enrich_sentiment_advisor_live_flow_divergence does not misclassify >=15m-old BULLISH/ACCUMULATE with cited_tr<=0.65 as is_bear_posture (emitting LIVE_FLOW_RECOVERY instead of contradictory LIVE_BUY_REVERSAL vs ACCUMULATE), nor BEARISH/DEFENSIVE with cited_tr>=1.35 as is_bull_posture (emitting LIVE_FLOW_FADE instead of contradictory LIVE_SELL_REVERSAL vs DEFENSIVE).
     2. OrderbookDepthCollector.fetch does not fall back to fapi.binance.com perpetual futures when api.binance.com spot fails transiently on a multi-venue symbol like TAOUSDC.
-    3. CacheFactory.remove('ShortTrend') only clears _short_trend_instance when shutdown succeeds.
+    3. CacheFactory.remove('ShortTrend') only clears ShortTrend from _instances when shutdown succeeds.
     """
     from types import SimpleNamespace
     import cacheManager as cm
@@ -7001,22 +7001,25 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     assert all("fapi.binance.com" not in u for u in called_urls)
     assert "TAOUSDC" not in ob_col._preferred_url
 
-    # 3. CacheFactory.remove('ShortTrend') preserves _short_trend_instance if shutdown returns False, and clears when True
-    prev_st = cm._short_trend_instance
+    # 3. CacheFactory.remove('ShortTrend') preserves ShortTrend in _instances if shutdown returns False, and clears when True
+    prev_st = cm.CacheFactory._instances.get("ShortTrend")
     try:
         state = {"ok": False}
         fake_st = SimpleNamespace(shutdown=lambda timeout=5.0: state["ok"])
-        cm._short_trend_instance = fake_st
+        cm.CacheFactory._instances["ShortTrend"] = fake_st
         cm.CacheFactory._sync_started.add("ShortTrend")
         assert cm.CacheFactory.remove("ShortTrend", timeout=0.01) is False
-        assert cm._short_trend_instance is fake_st
+        assert cm.CacheFactory._instances.get("ShortTrend") is fake_st
         assert "ShortTrend" not in cm.CacheFactory._sync_started
 
         state["ok"] = True
         assert cm.CacheFactory.remove("ShortTrend", timeout=0.01) is True
-        assert cm._short_trend_instance is None
+        assert cm.CacheFactory._instances.get("ShortTrend") is None
     finally:
-        cm._short_trend_instance = prev_st
+        if prev_st is not None:
+            cm.CacheFactory._instances["ShortTrend"] = prev_st
+        else:
+            cm.CacheFactory._instances.pop("ShortTrend", None)
 
     # 4. canonical_base_asset strips TUSD/BUSD suffixes while preserving bare stablecoin tickers
     from cachepaths import canonical_base_asset, normalize_cache_base_asset

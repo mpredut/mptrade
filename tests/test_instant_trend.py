@@ -815,16 +815,19 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             self.assertEqual(mgr.symbol_preferred_source.get("BTCUSDT"), "CoinGecko")
 
     def test_factory_remove_short_trend_cleans_singleton(self):
-        prev_st = cm._short_trend_instance
+        prev_st = cm.CacheFactory._instances.get("ShortTrend")
         try:
-            cm._short_trend_instance = None
+            cm.CacheFactory._instances.pop("ShortTrend", None)
             st_mgr = cm.CacheFactory.get("ShortTrend", symbols=["BTCUSDT"])
-            self.assertIsNotNone(cm._short_trend_instance)
-            self.assertIs(st_mgr, cm._short_trend_instance)
+            self.assertIsNotNone(cm.CacheFactory._instances.get("ShortTrend"))
+            self.assertIs(st_mgr, cm.CacheFactory._instances.get("ShortTrend"))
             self.assertTrue(cm.CacheFactory.remove("ShortTrend"))
-            self.assertIsNone(cm._short_trend_instance)
+            self.assertIsNone(cm.CacheFactory._instances.get("ShortTrend"))
         finally:
-            cm._short_trend_instance = prev_st
+            if prev_st is not None:
+                cm.CacheFactory._instances["ShortTrend"] = prev_st
+            else:
+                cm.CacheFactory._instances.pop("ShortTrend", None)
 
     def test_shutdown_unsubscribes_price_windows_from_cache24(self):
         c24 = cm.Cache24PriceManager(
@@ -1381,18 +1384,19 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         c24_null = cm.Cache24PriceManager(60, ["BTCUSDT"], null_items_file, read_only=True)
         self.assertEqual(c24_null.cache, {})
 
-        # CacheFactory.remove("BinanceTrade") resets bapi_trades.cache_trade_manager if it points to the removed instance
+        # bapi_trades delegates directly to CacheFactory without a duplicate module singleton
         prev_inst = cm.CacheFactory._instances.get("BinanceTrade")
-        prev_bt_mgr = bapi_trades.cache_trade_manager
         try:
+            self.assertFalse(hasattr(bapi_trades, "cache_trade_manager"))
             cm.CacheFactory._instances["BinanceTrade"] = tm
-            bapi_trades.cache_trade_manager = tm
+            self.assertIs(bapi_trades.init_cache_trade_manager(), tm)
             cm.CacheFactory.remove("BinanceTrade")
-            self.assertIsNone(bapi_trades.cache_trade_manager)
+            self.assertNotIn("BinanceTrade", cm.CacheFactory._instances)
         finally:
             if prev_inst is not None:
                 cm.CacheFactory._instances["BinanceTrade"] = prev_inst
-            bapi_trades.cache_trade_manager = prev_bt_mgr
+            else:
+                cm.CacheFactory._instances.pop("BinanceTrade", None)
 
     def test_audit38_jsonl_non_dict_lines_get_price_validation_and_pricewindow_coercion(self):
         """Audit #38: non-dict JSONL lines in Cache365/SparsePrice, get_price invalid/future row refresh, and PriceWindow coercion."""

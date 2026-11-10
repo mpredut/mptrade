@@ -623,10 +623,10 @@ class TestCacheSparsePriceManager(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def tearDown(self):
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def _make(self, price=50000.0):
         api_mock = MagicMock()
@@ -716,10 +716,10 @@ class TestCache24PriceManager(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def tearDown(self):
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def _make(self):
         api_mock = MagicMock()
@@ -1025,10 +1025,10 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def tearDown(self):
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def _make(self, price=50000.0, provider_names=None):
         api_mock = MagicMock()
@@ -1366,22 +1366,13 @@ class TestCacheFactory(unittest.TestCase):
     def setUp(self):
         # Reset singletons.
         cm.CacheFactory.shutdown_all()
-        if cm._current_price_instance is not None:
-            cm._current_price_instance.shutdown()
-        cm._current_price_instance = None
 
     def tearDown(self):
         cm.CacheFactory.shutdown_all()
-        if cm._current_price_instance is not None:
-            cm._current_price_instance.shutdown()
-        cm._current_price_instance = None
 
     def test_factory_lifecycle_promotion_and_identity(self):
         def _reset():
             cm.CacheFactory.shutdown_all()
-            if cm._current_price_instance is not None:
-                cm._current_price_instance.shutdown()
-            cm._current_price_instance = None
 
         with self.subTest("read only creation can be promoted to periodic sync"):
             _reset()
@@ -1570,14 +1561,10 @@ class TestCacheFactory(unittest.TestCase):
 class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
 
     def setUp(self):
-        if cm._current_price_instance is not None:
-            cm._current_price_instance.shutdown()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def tearDown(self):
-        if cm._current_price_instance is not None:
-            cm._current_price_instance.shutdown()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def test_get_current_price_manager_singleton_and_ws_wiring(self):
         with self.subTest("returns single cache current price manager"):
@@ -1614,17 +1601,15 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                 def __exit__(self, *args):
                     return False
 
-            previous_short_trend = cm._short_trend_instance
-            cm._short_trend_instance = None
+            previous_short_trend = cm.CacheFactory._instances.get("ShortTrend")
+            cm.CacheFactory._instances.pop("ShortTrend", None)
             with patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
                  patch.object(cm.CacheTradeManager, "load_state", return_value=None):
                 mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=True)
                 short_mgr = cm.get_short_trend_manager(symbols=["BTC"])
                 trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
                 try:
-                    with patch.object(cm, "_current_price_lock", _ForbidLock()), \
-                         patch.object(cm, "_short_trend_lock", _ForbidLock()), \
-                         patch.object(cm.CacheFactory, "_lock", _ForbidLock()), \
+                    with patch.object(cm.CacheFactory, "_lock", _ForbidLock()), \
                          patch.object(mgr, "lock", _ForbidLock()):
                         self.assertIs(cm.get_current_price_manager(), mgr)
                         self.assertIs(mgr.periodic_sync(save_state=False), mgr.thread)
@@ -1637,7 +1622,10 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                     mgr.shutdown()
                     cm.CacheFactory.remove("BinanceTrade")
                     short_mgr.shutdown()
-                    cm._short_trend_instance = previous_short_trend
+                    if previous_short_trend is not None:
+                        cm.CacheFactory._instances["ShortTrend"] = previous_short_trend
+                    else:
+                        cm.CacheFactory._instances.pop("ShortTrend", None)
 
     def test_every_factory_manager_accepts_read_only(self):
         """CacheFactory passes read_only to every class it builds, including PriceMulti."""
@@ -2094,9 +2082,9 @@ class TestAtomicWrite(unittest.TestCase):
         from binance_api import bapi_ws, bapi_ws_bridge
 
         st = cm.CacheFactory.get("ShortTrend", symbols=["BTCUSDC"])
-        self.assertIs(cm._short_trend_instance, st)
+        self.assertIs(cm.CacheFactory._instances.get("ShortTrend"), st)
         self.assertTrue(cm.CacheFactory.shutdown_all())
-        self.assertIsNone(cm._short_trend_instance)
+        self.assertIsNone(cm.CacheFactory._instances.get("ShortTrend"))
 
         bapi_ws_bridge._ws_bridge = None
         failing_stream = MagicMock()
@@ -2653,6 +2641,14 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     assert not hasattr(cacheaccount, "_bapi_trades")
     assert not hasattr(cacheaccount, "clear_binance_trade_cache_hook")
     assert not hasattr(cm, "clear_binance_trade_cache_hook")
+    assert not hasattr(cm, "_current_price_instance")
+    assert not hasattr(cm, "_short_trend_instance")
+    assert not hasattr(cm.CacheFactory, "register_teardown_hook")
+    assert not hasattr(cm.CacheFactory, "_teardown_hooks")
+    assert not hasattr(cm.CacheManagerInterface, "_is_account_cache")
+    assert not hasattr(cm.CacheManagerInterface, "_is_canonical_account_cache")
+    assert hasattr(cm.CacheAccountManagerBase, "_is_account_cache")
+    assert hasattr(cm.CacheAccountManagerBase, "_is_canonical_account_cache")
 
     now_ms = int(time.time() * 1000)
     recorded_syncs = []

@@ -1567,13 +1567,13 @@ def _make_mgr(filename, sync_ts, api_mock):
 class TestFallbackThreadBehavior(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
         self.managers = []
 
     def tearDown(self):
         for manager in self.managers:
             manager.shutdown()
-        cm._current_price_instance = None
+        cm.CacheFactory.remove("CurrentPrice")
 
     def _manager(self, filename, sync_ts, api_mock):
         manager = _make_mgr(filename, sync_ts, api_mock)

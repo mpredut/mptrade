@@ -1,5 +1,4 @@
 import time
-import threading
 
 # Repository imports.
 import instrument_registry as sym
@@ -14,50 +13,12 @@ from providers.order_ohlc_utils import (
     extract_timestamp_ms,
 )
 
-# 
-# Process-wide trade cache.
-#
-cache_trade_manager = None
-_cache_trade_manager_lock = threading.Lock()
-
-def clear_cache_trade_manager(expected=None):
-    """Clear the process-wide trade cache reference when the singleton is shut down."""
-    global cache_trade_manager
-    if expected is None or cache_trade_manager is expected:
-        cache_trade_manager = None
-
-
-def _register_trade_cache_teardown_hook(cm_mod=None) -> None:
-    if cm_mod is None:
-        try:
-            import cacheManager as cm_mod
-        except Exception:
-            cm_mod = None
-    factory = getattr(cm_mod, "CacheFactory", None) if cm_mod is not None else None
-    if hasattr(factory, "register_teardown_hook"):
-        factory.register_teardown_hook("BinanceTrade", clear_cache_trade_manager)
-
-
-_register_trade_cache_teardown_hook()
-
 
 def init_cache_trade_manager():
-    """Build the cache on the first call that actually consumes trades.
+    """Return the process-wide BinanceTrade cache reader from CacheFactory."""
+    import cacheManager as cm
 
-    Backtests, configuration tools, and tests import this module, so importing it must
-    not start Binance polling merely because the functions were loaded.
-    """
-    global cache_trade_manager
-    if cache_trade_manager is not None:
-        return cache_trade_manager
-    with _cache_trade_manager_lock:
-        if cache_trade_manager is None:
-            import cacheManager as cm
-            # Trading processes are read-only consumers. Only the central
-            # cacheManager process may poll Binance and publish cache versions.
-            _register_trade_cache_teardown_hook(cm)
-            cache_trade_manager = cm.get_cache_manager("BinanceTrade", start_sync=False)
-    return cache_trade_manager
+    return cm.get_cache_manager("BinanceTrade", start_sync=False)
 
 #######
 #######      get_my_trades     #######
