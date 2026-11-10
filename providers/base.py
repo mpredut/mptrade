@@ -12,6 +12,7 @@ from typing import Any, List, Optional
 from botcore import (
     _parse_bool_flag,
     bool_env,
+    clamp_price_to_bbo_mid,
     exact_nonneg_int,
     extract_current_price_item,
     is_shared_disk_cache_enabled,
@@ -183,15 +184,19 @@ class MarketDataProvider(ABC):
         start_time_ms: int = 0,
         *,
         api_client: Any = None,
+        **kwargs,
     ) -> List[dict]:
-        """Venue-agnostic remote trade fetcher for non-append ``CacheTradeManager`` instances."""
+        """Venue-agnostic remote trade fetcher for ``CacheTradeManager`` instances across all venues."""
         if api_client is None:
             return []
         if isinstance(api_client, cls) or "fetch_remote_trades" in getattr(api_client, "__dict__", {}):
             return list(api_client.fetch_remote_trades(symbol, start_time_ms) or [])
         prov_cls = cls.resolve_venue_provider_class(venue)
         if prov_cls is not None and callable(getattr(prov_cls, "fetch_remote_trades_with_client", None)):
-            res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client)
+            try:
+                res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client, **kwargs)
+            except TypeError:
+                res = prov_cls.fetch_remote_trades_with_client(symbol, start_time_ms, api_client)
             if res is not None:
                 return list(res)
         fetch_fn = getattr(api_client, "fetch_remote_trades", None)
@@ -684,27 +689,7 @@ class MarketDataProvider(ABC):
         text = str(error or "").lower()
         return any(token in text for token in cls._DEFINITIVE_REFUSAL_TOKENS)
 
-    @staticmethod
-    def clamp_price_to_bbo_mid(
-        price: Optional[float],
-        bid: Any,
-        ask: Any,
-        *,
-        max_spread_ratio: float = 0.05,
-    ) -> Optional[float]:
-        """Return ``price`` clamped to the BBO mid ``(bid + ask) / 2`` when ``price`` falls outside a tight ``[bid, ask]`` spread."""
-        px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
-        bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
-        ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
-        if (
-            bid_f is not None
-            and ask_f is not None
-            and bid_f <= ask_f
-            and (ask_f - bid_f) / bid_f <= max_spread_ratio
-            and (px_f is None or px_f < bid_f or px_f > ask_f)
-        ):
-            return round((bid_f + ask_f) * 0.5, 8)
-        return px_f
+    clamp_price_to_bbo_mid = staticmethod(clamp_price_to_bbo_mid)
 
     def _allow_ssot_price_cache(self) -> bool:
         """Return True when this provider should consult cacheManager SSOT before venue HTTP."""
@@ -1003,18 +988,9 @@ class MarketDataProvider(ABC):
         if not isinstance(snap, dict):
             return None
         try:
-            from cachetrend import CacheShortTrendManager
+            from pricewindow import eval_short_trend_direction
 
-            if CacheShortTrendManager._eval_upward_formula(snap):
-                return "up"
-            inv_snap = dict(snap)
-            for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
-                val = safe_float(inv_snap.get(key), default=None)
-                if val is not None:
-                    inv_snap[key] = -val
-            if CacheShortTrendManager._eval_upward_formula(inv_snap):
-                return "down"
-            return "flat"
+            return eval_short_trend_direction(snap)
         except Exception:
             return None
 

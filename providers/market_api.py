@@ -172,6 +172,20 @@ class BinanceProvider(MarketDataProvider):
         # for an absent asset and ``None`` when the API read fails.
         return _get_bapi().get_free_balance(asset)
 
+    @classmethod
+    def fetch_remote_trades_with_client(
+        cls,
+        symbol: str,
+        start_time_ms: int = 0,
+        client: Any = None,
+        *,
+        allorders_mod: Any = None,
+    ) -> List[dict]:
+        """Paginate raw Binance fills from ``client`` via ``bapi_allorders.paginate_my_trades``."""
+        ao = allorders_mod if allorders_mod is not None else _get_allorders()
+        raw_client = getattr(client, "client", client)
+        return list(ao.paginate_my_trades(raw_client, symbol, start_time_ms, limit=1000, strict=True) or [])
+
     def get_orders(
         self,
         symbol: str,

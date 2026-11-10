@@ -24,6 +24,7 @@ from botcore import (
     are_close,
     diff_percent,
     float_env,
+    resolve_sustained_sample_rate,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -41,6 +42,71 @@ RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for prima
 WINDOW_SECONDS_SMALL = round(3.7 * 60, 6)          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = round(2.5 * 60 * 60, 6)     # 2.5 hours (9000.0s)
 DEFAULT_TREND_WINDOW_SECONDS = (WINDOW_SECONDS_SMALL, WINDOW_SECONDS_BIG)
+UPWARD_EPSILON_K = 0.25           # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.
+
+
+def eval_short_trend_upward(
+    data: object, *, upward_epsilon_k: float = UPWARD_EPSILON_K
+) -> bool:
+    """Single canonical upward-trend formula (SSOT) aligned with should_wait (GT_S):
+    growth_coefficient > upward_epsilon_k * epsilon (when epsilon > 0).
+    """
+    if not isinstance(data, dict):
+        return False
+    for key in (
+        "growth_coefficient",
+        "gradient_recent",
+        "slope_small",
+        "final_trend",
+        "epsilon",
+    ):
+        val = data.get(key)
+        if val is not None and safe_float(val, default=None) is None:
+            return False
+
+    eps = safe_pos_float(data.get("epsilon"), default=0.0)
+    scale = 1.0
+    n_f = safe_float(data.get("n_samples"), default=None)
+    if n_f is not None and (n_f - 1.0) > 10.0:
+        scale = math.sqrt(10.0 / (n_f - 1.0))
+    noise_floor = eps * float(upward_epsilon_k) * scale
+
+    raw_gc = data.get("growth_coefficient")
+    if raw_gc is not None:
+        gc = float(raw_gc)
+        if gc != 0.0:
+            return gc > noise_floor
+        raw_ft = data.get("final_trend", 0.0)
+        ft = float(0.0 if raw_ft is None else raw_ft)
+        return eps == 0.0 and ft > 0
+
+    raw_slope = data.get("gradient_recent")
+    if raw_slope is None:
+        raw_slope = data.get("slope_small", 0.0)
+    raw_gradient = data.get("final_trend", 0.0)
+    slope = float(0.0 if raw_slope is None else raw_slope)
+    gradient = float(0.0 if raw_gradient is None else raw_gradient)
+    if slope != 0.0:
+        return slope > noise_floor
+    return eps == 0.0 and gradient > 0
+
+
+def eval_short_trend_direction(
+    snap: object, *, upward_epsilon_k: float = UPWARD_EPSILON_K
+) -> str | None:
+    """Evaluate short-trend direction ('up', 'down', or 'flat') from a trend snapshot dict."""
+    if not isinstance(snap, dict):
+        return None
+    if eval_short_trend_upward(snap, upward_epsilon_k=upward_epsilon_k):
+        return "up"
+    inv_snap = dict(snap)
+    for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
+        val = safe_float(inv_snap.get(key), default=None)
+        if val is not None:
+            inv_snap[key] = -val
+    if eval_short_trend_upward(inv_snap, upward_epsilon_k=upward_epsilon_k):
+        return "down"
+    return "flat"
 
 # -- Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) --
 # Direct Step-WOLS estimator on raw price increments:

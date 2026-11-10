@@ -40,6 +40,7 @@ from binance_api.bapi_ws import (
 )
 from botcore import (
     _parse_bool_flag,
+    clamp_price_to_bbo_mid,
     extract_current_price_item,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
@@ -48,6 +49,7 @@ from botcore import (
     required_float_env,
     required_int_env,
     resolve_now_ms,
+    resolve_sustained_sample_rate,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -1200,26 +1202,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return None
         return safe_pos_float(self.get_sample_rate(symbol, fallback=None), default=span / (len(samples) - 1))
 
-    @classmethod
-    def resolve_sustained_sample_rate(
-        cls, cpm, symbol: str, *, min_span_sec: float = 5.0
-    ) -> Optional[float]:
-        """Resolve sustained sample rate from a ``CacheCurrentPriceManager`` or compatible test double."""
-        if cpm is None:
-            return None
-        if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
-            return safe_pos_float(cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_sec), default=None)
-        lock_obj = getattr(cpm, "lock", None)
-        with lock_obj if hasattr(lock_obj, "__enter__") else threading.RLock():
-            ts_map = getattr(cpm, "_update_timestamps", None)
-            dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
-            samples = list(dq) if dq else []
-        if len(samples) < 2 or (samples[-1] - samples[0]) < float(min_span_sec):
-            return None
-        sr_fn = getattr(cpm, "get_sample_rate", None)
-        if callable(sr_fn):
-            return safe_pos_float(sr_fn(symbol, fallback=None), default=None)
-        return safe_pos_float((samples[-1] - samples[0]) / (len(samples) - 1), default=None)
+    resolve_sustained_sample_rate = staticmethod(resolve_sustained_sample_rate)
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         max_age = safe_pos_float(max_age_sec, default=None)
@@ -1848,9 +1831,7 @@ class KrakenPriceStream(_VenuePriceStreamBase):
             c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
             b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
             a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
-            from providers.base import MarketDataProvider
-
-            price = MarketDataProvider.clamp_price_to_bbo_mid(c_val, b_val, a_val)
+            price = clamp_price_to_bbo_mid(c_val, b_val, a_val)
             if price is None:
                 return
             with self._lock:

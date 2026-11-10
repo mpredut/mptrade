@@ -1526,6 +1526,54 @@ def extract_order_qty(order: object, default: float = 0.0) -> float:
     return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
 
 
+def clamp_price_to_bbo_mid(
+    price: float | None,
+    bid: object,
+    ask: object,
+    *,
+    max_spread_ratio: float = 0.05,
+) -> float | None:
+    """Return ``price`` clamped to the BBO mid ``(bid + ask) / 2`` when ``price`` falls outside a tight ``[bid, ask]`` spread."""
+    px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
+    bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
+    ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
+    if (
+        bid_f is not None
+        and ask_f is not None
+        and bid_f <= ask_f
+        and (ask_f - bid_f) / bid_f <= max_spread_ratio
+        and (px_f is None or px_f < bid_f or px_f > ask_f)
+    ):
+        return round((bid_f + ask_f) * 0.5, 8)
+    return px_f
+
+
+def resolve_sustained_sample_rate(
+    cpm: object, symbol: str, *, min_span_sec: float = 5.0
+) -> float | None:
+    """Resolve sustained sample rate from a current-price manager or compatible test double."""
+    if cpm is None:
+        return None
+    if callable(getattr(type(cpm), "get_sustained_sample_rate", None)):
+        return safe_pos_float(
+            cpm.get_sustained_sample_rate(symbol, min_span_sec=min_span_sec),
+            default=None,
+        )
+    lock_obj = getattr(cpm, "lock", None)
+    with lock_obj if hasattr(lock_obj, "__enter__") else threading.RLock():
+        ts_map = getattr(cpm, "_update_timestamps", None)
+        dq = ts_map.get(symbol) if isinstance(ts_map, dict) else None
+        samples = list(dq) if dq else []
+    if len(samples) < 2 or (samples[-1] - samples[0]) < float(min_span_sec):
+        return None
+    sr_fn = getattr(cpm, "get_sample_rate", None)
+    if callable(sr_fn):
+        return safe_pos_float(sr_fn(symbol, fallback=None), default=None)
+    return safe_pos_float(
+        (samples[-1] - samples[0]) / (len(samples) - 1), default=None
+    )
+
+
 def is_cache_fresh(
     last_ts: object, now_ts: float, ttl_sec: object, *, force_refresh: object = False
 ) -> bool:

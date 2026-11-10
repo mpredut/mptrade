@@ -445,9 +445,13 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         )
 
     def _paginate_validated_trades(self, symbol, startTime, row_label: str = "trade"):
-        """Paginate through ``get_my_trades`` and validate every returned fill row."""
-        rows = apiorders.paginate_my_trades(
-            self.api_client.client, symbol, startTime, limit=1000, strict=True
+        """Paginate through venue trade fills and validate every returned fill row."""
+        rows = MarketDataProvider.fetch_venue_remote_trades(
+            getattr(self, "venue", "binance"),
+            symbol,
+            startTime,
+            api_client=self.api_client,
+            allorders_mod=apiorders,
         )
         for row in rows:
             if (
