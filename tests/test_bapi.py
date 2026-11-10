@@ -323,15 +323,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(len(res_bt), 1)
         self.assertTrue(res_bt[0]["isBuyer"])
 
-        agg = bapi_trades.aggregate_trades([{
-            "id": 1, "orderId": 99, "symbol": SYMBOL, "price": "100.0",
-            "qty": "0.5", "quoteQty": "50.0", "commission": "0.05",
-            "commissionAsset": "USDC", "time": now_ms,
-            "isBuyer": True, "isMaker": False, "isBestMatch": True,
-        }])
-        self.assertEqual(len(agg), 1)
-        self.assertEqual(agg[0]["orderId"], 99)
-
         stream = bapi_ws.BinancePriceStream(symbols=[SYMBOL])
         stream._process_message('{"data": {"s": "BTCUSDC", "c": "0", "E": 1000}}')
         self.assertIsNone(stream.get_price(SYMBOL))
@@ -405,21 +396,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(extract_order_side({"side": "A"}), "SELL")
         self.assertEqual(extract_order_price({"limitPx": "99.5"}), 99.5)
         self.assertEqual(extract_order_qty({"vol": "3.25"}), 3.25)
-
-        # 3. bapi_trades.aggregate_trades computes VWAP on multi-fill orders and emits unified fields
-        raw_fills = [
-            {"id": 10, "orderId": 500, "symbol": SYMBOL, "isBuyer": True, "price": "100.0", "qty": "1.0", "quoteQty": "100.0", "commission": "0.1", "commissionAsset": "USDC", "time": 1_700_000_000_000},
-            {"id": 11, "orderId": 500, "symbol": SYMBOL, "isBuyer": True, "price": "130.0", "qty": "2.0", "quoteQty": "260.0", "commission": "0.2", "commissionAsset": "USDC", "time": 1_700_000_005_000},
-        ]
-        agg = bapi_tr.aggregate_trades(raw_fills)
-        self.assertEqual(len(agg), 1)
-        self.assertAlmostEqual(float(agg[0]["price"]), 120.0)
-        self.assertAlmostEqual(float(agg[0]["qty"]), 3.0)
-        self.assertAlmostEqual(float(agg[0]["quantity"]), 3.0)
-        self.assertEqual(agg[0]["side"], "BUY")
-        self.assertTrue(agg[0]["isBuyer"])
-        self.assertEqual(agg[0]["time"], 1_700_000_005_000)
-        self.assertEqual(agg[0]["timestamp"], 1_700_000_005_000)
 
         # 5. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders emit both timestamp/time and qty/quantity
         now_ms = int(time.time() * 1000)

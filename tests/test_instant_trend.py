@@ -1533,12 +1533,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertAlmostEqual(filled[0]["price"], 5e-9, places=14)
         self.assertEqual(filled[0]["quantity"], 2000.0)
 
-        # 3. bapi_trades.aggregate_trades preserves sub-satoshi multi-fill VWAP and ignores non-dict items
-        agg = bapi_trades.aggregate_trades(sub_satoshi_fills)
-        self.assertEqual(len(agg), 1)
-        self.assertAlmostEqual(float(agg[0]["price"]), 5e-9, places=14)
-        self.assertEqual(float(agg[0]["qty"]), 2000.0)
-
         # 4. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders guard invalid max_age_seconds and ts_ms <= 0
         fake_order_mgr = unittest.mock.MagicMock()
         fake_order_mgr.lock = threading.Lock()
@@ -1976,7 +1970,7 @@ def _make_current_price_manager(tmp_dir, price=50000.0):
         filename=os.path.join(tmp_dir, "cache_current_price.json"),
         ws_manager=None, api_client=mock_api, market_api=mock_api,
     )
-    mgr.enable_save_state_to_file()
+    mgr.save_state = True
     return mgr
 
 
@@ -1987,7 +1981,7 @@ def _make_ws_cache24_manager(tmp_dir, current_price_manager):
             filename=os.path.join(tmp_dir, "cache_24_price_BTCUSDC.json"),
             api_client=mock_api,
         )
-    mgr.enable_save_state_to_file()
+    mgr.save_state = True
     return mgr
 
 
@@ -2030,7 +2024,7 @@ class TestWsBridgeIntegration(unittest.TestCase):
             self.assertEqual(len(self.cur.cache.get("BTCUSDC", [])), 1)
 
     def test_persistence_currentprice(self):
-        self.cur.enable_save_state_to_file()
+        self.cur.save_state = True
         now_ms = int(cm.time.time() * 1000)
         self.ws._notify_subscribers("BTCUSDC", [[now_ms, 58000.0]])
         self.cur.save_state_to_file_if_enabled()

@@ -322,26 +322,6 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
     assert placed_calls[0][1] == pytest.approx(25.5)
     assert placed_calls[0][2] == pytest.approx(2.5)
 
-    # 5. bapi_trades.aggregate_trades handles price="0.00000000" (via quoteQty/qty) and alternate fee keys
-    agg = bapi_trades.aggregate_trades([
-        {
-            "id": 11,
-            "orderId": 555,
-            "symbol": "BTCUSDC",
-            "price": "0.00000000",
-            "qty": "0.5",
-            "quoteQty": "30000.0",
-            "fee": "15.0",
-            "feeAsset": "USDC",
-            "time": 1700000000000,
-            "side": "BUY",
-        }
-    ])
-    assert len(agg) == 1
-    assert float(agg[0]["price"]) == pytest.approx(60000.0)
-    assert float(agg[0]["commission"]) == pytest.approx(15.0)
-    assert agg[0]["commissionAsset"] == "USDC"
-
 
 def test_cross_venue_and_ws_extract_normalization_edges():
     from providers.base import (

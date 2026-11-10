@@ -5447,20 +5447,12 @@ def test_iteration27_should_wait_none_fallback_price_analysis_memo_and_quantity_
     fake_lt_cache["TAOUSD"][0]["duration_seconds"] = float("nan")
     assert pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY") is None
 
-    # 3. MarketRegimeService.compose_evidence slash normalization & _evaluate_provider_source clock skew
+    # 3. MarketRegimeService._evaluate_provider_source clock skew
     svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
     up_dec = MarketRegimeDecision(
         regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok",
     )
-    ev_short = MarketRegimeEvidence(
-        role="asset_short", family="price_trend", classifier="linreg",
-        provider="kraken", symbol="TAO/USD", decision=up_dec, evaluated_at=1000.0,
-    )
-    ev_long = MarketRegimeEvidence(
-        role="asset_long", family="price_trend", classifier="linreg",
-        provider="kraken", symbol="TAO/USD", decision=up_dec, evaluated_at=1000.0,
-    )
-    comp = svc.compose_evidence((ev_short, ev_long), asset_symbol="TAOUSD")
+    comp = svc.compose(up_dec, up_dec)
     assert comp.regime == "bull"
 
     calls = []
@@ -5606,12 +5598,6 @@ def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_m
     monkeypatch.setattr(bapi_trades, "init_cache_trade_manager", lambda: fake_trade_mgr)
     trades_out = bapi_trades.get_trade_orders("SELL", "BTC/USDC", 300)
     assert len(trades_out) == 1 and trades_out[0]["id"] == 3
-
-    agg = bapi_trades.aggregate_trades([
-        {"orderId": 10, "price": "0.0", "qty": "1.0", "time": valid_ts, "isBuyer": True},
-        {"orderId": 11, "price": "85000.0", "qty": "0.5", "time": valid_ts, "isBuyer": True},
-    ])
-    assert len(agg) == 1 and agg[0]["orderId"] == 11
 
     # 3. bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time
     canceled_ids = []
@@ -6845,8 +6831,7 @@ def test_iteration41_t212_provider_bapi_and_bapi_allorders_nan_bool_safety(monke
 
 
 def test_iteration42_order_id_context_bapi_ws_normalize_and_bapi_trades_nan_bool_safety():
-    import pytest
-    from binance_api import order_id_context, bapi_ws_normalize, bapi_trades
+    from binance_api import order_id_context, bapi_ws_normalize
 
     # 1. order_id_context: boolean clientOrderId & case-insensitive allowed_owners
     assert order_id_context.resolve_order_owner(True) == "unspecified"
@@ -6880,31 +6865,6 @@ def test_iteration42_order_id_context_bapi_ws_normalize_and_bapi_trades_nan_bool
     assert tr_row["time"] > 1_700_000_000_000
     assert "commission" not in tr_row
     assert "commissionAsset" not in tr_row
-
-    # 3. bapi_trades.aggregate_trades: rejects boolean orderId, quoteQty, commission, commissionAsset
-    agg = bapi_trades.aggregate_trades([
-        {"orderId": True, "symbol": "BTCUSDC", "qty": "1.0", "price": "50000", "isBuyer": True},
-        {
-            "orderId": 777,
-            "id": True,
-            "symbol": "BTCUSDC",
-            "qty": "0.5",
-            "price": "50000",
-            "quoteQty": True,
-            "commission": True,
-            "commissionAsset": True,
-            "isBuyer": "not-a-bool",
-            "side": "SELL",
-            "time": 1700000000000,
-        },
-    ])
-    assert len(agg) == 1
-    assert agg[0]["orderId"] == 777
-    assert agg[0]["id"] == 0
-    assert float(agg[0]["quoteQty"]) == pytest.approx(25000.0)
-    assert float(agg[0]["commission"]) == pytest.approx(0.0)
-    assert agg[0]["commissionAsset"] == ""
-    assert agg[0]["side"] == "SELL"
 
 
 def test_iteration43_ws_health_market_data_execution_audit_replay_and_trailing_nan_bool_safety(tmp_path):
@@ -8857,7 +8817,6 @@ def test_iteration67_binance_ws_client_context_and_api_safety():
     import json
     from binance_api.bapi_ws import BinancePriceStream, BinanceAccountStream
     from binance_api.order_id_context import _base36
-    from binance_api.bapi_trades import aggregate_trades
 
     # 1. BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E
     ps = BinancePriceStream(symbols=["BTCUSDC"])
@@ -8886,24 +8845,6 @@ def test_iteration67_binance_ws_client_context_and_api_safety():
     assert _base36(float("nan")) == "0"
     assert _base36("bad") == "0"
     assert _base36(36) == "10"
-
-    # 4. aggregate_trades handles OverflowError on quoteQty/commission gracefully
-    agg = aggregate_trades([
-        {
-            "orderId": 101,
-            "symbol": "BTCUSDC",
-            "qty": "0.5",
-            "price": "60000.0",
-            "quoteQty": 10**400,
-            "commission": 10**400,
-            "commissionAsset": "USDC",
-            "time": 1700000000000,
-            "isBuyer": True,
-        }
-    ])
-    assert len(agg) == 1
-    assert float(agg[0]["quoteQty"]) == 30000.0
-    assert float(agg[0]["commission"]) == 0.0
 
 
 def test_iteration68_kraken_and_hyperliquid_client_safety():
@@ -9130,7 +9071,7 @@ def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety
             "side": "BUY", "kind": "limit", "client_order_id": "c1", "qty": 1.0, "order_id": True,
         })
     store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"))
-    store.begin("BTCUSDC", "p1", "BUY", 1.0)
+    store.intent("p1", "BUY", 100.0, 1.0, "c0", symbol="BTCUSDC", start_side="BUY")
     with pytest.raises(ValueError):
         store.persist_intent("p1", "BUY", "limit", {"client_order_id": "c1", "qty": float("nan")})
 
@@ -11353,25 +11294,6 @@ def test_iteration108_binance_filters_bapi_ws_normalize_and_bapi_safety():
     assert rc.resolve_order_owner([1, 2, 3]) == "unspecified"
     assert rc.resolve_order_owner(12345) == "unspecified"
 
-    agg = bapi_trades.aggregate_trades(
-        [
-            {
-                "orderId": "999",
-                "id": "1",
-                "symbol": True,
-                "price": "100.0",
-                "qty": "1.0",
-                "side": "BUY",
-                "isMaker": "yes",
-                "isBestMatch": 123,
-            }
-        ]
-    )
-    assert len(agg) == 1
-    assert agg[0]["symbol"] == ""
-    assert agg[0]["isMaker"] is None
-    assert agg[0]["isBestMatch"] is None
-
 
 def test_iteration109_providers_base_http_resilience_replay_and_trailing_stop_safety(tmp_path):
     """Iteration 109: Verify providers.base, http_resilience, replay_provider, and trailing_stop safety."""
@@ -13106,39 +13028,6 @@ def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatc
     assert bapi_trades._valid_fill_id({"a": 1}) is None
     assert bapi_trades._valid_fill_id([123]) is None
 
-    # 2. bapi_trades.aggregate_trades preserves symbol, id, and commissionAsset across multi-fill orders with partial missing fields
-    agg = bapi_trades.aggregate_trades(
-        [
-            {
-                "orderId": 888.0,
-                "id": None,
-                "symbol": "BTCUSDC",
-                "qty": "0.5",
-                "price": "50000",
-                "commission": "0.1",
-                "commissionAsset": "BNB",
-                "side": "BUY",
-                "time": 1700000000000,
-            },
-            {
-                "orderId": 888,
-                "id": 9001.0,
-                "symbol": None,
-                "qty": "0.5",
-                "price": "50000",
-                "commission": "0.1",
-                "commissionAsset": None,
-                "side": "BUY",
-                "time": 1700000001000,
-            },
-        ]
-    )
-    assert len(agg) == 1
-    assert agg[0]["orderId"] == 888
-    assert agg[0]["id"] == 9001
-    assert agg[0]["symbol"] == "BTCUSDC"
-    assert agg[0]["commissionAsset"] == "BNB"
-
     # 3. bapi_allorders.get_filled_orders groups integer float and int orderIds together and separates sentinel strings
     now_ms = int(time.time() * 1000)
     monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda _s: None)
@@ -14493,12 +14382,11 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     assert store.terminal_retention == 50
 
     with pytest.raises(ValueError):
-        store.begin("BTCUSDC", "pair-bool", "BUY", True)
+        store.intent("pair-bool", "BUY", 60000.0, True, "CID-1", symbol="BTCUSDC")
     with pytest.raises(ValueError):
         store.intent("pair-bad", "BUY", 60000.0, 0.1, "nan", symbol="BTCUSDC")
 
-    store.begin("BTCUSDC", "pair-1", "BUY", 0.1)
-    store.intent("pair-1", "BUY", 60000.0, 0.1, "CID-RT-1")
+    store.intent("pair-1", "BUY", 60000.0, 0.1, "CID-RT-1", symbol="BTCUSDC", start_side="BUY")
     with pytest.raises(ValueError):
         store.accepted("pair-1", "BUY", "0")
     store.accepted("pair-1", "BUY", 999.0)

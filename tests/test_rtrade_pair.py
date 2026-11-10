@@ -1209,7 +1209,7 @@ class RTradePairStoreTest(unittest.TestCase):
         self.assertEqual(open(self.store.path, "rb").read(), original)
 
         with self.assertRaises(ValueError):
-            self.store.begin("TAOUSDC", "new-pair", "BUY", 1.0)
+            self.store.intent("new-pair", "BUY", 100.0, 1.0, "CID-1", symbol="TAOUSDC", start_side="BUY")
         self.assertEqual(open(self.store.path, "rb").read(), original)
 
     def test_existing_invalid_roots_fail_closed_without_rewrite(self):
@@ -1277,8 +1277,7 @@ class RTradePairStoreTest(unittest.TestCase):
         self.assertNotIn("limit_revisions", updated["state"])
 
     def test_intent_is_durable_before_acceptance_and_checkpoint(self):
-        self.store.begin("TAOUSDC", "pair-1", "BUY", 2.0)
-        self.store.intent("pair-1", "BUY", 100.0, 2.0, "SD_client", kind="limit")
+        self.store.intent("pair-1", "BUY", 100.0, 2.0, "SD_client", kind="limit", symbol="TAOUSDC", start_side="BUY")
         pending = self.store.active("TAOUSDC")[0]
         self.assertIsNone(pending["intents"]["limit:BUY"]["order_id"])
 
@@ -1290,7 +1289,7 @@ class RTradePairStoreTest(unittest.TestCase):
         self.assertEqual(adopted["state"]["phase"], "quoting")
 
     def test_terminal_pair_is_not_recovered(self):
-        self.store.begin("TAOUSDC", "pair-2", "SELL", 1.0)
+        self.store.intent("pair-2", "SELL", 100.0, 1.0, "SD_term", kind="limit", symbol="TAOUSDC", start_side="SELL")
         self.store.checkpoint("pair-2", {"pair_id": "pair-2", "phase": "complete", "tickets": []}, terminal=True)
         self.assertEqual(self.store.active("TAOUSDC"), [])
 
@@ -1326,7 +1325,7 @@ class RTradePairStoreTest(unittest.TestCase):
 
     def test_checkpoint_many_updates_rounds_in_one_transaction(self):
         for pair_id in ("p1", "p2"):
-            self.store.begin("TAOUSDC", pair_id, "BUY", 1.0)
+            self.store.intent(pair_id, "BUY", 100.0, 1.0, f"CID_{pair_id}", symbol="TAOUSDC", start_side="BUY")
         self.store.checkpoint_many([
             ("p1", {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []}, False),
             ("p2", {"phase": "complete"}, True),
@@ -1338,7 +1337,7 @@ class RTradePairStoreTest(unittest.TestCase):
         store = RTradePairStore(_os.path.join(self.tmp.name, "bounded.json"), terminal_retention=2)
         for i in range(4):
             pair_id = f"t{i}"
-            store.begin("TAOUSDC", pair_id, "BUY", 1.0)
+            store.intent(pair_id, "BUY", 100.0, 1.0, f"CID_{pair_id}", symbol="TAOUSDC", start_side="BUY")
             store.checkpoint(pair_id, {"phase": "complete"}, terminal=True)
         with open(store.path, encoding="utf-8") as handle:
             pairs = _json.load(handle)["pairs"]
@@ -1348,7 +1347,7 @@ class RTradePairStoreTest(unittest.TestCase):
         store = RTradePairStore()
         self.assertIsNone(store.path)
         self.assertIsNone(store.lock_path)
-        store.begin("TAOUSDC", "mem-1", "BUY", 1.0)
+        store.intent("mem-1", "BUY", 100.0, 1.0, "CID_MEM1", symbol="TAOUSDC", start_side="BUY")
         self.assertEqual(len(store.active("TAOUSDC")), 1)
         store.checkpoint("mem-1", {"phase": "complete"}, terminal=True)
         self.assertEqual(store.active("TAOUSDC"), [])

@@ -495,12 +495,6 @@ class AuditedStrategyExecutor:
             return safe_nonneg_float(fn(symbol), default=0.0) or 0.0
         return MarketDataProvider.min_order_qty(self, symbol)
 
-    def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
-        fn = getattr(self._executor, "strategy_dry_run", None)
-        if callable(fn):
-            return bool(fn(force_paper, strategy_execute))
-        return MarketDataProvider.resolve_strategy_dry_run(force_paper, strategy_execute, self.execution_enabled())
-
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)

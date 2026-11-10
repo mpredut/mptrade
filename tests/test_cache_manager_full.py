@@ -115,7 +115,7 @@ class TestCacheManagerInterface(unittest.TestCase):
         with self.subTest("save enabled writes file"):
             fname = _tmp_file(self.tmp, "save_test.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname)
-            mgr.enable_save_state_to_file()
+            mgr.save_state = True
             mgr.cache["SYM"] = [[999, 42.0]]
             mgr.save_state_to_file_if_enabled()
             self.assertTrue(os.path.exists(fname))
@@ -126,7 +126,7 @@ class TestCacheManagerInterface(unittest.TestCase):
         with self.subTest("save uses tmp then replace"):
             fname = _tmp_file(self.tmp, "atomic.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname)
-            mgr.enable_save_state_to_file()
+            mgr.save_state = True
             mgr.cache["SYM"] = [[1, 2.0]]
             mgr.save_state_to_file_if_enabled()
             self.assertTrue(os.path.exists(fname))
@@ -436,7 +436,7 @@ class TestCacheOrderManager(unittest.TestCase):
 
         with self.subTest(msg="mutable_order_update_is_persisted"):
             mgr = self._make()
-            mgr.enable_save_state_to_file()
+            mgr.save_state = True
             order = {
                 "orderId": 7, "price": "100", "quantity": "0.5",
                 "timestamp": int(time.time() * 1000), "side": "BUY",
@@ -1278,7 +1278,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
     def test_persistence_reload(self):
         mgr, api_mock = self._make()
-        mgr.enable_save_state_to_file()
+        mgr.save_state = True
         mgr.on_items_update("BTC", [[int(time.time() * 1000), 58000.0]])
         mgr.save_state_to_file_if_enabled()
 
@@ -1916,7 +1916,7 @@ class TestAppendJsonlPersist(unittest.TestCase):
             m.maintain_append_persist()
             with m.lock:
                 self.assertEqual(m.cache["SYM"], [[now_ms, 2.0]])   # Old entry removed from memory.
-            m.enable_save_state_to_file()
+            m.save_state = True
             m.save_state_to_file_if_enabled()
             with open(fname) as f:
                 on_disk = json.load(f)

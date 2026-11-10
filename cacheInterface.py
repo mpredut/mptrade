@@ -1226,6 +1226,3 @@ class CacheManagerInterface(ABC):
             for manager in instances
         ]
         return all(results) if results else True
-
-    def enable_save_state_to_file(self):
-        self.save_state = True

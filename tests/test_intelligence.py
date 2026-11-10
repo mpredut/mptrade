@@ -4625,7 +4625,7 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
     (tmp_path / "state").mkdir(exist_ok=True)
     store = RTradePairStore(str(tmp_path / "rtrade_pairs_state.json"))
     assert store._resolved_lock_path() == str(tmp_path / "state" / "rtrade_pairs_state.json.lock")
-    store.begin("TAOUSDC", "pair-store-79", "BUY", 1.0)
+    store.intent("pair-store-79", "BUY", 100.0, 1.0, "CID-79", symbol="TAOUSDC", start_side="BUY")
     assert len(store.active("TAOUSDC")) == 1
 
     # 5. assetguardian._resolve_blocking_sell_orders retains order when cancel returns False and resolves accepted order on True

@@ -420,12 +420,11 @@ class RTradeThreadingTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory(prefix=f"rtrade-merge-{kind}-") as root:
                     store = RTradePairStore(os.path.join(root, "pairs.json"))
                     state = _old_exposed_checkpoint(pair_id)
-                    store.begin("TAOUSDC", pair_id, "BUY", 1.0)
-                    store.checkpoint(pair_id, state, terminal=False)
                     client_id = rtrade_client_order_id(pair_id, "SELL", suffix)
                     store.intent(
                         pair_id, "SELL", price, qty, client_id,
-                        kind=suffix, symbol="TAOUSDC")
+                        kind=suffix, symbol="TAOUSDC", start_side="BUY")
+                    store.checkpoint(pair_id, state, terminal=False)
                     store.accepted(pair_id, "SELL", order_id, kind=suffix)
                     venue, executor = _restart_merge_venue(
                         root, store, {
@@ -459,12 +458,11 @@ class RTradeThreadingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="rtrade-merge-pending-") as root:
             store = RTradePairStore(os.path.join(root, "pairs.json"))
             state = _old_exposed_checkpoint(pair_id)
-            store.begin("TAOUSDC", pair_id, "BUY", 1.0)
-            store.checkpoint(pair_id, state, terminal=False)
             client_id = rtrade_client_order_id(pair_id, "SELL", "limit_1")
             store.intent(
                 pair_id, "SELL", 101.25, 0.7, client_id,
-                kind="limit_1", symbol="TAOUSDC")
+                kind="limit_1", symbol="TAOUSDC", start_side="BUY")
+            store.checkpoint(pair_id, state, terminal=False)
             venue, executor = _restart_merge_venue(
                 root, store, {
                     "recovered-by-cid": OrderStatus(
@@ -847,7 +845,7 @@ class RTradeThreadingTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory(prefix=f"rtrade-{phase}-refusal-") as root:
                     store_path = os.path.join(root, "pairs.json")
                     store = RTradePairStore(store_path)
-                    store.begin("TAOUSDC", f"pair-{phase}", "SELL", 0.4)
+                    store.intent(f"pair-{phase}", "SELL", 100.0, 0.4, f"CID_{phase}", symbol="TAOUSDC", start_side="SELL")
                     venue, executor = _hard_stop_venue(root, store, **kwargs)
                     with self.assertRaisesRegex(SubmissionRefused, "cache_stale"):
                         venue.place_market_exit(
@@ -865,7 +863,7 @@ class RTradeThreadingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="rtrade-post-cancel-refusal-") as root:
             store_path = os.path.join(root, "pairs.json")
             store = RTradePairStore(store_path)
-            store.begin("TAOUSDC", "pair-11b", "SELL", 0.4)
+            store.intent("pair-11b", "SELL", 100.0, 0.4, "CID_11b", symbol="TAOUSDC", start_side="SELL")
             venue, executor = _hard_stop_venue(
                 root, store,
                 submit_error=SubmissionRefused("account_cache_not_fresh"))
@@ -946,7 +944,7 @@ class RTradeThreadingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="rtrade-submit-unknown-") as root:
             store_path = os.path.join(root, "pairs.json")
             store = RTradePairStore(store_path)
-            store.begin("TAOUSDC", "pair-12", "SELL", 0.4)
+            store.intent("pair-12", "SELL", 100.0, 0.4, "CID_12", symbol="TAOUSDC", start_side="SELL")
             executor = Executor()
             with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
                  patch.object(

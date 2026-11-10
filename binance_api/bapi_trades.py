@@ -1,19 +1,15 @@
 import time
 import threading
-from collections import defaultdict
 
 # Repository imports.
 import instrument_registry as sym
-from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
+from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_int
 from . import bapi as api
 from .bapi import _normalize_side
 from . import bapi_allorders as apiorders
 from providers.order_ohlc_utils import (
     extract_client_order_id,
-    extract_order_fee,
     extract_order_id,
-    extract_order_price,
-    extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
 )
@@ -83,112 +79,6 @@ def _dedup_trades_by_fill_id(all_trades):
         ):
             latest_trades[fill_key] = trade
     return list(latest_trades.values())
-
-
-def _fmt_trade_num(val: float) -> str:
-    return (f"{val:.8f}" if val >= 1e-8 else f"{val:.12f}").rstrip("0").rstrip(".") or str(val)
-
-
-def aggregate_trades(trades):
-    aggregated_trades = defaultdict(lambda: {
-        'symbol': '', 'price': '', 'qty': 0.0, 'quoteQty': 0.0, 'weightedCost': 0.0,
-        'count': 0, 'commission': 0.0, 'commissionAsset': '', 'time': 0,
-        'isBuyer': None, 'isMaker': None, 'isBestMatch': None, 'id': 0,
-    })
-
-    # Group fills by order ID.
-    for trade in trades or ():
-        if not isinstance(trade, dict):
-            continue
-        orderId = _resolve_trade_order_id(trade)
-        if orderId is None or isinstance(orderId, bool) or not str(orderId).strip():
-            continue
-        qty = extract_order_qty(trade)
-        px = extract_order_price(trade)
-        if qty <= 0 or px <= 0:
-            continue
-        raw_qq = safe_pos_float(trade.get('quoteQty'), default=None)
-        quote_qty = raw_qq if raw_qq is not None else (px * qty)
-        ts_ms = extract_timestamp_ms(trade, default=0) or 0
-        side = extract_order_side(trade)
-        raw_is_buyer = trade.get('isBuyer')
-        is_buyer = raw_is_buyer if isinstance(raw_is_buyer, bool) else (side == 'BUY')
-
-        # Aggregate fields belonging to the same order.
-        raw_tid = _valid_fill_id(trade.get('id'))
-        if aggregated_trades[orderId]['count'] == 0 or not aggregated_trades[orderId]['id']:
-            aggregated_trades[orderId]['id'] = 0 if raw_tid is None else raw_tid
-        aggregated_trades[orderId]['count'] += 1
-        aggregated_trades[orderId]['orderId'] = orderId
-        raw_sym = trade.get('symbol', '')
-        clean_sym = raw_sym.strip() if isinstance(raw_sym, str) else ''
-        if clean_sym or not aggregated_trades[orderId]['symbol']:
-            aggregated_trades[orderId]['symbol'] = clean_sym
-        raw_px = trade.get('price')
-        has_pos_raw_px = safe_pos_float(raw_px, default=None) is not None
-        aggregated_trades[orderId]['price'] = (
-            raw_px
-            if has_pos_raw_px
-            else (_fmt_trade_num(px) if px > 0 else (raw_px if raw_px is not None else px))
-        )
-        aggregated_trades[orderId]['qty'] += qty
-        aggregated_trades[orderId]['quoteQty'] += quote_qty
-        aggregated_trades[orderId]['weightedCost'] += px * qty
-        fee_info = extract_order_fee(trade)
-        comm_val = safe_nonneg_float(trade.get('commission'), default=0.0) or 0.0
-        if comm_val == 0.0 and fee_info is not None:
-            comm_val = fee_info['fee']
-        raw_comm_asset = trade.get('commissionAsset')
-        comm_asset = (
-            raw_comm_asset.strip()
-            if (isinstance(raw_comm_asset, str) and raw_comm_asset.strip())
-            else (fee_info['fee_asset'] if fee_info is not None else '')
-        )
-        aggregated_trades[orderId]['commission'] += comm_val
-        if comm_asset or not aggregated_trades[orderId]['commissionAsset']:
-            aggregated_trades[orderId]['commissionAsset'] = comm_asset
-        aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
-        aggregated_trades[orderId]['isBuyer'] = is_buyer
-        raw_maker = trade.get('isMaker')
-        raw_best = trade.get('isBestMatch')
-        aggregated_trades[orderId]['isMaker'] = raw_maker if isinstance(raw_maker, bool) else None
-        aggregated_trades[orderId]['isBestMatch'] = raw_best if isinstance(raw_best, bool) else None
-
-    # Build the aggregate list.
-    aggregated_list = []
-    for aggregated in aggregated_trades.values():
-        total_qty = aggregated['qty']
-        if aggregated['count'] > 1 and total_qty > 0:
-            vwap = aggregated['weightedCost'] / total_qty
-            price_val = _fmt_trade_num(vwap) if vwap > 0 else "0"
-        else:
-            price_val = aggregated['price']
-        qty_str = (
-            f"{total_qty:.8f}"
-            if total_qty <= 0 or total_qty >= 1e-8
-            else _fmt_trade_num(total_qty)
-        )
-        side = "BUY" if aggregated['isBuyer'] else "SELL"
-        aggregated_list.append({
-            'id': aggregated['id'],
-            'orderId': aggregated['orderId'],
-            'symbol': aggregated['symbol'],
-            'orderListId': -1,
-            'price': price_val,
-            'qty': qty_str,  # Preserve the eight-decimal format (or sub-satoshi precision).
-            'quantity': qty_str,
-            'quoteQty': f"{aggregated['quoteQty']:.8f}",
-            'commission': f"{aggregated['commission']:.8f}",
-            'commissionAsset': aggregated['commissionAsset'],
-            'time': aggregated['time'],
-            'timestamp': aggregated['time'],
-            'isBuyer': aggregated['isBuyer'],
-            'side': side,
-            'isMaker': aggregated['isMaker'],
-            'isBestMatch': aggregated['isBestMatch']
-        })
-
-    return aggregated_list
 
 
 def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, limit=1000):

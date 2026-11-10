@@ -285,12 +285,6 @@ class MarketDataProvider(ABC):
             or not _parse_bool_flag(venue_live_enabled, False)
         )
 
-    def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
-        """Return whether a spot strategy should run in paper mode for this provider."""
-        return self.resolve_strategy_dry_run(
-            force_paper, strategy_execute, self.execution_enabled()
-        )
-
     def _round_required_qty(self, symbol: str, qty: float, err_prefix: str = "submit_order") -> float:
         """Round ``qty`` using ``round_quantity`` and raise ``ProviderError`` if non-positive."""
         rounded = self.round_quantity(symbol, qty)

@@ -68,7 +68,6 @@ from providers.base import (
     _parse_bool_flag,
     extract_timestamp_s,
     normalize_side,
-    normalize_timestamp_ms,
 )
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1401,16 +1400,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self.read_only = False
         self.save_state = True
         self._start_flush_loop()
-
-    def get_all_snapshots(self):
-        with self._lock:
-            if self._mem:
-                return {
-                    s: dict(v) for s, v in self._mem.items() if isinstance(v, dict)
-                }
-        return {
-            s: dict(v) for s, v in self._read_file().items() if isinstance(v, dict)
-        }
 
     def clear(self):
         with self._lock:

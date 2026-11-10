@@ -251,16 +251,6 @@ class RTradePairStore:
             if isinstance(rec, dict) and rec.get("terminal") and pair_id not in keep:
                 del pairs[pair_id]
 
-    def begin(self, symbol, pair_id, start_side, qty):
-        qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
-        pid_clean = self._clean_pair_id(pair_id)
-        now = time.time()
-
-        def op(pairs):
-            pairs[pid_clean] = self._new_pair_record(symbol, pid_clean, start_side, qty_f, now)
-
-        self.mutate(op)
-
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         price_f = None if price is None else self._finite_positive(price, f"pair {pair_id!r} price")

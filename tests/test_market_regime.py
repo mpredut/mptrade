@@ -419,42 +419,6 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual(recovered.regime, "bull")
         self.assertEqual(provider.calls, 2)
 
-    def test_compose_evidence_ignores_non_directional_families(self):
-        bull = self.evaluator.evaluate({
-            "gradient_recent": 0.6,
-            "epsilon": 0.1,
-        })
-        bear = self.evaluator.evaluate({
-            "gradient_recent": -0.6,
-            "epsilon": 0.1,
-        })
-
-        def item(role, decision, family="price_trend"):
-            return MarketRegimeEvidence(
-                role=role,
-                family=family,
-                classifier="test",
-                provider="Kraken",
-                symbol="HYPEUSD",
-                decision=decision,
-                evaluated_at=1000,
-                observed_at=990,
-                max_age_seconds=30,
-                correlation_key=f"HYPEUSD:{role}:{family}",
-            )
-
-        decision = MarketRegimeService().compose_evidence(
-            (
-                item("asset_short", bull),
-                item("asset_short", bear, family="persistence"),
-                item("asset_long", bull),
-            ),
-            asset_symbol="HYPEUSD",
-        )
-
-        self.assertEqual(decision.regime, "bull")
-        self.assertEqual(len(decision.components), 2)
-
     def test_common_service_derives_regime_from_provider_ohlc(self):
         class Provider:
             def __init__(self, name):

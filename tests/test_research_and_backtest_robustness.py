@@ -2849,12 +2849,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert extract_order_id({"orderId": float("nan"), "id": 777}) == "777"
     assert extract_order_id({"orderId": float("nan")}) is None
 
-    agg = bapi_trades.aggregate_trades([
-        {"orderId": "", "id": 501, "symbol": "BTCUSDC", "price": "100.0", "qty": "1.0", "time": 1000, "isBuyer": True},
-        {"orderId": float("nan"), "id": 502, "symbol": "BTCUSDC", "price": "200.0", "qty": "1.0", "time": 2000, "isBuyer": False},
-    ])
-    assert [row["orderId"] for row in agg] == ["501", "502"]
-
     bad_client = SimpleNamespace(get_my_trades=lambda **kw: [{"id": 12.5}, {"id": 13.5}])
     with pytest.raises(RuntimeError):
         bapi_allorders.paginate_my_trades(bad_client, "BTCUSDC", 1000, limit=2, strict=True)
@@ -4810,11 +4804,10 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
         instrument_registry.load_registry(True)  # type: ignore[arg-type]
     assert len(instrument_registry.load_registry("   ")) > 0
 
-    # 3. rtrade_pair_store: whitespace/case normalization in rtrade_client_order_id, begin, intent, accepted, active
+    # 3. rtrade_pair_store: whitespace/case normalization in rtrade_client_order_id, intent, accepted, active
     assert rtrade_client_order_id(" pair1 ", " buy ", " limit ") == rtrade_client_order_id("pair1", "BUY", "limit")
     store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"))
-    store.begin(" btcusdc ", " p1 ", " buy ", 0.5)
-    store.intent("p1", " buy ", 50000.0, 0.5, "coid1", kind=" limit ")
+    store.intent(" p1 ", " buy ", 50000.0, 0.5, "coid1", kind=" limit ", symbol=" btcusdc ", start_side=" buy ")
     store.accepted("p1", " buy ", "oid1", kind=" limit ")
     active = store.active(" btcusdc ")
     assert len(active) == 1 and active[0]["pair_id"] == "p1"
@@ -5525,14 +5518,11 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
     c365 = cm.Cache365PriceManager(30, ["BTCUSDC"], str(c365_path), read_only=True)
     assert c365.fetchtime_per_symbol["BTCUSDC"] == 1700000000000
 
-    # 7. bapi_trades._valid_fill_id rejects negative numbers and aggregate_trades falls back when orderId is 0
+    # 7. bapi_trades._valid_fill_id rejects negative numbers and _resolve_trade_order_id falls back when orderId is 0
     assert bapi_trades._valid_fill_id(-5) is None
     assert bapi_trades._valid_fill_id(-5.0) is None
     assert bapi_trades._valid_fill_id("-5") is None
-    agg = bapi_trades.aggregate_trades([
-        {"orderId": 0, "id": 987, "symbol": "BTCUSDC", "price": "100.0", "qty": "1.0", "time": 1000, "isBuyer": True},
-    ])
-    assert len(agg) == 1 and agg[0]["orderId"] == "987"
+    assert bapi_trades._resolve_trade_order_id({"orderId": 0, "id": 987}) == "987"
 
 
 def test_batch39_providers_pem_spot_engine_rules_replay_hardening():

@@ -926,7 +926,6 @@ class TestTrendCoordinator(unittest.TestCase):
         with self.subTest("evaluation cache lifecycle"):
             coord = self._make_coord()
             self.assertIsNone(coord.instant_mgr.get_snapshot("BTCUSDT"))
-            self.assertEqual(coord.instant_mgr.get_all_snapshots(), {})
             snap = coord.evaluate("BTCUSDT")
             self.assertIsNotNone(snap)
             cached = coord.instant_mgr.get_snapshot("BTCUSDT")
@@ -937,7 +936,6 @@ class TestTrendCoordinator(unittest.TestCase):
                     self.assertIn(key, cached)
             self.assertNotIn("slope_max_min", cached)
             self.assertFalse(coord._dirty["BTCUSDT"])
-            self.assertIn("BTCUSDT", coord.instant_mgr.get_all_snapshots())
             manager_snapshot = self.mgr.get_snapshot("BTCUSDT")
             self.assertIsNotNone(manager_snapshot)
             self.assertIn("slope_big", manager_snapshot)

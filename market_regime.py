@@ -595,11 +595,6 @@ class MarketRegimeService:
         return _DEFAULT_SNAPSHOT_MAX_AGE_SECONDS
 
     @staticmethod
-    def default_ohlc_max_age_seconds() -> dict:
-        """Return strict interval-specific freshness bounds for closed candles."""
-        return dict(_DEFAULT_OHLC_MAX_AGE_SECONDS)
-
-    @staticmethod
     def _age_limit(value, horizon, interval_min=None):
         """Resolve a scalar or horizon/interval freshness configuration."""
         if value is None or not isinstance(value, Mapping):
@@ -940,85 +935,6 @@ class MarketRegimeService:
             conviction=conviction, actionable=actionable, conflict=conflict,
             pattern=pattern, use_case=use_case, reason=reason,
             components=tuple(components))
-
-    def compose_evidence(
-        self,
-        evidence,
-        *,
-        asset_symbol=None,
-        use_case="balanced",
-        weights=None,
-        strength_cap=6.0,
-        directional_threshold=0.15,
-    ):
-        """Compose only usable directional evidence, once per symbol and role.
-
-        Other families such as persistence, volatility, and liquidity remain
-        observable context. They cannot become directional votes without a
-        separately validated policy.
-        """
-        items = tuple(evidence or ())
-        if any(not isinstance(item, MarketRegimeEvidence) for item in items):
-            raise TypeError("compose_evidence requires MarketRegimeEvidence items")
-        directional = [
-            item for item in items
-            if item.usable and item.family == "price_trend"
-        ]
-        if asset_symbol is None:
-            asset_symbol = next(
-                (
-                    item.symbol
-                    for item in directional
-                    if item.role in {"asset_short", "asset_long"}
-                ),
-                "",
-            )
-        asset_key = canonical_symbol_key(asset_symbol)
-        selected = {}
-        for item in directional:
-            item_key = canonical_symbol_key(item.symbol)
-            key = (item_key, item.role)
-            selected.setdefault(key, item)
-
-        unknown = self.evaluator.unknown("evidence_unavailable")
-        asset_short = selected.get((asset_key, "asset_short"))
-        asset_long = selected.get((asset_key, "asset_long"))
-        benchmark_symbols = tuple(dict.fromkeys(
-            item.symbol
-            for item in directional
-            if canonical_symbol_key(item.symbol) != asset_key
-            and item.role in {"benchmark_short", "benchmark_long"}
-        ))
-        benchmarks = tuple(
-            (
-                symbol,
-                selected.get(
-                    (canonical_symbol_key(symbol), "benchmark_short"),
-                    None,
-                ),
-                selected.get(
-                    (canonical_symbol_key(symbol), "benchmark_long"),
-                    None,
-                ),
-            )
-            for symbol in benchmark_symbols
-        )
-        return self.compose(
-            asset_short.decision if asset_short else unknown,
-            asset_long.decision if asset_long else unknown,
-            tuple(
-                (
-                    symbol,
-                    short.decision if short else unknown,
-                    long.decision if long else unknown,
-                )
-                for symbol, short, long in benchmarks
-            ),
-            use_case=use_case,
-            weights=weights,
-            strength_cap=strength_cap,
-            directional_threshold=directional_threshold,
-        )
 
     @staticmethod
     def _closed_series(provider, symbol, interval_min) -> ClosedPriceSeries:

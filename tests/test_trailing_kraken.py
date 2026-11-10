@@ -597,28 +597,18 @@ class TestRebuyGuardsKraken(Base):
         self.assertIn("HYPE: varf=60.0", buf.getvalue())
         self.assertIn("ENABLED=True", buf.getvalue())
 
-        # 3. Shared MarketDataProvider.resolve_strategy_dry_run & strategy_dry_run
+        # 3. Shared MarketDataProvider.resolve_strategy_dry_run
         self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(True, True, True))
         self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(False, False, True))
         self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(False, True, False))
         self.assertFalse(MarketDataProvider.resolve_strategy_dry_run(False, True, True))
 
-        hl_live = HyperliquidProvider(token="HYPE", live_enabled=True)
-        hl_dry = HyperliquidProvider(token="HYPE", live_enabled=False)
-        self.assertFalse(hl_live.strategy_dry_run(False, True))
-        self.assertTrue(hl_live.strategy_dry_run(True, True))
-        self.assertTrue(hl_dry.strategy_dry_run(False, True))
-
         with patch.dict(os.environ, {"HL_LIVE_ORDERS": "true", "KRAKEN_LIVE_ORDERS": "true"}):
             self.assertFalse(hl_strategy_dry_run(False, True))
             self.assertFalse(kraken_strategy_dry_run(False, True))
-            self.assertFalse(KrakenProvider(client=c).strategy_dry_run(False, True))
-            self.assertFalse(ts.executor.strategy_dry_run(False, True))
         with patch.dict(os.environ, {"HL_LIVE_ORDERS": "false", "KRAKEN_LIVE_ORDERS": "false"}):
             self.assertTrue(hl_strategy_dry_run(False, True))
             self.assertTrue(kraken_strategy_dry_run(False, True))
-            self.assertTrue(KrakenProvider(client=c).strategy_dry_run(False, True))
-            self.assertTrue(ts.executor.strategy_dry_run(False, True))
 
         # 4. AuditedStrategyExecutor passthroughs & SSOT cache_path resolution
         c.pair_info = lambda _p: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": "0.01", "base": "HYPE"}
