@@ -1949,59 +1949,6 @@ def normalize_yahoo_5d_chart_bars(
     return pts_5d, pts_24h_bars, pts_24h, rth_bar_fresh, chart_tick_fresh, chart_px, raw_last_5d_ts
 
 
-def evaluate_post_rth_24h_override(
-    matched_series_24h: list,
-    m24: Dict[str, Any],
-    sym_px_cur: float,
-    now_ts: float,
-    *,
-    is_eq_sym: bool,
-    entry: Optional[Dict[str, Any]] = None,
-    compute_24h_fn: Any = None,
-) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
-    """Evaluate post-RTH / off-RTH equity price override on 24h series while preserving RTH Volume Profile anchors."""
-    eff_compute_24h = compute_24h_fn or compute_24h_price_metrics
-    s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
-    s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
-    post_rth_px_override: Optional[float] = None
-    post_rth_series_replaced = False
-    if (
-        is_eq_sym
-        and m24
-        and s24_p1 is not None
-        and (
-            (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
-            or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
-        )
-    ):
-        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1], threshold=0.35) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
-            post_rth_px_override = round(sym_px_cur, 4)
-            if len(matched_series_24h) >= 2:
-                rth_vp_anchors = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}
-                last_bar_tail = (
-                    list(matched_series_24h[-1][2:])
-                    if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
-                    else []
-                )
-                override_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], post_rth_px_override, *last_bar_tail]]
-                m24 = eff_compute_24h(override_series_24h) or m24
-                if rth_vp_anchors:
-                    for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
-                        m24.pop(k_vp_clr, None)
-                    m24.update(rth_vp_anchors)
-                if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005:
-                    post_rth_series_replaced = True
-                    matched_series_24h = override_series_24h
-                    if isinstance(entry, dict):
-                        for k_ov in _SHORT_SLOPE_OVERRIDE_KEYS:
-                            entry.pop(k_ov, None)
-            if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
-                m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
-        for k_stale in _STALE_SHORT_24H_KEYS:
-            m24.pop(k_stale, None)
-    return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
-
-
 class TelemetryEvaluatorInterface(ABC):
     """Pure abstract base contract (Level 1) for stateless quantitative telemetry evaluators.
 
@@ -2342,15 +2289,51 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         entry: Optional[Dict[str, Any]] = None,
         compute_24h_fn: Any = None,
     ) -> Tuple[list, Dict[str, Any], Optional[float], bool]:
-        return evaluate_post_rth_24h_override(
-            matched_series_24h,
-            m24,
-            sym_px_cur,
-            now_ts,
-            is_eq_sym=True,
-            entry=entry,
-            compute_24h_fn=compute_24h_fn,
-        )
+        eff_compute_24h = compute_24h_fn or compute_24h_price_metrics
+        s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
+        s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
+        post_rth_px_override: Optional[float] = None
+        post_rth_series_replaced = False
+        if (
+            m24
+            and s24_p1 is not None
+            and (
+                (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
+                or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
+            )
+        ):
+            if (
+                sym_px_cur > 0
+                and not _prices_diverged(sym_px_cur, s24_p1[1], threshold=0.35)
+                and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4
+            ):
+                post_rth_px_override = round(sym_px_cur, 4)
+                if len(matched_series_24h) >= 2:
+                    rth_vp_anchors = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}
+                    last_bar_tail = (
+                        list(matched_series_24h[-1][2:])
+                        if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
+                        else []
+                    )
+                    override_series_24h = list(matched_series_24h[:-1]) + [
+                        [s24_p1[0], post_rth_px_override, *last_bar_tail]
+                    ]
+                    m24 = eff_compute_24h(override_series_24h) or m24
+                    if rth_vp_anchors:
+                        for k_vp_clr in _RTH_VP_ANCHOR_KEYS:
+                            m24.pop(k_vp_clr, None)
+                        m24.update(rth_vp_anchors)
+                    if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005:
+                        post_rth_series_replaced = True
+                        matched_series_24h = override_series_24h
+                        if isinstance(entry, dict):
+                            for k_ov in _SHORT_SLOPE_OVERRIDE_KEYS:
+                                entry.pop(k_ov, None)
+                if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
+                    m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
+            for k_stale in _STALE_SHORT_24H_KEYS:
+                m24.pop(k_stale, None)
+        return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
 
     def prune_stale_short_metrics(
         self,

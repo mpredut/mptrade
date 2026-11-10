@@ -336,6 +336,8 @@ class TestRebuyGuardsKraken(Base):
 
     def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
         import kraken_cachemanager as kcm
+        from cacheaccount import CacheTradeManager
+        from providers.kraken_provider import KrakenProvider
 
         class FakeLedgerClient:
             def _private(self, method, data=None, fresh=False):
@@ -350,7 +352,10 @@ class TestRebuyGuardsKraken(Base):
         saved_pairs = list(kcm.PAIRS)
         try:
             kcm.PAIRS[:] = ["HYPEUSD", "TAOUSD"]
-            kcm._fetch_rest_into(FakeLedgerClient(), cache)
+            by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+                FakeLedgerClient(), pairs=kcm.PAIRS, lookback_sec=kcm.LEDGER_LOOKBACK_S
+            )
+            CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
             self.assertEqual(len(cache["items"]["HYPEUSD"]), 1)
             self.assertEqual(cache["items"]["HYPEUSD"][0]["symbol"], "HYPEUSD")
             self.assertEqual(cache["items"]["TAOUSD"], [])
@@ -364,9 +369,14 @@ class TestRebuyGuardsKraken(Base):
                 },
                 "fetchtime": {},
             }
-            kcm._merge_rest_into(FakeLedgerClient(), ws_cache)
+            ws_by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+                FakeLedgerClient(), pairs=kcm.PAIRS, lookback_sec=kcm.LEDGER_LOOKBACK_S
+            )
+            CacheTradeManager.merge_venue_fills_into_dict(ws_cache, ws_by_sym, is_snapshot=False)
             self.assertEqual([x["id"] for x in ws_cache["items"]["HYPEUSD"]], ["R1", "WS-1"])
-            kcm._touch_ws_fetchtimes(ws_cache, 1700000010000)
+            CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+                ws_cache, now_ms=1700000010000, symbols=kcm.PAIRS, create_missing=True
+            )
             self.assertEqual(ws_cache["fetchtime"]["HYPEUSD"], 1700000010000)
             self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
         finally:

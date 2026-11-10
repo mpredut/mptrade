@@ -455,7 +455,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 self.assertEqual(buy_call[2], "buy")
 
     def test_ledger_to_fills_ignores_dustsweeping_and_multi_asset_groups(self):
-        from kraken.kraken_cachemanager import _ledger_to_fills
+        from providers.kraken_provider import KrakenProvider
         ledger = {
             "L1": {
                 "type": "trade", "subtype": "dustsweeping", "refid": "SWEEP-1",
@@ -478,7 +478,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 "asset": "ZUSD", "amount": "2537.76", "fee": "6.598", "time": 1793288800.0,
             },
         }
-        fills = _ledger_to_fills(ledger)
+        fills = KrakenProvider.ledger_to_fills(ledger)
         self.assertEqual(len(fills), 1)
         self.assertEqual(fills[0]["symbol"], "HYPEUSD")
         self.assertAlmostEqual(fills[0]["price"], 93.3, places=4)
@@ -775,16 +775,9 @@ def test_kraken_client__read_ttl_last_price_price_decimals_add_order_ohlc_closes
         cli.ohlc_closes_with_timestamps("HYPEUSD", True)
 
 def test_kraken_cachemanager__ledger_to_fills_rejects_nan_bool_zero_amounts_and_iter48_s2():
-    """[ITER48 #2] kraken_cachemanager: _ledger_to_fills rejects NaN/bool/zero amounts and fees."""
-    import sys
-    orig_sys_path = list(sys.path)
-    try:
-        from kraken import kraken_client as kc
-        from kraken import kraken_cachemanager as kcm
-        from kraken import kraken_xstock_watch as kxw
-    finally:
-        sys.path[:] = orig_sys_path
-    # 2. kraken_cachemanager: _ledger_to_fills rejects NaN/bool/zero amounts and fees
+    """[ITER48 #2] KrakenProvider.ledger_to_fills rejects NaN/bool/zero amounts and fees."""
+    from providers.kraken_provider import KrakenProvider
+    # 2. KrakenProvider.ledger_to_fills rejects NaN/bool/zero amounts and fees
     bad_ledger = {
         "L1": {"refid": "R1", "type": "trade", "asset": "HYPE", "amount": float("nan"), "time": 1700000000},
         "L2": {"refid": "R1", "type": "trade", "asset": "ZUSD", "amount": "-100.0", "time": 1700000000},
@@ -793,7 +786,7 @@ def test_kraken_cachemanager__ledger_to_fills_rejects_nan_bool_zero_amounts_and_
         "L5": {"refid": "R3", "type": "trade", "asset": "HYPE", "amount": "2.0", "fee": True, "time": 1700000000},
         "L6": {"refid": "R3", "type": "trade", "asset": "ZUSD", "amount": "-40.0", "fee": float("nan"), "time": 1700000000},
     }
-    fills = kcm._ledger_to_fills(bad_ledger)
+    fills = KrakenProvider.ledger_to_fills(bad_ledger)
     assert len(fills) == 1
     assert fills[0]["id"] == "R3"
     assert fills[0]["price"] == 20.0
@@ -970,16 +963,11 @@ def test_kraken_market_data_pair_precision_handles_float_strings_and_overflowerr
     assert pair_precision({"pair_decimals": 10**400, "lot_decimals": 10**400, "ordermin": 10**400}) == (2, 8, 0.0)
 
 def test__ledger_to_fills_tolerates_non_dict_ledger_or_non_dict_iter68_s3():
-    """[ITER68 #3] _ledger_to_fills tolerates non-dict ledger or non-dict entries."""
-    import os
-    import sys
-    from kraken.kraken_cachemanager import _ledger_to_fills
-    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-    if hl_dir not in sys.path:
-        sys.path.insert(0, hl_dir)
-    # 3. _ledger_to_fills tolerates non-dict ledger or non-dict entries
-    assert _ledger_to_fills(None) == []
-    assert _ledger_to_fills({"L1": "not-a-dict"}) == []
+    """[ITER68 #3] KrakenProvider.ledger_to_fills tolerates non-dict ledger or non-dict entries."""
+    from providers.kraken_provider import KrakenProvider
+    # 3. KrakenProvider.ledger_to_fills tolerates non-dict ledger or non-dict entries
+    assert KrakenProvider.ledger_to_fills(None) == []
+    assert KrakenProvider.ledger_to_fills({"L1": "not-a-dict"}) == []
 
 def test_kraken_xstock_watch_check_pairs_tolerates_non_dict_entries_and_missing_iter70_s3():
     """[ITER70 #3] kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict."""
@@ -1071,10 +1059,10 @@ def test_krakenclient_add_order_validates_side_ordertype_and_mandatory_limit_ite
         kc.add_order("HYPEUSD", "buy", 1.0, price=None, ordertype="limit")
 
 def test_kraken_cachemanager__normalize_does_not_fabricate_sell_when_trade_iter90_s2():
-    """[ITER90 #2] kraken_cachemanager._normalize does not fabricate SELL when trade side is missing."""
-    import kraken.kraken_cachemanager as kcm
-    # 2. kraken_cachemanager._normalize does not fabricate SELL when trade side is missing
-    norm = kcm._normalize("T1", {"pair": "HYPEUSD", "price": "25.0", "vol": "1.0", "time": 1700000000})
+    """[ITER90 #2] KrakenProvider.normalize_ws_trade does not fabricate SELL when trade side is missing."""
+    from providers.kraken_provider import KrakenProvider
+    # 2. KrakenProvider.normalize_ws_trade does not fabricate SELL when trade side is missing
+    norm = KrakenProvider.normalize_ws_trade("T1", {"pair": "HYPEUSD", "price": "25.0", "vol": "1.0", "time": 1700000000})
     assert norm["side"] is None
     assert norm["isBuyer"] is None
 
@@ -1213,16 +1201,17 @@ def test_krakenclient_ohlc_closes_with_timestamps_and_kraken_market_data_iter115
     assert kmd.pair_precision({"pair_decimals": 999, "lot_decimals": 999, "ordermin": "0.1"}) == (2, 8, 0.1)
 
 def test_kraken_cachemanager__normalize__load_initial_cache_and__ledger_to_fills_iter115_s3(tmp_path):
-    """[ITER115 #3] kraken_cachemanager._normalize, _load_initial_cache, and _ledger_to_fills."""
-    import kraken.kraken_cachemanager as kcm
-    # 3. kraken_cachemanager._normalize, _load_initial_cache, and _ledger_to_fills
-    norm = kcm._normalize("tx1", {"pair": "XBTUSD", "ordertxid": True, "order_id": "OID-1", "price": "100", "vol": "1", "time": 1700000000})
+    """[ITER115 #3] KrakenProvider.normalize_ws_trade, CacheTradeManager.load_sanitized_trade_snapshot, and KrakenProvider.ledger_to_fills."""
+    from cacheaccount import CacheTradeManager
+    from providers.kraken_provider import KrakenProvider
+    # 3. KrakenProvider.normalize_ws_trade, CacheTradeManager.load_sanitized_trade_snapshot, and KrakenProvider.ledger_to_fills
+    norm = KrakenProvider.normalize_ws_trade("tx1", {"pair": "XBTUSD", "ordertxid": True, "order_id": "OID-1", "price": "100", "vol": "1", "time": 1700000000})
     assert norm["orderId"] == "OID-1"
     cache_file = tmp_path / "kraken_trades.json"
     cache_file.write_text('{"items":{"XBTUSD":[{"id":true,"time":100},{"id":"   ","time":100},{"id":"t1","time":0},{"id":" t2 ","time":1700000000000}]},"fetchtime":{"XBTUSD":100}}')
-    loaded = kcm._load_initial_cache(str(cache_file))
+    loaded = CacheTradeManager.load_sanitized_trade_snapshot(str(cache_file), venue="kraken")
     assert [r["id"] for r in loaded["items"]["XBTUSD"]] == ["t2"]
-    fills = kcm._ledger_to_fills({
+    fills = KrakenProvider.ledger_to_fills({
         "l1": {"refid": True, "asset": "XXBT", "type": "trade", "amount": "1", "time": 1700000000},
         "l2": {"refid": True, "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
         "l3": {"refid": " R1 ", "asset": "XXBT", "type": " TRADE ", "amount": "0.5", "time": 1700000000},
@@ -1247,16 +1236,17 @@ def test_krakenclient_pair_info_ticker_and_add_order_validate_false_iter116_s1(m
     assert captured_data.get("validate") == "true"
 
 def test_kraken_cachemanager__match_configured_pair__normalize_and__ledger_to_fills_iter116_s2():
-    """[ITER116 #2] kraken_cachemanager._match_configured_pair, _normalize, and _ledger_to_fills."""
+    """[ITER116 #2] KrakenProvider.match_configured_pair, normalize_ws_trade, and ledger_to_fills."""
     import kraken.kraken_cachemanager as kcm
-    # 2. kraken_cachemanager._match_configured_pair, _normalize, and _ledger_to_fills
-    assert kcm._match_configured_pair(True) is None
-    assert kcm._match_configured_pair(123) is None
-    assert kcm._normalize(None, {"pair": "XBTUSD"}) == {}
-    assert kcm._normalize(True, {"pair": "XBTUSD"}) == {}
-    assert kcm._normalize("tx1", "not-a-dict") == {}
-    assert kcm._normalize(" tx1 ", {"pair": True})["symbol"] is None
-    assert kcm._ledger_to_fills({
+    from providers.kraken_provider import KrakenProvider
+    # 2. KrakenProvider.match_configured_pair, normalize_ws_trade, and ledger_to_fills
+    assert KrakenProvider.match_configured_pair(True, pairs=kcm.PAIRS) is None
+    assert KrakenProvider.match_configured_pair(123, pairs=kcm.PAIRS) is None
+    assert KrakenProvider.normalize_ws_trade(None, {"pair": "XBTUSD"}) == {}
+    assert KrakenProvider.normalize_ws_trade(True, {"pair": "XBTUSD"}) == {}
+    assert KrakenProvider.normalize_ws_trade("tx1", "not-a-dict") == {}
+    assert KrakenProvider.normalize_ws_trade(" tx1 ", {"pair": True})["symbol"] is None
+    assert KrakenProvider.ledger_to_fills({
         "l1": {"refid": "R1", "asset": True, "type": "trade", "amount": "1", "time": 1700000000},
         "l2": {"refid": "R1", "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
     }) == []
@@ -1307,12 +1297,12 @@ def test_krakenclient_cancel_order_and_query_orders_reject_sentinel_strings_nan_
             kc.query_orders(bad_txid)  # type: ignore[arg-type]
 
 def test_kraken_cachemanager__normalize_rejects_sentinel_txid_and_normalizes_integer_iter135_s2():
-    """[ITER135 #2] kraken_cachemanager._normalize rejects sentinel txid and normalizes integer float ordertxid."""
-    from kraken import kraken_cachemanager as kcm
-    # 2. kraken_cachemanager._normalize rejects sentinel txid and normalizes integer float ordertxid
-    assert kcm._normalize("nan", {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
-    assert kcm._normalize(["T1"], {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
-    norm = kcm._normalize(
+    """[ITER135 #2] KrakenProvider.normalize_ws_trade rejects sentinel txid and normalizes integer float ordertxid."""
+    from providers.kraken_provider import KrakenProvider
+    # 2. KrakenProvider.normalize_ws_trade rejects sentinel txid and normalizes integer float ordertxid
+    assert KrakenProvider.normalize_ws_trade("nan", {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    assert KrakenProvider.normalize_ws_trade(["T1"], {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    norm = KrakenProvider.normalize_ws_trade(
         " TX-100 ",
         {"type": "buy", "price": "10", "vol": "1", "time": 1700000000, "ordertxid": "nan", "id": 999.0},
     )
@@ -1320,10 +1310,10 @@ def test_kraken_cachemanager__normalize_rejects_sentinel_txid_and_normalizes_int
     assert norm["orderId"] == "999"
 
 def test_kraken_cachemanager__load_initial_cache_filters_out_sentinel_container_fill_ids_iter135_s3(tmp_path):
-    """[ITER135 #3] kraken_cachemanager._load_initial_cache filters out sentinel/container fill IDs."""
+    """[ITER135 #3] CacheTradeManager.load_sanitized_trade_snapshot filters out sentinel/container fill IDs."""
     import json
-    from kraken import kraken_cachemanager as kcm
-    # 3. kraken_cachemanager._load_initial_cache filters out sentinel/container fill IDs
+    from cacheaccount import CacheTradeManager
+    # 3. CacheTradeManager.load_sanitized_trade_snapshot filters out sentinel/container fill IDs
     cache_file = str(tmp_path / "cache_trade_kraken.json")
     with open(cache_file, "w", encoding="utf-8") as fh:
         json.dump(
@@ -1339,14 +1329,14 @@ def test_kraken_cachemanager__load_initial_cache_filters_out_sentinel_container_
             },
             fh,
         )
-    loaded = kcm._load_initial_cache(cache_file)
+    loaded = CacheTradeManager.load_sanitized_trade_snapshot(cache_file, venue="kraken")
     assert [r["id"] for r in loaded["items"]["HYPEUSD"]] == ["VALID-1"]
 
 def test_kraken_cachemanager__ledger_to_fills_ignores_entries_with_sentinel_container_refid_iter135_s4():
-    """[ITER135 #4] kraken_cachemanager._ledger_to_fills ignores entries with sentinel/container refid."""
-    from kraken import kraken_cachemanager as kcm
-    # 4. kraken_cachemanager._ledger_to_fills ignores entries with sentinel/container refid
-    fills = kcm._ledger_to_fills(
+    """[ITER135 #4] KrakenProvider.ledger_to_fills ignores entries with sentinel/container refid."""
+    from providers.kraken_provider import KrakenProvider
+    # 4. KrakenProvider.ledger_to_fills ignores entries with sentinel/container refid
+    fills = KrakenProvider.ledger_to_fills(
         {
             "L1": {"refid": "nan", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000000.0},
             "L2": {"refid": "nan", "asset": "ZUSD", "amount": "-100.0", "type": "trade", "time": 1700000000.0},
@@ -1465,18 +1455,19 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
     assert pa_mod._parse_armed_flag("true") is True
 
 def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_iter147_s1(tmp_path):
-    """[ITER147 #1] kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache."""
+    """[ITER147 #1] clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot."""
     import json
-    from kraken import kraken_cachemanager as kcm
+    from cacheaccount import CacheTradeManager
+    from providers.kraken_provider import KrakenProvider
     from providers.order_ohlc_utils import clean_order_id
-    # 1. kraken_cachemanager.clean_order_id, _normalize, and _load_initial_cache
+    # 1. clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot
     for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
         assert clean_order_id(bad_id) is None
-        assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
+        assert KrakenProvider.normalize_ws_trade(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
 
     assert clean_order_id(777.0) == "777"
     assert clean_order_id("777.0") == "777"
-    norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
+    norm_ok = KrakenProvider.normalize_ws_trade(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
     assert norm_ok["id"] == "777"
 
     cache_file = tmp_path / "cache_trade_kraken.json"
@@ -1494,7 +1485,7 @@ def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_i
         ),
         encoding="utf-8",
     )
-    loaded_cache = kcm._load_initial_cache(str(cache_file))
+    loaded_cache = CacheTradeManager.load_sanitized_trade_snapshot(str(cache_file), venue="kraken")
     assert len(loaded_cache["items"]["HYPEUSD"]) == 1
     assert loaded_cache["items"]["HYPEUSD"][0]["id"] == "888"
     assert loaded_cache["items"]["HYPEUSD"][0]["isBuyer"] is False

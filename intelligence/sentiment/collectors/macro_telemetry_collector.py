@@ -786,61 +786,6 @@ def _harvest_initial_prices_and_trends_impl(
     return prices_and_trends
 
 
-def _harvest_portfolio_and_venue_cycles_impl(
-    cache_dir: str,
-    workspace_dir: str,
-    logs_dirs: List[str],
-    portfolio_summary: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    watcher_price_items: Any,
-    inst_by_sym: Dict[str, Any],
-    read_json_fn: Any = None,
-    *,
-    now_ts: Optional[float] = None,
-) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
-    _rj = read_json_fn or read_json_cached
-    _mc._ensure_cacheprice_classes_bound()
-    av_cls = _mc.CacheAssetValueManager
-    last_av = read_last_jsonl_dict(os.path.join(cache_dir, av_cls.DEFAULT_FILENAME), tail_bytes=2048)
-    if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
-        portfolio_summary.update(av_summary)
-
-    kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
-        workspace_dir, prices_and_trends, build_cycle_fallback_prices(microstructure, watcher_price_items), _rj,
-    )
-    if kraken_cycles:
-        portfolio_summary["kraken_cycles"] = kraken_cycles
-    if hyperliquid_cycles:
-        portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
-
-    has_active_t212 = any(normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in inst_by_sym.values()) or any(
-        isinstance(p, dict) and normalize_venue_name(p.get("venue")) == "t212"
-        for p in (portfolio_summary.get("tradable_positions") or ())
-    )
-    t212_cycles = all_t212_cycles
-    if has_active_t212 and t212_cycles:
-        portfolio_summary["t212_cycles"] = t212_cycles
-    if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), prices_and_trends, all_t212_cycles, _rj):
-        portfolio_summary["kraken_xstocks"] = xst_summary
-    if cross_market_ctx := build_cross_market_context(prices_and_trends, microstructure, all_t212_cycles):
-        portfolio_summary["cross_market_context"] = cross_market_ctx
-
-    for l_dir in logs_dirs:
-        if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
-            if isinstance(last_ps.get("hl"), dict):
-                hl_ro = dict(last_ps["hl"])
-                ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"), allow_iso=True)
-                eff_now_s = resolve_now_ts(now_ts)
-                if ps_ts_s is not None and eff_now_s is not None:
-                    hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
-                portfolio_summary["hyperliquid_readonly"] = hl_ro
-            break
-
-    return kraken_cycles, hyperliquid_cycles, t212_cycles
-
-
 def _populate_market_and_portfolio_snapshot_impl(
     snapshot: Any,
     *,
@@ -1287,18 +1232,51 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        return _harvest_portfolio_and_venue_cycles_impl(
-            cachedb_dir,
-            workspace_dir,
-            list(logs_dirs or ()),
-            portfolio_summary if isinstance(portfolio_summary, dict) else {},
-            prices_and_trends if isinstance(prices_and_trends, dict) else {},
-            microstructure if isinstance(microstructure, dict) else {},
-            watcher_price_items,
-            inst_by_sym if isinstance(inst_by_sym, dict) else {},
-            read_json_fn,
-            now_ts=now_ts,
+        eff_ps = portfolio_summary if isinstance(portfolio_summary, dict) else {}
+        eff_pt = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+        eff_ms = microstructure if isinstance(microstructure, dict) else {}
+        eff_inst = inst_by_sym if isinstance(inst_by_sym, dict) else {}
+        _rj = read_json_fn or read_json_cached
+        _mc._ensure_cacheprice_classes_bound()
+        av_cls = _mc.CacheAssetValueManager
+        last_av = read_last_jsonl_dict(os.path.join(cachedb_dir, av_cls.DEFAULT_FILENAME), tail_bytes=2048)
+        if av_summary := av_cls.extract_asset_value_summary(last_av, now_ts=now_ts):
+            eff_ps.update(av_summary)
+
+        kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
+            workspace_dir, eff_pt, build_cycle_fallback_prices(eff_ms, watcher_price_items), _rj,
         )
+        if kraken_cycles:
+            eff_ps["kraken_cycles"] = kraken_cycles
+        if hyperliquid_cycles:
+            eff_ps["hyperliquid_cycles"] = hyperliquid_cycles
+
+        has_active_t212 = any(
+            normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in eff_inst.values()
+        ) or any(
+            isinstance(p, dict) and normalize_venue_name(p.get("venue")) == "t212"
+            for p in (eff_ps.get("tradable_positions") or ())
+        )
+        t212_cycles = all_t212_cycles
+        if has_active_t212 and t212_cycles:
+            eff_ps["t212_cycles"] = t212_cycles
+        if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), eff_pt, all_t212_cycles, _rj):
+            eff_ps["kraken_xstocks"] = xst_summary
+        if cross_market_ctx := build_cross_market_context(eff_pt, eff_ms, all_t212_cycles):
+            eff_ps["cross_market_context"] = cross_market_ctx
+
+        for l_dir in list(logs_dirs or ()):
+            if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
+                if isinstance(last_ps.get("hl"), dict):
+                    hl_ro = dict(last_ps["hl"])
+                    ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"), allow_iso=True)
+                    eff_now_s = resolve_now_ts(now_ts)
+                    if ps_ts_s is not None and eff_now_s is not None:
+                        hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
+                    eff_ps["hyperliquid_readonly"] = hl_ro
+                break
+
+        return kraken_cycles, hyperliquid_cycles, t212_cycles
 
 
 class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):

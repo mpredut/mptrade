@@ -610,10 +610,11 @@ def test_monitororder_ttl_and_ordered_id_set():
 
 def test_kraken_cache_touch_ws_fetchtimes():
     import kraken.kraken_cachemanager as kcm
+    from cacheaccount import CacheTradeManager
     cache = {"items": {"TAOUSDC": []}, "fetchtime": {}}
-    kcm._touch_ws_fetchtimes(cache, 1700000000)
+    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=1700000000, symbols=kcm.PAIRS, create_missing=True)
     assert cache["fetchtime"]["TAOUSDC"] == 1700000000
-    kcm._touch_ws_fetchtimes(cache, "invalid")
+    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms="invalid", symbols=kcm.PAIRS, create_missing=True)
     assert cache["fetchtime"]["TAOUSDC"] > 0
 
 

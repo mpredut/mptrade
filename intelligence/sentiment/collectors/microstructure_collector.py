@@ -453,57 +453,6 @@ def _load_raw_archive_and_watcher_series(
     return archive_pts, sparse_7d_pts, watcher_7d_pts, watcher_cutoff_24h
 
 
-def _overlay_live_current_price_ticks(
-    series_24h: list,
-    current_price_items: Optional[Dict[str, Any]],
-    cands: list[str],
-    is_eq_sym_load: bool,
-) -> list:
-    if not isinstance(current_price_items, dict) or not current_price_items:
-        return series_24h
-    last_24_pt = _parse_ts_px_row(series_24h[-1]) if series_24h else None
-    for cand in cands:
-        cur_item = casefold_get(current_price_items, cand)
-        if isinstance(cur_item, list) and cur_item:
-            cand_pts = [
-                [pt[0], pt[1]]
-                for pt in cur_item
-                if isinstance(pt, (list, tuple)) and len(pt) >= 2 and _parse_ts_px_row(pt) is not None
-            ]
-            cand_last = _parse_ts_px_row(cand_pts[-1]) if cand_pts else None
-            if cand_pts and cand_last is not None:
-                if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
-                    continue
-                if (
-                    is_eq_sym_load
-                    and len(series_24h) >= 2
-                    and last_24_pt is not None
-                    and abs(cand_last[1] - last_24_pt[1]) <= 1e-6
-                    and (
-                        cand_last[0] <= last_24_pt[0]
-                        or (cand_last[0] - last_24_pt[0]) > 20 * 60 * 1000
-                    )
-                ):
-                    break
-                return list(series_24h) + cand_pts
-        if (px_f := extract_current_price_item(cur_item)) is not None and series_24h and last_24_pt is not None:
-            if not _prices_diverged(last_24_pt[1], px_f):
-                if is_eq_sym_load and len(series_24h) >= 2 and abs(px_f - last_24_pt[1]) <= 1e-6:
-                    break
-                raw_last_t = (
-                    safe_pos_float(series_24h[-1][0], default=None)
-                    if isinstance(series_24h[-1], (list, tuple)) and series_24h[-1]
-                    else None
-                )
-                next_raw_t = (
-                    (raw_last_t + 1.0)
-                    if (raw_last_t is not None and raw_last_t < 1e11 - 1.0)
-                    else (last_24_pt[0] + 1000.0)
-                )
-                return list(series_24h) + [[next_raw_t, px_f]]
-    return series_24h
-
-
 def load_symbol_price_series(
     cachedb_dir: str,
     symbol: str,
@@ -1950,12 +1899,49 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
         _LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
-        series_24h = _overlay_live_current_price_ticks(
-            series_24h,
-            current_price_items,
-            cands,
-            is_eq_sym_load,
-        )
+        if isinstance(current_price_items, dict) and current_price_items:
+            last_24_pt = _parse_ts_px_row(series_24h[-1]) if series_24h else None
+            for cand in cands:
+                cur_item = casefold_get(current_price_items, cand)
+                if isinstance(cur_item, list) and cur_item:
+                    cand_pts = [
+                        [pt[0], pt[1]]
+                        for pt in cur_item
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2 and _parse_ts_px_row(pt) is not None
+                    ]
+                    cand_last = _parse_ts_px_row(cand_pts[-1]) if cand_pts else None
+                    if cand_pts and cand_last is not None:
+                        if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
+                            continue
+                        if (
+                            is_eq_sym_load
+                            and len(series_24h) >= 2
+                            and last_24_pt is not None
+                            and abs(cand_last[1] - last_24_pt[1]) <= 1e-6
+                            and (
+                                cand_last[0] <= last_24_pt[0]
+                                or (cand_last[0] - last_24_pt[0]) > 20 * 60 * 1000
+                            )
+                        ):
+                            break
+                        series_24h = list(series_24h) + cand_pts
+                        break
+                if (px_f := extract_current_price_item(cur_item)) is not None and series_24h and last_24_pt is not None:
+                    if not _prices_diverged(last_24_pt[1], px_f):
+                        if is_eq_sym_load and len(series_24h) >= 2 and abs(px_f - last_24_pt[1]) <= 1e-6:
+                            break
+                        raw_last_t = (
+                            safe_pos_float(series_24h[-1][0], default=None)
+                            if isinstance(series_24h[-1], (list, tuple)) and series_24h[-1]
+                            else None
+                        )
+                        next_raw_t = (
+                            (raw_last_t + 1.0)
+                            if (raw_last_t is not None and raw_last_t < 1e11 - 1.0)
+                            else (last_24_pt[0] + 1000.0)
+                        )
+                        series_24h = list(series_24h) + [[next_raw_t, px_f]]
+                        break
         series_24h = session_policy.normalize_24h_series(series_24h, symbol)
         vals_7d = append_newer_24h_to_7d_vals(vals_7d, series_24h, arch_7d_end_ts)
 

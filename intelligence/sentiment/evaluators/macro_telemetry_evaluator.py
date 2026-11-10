@@ -50,102 +50,6 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _compute_futures_premarket_lead_impl(data: Any) -> Dict[str, Any]:
-    """Compute pre-market / extended-hours US index futures lead (NQ=F vs QQQ, ES=F vs SPY)."""
-    if not isinstance(data, dict):
-        return {}
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    if not isinstance(items, dict):
-        return {}
-    out: Dict[str, Any] = {}
-    any_cash_live_rth = False
-    for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
-        fut, cash = items.get(fut_sym), items.get(cash_sym)
-        if not isinstance(fut, dict) or not isinstance(cash, dict):
-            continue
-        fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
-        fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
-        fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
-        cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
-        fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
-        cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
-        cash_state = str(cash.get("market_state") or "").strip().upper()
-        cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
-            fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
-        )
-        is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
-        if not is_off_rth:
-            any_cash_live_rth = True
-            continue
-        if fut_globex is not None and abs(fut_globex) >= 0.25:
-            out[lead_key] = round(fut_globex, 2) + 0.0
-        elif fut_24h is not None and cash_24h is not None:
-            diff_v = round(fut_24h - cash_24h, 2) + 0.0
-            dir_ok = (
-                (diff_v > 0.0 and (fut_24h >= -0.15 or (fut_1h is not None and fut_1h >= 0.15)))
-                or (diff_v < 0.0 and (fut_24h <= 0.15 or (fut_1h is not None and fut_1h <= -0.15)))
-            )
-            if dir_ok and abs(diff_v) >= 0.25:
-                out[lead_key] = diff_v
-        elif fut_1h is not None and abs(fut_1h) >= 0.25:
-            out[lead_key] = round(fut_1h, 2) + 0.0
-    lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
-    if lead_v is None and not any_cash_live_rth:
-        lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
-    if lead_v is not None and abs(lead_v) >= 0.25:
-        out["futures_lead_pct"] = round(lead_v, 2) + 0.0
-        out["futures_lead_regime"] = "FUTURES_PREMARKET_GAP_UP" if lead_v >= 0.25 else "FUTURES_PREMARKET_GAP_DOWN"
-    return out
-
-
-def _compute_equity_macro_regime_impl(data: Any) -> str:
-    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
-    if not isinstance(data, dict):
-        return "NEUTRAL"
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    if not isinstance(items, dict):
-        items = {}
-    eq_24h: List[float] = []
-    eq_1h: List[float] = []
-    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
-        entry = items.get(sym)
-        if not isinstance(entry, dict):
-            continue
-        m_state = str(entry.get("market_state") or "").strip().upper()
-        if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
-            eq_24h.append(c24)
-        if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
-            eq_1h.append(c1)
-    if not eq_24h and not eq_1h:
-        explicit = str(data.get("equity_regime") or "").strip().upper()
-        return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
-    avg_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
-    avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
-    dxy_entry = items.get("DXY")
-    dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
-    vix_entry = items.get("VIX")
-    vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
-    fut_lead = safe_float(
-        data.get("futures_lead_pct") if "futures_lead_pct" in data else compute_futures_premarket_lead(data).get("futures_lead_pct"),
-        default=0.0,
-    ) or 0.0
-    if (
-        avg_24h >= 0.35
-        or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
-        or (avg_24h >= 0.0 and fut_lead >= 0.40 and (dxy_24h is None or dxy_24h <= 0.25))
-    ) and (vix_24h is None or vix_24h <= 5.0):
-        return "RISK_ON"
-    if (
-        avg_24h <= -0.35
-        or (avg_24h <= -0.15 and avg_1h <= -0.15)
-        or (avg_24h <= 0.0 and fut_lead <= -0.40)
-        or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
-        or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
-    ):
-        return "RISK_OFF"
-    return "NEUTRAL"
-
-
 def _compute_cross_asset_regime_impl(
     data: Any,
     *,
@@ -229,67 +133,6 @@ def _compute_cross_asset_regime_impl(
     if eq_bull and crypto_bear:
         return "EQUITY_BULLISH_DECOUPLING"
     return "NEUTRAL"
-
-
-def _compute_deribit_options_surface_impl(
-    books: Any,
-    *,
-    currency: str = "BTC",
-    dvol: Optional[float] = None,
-    rv: Optional[float] = None,
-    btc_dvol: Optional[float] = None,
-    btc_rv: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Compute Deribit options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy) for any currency (BTC, ETH)."""
-    out: Dict[str, Any] = {}
-    pfx = str(currency or "BTC").strip().lower() or "btc"
-    rv_f = safe_pos_float(rv if rv is not None else btc_rv, default=None)
-    dvol_f = safe_pos_float(dvol if dvol is not None else btc_dvol, default=None)
-    if rv_f is not None:
-        out[f"{pfx}_rv_pct"] = round(rv_f, 2)
-    if dvol_f is not None and rv_f is not None:
-        out[f"{pfx}_vrp_pct"] = round(dvol_f - rv_f, 2)
-
-    spot = 0.0
-    if isinstance(books, list) and books:
-        for b in books:
-            if isinstance(b, dict):
-                u_px = safe_pos_float(b.get("estimated_delivery_price") or b.get("underlying_price"), default=0.0) or 0.0
-                if u_px > 0.0:
-                    spot = u_px
-                    break
-        call_oi = put_oi = 0.0
-        put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
-        for b in books:
-            if not isinstance(b, dict):
-                continue
-            parts = str(b.get("instrument_name") or "").split("-")
-            if len(parts) < 4:
-                continue
-            strike = safe_pos_float(parts[2], default=None)
-            opt_type = parts[3].strip().upper()
-            oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
-            iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
-            if 0.05 <= iv < 5.0:
-                iv *= 100.0
-            if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
-                continue
-            if opt_type == "C":
-                call_oi += oi
-                if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
-                    call_iv_num += iv * oi
-                    call_iv_den += oi
-            else:
-                put_oi += oi
-                if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
-                    put_iv_num += iv * oi
-                    put_iv_den += oi
-
-        if call_oi > 0.0 and put_oi > 0.0:
-            out[f"{pfx}_pc_oi_ratio"] = round(put_oi / call_oi, 2)
-        if put_iv_den > 0.0 and call_iv_den > 0.0:
-            out[f"{pfx}_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
-    return out
 
 
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
@@ -1138,7 +981,50 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
     cls_name = "FuturesPremarketLeadEvaluator"
 
     def evaluate(self, data: Any, **kwargs: Any) -> Dict[str, Any]:
-        return _compute_futures_premarket_lead_impl(data)
+        if not isinstance(data, dict):
+            return {}
+        items = data.get("items") if isinstance(data.get("items"), dict) else data
+        if not isinstance(items, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        any_cash_live_rth = False
+        for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
+            fut, cash = items.get(fut_sym), items.get(cash_sym)
+            if not isinstance(fut, dict) or not isinstance(cash, dict):
+                continue
+            fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
+            fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
+            fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
+            cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
+            fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
+            cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
+            cash_state = str(cash.get("market_state") or "").strip().upper()
+            cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
+                fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
+            )
+            is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
+            if not is_off_rth:
+                any_cash_live_rth = True
+                continue
+            if fut_globex is not None and abs(fut_globex) >= 0.25:
+                out[lead_key] = round(fut_globex, 2) + 0.0
+            elif fut_24h is not None and cash_24h is not None:
+                diff_v = round(fut_24h - cash_24h, 2) + 0.0
+                dir_ok = (
+                    (diff_v > 0.0 and (fut_24h >= -0.15 or (fut_1h is not None and fut_1h >= 0.15)))
+                    or (diff_v < 0.0 and (fut_24h <= 0.15 or (fut_1h is not None and fut_1h <= -0.15)))
+                )
+                if dir_ok and abs(diff_v) >= 0.25:
+                    out[lead_key] = diff_v
+            elif fut_1h is not None and abs(fut_1h) >= 0.25:
+                out[lead_key] = round(fut_1h, 2) + 0.0
+        lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
+        if lead_v is None and not any_cash_live_rth:
+            lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
+        if lead_v is not None and abs(lead_v) >= 0.25:
+            out["futures_lead_pct"] = round(lead_v, 2) + 0.0
+            out["futures_lead_regime"] = "FUTURES_PREMARKET_GAP_UP" if lead_v >= 0.25 else "FUTURES_PREMARKET_GAP_DOWN"
+        return out
 
 
 class EquityMacroRegimeEvaluator(MacroTelemetryEvaluatorBase):
@@ -1147,7 +1033,52 @@ class EquityMacroRegimeEvaluator(MacroTelemetryEvaluatorBase):
     cls_name = "EquityMacroRegimeEvaluator"
 
     def evaluate(self, data: Any, **kwargs: Any) -> str:
-        return _compute_equity_macro_regime_impl(data)
+        if not isinstance(data, dict):
+            return "NEUTRAL"
+        items = data.get("items") if isinstance(data.get("items"), dict) else data
+        if not isinstance(items, dict):
+            items = {}
+        eq_24h: List[float] = []
+        eq_1h: List[float] = []
+        for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+            entry = items.get(sym)
+            if not isinstance(entry, dict):
+                continue
+            m_state = str(entry.get("market_state") or "").strip().upper()
+            if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+                eq_24h.append(c24)
+            if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
+                eq_1h.append(c1)
+        if not eq_24h and not eq_1h:
+            explicit = str(data.get("equity_regime") or "").strip().upper()
+            return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
+        avg_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+        avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
+        dxy_entry = items.get("DXY")
+        dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
+        vix_entry = items.get("VIX")
+        vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+        fut_lead = safe_float(
+            data.get("futures_lead_pct")
+            if "futures_lead_pct" in data
+            else compute_futures_premarket_lead(data).get("futures_lead_pct"),
+            default=0.0,
+        ) or 0.0
+        if (
+            avg_24h >= 0.35
+            or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
+            or (avg_24h >= 0.0 and fut_lead >= 0.40 and (dxy_24h is None or dxy_24h <= 0.25))
+        ) and (vix_24h is None or vix_24h <= 5.0):
+            return "RISK_ON"
+        if (
+            avg_24h <= -0.35
+            or (avg_24h <= -0.15 and avg_1h <= -0.15)
+            or (avg_24h <= 0.0 and fut_lead <= -0.40)
+            or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
+            or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
+        ):
+            return "RISK_OFF"
+        return "NEUTRAL"
 
 
 class CrossAssetRegimeEvaluator(MacroTelemetryEvaluatorBase):
@@ -1181,14 +1112,55 @@ class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
         btc_rv: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        return _compute_deribit_options_surface_impl(
-            books,
-            currency=currency,
-            dvol=dvol,
-            rv=rv,
-            btc_dvol=btc_dvol,
-            btc_rv=btc_rv,
-        )
+        out: Dict[str, Any] = {}
+        pfx = str(currency or "BTC").strip().lower() or "btc"
+        rv_f = safe_pos_float(rv if rv is not None else btc_rv, default=None)
+        dvol_f = safe_pos_float(dvol if dvol is not None else btc_dvol, default=None)
+        if rv_f is not None:
+            out[f"{pfx}_rv_pct"] = round(rv_f, 2)
+        if dvol_f is not None and rv_f is not None:
+            out[f"{pfx}_vrp_pct"] = round(dvol_f - rv_f, 2)
+
+        spot = 0.0
+        if isinstance(books, list) and books:
+            for b in books:
+                if isinstance(b, dict):
+                    u_px = safe_pos_float(b.get("estimated_delivery_price") or b.get("underlying_price"), default=0.0) or 0.0
+                    if u_px > 0.0:
+                        spot = u_px
+                        break
+            call_oi = put_oi = 0.0
+            put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
+            for b in books:
+                if not isinstance(b, dict):
+                    continue
+                parts = str(b.get("instrument_name") or "").split("-")
+                if len(parts) < 4:
+                    continue
+                strike = safe_pos_float(parts[2], default=None)
+                opt_type = parts[3].strip().upper()
+                oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
+                iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
+                if 0.05 <= iv < 5.0:
+                    iv *= 100.0
+                if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
+                    continue
+                if opt_type == "C":
+                    call_oi += oi
+                    if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
+                        call_iv_num += iv * oi
+                        call_iv_den += oi
+                else:
+                    put_oi += oi
+                    if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
+                        put_iv_num += iv * oi
+                        put_iv_den += oi
+
+            if call_oi > 0.0 and put_oi > 0.0:
+                out[f"{pfx}_pc_oi_ratio"] = round(put_oi / call_oi, 2)
+            if put_iv_den > 0.0 and call_iv_den > 0.0:
+                out[f"{pfx}_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
+        return out
 
 
 class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):

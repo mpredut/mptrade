@@ -318,114 +318,6 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     return by_sym
 
 
-def _harvest_venue_cycles_impl(
-    workspace_dir: str,
-    prices_and_trends: Dict[str, Any],
-    fallback_prices: Dict[str, float],
-    read_json_fn: Any = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    _rj = _resolve_read_json_cached(read_json_fn)
-
-    def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
-        if isinstance((st_data := _rj(st_path)), dict):
-            lookup_sym = f"{sym}_US_EQ" if is_eq and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ")) else sym
-            parsed = parse_venue_cycle_state(
-                st_data, lookup_sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
-            )
-            prev = target.get(sym)
-            if isinstance(prev, dict):
-                prev_active = (safe_nonneg_float(prev.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(prev.get("resting_orders"))
-                new_active = (safe_nonneg_float(parsed.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(parsed.get("resting_orders"))
-                if prev_active and not new_active:
-                    return
-            target[sym] = parsed
-
-    kraken_cycles: Dict[str, Any] = {}
-    for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=workspace_dir):
-        pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-        if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
-            _record_cyc(kraken_cycles, st_path, pair_name, 6)
-
-    hyperliquid_cycles: Dict[str, Any] = {}
-    for st_path in iter_venue_cycle_state_files("hyperliquid", workspace_dir=workspace_dir):
-        raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-        if raw_tok.startswith("DN_") or raw_tok == "DN":
-            continue
-        for sfx in ("_LONG", "_SHORT"):
-            if raw_tok.endswith(sfx):
-                raw_tok = raw_tok[: -len(sfx)]
-                break
-        if raw_tok.isalnum():
-            _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
-
-    all_t212_cycles: Dict[str, Any] = {}
-    for st_path, ticker in _iter_t212_state_files(workspace_dir):
-        _record_cyc(all_t212_cycles, st_path, ticker, 4, is_eq=True)
-
-    return kraken_cycles, hyperliquid_cycles, all_t212_cycles
-
-
-def _harvest_kraken_xstocks_impl(
-    kraken_dir: str,
-    prices_and_trends: Dict[str, Any],
-    all_t212_cycles: Dict[str, Any],
-    read_json_fn: Any = None,
-) -> Optional[Dict[str, Any]]:
-    _rj = _resolve_read_json_cached(read_json_fn)
-    cand_paths = [
-        p for p in (os.path.join(kraken_dir, "xstock_state.json"), os.path.join(kraken_dir, ".xstock_state.json"))
-        if os.path.exists(p)
-    ]
-    if not cand_paths:
-        return None
-    xst_path = max(cand_paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
-    xst_data = _rj(xst_path)
-    if not isinstance(xst_data, dict):
-        return None
-    xstock_cfg = load_key_value_conf(kraken_dir, root_dir=kraken_dir)
-    known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
-    x_regex = xstock_cfg.get("xstock_regex") or "SPCX|SPACEX"
-    x_holdings: Dict[str, float] = {}
-    for ak, av in known_assets.items():
-        ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
-        if av_f <= 0:
-            continue
-        is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
-        if not is_xstock_tok:
-            try:
-                is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))
-            except re.error:
-                is_xstock_tok = False
-        if is_xstock_tok:
-            x_holdings[ak_str] = round(av_f, 6)
-    alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
-    raw_pair = xst_data.get("pair")
-    listed_pair = str(raw_pair).strip().upper() if isinstance(raw_pair, str) and raw_pair.strip() and raw_pair.strip().lower() not in ("none", "null", "nan") else None
-    if not (x_holdings or alloc_info or listed_pair):
-        return None
-    underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
-    t212_sib = f"{underlying}_US_EQ"
-    alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
-    live_px = (
-        (resolve_symbol_price(listed_pair, prices_and_trends) if listed_pair else 0.0)
-        or resolve_symbol_price(t212_sib, prices_and_trends)
-    )
-    xst_summary: Dict[str, Any] = {
-        "underlying": underlying, "t212_sibling": t212_sib, "holdings": x_holdings,
-        "allocated": alloc_info, "listed_pair": listed_pair, "alloc_price": alloc_px,
-        "tp1_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None),
-        "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
-        "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
-    }
-    if live_px > 0:
-        xst_summary["live_price"] = round(live_px, 4)
-        if alloc_px is not None:
-            xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
-    if isinstance((sib_cyc := _first_variant_dict(all_t212_cycles, (t212_sib, underlying))), dict):
-        xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
-    return xst_summary
-
-
 def _attach_trailing_peak_to_position(
     pos_entry: Dict[str, Any],
     v_norm: str,
@@ -1624,12 +1516,48 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
         read_json_fn: Any = None,
         **kwargs: Any,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        return _harvest_venue_cycles_impl(
-            workspace_dir or cachedb_dir,
-            prices_and_trends or {},
-            fallback_prices or {},
-            read_json_fn=read_json_fn,
-        )
+        eff_workspace = workspace_dir or cachedb_dir
+        eff_pt = prices_and_trends or {}
+        eff_fb = fallback_prices or {}
+        _rj = _resolve_read_json_cached(read_json_fn)
+
+        def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
+            if isinstance((st_data := _rj(st_path)), dict):
+                lookup_sym = f"{sym}_US_EQ" if is_eq and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ")) else sym
+                parsed = parse_venue_cycle_state(
+                    st_data, lookup_sym, eff_pt, avg_decimals=dec, fallback_prices=eff_fb, include_meta=True
+                )
+                prev = target.get(sym)
+                if isinstance(prev, dict):
+                    prev_active = (safe_nonneg_float(prev.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(prev.get("resting_orders"))
+                    new_active = (safe_nonneg_float(parsed.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(parsed.get("resting_orders"))
+                    if prev_active and not new_active:
+                        return
+                target[sym] = parsed
+
+        kraken_cycles: Dict[str, Any] = {}
+        for st_path in iter_venue_cycle_state_files("kraken", workspace_dir=eff_workspace):
+            pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+            if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+                _record_cyc(kraken_cycles, st_path, pair_name, 6)
+
+        hyperliquid_cycles: Dict[str, Any] = {}
+        for st_path in iter_venue_cycle_state_files("hyperliquid", workspace_dir=eff_workspace):
+            raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
+            if raw_tok.startswith("DN_") or raw_tok == "DN":
+                continue
+            for sfx in ("_LONG", "_SHORT"):
+                if raw_tok.endswith(sfx):
+                    raw_tok = raw_tok[: -len(sfx)]
+                    break
+            if raw_tok.isalnum():
+                _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
+
+        all_t212_cycles: Dict[str, Any] = {}
+        for st_path, ticker in _iter_t212_state_files(eff_workspace):
+            _record_cyc(all_t212_cycles, st_path, ticker, 4, is_eq=True)
+
+        return kraken_cycles, hyperliquid_cycles, all_t212_cycles
 
 
 class KrakenXstocksCollector(PortfolioCacheCollectorBase):
@@ -1649,12 +1577,70 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
         read_json_fn: Any = None,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
-        return _harvest_kraken_xstocks_impl(
-            kraken_dir or cachedb_dir,
-            prices_and_trends or {},
-            all_t212_cycles or {},
-            read_json_fn=read_json_fn,
+        eff_k_dir = kraken_dir or cachedb_dir
+        eff_pt = prices_and_trends or {}
+        eff_t212 = all_t212_cycles or {}
+        _rj = _resolve_read_json_cached(read_json_fn)
+        cand_paths = [
+            p for p in (os.path.join(eff_k_dir, "xstock_state.json"), os.path.join(eff_k_dir, ".xstock_state.json"))
+            if os.path.exists(p)
+        ]
+        if not cand_paths:
+            return None
+        xst_path = max(cand_paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
+        xst_data = _rj(xst_path)
+        if not isinstance(xst_data, dict):
+            return None
+        xstock_cfg = load_key_value_conf(eff_k_dir, root_dir=eff_k_dir)
+        known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
+        x_regex = xstock_cfg.get("xstock_regex") or "SPCX|SPACEX"
+        x_holdings: Dict[str, float] = {}
+        for ak, av in known_assets.items():
+            ak_str, av_f = str(ak).strip(), safe_float(av, 0.0) or 0.0
+            if av_f <= 0:
+                continue
+            is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
+            if not is_xstock_tok:
+                try:
+                    is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))
+                except re.error:
+                    is_xstock_tok = False
+            if is_xstock_tok:
+                x_holdings[ak_str] = round(av_f, 6)
+        alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
+        raw_pair = xst_data.get("pair")
+        listed_pair = (
+            str(raw_pair).strip().upper()
+            if isinstance(raw_pair, str) and raw_pair.strip() and raw_pair.strip().lower() not in ("none", "null", "nan")
+            else None
         )
+        if not (x_holdings or alloc_info or listed_pair):
+            return None
+        underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
+        t212_sib = f"{underlying}_US_EQ"
+        alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
+        live_px = (
+            (resolve_symbol_price(listed_pair, eff_pt) if listed_pair else 0.0)
+            or resolve_symbol_price(t212_sib, eff_pt)
+        )
+        xst_summary: Dict[str, Any] = {
+            "underlying": underlying,
+            "t212_sibling": t212_sib,
+            "holdings": x_holdings,
+            "allocated": alloc_info,
+            "listed_pair": listed_pair,
+            "alloc_price": alloc_px,
+            "tp1_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None),
+            "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
+            "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
+        }
+        if live_px > 0:
+            xst_summary["live_price"] = round(live_px, 4)
+            if alloc_px is not None:
+                xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
+        if isinstance((sib_cyc := _first_variant_dict(eff_t212, (t212_sib, underlying))), dict):
+            xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
+        return xst_summary
 
 
 class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):

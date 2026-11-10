@@ -531,54 +531,6 @@ def _collect_pillar2_and_regime_telemetry(
     return telemetry, ob_snap, f_snap, w_snap
 
 
-def _resolve_pretrade_live_price_and_vb_ts(
-    cachedb_dir: str,
-    symbol: str,
-    quote_variants: List[str],
-    cur_p_items: Dict[str, Any],
-    is_eq_sym: bool,
-    _rj: Callable[[str], Any],
-    *,
-    allow_network: bool = False,
-) -> Tuple[float, float, float]:
-    live_cur_px = 0.0
-    cp_ts_sec = 0.0
-    for cand in quote_variants:
-        raw_cp = casefold_get(cur_p_items, cand)
-        if (px_v := extract_current_price_item(raw_cp)) is not None and px_v > 0.0:
-            live_cur_px = px_v
-            if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None:
-                cp_ts_sec = normalize_epoch_sec(cp_pt[0], default=0.0) or 0.0
-            break
-    vb_pos_ts = 0.0
-    vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-    if (live_cur_px <= 0.0 or is_eq_sym) and isinstance(vb_d := _rj(vb_path), dict):
-        if allow_network and is_eq_sym and _rj is _default_read_json_cached:
-            _refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
-        for vb_k, vb_v in vb_d.items():
-            if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
-                if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(symbol):
-                    vb_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
-                    vb_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
-                    if vb_px > 0.0:
-                        if (
-                            vb_ts > 0.0
-                            and cp_ts_sec > 0.0
-                            and abs(round(vb_px, 4) - round(live_cur_px, 4)) < 1e-4
-                            and cp_ts_sec < vb_ts
-                        ):
-                            vb_ts = cp_ts_sec
-                        vb_pos_ts = vb_ts
-                        if (
-                            live_cur_px <= 0.0
-                            or abs(round(live_cur_px, 4) - round(vb_px, 4)) < 1e-4
-                            or (cp_ts_sec > 0.0 and vb_ts > cp_ts_sec)
-                        ):
-                            live_cur_px = round(vb_px, 4) if is_eq_sym else vb_px
-                        break
-    return live_cur_px, cp_ts_sec, vb_pos_ts
-
-
 def _upgrade_pretrade_tpo_vp_from_ohlc(
     cachedb_dir: str,
     sym_v: str,
@@ -1672,56 +1624,6 @@ def _collect_and_format_pretrade_recent_fills(
         pass
 
 
-def _collect_and_format_pretrade_macro_pillars(
-    cachedb_dir: str,
-    symbol: str,
-    is_eq_sym: bool,
-    m24: Dict[str, Any],
-    btc_m24: Dict[str, Any],
-    cur_p_items: Dict[str, Any],
-    telemetry: Dict[str, Any],
-) -> None:
-    try:
-        if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
-            from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
-
-            btc_chg_24h_live: Optional[float] = None
-            if not is_eq_sym and canonical_base_asset(symbol) == "BTC":
-                btc_chg_24h_live = safe_float(m24.get("chg_24h_pct"), default=None)
-            elif btc_m24:
-                btc_chg_24h_live = safe_float(btc_m24.get("chg_24h_pct"), default=None)
-            else:
-                btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cachedb_dir, current_price_items=cur_p_items)
-            mb_data = enrich_macro_benchmarks_live_state(mb_data, btc_chg_24h_pct=btc_chg_24h_live) or mb_data
-            eq_reg_line = format_equity_macro_regime_line(mb_data)
-            if eq_reg_line:
-                telemetry["Equity & Macro Regime"] = eq_reg_line
-    except Exception:
-        pass
-    if not is_eq_sym:
-        try:
-            if isinstance(m_data := _read_first_cached_dict(cachedb_dir, "sentiment_eval_files", "sentiment_eval.json")[0], dict):
-                bias, risk, action = (str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action"))
-                if bias or risk or action:
-                    telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
-        except Exception:
-            pass
-        try:
-            if isinstance(fg_data := _read_first_cached_dict(cachedb_dir, "fear_greed_files", "fear_greed_collect.json")[0], dict):
-                val, label = fg_data.get("value", ""), fg_data.get("classification", "")
-                if val is not None and not isinstance(val, bool) and str(val).strip() != "":
-                    telemetry["Fear & Greed Index"] = f"{val} ({str(label).strip() if label is not None and not isinstance(label, bool) else ''})"
-        except Exception:
-            pass
-    try:
-        if isinstance(g_data := _read_first_cached_dict(cachedb_dir, "geopolitical_eval_file", "geopolitical_eval.json")[0], dict):
-            level = g_data.get("threat_level", "")
-            if level is not None and not isinstance(level, bool) and str(level).strip() != "":
-                telemetry["Geopolitical Threat Level"] = str(level).strip()
-    except Exception:
-        pass
-
-
 @dataclass
 class PretradeEvaluationContext:
     """Shared normalized snapshot & state context passed across polymorphic PretradePillarCollectorBase stages."""
@@ -1848,15 +1750,42 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
             if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict)
             else {}
         )
-        ctx.live_cur_px, ctx.cp_ts_sec, ctx.vb_pos_ts = _resolve_pretrade_live_price_and_vb_ts(
-            ctx.cachedb_dir,
-            ctx.symbol,
-            ctx.quote_variants,
-            ctx.cur_p_items,
-            ctx.is_eq_sym,
-            ctx.rj,
-            allow_network=eff_allow_net,
-        )
+        live_cur_px = 0.0
+        cp_ts_sec = 0.0
+        for cand in ctx.quote_variants:
+            raw_cp = casefold_get(ctx.cur_p_items, cand)
+            if (px_v := extract_current_price_item(raw_cp)) is not None and px_v > 0.0:
+                live_cur_px = px_v
+                if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None:
+                    cp_ts_sec = normalize_epoch_sec(cp_pt[0], default=0.0) or 0.0
+                break
+        vb_pos_ts = 0.0
+        vb_path = str(resolve_cachedb_filepath(os.path.join(ctx.cachedb_dir, "venue_balances_state.json")))
+        if (live_cur_px <= 0.0 or ctx.is_eq_sym) and isinstance(vb_d := ctx.rj(vb_path), dict):
+            if eff_allow_net and ctx.is_eq_sym and ctx.rj is _default_read_json_cached:
+                _refresh_stale_t212_cached_positions(vb_d, vb_path, _time.time())
+            for vb_k, vb_v in vb_d.items():
+                if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
+                    if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(ctx.symbol):
+                        vb_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
+                        vb_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
+                        if vb_px > 0.0:
+                            if (
+                                vb_ts > 0.0
+                                and cp_ts_sec > 0.0
+                                and abs(round(vb_px, 4) - round(live_cur_px, 4)) < 1e-4
+                                and cp_ts_sec < vb_ts
+                            ):
+                                vb_ts = cp_ts_sec
+                            vb_pos_ts = vb_ts
+                            if (
+                                live_cur_px <= 0.0
+                                or abs(round(live_cur_px, 4) - round(vb_px, 4)) < 1e-4
+                                or (cp_ts_sec > 0.0 and vb_ts > cp_ts_sec)
+                            ):
+                                live_cur_px = round(vb_px, 4) if ctx.is_eq_sym else vb_px
+                            break
+        ctx.live_cur_px, ctx.cp_ts_sec, ctx.vb_pos_ts = live_cur_px, cp_ts_sec, vb_pos_ts
         (
             ctx.alt_series_24h,
             ctx.arch_vals_7d,
@@ -2082,9 +2011,73 @@ class MacroPillarsStage(PretradePillarCollectorBase):
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
         before_cnt = len(ctx.telemetry)
-        _collect_and_format_pretrade_macro_pillars(
-            ctx.cachedb_dir, ctx.symbol, ctx.is_eq_sym, ctx.m24, ctx.btc_m24, ctx.cur_p_items, ctx.telemetry
-        )
+        try:
+            if isinstance(
+                mb_data := _read_first_cached_dict(
+                    ctx.cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json"
+                )[0],
+                dict,
+            ):
+                from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
+
+                btc_chg_24h_live: Optional[float] = None
+                if not ctx.is_eq_sym and canonical_base_asset(ctx.symbol) == "BTC":
+                    btc_chg_24h_live = safe_float(ctx.m24.get("chg_24h_pct"), default=None)
+                elif ctx.btc_m24:
+                    btc_chg_24h_live = safe_float(ctx.btc_m24.get("chg_24h_pct"), default=None)
+                else:
+                    btc_chg_24h_live = resolve_cached_btc_24h_change_pct(
+                        ctx.cachedb_dir, current_price_items=ctx.cur_p_items
+                    )
+                mb_data = enrich_macro_benchmarks_live_state(mb_data, btc_chg_24h_pct=btc_chg_24h_live) or mb_data
+                eq_reg_line = format_equity_macro_regime_line(mb_data)
+                if eq_reg_line:
+                    ctx.telemetry["Equity & Macro Regime"] = eq_reg_line
+        except Exception:
+            pass
+        if not ctx.is_eq_sym:
+            try:
+                if isinstance(
+                    m_data := _read_first_cached_dict(
+                        ctx.cachedb_dir, "sentiment_eval_files", "sentiment_eval.json"
+                    )[0],
+                    dict,
+                ):
+                    bias, risk, action = (
+                        str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action")
+                    )
+                    if bias or risk or action:
+                        ctx.telemetry["Macro Sentiment Bias"] = (
+                            f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
+                        )
+            except Exception:
+                pass
+            try:
+                if isinstance(
+                    fg_data := _read_first_cached_dict(
+                        ctx.cachedb_dir, "fear_greed_files", "fear_greed_collect.json"
+                    )[0],
+                    dict,
+                ):
+                    val, label = fg_data.get("value", ""), fg_data.get("classification", "")
+                    if val is not None and not isinstance(val, bool) and str(val).strip() != "":
+                        ctx.telemetry["Fear & Greed Index"] = (
+                            f"{val} ({str(label).strip() if label is not None and not isinstance(label, bool) else ''})"
+                        )
+            except Exception:
+                pass
+        try:
+            if isinstance(
+                g_data := _read_first_cached_dict(
+                    ctx.cachedb_dir, "geopolitical_eval_file", "geopolitical_eval.json"
+                )[0],
+                dict,
+            ):
+                level = g_data.get("threat_level", "")
+                if level is not None and not isinstance(level, bool) and str(level).strip() != "":
+                    ctx.telemetry["Geopolitical Threat Level"] = str(level).strip()
+        except Exception:
+            pass
         if len(ctx.telemetry) > before_cnt:
             ctx.record_pillar_source("macro_pillars", "cachedb")
 

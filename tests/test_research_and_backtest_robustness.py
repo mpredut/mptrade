@@ -1710,7 +1710,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert sanitized_t212["sl_pending_exit"] is None
     assert sanitized_t212["tp_pending_exit"] is None
 
-    from kraken.kraken_cachemanager import _load_initial_cache
+    from cacheaccount import CacheTradeManager
     bad_kraken_cache = tmp_path / "cache_trade_kraken_bad.json"
     bad_kraken_cache.write_text(
         json.dumps({
@@ -1726,7 +1726,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
         }),
         encoding="utf-8",
     )
-    loaded_kc = _load_initial_cache(str(bad_kraken_cache))
+    loaded_kc = CacheTradeManager.load_sanitized_trade_snapshot(str(bad_kraken_cache), venue="kraken")
     assert [r["id"] for r in loaded_kc["items"]["HYPEUSD"]] == ["T1", "T2"]
 
     # 9. Volatility, KalmanTrigger, SmartStopLossGuard, NewsFeedCollector, and GeopoliticalThreatAnalyzer resilience

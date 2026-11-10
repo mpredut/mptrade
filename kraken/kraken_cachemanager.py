@@ -43,7 +43,6 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cacheaccount import (
-    CacheTradeManager,
     run_kraken_trade_poll_loop,
     run_kraken_trade_ws_loop,
 )
@@ -51,7 +50,6 @@ from cachepaths import CACHE_KRAKEN_TRADE_FILENAME, cache_path
 from credentials import CredentialConfigurationError, kraken_credentials
 from instrument_registry import symbols_for
 from kraken_client import KrakenClient
-from providers.kraken_provider import KrakenProvider
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
@@ -74,33 +72,6 @@ MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
 CACHE_FILE = cache_path(CACHE_KRAKEN_TRADE_FILENAME)
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
-_QUOTE = KrakenProvider._KRAKEN_QUOTE_ASSETS
-
-
-def _match_configured_pair(symbol: str | None) -> str | None:
-    """Resolve a raw or WS Kraken pair to its configured PAIRS entry (or canonical key if '*' is enabled)."""
-    return KrakenProvider.match_configured_pair(symbol, pairs=PAIRS)
-
-
-_build_kraken_cache_fill = KrakenProvider.build_cache_fill
-_normalize = KrakenProvider.normalize_ws_trade
-_ledger_to_fills = KrakenProvider.ledger_to_fills
-_extract_ws_own_trades = KrakenProvider.extract_ws_own_trades
-
-
-def _load_initial_cache(path):
-    """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
-    return CacheTradeManager.load_sanitized_trade_snapshot(path, venue="kraken")
-
-
-def _fetch_rest_into(client, cache):
-    """Fetch unified Ledgers data via KrakenProvider and persist into the agnostic trade snapshot."""
-    by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-        client,
-        pairs=PAIRS,
-        lookback_sec=LEDGER_LOOKBACK_S,
-    )
-    CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
 
 
 def _touch_kraken_heartbeat(force: bool = False) -> None:
@@ -127,38 +98,6 @@ def poll_loop(client):
     )
 
 
-def _merge_rest_into(client, cache):
-    """Fetch Ledgers via KrakenProvider and merge incrementally into an active WS cache via CacheTradeManager."""
-    by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-        client,
-        pairs=PAIRS,
-        lookback_sec=LEDGER_LOOKBACK_S,
-    )
-    CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=False)
-
-
-def _touch_ws_fetchtimes(cache, now_ms=None):
-    """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
-        cache, now_ms=now_ms, symbols=PAIRS, create_missing=True
-    )
-
-
-def ws_loop(client):
-    """Delegate real-time ownTrades WS + REST reconciliation to the canonical account-cache bridge."""
-    return run_kraken_trade_ws_loop(
-        client,
-        cache_file=CACHE_FILE,
-        pairs=PAIRS,
-        poll_interval=POLL_INTERVAL,
-        backoff_init=POLL_BACKOFF_INIT,
-        backoff_max=POLL_BACKOFF_MAX,
-        lookback_sec=LEDGER_LOOKBACK_S,
-        ws_url=WS_URL,
-        heartbeat_fn=_touch_kraken_heartbeat,
-    )
-
-
 def main():
     single_instance("kraken_cachemanager")   # one instance/fetcher minimizes rate-limit usage
     # The cache manager's dedicated _CACHE key has its own nonce sequence, separate from
@@ -173,7 +112,17 @@ def main():
     log(f"[kraken_cache] start: mode={MODE} credentials={credentials.profile} "
         f"pairs={PAIRS} poll={POLL_INTERVAL}s -> {CACHE_FILE}")
     if MODE in ("ws", "auto"):
-        ws_loop(client)        # real-time WS-first + periodic REST Ledgers fallback
+        run_kraken_trade_ws_loop(
+            client,
+            cache_file=CACHE_FILE,
+            pairs=PAIRS,
+            poll_interval=POLL_INTERVAL,
+            backoff_init=POLL_BACKOFF_INIT,
+            backoff_max=POLL_BACKOFF_MAX,
+            lookback_sec=LEDGER_LOOKBACK_S,
+            ws_url=WS_URL,
+            heartbeat_fn=_touch_kraken_heartbeat,
+        )
     else:
         poll_loop(client)      # REST only
 
