@@ -30,7 +30,6 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
-    resolve_kraken_lookup_symbol,
     split_symbol_assets,
 )
 
@@ -119,6 +118,8 @@ class MarketDataProvider(ABC):
     _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
+    _CLIENT_CLASS_NAME: Optional[str] = None
+    _DEFAULT_QUOTE_ASSET: Optional[str] = None
     _USES_SSOT_MARKET_CACHE: bool = True
     _REQUIRES_CACHE_PERMIT: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
@@ -516,13 +517,24 @@ class MarketDataProvider(ABC):
     def guards_internally(self) -> bool:
         return False
 
-    def _resolve_capability_flag(self, attr: str) -> bool:
-        if getattr(self, attr, False):
-            return True
+    def _resolve_provider_attr(self, attr: str, default: Any = None) -> Any:
+        inst_dict = getattr(self, "__dict__", {})
+        if attr in inst_dict:
+            return inst_dict[attr]
         if attr in type(self).__dict__:
-            return bool(getattr(self, attr, False))
+            return getattr(self, attr, default)
         prov_cls = self.resolve_venue_provider_class(getattr(self, "name", ""))
-        return bool(getattr(prov_cls, attr, False)) if prov_cls is not None else False
+        if prov_cls is not None and hasattr(prov_cls, attr):
+            return getattr(prov_cls, attr)
+        return getattr(self, attr, default)
+
+    def _resolve_capability_flag(self, attr: str) -> bool:
+        return bool(self._resolve_provider_attr(attr, False))
+
+    def default_quote_asset(self) -> Optional[str]:
+        """Return default quote asset when a venue symbol omits explicit quote suffix."""
+        val = self._resolve_provider_attr("_DEFAULT_QUOTE_ASSET", None)
+        return str(val).strip().upper() if isinstance(val, str) and val.strip() else None
 
     def requires_cache_permit(self) -> bool:
         """Return whether this provider enforces account-cache submit permits."""
@@ -683,10 +695,8 @@ class MarketDataProvider(ABC):
         cleaned = clean_symbol_key(raw_u)
         parts = split_symbol_assets(raw_u)
         canon = canonical_symbol_key(raw_u) if parts is not None else ""
-        kr_lookup = resolve_kraken_lookup_symbol(raw_u) if (parts is not None and parts[1] == "USD") else ""
-        return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon, kr_lookup) if c))
+        return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon) if c))
 
-    _REAL_CLIENT_CLASS_NAMES = frozenset({"KrakenClient", "HLClient", "T212Client"})
     _DEFINITIVE_REFUSAL_TOKENS = (
         "insufficient",
         "minimum value",
@@ -726,12 +736,13 @@ class MarketDataProvider(ABC):
             or getattr(self, "_ssot_24price_cache_dir", None)
             or getattr(self, "_ssot_fills_cache_path", None)
         )
-        inj_client = getattr(self, "_cli", None) or getattr(self, "_client", None)
-        if (
-            inj_client is not None
-            and type(inj_client).__name__ not in self._REAL_CLIENT_CLASS_NAMES
-            and not has_explicit_ssot
-        ):
+        inst_dict = getattr(self, "__dict__", {})
+        inj_client = inst_dict.get("_cli") or inst_dict.get("_client")
+        client_cls_name = self._resolve_provider_attr("_CLIENT_CLASS_NAME", None)
+        is_real_client = bool(
+            client_cls_name and type(inj_client).__name__ == client_cls_name
+        )
+        if inj_client is not None and not is_real_client and not has_explicit_ssot:
             return False
         if has_explicit_ssot:
             return True
@@ -777,28 +788,26 @@ class MarketDataProvider(ABC):
             custom_dir=getattr(self, "_ssot_24price_cache_dir", None),
         )
 
-    @staticmethod
-    def normalize_orderbook_payload(raw_data: Any) -> Optional[dict]:
-        """Normalize Binance, Kraken, or Hyperliquid L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""
+    @classmethod
+    def normalize_orderbook_payload(cls, raw_data: Any) -> Optional[dict]:
+        """Normalize L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""
         if not isinstance(raw_data, dict):
             return None
         data = raw_data
-        if "bids" not in data and isinstance(data.get("levels"), list) and len(data["levels"]) >= 2:
-            hl_bids, hl_asks = data["levels"][0], data["levels"][1]
-            if isinstance(hl_bids, list) and isinstance(hl_asks, list):
-                data = {
-                    "bids": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_bids],
-                    "asks": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_asks],
-                }
-        elif "bids" not in data and isinstance(data.get("result"), dict):
-            krk_book = next(
-                (v for v in data["result"].values() if isinstance(v, dict) and "bids" in v),
-                None,
-            )
-            if isinstance(krk_book, dict):
-                data = krk_book
-            else:
+        if "bids" not in data:
+            extract_self = getattr(cls, "extract_orderbook_sides", None)
+            extracted = extract_self(data) if callable(extract_self) else None
+            if not isinstance(extracted, dict):
+                for venue_key in cls._VENUE_PROVIDER_SPECS:
+                    prov_cls = cls.resolve_venue_provider_class(venue_key)
+                    extract_fn = getattr(prov_cls, "extract_orderbook_sides", None) if prov_cls is not None else None
+                    if callable(extract_fn):
+                        extracted = extract_fn(data)
+                        if isinstance(extracted, dict):
+                            break
+            if not isinstance(extracted, dict):
                 return None
+            data = extracted
 
         def _parse_side(rows: Any) -> list[tuple[float, float]]:
             if not isinstance(rows, list):

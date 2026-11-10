@@ -127,7 +127,9 @@ class MarketApi:
             provider = self.provider_by_name(provider_name)
             if provider is None:
                 raise ValueError(f"Unknown provider: {provider_name!r}")
-        provider.validate_symbol(symbol)
+        validate_fn = getattr(provider, "validate_symbol", None)
+        if callable(validate_fn):
+            validate_fn(symbol)
         return provider
 
     def _provider_for(self, symbol: str) -> MarketDataProvider:
@@ -146,19 +148,10 @@ class MarketApi:
                     return candidate
             except Exception:
                 continue
-        # Behavior-preserving default: first provider (Binance).
+        # Behavior-preserving default: first configured provider.
         default = self._providers[0]
         self._route[symbol] = default
         return default
-
-    def _provider_routed_or_default(
-        self, symbol: str, provider_name=None,
-    ) -> MarketDataProvider:
-        return (
-            self._provider_explicit_or_routed(symbol, provider_name)
-            if provider_name is not None
-            else self._provider_for(symbol)
-        )
 
     def get_current_price(
         self, symbol: str, *, provider_name=None,
@@ -169,7 +162,7 @@ class MarketApi:
     def get_price_history(
         self, symbol: str, lookback_h: float, *, provider_name=None,
     ) -> Optional[List]:
-        return self._provider_routed_or_default(symbol, provider_name).get_price_history(symbol, lookback_h)
+        return self._provider_explicit_or_routed(symbol, provider_name).get_price_history(symbol, lookback_h)
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
@@ -186,7 +179,7 @@ class MarketApi:
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        prov = self._provider_routed_or_default(symbol, provider_name)
+        prov = self._provider_explicit_or_routed(symbol, provider_name)
         if authoritative or publish_cache:
             return prov.get_orders(
                 symbol,
@@ -591,7 +584,13 @@ class MarketApi:
         if base is None or quote is None:
             res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
             base = base or res_base or None
-            quote = quote or res_quote or ("USDC" if normalize_venue_name(prov_name) == "hyperliquid" else None)
+            default_quote_fn = getattr(provider, "default_quote_asset", None)
+            default_quote = (
+                default_quote_fn()
+                if callable(default_quote_fn)
+                else getattr(MarketDataProvider.resolve_venue_provider_class(prov_name), "_DEFAULT_QUOTE_ASSET", None)
+            )
+            quote = quote or res_quote or default_quote
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
                           base=base, quote=quote, params=inst_params or {}, api=self)
         return inst.place(side, price, qty, **kwargs)
@@ -630,18 +629,16 @@ class MarketApi:
 # preserve routing for unclaimed symbols. Hyperliquid claims only HYPE and Binance
 # explicitly excludes it. Provider construction is cheap and SDKs load lazily;
 # import failure falls back cleanly without affecting the fleet.
-_extra_providers = []
+_configured_providers = []
 for _venue_key, (_modname, _clsname) in MarketDataProvider._VENUE_PROVIDER_SPECS.items():
-    if _venue_key == "binance":
-        continue
     try:
         _prov_cls = MarketDataProvider.resolve_venue_provider_class(_venue_key)
         if _prov_cls is not None:
-            _extra_providers.append(_prov_cls())
+            _configured_providers.append(_prov_cls())
     except Exception as _e:  # noqa: BLE001
         print(f"market_api: {_clsname} unavailable ({_e})")
 
 api = MarketApi(
-    [BinanceProvider()] + _extra_providers,
+    _configured_providers,
     regime_snapshot_resolver=_runtime_market_regime_snapshot,
 )

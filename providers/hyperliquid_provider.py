@@ -139,6 +139,8 @@ def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
 class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
+    _CLIENT_CLASS_NAME = "HLClient"
+    _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
 
@@ -264,6 +266,17 @@ class HyperliquidProvider(MarketDataProvider):
     def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
         self.validate_symbol(symbol)
         return (f"{self._token}USDC", self._token)
+
+    @staticmethod
+    def extract_orderbook_sides(raw_data: dict) -> Optional[dict]:
+        if isinstance(raw_data.get("levels"), list) and len(raw_data["levels"]) >= 2:
+            hl_bids, hl_asks = raw_data["levels"][0], raw_data["levels"][1]
+            if isinstance(hl_bids, list) and isinstance(hl_asks, list):
+                return {
+                    "bids": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_bids],
+                    "asks": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_asks],
+                }
+        return None
 
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         c = self._hl()

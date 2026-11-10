@@ -68,6 +68,7 @@ from cachepaths import (
     kraken_pair_matches,
     resolve_kraken_lookup_symbol,
     split_kraken_pair,
+    split_symbol_assets,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
@@ -155,6 +156,7 @@ def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 
 
 class KrakenProvider(MarketDataProvider):
+    _CLIENT_CLASS_NAME = "KrakenClient"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
@@ -274,6 +276,26 @@ class KrakenProvider(MarketDataProvider):
             raise
 
     # -- Public market data without keys. --------------------------------------
+    def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
+        base_cands = super()._ssot_symbol_candidates(symbol)
+        if not base_cands:
+            return ()
+        raw_u = symbol.strip().upper()
+        parts = split_symbol_assets(raw_u)
+        kr_lookup = resolve_kraken_lookup_symbol(raw_u) if (parts is not None and parts[1] == "USD") else ""
+        return tuple(dict.fromkeys((*base_cands, kr_lookup))) if kr_lookup else base_cands
+
+    @staticmethod
+    def extract_orderbook_sides(raw_data: dict) -> Optional[dict]:
+        if isinstance(raw_data.get("result"), dict):
+            krk_book = next(
+                (v for v in raw_data["result"].values() if isinstance(v, dict) and "bids" in v),
+                None,
+            )
+            if isinstance(krk_book, dict):
+                return krk_book
+        return None
+
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         try:
             return self._client().last_price(symbol)

@@ -372,3 +372,48 @@ def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_
     assert facade.latest_fill_price("BTCUSDC", "BID", 3600) == pytest.approx(105.0)
     res = facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, True)
     assert res["force"] is True and captured["force"] is True
+
+
+def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
+    """Verify venue-agnostic MarketDataProvider capabilities, SSOT cold-start client detection, and unified MarketApi routing."""
+    import pytest
+    import botcore
+    from providers.base import MarketDataProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+    from providers.market_api import MarketApi
+
+    assert not hasattr(MarketDataProvider, "_REAL_CLIENT_CLASS_NAMES")
+    assert not hasattr(MarketApi, "_provider_routed_or_default")
+    assert KrakenProvider._CLIENT_CLASS_NAME == "KrakenClient"
+    assert HyperliquidProvider._CLIENT_CLASS_NAME == "HLClient"
+    assert T212Provider._CLIENT_CLASS_NAME == "T212Client"
+    assert HyperliquidProvider().default_quote_asset() == "USDC"
+    assert KrakenProvider().default_quote_asset() is None
+
+    monkeypatch.setattr(botcore._RUNTIME_SERVICES, "allow_shared_disk_cache", True)
+    # Fresh Kraken/T212 providers with uninitialized _cli must allow SSOT cache (must not confuse bound _client method with mock).
+    assert KrakenProvider()._allow_ssot_price_cache() is True
+    assert T212Provider()._allow_ssot_price_cache() is True
+    assert HyperliquidProvider()._allow_ssot_price_cache() is True
+    # Injected mock clients disable shared disk SSOT cache unless explicitly enabled.
+    assert KrakenProvider(client=object())._allow_ssot_price_cache() is False
+    assert T212Provider(client=object())._allow_ssot_price_cache() is False
+    assert HyperliquidProvider(client=object())._allow_ssot_price_cache() is False
+
+    hl = HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl_api = MarketApi([hl])
+    with pytest.raises(ProviderError, match="unsupported"):
+        hl_api.get_price_history("BTCUSDC", 1.0)
+    with pytest.raises(ProviderError, match="unsupported"):
+        hl_api.get_orders("BTCUSDC", "BUY", 60.0)
+
+    captured_quotes = []
+    monkeypatch.setattr(
+        "instrument.Instrument.place",
+        lambda inst, *args, **kwargs: captured_quotes.append((inst.base, inst.quote)) or "ok",
+    )
+    assert hl_api.place("HYPE", "BUY", 40.0, 1.0) == "ok"
+    assert captured_quotes[-1][1] == "USDC"
+
