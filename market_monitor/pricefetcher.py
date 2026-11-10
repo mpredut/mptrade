@@ -573,8 +573,18 @@ class PricePlatformFactory:
 class CacheAllPriceFetcherManager(CachePriceManagerBase):
     DEFAULT_FILENAME = CACHE_WATCHER_ALL_PRICE_FILENAME
 
-    def __init__(self, sync_ts, symbols, filename=CACHE_WATCHER_ALL_PRICE_FILENAME, api_client=api, cmc_api_key: Optional[str] = None,
-                 read_only=False, max_symbols: Optional[int] = None):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename=CACHE_WATCHER_ALL_PRICE_FILENAME,
+        api_client=api,
+        cmc_api_key: Optional[str] = None,
+        read_only=False,
+        max_symbols: Optional[int] = None,
+        *,
+        data_sync_mode: Optional[str] = None,
+    ):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
         self.max_monitored_symbols = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
         initial_symbols = []
@@ -591,8 +601,15 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         self.active_symbols = set(initial_symbols)
         self.symbol_added_time: Dict[str, float] = {}
         self.symbol_preferred_source: Dict[str, str] = {}  # Required source preference state.
-        super().__init__(sync_ts, initial_symbols, filename, append_mode=True,
-                         api_client=api_client, read_only=read_only)
+        super().__init__(
+            sync_ts,
+            initial_symbols,
+            filename,
+            append_mode=True,
+            api_client=api_client,
+            read_only=read_only,
+            data_sync_mode=data_sync_mode,
+        )
         self._load_symbol_metadata()
         print("[Pricefetcher] Checking symbol support:")
         for symbol in self.original_symbols:
@@ -1047,7 +1064,11 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
         max_symbols=eff_max,
     )
     print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
-    cachePriceAll = CacheFactory.get("PriceMulti", symbols=all_symbols)
+    cachePriceAll = CacheFactory.get(
+        "PriceMulti",
+        symbols=all_symbols,
+        data_sync_mode=CachePriceManagerBase.MODE_PRODUCER,
+    )
     cachePriceAll.max_monitored_symbols = eff_max
     cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
 

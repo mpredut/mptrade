@@ -593,3 +593,37 @@ def test_alertnotifiers__parse_bool_flag_default_preservation_iter163_s3():
     # 3. alertnotifiers: _parse_bool_flag default preservation
     assert an._parse_bool_flag("invalid_token", default=True) is True
     assert an._parse_bool_flag("false", default=True) is False
+
+
+def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_type_error(tmp_path, monkeypatch):
+    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    monkeypatch.setattr(
+        "market_monitor.pricefetcher.PricePlatformFactory.check_symbol_support",
+        lambda self, sym: {"Binance": True},
+    )
+    cache_file = str(tmp_path / "cache_watcher_all_price.json")
+    mgr = CacheAllPriceFetcherManager(
+        60,
+        ["BTCUSDC"],
+        filename=cache_file,
+        read_only=False,
+        data_sync_mode="producer",
+    )
+    assert mgr.data_sync_mode == "producer"
+    assert mgr.save_state is True
+    assert mgr.read_only is False
+
+    pw_log = tmp_path / "price_watcher.log"
+    pw_log.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "/home/predut/mptrade/cacheManager.py", line 482, in get\n'
+        "TypeError: CacheAllPriceFetcherManager.__init__() got an unexpected keyword argument 'data_sync_mode'\n"
+        "16:29:38 [Pricefetcher] Checking symbol support:\n"
+        "16:29:56 [Checker][BTCUSDC] Price: $73723.3800\n",
+        encoding="utf-8",
+    )
+    anom = harvest_log_anomalies_from_dirs([str(tmp_path)], lookback_hours=24.0)
+    assert anom.error_count == 0
+

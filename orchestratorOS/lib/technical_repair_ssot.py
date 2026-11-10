@@ -680,6 +680,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*(?:STRATEGIE\s+.*?\s+PORNITA|(?:[A-Z0-9_]+\s+)?STRATEGY\s+STARTED)\s*===|===\s*TRAILING STOP(?:\s+KRAKEN)?\s+started|\[STRAT\]\s+state loaded|"
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
+        r"\[Pricefetcher\]\s+Checking symbol support:|\[price_watcher\]|"
         r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
         r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
         r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
@@ -690,6 +691,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     startup_fatal_exc_pattern = re.compile(
         r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
         r"ValueError:\s+Unknown cache type:|"
+        r"TypeError:.*got an unexpected keyword argument|"
         r"\bname '[^']+' is not defined\b|"
         r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
         re.IGNORECASE,
