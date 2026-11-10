@@ -9298,6 +9298,8 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                     '  File "/home/predut/mptrade/kraken/trailing_stop.py", line 1709, in <module>',
                     "SyntaxError: invalid syntax",
                     "[09:33:30] === TRAILING STOP KRAKEN started — ACTIVE ===",
+                    "[18:54:24]   ! [TRAIL-K] BalanceEx failed (KrakenError: network error/empty response in BalanceEx (HTTP 0))",
+                    "[18:55:00] [TRAIL-K] heartbeat",
                 ]
             )
             + "\n",

@@ -842,6 +842,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "agy CLI with model" in cleaned
                                     or "authentication failed or timed out" in cleaned
                                     or "! network error " in cleaned
+                                    or "network error/empty response" in cleaned
                                     or "T212 order history: timeout/network error" in cleaned
                                     or "FAILURE: every rung exhausted, the VPN is still down" in cleaned
                                 )
