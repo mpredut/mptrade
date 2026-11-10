@@ -9303,6 +9303,29 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             + "\n",
             encoding="utf-8",
         )
+        order_retry_log = Path(tmp_net) / "order_retry.log"
+        order_retry_log.write_text(
+            "\n".join(
+                [
+                    "[18:48:15]   ! network error POST: <urlopen error [Errno -3] Temporary failure in name resolution>",
+                    "18:48:58 [order_retry] {'attempted': 0, 'succeeded': 0, 'reconciled': 0, 'observed': 3, 'filled': 0}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        auto_exec_log = Path(tmp_net) / "auto_trade_executor.log"
+        auto_exec_log.write_text(
+            "\n".join(
+                [
+                    "2026-11-10 18:28:16,015 [WARNING] agy CLI with model 'gemini-4-argon-medium' failed (code 1): Error: authentication required.",
+                    "error: authentication failed or timed out",
+                    "2026-11-10 18:35:00,000 [INFO] Starting Autonomous AI Supervisor cycle",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=24.0)
         assert net_res.error_count == 0
         assert not net_res.persistent_errors

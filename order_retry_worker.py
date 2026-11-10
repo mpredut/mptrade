@@ -1120,7 +1120,7 @@ def main():
         try:
             stats = process_once(mkt)
             last_stats = stats
-            if stats["attempted"] or stats["expired"]:
+            if stats["attempted"] or stats["expired"] or stats["observed"]:
                 print(f"[order_retry] {stats}")
         except oq.RetryQueueCorruptionError as exc:
             _alert_queue_corruption(exc)

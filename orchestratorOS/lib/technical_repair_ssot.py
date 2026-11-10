@@ -687,7 +687,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"Starting MacroAnalyzer|Macro analyzer cycle active:|"
         r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
         r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:|"
-        r"OK \(tun0 \+ HTTPS through the tunnel\)|PIA healthy \(tun0 \+ DNS \+ HTTPS\)|\[order_retry\]\s+start|\.env loaded from .*hyperliquid)",
+        r"OK \(tun0 \+ HTTPS through the tunnel\)|PIA healthy \(tun0 \+ DNS \+ HTTPS\)|\[order_retry\]\s+(?:start|ACCEPTED\b|FILLED\b|\{'attempted':)|\.env loaded from .*hyperliquid)",
         re.IGNORECASE,
     )
     startup_fatal_exc_pattern = re.compile(
@@ -840,6 +840,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned
+                                    or "authentication failed or timed out" in cleaned
                                     or "! network error " in cleaned
                                     or "T212 order history: timeout/network error" in cleaned
                                     or "FAILURE: every rung exhausted, the VPN is still down" in cleaned
