@@ -668,7 +668,9 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not keys:
             return None
         now_s = _now_time()
-        max_stale_s = safe_pos_float(max_stale_sec, default=90.0) or 90.0
+        max_stale_s = 90.0 if max_stale_sec is None else safe_pos_float(max_stale_sec, default=None)
+        if max_stale_s is None:
+            return None
         sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()
         best_rows: Optional[list[dict]] = None
         best_rank: Optional[tuple[float, int]] = None
@@ -715,7 +717,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return False
         items = cache_obj.setdefault("items", {})
         ft = cache_obj.setdefault("fetchtime", {})
-        eff_now_ms = int(now_ms) if now_ms is not None else int(_now_time() * 1000)
+        eff_now_ms = resolve_now_ms(now_ms)
         changed = False
         for sym_raw, new_rows in (fills_by_symbol or {}).items():
             if not sym_raw or isinstance(sym_raw, bool) or not isinstance(new_rows, list):
@@ -753,7 +755,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         changed = True
                 merged = sorted(
                     by_oid.values(),
-                    key=lambda r: (r.get("timestamp") or r.get("time") or 0, str(r.get("orderId") or "")),
+                    key=lambda r: (extract_timestamp_ms(r, default=0) or 0, str(extract_order_id(r) or "")),
                 )
                 items[sym_key] = merged
             else:
@@ -772,7 +774,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                         added = True
                         changed = True
                 if added and all(isinstance(r, dict) and "time" in r and "tid" not in r for r in bucket):
-                    bucket.sort(key=lambda r: r.get("time") or 0)
+                    bucket.sort(key=lambda r: extract_timestamp_ms(r, default=0) or 0)
                 items[sym_key] = bucket
             old_ft = safe_pos_float(ft.get(sym_key), default=None)
             if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
@@ -868,8 +870,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
         try:
-            if not os.path.exists(str(cache_file)):
-                return
             data = read_json_dict_recovering(str(cache_file), default=None)
             if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
                 return

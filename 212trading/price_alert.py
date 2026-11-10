@@ -32,7 +32,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from ipo_common import load_t212_environment  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
-from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
+from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url, make_bot_event_alert  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
 from strategies.state_store import safe_state_token  # noqa: E402
 
@@ -47,10 +47,7 @@ def push(topic: str, title: str, body: str) -> bool:
     url = format_ntfy_url(topic)
     if not url:
         return False
-    alert = {
-        "type": "bot_event", "symbol": title.split(" ", 1)[0],
-        "name": title, "source": "price_alert", "body": body,
-    }
+    alert = make_bot_event_alert(title, body, "price_alert", title.split(" ", 1)[0])
     return AlertNotifier.send_phone_webhook_batch(
         [alert], webhook_url=url,
     )

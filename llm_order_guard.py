@@ -22,6 +22,7 @@ from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
     clean_scale,
+    format_notify_price,
     normalize_side,
     obj_attr,
     resolve_now_ts,
@@ -168,7 +169,7 @@ def evaluate_high_stake_order_guard(
 
         if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
-                from notify_engine.alertnotifiers import format_notify_price, notify
+                from notify_engine.alertnotifiers import notify
                 from orchestratorOS.agy.topics import topic_spec
 
                 hs_tag = topic_spec("guard_high_stake").bracket_tag

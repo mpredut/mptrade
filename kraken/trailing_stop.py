@@ -302,12 +302,9 @@ class KrakenTrailing(TrailingAdapterBase):
             return False
 
     def price(self, pair: str):
-        try:
-            px = self.executor.get_current_price(pair)
-            if px is not None and px > 0:
-                return px
-        except Exception:
-            pass
+        get_px = getattr(self.executor, "get_current_price", None)
+        if callable(get_px):
+            return get_px(pair)
         return self.client.last_price(pair)
 
     def reconcile_pending(self, pending, persist):

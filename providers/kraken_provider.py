@@ -908,11 +908,18 @@ class KrakenProvider(MarketDataProvider):
                 print(f"[Kraken][DRY] validate {symbol}: {e}")
                 return None
         try:
-            self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, submit_price or price)
             print(f"[Kraken][LIVE] {side} {symbol} qty={qty} @ {price}")
-            res = self._client().add_order(
-                symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
-                cl_ord_id=cl_ord_id)
+            res = self._execute_kraken_live_order(
+                symbol,
+                s_norm,
+                s,
+                qty,
+                submit_price,
+                price,
+                ordertype=ordertype,
+                cl_ord_id=cl_ord_id,
+                include_none_cl_ord_id=True,
+            )
             if res:
                 self._invalidate_fills_cache(symbol)
             return res
@@ -932,33 +939,32 @@ class KrakenProvider(MarketDataProvider):
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
-        s_norm = normalize_side(side)
-        if s_norm not in {"BUY", "SELL"}:
-            raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
-        s = s_norm.lower()
-        is_market = _parse_bool_flag(market, False)
-        ordertype = "market" if (is_market or price is None) else "limit"
-        px_f = None
-        if ordertype == "limit":
-            px_f = safe_pos_float(price, default=None)
-            if px_f is None:
-                raise ProviderError(f"submit_order {symbol} {s}: invalid/non-positive price={price!r}")
-        qty = self._round_required_qty(symbol, qty, f"submit_order {s}")
+        is_market = _parse_bool_flag(market, False) or price is None
+        s_norm, s, qty, px_f, ordertype = self._prepare_kraken_order(
+            symbol, side, qty, price, is_market=is_market, caller="submit_order"
+        )
         try:
-            order_kwargs = {"ordertype": ordertype, "validate": False}
-            if client_order_id is not None:
-                order_kwargs["cl_ord_id"] = _kraken_client_order_id(
-                    client_order_id)
+            cl_ord_id = (
+                _kraken_client_order_id(client_order_id)
+                if client_order_id is not None else None
+            )
             # This is the final authoritative gate for every raw executor path,
             # including SpotDCA and trailing stop. Recheck next to the API call so
             # a switch change after orchestration cannot create a live order.
             if not self.execution_enabled():
                 raise SubmissionRefused(
                     "KRAKEN_LIVE_ORDERS is not true; real execution is disabled")
-            self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, px_f or price)
-            res = self._client().add_order(
-                symbol, s, qty, None if ordertype == "market" else px_f,
-                **order_kwargs) or {}
+            res = self._execute_kraken_live_order(
+                symbol,
+                s_norm,
+                s,
+                qty,
+                px_f,
+                price,
+                ordertype=ordertype,
+                cl_ord_id=cl_ord_id,
+                include_none_cl_ord_id=False,
+            ) or {}
         except SubmissionRefused:
             raise
         except Exception as e:  # noqa: BLE001 — Normalize venue errors.
@@ -1175,9 +1181,6 @@ class KrakenProvider(MarketDataProvider):
             if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None and 0 <= int(pair_dec) <= 18:
                 out["tick_size"] = round(10.0 ** (-int(pair_dec)), 8)
         return out
-
-    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
-        return self.extract_cached_fee_and_limits(self, symbol)
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = exact_pos_int(interval_min, default=None)

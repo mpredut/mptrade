@@ -21,6 +21,7 @@ from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    format_notify_qty,
     normalize_epoch_sec,
     required_float_env,
     resolve_now_ts,
@@ -656,8 +657,7 @@ def _format_ts(ts):
         return "N/A"
 
 
-def _fmt_num(val: float) -> str:
-    return f"{float(val):.8f}".rstrip("0").rstrip(".") or "0"
+_fmt_num = format_notify_qty
 
 
 def _concrete_record_owner(rec) -> str:

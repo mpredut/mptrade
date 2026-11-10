@@ -272,6 +272,17 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         AlertNotifier.send(self.NEW_COIN, enable_console=False, enable_file=True,
                            enable_email=False, enable_phone_webhook=False, filename=path)
         self.assertTrue(os.path.exists(path))
+        with patch("builtins.print") as mock_print:
+            AlertNotifier.send(self.NEW_COIN, enable_console=True, enable_file=False,
+                               enable_email=False, enable_phone_webhook=False)
+            self.assertTrue(mock_print.called)
+        self.assertEqual(AlertNotifier.email_subject([self.NEW_COIN]), "New Coin: RWS")
+        self.assertEqual(
+            AlertNotifier.email_subject([self.NEW_COIN, dict(self.NEW_COIN, symbol="FOO")]),
+            "New Coins (2): RWS, FOO",
+        )
+        price_alert = PriceAlert("TAO", "down", 80.0, 100.0, -20.0, 7.5)
+        self.assertEqual(AlertNotifier.email_subject([price_alert]), "TAO (1 alerts)")
 
     def test_new_coin_identity_deduplication(self):
         coin1 = dict(self.NEW_COIN, price=0.0154, url="https://coinmarketcap.com/currencies/real-world-services/?ref=1")

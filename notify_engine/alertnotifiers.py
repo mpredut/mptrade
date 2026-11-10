@@ -284,11 +284,16 @@ _REDUNDANT_BULK_LINE_RE = re.compile(
     r"|Risk:\s*(.+))$",
     flags=re.IGNORECASE,
 )
+_LAST_LOGS_RE = re.compile(r"(?is)\n*\s*last logs:.*")
+_AUTO_TOPIC_TAG_RE = re.compile(r"\[auto_[a-z0-9_]+")
+_BRACKET_GROUP_RE = re.compile(r"\[([^\[\]]+)\]")
+_BODY_VENUE_RE = re.compile(r"\bVenue:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+_LEADING_BRACKET_RE = re.compile(r"^\[[^\]]+\]\s*")
 
 
 def _normalize_text_for_similarity(text: str) -> str:
     """Normalize volatile numbers, timestamps, PIDs, hex IDs, prices, and percentages."""
-    s = re.sub(r"(?is)\n*\s*last logs:.*", "", str(text or "")).strip()
+    s = _LAST_LOGS_RE.sub("", str(text or "")).strip()
     s = re.sub(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*", "", s)
     s = re.sub(r"^\d{2}:\d{2}:\d{2}\s*", "", s)
     s = re.sub(r"0x[0-9a-fA-F]+", "<HEX>", s)
@@ -439,7 +444,7 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
 
         venue = ""
         tags: list[str] = []
-        for match in re.finditer(r"\[([^\[\]]+)\]", raw_t):
+        for match in _BRACKET_GROUP_RE.finditer(raw_t):
             inner = match.group(1).strip()
             if not inner:
                 continue
@@ -455,13 +460,13 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
             else:
                 tags.append(inner)
         if not venue:
-            body_venue_m = re.search(r"\bVenue:\s*([A-Za-z0-9_]+)", str(it.get("body") or ""), re.IGNORECASE)
+            body_venue_m = _BODY_VENUE_RE.search(str(it.get("body") or ""))
             if body_venue_m and body_venue_m.group(1).lower() in _KNOWN_NOTIFY_VENUES:
                 venue = body_venue_m.group(1).lower()
         item_venues.append(venue)
         item_tags.append(tags)
 
-        stripped = re.sub(r"\[[^\[\]]+\]", " ", raw_t)
+        stripped = _BRACKET_GROUP_RE.sub(" ", raw_t)
         stripped = re.sub(r"@\s*\$?[0-9][0-9.,]*", " ", stripped)
         tokens = [
             tok for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]*", stripped)
@@ -560,7 +565,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         cnt = exact_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
         repeat_tag = f" (×{cnt})" if cnt > 1 else ""
-        cleaned = re.sub(r"(?is)\n*\s*last logs:.*", "", str(it.get("body") or "")).strip()
+        cleaned = _LAST_LOGS_RE.sub("", str(it.get("body") or "")).strip()
         raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
         if not raw_lines:
             compact_body = ""
@@ -675,7 +680,7 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
         )
     if any(marker in titles for marker in _TRADE_MARKERS):
         return 0  # Real trades must never be suppressed by deduplication
-    if "DISPONIBIL" in titles or "AVAILABLE" in titles or "LISTED ON" in titles or "LISTED" in titles:
+    if any(m in titles for m in ("DISPONIBIL", "AVAILABLE", "LISTED")):
         return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
     if any(m in titles for m in ("MACRO", "SENTIMENT")) or any(
         isinstance(a, dict) and "macro" in str(a.get("source", "")).lower() for a in alerts
@@ -719,7 +724,7 @@ def pass_common_gate(
     t_key = _canonical_topic_key(topic)
     fingerprint = _delivery_fingerprint(alerts_list)
     norm_title = _normalize_text_for_similarity(title)
-    bare_title = re.sub(r"^\[[^\]]+\]\s*", "", norm_title).strip()
+    bare_title = _LEADING_BRACKET_RE.sub("", norm_title).strip()
     is_generic_title = bare_title in (
         "", "alert", "os alert", "trade alert", "price alert",
         "critical errors", "alerts (<n>)",
@@ -1110,17 +1115,56 @@ class AlertNotifier:
             return False
 
     @staticmethod
+    def _format_price_alerts_batch_title(alerts: list) -> str:
+        count = len(alerts)
+        items = []
+        symbols = []
+        for a in alerts:
+            sym = obj_attr(a, "symbol", "N/A")
+            atype = obj_attr(a, "alert_type", "")
+            dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
+            if sym and sym != "N/A":
+                if sym not in symbols:
+                    symbols.append(sym)
+                items.append(f"{sym} {dir_str}".strip())
+
+        items_str = ", ".join(items)
+        syms_str = ", ".join(symbols)
+
+        if len(symbols) == 1:
+            return f"{symbols[0]} ({count} alerts)"
+        if items_str and len(items_str) <= 50:
+            return f"Price Alerts ({count}): {items_str}"
+        if syms_str and len(syms_str) <= 50:
+            return f"Price Alerts ({count}): {syms_str}"
+        return f"Price Alerts ({count} coins)"
+
+    @staticmethod
+    def _format_new_coins_batch_title(alerts: list) -> str:
+        count = len(alerts)
+        symbols = []
+        for a in alerts:
+            sym = obj_attr(a, "symbol", "N/A")
+            if sym and sym != "N/A" and sym not in symbols:
+                symbols.append(sym)
+        syms_str = ", ".join(symbols)
+        if syms_str and len(syms_str) <= 50:
+            return f"New Coins ({count}): {syms_str}"
+        return f"New Coins Discovered ({count})"
+
+    @staticmethod
     def email_subject(alerts: list) -> str:
         if not alerts:
             return "Alert"
         first = alerts[0]
         if isinstance(first, dict) and first.get("type") == "new_coin_discovered":
-            from notify_engine.server import NotificationServer
-            return NotificationServer._format_new_coins_batch_title(alerts) if len(alerts) > 1 \
+            return (
+                AlertNotifier._format_new_coins_batch_title(alerts)
+                if len(alerts) > 1
                 else f"New Coin: {first.get('symbol', 'N/A')}"
+            )
         if (isinstance(first, dict) and "alert_type" in first) or hasattr(first, "alert_type"):
-            from notify_engine.server import NotificationServer
-            return NotificationServer._format_price_alerts_batch_title(alerts)
+            return AlertNotifier._format_price_alerts_batch_title(alerts)
         if isinstance(first, dict):
             return str(first.get("name") or first.get("title") or "Alert")
         return "Alert"
@@ -1177,7 +1221,7 @@ class AlertNotifier:
         alerts = [alert] if not isinstance(alert, list) else alert
         if _parse_bool_flag(enable_console, True):
             for item in alerts:
-                AlertNotifier.print_to_console(item)
+                print(f"\n{'=' * 70}\n{item}\n{'=' * 70}")
         if _parse_bool_flag(enable_file, True):
             for item in alerts:
                 AlertNotifier.save_to_file(item, filename=filename)
@@ -1210,7 +1254,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     alert = make_bot_event_alert(title, body, source, symbol)
     if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
-        if re.search(r"\[auto_[a-z0-9_]+", str(title or "")):
+        if _AUTO_TOPIC_TAG_RE.search(str(title or "")):
             from notify_engine.server import _topic_for_category
             urgent = _alerts_are_urgent([alert])
             intent.update({

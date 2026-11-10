@@ -598,34 +598,26 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL][DRY] would place {side} {symbol} qty={qty} @ {submit_px} "
                   f"(market={is_market}, tif={order_tif}, real orders disabled; set {_LIVE_ENV}=true for real orders)")
             return None
-        # -- Gated live path. ---------------------------------------------------
         pair = self._pair()
         if pair is None:
             print(f"[HL] place_order: spot pair unavailable for {symbol}")
             return None
         try:
-            if not self._client_tried and not self._env_loaded:
-                self._load_env()
-            client_order_id = kwargs.get("client_order_id")
-            cloid = (
-                _cloid_for_client_order_id(client_order_id)
-                if client_order_id is not None else None)
-            secret = os.environ.get("HL_SECRET_KEY")
-            if not secret:
-                print("[HL] place_order: HL_SECRET_KEY missing — cannot sign")
-                return None
-            signer = self._new_client(secret)
-            sz_dec = signer.sz_decimals(self._token)
             qty = self.round_quantity(symbol, qty)
             if qty <= 0:
                 print(f"[HL] place_order {side} {symbol}: refused non-positive qty={qty}")
                 return None
-            ok, oid, msg = self._invoke_spot_order(
-                signer, pair, is_buy, float(qty), float(submit_px),
-                sz_decimals=sz_dec, is_market=is_market, tif=order_tif,
-                cloid=cloid, include_none_cloid=True,
+            ok, oid, msg, clean_oid = self._execute_spot_order_live(
+                symbol,
+                pair,
+                is_buy,
+                qty,
+                submit_px,
+                is_market=is_market,
+                order_tif=order_tif,
+                client_order_id=kwargs.get("client_order_id"),
+                include_none_cloid=True,
             )
-            clean_oid = extract_order_id(oid, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
             if not (ok and clean_oid):
                 if not ok and self._is_definitive_refusal(msg):
@@ -636,7 +628,6 @@ class HyperliquidProvider(MarketDataProvider):
                 if isinstance(oid, (int, float))
                 else clean_oid
             )
-            self._invalidate_fills_cache(symbol)
             return {"orderId": out_oid, "ok": ok, "msg": msg}
         except SubmissionRefused:
             raise
@@ -752,9 +743,6 @@ class HyperliquidProvider(MarketDataProvider):
             eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
             out["tick_size"] = round(10.0 ** (-eff_px_dec), 8)
         return out
-
-    def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
-        return self.extract_cached_fee_and_limits(self, symbol, price=price)
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)

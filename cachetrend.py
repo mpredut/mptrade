@@ -1502,7 +1502,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
         if not trend_path:
             return None
-        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        max_age = 15.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+        if max_age is None:
+            return None
         try:
             data = read_json_dict_recovering(trend_path)
             if not isinstance(data, dict):
@@ -1536,7 +1538,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         """Resolve a fresh short-trend snapshot from in-memory ``CacheShortTrendManager`` or ``cache_short_trend.json``."""
         if not candidates:
             return None
-        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        max_age = 15.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+        if max_age is None:
+            return None
         eff_now = resolve_now_ts(now_s)
         if custom_path is None:
             stm = (

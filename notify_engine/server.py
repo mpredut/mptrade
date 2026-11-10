@@ -26,6 +26,7 @@ from cachepaths import cache_path, normalize_venue_name
 from state_io import atomic_write_text, read_json_dict, read_text_lines
 from notify_engine.alertnotifiers import (
     AlertNotifier,
+    _AUTO_TOPIC_TAG_RE,
     _GATE_ACCEPTED_REASONS,
     _GATE_SUPPRESSED_REASONS,
     _TRADE_MARKERS,
@@ -81,6 +82,14 @@ _PROVIDER_LABELS = {
     "t212": "T212",
     "binance": "Binance",
 }
+_STRIP_BOT_PREFIX_RE = re.compile(
+    r"^\[(?:price_watcher|macro_analyzer)(?:\.py)?\]\s*",
+    flags=re.IGNORECASE,
+)
+_TRAILING_VENUE_TAG_RE = re.compile(
+    r"\[(?:binance|kraken|hyperliquid|hl|t212)(?::[a-z0-9_]+)?\]\s*$",
+    flags=re.IGNORECASE,
+)
 
 def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
     if isinstance(val, bool) or val is None:
@@ -398,46 +407,8 @@ class NotificationServer:
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 
-    @staticmethod
-    def _format_price_alerts_batch_title(alerts: list) -> str:
-        count = len(alerts)
-        items = []
-        symbols = []
-        for a in alerts:
-            sym = obj_attr(a, "symbol", "N/A")
-            atype = obj_attr(a, "alert_type", "")
-            dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
-            if sym and sym != "N/A":
-                if sym not in symbols:
-                    symbols.append(sym)
-                items.append(f"{sym} {dir_str}".strip())
-
-        items_str = ", ".join(items)
-        syms_str = ", ".join(symbols)
-
-        if len(symbols) == 1:
-            return f"{symbols[0]} ({count} alerts)"
-
-        if items_str and len(items_str) <= 50:
-            return f"Price Alerts ({count}): {items_str}"
-        elif syms_str and len(syms_str) <= 50:
-            return f"Price Alerts ({count}): {syms_str}"
-        else:
-            return f"Price Alerts ({count} coins)"
-
-    @staticmethod
-    def _format_new_coins_batch_title(alerts: list) -> str:
-        count = len(alerts)
-        symbols = []
-        for a in alerts:
-            sym = obj_attr(a, "symbol", "N/A")
-            if sym and sym != "N/A" and sym not in symbols:
-                symbols.append(sym)
-        syms_str = ", ".join(symbols)
-        if syms_str and len(syms_str) <= 50:
-            return f"New Coins ({count}): {syms_str}"
-        else:
-            return f"New Coins Discovered ({count})"
+    _format_price_alerts_batch_title = staticmethod(AlertNotifier._format_price_alerts_batch_title)
+    _format_new_coins_batch_title = staticmethod(AlertNotifier._format_new_coins_batch_title)
 
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
         if not isinstance(alerts, (list, tuple)) or not alerts:
@@ -497,14 +468,9 @@ class NotificationServer:
         trades_topic = self._resolve_topic("TRADES")
 
         # Strip any existing [price_watcher] or [macro_analyzer] prefix
-        cleaned_title = re.sub(
-            r"^\[(?:price_watcher|macro_analyzer)(?:\.py)?\]\s*",
-            "",
-            title,
-            flags=re.IGNORECASE,
-        ).strip() or "Alert"
+        cleaned_title = _STRIP_BOT_PREFIX_RE.sub("", title).strip() or "Alert"
 
-        has_auto_topic_tag = bool(re.search(r"\[auto_[a-z0-9_]+", cleaned_title))
+        has_auto_topic_tag = bool(_AUTO_TOPIC_TAG_RE.search(cleaned_title))
         is_macro_bot = bot_name.lower() in ("macro_analyzer", "macro_analyzer.py")
         is_price = (
             topic == price_topic
@@ -521,7 +487,7 @@ class NotificationServer:
             provider = _resolve_provider_label(bot_name, source)
             if bot_name and cleaned_title.startswith(f"[{bot_name}]"):
                 cleaned_title = cleaned_title[len(f"[{bot_name}]"):].strip()
-            if re.search(r"\[(?:binance|kraken|hyperliquid|hl|t212)(?::[a-z0-9_]+)?\]\s*$", cleaned_title, flags=re.IGNORECASE):
+            if _TRAILING_VENUE_TAG_RE.search(cleaned_title):
                 full_title = cleaned_title
             elif provider and not cleaned_title.startswith(f"[{provider}]"):
                 full_title = f"[{provider}] {cleaned_title}"
@@ -555,6 +521,25 @@ class NotificationServer:
         if len(lines) > threshold:
             return lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
         return "\n".join(lines)
+
+    @staticmethod
+    def _decode_intent_payload(line: str) -> dict | None:
+        intent_pos = line.find("__orchestrator_intent__")
+        brace_idx = line.rfind("{", 0, intent_pos)
+        payload = None
+        if brace_idx != -1:
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(line, brace_idx)
+            except json.JSONDecodeError:
+                payload = None
+        if payload is None:
+            start_idx = line.find("{")
+            end_idx = line.rfind("}")
+            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                payload = json.loads(line[start_idx:end_idx + 1])
+            else:
+                payload = json.loads(line)
+        return payload if isinstance(payload, dict) else None
 
     def process_line(self, line: str, bot_name: str):
         if not isinstance(line, str) or isinstance(line, bool):
@@ -601,24 +586,8 @@ class NotificationServer:
         # 1. Check for Explicit AlertNotifier Intent (JSON)
         if "__orchestrator_intent__" in line:
             try:
-                intent_pos = line.find("__orchestrator_intent__")
-                brace_idx = line.rfind("{", 0, intent_pos)
-                payload = None
-                if brace_idx != -1:
-                    try:
-                        payload, _ = json.JSONDecoder().raw_decode(line, brace_idx)
-                    except json.JSONDecodeError:
-                        payload = None
-                if payload is None:
-                    start_idx = line.find("{")
-                    end_idx = line.rfind("}")
-                    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                        json_str = line[start_idx:end_idx + 1]
-                        payload = json.loads(json_str)
-                    else:
-                        payload = json.loads(line)
-
-                intent = payload.get("__orchestrator_intent__") if isinstance(payload, dict) else None
+                payload = self._decode_intent_payload(line)
+                intent = payload.get("__orchestrator_intent__") if payload else None
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:

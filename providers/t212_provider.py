@@ -31,8 +31,10 @@ from cachepaths import CACHE_T212_TRADE_FILENAME, canonical_base_asset
 from .base import (
     MarketDataProvider,
     extract_order_id,
+    extract_timestamp_ms,
 )
 from .order_ohlc_utils import (
+    build_open_order_entry,
     normalize_order,
     normalize_timestamp_ms,
     require_clean_order_id,
@@ -338,6 +340,9 @@ class T212Provider(MarketDataProvider):
         """Fetch normalized T212 fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
+        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
+        if start_ms is None:
+            return []
         cli = client if client is not None else self._client()
         refresh_fn = getattr(cli, "refresh_order_history", None)
         if not callable(refresh_fn):
@@ -346,13 +351,12 @@ class T212Provider(MarketDataProvider):
         if not isinstance(items, list) or not items:
             return []
         by_sym = self.normalize_history_items(items)
-        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
         sym_u = symbol.strip().upper()
         out: List[dict] = []
         for k, rows in by_sym.items():
             if k.upper() == sym_u or _t212_tickers_match(symbol, k):
                 for r in rows:
-                    if (r.get("timestamp") or r.get("time") or 0) >= start_ms:
+                    if isinstance(r, dict) and (extract_timestamp_ms(r, default=0) or 0) >= start_ms:
                         out.append(dict(r))
         return out
 
@@ -360,6 +364,7 @@ class T212Provider(MarketDataProvider):
         """Fetch recent T212 order history and return normalized fills for ``symbol``."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
+        sym_u = symbol.strip().upper()
         cache_file = self._fills_cache_file()
         try:
             cli = self._client()
@@ -373,19 +378,22 @@ class T212Provider(MarketDataProvider):
                 ):
                     cli._trade_cache_path = str(cache_file)
                 items = refresh_fn(max_age_sec=0.0)
-            if isinstance(items, list) and items:
-                by_sym = self.normalize_history_items(items)
-                if publish_cache and cache_file and by_sym:
+            if isinstance(items, list):
+                by_sym = self.normalize_history_items(items) if items else {}
+                if publish_cache and cache_file:
                     from cacheaccount import CacheTradeManager
 
-                    CacheTradeManager.merge_venue_fills_snapshot(cache_file, by_sym)
-                sym_u = symbol.strip().upper()
-                matched: List[dict] = []
-                for k, rows in by_sym.items():
-                    if k.upper() == sym_u or _t212_tickers_match(symbol, k):
-                        matched.extend(rows)
-                if matched:
-                    return matched
+                    to_publish = dict(by_sym)
+                    if not any(k.upper() == sym_u or _t212_tickers_match(symbol, k) for k in to_publish):
+                        to_publish[sym_u] = []
+                    CacheTradeManager.merge_venue_fills_snapshot(cache_file, to_publish)
+                if by_sym:
+                    matched: List[dict] = []
+                    for k, rows in by_sym.items():
+                        if k.upper() == sym_u or _t212_tickers_match(symbol, k):
+                            matched.extend(rows)
+                    if matched:
+                        return matched
             if cache_file:
                 cached = self._fills_from_cache(symbol)
                 if cached is not None:
@@ -612,22 +620,16 @@ class T212Provider(MarketDataProvider):
             return None
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
-            is_market = resolve_market_flag(force=force, **kwargs)
-            qty = self.round_quantity(symbol, qty)
-            if qty <= 0:
-                print(f"[T212] place_order {symbol}: refused non-positive qty={qty}")
-                return None
-            status, data = self._send_order(
-                symbol, side, qty, price, market=is_market, order_validity=order_validity)
-            if status not in (200, 201):
-                print(f"[T212] place_order {symbol} failed (HTTP {status}): {data}")
-                if _definitive_submit_failure(status, data):
-                    raise SubmissionRefused(f"T212 HTTP {status}: {data}")
-                return None
-            # Instrument.place uses the common orderId key for cooldown. Preserve
-            # T212's native id while exposing the mechanical alias on a copied payload.
+            data, oid = self._execute_t212_order(
+                symbol,
+                side,
+                qty,
+                price,
+                is_market=resolve_market_flag(force=force, **kwargs),
+                order_validity=order_validity,
+                caller="place_order",
+            )
             self._invalidate_fills_cache(symbol)
-            oid = extract_order_id(data)
             if isinstance(data, dict) and oid is not None and "orderId" not in data:
                 data = dict(data)
                 data["orderId"] = oid
@@ -644,26 +646,17 @@ class T212Provider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
         """Place strictly for the generic engine without bypassing the live gate."""
-        # Public T212 v0 accepts neither strategy tags nor client IDs, so
-        # ExecutionAudit correlates using the venue-returned ID.
         del kind, client_order_id
         if not self.execution_enabled():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real order is blocked")
-        qty = self._round_required_qty(symbol, qty, "submit_order")
-        is_market = _parse_bool_flag(market, False) or price is None
-        try:
-            status, data = self._send_order(
-                symbol, side, qty, price, market=is_market)
-        except ProviderError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"submit_order({symbol}): {e}") from e
-        if status not in (200, 201):
-            message = f"submit_order({symbol}): T212 HTTP {status}: {data}"
-            if _definitive_submit_failure(status, data):
-                raise SubmissionRefused(message)
-            raise ProviderError(message)
-        order_id = extract_order_id(data)
+        data, order_id = self._execute_t212_order(
+            symbol,
+            side,
+            qty,
+            price,
+            is_market=bool(_parse_bool_flag(market, False) or price is None),
+            caller="submit_order",
+        )
         if order_id is None:
             raise ProviderError(f"submit_order({symbol}): response without an id: {data}")
         self._invalidate_fills_cache(symbol)
@@ -799,17 +792,24 @@ class T212Provider(MarketDataProvider):
                 px = safe_pos_float(raw_px, default=None)
                 raw_exec_qty = o.get("filledQuantity") if o.get("filledQuantity") is not None else o.get("executedQty")
                 oid = extract_order_id(o)
-                out.append({
-                    "id": oid,
-                    "orderId": oid,
-                    "symbol": symbol.strip().upper(),
-                    "side": side,
-                    "type": str(o.get("type") or "LIMIT").strip().upper(),
-                    "price": px,
-                    "origQty": abs(raw_qty),
-                    "executedQty": abs(safe_float(raw_exec_qty, default=0.0)),
-                    "status": status_u,
-                })
+                if oid is None:
+                    continue
+                out.append(
+                    build_open_order_entry(
+                        o,
+                        order_id=oid,
+                        side=side,
+                        price=px,
+                        orig_qty=abs(raw_qty),
+                        executed_qty=abs(safe_float(raw_exec_qty, default=0.0)),
+                        status=status_u,
+                        extra={
+                            "id": oid,
+                            "symbol": symbol.strip().upper(),
+                            "type": str(o.get("type") or "LIMIT").strip().upper(),
+                        },
+                    )
+                )
             return out
         except ProviderError:
             raise

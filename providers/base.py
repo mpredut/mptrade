@@ -2,6 +2,7 @@
 
 import contextlib
 import importlib
+import inspect
 import math
 import os
 import threading
@@ -94,7 +95,7 @@ class MarketDataProvider(ABC):
         cached = self._cached_current_price(symbol)
         if cached is not None:
             return cached
-        return self._fetch_current_price(symbol)
+        return safe_pos_float(self._fetch_current_price(symbol), default=None)
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending historical prices over ``lookback_h`` hours (SSOT 24h cache first, then venue transport)."""
@@ -162,9 +163,30 @@ class MarketDataProvider(ABC):
         if window_reference_fn is not None:
             cls._policy_window_reference_fn = staticmethod(window_reference_fn)
 
+    @staticmethod
+    def _invoke_fee_and_limits_callable(
+        fn: Any, *leading_args: Any, symbol: str, price: Optional[float] = None
+    ) -> Optional[dict]:
+        if not callable(fn):
+            return None
+        try:
+            params = inspect.signature(fn).parameters
+            has_price = "price" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            has_price = False
+        res = fn(*leading_args, symbol, price=price) if has_price else fn(*leading_args, symbol)
+        return res if isinstance(res, dict) else None
+
     def resolve_cached_fee_and_limits(self, symbol: str, *, price: Optional[float] = None) -> dict:
         """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
-        return {}
+        extract_fn = getattr(type(self), "extract_cached_fee_and_limits", None)
+        if not callable(extract_fn):
+            prov_cls = self.resolve_venue_provider_class(getattr(self, "name", ""))
+            extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
+        res = self._invoke_fee_and_limits_callable(extract_fn, self, symbol=symbol, price=price)
+        return res if res is not None else {}
 
     @classmethod
     def resolve_venue_provider_class(cls, venue: Any) -> Any:
@@ -175,8 +197,9 @@ class MarketDataProvider(ABC):
         mod_path, cls_name = spec
         return getattr(importlib.import_module(mod_path), cls_name, None)
 
-    @staticmethod
+    @classmethod
     def resolve_provider_cached_fee_and_limits(
+        cls,
         venue: str,
         symbol: str,
         provider: Any,
@@ -186,25 +209,24 @@ class MarketDataProvider(ABC):
         """Resolve cached fee/limit overrides from ``provider`` via public hook or venue adapter."""
         if provider is None:
             return {}
-        method = getattr(type(provider), "resolve_cached_fee_and_limits", None)
-        if callable(method):
+        inst_hook = getattr(provider, "resolve_cached_fee_and_limits", None)
+        if callable(inst_hook) and getattr(type(provider), "resolve_cached_fee_and_limits", None) is not cls.resolve_cached_fee_and_limits:
             try:
-                res = provider.resolve_cached_fee_and_limits(symbol, price=price)
-                if isinstance(res, dict):
+                res = cls._invoke_fee_and_limits_callable(inst_hook, symbol=symbol, price=price)
+                if res is not None:
                     return res
             except Exception:
                 pass
-        prov_cls = MarketDataProvider.resolve_venue_provider_class(
-            venue or getattr(provider, "name", "")
-        )
-        extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
-        if callable(extract_fn):
-            try:
-                res = extract_fn(provider, symbol, price=price)
-            except TypeError:
-                res = extract_fn(provider, symbol)
-            if isinstance(res, dict):
+        extract_fn = getattr(type(provider), "extract_cached_fee_and_limits", None)
+        if not callable(extract_fn):
+            prov_cls = cls.resolve_venue_provider_class(venue or getattr(provider, "name", ""))
+            extract_fn = getattr(prov_cls, "extract_cached_fee_and_limits", None) if prov_cls is not None else None
+        try:
+            res = cls._invoke_fee_and_limits_callable(extract_fn, provider, symbol=symbol, price=price)
+            if res is not None:
                 return res
+        except Exception:
+            pass
         return {}
 
     @classmethod
@@ -301,41 +323,50 @@ class MarketDataProvider(ABC):
                 symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
             )
 
+    def _invoke_fills_from_api(
+        self, symbol: str, *, publish_cache: bool = False
+    ) -> Optional[List[dict]]:
+        """Invoke ``self._fills_from_api`` without masking internal ``TypeError`` exceptions."""
+        api_fn = getattr(self, "_fills_from_api", None)
+        if not callable(api_fn):
+            return None
+        try:
+            params = inspect.signature(api_fn).parameters
+            accepts_publish = "publish_cache" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            accepts_publish = False
+        if accepts_publish:
+            return api_fn(symbol, publish_cache=publish_cache)
+        rows = api_fn(symbol)
+        if publish_cache and rows is not None:
+            cache_file = self._fills_cache_file()
+            if cache_file:
+                self.write_ssot_fills_cache(symbol, cache_file, rows)
+        return rows
+
     def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         self.validate_symbol(symbol)
-        api_fn = getattr(self, "_fills_from_api", None)
-        if not callable(api_fn):
+        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
+        if start_ms is None:
             return []
-        try:
-            rows = api_fn(symbol, publish_cache=False)
-        except TypeError:
-            rows = api_fn(symbol)
+        rows = self._invoke_fills_from_api(symbol, publish_cache=False)
         if not isinstance(rows, list):
             return []
-        start_ms = safe_nonneg_float(start_time_ms, default=0.0) or 0.0
-        if start_ms <= 0:
-            return [dict(r) if isinstance(r, dict) else r for r in rows]
         return [
             dict(r)
             for r in rows
-            if isinstance(r, dict) and (extract_timestamp_ms(r, default=0) or 0) >= start_ms
+            if isinstance(r, dict)
+            and (start_ms <= 0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
 
     def refresh_ssot_fills_cache(self, symbol: str, fills: Optional[List[dict]] = None) -> List[dict]:
         """Authoritatively fetch (if ``fills`` not provided) and explicitly publish ``symbol`` fills to the SSOT trade cache."""
         self.validate_symbol(symbol)
         if fills is None:
-            api_fn = getattr(self, "_fills_from_api", None)
-            if not callable(api_fn):
-                return []
-            try:
-                rows = api_fn(symbol, publish_cache=True)
-            except TypeError:
-                rows = api_fn(symbol)
-                cache_file = self._fills_cache_file()
-                if cache_file and rows is not None:
-                    self.write_ssot_fills_cache(symbol, cache_file, rows)
+            rows = self._invoke_fills_from_api(symbol, publish_cache=True)
             return list(rows) if isinstance(rows, list) else []
         cache_file = self._fills_cache_file()
         if cache_file:
@@ -352,8 +383,7 @@ class MarketDataProvider(ABC):
         publish_cache: bool = False,
     ) -> List[dict]:
         """Return normalized recent orders (fills aggregated by orderId), reading SSOT cache first unless ``authoritative=True``."""
-        api_fn = getattr(self, "_fills_from_api", None)
-        if not callable(api_fn):
+        if not callable(getattr(self, "_fills_from_api", None)):
             return []
         self.validate_symbol(symbol)
         since_val = safe_nonneg_float(since_s, default=None)
@@ -363,14 +393,7 @@ class MarketDataProvider(ABC):
             cache_fn = getattr(self, "_fills_from_cache", None)
             rows = cache_fn(symbol) if (callable(cache_fn) and not authoritative and not publish_cache) else None
             if rows is None:
-                try:
-                    rows = api_fn(symbol, publish_cache=publish_cache)
-                except TypeError:
-                    rows = api_fn(symbol)
-                    if publish_cache and rows is not None:
-                        cache_file = self._fills_cache_file()
-                        if cache_file:
-                            self.write_ssot_fills_cache(symbol, cache_file, rows)
+                rows = self._invoke_fills_from_api(symbol, publish_cache=publish_cache)
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             return aggregate_fills_by_order_id(rows, cutoff_ms=(time.time() - since_val) * 1000.0, side=side)
@@ -803,7 +826,9 @@ class MarketDataProvider(ABC):
             or getattr(self, "_ssot_fills_cache_path", None)
         )
         inst_dict = getattr(self, "__dict__", {})
-        inj_client = inst_dict.get("_cli") or inst_dict.get("_client")
+        inj_client = inst_dict.get("_cli")
+        if inj_client is None:
+            inj_client = inst_dict.get("_client")
         client_cls_name = self._resolve_provider_attr("_CLIENT_CLASS_NAME", None)
         is_real_client = bool(
             client_cls_name and type(inj_client).__name__ == client_cls_name
@@ -818,6 +843,9 @@ class MarketDataProvider(ABC):
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
         if not self._USES_SSOT_MARKET_CACHE or not self._allow_ssot_price_cache():
             return None
+        eff_age = 12.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+        if eff_age is None:
+            return None
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
@@ -828,7 +856,7 @@ class MarketDataProvider(ABC):
         return CacheCurrentPriceManager.read_ssot_current_price_candidates(
             candidates,
             price_path,
-            safe_pos_float(max_age_sec, default=12.0) or 12.0,
+            eff_age,
             use_memory_manager=(custom_path is None),
             reader_fn=self._ssot_current_price_reader,
         )
