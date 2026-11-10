@@ -1068,21 +1068,6 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None, provider_
     return changed
 
 
-def resolve_record(record_id, *, client_order_id=None):
-    """Legacy helper: remove one exact *unsubmitted* persisted revision."""
-    if not record_id or isinstance(record_id, bool):
-        return False
-    return bool(
-        _remove_matching_locked(
-            lambda rec: (
-                rec.get("id") == record_id
-                and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
-                and (client_order_id is None or _record_client_order_id(rec) == client_order_id)
-            )
-        )
-    )
-
-
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
     if ids is None or isinstance(ids, (str, bytes, bool)):

@@ -674,7 +674,7 @@ class OrderRetryStoreTest(unittest.TestCase):
             oq.enqueue("BTCUSDC", "BUY", 2.0, {}, requested_price=99.0,
                        now=1001.0)
 
-            self.assertFalse(oq.resolve_record(rid, client_order_id=first_cid))
+            self.assertNotEqual(oq.get(rid)["place_kwargs"]["client_order_id"], first_cid)
             self.assertEqual(oq.get(rid)["qty"], 2.0)
 
         with self.subTest(msg="mark_failure_preserves_pre_submit_client_id"):
@@ -721,18 +721,6 @@ class OrderRetryStoreTest(unittest.TestCase):
                 rid, {"orderId": 123}, now=1100.0,
                 client_order_id="different"))
             self.assertEqual(oq.get(rid)["lifecycle"], "submit_pending")
-
-        with self.subTest(msg="legacy_resolve_record_cannot_remove_accepted_tracker"):
-            self._reset_env()
-            rid = oq.enqueue(
-                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-            cid = oq.get(rid)["place_kwargs"]["client_order_id"]
-            self.assertTrue(oq.mark_accepted(
-                rid, {"orderId": 91, "status": "NEW"}, now=1100.0,
-                client_order_id=cid))
-
-            self.assertFalse(oq.resolve_record(rid, client_order_id=cid))
-            self.assertEqual(oq.get(rid)["order_id"], "91")
 
         with self.subTest(msg="order_id_parser_handles_provider_shapes"):
             self.assertEqual(oq.extract_order_id({"orderId": 1}), "1")

@@ -362,11 +362,6 @@ class MarketRegimeEvidence:
         return self.temporal_state in {"fresh", "unbounded", "unknown"}
 
     @property
-    def time_verified(self) -> bool:
-        """Return whether the source exposes an in-range observation timestamp."""
-        return self.decision.fresh and self.temporal_state == "fresh"
-
-    @property
     def availability_reason(self) -> str:
         """Explain why this evidence can or cannot participate in a decision."""
         if not self.decision.fresh:
@@ -1154,12 +1149,6 @@ class MarketRegimeService:
                     self._cache, key, (cache_now, decision, observed_at, continuous), self.cache_max,
                 )
         return decision, observed_at, continuous
-
-    def evaluate_provider(self, provider, symbol: str, *, interval_min=1,
-                          window_seconds=900.0) -> MarketRegimeDecision:
-        return self._evaluate_provider_source(
-            provider, symbol, interval_min=interval_min, window_seconds=window_seconds,
-        )[0]
 
     @staticmethod
     def _resolve_horizon_window(horizon="short", interval_min=None):

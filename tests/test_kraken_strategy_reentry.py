@@ -503,16 +503,6 @@ class StratRulesTest(unittest.TestCase):
             self.assertFalse(sr.hit_stop(100.0, 50.0, 0.0))
             self.assertFalse(sr.hit_stop(0.0, 50.0, 12.5))
 
-        with self.subTest("reentry_stop_bounce"):
-            self.assertTrue(sr.reentry_stop_blocked(50.0, 50.0, 1.5, 0.0))
-            self.assertFalse(sr.reentry_stop_blocked(50.8, 50.0, 1.5, 0.0))
-
-        with self.subTest("reentry_drop"):
-            self.assertTrue(sr.reentry_drop_blocked(99.0, 100.0, 2.0, 0.0))
-            self.assertFalse(sr.reentry_drop_blocked(97.0, 100.0, 2.0, 0.0))
-            self.assertFalse(sr.reentry_drop_blocked(99.0, 100.0, 0.0, 0.0))
-            self.assertFalse(sr.reentry_drop_blocked(99.0, 0.0, 2.0, 0.0))
-
         with self.subTest("dca_price_hit"):
             self.assertTrue(sr.dca_price_hit(98.0, 100.0, 2.0, 0.0))
             self.assertTrue(sr.dca_price_hit(97.0, 100.0, 2.0, 0.0))

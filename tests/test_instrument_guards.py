@@ -2002,11 +2002,6 @@ class TestTradeCooldown(unittest.TestCase):
         tc.release_trade("BTCUSDC")
         self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
 
-    def test_update_binance_order_id(self):
-        tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
-        tc.update_binance_order_id("BTCUSDC", 12345)
-        self.assertIn("12345", tc.describe_last_trade("BTCUSDC"))
-
     def test_concurrent_threads_single_winner(self):
         results = []
         barrier = threading.Barrier(20)
@@ -2070,13 +2065,6 @@ class TestTradeCooldown(unittest.TestCase):
         with tc.trade_slot("SELL", "BTCUSDC", cooldown_sec=180) as slot:
             self.assertFalse(slot.allowed)
         self.assertFalse(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
-
-    def test_get_last_trade_age(self):
-        self.assertIsNone(tc.get_last_trade_age("BTCUSDC"))
-        tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
-        age = tc.get_last_trade_age("BTCUSDC")
-        self.assertIsNotNone(age)
-        self.assertLess(age, 5)
 
     def test_pair_allows_one_buy_and_one_sell_inside_same_cooldown(self):
         with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:

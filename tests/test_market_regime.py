@@ -362,7 +362,6 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
 
         self.assertEqual(resolution.primary.observed_at, 980)
         self.assertEqual(resolution.primary.temporal_state, "fresh")
-        self.assertTrue(resolution.primary.time_verified)
         self.assertTrue(resolution.primary.closed_candles)
 
     def test_candle_gap_is_retained_but_not_selected(self):
@@ -410,10 +409,10 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
             negative_cache_ttl_sec=2,
             clock=lambda: current[0],
         )
-        first = service.evaluate_provider(provider, "ABCUSD")
-        backed_off = service.evaluate_provider(provider, "ABCUSD")
+        first = service._evaluate_provider_source(provider, "ABCUSD")[0]
+        backed_off = service._evaluate_provider_source(provider, "ABCUSD")[0]
         current[0] = 2.1
-        recovered = service.evaluate_provider(provider, "ABCUSD")
+        recovered = service._evaluate_provider_source(provider, "ABCUSD")[0]
 
         self.assertEqual(first.regime, "unknown")
         self.assertEqual(backed_off.regime, "unknown")
@@ -466,9 +465,9 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
 
         service = MarketRegimeService(2.0, cache_ttl_sec=30)
         decisions = [
-            service.evaluate_provider(
+            service._evaluate_provider_source(
                 Provider(name), "HYPEUSD", interval_min=1, window_seconds=360,
-            )
+            )[0]
             for name in ("Kraken", "Hyperliquid")
         ]
         self.assertEqual(decisions[0], decisions[1])
@@ -496,7 +495,7 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
                 raise RuntimeError("offline")
 
         service = MarketRegimeService(cache_max=1)
-        decision = service.evaluate_provider(Provider(), "HYPE", interval_min=1)
+        decision = service._evaluate_provider_source(Provider(), "HYPE", interval_min=1)[0]
         self.assertEqual(decision.regime, "unknown")
         self.assertEqual(decision.reason, "source_error:RuntimeError")
 

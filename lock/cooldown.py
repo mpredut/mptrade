@@ -475,11 +475,6 @@ def release_pair_leg(symbol, pair_id, side):
         symbol, clean_pid, normalize_side(side), keep_group=True)
 
 
-def update_binance_order_id(symbol, order_id):
-    """Attach the Binance order ID after successful placement."""
-    _cooldown().update(symbol, binance_order_id=normalize_scalar_order_id(order_id))
-
-
 class _TradeReservation:
     """Adapt positional ``commit(order_id)`` to the reservation's Binance ID field."""
 
@@ -514,24 +509,6 @@ def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=
         with _cooldown().slot(symbol, cooldown_sec, side=norm_side, symbol=symbol,
                               client_order_id=clean_cid, binance_order_id=None) as res:
             yield _TradeReservation(res)
-
-
-def get_last_trade_age(symbol):
-    """Return the last symbol order's age in seconds, or None when absent."""
-    return _cooldown().last_age(symbol)
-
-
-def describe_last_trade(symbol):
-    last = _cooldown().get(symbol)
-    if not isinstance(last, dict):
-        return f"{symbol}: no order recorded"
-    ts = safe_pos_float(last.get("timestamp"), default=None)
-    if ts is None:
-        return f"{symbol}: no order recorded"
-    age = max(0.0, time.time() - ts)
-    return (f"{symbol}: ultim={last.get('side')} | age={age:.1f}s | "
-            f"proc={last.get('process_name')} | tid={last.get('thread_id')} | "
-            f"clientId={last.get('client_order_id')} | binId={last.get('binance_order_id')}")
 
 
 register_module_aliases(__name__, "lock.file_lock", "lock.trade_cooldown")

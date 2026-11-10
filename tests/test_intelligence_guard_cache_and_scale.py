@@ -11830,9 +11830,8 @@ def test_iteration113_order_retry_execution_audit_and_state_io_safety(tmp_path, 
     assert oret.enqueue("BTCUSDC", "BUY", 1.0, failure_reason=True) is None
     assert oret.enqueue("BTCUSDC", "BUY", 1.0, attempts=1.5) is None
 
-    # 2. order_retry.get, resolve_record, and claim input validation
+    # 2. order_retry.get and claim input validation
     assert oret.get(True) is None
-    assert oret.resolve_record(True) is False
     with pytest.raises(ValueError):
         oret.claim(["id1"], lease_sec="bad")
 

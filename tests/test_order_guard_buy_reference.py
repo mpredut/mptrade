@@ -65,20 +65,18 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             self.assertFalse(order_guard.profit_guard(
                 _Provider("kraken"), "HYPEUSD", "BUY", 93.0, 1.15, window_ref=56.66))
-            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("kraken", "BUY"))
-            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
+            self.assertNotEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "off")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "off")
 
     def test_unreadable_value_raises_value_error(self):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="maybe")):
             with self.assertRaises(ValueError):
-                order_guard.is_profit_guard_enabled_cfg("binance", "BUY")
+                order_guard.get_profit_guard_mode_cfg("binance", "BUY")
 
     def test_repository_config_sets_binance_buy_reference_dynamic(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "dynamic")
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "strict")
-            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
-            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("kraken", "BUY"))
 
     def test_dynamic_mode_bypasses_in_bull_trend_and_enforces_in_bear_or_flat(self):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
@@ -102,16 +100,14 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertTrue(order_guard.profit_guard("binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertTrue(order_guard.profit_guard("Binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertTrue(order_guard.profit_guard(_Provider("Binance"), "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
-            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("Binance", "BUY"))
-            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
             self.assertEqual(order_guard.get_profit_guard_mode_cfg("Binance", "BUY"), "off")
 
     def test_missing_default_buy_reference_in_margins_raises_key_error(self):
         with mock.patch.object(order_guard, "_MARGINS", {"binance": 1.15}):
             with self.assertRaises(KeyError):
-                order_guard.is_profit_guard_enabled_cfg("binance", "BUY")
+                order_guard.get_profit_guard_mode_cfg("binance", "BUY")
             with self.assertRaises(KeyError):
-                order_guard.is_profit_guard_enabled_cfg("kraken", "BUY")
+                order_guard.get_profit_guard_mode_cfg("kraken", "BUY")
 
     def test_real_binance_provider_integration(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
@@ -733,9 +729,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertEqual(
                 order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="rtrade"),
                 "off",
-            )
-            self.assertFalse(
-                order_guard.is_profit_guard_enabled_cfg("binance", "SELL", module="rtrade")
             )
 
             # Missing module key raises KeyError (fail fast)

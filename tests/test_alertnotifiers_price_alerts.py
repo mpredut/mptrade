@@ -421,7 +421,6 @@ class TestNewCoinsDiscovery(unittest.TestCase):
         ]
         with patch("market_monitor.new_coins_discovery.requests.get", return_value=mock_resp):
             src = DexScreenerSource()
-        self.assertIn("DEXA", src.get_supported_symbols())
         self.assertEqual(len(src.get_new_coins()), 1)
 
     def test_factory_instantiates_only_enabled_sources(self):

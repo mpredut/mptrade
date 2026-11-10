@@ -110,10 +110,6 @@ class NewCoinsSource(ABC):
     def get_new_coins(self, days_back: int = 30) -> List[Dict]:
         pass
 
-    @abstractmethod
-    def get_supported_symbols(self) -> Set[str]:
-        pass
-
     def refresh(self):
         pass
 
@@ -128,7 +124,6 @@ class CoinMarketCapSource(NewCoinsSource):
     def __init__(self, api_key: str = CMC_API_KEY):
         self.api_key = api_key
         self.headers = {'Accepts': 'application/json', 'X-CMC_PRO_API_KEY': self.api_key}
-        self._supported_symbols: Set[str] = set()
         self._last_refresh = 0
         self._cache: List[Dict] = []
         if self.api_key:
@@ -139,9 +134,6 @@ class CoinMarketCapSource(NewCoinsSource):
     
     def is_available(self) -> bool:
         return isinstance(self.api_key, str) and len(self.api_key.strip()) > 0
-    
-    def get_supported_symbols(self) -> Set[str]:
-        return self._supported_symbols.copy()
     
     def refresh(self):
         if not self.is_available():
@@ -154,7 +146,6 @@ class CoinMarketCapSource(NewCoinsSource):
             data = response.json()
             if isinstance(data, dict) and isinstance(data.get('data'), list):
                 self._cache = []
-                self._supported_symbols.clear()
                 for coin in data['data']:
                     if not isinstance(coin, dict):
                         continue
@@ -162,7 +153,6 @@ class CoinMarketCapSource(NewCoinsSource):
                     name = coin.get('name') or symbol
                     slug = coin.get('slug') or ''
                     if is_trackable_symbol(symbol, name=name, slug=slug):
-                        self._supported_symbols.add(symbol)
                         quote_map = coin.get('quote') if isinstance(coin.get('quote'), dict) else {}
                         usd_quote = quote_map.get('USD') if isinstance(quote_map.get('USD'), dict) else {}
                         raw_date = coin.get('date_added')
@@ -200,7 +190,6 @@ class CoinMarketCapSource(NewCoinsSource):
 class CoinGeckoSource(NewCoinsSource):
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
-        self._supported_symbols: Set[str] = set()
         self._cache: List[Dict] = []
         self._last_refresh = 0
         self.refresh()
@@ -211,9 +200,6 @@ class CoinGeckoSource(NewCoinsSource):
     def is_available(self) -> bool:
         return True
     
-    def get_supported_symbols(self) -> Set[str]:
-        return self._supported_symbols.copy()
-    
     def refresh(self):
         try:
             time.sleep(1.2)
@@ -223,13 +209,11 @@ class CoinGeckoSource(NewCoinsSource):
             if not isinstance(data, list):
                 return
             self._cache = []
-            self._supported_symbols.clear()
             for coin in data:
                 if not isinstance(coin, dict):
                     continue
                 symbol = str(coin.get('symbol') or '').upper()
                 if symbol and symbol not in EXCLUDED_SYMBOLS:
-                    self._supported_symbols.add(symbol)
                     self._cache.append({
                         "symbol": symbol,
                         "name": coin.get('name') or symbol,
@@ -256,7 +240,6 @@ class CoinGeckoSource(NewCoinsSource):
 class BinanceNewListingsSource(NewCoinsSource):
     def __init__(self):
         self.base_url = "https://api.binance.com/api/v3"
-        self._supported_symbols: Set[str] = set()
         self._new_listings: List[Dict] = []
         self._last_refresh = 0
         self._historical_symbols: Set[str] = set()
@@ -267,9 +250,6 @@ class BinanceNewListingsSource(NewCoinsSource):
     
     def is_available(self) -> bool:
         return True
-    
-    def get_supported_symbols(self) -> Set[str]:
-        return self._supported_symbols.copy()
     
     def refresh(self):
         try:
@@ -306,7 +286,6 @@ class BinanceNewListingsSource(NewCoinsSource):
                                 "url": f"https://www.binance.com/en/trade/{sym}"
                             })
             self._historical_symbols = current_symbols.copy()
-            self._supported_symbols = current_symbols
             self._last_refresh = time.time()
             print(f"[Binance Source] {len(current_symbols)} active pairs")
         except Exception as e:
@@ -323,7 +302,6 @@ class DexScreenerSource(NewCoinsSource):
     def __init__(self):
         self.base_url = "https://api.dexscreener.com/latest/dex"
         self._cache: List[Dict] = []
-        self._supported_symbols: Set[str] = set()
         self._last_refresh = 0
         self.refresh()
     
@@ -333,9 +311,6 @@ class DexScreenerSource(NewCoinsSource):
     def is_available(self) -> bool:
         return True
     
-    def get_supported_symbols(self) -> Set[str]:
-        return self._supported_symbols.copy()
-    
     def refresh(self):
         try:
             response = requests.get(f"{self.base_url}/token-profiles", timeout=15)
@@ -344,7 +319,6 @@ class DexScreenerSource(NewCoinsSource):
             if response.status_code == 200:
                 data = response.json()
                 self._cache = []
-                self._supported_symbols.clear()
                 profiles = (
                     data.get('profiles', [])
                     if isinstance(data, dict)
@@ -359,7 +333,6 @@ class DexScreenerSource(NewCoinsSource):
                     token_address = profile.get('tokenAddress') or ''
                     listed_at = profile.get('listedAt', None)
                     if symbol and len(symbol) <= 10 and symbol.isalnum() and symbol not in EXCLUDED_SYMBOLS:
-                        self._supported_symbols.add(symbol)
                         added_time = (
                             _parse_coin_added_at(listed_at, utc=False)
                             if safe_pos_float(listed_at, default=None) is not None

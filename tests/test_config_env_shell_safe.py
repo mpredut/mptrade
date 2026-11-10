@@ -476,11 +476,6 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
     assert loaded_reg.get("macro_sentiment", {}).get("conversation_id") == "c1"
     assert len(condense_decision("A very long decision string here", max_len=2)) == 4
 
-    monkeypatch.setattr(tc, "STATE_FILE", str(tmp_path / "tc.json"))
-    monkeypatch.setattr(tc, "LOCK_FILE", str(tmp_path / "tc.lock"))
-    tc._cooldown()._write({"BTCUSDC": {"timestamp": "bad"}})
-    assert "no order recorded" in tc.describe_last_trade("BTCUSDC")
-
     class _DummyRetry:
         @staticmethod
         def load_all():
@@ -633,8 +628,6 @@ def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
     assert "aggressive_shorting_divergence" in reason
 
     # 3. spot_rules reentry barriers fail closed on NaN price and reject bool/None in exhaustion checks
-    assert sr.reentry_stop_blocked(float("nan"), 100.0, 2.0, 0.05) is True
-    assert sr.reentry_drop_blocked(float("nan"), 100.0, 2.0, 0.05) is True
     assert sr.reentry_hybrid_blocked(float("nan"), 100.0, 105.0, True, 2.0, 1.0)[0] is True
     assert sr.dynamic_surge_gain_pct(True, fallback_gain_pct=25.0) == 25.0
     assert sr.dynamic_flat_tp_pct(True, base_tp_pct=5.0) == 5.0

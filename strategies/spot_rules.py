@@ -51,30 +51,6 @@ def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
     return (avg_f - px_f) / avg_f * 100 >= sl_f
 
 
-def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct: float) -> bool:
-    """After STOP-LOSS, block until price rebounds `bounce_pct`%% above the post-sale low."""
-    low_f, bounce_f = safe_float(sl_low, default=None), safe_float(bounce_pct, default=None)
-    if low_f is None or low_f <= 0 or bounce_f is None or bounce_f <= 0:
-        return False
-    px_f = safe_float(price, default=None)
-    if px_f is None or px_f <= 0:
-        return True
-    threshold = low_f * (1 + bounce_f / 100)
-    return px_f < threshold and not are_close(px_f, threshold, tol_pct)
-
-
-def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pct: float) -> bool:
-    """After take profit, block until price falls `drop_pct`%% below the sale price."""
-    drop_f, sell_f = safe_float(drop_pct, default=None), safe_float(last_sell, default=None)
-    if drop_f is None or drop_f <= 0 or sell_f is None or sell_f <= 0:
-        return False
-    px_f = safe_float(price, default=None)
-    if px_f is None or px_f <= 0:
-        return True
-    threshold = sell_f * (1 - drop_f / 100)
-    return px_f > threshold and not are_close(px_f, threshold, tol_pct)
-
-
 def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float) -> bool:
     """Return whether price is `drop_pct`%% below the latest buy, including tolerance."""
     px_f, lb_f, drop_f = safe_float(price, default=None), safe_float(last_buy, default=None), safe_float(drop_pct, default=None)

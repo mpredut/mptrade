@@ -398,19 +398,6 @@ def get_profit_guard_mode_cfg(
     )
 
 
-def is_profit_guard_enabled_cfg(
-    provider_name,
-    order_type: str,
-    *,
-    module: Optional[str] = None,
-    reference_mode: Optional[str] = None,
-) -> bool:
-    """Return True if the configured profit guard mode in order_guard.conf is not 'off'."""
-    return get_profit_guard_mode_cfg(
-        provider_name, order_type, module=module, reference_mode=reference_mode
-    ) != "off"
-
-
 def symbol_regime(
     symbol: str,
     provider=None,
