@@ -28,7 +28,7 @@ from providers.base import (
     extract_timestamp_ms,
 )
 from providers.order_ohlc_utils import extract_order_qty
-from providers.market_api import api as mkt          # noqa: E402  (facada singleton)
+from providers.market_api import api as mkt          # noqa: E402  (singleton facade)
 
 HYPE = "HYPEUSDC"
 MAXAGE = 17 * 24 * 3600
@@ -46,7 +46,7 @@ def check(name, cond, detail=""):
 
 def main():
     failures.clear()
-    print("==== RUTARE pe symbol (Binance ramane default) ====")
+    print("==== Symbol ROUTING (Binance remains default) ====")
     check("HYPEUSDC -> Hyperliquid", mkt.provider_name_for(HYPE) == "Hyperliquid",
           mkt.provider_name_for(HYPE))
     check("BTCUSDC  -> Binance", mkt.provider_name_for("BTCUSDC") == "Binance",
@@ -70,7 +70,7 @@ def main():
     hist = mkt.get_price_history(HYPE, 3)
     hist_dicts = [p for p in (hist or []) if isinstance(p, dict)] if isinstance(hist, list) else []
     n = len(hist_dicts)
-    print(f"  get_price_history(HYPEUSDC, 3h): {n} puncte")
+    print(f"  get_price_history(HYPEUSDC, 3h): {n} points")
     if hist_dicts:
         print(f"    first={hist_dicts[0]}  last={hist_dicts[-1]}")
     asc = bool(hist_dicts) and all(
@@ -86,28 +86,28 @@ def main():
         check("the last close ~ the current price (<10%)", near,
               f"close={last} price={price}")
 
-    print("\n==== CONT SPOT HYPE (citire) ====")
+    print("\n==== HYPE SPOT ACCOUNT (read-only) ====")
     hl_prov = mkt.provider_by_name("hyperliquid")
     free_hype = hl_prov.free_balance("HYPE")
     free_usdc = hl_prov.free_balance("USDC")
     print(f"  free_balance(HYPE) = {free_hype}")
     print("  free_balance(USDC) = "
-          f"{free_usdc}  (provider explicit: hyperliquid)")
+          f"{free_usdc}  (explicit provider: hyperliquid)")
     check("free_balance(HYPE) numeric >=0", safe_float(free_hype, -1.0) >= 0.0,
           repr(free_hype))
 
     buys = mkt.get_orders(HYPE, "BUY", MAXAGE) or []
     sells = mkt.get_orders(HYPE, "SELL", MAXAGE) or []
-    print(f"  get_orders BUY={len(buys)} SELL={len(sells)} (ultimele {MAXAGE//86400} zile, SPOT)")
+    print(f"  get_orders BUY={len(buys)} SELL={len(sells)} (last {MAXAGE//86400} days, SPOT)")
     shape_ok = all(isinstance(o, dict) and set(("side", "price", "qty", "timestamp")) <= set(o) for o in (buys + sells))
     sides_ok = all(isinstance(o, dict) and o.get("side") == "BUY" for o in buys) and all(isinstance(o, dict) and o.get("side") == "SELL" for o in sells)
     check("orders normalised to {side,price,qty,timestamp}", shape_ok)
-    check("side filtrat corect (BUY/SELL)", sides_ok)
+    check("side filtered accurately (BUY/SELL)", sides_ok)
     for o in (buys[:2] + sells[:2]):
         if isinstance(o, dict):
             print(f"    {o.get('side')} px={o.get('price')} qty={o.get('qty')} ts={o.get('timestamp')}")
 
-    print("\n==== POZITIE (logica get_position_stats) ====")
+    print("\n==== POSITION (get_position_stats logic) ====")
     valid_buys = [
         o for o in buys
         if isinstance(o, dict) and extract_order_qty(o) > 0.0 and extract_order_price(o) > 0.0
@@ -151,7 +151,7 @@ def main():
         print("  (no recent SPOT buys or no price — no sell decision)")
 
     print("\n==== ORDER GATE: place_order must be DRY ====")
-    saved_live_orders = os.environ.pop("HL_LIVE_ORDERS", None)   # asiguram DRY pt test
+    saved_live_orders = os.environ.pop("HL_LIVE_ORDERS", None)   # ensure DRY for test
     try:
         res = mkt.place_order(HYPE, "SELL", price_f if price_f > 0.0 else 1.0, 0.0001)
     finally:
@@ -161,11 +161,11 @@ def main():
 
     print("\n" + "=" * 60)
     if failures:
-        print(f"FAIL — {len(failures)} probleme:")
+        print(f"FAIL — {len(failures)} issues:")
         for f in failures:
             print(f"  - {f}")
         sys.exit(1)
-    print("PASS — facada HYPE (Hyperliquid spot) e sanatoasa in DRY-RUN.")
+    print("PASS — HYPE facade (Hyperliquid spot) is healthy in DRY-RUN.")
     sys.exit(0)
 
 

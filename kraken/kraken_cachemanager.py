@@ -84,20 +84,6 @@ def _touch_kraken_heartbeat(force: bool = False) -> None:
     )
 
 
-def poll_loop(client):
-    """Delegate REST Ledgers polling to the canonical account-cache bridge."""
-    return run_kraken_trade_poll_loop(
-        client,
-        cache_file=CACHE_FILE,
-        pairs=PAIRS,
-        poll_interval=POLL_INTERVAL,
-        backoff_init=POLL_BACKOFF_INIT,
-        backoff_max=POLL_BACKOFF_MAX,
-        lookback_sec=LEDGER_LOOKBACK_S,
-        heartbeat_fn=_touch_kraken_heartbeat,
-    )
-
-
 def main():
     single_instance("kraken_cachemanager")   # one instance/fetcher minimizes rate-limit usage
     # The cache manager's dedicated _CACHE key has its own nonce sequence, separate from
@@ -124,7 +110,16 @@ def main():
             heartbeat_fn=_touch_kraken_heartbeat,
         )
     else:
-        poll_loop(client)      # REST only
+        run_kraken_trade_poll_loop(
+            client,
+            cache_file=CACHE_FILE,
+            pairs=PAIRS,
+            poll_interval=POLL_INTERVAL,
+            backoff_init=POLL_BACKOFF_INIT,
+            backoff_max=POLL_BACKOFF_MAX,
+            lookback_sec=LEDGER_LOOKBACK_S,
+            heartbeat_fn=_touch_kraken_heartbeat,
+        )
 
 
 if __name__ == "__main__":

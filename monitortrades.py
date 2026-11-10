@@ -702,7 +702,7 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
         return False
     min_qty_f = safe_nonneg_float(min_qty, default=0.0)
     if min_qty_f > 0.0 and qty_f < min_qty_f:
-        print(f"[{inst.symbol}] {side} skip: qty {qty} < volum minim venue {min_qty}")
+        print(f"[{inst.symbol}] {side} skip: qty {qty} < venue min qty {min_qty}")
         return False
     return inst.place(side, price_f, qty_f, **kwargs) is not None
 
@@ -1637,13 +1637,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     _save_mt_state()
 
 
-def _touch_mt_hb(*, force: bool = False) -> None:
-    touch_module_heartbeat(
-        "monitortrades", interval_sec=30.0, force=force,
-        intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
-    )
-
-
 def main():
     instruments = load_for("mt")
     if not instruments:
@@ -1664,7 +1657,10 @@ def main():
     check_and_notify_executed_trades(maxage_trade_s)
 
     d = MT_GUARD_WINDOW_DAYS
-    _touch_mt_hb(force=True)
+    touch_module_heartbeat(
+        "monitortrades", interval_sec=30.0, force=True,
+        intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
+    )
     while True:
         try:
             _print_trade_order_counts("ORDER COUNT", apiorders.get_trade_orders, maxage_trade_s)
@@ -1691,7 +1687,10 @@ def main():
             except Exception as _e:
                 print(f"flush_smart_stop_loss_alerts error: {_e}")
 
-        _touch_mt_hb()
+        touch_module_heartbeat(
+            "monitortrades", interval_sec=30.0,
+            intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
+        )
         time.sleep(MT_MAIN_LOOP_SLEEP_SEC)
 
 

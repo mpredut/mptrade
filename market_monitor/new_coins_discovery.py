@@ -428,9 +428,6 @@ class NewCoinsMonitor:
         self._thread = None
         self.refresh()
 
-    def is_valid_symbol(self, symbol: str, name: str = "", slug: str = "") -> bool:
-        return is_trackable_symbol(symbol, name=name, slug=slug)
-
     def refresh(self, refresh_sources: bool = False):
         if _parse_bool_flag(refresh_sources, False):
             self.factory.refresh_all()
@@ -445,7 +442,7 @@ class NewCoinsMonitor:
                     continue
                 raw_symbol = coin.get('symbol')
                 symbol = str(raw_symbol).strip().upper() if isinstance(raw_symbol, str) else ""
-                if symbol and self.is_valid_symbol(symbol, str(coin.get('name') or ''), str(coin.get('slug') or '')):
+                if symbol and is_trackable_symbol(symbol, name=str(coin.get('name') or ''), slug=str(coin.get('slug') or '')):
                     self.all_symbols.add(symbol)
                 else:
                     print(f"[NewCoinsMonitor] Ignored invalid symbol: {raw_symbol} (from {source_name})")
@@ -602,7 +599,7 @@ class NewCoinsMonitor:
             return False
         source = coin_info.get('source', 'unknown')
 
-        if not self.is_valid_symbol(symbol, coin_info.get('name', ''), coin_info.get('slug', '')):
+        if not is_trackable_symbol(symbol, name=coin_info.get('name', ''), slug=coin_info.get('slug', '')):
             print(f"[NewCoinsMonitor] ❌ Invalid symbol: {symbol}")
             return False
 

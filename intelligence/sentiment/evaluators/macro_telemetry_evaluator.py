@@ -50,91 +50,6 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _compute_cross_asset_regime_impl(
-    data: Any,
-    *,
-    btc_chg_24h_pct: Optional[float] = None,
-) -> str:
-    """Classify the symmetric US Equity vs Crypto Institutional correlation regime.
-
-    Returns one of ``get_cross_asset_regimes()``:
-    - ``COUPLED_RISK_ON``: Both US Equities and Crypto/IBIT/CB_Premium are advancing together.
-    - ``COUPLED_RISK_OFF``: Both US Equities and Crypto/IBIT/CB_Premium are selling off together.
-    - ``CRYPTO_BULLISH_DECOUPLING``: US Equities are in RISK_OFF / declining, while Crypto/IBIT/CB_Premium show institutional accumulation.
-    - ``EQUITY_BULLISH_DECOUPLING``: US Equities are in RISK_ON / advancing, while Crypto/IBIT/CB_Premium show spot distribution/weakness.
-    - ``NEUTRAL``: No strong coupled trend or cross-asset divergence.
-    """
-    allowed = get_cross_asset_regimes()
-    if not isinstance(data, dict):
-        return "NEUTRAL"
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    if not isinstance(items, dict):
-        items = {}
-    eq_24h: List[float] = []
-    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
-        entry = items.get(sym)
-        if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
-            eq_24h.append(c24)
-    eq_regime = str(data.get("equity_regime") or "").strip().upper()
-    if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
-        eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
-    ):
-        eq_regime = compute_equity_macro_regime(data)
-    avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
-
-    ibit_entry = items.get("IBIT")
-    ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
-    btc_24h = safe_float(btc_chg_24h_pct, default=None)
-    if btc_24h is not None and abs(btc_24h) > 1e-6:
-        if ibit_24h is None or abs(ibit_24h) <= 1e-6:
-            crypto_px_chg = btc_24h
-        elif ibit_24h > 0.0 and btc_24h >= -0.15:
-            crypto_px_chg = max(ibit_24h, btc_24h)
-        elif ibit_24h < 0.0 and btc_24h <= 0.15:
-            crypto_px_chg = min(ibit_24h, btc_24h)
-        else:
-            crypto_px_chg = btc_24h
-    else:
-        crypto_px_chg = ibit_24h
-    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
-
-    if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
-        explicit = str(data.get("cross_asset_regime") or "").strip().upper()
-        return explicit if explicit in allowed else "NEUTRAL"
-
-    vix_entry = items.get("VIX")
-    vix_chg = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
-    vix_px = safe_pos_float(vix_entry.get("price"), default=None) if isinstance(vix_entry, dict) else None
-    vix_fear_spike = (vix_chg is not None and vix_chg >= 8.0) or (
-        vix_px is not None and vix_px >= 28.0 and (vix_chg is None or vix_chg >= 3.0)
-    )
-
-    eq_bull = eq_regime == "RISK_ON" or (
-        eq_regime != "RISK_OFF" and not vix_fear_spike and bool(eq_24h) and avg_eq_24h >= 0.25
-    )
-    eq_bear = eq_regime == "RISK_OFF" or (
-        eq_regime != "RISK_ON" and bool(eq_24h) and avg_eq_24h <= -0.25
-    )
-    crypto_bull = (
-        (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
-        or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
-    )
-    crypto_bear = (
-        (crypto_px_chg is not None and crypto_px_chg <= -0.35 and (cb_bps is None or cb_bps < 5.0))
-        or (cb_bps is not None and cb_bps <= -5.0 and (crypto_px_chg is None or crypto_px_chg <= 0.15))
-    )
-
-    if eq_bull and crypto_bull:
-        return "COUPLED_RISK_ON"
-    if eq_bear and crypto_bear:
-        return "COUPLED_RISK_OFF"
-    if eq_bear and crypto_bull:
-        return "CRYPTO_BULLISH_DECOUPLING"
-    if eq_bull and crypto_bear:
-        return "EQUITY_BULLISH_DECOUPLING"
-    return "NEUTRAL"
-
-
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface / Cross-Asset Regime)."""
     if not isinstance(data, dict):
@@ -225,127 +140,6 @@ def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -
     return regime
 
 
-def _apply_asset_scope_filter_impl(
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    portfolio_summary: Dict[str, Any],
-    scope: str,
-    inst_by_sym: Dict[str, Any],
-    t212_cycles: Dict[str, Any],
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Filter prices_and_trends, microstructure, and portfolio_summary by asset_scope ('equities' | 'crypto')."""
-    prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-    microstructure = microstructure if isinstance(microstructure, dict) else {}
-    if not isinstance(portfolio_summary, dict):
-        portfolio_summary = {}
-    inst_by_sym = inst_by_sym if isinstance(inst_by_sym, dict) else {}
-    t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
-    scope_norm = str(scope or "").strip().lower()
-    if scope_norm not in ("equities", "crypto"):
-        return prices_and_trends, microstructure
-    want_t212 = scope_norm == "equities"
-    t212_sym_set = {str(s).upper() for s in t212_cycles} | {
-        str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
-    }
-
-    def _set_or_pop(key: str, val: Any) -> None:
-        if val:
-            portfolio_summary[key] = val
-        else:
-            portfolio_summary.pop(key, None)
-
-    def _is_t212_venue(item: Any) -> bool:
-        if not isinstance(item, dict):
-            return False
-        v_n = normalize_venue_name(item.get("venue"))
-        if v_n:
-            is_t212 = v_n == "t212"
-        else:
-            sym_u = str(item.get("symbol") or "").strip().upper()
-            is_t212 = sym_u.endswith(("_EQ", "_US_EQ")) or sym_u in t212_sym_set
-        return is_t212 == want_t212
-
-    if want_t212:
-        prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
-        microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
-        for crypto_key in (
-            "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
-            "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
-            "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
-        ):
-            portfolio_summary.pop(crypto_key, None)
-        if isinstance(portfolio_summary.get("venues_value_usd"), dict):
-            eq_venues = {
-                vk: vv
-                for vk, vv in portfolio_summary["venues_value_usd"].items()
-                if normalize_venue_name(vk) == "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
-            }
-            _set_or_pop("venues_value_usd", eq_venues)
-            _set_or_pop("portfolio_total_usd", round(sum(eq_venues.values()), 2) if eq_venues else None)
-        else:
-            portfolio_summary.pop("portfolio_total_usd", None)
-    else:
-        prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
-        microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
-        portfolio_summary.pop("t212_cycles", None)
-        if isinstance(portfolio_summary.get("venues_value_usd"), dict):
-            crypto_venues = {
-                vk: vv
-                for vk, vv in portfolio_summary["venues_value_usd"].items()
-                if normalize_venue_name(vk) != "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
-            }
-            _set_or_pop("venues_value_usd", crypto_venues)
-            _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
-    if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
-        def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:
-            v_str = cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
-            return (normalize_venue_name(v_str) == "t212") == want_t212
-
-        _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_cash_entry(ck, cv)})
-    if isinstance(portfolio_summary.get("recent_orders"), dict):
-        allowed_eq_ro_syms = set(t212_sym_set)
-        for pos_it in (portfolio_summary.get("tradable_positions") or ()):
-            if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
-                if s_p := str(pos_it.get("symbol") or "").strip().upper():
-                    allowed_eq_ro_syms.add(s_p)
-        for it_ro in (portfolio_summary.get("recent_ai_intents") or ()):
-            if isinstance(it_ro, dict) and normalize_venue_name(it_ro.get("venue")) == "t212":
-                if s_i := str(it_ro.get("symbol") or "").strip().upper():
-                    allowed_eq_ro_syms.add(s_i)
-
-        def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
-            if isinstance(rv, dict) and rv.get("venue"):
-                is_eq = normalize_venue_name(rv.get("venue")) == "t212"
-            else:
-                rk_up = str(rk).upper()
-                if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
-                    is_eq = True
-                else:
-                    is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
-            if is_eq and want_t212 and allowed_eq_ro_syms:
-                rk_clean = str(rk).split(":", 1)[-1].strip().upper()
-                return any(
-                    cand.upper() in allowed_eq_ro_syms
-                    for cand in (rk_clean, *cache_symbol_variants(rk_clean, include_base=True))
-                )
-            return is_eq
-
-        _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
-    for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
-        if isinstance(portfolio_summary.get(list_key), list):
-            _set_or_pop(list_key, [item for item in portfolio_summary[list_key] if _is_t212_venue(item)])
-    if isinstance(portfolio_summary.get("open_limit_orders"), list):
-        portfolio_summary["open_limit_orders"] = [item for item in portfolio_summary["open_limit_orders"] if _is_t212_venue(item)]
-    last_exec = portfolio_summary.get("last_cycle_execution_status")
-    if isinstance(last_exec, dict):
-        if not _is_t212_venue(last_exec):
-            portfolio_summary.pop("last_cycle_execution_status", None)
-    elif isinstance(last_exec, list):
-        filtered_exec = [item for item in last_exec if _is_t212_venue(item)]
-        _set_or_pop("last_cycle_execution_status", (filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec) if filtered_exec else None)
-    return prices_and_trends, microstructure
-
-
 def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_items: Any) -> Dict[str, float]:
     """Build fallback price map from orderbook mid-prices and watcher_all_price series for cycle state parsing."""
     cycle_fallback_prices: Dict[str, float] = {}
@@ -377,242 +171,6 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
                     if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
                         cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
     return cycle_fallback_prices
-
-
-def _reconcile_live_venue_equity_summary_impl(portfolio_summary: Dict[str, Any]) -> None:
-    """Reconcile live multi-venue spot equity from `tradable_positions` and `venue_quote_cash` via SSOT `compute_venue_nav_breakdown`."""
-    if not isinstance(portfolio_summary, dict):
-        return
-    t_pos_list = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
-    vq_cash_map = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
-    if not (t_pos_list or vq_cash_map):
-        return
-    nav = compute_venue_nav_breakdown(positions=t_pos_list, quote_cash=vq_cash_map)
-    venues_usd = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
-    if isinstance(portfolio_summary.get("venues_value_usd"), dict) and venues_usd:
-        merged_vv = dict(portfolio_summary["venues_value_usd"])
-        for vk, vv in venues_usd.items():
-            if vv > 0.0 and vk in merged_vv:
-                merged_vv[vk] = vv
-        portfolio_summary["venues_value_usd"] = merged_vv
-        portfolio_summary["portfolio_total_usd"] = round(sum(merged_vv.values()), 2)
-    venue_pos_map = nav.get("venue_pos_usd") if isinstance(nav.get("venue_pos_usd"), dict) else {}
-    venue_cash_map = nav.get("venue_cash_usd") if isinstance(nav.get("venue_cash_usd"), dict) else {}
-    for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
-        tot_v = safe_pos_float(venues_usd.get(v_target), default=0.0) or 0.0
-        v_pos_sum = safe_pos_float(venue_pos_map.get(v_target), default=0.0) or 0.0
-        v_cash_sum = safe_pos_float(venue_cash_map.get(v_target), default=0.0) or 0.0
-        v_pos_list = [
-            p for p in t_pos_list
-            if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
-        ]
-        if tot_v > 0.0:
-            if v_target == "binance":
-                portfolio_summary[eq_key] = tot_v
-            elif isinstance(hl_ro_d := portfolio_summary.get("hyperliquid_readonly"), dict):
-                hl_ro_d["live_reconciled_spot_usd"] = tot_v
-                hl_ro_d["total_equity_usd"] = round(
-                    tot_v + (safe_pos_float(hl_ro_d.get("perp_equity_usd"), default=0.0) or 0.0), 2
-                )
-                hl_ro_d["snapshot_age_min"] = 0.0
-                if v_pos_list:
-                    sp0_coin = (
-                        hl_ro_d["spot_positions"][0].get("coin") or hl_ro_d["spot_positions"][0].get("symbol")
-                        if isinstance(hl_ro_d.get("spot_positions"), list)
-                        and hl_ro_d["spot_positions"]
-                        and isinstance(hl_ro_d["spot_positions"][0], dict)
-                        else ""
-                    )
-                    ro_coin = canonical_base_asset(hl_ro_d.get("coin") or hl_ro_d.get("symbol") or sp0_coin)
-                    hp0 = next(
-                        (
-                            p for p in v_pos_list
-                            if ro_coin and canonical_base_asset(p.get("base") or p.get("symbol") or "") == ro_coin
-                        ),
-                        None,
-                    ) or next(
-                        (
-                            p for p in v_pos_list
-                            if (safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0)
-                            + (safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0)
-                            > 0.0
-                        ),
-                        v_pos_list[0],
-                    )
-                    hp0_base = canonical_base_asset(hp0.get("base") or hp0.get("symbol") or "")
-                    hp0_free_q = max(
-                        (
-                            safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0
-                            for p in v_pos_list
-                            if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base
-                        ),
-                        default=0.0,
-                    )
-                    hp0_locked_by_sym: Dict[str, float] = {}
-                    for p in v_pos_list:
-                        if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base:
-                            ps_k = str(p.get("symbol") or hp0_base).strip().upper()
-                            hp0_locked_by_sym[ps_k] = max(
-                                hp0_locked_by_sym.get(ps_k, 0.0),
-                                safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0,
-                            )
-                    live_q = hp0_free_q + sum(hp0_locked_by_sym.values())
-                    if live_q > 0.0:
-                        if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                            hl_ro_d["qty"] = round(live_q, 6)
-                            hl_ro_d["value_usd"] = round(v_pos_sum, 2)
-                            hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                        if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and sp_list and isinstance(sp_list[0], dict):
-                            sp_list[0]["qty"] = round(live_q, 6)
-                            sp_list[0]["value_usd"] = round(v_pos_sum, 2)
-                            sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                            sp_list[0]["snapshot_age_min"] = 0.0
-                    else:
-                        if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                            hl_ro_d["qty"] = 0.0
-                            hl_ro_d["value_usd"] = 0.0
-                            hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                        if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
-                            sp_list[0]["qty"] = 0.0
-                            sp_list[0]["value_usd"] = 0.0
-                            sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                            sp_list[0]["snapshot_age_min"] = 0.0
-                else:
-                    if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                        hl_ro_d["qty"] = 0.0
-                        hl_ro_d["value_usd"] = 0.0
-                        hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                    if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
-                        sp_list[0]["qty"] = 0.0
-                        sp_list[0]["value_usd"] = 0.0
-                        sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                        sp_list[0]["snapshot_age_min"] = 0.0
-
-
-def _evaluate_institutional_posture_divergence_impl(
-    cached_act: Any,
-    cached_bias: Any,
-    cached_text: Any,
-    macro_benchmarks: Any,
-    *,
-    live_tr: Optional[float] = None,
-    flow_lbl: str = "",
-) -> Optional[Dict[str, str]]:
-    """Detect institutional cross-asset, Coinbase premium, ETF, futures lead, or options skew divergence vs a cached posture."""
-    if not isinstance(macro_benchmarks, dict) or not macro_benchmarks:
-        return None
-    mb_items = macro_benchmarks.get("items") if isinstance(macro_benchmarks.get("items"), dict) else macro_benchmarks
-    if not isinstance(mb_items, dict):
-        mb_items = {}
-    cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
-    cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps", mb_items.get("coinbase_premium_bps")), default=None)
-    ibit_d = (
-        mb_items.get("IBIT")
-        if isinstance(mb_items.get("IBIT"), dict)
-        else (macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {})
-    )
-    ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
-    has_bench_items = any(k in mb_items for k in ("SPY", "QQQ", "ES=F", "NQ=F"))
-    lead_info = compute_futures_premarket_lead(macro_benchmarks)
-    fut_lead = (
-        safe_float(lead_info.get("futures_lead_pct"), default=None)
-        if has_bench_items
-        else safe_float(macro_benchmarks.get("futures_lead_pct", mb_items.get("futures_lead_pct")), default=None)
-    )
-    fut_reg = (
-        str(lead_info.get("futures_lead_regime") or "").strip().upper()
-        if has_bench_items
-        else str(macro_benchmarks.get("futures_lead_regime") or mb_items.get("futures_lead_regime") or "").strip().upper()
-    )
-    btc_skew = safe_float(macro_benchmarks.get("btc_skew_25d_pct", mb_items.get("btc_skew_25d_pct")), default=None)
-    eth_skew = safe_float(macro_benchmarks.get("eth_skew_25d_pct", mb_items.get("eth_skew_25d_pct")), default=None)
-    eff_skew = btc_skew if btc_skew is not None else eth_skew
-
-    txt_u = str(cached_text or "").upper()
-    if cross_reg and cross_reg != "NEUTRAL" and cross_reg in txt_u:
-        return None
-
-    act_u = str(cached_act or "").strip().upper()
-    bias_u = str(cached_bias or "").strip().upper()
-    is_bear = act_u in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in bias_u
-    is_bull = act_u == "ACCUMULATE" or "BULL" in bias_u
-
-    inst_parts = [
-        x
-        for x in (
-            f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
-            f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
-            f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
-            f"Futures_Lead={fut_lead:+.2f}%"
-            if fut_lead is not None and fut_reg in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN")
-            else "",
-            f"Skew_25d={eff_skew:+.2f}%" if eff_skew is not None and (eff_skew <= -2.5 or eff_skew >= 4.0) else "",
-            flow_lbl,
-        )
-        if x
-    ]
-    inst_lbl = ", ".join(inst_parts)
-    reg_tag = (cross_reg if cross_reg and cross_reg != "NEUTRAL" else "cb_premium").lower()
-    posture_tag = (act_u or bias_u).lower()
-    metric_tag = (
-        f"{cb_bps:+.1f}bps"
-        if cb_bps is not None
-        else (
-            f"ibit_{ibit_1h:+.2f}pct"
-            if ibit_1h is not None
-            else (
-                f"lead_{fut_lead:+.2f}pct"
-                if fut_lead is not None
-                else (f"skew_{eff_skew:+.2f}pct" if eff_skew is not None else "flow")
-            )
-        )
-    )
-
-    if (
-        is_bear
-        and (live_tr is None or live_tr >= 0.95)
-        and (
-            (
-                cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
-                and (
-                    (cb_bps is not None and cb_bps >= 5.0)
-                    or (ibit_1h is not None and ibit_1h >= 0.75)
-                    or (fut_reg == "FUTURES_PREMARKET_GAP_UP" and fut_lead is not None and fut_lead >= 0.50)
-                    or (eff_skew is not None and eff_skew <= -2.5)
-                )
-            )
-            or (cb_bps is not None and cb_bps >= 10.0)
-        )
-    ):
-        return {
-            "direction": "BUY",
-            "reason": f"institutional_buy_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
-            "inst_lbl": inst_lbl,
-            "posture": act_u or bias_u,
-        }
-    if (
-        is_bull
-        and (live_tr is None or live_tr <= 1.05)
-        and (
-            (
-                cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
-                and (
-                    (cb_bps is not None and cb_bps <= -5.0)
-                    or (ibit_1h is not None and ibit_1h <= -0.75)
-                    or (fut_reg == "FUTURES_PREMARKET_GAP_DOWN" and fut_lead is not None and fut_lead <= -0.50)
-                    or (eff_skew is not None and eff_skew >= 4.0)
-                )
-            )
-            or (cb_bps is not None and cb_bps <= -10.0)
-        )
-    ):
-        return {
-            "direction": "SELL",
-            "reason": f"institutional_sell_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
-            "inst_lbl": inst_lbl,
-            "posture": act_u or bias_u,
-        }
-    return None
 
 
 def enrich_sentiment_advisor_live_flow_divergence(
@@ -1093,7 +651,75 @@ class CrossAssetRegimeEvaluator(MacroTelemetryEvaluatorBase):
         btc_chg_24h_pct: Optional[float] = None,
         **kwargs: Any,
     ) -> str:
-        return _compute_cross_asset_regime_impl(data, btc_chg_24h_pct=btc_chg_24h_pct)
+        allowed = get_cross_asset_regimes()
+        if not isinstance(data, dict):
+            return "NEUTRAL"
+        items = data.get("items") if isinstance(data.get("items"), dict) else data
+        if not isinstance(items, dict):
+            items = {}
+        eq_24h: List[float] = []
+        for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+            entry = items.get(sym)
+            if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+                eq_24h.append(c24)
+        eq_regime = str(data.get("equity_regime") or "").strip().upper()
+        if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
+            eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
+        ):
+            eq_regime = compute_equity_macro_regime(data)
+        avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+
+        ibit_entry = items.get("IBIT")
+        ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
+        btc_24h = safe_float(btc_chg_24h_pct, default=None)
+        if btc_24h is not None and abs(btc_24h) > 1e-6:
+            if ibit_24h is None or abs(ibit_24h) <= 1e-6:
+                crypto_px_chg = btc_24h
+            elif ibit_24h > 0.0 and btc_24h >= -0.15:
+                crypto_px_chg = max(ibit_24h, btc_24h)
+            elif ibit_24h < 0.0 and btc_24h <= 0.15:
+                crypto_px_chg = min(ibit_24h, btc_24h)
+            else:
+                crypto_px_chg = btc_24h
+        else:
+            crypto_px_chg = ibit_24h
+        cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
+
+        if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
+            explicit = str(data.get("cross_asset_regime") or "").strip().upper()
+            return explicit if explicit in allowed else "NEUTRAL"
+
+        vix_entry = items.get("VIX")
+        vix_chg = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+        vix_px = safe_pos_float(vix_entry.get("price"), default=None) if isinstance(vix_entry, dict) else None
+        vix_fear_spike = (vix_chg is not None and vix_chg >= 8.0) or (
+            vix_px is not None and vix_px >= 28.0 and (vix_chg is None or vix_chg >= 3.0)
+        )
+
+        eq_bull = eq_regime == "RISK_ON" or (
+            eq_regime != "RISK_OFF" and not vix_fear_spike and bool(eq_24h) and avg_eq_24h >= 0.25
+        )
+        eq_bear = eq_regime == "RISK_OFF" or (
+            eq_regime != "RISK_ON" and bool(eq_24h) and avg_eq_24h <= -0.25
+        )
+        crypto_bull = (
+            (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
+            or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
+        )
+        crypto_bear = (
+            (crypto_px_chg is not None and crypto_px_chg <= -0.35 and (cb_bps is None or cb_bps < 5.0))
+            or (cb_bps is not None and cb_bps <= -5.0 and (crypto_px_chg is None or crypto_px_chg <= 0.15))
+        )
+
+        if eq_bull and crypto_bull:
+            return "COUPLED_RISK_ON"
+        if eq_bear and crypto_bear:
+            return "COUPLED_RISK_OFF"
+        if eq_bear and crypto_bull:
+            return "CRYPTO_BULLISH_DECOUPLING"
+        if eq_bull and crypto_bear:
+            return "EQUITY_BULLISH_DECOUPLING"
+        return "NEUTRAL"
 
 
 class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):
@@ -1179,14 +805,120 @@ class InstitutionalPostureDivergenceEvaluator(MacroTelemetryEvaluatorBase):
         flow_lbl: str = "",
         **kwargs: Any,
     ) -> Optional[Dict[str, str]]:
-        return _evaluate_institutional_posture_divergence_impl(
-            cached_act,
-            cached_bias,
-            cached_text,
-            macro_benchmarks,
-            live_tr=live_tr,
-            flow_lbl=flow_lbl,
+        if not isinstance(macro_benchmarks, dict) or not macro_benchmarks:
+            return None
+        mb_items = macro_benchmarks.get("items") if isinstance(macro_benchmarks.get("items"), dict) else macro_benchmarks
+        if not isinstance(mb_items, dict):
+            mb_items = {}
+        cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
+        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps", mb_items.get("coinbase_premium_bps")), default=None)
+        ibit_d = (
+            mb_items.get("IBIT")
+            if isinstance(mb_items.get("IBIT"), dict)
+            else (macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {})
         )
+        ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
+        has_bench_items = any(k in mb_items for k in ("SPY", "QQQ", "ES=F", "NQ=F"))
+        lead_info = compute_futures_premarket_lead(macro_benchmarks)
+        fut_lead = (
+            safe_float(lead_info.get("futures_lead_pct"), default=None)
+            if has_bench_items
+            else safe_float(macro_benchmarks.get("futures_lead_pct", mb_items.get("futures_lead_pct")), default=None)
+        )
+        fut_reg = (
+            str(lead_info.get("futures_lead_regime") or "").strip().upper()
+            if has_bench_items
+            else str(macro_benchmarks.get("futures_lead_regime") or mb_items.get("futures_lead_regime") or "").strip().upper()
+        )
+        btc_skew = safe_float(macro_benchmarks.get("btc_skew_25d_pct", mb_items.get("btc_skew_25d_pct")), default=None)
+        eth_skew = safe_float(macro_benchmarks.get("eth_skew_25d_pct", mb_items.get("eth_skew_25d_pct")), default=None)
+        eff_skew = btc_skew if btc_skew is not None else eth_skew
+
+        txt_u = str(cached_text or "").upper()
+        if cross_reg and cross_reg != "NEUTRAL" and cross_reg in txt_u:
+            return None
+
+        act_u = str(cached_act or "").strip().upper()
+        bias_u = str(cached_bias or "").strip().upper()
+        is_bear = act_u in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in bias_u
+        is_bull = act_u == "ACCUMULATE" or "BULL" in bias_u
+
+        inst_parts = [
+            x
+            for x in (
+                f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
+                f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
+                f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
+                f"Futures_Lead={fut_lead:+.2f}%"
+                if fut_lead is not None and fut_reg in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN")
+                else "",
+                f"Skew_25d={eff_skew:+.2f}%" if eff_skew is not None and (eff_skew <= -2.5 or eff_skew >= 4.0) else "",
+                flow_lbl,
+            )
+            if x
+        ]
+        inst_lbl = ", ".join(inst_parts)
+        reg_tag = (cross_reg if cross_reg and cross_reg != "NEUTRAL" else "cb_premium").lower()
+        posture_tag = (act_u or bias_u).lower()
+        metric_tag = (
+            f"{cb_bps:+.1f}bps"
+            if cb_bps is not None
+            else (
+                f"ibit_{ibit_1h:+.2f}pct"
+                if ibit_1h is not None
+                else (
+                    f"lead_{fut_lead:+.2f}pct"
+                    if fut_lead is not None
+                    else (f"skew_{eff_skew:+.2f}pct" if eff_skew is not None else "flow")
+                )
+            )
+        )
+
+        if (
+            is_bear
+            and (live_tr is None or live_tr >= 0.95)
+            and (
+                (
+                    cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
+                    and (
+                        (cb_bps is not None and cb_bps >= 5.0)
+                        or (ibit_1h is not None and ibit_1h >= 0.75)
+                        or (fut_reg == "FUTURES_PREMARKET_GAP_UP" and fut_lead is not None and fut_lead >= 0.50)
+                        or (eff_skew is not None and eff_skew <= -2.5)
+                    )
+                )
+                or (cb_bps is not None and cb_bps >= 10.0)
+            )
+        ):
+            return {
+                "direction": "BUY",
+                "reason": f"institutional_buy_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
+                "inst_lbl": inst_lbl,
+                "posture": act_u or bias_u,
+            }
+        if (
+            is_bull
+            and (live_tr is None or live_tr <= 1.05)
+            and (
+                (
+                    cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
+                    and (
+                        (cb_bps is not None and cb_bps <= -5.0)
+                        or (ibit_1h is not None and ibit_1h <= -0.75)
+                        or (fut_reg == "FUTURES_PREMARKET_GAP_DOWN" and fut_lead is not None and fut_lead <= -0.50)
+                        or (eff_skew is not None and eff_skew >= 4.0)
+                    )
+                )
+                or (cb_bps is not None and cb_bps <= -10.0)
+            )
+        ):
+            return {
+                "direction": "SELL",
+                "reason": f"institutional_sell_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
+                "inst_lbl": inst_lbl,
+                "posture": act_u or bias_u,
+            }
+        return None
 
 
 class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
@@ -1204,14 +936,116 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
         t212_cycles: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        return _apply_asset_scope_filter_impl(
-            prices_and_trends,
-            microstructure or {},
-            portfolio_summary if isinstance(portfolio_summary, dict) else {},
-            scope,
-            inst_by_sym or {},
-            t212_cycles or {},
-        )
+        prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+        microstructure = microstructure if isinstance(microstructure, dict) else {}
+        if not isinstance(portfolio_summary, dict):
+            portfolio_summary = {}
+        inst_by_sym = inst_by_sym if isinstance(inst_by_sym, dict) else {}
+        t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
+        scope_norm = str(scope or "").strip().lower()
+        if scope_norm not in ("equities", "crypto"):
+            return prices_and_trends, microstructure
+        want_t212 = scope_norm == "equities"
+        t212_sym_set = {str(s).upper() for s in t212_cycles} | {
+            str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
+        }
+
+        def _set_or_pop(key: str, val: Any) -> None:
+            if val:
+                portfolio_summary[key] = val
+            else:
+                portfolio_summary.pop(key, None)
+
+        def _is_t212_venue(item: Any) -> bool:
+            if not isinstance(item, dict):
+                return False
+            v_n = normalize_venue_name(item.get("venue"))
+            if v_n:
+                is_t212 = v_n == "t212"
+            else:
+                sym_u = str(item.get("symbol") or "").strip().upper()
+                is_t212 = sym_u.endswith(("_EQ", "_US_EQ")) or sym_u in t212_sym_set
+            return is_t212 == want_t212
+
+        if want_t212:
+            prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
+            microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
+            for crypto_key in (
+                "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
+                "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
+                "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
+            ):
+                portfolio_summary.pop(crypto_key, None)
+            if isinstance(portfolio_summary.get("venues_value_usd"), dict):
+                eq_venues = {
+                    vk: vv
+                    for vk, vv in portfolio_summary["venues_value_usd"].items()
+                    if normalize_venue_name(vk) == "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+                }
+                _set_or_pop("venues_value_usd", eq_venues)
+                _set_or_pop("portfolio_total_usd", round(sum(eq_venues.values()), 2) if eq_venues else None)
+            else:
+                portfolio_summary.pop("portfolio_total_usd", None)
+        else:
+            prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
+            microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
+            portfolio_summary.pop("t212_cycles", None)
+            if isinstance(portfolio_summary.get("venues_value_usd"), dict):
+                crypto_venues = {
+                    vk: vv
+                    for vk, vv in portfolio_summary["venues_value_usd"].items()
+                    if normalize_venue_name(vk) != "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+                }
+                _set_or_pop("venues_value_usd", crypto_venues)
+                _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
+        if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
+            def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:
+                v_str = cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
+                return (normalize_venue_name(v_str) == "t212") == want_t212
+
+            _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_cash_entry(ck, cv)})
+        if isinstance(portfolio_summary.get("recent_orders"), dict):
+            allowed_eq_ro_syms = set(t212_sym_set)
+            for pos_it in (portfolio_summary.get("tradable_positions") or ()):
+                if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
+                    if s_p := str(pos_it.get("symbol") or "").strip().upper():
+                        allowed_eq_ro_syms.add(s_p)
+            for it_ro in (portfolio_summary.get("recent_ai_intents") or ()):
+                if isinstance(it_ro, dict) and normalize_venue_name(it_ro.get("venue")) == "t212":
+                    if s_i := str(it_ro.get("symbol") or "").strip().upper():
+                        allowed_eq_ro_syms.add(s_i)
+
+            def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
+                if isinstance(rv, dict) and rv.get("venue"):
+                    is_eq = normalize_venue_name(rv.get("venue")) == "t212"
+                else:
+                    rk_up = str(rk).upper()
+                    if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
+                        is_eq = True
+                    else:
+                        is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
+                if is_eq and want_t212 and allowed_eq_ro_syms:
+                    rk_clean = str(rk).split(":", 1)[-1].strip().upper()
+                    return any(
+                        cand.upper() in allowed_eq_ro_syms
+                        for cand in (rk_clean, *cache_symbol_variants(rk_clean, include_base=True))
+                    )
+                return is_eq
+
+            _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
+        for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
+            if isinstance(portfolio_summary.get(list_key), list):
+                _set_or_pop(list_key, [item for item in portfolio_summary[list_key] if _is_t212_venue(item)])
+        if isinstance(portfolio_summary.get("open_limit_orders"), list):
+            portfolio_summary["open_limit_orders"] = [item for item in portfolio_summary["open_limit_orders"] if _is_t212_venue(item)]
+        last_exec = portfolio_summary.get("last_cycle_execution_status")
+        if isinstance(last_exec, dict):
+            if not _is_t212_venue(last_exec):
+                portfolio_summary.pop("last_cycle_execution_status", None)
+        elif isinstance(last_exec, list):
+            filtered_exec = [item for item in last_exec if _is_t212_venue(item)]
+            _set_or_pop("last_cycle_execution_status", (filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec) if filtered_exec else None)
+        return prices_and_trends, microstructure
 
 
 class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
@@ -1220,7 +1054,112 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
     cls_name = "LiveVenueEquityReconciliationEvaluator"
 
     def evaluate(self, portfolio_summary: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
-        _reconcile_live_venue_equity_summary_impl(portfolio_summary)
+        if not isinstance(portfolio_summary, dict):
+            return portfolio_summary
+        t_pos_list = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
+        vq_cash_map = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
+        if not (t_pos_list or vq_cash_map):
+            return portfolio_summary
+        nav = compute_venue_nav_breakdown(positions=t_pos_list, quote_cash=vq_cash_map)
+        venues_usd = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
+        if isinstance(portfolio_summary.get("venues_value_usd"), dict) and venues_usd:
+            merged_vv = dict(portfolio_summary["venues_value_usd"])
+            for vk, vv in venues_usd.items():
+                if vv > 0.0 and vk in merged_vv:
+                    merged_vv[vk] = vv
+            portfolio_summary["venues_value_usd"] = merged_vv
+            portfolio_summary["portfolio_total_usd"] = round(sum(merged_vv.values()), 2)
+        venue_pos_map = nav.get("venue_pos_usd") if isinstance(nav.get("venue_pos_usd"), dict) else {}
+        venue_cash_map = nav.get("venue_cash_usd") if isinstance(nav.get("venue_cash_usd"), dict) else {}
+        for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
+            tot_v = safe_pos_float(venues_usd.get(v_target), default=0.0) or 0.0
+            v_pos_sum = safe_pos_float(venue_pos_map.get(v_target), default=0.0) or 0.0
+            v_cash_sum = safe_pos_float(venue_cash_map.get(v_target), default=0.0) or 0.0
+            v_pos_list = [
+                p for p in t_pos_list
+                if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
+            ]
+            if tot_v > 0.0:
+                if v_target == "binance":
+                    portfolio_summary[eq_key] = tot_v
+                elif isinstance(hl_ro_d := portfolio_summary.get("hyperliquid_readonly"), dict):
+                    hl_ro_d["live_reconciled_spot_usd"] = tot_v
+                    hl_ro_d["total_equity_usd"] = round(
+                        tot_v + (safe_pos_float(hl_ro_d.get("perp_equity_usd"), default=0.0) or 0.0), 2
+                    )
+                    hl_ro_d["snapshot_age_min"] = 0.0
+                    if v_pos_list:
+                        sp0_coin = (
+                            hl_ro_d["spot_positions"][0].get("coin") or hl_ro_d["spot_positions"][0].get("symbol")
+                            if isinstance(hl_ro_d.get("spot_positions"), list)
+                            and hl_ro_d["spot_positions"]
+                            and isinstance(hl_ro_d["spot_positions"][0], dict)
+                            else ""
+                        )
+                        ro_coin = canonical_base_asset(hl_ro_d.get("coin") or hl_ro_d.get("symbol") or sp0_coin)
+                        hp0 = next(
+                            (
+                                p for p in v_pos_list
+                                if ro_coin and canonical_base_asset(p.get("base") or p.get("symbol") or "") == ro_coin
+                            ),
+                            None,
+                        ) or next(
+                            (
+                                p for p in v_pos_list
+                                if (safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0)
+                                + (safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0)
+                                > 0.0
+                            ),
+                            v_pos_list[0],
+                        )
+                        hp0_base = canonical_base_asset(hp0.get("base") or hp0.get("symbol") or "")
+                        hp0_free_q = max(
+                            (
+                                safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0
+                                for p in v_pos_list
+                                if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base
+                            ),
+                            default=0.0,
+                        )
+                        hp0_locked_by_sym: Dict[str, float] = {}
+                        for p in v_pos_list:
+                            if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base:
+                                ps_k = str(p.get("symbol") or hp0_base).strip().upper()
+                                hp0_locked_by_sym[ps_k] = max(
+                                    hp0_locked_by_sym.get(ps_k, 0.0),
+                                    safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0,
+                                )
+                        live_q = hp0_free_q + sum(hp0_locked_by_sym.values())
+                        if live_q > 0.0:
+                            if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
+                                hl_ro_d["qty"] = round(live_q, 6)
+                                hl_ro_d["value_usd"] = round(v_pos_sum, 2)
+                                hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
+                            if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and sp_list and isinstance(sp_list[0], dict):
+                                sp_list[0]["qty"] = round(live_q, 6)
+                                sp_list[0]["value_usd"] = round(v_pos_sum, 2)
+                                sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
+                                sp_list[0]["snapshot_age_min"] = 0.0
+                        else:
+                            if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
+                                hl_ro_d["qty"] = 0.0
+                                hl_ro_d["value_usd"] = 0.0
+                                hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
+                            if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
+                                sp_list[0]["qty"] = 0.0
+                                sp_list[0]["value_usd"] = 0.0
+                                sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
+                                sp_list[0]["snapshot_age_min"] = 0.0
+                    else:
+                        if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
+                            hl_ro_d["qty"] = 0.0
+                            hl_ro_d["value_usd"] = 0.0
+                            hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
+                        if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
+                            sp_list[0]["qty"] = 0.0
+                            sp_list[0]["value_usd"] = 0.0
+                            sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
+                            sp_list[0]["snapshot_age_min"] = 0.0
         return portfolio_summary
 
 

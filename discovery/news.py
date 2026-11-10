@@ -84,7 +84,7 @@ def get_coinmarketcap_coins():
             break
         start += limit  # Advance to the next page.
 
-    print(f"Am extras {len(coins)} monezi")
+    print(f"Extracted {len(coins)} coins")
     return pd.DataFrame(
         coins,
         columns=[
@@ -143,7 +143,7 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
             if px_cmc_f is None or px_bin_f is None:
                 continue
             # Use price proximity as a weak cross-source identity check.
-            if abs(px_cmc_f - px_bin_f) / px_cmc_f < 0.05:  # Toleranta de 5%
+            if abs(px_cmc_f - px_bin_f) / px_cmc_f < 0.05:  # 5% tolerance
                 common_coins.append({
                     "name": row['name'],
                     "symbol": symbol,
@@ -190,7 +190,7 @@ def main():
     nb = 100
     df_sorted_new = df_cmc.sort_values(by="launch_date", ascending=False).head(nb)
 
-    print("Cea mai noua moneda lansata pe CoinMarketCap:")
+    print("Newest coin listed on CoinMarketCap:")
     if not df_sorted_new.empty:
         print(df_sorted_new.iloc[0])
 
@@ -201,20 +201,20 @@ def main():
     df_sorted_greatest_decrease_24h = df_cmc.sort_values(by="change_24h", ascending=True).head(10)
 
     # Print all report sections.
-    print(f"Primele {nb} monede noi:")
+    print(f"First {nb} new coins:")
     pd.set_option('display.max_rows', 100)  # Display up to 100 rows.
     print(df_sorted_new)
 
-    print("\nTop 10 cresteri pe 7 zile:")
+    print("\nTop 10 gainers over 7 days:")
     print(df_sorted_greatest_increase_7d)
 
-    print("\nTop 10 scaderi pe 7 zile:")
+    print("\nTop 10 losers over 7 days:")
     print(df_sorted_greatest_decrease_7d)
 
-    print("\nTop 10 cresteri pe 24 de ore:")
+    print("\nTop 10 gainers over 24 hours:")
     print(df_sorted_greatest_increase_24h)
 
-    print("\nTop 10 scaderi pe 24 de ore:")
+    print("\nTop 10 losers over 24 hours:")
     print(df_sorted_greatest_decrease_24h)
 
     ###########
@@ -224,16 +224,16 @@ def main():
     print("The first 10 coins available on both CoinMarketCap and Binance, sorted by newness:")
     print(df_top_10_new)
 
-    print("\nTop 10 cresteri pe 7 zile:")
+    print("\nTop 10 gainers over 7 days:")
     print(df_top_10_increase_7d)
 
-    print("\nTop 10 scaderi pe 7 zile:")
+    print("\nTop 10 losers over 7 days:")
     print(df_top_10_decrease_7d)
 
-    print("\nTop 10 cresteri pe 24 de ore:")
+    print("\nTop 10 gainers over 24 hours:")
     print(df_top_10_increase_24h)
 
-    print("\nTop 10 scaderi pe 24 de ore:")
+    print("\nTop 10 losers over 24 hours:")
     print(df_top_10_decrease_24h)
 
 

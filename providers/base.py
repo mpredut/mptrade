@@ -16,7 +16,6 @@ from botcore import (
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
     resolve_patched_attr,
-    safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -25,10 +24,8 @@ from botcore import (
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     cache_path,
-    cache_symbol_variants,
     canonical_symbol_key,
     clean_symbol_key,
-    compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
 )

@@ -284,16 +284,11 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         raise
 
 
-def atomic_binary_writer(path: str, *, preserve_mode: bool = False) -> contextlib.AbstractContextManager[Any]:
-    """Yield a binary handle and atomically publish it only after a durable write."""
-    return _atomic_stream_writer(path, "wb", preserve_mode=_parse_bool_flag(preserve_mode, False))
-
-
 def atomic_write_bytes(
     path: str, data: bytes | bytearray | memoryview, *, preserve_mode: bool = False,
 ) -> None:
     """Durably and atomically write binary bytes to ``path``."""
-    with atomic_binary_writer(path, preserve_mode=preserve_mode) as handle:
+    with _atomic_stream_writer(path, "wb", preserve_mode=_parse_bool_flag(preserve_mode, False)) as handle:
         handle.write(data)
 
 

@@ -79,10 +79,6 @@ class BaseGuard(ABC):
                         out.append(ps)
         return out
 
-    @staticmethod
-    def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
-        return set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
-
     def add_tokens_to(self, target: set[str]) -> None:
         """Add this guard's lowercase code, canonical name, and aliases to ``target``."""
         target.update(self.aliases)
@@ -91,7 +87,7 @@ class BaseGuard(ABC):
 
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
         """Return whether this guard is bypassed by the given set of active bypass keys."""
-        low = self._coerce_bypass_set(bypassed_guards)
+        low = set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
         if not low:
             return False
         cat_aliases = _CATEGORY_BYPASS_ALIASES.get(self.category, frozenset({self.category}))
@@ -239,7 +235,7 @@ class LLMGuard(BaseGuard):
     category = "llm"
 
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
-        low = self._coerce_bypass_set(bypassed_guards)
+        low = set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
         if not low:
             return False
         return bool(
@@ -477,7 +473,7 @@ _QLIMIT2_WEIBULL_TOKENS: frozenset[str] = frozenset({
 
 def resolve_qlimit2_sub_bypasses(bypass_guards: object) -> tuple[set[str], bool, bool]:
     """Return ``(raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass)`` for ``G_QLIMIT2``."""
-    raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards) if bypass_guards else set()
+    raw_bypass_tokens = set(BaseGuard._extract_raw_bypass_tokens(bypass_guards)) if bypass_guards else set()
     has_group = bool(raw_bypass_tokens & _QLIMIT2_GROUP_TOKENS)
     has_parabolic = bool(raw_bypass_tokens & _QLIMIT2_PARABOLIC_TOKENS)
     has_weibull = bool(raw_bypass_tokens & _QLIMIT2_WEIBULL_TOKENS)

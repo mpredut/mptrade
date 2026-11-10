@@ -65,103 +65,6 @@ def set_pos_anchor(
         pos[pct_key] = pct_delta(cur_px, a_f)
 
 
-def _parse_venue_cycle_state_impl(
-    st_data: Dict[str, Any],
-    symbol: str,
-    prices_and_trends: Dict[str, Any],
-    *,
-    avg_decimals: int = 6,
-    fallback_prices: Optional[Dict[str, float]] = None,
-    include_meta: bool = False,
-) -> Dict[str, Any]:
-    """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
-    st_data = st_data if isinstance(st_data, dict) else {}
-    qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
-    raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-    cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
-    last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
-    explicit_avg = safe_pos_float(
-        st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price"),
-        default=None,
-    )
-    dca_buys_i = int(safe_nonneg_float(st_data.get("dca_buys"), default=0) or 0)
-    single_lot_px = (
-        safe_pos_float(st_data.get("entry_price") or last_buy_px, default=None)
-        if dca_buys_i == 0
-        else None
-    )
-    if qty > 1e-12 and cost > 0:
-        if explicit_avg is not None and abs(qty * explicit_avg - cost) <= 0.015:
-            avg_cost = round(explicit_avg, avg_decimals)
-        elif single_lot_px is not None and abs(qty * single_lot_px - cost) <= 0.015:
-            avg_cost = round(single_lot_px, avg_decimals)
-        else:
-            avg_cost = round(cost / qty, avg_decimals)
-    elif qty > 1e-12:
-        avg_cost = round_opt_px(
-            explicit_avg or st_data.get("entry_price"),
-            avg_decimals,
-        )
-    else:
-        avg_cost = None
-    px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
-    dd_pct = pct_delta(px_f, avg_cost) if avg_cost and px_f > 0 else None
-    cyc_entry: Dict[str, Any] = {
-        "qty": round(qty, 6),
-        "cost_usd": round(cost, 2),
-        "avg_cost_px": avg_cost,
-        "entry_price": round_opt_px(st_data.get("entry_price"), avg_decimals),
-        "last_buy_price": round_opt_px(last_buy_px, avg_decimals),
-        "last_sell_price": round_opt_px(st_data.get("last_sell_price"), avg_decimals),
-        "last_exit_kind": st_data.get("last_exit_kind"),
-        "dca_buys": st_data.get("dca_buys"),
-        "dd_pct": dd_pct,
-        "pnl_vs_avg_pct": dd_pct,
-    }
-    pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
-    if pos_peak is not None and qty > 1e-12:
-        if px_f > 0 and pos_peak > 0:
-            eff_peak = max(pos_peak, px_f)
-            cyc_entry["pos_peak"] = round_opt_px(eff_peak, avg_decimals)
-            cyc_entry["dd_from_peak_pct"] = pct_delta(px_f, eff_peak)
-        else:
-            cyc_entry["pos_peak"] = pos_peak
-    raw_realized = next(
-        (st_data[rk] for rk in ("realized_net", "realized_net_usd", "realized_pnl", "realized_pnl_usd", "realized_gross") if st_data.get(rk) is not None),
-        None,
-    )
-    if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
-        cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    entry_px_f = safe_pos_float(cyc_entry.get("entry_price"), default=0.0) or 0.0
-    ref_entry_px = safe_pos_float(avg_cost or entry_px_f or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
-    if realized_pnl < 0.0 and entry_px_f > ref_entry_px:
-        ref_entry_px = entry_px_f
-    last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
-    if (
-        str(cyc_entry.get("last_exit_kind") or "").strip().upper() in ("", "TP")
-        and ref_entry_px > 0.0
-        and last_sell_px_f > 0.0
-        and last_sell_px_f < ref_entry_px * 0.995
-        and realized_pnl < 0.0
-    ):
-        cyc_entry["last_exit_kind"] = "REDUCE"
-    tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
-    if isinstance(tp_sold, list) and tp_sold:
-        cyc_entry["tp_sold_levels"] = tp_sold
-    if isinstance((raw_orders := st_data.get("orders")), list) and raw_orders:
-        close_orders = [
-            {"side": o.get("side"), "px": o.get("px") or o.get("price") or o.get("limit"), "sz": o.get("sz") or o.get("qty"), "role": o.get("role") or o.get("kind")}
-            for o in raw_orders if isinstance(o, dict)
-        ]
-        if close_orders:
-            cyc_entry["resting_orders"] = close_orders
-    if include_meta:
-        for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
-            if (ts_ms := normalize_timestamp_ms(st_data.get(src_k), default=None)) is not None:
-                cyc_entry[dst_k] = ts_ms
-    return cyc_entry
-
-
 def _extract_symbol_recent_fills_impl(
     orders_list: list,
     *,
@@ -1483,14 +1386,92 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
         include_meta: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        return _parse_venue_cycle_state_impl(
-            st_data,
-            symbol,
-            prices_and_trends or {},
-            avg_decimals=avg_decimals,
-            fallback_prices=fallback_prices,
-            include_meta=include_meta,
+        prices_and_trends = prices_and_trends or {}
+        st_data = st_data if isinstance(st_data, dict) else {}
+        qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
+        raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
+        cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
+        last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
+        explicit_avg = safe_pos_float(
+            st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price"),
+            default=None,
         )
+        dca_buys_i = int(safe_nonneg_float(st_data.get("dca_buys"), default=0) or 0)
+        single_lot_px = (
+            safe_pos_float(st_data.get("entry_price") or last_buy_px, default=None)
+            if dca_buys_i == 0
+            else None
+        )
+        if qty > 1e-12 and cost > 0:
+            if explicit_avg is not None and abs(qty * explicit_avg - cost) <= 0.015:
+                avg_cost = round(explicit_avg, avg_decimals)
+            elif single_lot_px is not None and abs(qty * single_lot_px - cost) <= 0.015:
+                avg_cost = round(single_lot_px, avg_decimals)
+            else:
+                avg_cost = round(cost / qty, avg_decimals)
+        elif qty > 1e-12:
+            avg_cost = round_opt_px(
+                explicit_avg or st_data.get("entry_price"),
+                avg_decimals,
+            )
+        else:
+            avg_cost = None
+        px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
+        dd_pct = pct_delta(px_f, avg_cost) if avg_cost and px_f > 0 else None
+        cyc_entry: Dict[str, Any] = {
+            "qty": round(qty, 6),
+            "cost_usd": round(cost, 2),
+            "avg_cost_px": avg_cost,
+            "entry_price": round_opt_px(st_data.get("entry_price"), avg_decimals),
+            "last_buy_price": round_opt_px(last_buy_px, avg_decimals),
+            "last_sell_price": round_opt_px(st_data.get("last_sell_price"), avg_decimals),
+            "last_exit_kind": st_data.get("last_exit_kind"),
+            "dca_buys": st_data.get("dca_buys"),
+            "dd_pct": dd_pct,
+            "pnl_vs_avg_pct": dd_pct,
+        }
+        pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
+        if pos_peak is not None and qty > 1e-12:
+            if px_f > 0 and pos_peak > 0:
+                eff_peak = max(pos_peak, px_f)
+                cyc_entry["pos_peak"] = round_opt_px(eff_peak, avg_decimals)
+                cyc_entry["dd_from_peak_pct"] = pct_delta(px_f, eff_peak)
+            else:
+                cyc_entry["pos_peak"] = pos_peak
+        raw_realized = next(
+            (st_data[rk] for rk in ("realized_net", "realized_net_usd", "realized_pnl", "realized_pnl_usd", "realized_gross") if st_data.get(rk) is not None),
+            None,
+        )
+        if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
+            cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
+        entry_px_f = safe_pos_float(cyc_entry.get("entry_price"), default=0.0) or 0.0
+        ref_entry_px = safe_pos_float(avg_cost or entry_px_f or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+        if realized_pnl < 0.0 and entry_px_f > ref_entry_px:
+            ref_entry_px = entry_px_f
+        last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
+        if (
+            str(cyc_entry.get("last_exit_kind") or "").strip().upper() in ("", "TP")
+            and ref_entry_px > 0.0
+            and last_sell_px_f > 0.0
+            and last_sell_px_f < ref_entry_px * 0.995
+            and realized_pnl < 0.0
+        ):
+            cyc_entry["last_exit_kind"] = "REDUCE"
+        tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
+        if isinstance(tp_sold, list) and tp_sold:
+            cyc_entry["tp_sold_levels"] = tp_sold
+        if isinstance((raw_orders := st_data.get("orders")), list) and raw_orders:
+            close_orders = [
+                {"side": o.get("side"), "px": o.get("px") or o.get("price") or o.get("limit"), "sz": o.get("sz") or o.get("qty"), "role": o.get("role") or o.get("kind")}
+                for o in raw_orders if isinstance(o, dict)
+            ]
+            if close_orders:
+                cyc_entry["resting_orders"] = close_orders
+        if include_meta:
+            for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
+                if (ts_ms := normalize_timestamp_ms(st_data.get(src_k), default=None)) is not None:
+                    cyc_entry[dst_k] = ts_ms
+        return cyc_entry
 
 
 class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):

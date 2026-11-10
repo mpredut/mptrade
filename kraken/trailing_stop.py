@@ -406,9 +406,9 @@ class KrakenTrailing(TrailingAdapterBase):
             CHECK_SECONDS,
             [
                 "=== TRAILING STOP KRAKEN started — " + mode + " ===",
-                "    protejez: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items())
+                "    protecting: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items())
                 + "  (FREE balance only, not the bot position)",
-                f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (recul +{REBUY_BOUNCE_PCT}% de la minim)",
+                f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (bounce +{REBUY_BOUNCE_PCT}% from trough)",
             ],
         )
 
