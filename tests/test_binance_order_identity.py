@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 
-from binance_api import order_id_context as rc
+from providers import order_id_context as rc
 from binance_api import bapi as api
 import monitororder
 
@@ -192,12 +192,12 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
     def test_instrument_apply_outbox_lineage_prefix_preserves_bot_lineage(self):
         from instrument import Instrument
         target = {}
-        with patch("binance_api.order_id_context.get_process_name", return_value="TA"):
+        with patch("providers.order_id_context.get_process_name", return_value="TA"):
             Instrument._apply_outbox_lineage_prefix(target, {})
         self.assertEqual(target.get("prefix"), "TA_OR")
 
         runner_target = {}
-        with patch("binance_api.order_id_context.get_process_name", return_value="PYTEST"):
+        with patch("providers.order_id_context.get_process_name", return_value="PYTEST"):
             Instrument._apply_outbox_lineage_prefix(runner_target, {})
         self.assertNotIn("prefix", runner_target)
 
@@ -388,7 +388,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
 def test_order_id_context_boolean_clientorderid_case_insensitive_allowed_owners_iter42_s1():
     """[ITER42 #1] order_id_context: boolean clientOrderId & case-insensitive allowed_owners."""
-    from binance_api import order_id_context
+    from providers import order_id_context
     # 1. order_id_context: boolean clientOrderId & case-insensitive allowed_owners
     assert order_id_context.resolve_order_owner(True) == "unspecified"
     assert order_id_context.resolve_order_owner(False) == "unspecified"
@@ -399,7 +399,7 @@ def test_order_id_context_boolean_clientorderid_case_insensitive_allowed_owners_
 
 def test__base36_handles_none_bool_inf_nan_and_invalid_iter67_s3():
     """[ITER67 #3] _base36 handles None, bool, inf, nan, and invalid strings safely."""
-    from binance_api.order_id_context import _base36
+    from providers.order_id_context import _base36
     # 3. _base36 handles None, bool, inf, nan, and invalid strings safely
     assert _base36(None) == "0"
     assert _base36(True) == "0"
@@ -413,7 +413,7 @@ def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
     from binance_api import bapi
     from binance_api import bapi_allorders
     from binance_api import bapi_trades
-    from binance_api import order_id_context as rc
+    from providers import order_id_context as rc
     # 4. bapi / bapi_allorders / bapi_trades / order_id_context
     assert bapi.update_price(True) is None
     assert bapi.get_current_price(True) is None
@@ -425,7 +425,7 @@ def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
 
 def test_resolve_order_owner_matches_uppercase_mixed_case_manual_prefixes_iter124_s3():
     """[ITER124 #3] resolve_order_owner matches uppercase/mixed-case manual prefixes."""
-    from binance_api import order_id_context as rc
+    from providers import order_id_context as rc
     # 3. resolve_order_owner matches uppercase/mixed-case manual prefixes
     assert rc.resolve_order_owner("WEB_abc123") == "manual"
     assert rc.resolve_order_owner("IOS_xyz987") == "manual"
@@ -433,7 +433,7 @@ def test_resolve_order_owner_matches_uppercase_mixed_case_manual_prefixes_iter12
 
 def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_treats_iter159_s1():
     """[ITER159 #1] order_id_context: _base36 parses float strings ('36.0') and resolve_order_owner treats 'None'/'null'/'0' as unspecified."""
-    from binance_api import order_id_context as rc
+    from providers import order_id_context as rc
     # 1. order_id_context: _base36 parses float strings ("36.0") and resolve_order_owner treats "None"/"null"/"0" as unspecified
     assert rc._base36("36.0") == "10"
     assert rc._base36(True) == "0"

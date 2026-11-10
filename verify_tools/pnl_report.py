@@ -11,7 +11,7 @@ if ROOT not in sys.path:
 from botcore import safe_float, safe_pos_float
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
-from binance_api.order_id_context import resolve_order_owner
+from providers.order_id_context import resolve_order_owner
 from instrument_registry import symbols_for
 from providers.base import (
     extract_order_price,

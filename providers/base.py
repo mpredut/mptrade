@@ -1,20 +1,25 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
+import asyncio
 import contextlib
 import importlib
 import inspect
+import logging
 import math
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from botcore import (
     _parse_bool_flag,
+    async_interruptible_sleep,
     bool_env,
     clamp_price_to_bbo_mid,
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
+    load_env_file_defaults,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -121,10 +126,14 @@ class MarketDataProvider(ABC):
     _CLIENT_CLASS_NAME: Optional[str] = None
     _DEFAULT_QUOTE_ASSET: Optional[str] = None
     _DEFAULT_INTENT_EXECUTOR_TAG: str = "[auto_cryptotrade_executor]"
+    _ASSET_SCOPE: str = "crypto"
+    _RUNTIME_ENV_RELPATH: Optional[tuple[str, ...]] = None
     _USES_SSOT_MARKET_CACHE: bool = True
     _REQUIRES_CACHE_PERMIT: bool = False
     _DEFERS_SMART_CANCELLATION: bool = False
     _SUPPORTS_BUSINESS_MINIMUM: bool = False
+    _SUPPORTS_ORDER_VALIDITY: bool = False
+    _DEFERS_PREFLIGHT_QUANTITY: bool = False
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
         "binance": ("providers.binance_provider", "BinanceProvider"),
         "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
@@ -204,6 +213,26 @@ class MarketDataProvider(ABC):
         prov_cls = cls.resolve_venue_provider_class(venue)
         tag = getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None) if prov_cls is not None else None
         return str(tag) if isinstance(tag, str) and tag.strip() else cls._DEFAULT_INTENT_EXECUTOR_TAG
+
+    @classmethod
+    def is_equity_venue(cls, venue: Any) -> bool:
+        """Return True when ``venue`` resolves to an equities-scoped provider (e.g. Trading 212)."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        return str(getattr(prov_cls, "_ASSET_SCOPE", "crypto") or "crypto").strip().lower() == "equities"
+
+    @classmethod
+    def load_venue_env_defaults(cls, workspace_dir: Any, *, asset_scope: str = "all") -> None:
+        """Load per-venue runtime/config env defaults matching ``asset_scope`` ('all', 'crypto', 'equities')."""
+        if not workspace_dir:
+            return
+        scope = str(asset_scope or "all").strip().lower()
+        ws_path = Path(workspace_dir)
+        for venue_key in cls._VENUE_PROVIDER_SPECS:
+            prov_cls = cls.resolve_venue_provider_class(venue_key)
+            rel = getattr(prov_cls, "_RUNTIME_ENV_RELPATH", None) if prov_cls is not None else None
+            prov_scope = str(getattr(prov_cls, "_ASSET_SCOPE", "crypto") or "crypto").strip().lower()
+            if rel and (scope == "all" or scope == prov_scope):
+                load_env_file_defaults(str(ws_path.joinpath(*rel)))
 
     @classmethod
     def resolve_provider_cached_fee_and_limits(
@@ -631,6 +660,14 @@ class MarketDataProvider(ABC):
         """Return whether this provider enforces venue business minimum rules."""
         return bool(MarketDataProvider._resolve_provider_attr(self, "_SUPPORTS_BUSINESS_MINIMUM", False))
 
+    def supports_order_validity(self) -> bool:
+        """Return whether this provider accepts explicit ``order_validity`` instrument parameters."""
+        return bool(MarketDataProvider._resolve_provider_attr(self, "_SUPPORTS_ORDER_VALIDITY", False))
+
+    def defers_preflight_quantity(self) -> bool:
+        """Return whether pre-sizing ``preflight_order`` omits raw quantity until ``quantity_decision``."""
+        return bool(MarketDataProvider._resolve_provider_attr(self, "_DEFERS_PREFLIGHT_QUANTITY", False))
+
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""
         return None
@@ -1018,4 +1055,239 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
         return True
     except Exception:  # noqa: BLE001 -- retries are best-effort; the timeout still guards
         return False
+
+
+# ── Shared Venue-Agnostic WebSocket Stream Primitives ─────────────────────────
+
+WS_RECV_TIMEOUT = 0.5
+WS_STOP_TIMEOUT = 8.0
+WS_PING_INTERVAL = 20
+WS_PING_TIMEOUT = 10
+WS_CLOSE_TIMEOUT = 0.5
+WS_RETRY_INITIAL = 1.0
+WS_RETRY_MAX = 60.0
+
+_ws_logger = logging.getLogger("providers.ws")
+
+
+class AsyncReconnectStreamBase:
+    """Shared thread, asyncio loop, reconnect backoff, and clean shutdown for venue WebSocket streams."""
+
+    STABLE_SESSION_SEC = 60.0
+    _default_thread_name = "BinanceWS"
+
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_task: Optional[asyncio.Task] = None
+        self._retry_delay = WS_RETRY_INITIAL
+        self._start_lock = threading.Lock()
+
+    def start(self, name: Optional[str] = None, daemon: bool = True) -> "AsyncReconnectStreamBase":
+        eff_name = (
+            str(name).strip()
+            if isinstance(name, str) and name.strip()
+            else self._default_thread_name
+        )
+        eff_daemon = _parse_bool_flag(daemon, default=True)
+        with self._start_lock:
+            if self.is_running:
+                _ws_logger.info("%s already running", eff_name)
+                return self
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._thread_worker, name=eff_name, daemon=eff_daemon
+            )
+            self._thread.start()
+        _ws_logger.info("%s started", eff_name)
+        return self
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
+        self.request_stop()
+        loop = getattr(self, "_loop", None)
+        task = getattr(self, "_main_task", None)
+        if loop is not None and task is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
+        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
+        if (
+            self._thread
+            and self._thread.is_alive()
+            and self._thread is not threading.current_thread()
+        ):
+            self._thread.join(timeout=eff_timeout)
+            if self._thread.is_alive():
+                _ws_logger.warning("WS thread did not stop within %.1fs", eff_timeout)
+                return False
+        return True
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _thread_worker(self) -> None:
+        try:
+            asyncio.run(self._main())
+        except (asyncio.CancelledError, Exception) as exc:
+            if not isinstance(exc, asyncio.CancelledError) and not self._is_shutdown_error(exc):
+                _ws_logger.exception("WS thread crashed: %s", exc)
+        finally:
+            self._loop = None
+            self._main_task = None
+            _ws_logger.info("WS thread exited")
+
+    async def _main(self) -> None:
+        await self._run_with_reconnect(self._connect_and_run)
+
+    async def _run_with_reconnect(self, body: Callable) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._main_task = asyncio.current_task()
+        except RuntimeError:
+            pass
+        while not self._stop_event.is_set():
+            t0 = time.time()
+            exc = None
+            try:
+                await body()
+            except asyncio.CancelledError:
+                if self._stop_event.is_set():
+                    break
+                raise
+            except Exception as err:
+                exc = err
+                if self._is_shutdown_error(err):
+                    break
+                _ws_logger.warning("WS error: %s", err)
+            self._on_session_end(exc)
+            if self._stop_event.is_set():
+                break
+            if time.time() - t0 >= self.STABLE_SESSION_SEC:
+                self._retry_delay = WS_RETRY_INITIAL
+            _ws_logger.info("WS reconnect in %.1fs", self._retry_delay)
+            await self._interruptible_sleep(self._retry_delay)
+            self._retry_delay = min(self._retry_delay * 2, WS_RETRY_MAX)
+        _ws_logger.info("WS reconnect loop stopped")
+
+    def _on_session_end(self, exc: Optional[Exception]) -> None:
+        pass
+
+    async def _connect_and_run(self) -> None:
+        raise NotImplementedError
+
+    async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
+        await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)
+
+    @staticmethod
+    def _is_shutdown_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return isinstance(exc, RuntimeError) and (
+            "cannot schedule new futures after shutdown" in msg
+            or "event loop is closed" in msg
+        )
+
+
+class PublicPriceStreamBase(AsyncReconnectStreamBase):
+    """Shared base class for public WebSocket price streams across all venues (Binance, Hyperliquid, Kraken)."""
+
+    _MAX_STREAMS: Optional[int] = None
+
+    @staticmethod
+    def _norm_ws_symbol(symbol: object) -> Optional[str]:
+        if not isinstance(symbol, str):
+            return None
+        s = symbol.strip().upper().replace("/", "")
+        return s or None
+
+    def __init__(self, symbols: Optional[list] = None):
+        super().__init__()
+        self._prices: Dict[str, float] = {}
+        self._subscribed: Set[str] = set()
+        self._lock = threading.Lock()
+        self._subscribers = []
+        if isinstance(symbols, str):
+            raw_syms = [symbols]
+        elif symbols is None or isinstance(symbols, (bool, bytes, dict)):
+            raw_syms = []
+        else:
+            try:
+                raw_syms = list(symbols)
+            except TypeError:
+                raw_syms = []
+        norm_list = []
+        for s in raw_syms:
+            norm_s = self._norm_ws_symbol(s)
+            if norm_s and norm_s not in self._subscribed:
+                self._subscribed.add(norm_s)
+                norm_list.append(norm_s)
+        self._symbols = tuple(norm_list)
+
+    def subscribe(self, subscriber) -> None:
+        with self._lock:
+            if subscriber not in self._subscribers:
+                self._subscribers.append(subscriber)
+
+    def unsubscribe(self, subscriber) -> None:
+        with self._lock:
+            if subscriber in self._subscribers:
+                self._subscribers.remove(subscriber)
+
+    def _notify_subscribers(self, symbol: str, items) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for sub in subscribers:
+            try:
+                sub.on_items_update(symbol, items)
+            except Exception as exc:
+                _ws_logger.error("Subscriber notify error: %s", exc)
+
+    def add_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s in self._subscribed:
+                _ws_logger.debug("[%s] Already subscribed", norm_s)
+                return False
+            if self._MAX_STREAMS is not None and len(self._subscribed) >= self._MAX_STREAMS:
+                _ws_logger.warning("Max streams (%d) reached, cannot add %s", self._MAX_STREAMS, norm_s)
+                return False
+            self._subscribed.add(norm_s)
+            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
+        return True
+
+    def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s not in self._subscribed:
+                return False
+            self._subscribed.discard(norm_s)
+            self._symbols = tuple(s for s in self._symbols if s != norm_s)
+            self._prices.pop(norm_s, None)
+        return True
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return None
+        with self._lock:
+            return self._prices.get(norm_s)
+
+    def get_all_prices(self) -> Dict[str, float]:
+        with self._lock:
+            return dict(self._prices)
+
+    @property
+    def running_symbols(self) -> Set[str]:
+        with self._lock:
+            return set(self._subscribed)
+
 

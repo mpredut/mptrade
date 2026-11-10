@@ -10,7 +10,7 @@ from binance.exceptions import BinanceAPIException
 from notify_engine import alertnotifiers as alert
 import instrument_registry as sym
 from binance_api import bapi as api
-from binance_api import order_id_context as rc
+from providers import order_id_context as rc
 from providers.base import (
     extract_order_id,
     extract_order_price,

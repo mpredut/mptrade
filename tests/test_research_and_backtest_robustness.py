@@ -2832,7 +2832,8 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
 
     # 9. bapi_ws_normalize, order_id_context, and bapi_ws stop self-join hardening
     import threading
-    from binance_api import bapi_ws, bapi_ws_normalize, order_id_context
+    from binance_api import bapi_ws, bapi_ws_normalize
+    from providers import order_id_context
 
     assert bapi_ws_normalize.parse_order_execution_report(
         {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 12.5, "i": 1, "L": "50000", "l": "0.1"}

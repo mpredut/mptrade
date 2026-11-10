@@ -350,7 +350,7 @@ def resolve_caller_module(
             return m_low
     if (client_order_id and not isinstance(client_order_id, bool)) or (prefix and not isinstance(prefix, bool)):
         try:
-            from binance_api.order_id_context import resolve_order_owner
+            from providers.order_id_context import resolve_order_owner
             for candidate in (client_order_id, prefix):
                 if not candidate or isinstance(candidate, bool):
                     continue
@@ -360,7 +360,7 @@ def resolve_caller_module(
         except Exception:
             pass
     try:
-        from binance_api.order_id_context import get_process_name
+        from providers.order_id_context import get_process_name
         return _PROCESS_TO_MODULE.get(get_process_name())
     except Exception:
         return None

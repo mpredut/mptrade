@@ -148,6 +148,8 @@ class HyperliquidProvider(MarketDataProvider):
 
     _CLIENT_CLASS_NAME = "HLClient"
     _DEFAULT_QUOTE_ASSET = "USDC"
+    _DEFERS_PREFLIGHT_QUANTITY = True
+    _RUNTIME_ENV_RELPATH = ("hyperliquid", "config.env")
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
     PUBLIC_WS_URL = "wss://api.hyperliquid.xyz/ws"

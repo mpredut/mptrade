@@ -805,7 +805,7 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
 
 def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_workspace):
     import json
-    from binance_api.order_id_context import REPRICEABLE_BOTS, resolve_order_owner
+    from providers.order_id_context import REPRICEABLE_BOTS, resolve_order_owner
     from orchestratorOS.agy.topics import condense_decision
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
     from providers.execution_audit import normalize_trading_decisions, summarize_recent_ai_intents
@@ -1183,7 +1183,7 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
 
 def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_intent_cids():
     """AI orders are never repriced by monitororder, and bot/repriced orders are never adopted as AI orders."""
-    from binance_api import order_id_context as rc
+    from providers import order_id_context as rc
     from providers.execution_audit import (
         _resolve_intent_execution_details,
         cancel_existing_ai_open_orders,

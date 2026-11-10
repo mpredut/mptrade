@@ -27,12 +27,11 @@ from instrument_registry import (
     resolve_instrument_spec,
     select_instruments,
 )
-from providers.base import extract_order_id
+from providers.base import MarketDataProvider, extract_order_id
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
     is_us_rth_open,
-    load_env_file_defaults,
     normalize_side,
     obj_attr,
     resolve_patched_attr,
@@ -231,7 +230,7 @@ class Instrument:
             target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
         elif "prefix" not in target_kwargs:
             try:
-                from binance_api.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
+                from providers.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
                 pname = get_process_name()
                 if pname and pname in KNOWN_BOT_PROCESS_CODES:
                     target_kwargs["prefix"] = f"{pname}_OR"
@@ -464,7 +463,12 @@ class Instrument:
             return None, _refuse_early("execution_disabled")
         if inst_live is not None and "live_enabled" not in kwargs:
             kwargs["live_enabled"] = provider_execution_enabled
-        if ctx.v_norm == "t212" and "order_validity" not in kwargs:
+        supports_validity = getattr(
+            self._provider,
+            "supports_order_validity",
+            lambda: MarketDataProvider.supports_order_validity(self._provider),
+        )()
+        if supports_validity and "order_validity" not in kwargs:
             inst_validity = self.param("execution", "order_validity")
             if isinstance(inst_validity, str) and inst_validity.strip():
                 kwargs["order_validity"] = inst_validity.strip().upper()
@@ -536,7 +540,12 @@ class Instrument:
             if ctx.guarded_order_state is None:
                 raise SubmissionRefused("account_cache_not_fresh")
         if not ctx.requires_permit and callable(ctx.preflight_order):
-            preflight_qty = None if ctx.v_norm in {"kraken", "hyperliquid"} else ctx.qty
+            defers_qty = getattr(
+                self._provider,
+                "defers_preflight_quantity",
+                lambda: MarketDataProvider.defers_preflight_quantity(self._provider),
+            )()
+            preflight_qty = None if defers_qty else ctx.qty
             ctx.preflight_order(
                 self.symbol,
                 ctx.side_u,
@@ -1452,13 +1461,9 @@ def load_tradable_instruments(
     is_rth_open_fn=None,
     api=None,
 ) -> dict:
-    """Discover enabled specs across Binance, Kraken, Hyperliquid, and Trading212 and bind them to providers."""
+    """Discover enabled specs across configured venues and bind them to providers."""
     ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
-    scope = (asset_scope or "all").strip().lower()
-    if scope in ("all", "crypto"):
-        load_env_file_defaults(os.path.join(ws_dir, "hyperliquid", "config.env"))
-    if scope in ("all", "equities"):
-        load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
+    MarketDataProvider.load_venue_env_defaults(ws_dir, asset_scope=asset_scope or "all")
     ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
     base_specs: dict | None = None
     if os.path.exists(ws_inst_conf) or not only_workspace_conf:

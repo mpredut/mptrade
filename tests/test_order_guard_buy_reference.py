@@ -783,7 +783,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_resolve_caller_module_preserves_lineage_across_outbox_and_repricer(self):
         """Ensure outbox retries (TA_OR) and monitororder repricing (MO_TA_) retain module identity."""
-        from binance_api import order_id_context as oic
+        from providers import order_id_context as oic
 
         with mock.patch.object(oic, "get_process_name", return_value="ORW"):
             self.assertIsNone(order_guard.resolve_caller_module(None))

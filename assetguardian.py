@@ -7,7 +7,7 @@ import threading
 import time
 
 from binance_api import bapi as api
-from binance_api.order_id_context import resolve_order_owner
+from providers.order_id_context import resolve_order_owner
 from providers.base import (
     extract_order_id,
     extract_order_price,

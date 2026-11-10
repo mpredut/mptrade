@@ -20,7 +20,7 @@ import instrument_registry as sym
 
 from .bapi_client import client
 from . import bapi_ws
-from . import order_id_context as rc
+from providers import order_id_context as rc
 from providers.order_ohlc_utils import (
     extract_order_id,
     extract_order_price,

@@ -1,3 +1,4 @@
+"""Cross-venue clientOrderId process-lineage, bot-prefix, and order-owner SSOT."""
 import itertools
 import os
 import re
@@ -5,10 +6,9 @@ import sys
 import threading
 import time
 
-
 from typing import Optional, Union, Iterable
 from botcore import clean_order_id, safe_nonneg_int, sanitize_identifier
-from providers.order_ohlc_utils import MANUAL_CID_PREFIXES
+from .order_ohlc_utils import MANUAL_CID_PREFIXES
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -115,7 +115,7 @@ def create_client_order_id(process_name=None):
 
 
 def resolve_order_owner(client_order_id: Optional[str]) -> str:
-    """Resolve the responsible bot or origin from a Binance clientOrderId.
+    """Resolve the responsible bot or origin from a venue clientOrderId.
 
     Single Source of Truth (SSOT) across all fleet bots and reporting tools.
     Returns:

@@ -160,6 +160,7 @@ def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 
 class KrakenProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
+    _DEFERS_PREFLIGHT_QUANTITY = True
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"

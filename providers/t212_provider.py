@@ -92,6 +92,9 @@ def _order_ticker(raw: dict) -> str:
 class T212Provider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "T212Client"
     _DEFAULT_INTENT_EXECUTOR_TAG = "[auto_sharetrade_executor]"
+    _ASSET_SCOPE = "equities"
+    _RUNTIME_ENV_RELPATH = ("212trading", "runtime.env")
+    _SUPPORTS_ORDER_VALIDITY = True
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)

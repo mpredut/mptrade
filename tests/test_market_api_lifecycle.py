@@ -462,6 +462,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "kraken_provider.py",
         "t212_provider.py",
         "replay_provider.py",
+        "order_id_context.py",
         "order_ohlc_utils.py",
         "quantity.py",
         "strategy_executor.py",
@@ -482,6 +483,38 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         assert not (mod_roots & forbidden_upward_layers), (
             f"Upward DAG violation in providers/{mod_file}: {mod_roots & forbidden_upward_layers}"
         )
+
+    gateway_modules = (
+        "instrument.py",
+        "order_guard.py",
+        "order_lifecycle.py",
+        "order_retry.py",
+        "order_retry_worker.py",
+    )
+    forbidden_venue_sdks = {"binance_api", "binance", "kraken", "hyperliquid", "212trading", "hl_client"}
+    for gw_file in gateway_modules:
+        gw_src = (root / gw_file).read_text(encoding="utf-8")
+        gw_tree = ast.parse(gw_src, filename=gw_file)
+        gw_roots = set()
+        for node in ast.walk(gw_tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    gw_roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                gw_roots.add(node.module.split(".")[0])
+        assert not (gw_roots & forbidden_venue_sdks), (
+            f"Venue SDK leak in Order Gateway module {gw_file}: {gw_roots & forbidden_venue_sdks}"
+        )
+
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+
+    assert T212Provider().supports_order_validity() is True
+    assert KrakenProvider().supports_order_validity() is False
+    assert KrakenProvider().defers_preflight_quantity() is True
+    assert HyperliquidProvider().defers_preflight_quantity() is True
+    assert T212Provider().defers_preflight_quantity() is False
 
     assert OhlcClosedPriceSeries is market_regime.ClosedPriceSeries
     assert BaseClosedPriceSeries is OhlcClosedPriceSeries

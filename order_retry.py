@@ -789,7 +789,7 @@ def infer_record_owner(rec: dict) -> str:
     )
     if cid:
         try:
-            from binance_api import order_id_context as rc
+            from providers import order_id_context as rc
             owner = rc.resolve_order_owner(cid)
         except Exception:
             owner = "unspecified"
@@ -798,7 +798,7 @@ def infer_record_owner(rec: dict) -> str:
     iid = _clean_str(rec.get("intent_id"))
     if iid:
         try:
-            from binance_api import order_id_context as rc
+            from providers import order_id_context as rc
             iid_owner = rc.resolve_order_owner(iid)
             if _is_concrete_owner(iid_owner):
                 return iid_owner
@@ -859,7 +859,7 @@ def resolve_tracked_order_owner(
     owner = "unspecified"
     if cid_str:
         try:
-            from binance_api import order_id_context as rc
+            from providers import order_id_context as rc
             owner = rc.resolve_order_owner(cid_str)
         except Exception:
             owner = "unspecified"

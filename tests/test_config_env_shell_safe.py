@@ -477,7 +477,7 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
 
 
 def test_order_id_context_and_pricefetcher_hardening(tmp_path):
-    from binance_api import order_id_context as oic
+    from providers import order_id_context as oic
     from market_monitor import pricefetcher as pf
 
     assert oic._base36(-5) == "0"

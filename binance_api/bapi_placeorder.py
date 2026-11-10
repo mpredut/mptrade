@@ -20,7 +20,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
+from providers import order_id_context as rc
 
 from . import bapi as api
 from .bapi import _normalize_side
