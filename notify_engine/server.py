@@ -65,12 +65,9 @@ _GUARD_MARKERS = (
 _PRIMARY_ERROR_MARKERS = (
     "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED",
 )
-_OPS_MARKERS = (
-    *_PRIMARY_ERROR_MARKERS, "MANUAL", "GONE", "ESUAT", "ERORI", "DISPARUT",
-)
-_EXPLICIT_ERROR_MARKERS = (
-    *_PRIMARY_ERROR_MARKERS, "CRASH", "ESUAT", "ERORI", "DISPARUT", "GONE",
-)
+_BILINGUAL_ERROR_MARKERS = ("ESUAT", "ERORI", "DISPARUT", "GONE")
+_OPS_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "MANUAL")
+_EXPLICIT_ERROR_MARKERS = (*_PRIMARY_ERROR_MARKERS, *_BILINGUAL_ERROR_MARKERS, "CRASH")
 _SERVER_MARKERS = (
     "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
     "SERVER STATUS", "SERVER DOWN", "DEADMAN",
@@ -169,15 +166,15 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     for cand in (normalize_venue_name(src_str), normalize_venue_name(bot_str)):
         if cand in _PROVIDER_LABELS:
             return _PROVIDER_LABELS[cand]
-    s = src_str.lower()
-    b = bot_str.lower()
-    if "kraken" in s or "kraken" in b or "xstock" in b:
+    s, b = src_str.lower(), bot_str.lower()
+    combined = f"{s} {b}"
+    if "kraken" in combined or "xstock" in b:
         return "Kraken"
-    if "hyperliquid" in s or "hl" in s or "hyperliquid" in b or b.startswith("hl"):
+    if "hyperliquid" in combined or "hl" in s or b.startswith("hl"):
         return "Hyperliquid"
-    if "t212" in s or "trading212" in s or "t212" in b:
+    if "t212" in combined or "trading212" in s:
         return "T212"
-    if "binance" in s or "binance" in b or b in ("rtrade", "tradeall", "monitortrades", "order_retry", "monitororder") or "monitororder" in s:
+    if "binance" in combined or "monitororder" in combined or b in ("rtrade", "tradeall", "monitortrades", "order_retry"):
         return "Binance"
     if "-" in bot_str:
         return bot_str.split("-")[0]

@@ -473,6 +473,10 @@ class Strategy(BaseSpotMixin):
             return False
         return self.sign * (price - ord_px) > 0.003 * ord_px
 
+    @staticmethod
+    def _fmt_px(px: float) -> str:
+        return format_price_log(px) if 0.0 < px < 1.0 else f"{px:.2f}"
+
     def _apply_open(self, fq, fp, amount, kind, real_qty=None, real_avg=None, *, count_dca=None):
         is_dca = (self.s["qty"] > 1e-9) if count_dca is None else bool(count_dca)
         self.s["last_open_price"] = fp
@@ -489,8 +493,7 @@ class Strategy(BaseSpotMixin):
         avg = self._avg()
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:
-            fp_s = format_price_log(fp) if 0.0 < fp < 1.0 else f"{fp:.2f}"
-            avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
+            fp_s, avg_s = self._fmt_px(fp), self._fmt_px(avg)
             log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
                 f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
             notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp_s} [hl_bot]",
@@ -508,8 +511,7 @@ class Strategy(BaseSpotMixin):
             self.s["wins"] = self.s.get("wins", 0) + 1
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:
-            px_s = format_price_log(price) if 0.0 < price < 1.0 else f"{price:.2f}"
-            avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
+            px_s, avg_s = self._fmt_px(price), self._fmt_px(avg)
             log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
             notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f} [hl_bot]",
                    body=f"a{avg_s} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",

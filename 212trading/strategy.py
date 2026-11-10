@@ -1134,6 +1134,22 @@ class Strategy(BaseSpotMixin):
                 )
         return True
 
+    def _alert_stop_loss_once(self, price: float, loss_pct: float, exit_reason: str = "") -> None:
+        if self.s.get("sl_alerted"):
+            return
+        self.s["sl_alerted"] = True
+        reason_sfx = f" ({exit_reason})" if exit_reason else ""
+        label_pfx = "MHDSL " if exit_reason else ""
+        log(
+            f"  🛑 [STRAT] {label_pfx}STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}%{reason_sfx} "
+            "— SELLING EVERYTHING (cutting the loss)"
+        )
+        notify(
+            title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+            body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}%{reason_sfx} — selling everything",
+            source="T212", price=price, desktop=self.desktop,
+        )
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1170,14 +1186,7 @@ class Strategy(BaseSpotMixin):
                     self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
                 if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until", sell_qty=sell_qty):
                     self.s["sl_pending_exit"] = None
-                    if not self.s.get("sl_alerted"):
-                        self.s["sl_alerted"] = True
-                        log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({exit_reason}) — SELLING EVERYTHING (cutting the loss)")
-                        notify(
-                            title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                            body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({exit_reason}) — selling everything",
-                            source="T212", price=price, desktop=self.desktop,
-                        )
+                    self._alert_stop_loss_once(price, loss_pct, exit_reason)
                 elif self.s.get("sl_fail_until"):
                     self.s["sl_pending_exit"] = None
                 return True
@@ -1193,14 +1202,7 @@ class Strategy(BaseSpotMixin):
         if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
-            if not self.s.get("sl_alerted"):
-                self.s["sl_alerted"] = True
-                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
-                notify(
-                    title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                    body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — selling everything",
-                    source="T212", price=price, desktop=self.desktop,
-                )
+            self._alert_stop_loss_once(price, loss_pct)
         return True
 
     def _handle_sl_rebuy(self, price: float) -> None:

@@ -289,17 +289,26 @@ _AUTO_TOPIC_TAG_RE = re.compile(r"\[auto_[a-z0-9_]+")
 _BRACKET_GROUP_RE = re.compile(r"\[([^\[\]]+)\]")
 _BODY_VENUE_RE = re.compile(r"\bVenue:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
 _LEADING_BRACKET_RE = re.compile(r"^\[[^\]]+\]\s*")
+_SIMILARITY_SUBS = (
+    (re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*"), ""),
+    (re.compile(r"^\d{2}:\d{2}:\d{2}\s*"), ""),
+    (re.compile(r"0x[0-9a-fA-F]+"), "<HEX>"),
+    (re.compile(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps)?"), "<N>"),
+    (re.compile(r"\s+"), " "),
+)
+_IDENTITY_NAME_SUBS = (
+    (re.compile(r"[+-]?\d+(?:\.\d+)?%"), "<PCT>"),
+    (re.compile(r"@\s*~?\$?\d+(?:\.\d+)?"), "@ <PX>"),
+    (re.compile(r"\(\d+(?:\.\d+)?s\)"), "(<DUR>)"),
+)
 
 
 def _normalize_text_for_similarity(text: str) -> str:
     """Normalize volatile numbers, timestamps, PIDs, hex IDs, prices, and percentages."""
     s = _LAST_LOGS_RE.sub("", str(text or "")).strip()
-    s = re.sub(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*", "", s)
-    s = re.sub(r"^\d{2}:\d{2}:\d{2}\s*", "", s)
-    s = re.sub(r"0x[0-9a-fA-F]+", "<HEX>", s)
-    s = re.sub(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps)?", "<N>", s)
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    return s
+    for pat, repl in _SIMILARITY_SUBS:
+        s = pat.sub(repl, s)
+    return s.strip().lower()
 
 
 _PRIO_RANK = {"urgent": 3, "high": 2, "default": 1, "low": 0}
@@ -616,9 +625,9 @@ def _alert_identity(alert: Any) -> dict:
         if _is_guard_alert([alert]) or _is_error_or_ops_alert([alert]):
             # For guard, error, ops, watchdog, and mailer alerts, dedup on stable
             # identity fields excluding volatile body timestamps/reasoning/log lines.
-            norm_name = re.sub(r"[+-]?\d+(?:\.\d+)?%", "<PCT>", name)
-            norm_name = re.sub(r"@\s*~?\$?\d+(?:\.\d+)?", "@ <PX>", norm_name)
-            norm_name = re.sub(r"\(\d+(?:\.\d+)?s\)", "(<DUR>)", norm_name)
+            norm_name = name
+            for pat, repl in _IDENTITY_NAME_SUBS:
+                norm_name = pat.sub(repl, norm_name)
             identity = {
                 "type": alert.get("type"),
                 "symbol": alert.get("symbol"),
