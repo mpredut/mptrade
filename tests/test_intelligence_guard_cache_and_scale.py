@@ -6666,8 +6666,8 @@ def test_iteration39_binance_filters_strategy_executor_market_api_nan_bool_safet
 def test_iteration40_kraken_hyperliquid_rollback_outcomes_nan_bool_safety(monkeypatch, tmp_path):
     from types import SimpleNamespace
     import pytest
-    import order_outcomes_log as ool
-    import order_rollback as orb
+    import order_lifecycle as ool
+    import order_lifecycle as orb
     from providers.strategy_executor import ProviderError
     from providers.kraken_provider import KrakenProvider
     from providers.hyperliquid_provider import HyperliquidProvider
@@ -8959,7 +8959,7 @@ def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety
     from types import SimpleNamespace
     import cacheintegrity
     from rtrade_pair_store import RTradePairStore
-    from order_rollback import extract_order_restore_params
+    from order_lifecycle import extract_order_restore_params
     from shadow_signals import KalmanStateTracker
     import utils
 
@@ -11023,7 +11023,7 @@ def test_iteration106_quantity_execution_audit_rollback_and_bapi_placeorder_safe
     from types import SimpleNamespace
     from providers import quantity as pq
     from providers import execution_audit as ea
-    import order_rollback as orb
+    import order_lifecycle as orb
     from binance_api import bapi_placeorder as bpo
 
     # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
@@ -11067,7 +11067,7 @@ def test_iteration107_binance_cache_health_market_regime_and_order_outcomes_safe
     from types import SimpleNamespace
     import binance_cache_health as bch
     import market_regime as mr
-    import order_outcomes_log as ool
+    import order_lifecycle as ool
 
     # 1. binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
     err = bch.AccountCacheNotReady(True)
@@ -12204,7 +12204,7 @@ def test_iteration120_binance_pagination_ws_trade_and_orchestrator_gateway_safet
 def test_iteration121_reentry_state_sync_market_regime_and_rollback_safety():
     """Iteration 121: Verify PositionExitManager.evaluate_reentry external trough/peak sync and lowercase STOP kind, MarketRegimeService._age_limit/resolve_with_evidence validation, order_rollback NaN level and non-list cancelled_orders, and shadow_runtime.require_shadow_interval float/non-positive rejection."""
     import pytest
-    import order_rollback as orb
+    import order_lifecycle as orb
     import botcore as sr
     from market_regime import MarketRegimeHorizon, MarketRegimeService
     from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentrySnapshot
@@ -13522,7 +13522,7 @@ def test_iteration139_research_backtest_ranges_intelligence_chop_and_sweep_safet
 def test_iteration140_t212_strategy_state_boolean_and_order_rollback_hygiene():
     """Verify 212trading.strategy._sanitize_t212_state boolean/order/level/intent hygiene and order_rollback level/kind normalization."""
     import importlib
-    from order_rollback import extract_order_restore_params
+    from order_lifecycle import extract_order_restore_params
 
     strat_mod = importlib.import_module("212trading.strategy")
     _sanitize_t212_state = strat_mod._sanitize_t212_state
@@ -14202,7 +14202,7 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     import json
     import pytest
     import active_intents as ai
-    import accepted_order_persistence as aop
+    import order_lifecycle as aop
     from rtrade_pair_store import RTradePairStore
 
     # 1. active_intents: clean_order_id, _parse_bool_flag, _first, _intent_row, _walk
@@ -14349,7 +14349,7 @@ def test_iteration151_order_outcomes_log_binance_cache_health_and_providers_hygi
     """Verify order_outcomes_log, binance_cache_health, execution_audit, market_api, and replay_provider hygiene."""
     import glob
     import pytest
-    import order_outcomes_log as ool
+    import order_lifecycle as ool
     import binance_cache_health as bch
     from providers.execution_audit import _parse_bool_flag as ea_parse_bool
     from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
@@ -15210,7 +15210,7 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
 
 def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, monkeypatch):
     import botcore as bc
-    import order_outcomes_log as olog
+    import order_lifecycle as olog
     import binance_cache_health as bch
 
     # 2. botcore: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
@@ -15267,7 +15267,7 @@ def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, m
 
 def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tmp_path, monkeypatch):
     import state_io
-    import accepted_order_persistence as aop
+    import order_lifecycle as aop
     import market_regime as mr
 
     # 1. state_io: load_json_state with fail_closed="false", truncate_file_bytes with "4.0", atomic_gzip_file with remove_source="false"
@@ -15580,7 +15580,7 @@ def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
 def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygiene(tmp_path, monkeypatch):
     from decimal import Decimal
     import botcore as cfg_mod
-    import order_outcomes_log as ool
+    import order_lifecycle as ool
     from providers import base as hr
     from providers import quantity as bf
     from providers import quantity as qty_mod

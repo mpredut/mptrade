@@ -449,7 +449,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
         from providers.base import extract_timestamp_s
         from providers.order_ohlc_utils import extract_remaining_qty
-        from order_rollback import extract_order_restore_params
+        from order_lifecycle import extract_order_restore_params
         import monitortrades as mt_mod
 
         self.assertEqual(extract_timestamp_s({"timestamp": 1_700_000_000_000}), 1_700_000_000.0)

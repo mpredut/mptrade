@@ -1021,10 +1021,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
 
 
 
-def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
-    return normalize_trend_direction(raw_dir, default=None, preserve_bull_bear=True)
-
-
 _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 
@@ -1096,7 +1092,7 @@ def resolve_effective_trend_duration(
 
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     return _scan_cached_long_trend(
-        symbol, lambda e: _normalize_trend_dir_token(e.get("direction"))
+        symbol, lambda e: normalize_trend_direction(e.get("direction"), default=None, preserve_bull_bear=True)
     )
 
 
@@ -1104,13 +1100,13 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
     """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
     if regime_context is not None:
         rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")
-        norm_rt = _normalize_trend_dir_token(rt)
+        norm_rt = normalize_trend_direction(rt, default=None, preserve_bull_bear=True)
         if norm_rt is not None:
             return norm_rt
     return _resolve_long_trend_field(
         symbol,
         "direction",
-        _normalize_trend_dir_token,
+        lambda v: normalize_trend_direction(v, default=None, preserve_bull_bear=True),
         _read_cached_trend_direction,
         default=None,
     )

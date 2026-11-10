@@ -20,7 +20,6 @@ from botcore import (
     load_root_config,
     normalize_side,
     obj_attr,
-    register_module_aliases,
     required_float_env,
     required_int_env,
     safe_float,
@@ -776,12 +775,4 @@ def restore_cancelled_orders(
         except Exception as exc:
             log_fn(f"  ! [ATOMIC_ROLLBACK] failed restoring order: {exc}")
     return restored
-
-
-register_module_aliases(
-    __name__,
-    "accepted_order_persistence",
-    "order_outcomes_log",
-    "order_rollback",
-)
 

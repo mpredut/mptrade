@@ -5046,21 +5046,18 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
 
     # 1. _MergedModuleAliasFinder resolves merged Package E module aliases even after sys.modules.pop
     for alias in (
-        "accepted_order_persistence",
-        "order_outcomes_log",
-        "order_rollback",
         "keys.apikeys",
-        "hyperliquid.price_analysis",
-        "price_analysis",
+        "config",
+        "symbols",
     ):
         sys.modules.pop(alias, None)
-    aop = importlib.import_module("accepted_order_persistence")
-    assert hasattr(aop, "complete_accepted_claim")
-    assert aop.__name__ == "order_lifecycle"
+    cfg_mod = importlib.import_module("config")
+    assert hasattr(cfg_mod, "require_shadow_interval")
+    assert cfg_mod.__name__ == "botcore"
 
-    ool = importlib.import_module("order_outcomes_log")
-    assert hasattr(ool, "log_order_outcome")
-    assert ool.__name__ == "order_lifecycle"
+    sym_mod = importlib.import_module("symbols")
+    assert hasattr(sym_mod, "load_registry")
+    assert sym_mod.__name__ == "instrument_registry"
 
     # 2. credentials reload refreshes keys.apikeys shim while preserving keys._is_credentials_shim
     sys.modules.pop("keys.apikeys", None)
@@ -5069,11 +5066,10 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     assert sys.modules.get("keys.apikeys") is credentials
     assert getattr(sys.modules.get("keys"), "_is_credentials_shim", False) is True
 
-    # 3. hyperliquid.signals reload updates price_analysis alias and get_signal honors monkeypatched signals.signal
+    # 3. hyperliquid.signals reload updates hyperliquid.signals alias and get_signal honors monkeypatched signals.signal
     import hyperliquid.signals as hl_sig
     hl_sig_reloaded = importlib.reload(hl_sig)
-    assert sys.modules.get("price_analysis") is hl_sig_reloaded
-    assert sys.modules.get("hyperliquid.price_analysis") is hl_sig_reloaded
+    assert sys.modules.get("hyperliquid.signals") is hl_sig_reloaded
     monkeypatch.setenv("SIGNAL_SOURCE", "analysis")
     monkeypatch.setattr(hl_sig_reloaded, "signal", lambda client, coin: {"trend": "down", "confidence": 0.9, "source": "patched_after_reload"})
     sig_res = hl_sig_reloaded.get_signal(object(), "ETH")

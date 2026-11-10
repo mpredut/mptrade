@@ -1192,7 +1192,7 @@ def test_batch43_offline_runners_hardening(tmp_path):
 def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeypatch):
     import enum
     import subprocess
-    import order_outcomes_log as ool
+    import order_lifecycle as ool
     import verify_tools.ownership_inventory as oi
 
     # 1. ownership_inventory._parse_bool_flag strips inline comments & accepts "1.0"

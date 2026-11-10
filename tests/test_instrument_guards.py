@@ -28,7 +28,7 @@ from providers.strategy_executor import (
 )
 from instrument import Instrument
 import order_guard
-import order_outcomes_log as outcomes_log
+import order_lifecycle as outcomes_log
 
 SYMBOL = "ZZZFAKEUSD"
 

@@ -5676,7 +5676,7 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
 
 
 def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_and_monitors_hardening(tmp_path, monkeypatch):
-    import accepted_order_persistence as aop
+    import order_lifecycle as aop
     import active_intents as ai
     import assetguardian as ag
     import monitororder as mo

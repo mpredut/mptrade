@@ -1743,12 +1743,7 @@ def register_module_aliases(module_name: str, *aliases: str) -> None:
 
 
 _MERGED_MODULE_TARGETS = {
-    "accepted_order_persistence": "order_lifecycle",
-    "order_outcomes_log": "order_lifecycle",
-    "order_rollback": "order_lifecycle",
     "hyperliquid.signals": "hyperliquid.signals",
-    "hyperliquid.price_analysis": "hyperliquid.signals",
-    "price_analysis": "hyperliquid.signals",
     "keys": "credentials",
     "keys.apikeys": "credentials",
     "config": "botcore",
@@ -1771,12 +1766,11 @@ class _MergedModuleAliasLoader:
             hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
             is_reload = module is sys.modules.get("signals") and getattr(module, "__mptrade_exec_done__", False)
             target_mod = load_local_module(hl_dir, "signals", reload=is_reload)
-            for alias_k in ("signals", "hyperliquid.signals", "price_analysis", "hyperliquid.price_analysis"):
+            for alias_k in ("signals", "hyperliquid.signals"):
                 sys.modules[alias_k] = target_mod
             hl_pkg = sys.modules.get("hyperliquid")
             if hl_pkg is not None:
                 setattr(hl_pkg, "signals", target_mod)
-                setattr(hl_pkg, "price_analysis", target_mod)
             sys.modules[self.alias_name] = target_mod
             return
 

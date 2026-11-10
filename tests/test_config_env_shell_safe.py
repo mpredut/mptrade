@@ -134,7 +134,7 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
 
 def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     import pytest
-    import order_outcomes_log
+    import order_lifecycle as order_outcomes_log
     import botcore as shadow_runtime
     import shadow_signals
 
@@ -438,7 +438,7 @@ def test_triggers_guards_and_collectors_hardening(tmp_path):
 
 
 def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
-    import accepted_order_persistence as aop
+    import order_lifecycle as aop
     from orchestratorOS.agy.summary_store import _drop_summaries, parse_db_timestamp, resolve_project_ids, write_annotation_title, read_annotation_title
     from orchestratorOS.agy.topics import condense_decision, load_topic_registry, save_topic_registry
 
@@ -682,7 +682,7 @@ def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatc
     mt._log_sl_hold_state("BTCUSDC", snap, ExitDecision(ExitAction.HOLD, False, "bounce", metadata={"disaster_floor": None}), 0.05)
 
     # 4. order_rollback.extract_order_restore_params and restore_cancelled_orders reject NaN/bool/inf
-    import order_rollback as orb
+    import order_lifecycle as orb
 
     nan_params = orb.extract_order_restore_params({"side": "SELL", "price": float("nan"), "qty": 2.0, "amount": True})
     assert nan_params["price"] == 0.0

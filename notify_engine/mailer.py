@@ -51,14 +51,9 @@ def last_error_is_auth_failure() -> bool:
     return _LAST_ERROR_IS_AUTH
 
 
-def load_env() -> None:
-    """Load config.env (versioned) and .env (secrets) without overriding the process env."""
-    load_env_stack()
-
-
 def email_mirrored_topics() -> set[str]:
     if not os.environ.get("NTFY_TOPIC_ERROR"):
-        load_env()
+        load_env_stack()
     topics = {
         os.environ.get(f"NTFY_TOPIC_{cat}", "").split("#", 1)[0].strip()
         for cat in EMAIL_MIRRORED_CATEGORIES
@@ -77,7 +72,7 @@ def is_email_mirrored(topic: str | None) -> bool:
 
 def _config() -> dict | None:
     if not os.environ.get("SMTP_USERNAME") or not os.environ.get("ALERT_TO_EMAIL"):
-        load_env()
+        load_env_stack()
     cfg = {
         "server": os.environ.get("SMTP_SERVER", "").split("#", 1)[0].strip() or "smtp.gmail.com",
         "port": os.environ.get("SMTP_PORT", "").split("#", 1)[0].strip() or "587",
@@ -164,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("subject")
     parser.add_argument("body", nargs="?", default="")
     args = parser.parse_args(argv)
-    load_env()
+    load_env_stack()
     if args.topic is not None and not is_email_mirrored(args.topic):
         return 0
     return 0 if send_email(args.subject, args.body) else 1
