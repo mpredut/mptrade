@@ -4159,7 +4159,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         ),
         encoding="utf-8",
     )
-    (cdir_36 / "cache_order.json").write_text(
+    (cdir_36 / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -6674,7 +6674,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
 
     # 3. Bug 112: collect_pretrade_telemetry Recent Venue Fills includes Last BUY Age, Last SELL Age, and Recent BUY/SELL Tranches
     now_ms = int(_time.time() * 1000)
-    (orders_dir / "cache_order.json").write_text(
+    (orders_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -6723,7 +6723,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     assert "Last SELL Age=14.0h" in rvf
     assert "Recent BUY Tranches=[0.01@77350.0, 0.01@77580.0]" in rvf
 
-    (orders_dir / "cache_order.json").write_text(
+    (orders_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {
@@ -6770,7 +6770,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     assert "Open LIFO Lots=[0.01@77350.0]" in rvf_harvested
     assert "Active Cycle Avg BUY=77465.0" in rvf_harvested
 
-    (orders_dir / "cache_order.json").write_text(
+    (orders_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {

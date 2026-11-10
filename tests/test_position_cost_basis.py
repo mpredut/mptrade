@@ -83,7 +83,7 @@ def test_binance_uses_immutable_fills_and_current_durable_versions(binance_histo
     assert api.position_cost_basis("ARBUSDC", 1, 3600, provider_name="binance") == 100
     current.assert_called_once()
     ensure.assert_called_once_with(current.return_value)
-    get_cache.assert_called_once_with("Trade", start_sync=False)
+    get_cache.assert_called_once_with("BinanceTrade", start_sync=False)
     assert api.position_cost_basis("ARBUSDC", 2, 3600, provider_name="binance") is None
 
 
@@ -209,7 +209,7 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
     import cacheManager as cm
     from unittest.mock import MagicMock
 
-    trade_file = str(tmp_path / "cache_trade.jsonl")
+    trade_file = str(tmp_path / "cache_trade_binance.jsonl")
     rest_calls = []
 
     def fake_paginate(_client, symbol, start_time_ms, limit=1000, *, strict=False):

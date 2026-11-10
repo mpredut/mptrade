@@ -1129,10 +1129,10 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         ):
             cm._upsert_order_from_execution_report(trade_event)
             cm._append_trade_from_execution_report(trade_event)
-            bapi_ws_bridge._default_cache_getter("Order")
+            bapi_ws_bridge._default_cache_getter("BinanceOrder")
         self.assertEqual(
             seen_sync_flags,
-            [("Order", False), ("Trade", False), ("Order", False)],
+            [("BinanceOrder", False), ("BinanceTrade", False), ("BinanceOrder", False)],
         )
 
         # _save_jsonl_append keeps _persisted_counts updated after fsync when _write_meta returns False so retry updates .meta without duplicating rows
@@ -1382,17 +1382,17 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         c24_null = cm.Cache24PriceManager(60, ["BTCUSDT"], null_items_file, read_only=True)
         self.assertEqual(c24_null.cache, {})
 
-        # CacheFactory.remove("Trade") resets bapi_trades.cache_trade_manager if it points to the removed instance
-        prev_inst = cm.CacheFactory._instances.get("Trade")
+        # CacheFactory.remove("BinanceTrade") resets bapi_trades.cache_trade_manager if it points to the removed instance
+        prev_inst = cm.CacheFactory._instances.get("BinanceTrade")
         prev_bt_mgr = bapi_trades.cache_trade_manager
         try:
-            cm.CacheFactory._instances["Trade"] = tm
+            cm.CacheFactory._instances["BinanceTrade"] = tm
             bapi_trades.cache_trade_manager = tm
-            cm.CacheFactory.remove("Trade")
+            cm.CacheFactory.remove("BinanceTrade")
             self.assertIsNone(bapi_trades.cache_trade_manager)
         finally:
             if prev_inst is not None:
-                cm.CacheFactory._instances["Trade"] = prev_inst
+                cm.CacheFactory._instances["BinanceTrade"] = prev_inst
             bapi_trades.cache_trade_manager = prev_bt_mgr
 
     def test_audit38_jsonl_non_dict_lines_get_price_validation_and_pricewindow_coercion(self):

@@ -25,11 +25,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
-from cachepaths import CACHE_ORDER_FILENAME, cache_path, get_cachedb_dir
+from cachepaths import CACHE_BINANCE_ORDER_FILENAME, cache_path, get_cachedb_dir
 from state_io import atomic_write_json, durable_replace_file, read_json_dict
 
 CACHE_DIR = get_cachedb_dir()
-ORDER_FILE = cache_path(CACHE_ORDER_FILENAME)
+ORDER_FILE = cache_path(CACHE_BINANCE_ORDER_FILENAME)
 
 BAD_STATUS = {"CANCELED", "EXPIRED", "REJECTED", "NEW"}
 

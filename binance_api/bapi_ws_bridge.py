@@ -164,7 +164,7 @@ def upsert_order_from_execution_report(
     """Normalize and persist an ``executionReport`` fill into the Order cache."""
     return _persist_ws_execution_report(
         event,
-        cache_name="Order",
+        cache_name="BinanceOrder",
         parser=parse_order_execution_report,
         label="order",
         cache_getter=cache_getter,
@@ -179,7 +179,7 @@ def append_trade_from_execution_report(
     """Normalize and persist an ``executionReport`` fill into the Trade cache."""
     return _persist_ws_execution_report(
         event,
-        cache_name="Trade",
+        cache_name="BinanceTrade",
         parser=parse_trade_execution_report,
         label="Trade",
         cache_getter=cache_getter,
@@ -194,8 +194,8 @@ def persist_ws_updated_caches(
     """Flush caches affected by ``event_type`` when persistence is enabled."""
     getter = cache_getter or _default_cache_getter
     if event_type == "executionReport":
-        getter("Order").save_state_to_file_if_enabled()
-        getter("Trade").save_state_to_file_if_enabled()
+        getter("BinanceOrder").save_state_to_file_if_enabled()
+        getter("BinanceTrade").save_state_to_file_if_enabled()
     elif event_type in ("balanceUpdate", "outboundAccountPosition"):
         getter("AssetValue", symbols=["TOTAL"]).save_state_to_file_if_enabled()
 
@@ -258,7 +258,7 @@ def handle_binance_ws_event(
             trade_res = (append_trade_fn or (lambda ev: append_trade_from_execution_report(ev, cache_getter=getter)))(event)
             should_persist = not (order_res is False and trade_res is False)
         else:
-            for cache_name in ("Order", "Trade"):
+            for cache_name in ("BinanceOrder", "BinanceTrade"):
                 getter(cache_name).query_remote_and_update_cache()
             should_persist = True
         if should_persist:

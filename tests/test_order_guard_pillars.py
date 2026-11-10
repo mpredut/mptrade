@@ -1439,7 +1439,7 @@ def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, 
     assert converted["fetchtime"] == {}
 
     # 5. clean_order_cache preserves non-list entries in items when cleaning
-    order_file = tmp_path / "cache_order.json"
+    order_file = tmp_path / "cache_order_binance.json"
     order_file.write_text(
         json.dumps({
             "items": {

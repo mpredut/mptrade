@@ -2112,7 +2112,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             }),
             encoding="utf-8",
         )
-        ord_path = tmp_path / "cache_order.json"
+        ord_path = tmp_path / "cache_order_binance.json"
         ord_path.write_text(
             json.dumps({
                 "items": {

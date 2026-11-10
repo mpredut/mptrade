@@ -43,8 +43,8 @@ def init_cache_trade_manager():
             # cacheManager process may poll Binance and publish cache versions.
             factory = getattr(cm, "CacheFactory", None)
             if hasattr(factory, "register_teardown_hook"):
-                factory.register_teardown_hook("Trade", clear_cache_trade_manager)
-            cache_trade_manager = cm.get_cache_manager("Trade", start_sync=False)
+                factory.register_teardown_hook("BinanceTrade", clear_cache_trade_manager)
+            cache_trade_manager = cm.get_cache_manager("BinanceTrade", start_sync=False)
     return cache_trade_manager
 
 #######

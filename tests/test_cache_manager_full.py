@@ -1362,9 +1362,9 @@ class TestCacheFactory(unittest.TestCase):
             _reset()
             with patch.object(cm.CacheTradeManager, "periodic_sync") as periodic, \
                  patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-                first = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+                first = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
                 periodic.assert_not_called()
-                second = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=True)
+                second = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=True)
                 self.assertIs(first, second)
                 periodic.assert_called_once()
             _reset()
@@ -1425,7 +1425,7 @@ class TestCacheFactory(unittest.TestCase):
                 barrier.wait(timeout=2.0)
                 results.append(
                     cm.CacheFactory.get(
-                        "Order", symbols=["BTC"], start_sync=start_sync
+                        "BinanceOrder", symbols=["BTC"], start_sync=start_sync
                     )
                 )
 
@@ -1455,8 +1455,8 @@ class TestCacheFactory(unittest.TestCase):
                  patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
                  patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
                  patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:
-                trade_mgr = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
-                order_mgr = cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=False)
+                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
+                order_mgr = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=False)
                 price_mgr = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"], start_sync=False)
                 self.assertTrue(trade_mgr.read_only)
                 self.assertTrue(order_mgr.read_only)
@@ -1474,14 +1474,14 @@ class TestCacheFactory(unittest.TestCase):
                  side_effect=[RuntimeError("can't start new thread"), None],
              ) as periodic:
             with self.assertRaises(RuntimeError):
-                cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=True)
-            first = cm.CacheFactory._instances.get("Order")
+                cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=True)
+            first = cm.CacheFactory._instances.get("BinanceOrder")
             self.assertIsNotNone(first)
-            self.assertNotIn("Order", cm.CacheFactory._sync_started)
-            second = cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=True)
+            self.assertNotIn("BinanceOrder", cm.CacheFactory._sync_started)
+            second = cm.CacheFactory.get("BinanceOrder", symbols=["BTC"], start_sync=True)
         self.assertIs(first, second)
         self.assertEqual(periodic.call_count, 2)
-        self.assertIn("Order", cm.CacheFactory._sync_started)
+        self.assertIn("BinanceOrder", cm.CacheFactory._sync_started)
 
     def test_price_factories_return_per_symbol_managers_and_filenames(self):
         cur_mock = MagicMock()
@@ -1503,8 +1503,8 @@ class TestCacheFactory(unittest.TestCase):
 
     def test_factory_returns_expected_manager_classes(self):
         cases = (
-            ("Trade", cm.CacheTradeManager),
-            ("Order", cm.CacheOrderManager),
+            ("BinanceTrade", cm.CacheTradeManager),
+            ("BinanceOrder", cm.CacheOrderManager),
             ("CurrentPrice", cm.CacheCurrentPriceManager),
         )
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]), \
@@ -1517,8 +1517,8 @@ class TestCacheFactory(unittest.TestCase):
 
     def test_get_cache_manager_delegates_to_factory(self):
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-            r1 = cm.get_cache_manager("Trade", symbols=["BTC"], start_sync=False)
-            r2 = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+            r1 = cm.get_cache_manager("BinanceTrade", symbols=["BTC"], start_sync=False)
+            r2 = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
         self.assertIs(r1, r2)
 
     def test_factory_default_symbols_use_ssot_price_tracking(self):
@@ -1591,7 +1591,7 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                  patch.object(cm.CacheTradeManager, "load_state", return_value=None):
                 mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=True)
                 short_mgr = cm.get_short_trend_manager(symbols=["BTC"])
-                trade_mgr = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+                trade_mgr = cm.CacheFactory.get("BinanceTrade", symbols=["BTC"], start_sync=False)
                 try:
                     with patch.object(cm, "_current_price_lock", _ForbidLock()), \
                          patch.object(cm, "_short_trend_lock", _ForbidLock()), \
@@ -1601,12 +1601,12 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                         self.assertIs(mgr.periodic_sync(save_state=False), mgr.thread)
                         self.assertIs(cm.get_short_trend_manager(), short_mgr)
                         self.assertIs(
-                            cm.CacheFactory.get("Trade", start_sync=False),
+                            cm.CacheFactory.get("BinanceTrade", start_sync=False),
                             trade_mgr,
                         )
                 finally:
                     mgr.shutdown()
-                    cm.CacheFactory.remove("Trade")
+                    cm.CacheFactory.remove("BinanceTrade")
                     short_mgr.shutdown()
                     cm._short_trend_instance = previous_short_trend
 

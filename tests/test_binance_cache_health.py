@@ -128,7 +128,7 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
         )
         self.assertFalse(os.path.exists(self.path))
         self.assertFalse(health.record_persisted_version(
-            "Order", "must-not-publish", now_ms=self.NOW_MS + 1))
+            "BinanceOrder", "must-not-publish", now_ms=self.NOW_MS + 1))
 
     def test_dead_writer_takes_precedence_while_initializing(self):
         self._write(self._state(
@@ -179,7 +179,7 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
         self.assertEqual(initial.reason, "account_cache_initializing")
 
         self.assertTrue(health.record_successful_sync(
-            "Order", "order-v2", now_ms=self.NOW_MS + 1_000
+            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 1_000
         ))
         order_only = health.inspect_health(
             path=self.path,
@@ -194,7 +194,7 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
         with patch.object(
                 health, "_now_ms", return_value=self.NOW_MS + 2_500):
             self.assertTrue(health.record_successful_sync(
-                "Trade", "trade-v2", now_ms=self.NOW_MS + 2_000
+                "BinanceTrade", "trade-v2", now_ms=self.NOW_MS + 2_000
             ))
         with open(self.path, encoding="utf-8") as handle:
             state = json.load(handle)
@@ -223,11 +223,11 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
     def test_version_only_publication_preserves_rest_sync_time(self):
         self._enable_writer()
         health.record_successful_sync(
-            "Order", "order-v1", now_ms=self.NOW_MS + 1_000)
+            "BinanceOrder", "order-v1", now_ms=self.NOW_MS + 1_000)
         health.record_successful_sync(
-            "Trade", "trade-v1", now_ms=self.NOW_MS + 2_000)
+            "BinanceTrade", "trade-v1", now_ms=self.NOW_MS + 2_000)
         self.assertTrue(health.record_persisted_version(
-            "Order", "order-v2", now_ms=self.NOW_MS + 3_000))
+            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 3_000))
 
         status = health.inspect_health(
             path=self.path,
@@ -243,9 +243,9 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
     def test_disable_writer_publishes_stopping_state(self):
         self._enable_writer()
         health.record_successful_sync(
-            "Order", "order-v1", now_ms=self.NOW_MS + 1_000)
+            "BinanceOrder", "order-v1", now_ms=self.NOW_MS + 1_000)
         health.record_successful_sync(
-            "Trade", "trade-v1", now_ms=self.NOW_MS + 2_000)
+            "BinanceTrade", "trade-v1", now_ms=self.NOW_MS + 2_000)
         self.assertTrue(health.disable_writer(now_ms=self.NOW_MS + 3_000))
 
         status = health.inspect_health(
@@ -266,7 +266,7 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
             self.assertFalse(
                 health.disable_writer(now_ms=self.NOW_MS + 1_000))
         self.assertFalse(health.record_persisted_version(
-            "Order", "order-v2", now_ms=self.NOW_MS + 2_000))
+            "BinanceOrder", "order-v2", now_ms=self.NOW_MS + 2_000))
 
 
     def test_writer_process_identity_change_fails_closed(self):
@@ -355,9 +355,9 @@ def test_binance_cache_health_accountcachenotready_record_successful_sync_record
     # 1. binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
     err = bch.AccountCacheNotReady(True)
     assert err.reason == "account_cache_not_fresh"
-    assert bch.record_successful_sync("Order", True) is False
+    assert bch.record_successful_sync("BinanceOrder", True) is False
     assert bch.record_successful_sync(True, "v1") is False
-    assert bch.record_persisted_version("Trade", True) is False
+    assert bch.record_persisted_version("BinanceTrade", True) is False
     assert bch.record_persisted_version(True, "v1") is False
 
 def test_binance_cache_health__clean_version_str_rejects_sentinel_strings_iter151_s2():

@@ -39,11 +39,11 @@ from cacheInterface import (
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     CACHE_ASSET_VALUE_FILENAME,
+    CACHE_BINANCE_ORDER_FILENAME,
+    CACHE_BINANCE_TRADE_FILENAME,
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
-    CACHE_ORDER_FILENAME,
     CACHE_T212_TRADE_FILENAME,
-    CACHE_TRADE_FILENAME,
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
@@ -413,9 +413,9 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     _is_trade_account_cache = True
     append_persist: bool = True
-    DEFAULT_FILENAME = CACHE_TRADE_FILENAME
+    DEFAULT_FILENAME = CACHE_BINANCE_TRADE_FILENAME
     VENUE_FILENAMES: dict[str, str] = {
-        "binance": CACHE_TRADE_FILENAME,
+        "binance": CACHE_BINANCE_TRADE_FILENAME,
         "kraken": CACHE_KRAKEN_TRADE_FILENAME,
         "hyperliquid": CACHE_HYPERLIQUID_TRADE_FILENAME,
         "hl": CACHE_HYPERLIQUID_TRADE_FILENAME,
@@ -435,7 +435,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             return v_norm
         base_f = os.path.basename(str(filename or "")).lower()
         for cand_v, cand_f in (
-            ("binance", CACHE_TRADE_FILENAME),
+            ("binance", CACHE_BINANCE_TRADE_FILENAME),
             ("kraken", CACHE_KRAKEN_TRADE_FILENAME),
             ("hyperliquid", CACHE_HYPERLIQUID_TRADE_FILENAME),
             ("t212", CACHE_T212_TRADE_FILENAME),
@@ -1353,8 +1353,8 @@ class CacheOrderManager(CacheAccountManagerBase):
     """Account order aggregate cache (Level 3) backed by versioned JSON snapshots and schema-v2 manifests."""
 
     _is_order_account_cache = True
-    DEFAULT_FILENAME = CACHE_ORDER_FILENAME
-    VENUE_FILENAMES: dict[str, str] = {"binance": CACHE_ORDER_FILENAME}
+    DEFAULT_FILENAME = CACHE_BINANCE_ORDER_FILENAME
+    VENUE_FILENAMES: dict[str, str] = {"binance": CACHE_BINANCE_ORDER_FILENAME}
 
     @classmethod
     def disk_filename(cls, venue: str = "binance") -> str:
@@ -1940,7 +1940,7 @@ def _venue_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
 
 def _venue_order_and_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
     return (
-        (CacheOrderManager.DEFAULT_FILENAME, "binance"),
+        (CacheOrderManager.disk_filename("binance"), "binance"),
         *_venue_trade_cache_contracts(),
     )
 

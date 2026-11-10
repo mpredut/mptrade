@@ -196,7 +196,7 @@ class BinanceProvider(MarketDataProvider):
             return None
         status = health.require_fresh_account_cache()
         cm.ensure_account_cache_readers(status)
-        manager = cm.get_cache_manager("Trade", start_sync=False)
+        manager = cm.get_cache_manager("BinanceTrade", start_sync=False)
         with manager.lock:
             bucket = None
             for cand in [symbol] + cache_symbol_variants(symbol):

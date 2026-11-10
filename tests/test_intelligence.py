@@ -865,7 +865,7 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
             ]
         }
     }
-    (tmp_path / "cache_order.json").write_text(json.dumps(orders_cache), encoding="utf-8")
+    (tmp_path / "cache_order_binance.json").write_text(json.dumps(orders_cache), encoding="utf-8")
     fills = portfolio_collector.load_symbol_best_recent_fills(
         str(tmp_path),
         "BTCUSDC",
@@ -2079,7 +2079,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
             "depth_1pct_ask_usd": 200000.0,
             "mid_price": 2500.0,
         },
-        str(tmp_path / "cache_order.json"): {
+        str(tmp_path / "cache_order_binance.json"): {
             "items": {
                 "ETHUSDC": [
                     {
@@ -5399,7 +5399,7 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
         lambda p: (
             fake_balances
             if "venue_balances_state.json" in str(p)
-            else (fake_orders if "cache_order.json" in str(p) else {})
+            else (fake_orders if "cache_order_binance.json" in str(p) else {})
         ),
     )
     fleet_res = inspect_prod_fleet.inspect_fleet(json_output=True)
@@ -9069,7 +9069,7 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
     now_ms = 1_794_190_000_000
     old_dust_ts = now_ms - 30 * 86400 * 1000
     fresh_buy_ts = now_ms - 8 * 3600 * 1000
-    (cdir / "orders" / "cache_order.json").write_text(
+    (cdir / "orders" / "cache_order_binance.json").write_text(
         json.dumps(
             {
                 "items": {

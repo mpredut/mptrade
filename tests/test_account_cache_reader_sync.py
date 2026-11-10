@@ -1195,9 +1195,9 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         }
 
         def manager_for(cache_name, *args, **kwargs):
-            if cache_name == "Order":
+            if cache_name == "BinanceOrder":
                 return order_manager
-            if cache_name == "Trade":
+            if cache_name == "BinanceTrade":
                 return trade_manager
             raise AssertionError(f"unexpected cache lookup: {cache_name}")
 
@@ -1241,10 +1241,10 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
         try:
             self.assertTrue(health.record_successful_sync(
-                "Order", "order-v1",
+                "BinanceOrder", "order-v1",
                 now_ms=manager._last_complete_sync_at_ms))
             self.assertTrue(health.record_successful_sync(
-                "Trade", "trade-v1",
+                "BinanceTrade", "trade-v1",
                 now_ms=manager._last_complete_sync_at_ms))
             status = health.inspect_health(
                 path=marker, now_ms=13000, max_age_sec=10,
@@ -1265,8 +1265,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         with patch.object(
                 health, "_pid_started_at_ms", return_value=500):
             health.enable_writer(path=marker, pid=123, now_ms=1000)
-        health.record_successful_sync("Order", "order-v1", now_ms=2000)
-        health.record_successful_sync("Trade", "trade-v1", now_ms=2000)
+        health.record_successful_sync("BinanceOrder", "order-v1", now_ms=2000)
+        health.record_successful_sync("BinanceTrade", "trade-v1", now_ms=2000)
         with open(marker, "rb") as handle:
             marker_before = handle.read()
         try:

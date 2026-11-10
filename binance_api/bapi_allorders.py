@@ -161,7 +161,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # Consumer processes read the cache written by the dedicated cacheManager process.
     # Starting a second polling loop here duplicates API traffic and mixes cache logs
     # into callers such as order_retry_worker.
-    cache_order_manager = cm.get_cache_manager("Order", start_sync=False)
+    cache_order_manager = cm.get_cache_manager("BinanceOrder", start_sync=False)
     return [
         _build_trade_order_record(order.get("orderId"), px, qty, ts_ms, side)
         for order, side, ts_ms, px, qty in filter_recent_cached_orders(

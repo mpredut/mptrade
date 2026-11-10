@@ -243,24 +243,13 @@ class CacheFactory:
     _instances = {}
     _sync_started = set()
     _CONFIG = {}
-    _ALIASES = {
-        "BinanceTrade": "Trade",
-        "BinanceOrder": "Order",
-    }
     _teardown_hooks: dict = {}
-
-    @classmethod
-    def _canonical_name(cls, name: str) -> str:
-        if isinstance(name, str):
-            return cls._ALIASES.get(name, name)
-        return name
 
     @classmethod
     def register_teardown_hook(cls, name: str, callback) -> None:
         """Register an optional teardown callback invoked when ``name`` is removed or shut down."""
         if not isinstance(name, str) or not name.strip() or not callable(callback):
             return
-        name = cls._canonical_name(name)
         with cls._lock:
             hooks = cls._teardown_hooks.setdefault(name, [])
             if callback not in hooks:
@@ -315,7 +304,6 @@ class CacheFactory:
 
     @classmethod
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
-        name = cls._canonical_name(name)
         start_sync = _parse_bool_flag(start_sync, default=True)
         if isinstance(symbols, str):
             symbols = _coerce_symbol_list(symbols)
@@ -439,7 +427,7 @@ class CacheFactory:
     def _clear_bapi_trade_manager_ref(cls, trade_mgr) -> None:
         if trade_mgr is None:
             return
-        for hook in list(cls._teardown_hooks.get("Trade", ())):
+        for hook in list(cls._teardown_hooks.get("BinanceTrade", ())):
             try:
                 hook(trade_mgr)
             except Exception:
@@ -453,7 +441,7 @@ class CacheFactory:
             current_price = (
                 cls._instances.get("CurrentPrice") or _current_price_instance
             )
-            trade_mgr = cls._instances.get("Trade")
+            trade_mgr = cls._instances.get("BinanceTrade")
             short_trend = _short_trend_instance
             managers = []
             seen_ids = set()
@@ -500,7 +488,6 @@ class CacheFactory:
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
         global _current_price_instance, _short_trend_instance
-        name = cls._canonical_name(name)
         with cls._lock:
             if name == "ShortTrend":
                 inst = _short_trend_instance
@@ -533,19 +520,19 @@ class CacheFactory:
                 and stopped
             ):
                 _current_price_instance = None
-            if name == "Trade" and stopped:
+            if name == "BinanceTrade" and stopped:
                 cls._clear_bapi_trade_manager_ref(value)
             return stopped
 
 
 # Register all canonical domain cache implementations in one place.
 CacheFactory.register(
-    "Trade",
+    "BinanceTrade",
     CacheTradeManager,
     sync_ts=lambda: TRADE_SYNC_INTERVAL_SEC,
 )
 CacheFactory.register(
-    "Order",
+    "BinanceOrder",
     CacheOrderManager,
     sync_ts=lambda: ORDER_SYNC_INTERVAL_SEC,
 )
@@ -635,10 +622,10 @@ def ensure_account_cache_readers(status):
         trade_version = status.trade_cache_version
         if not order_version or not trade_version:
             raise ValueError("health marker has no durable cache versions")
-        get_cache_manager("Order", start_sync=False).ensure_persisted_version(
+        get_cache_manager("BinanceOrder", start_sync=False).ensure_persisted_version(
             order_version
         )
-        get_cache_manager("Trade", start_sync=False).ensure_persisted_version(
+        get_cache_manager("BinanceTrade", start_sync=False).ensure_persisted_version(
             trade_version
         )
     except account_cache_health.AccountCacheNotReady:
@@ -711,7 +698,7 @@ def enable_real_ws_event_sync():
     return _ws_bridge
 
 
-CacheFactory.register_teardown_hook("Trade", _bapi_trades.clear_cache_trade_manager)
+CacheFactory.register_teardown_hook("BinanceTrade", _bapi_trades.clear_cache_trade_manager)
 
 
 def _initialize_once():
@@ -721,7 +708,7 @@ def _initialize_once():
 if __name__ == "__main__":
     single_instance("cacheManager")
     account_cache_health.enable_writer()
-    for _account_cache_name in ("Order", "Trade"):
+    for _account_cache_name in ("BinanceOrder", "BinanceTrade"):
         _acc_mgr = get_cache_manager(_account_cache_name, start_sync=False)
         CacheFactory._sync_started.add(_account_cache_name)
         _ver, _sync_ms = (
