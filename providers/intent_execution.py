@@ -234,10 +234,11 @@ def execute_enforce_intent_order(
                 and "insufficient-free-for-stocks-buy" in reason_str.lower()
             ):
                 retried_insufficient_free = True
-                from .quantity import _floor_2dec, round_provider_qty
+                from .quantity import _floor_qty_decimals, round_provider_qty
 
-                scaled_qty = _floor_2dec(
-                    round_provider_qty(getattr(inst, "_provider", None), str(getattr(inst, "symbol", "") or ""), target_qty * 0.94)
+                scaled_qty = _floor_qty_decimals(
+                    round_provider_qty(getattr(inst, "_provider", None), str(getattr(inst, "symbol", "") or ""), target_qty * 0.94),
+                    2,
                 )
                 if 0.0 < scaled_qty < target_qty and (price <= 0.0 or scaled_qty * price >= 1.0):
                     target_qty = scaled_qty
