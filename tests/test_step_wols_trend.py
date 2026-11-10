@@ -371,7 +371,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
         import cacheManager as cm
 
         now_ts = _time.time()
-        mgr = cm.CacheShortTrendManager(["TAOUSDC"], writer=False)
+        mgr = cm.CacheShortTrendManager(["TAOUSDC"])
         mgr._set_mem(
             "TAOUSDC",
             growth_coefficient=0.05,

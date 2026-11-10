@@ -39,6 +39,7 @@ from binance_api.bapi_ws import (
     WS_RECV_TIMEOUT,
 )
 from botcore import (
+    _parse_bool_flag,
     env_value,
     extract_current_price_item,
     is_live_network_backfill_enabled,
@@ -85,10 +86,7 @@ from instrument_registry import (
     is_symbol_market_open,
 )
 import providers.market_api as _market_api
-from providers.base import (
-    _parse_bool_flag,
-    live_price_fetch_context,
-)
+from providers.base import live_price_fetch_context
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
@@ -267,6 +265,7 @@ class CacheSparsePriceManager(CachePriceManagerBase):
         *,
         current_price_getter=None,
         current_price_mgr=None,
+        data_sync_mode: Optional[str] = None,
     ):
         super().__init__(
             sync_ts,
@@ -278,6 +277,7 @@ class CacheSparsePriceManager(CachePriceManagerBase):
             read_only=read_only,
             current_price_getter=current_price_getter,
             current_price_mgr=current_price_mgr,
+            data_sync_mode=data_sync_mode,
         )
 
 
@@ -299,6 +299,7 @@ class Cache24PriceManager(CachePriceManagerBase):
         *,
         current_price_getter=None,
         current_price_mgr=None,
+        data_sync_mode: Optional[str] = None,
     ):
         super().__init__(
             sync_ts,
@@ -309,6 +310,7 @@ class Cache24PriceManager(CachePriceManagerBase):
             read_only=read_only,
             current_price_getter=current_price_getter,
             current_price_mgr=current_price_mgr,
+            data_sync_mode=data_sync_mode,
         )
         self._filter_maps_to_configured_symbols_locked()
 
@@ -567,6 +569,7 @@ class Cache365PriceManager(Cache24PriceManager):
         *,
         current_price_getter=None,
         current_price_mgr=None,
+        data_sync_mode: Optional[str] = None,
     ):
         self._last_long_trim = 0.0
         CachePriceManagerBase.__init__(
@@ -580,6 +583,7 @@ class Cache365PriceManager(Cache24PriceManager):
             read_only=read_only,
             current_price_getter=current_price_getter,
             current_price_mgr=current_price_mgr,
+            data_sync_mode=data_sync_mode,
         )
         self._filter_maps_to_configured_symbols_locked()
 

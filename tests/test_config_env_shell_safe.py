@@ -1236,7 +1236,6 @@ def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
     mgr = ct.CacheShortTrendManager(
         ["BTCUSDC"],
         filename=str(tmp_path / "st.json"),
-        writer=False,
         window_seconds=[True, float("nan"), -5.0],
         sync_ts=float("nan"),
     )

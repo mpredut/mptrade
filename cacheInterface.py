@@ -781,18 +781,13 @@ class CacheManagerInterface(ABC):
             self.cache = {}
             had_invalid_line = False
             backup_path = self._previous_generation_path()
-            if not os.path.exists(self.filename) and os.path.exists(backup_path) and not self.read_only:
+            if not os.path.exists(self.filename) and os.path.exists(backup_path):
                 try:
                     self._restore_previous_generation(backup_path)
                 except OSError:
                     pass
-            read_path = (
-                self.filename
-                if os.path.exists(self.filename)
-                else (backup_path if os.path.exists(backup_path) else None)
-            )
-            if read_path:
-                with open(read_path, "r", encoding="utf-8") as f:
+            if os.path.exists(self.filename):
+                with open(self.filename, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:

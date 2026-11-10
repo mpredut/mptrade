@@ -28,7 +28,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from state_io import generation_lock_path, load_json_state, save_json_state
-from .order_ohlc_utils import extract_order_id
+from .order_ohlc_utils import all_venue_native_client_order_ids, extract_order_id
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
 _NOTIONAL_KEYS: tuple[str, ...] = (
@@ -93,23 +93,7 @@ def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
 
 def venue_native_client_order_ids(client_order_id: Any) -> set[str]:
     """Return the lowercase venue-native forms of one durable client ID (Binance raw, Kraken UUID hex, HL cloid)."""
-    raw = clean_order_id(client_order_id)
-    if not raw:
-        return set()
-    out = {raw.lower()}
-    try:
-        from .kraken_provider import _kraken_client_order_id
-
-        out.add(_kraken_client_order_id(raw).lower())
-    except Exception:
-        pass
-    try:
-        from .hyperliquid_provider import _cloid_for_client_order_id
-
-        out.add(_cloid_for_client_order_id(raw).lower())
-    except Exception:
-        pass
-    return out
+    return all_venue_native_client_order_ids(client_order_id)
 
 
 def intent_venue_client_order_ids(intent: Any) -> set[str]:

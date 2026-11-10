@@ -28,8 +28,14 @@ from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
+    _is_fresh_obs_ts,
     _parse_bool_flag,
+    _ts_ms_to_s,
+    clean_order_id,
+    extract_timestamp_ms,
+    extract_timestamp_s,
     normalize_epoch_sec,
+    normalize_side,
     resolve_now_ms,
     resolve_now_ts,
     safe_float,
@@ -66,16 +72,10 @@ import instrument_registry as sym
 from instrument_registry import casefold_get
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
-    _is_fresh_obs_ts,
-    _ts_ms_to_s,
-    clean_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
-    extract_timestamp_ms,
-    extract_timestamp_s,
-    normalize_side,
 )
 from state_io import (
     atomic_snapshot_file,
@@ -1276,7 +1276,8 @@ class CacheTradeManager(CacheAccountManagerBase):
                     ):
                         raise ValueError("Trade suffix digest differs from manifest")
                     candidate_cache = None
-                    discard_generation_file(self._previous_generation_path())
+                    if not self.read_only:
+                        discard_generation_file(self._previous_generation_path())
                 except (
                     account_cache_health.AccountCacheNotReady,
                     OSError,
@@ -1742,7 +1743,16 @@ class CacheOrderManager(CacheAccountManagerBase):
         v_key = normalize_venue_name(venue, default="binance") or "binance"
         return str(cls.VENUE_FILENAMES.get(v_key, cls.DEFAULT_FILENAME) or "")
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
+    ):
         super().__init__(
             sync_ts,
             symbols,
@@ -1751,6 +1761,7 @@ class CacheOrderManager(CacheAccountManagerBase):
             api_client=api_client,
             append_persist=False,
             read_only=read_only,
+            data_sync_mode=data_sync_mode,
         )
 
     @staticmethod
@@ -2171,7 +2182,16 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             out["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
         return out
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
+    ):
         self._migrated_usdt_on_load = False
         super().__init__(
             sync_ts,
@@ -2181,8 +2201,9 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             api_client=api_client,
             append_persist=True,
             read_only=read_only,
+            data_sync_mode=data_sync_mode,
         )
-        if self._migrated_usdt_on_load:
+        if self._migrated_usdt_on_load and not self.read_only:
             self.compact_jsonl()
 
     def _is_valid_item(self, item) -> bool:

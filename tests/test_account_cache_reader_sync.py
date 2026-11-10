@@ -1914,6 +1914,33 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
                 periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
             cm.CacheFactory.shutdown_all()
 
+        with self.subTest("all_leaf_cache_classes_accept_data_sync_mode_and_readonly_preserves_previous"):
+            tmp_dir = tempfile.mkdtemp()
+            for cls, fname in (
+                (cm.CacheOrderManager, "o.json"),
+                (cm.CacheAssetValueManager, "av.jsonl"),
+                (cm.CacheSparsePriceManager, "sp.jsonl"),
+                (cm.Cache24PriceManager, "p24.json"),
+                (cm.Cache365PriceManager, "p365.jsonl"),
+                (cm.CacheLongTrendManager, "lt.json"),
+            ):
+                p = os.path.join(tmp_dir, fname)
+                inst = cls(9999, ["BTC"], p, data_sync_mode="disk_reader")
+                self.assertEqual(inst.data_sync_mode, "disk_reader")
+                self.assertTrue(inst.read_only)
+                self.assertFalse(inst.save_state)
+
+            sp_path = os.path.join(tmp_dir, "sp_prev.jsonl")
+            with open(sp_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"s": "BTC", "i": [1700000000000, 60000.0]}) + "\n")
+            with open(sp_path + ".previous", "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"s": "BTC", "i": [1699999000000, 59000.0]}) + "\n")
+            reader_sp = cm.CacheSparsePriceManager(
+                9999, ["BTC"], sp_path, data_sync_mode="disk_reader"
+            )
+            self.assertEqual(reader_sp.cache.get("BTC"), [[1700000000000, 60000.0]])
+            self.assertTrue(os.path.exists(sp_path + ".previous"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

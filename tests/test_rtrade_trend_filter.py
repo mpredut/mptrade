@@ -275,7 +275,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
         entries = [[now_ms - (899 - i) * 1000, 300.0 + step * i + (0.05 if i % 2 else -0.05)]
                    for i in range(900)]
         writer = self.cm.CacheShortTrendManager(
-            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), writer=True)
+            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), data_sync_mode="producer")
         writer._cache24_managers = {"TAOUSDC": FakeCache24(entries)}
         published = writer._published_dynamic_windows("TAOUSDC")
         for dyn in published.values():

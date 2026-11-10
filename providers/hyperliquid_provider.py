@@ -44,9 +44,9 @@ from .base import (
     extract_timestamp_ms,
 )
 from .order_ohlc_utils import (
-    _derive_128bit_client_order_id,
     build_open_order_entry,
     build_price_history_points,
+    derive_venue_128bit_client_order_id,
     extract_order_fee,
     extract_order_qty,
     extract_order_side,
@@ -103,18 +103,9 @@ def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
     }
 
 
-_CLOID_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
-
-
 def _cloid_for_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Hyperliquid's exact 128-bit CLOID form."""
-    return _derive_128bit_client_order_id(
-        client_order_id,
-        venue_label="Hyperliquid",
-        domain_prefix=b"assertguardian:hyperliquid:cloid:v1\0",
-        exact_re=_CLOID_RE,
-        hex_prefix="0x",
-    )
+    return derive_venue_128bit_client_order_id("hyperliquid", client_order_id)
 
 
 def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:

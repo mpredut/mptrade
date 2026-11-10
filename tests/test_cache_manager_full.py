@@ -2322,7 +2322,7 @@ def test_cacheshorttrendmanager_slash_sanitization_cross_venue_dynamic_window_re
     # 4. CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution
     st_file = tmp_path / "cache_short_trend.json"
     (tmp_path / "24trend").mkdir(parents=True, exist_ok=True)
-    stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=True)
+    stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), data_sync_mode="producer")
     assert "/" not in os.path.basename(stm._live_trend_file("TAO/USD"))
     c24_path = tmp_path / "cache_24_price_TAOUSDC.json"
     c24_path.write_text(
@@ -2524,7 +2524,7 @@ def test_cacheshorttrendmanager_string_symbols_writer_false_window_seconds_as_sc
     stm = ct.CacheShortTrendManager(
         "BTCUSDC",
         filename=st_file,
-        writer="false",
+        data_sync_mode="disk_reader",
         window_seconds="120.0",
         read_only="true",
     )
@@ -2775,13 +2775,13 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
     """Verify the 3 cache operating models (producer, live_reader, disk_reader) via data_sync_mode."""
     import inspect
 
-    for fn in (cm.get_cache_manager, cm.CacheFactory.get, cm.get_current_price_manager):
+    for fn in (cm.get_cache_manager, cm.CacheFactory.get, cm.get_current_price_manager, cm.get_short_trend_manager):
         params = inspect.signature(fn).parameters
-        assert params["data_sync_mode"].default == cm.CacheManagerInterface.MODE_DISK_READER
+        assert params["data_sync_mode"].default in (cm.CacheManagerInterface.MODE_DISK_READER, None)
         assert "start_sync" not in params
         assert "sync_to_file" not in params
         assert "mode" not in params
-    assert inspect.signature(cm.get_short_trend_manager).parameters["writer"].default is False
+        assert "writer" not in params
 
     cm.CacheFactory.remove("24Price")
     try:
@@ -2868,9 +2868,10 @@ def test_ast_only_producers_enable_cache_sync_or_writer():
     cache_getters = {
         "get_cache_manager",
         "get_current_price_manager",
+        "get_short_trend_manager",
         "attach_default_price_ws_stream",
     }
-    legacy_aliases = {"start_sync", "sync_to_file", "mode"}
+    legacy_aliases = {"start_sync", "sync_to_file", "mode", "writer"}
     violations = []
     for root, dirs, files in os.walk(repo_root):
         dirs[:] = [

@@ -267,20 +267,29 @@ def t212_adjust_partial_sell_qty(
     return req_f, None
 
 
+_VENUE_BUY_SLIPPAGE_FEE_BUFFERS: dict[str, float] = {
+    "hyperliquid": 0.95,
+    "t212": 0.998,
+}
+_VENUE_SELL_BALANCE_CAPS: dict[str, Any] = {
+    "t212": t212_sell_balance_cap,
+}
+
+
 def venue_fee_cap_quantity(
     venue: Any, side: str, price: float, available_qty: float, *, default_buy_buf: float = 1.0
 ) -> float:
-    """Apply venue-specific BUY slippage/fee buffers and T212 SELL dust caps."""
+    """Apply venue-specific BUY slippage/fee buffers and SELL dust caps via declarative venue tables."""
     venue_l = normalize_venue_name(str(venue or ""))
-    if venue_l not in ("hyperliquid", "t212") and default_buy_buf == 1.0:
+    if venue_l not in _VENUE_BUY_SLIPPAGE_FEE_BUFFERS and venue_l not in _VENUE_SELL_BALANCE_CAPS and default_buy_buf == 1.0:
         return available_qty
     avail_f = safe_pos_float(available_qty, default=None)
     if avail_f is None:
         return 0.0
     if normalize_side(side) == "BUY":
-        buf = 0.95 if venue_l == "hyperliquid" else (0.998 if venue_l == "t212" else default_buy_buf)
-        return avail_f * buf
-    return t212_sell_balance_cap(avail_f, price) if venue_l == "t212" else avail_f
+        return avail_f * _VENUE_BUY_SLIPPAGE_FEE_BUFFERS.get(venue_l, default_buy_buf)
+    sell_cap_fn = _VENUE_SELL_BALANCE_CAPS.get(venue_l)
+    return sell_cap_fn(avail_f, price) if sell_cap_fn is not None else avail_f
 
 
 def clamp_notional_to_wallet_balance(

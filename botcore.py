@@ -1355,6 +1355,62 @@ def resolve_now_ms(now_ms: object = None) -> int:
     return parsed if parsed is not None else int(resolve_now_ts() * 1000)
 
 
+_TIMESTAMP_KEYS = (
+    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms",
+)
+
+
+def _first_mapped(mapping: object, keys: tuple[str, ...], parser: object, default: object = None) -> object:
+    """Return the first non-None parsed value from ``mapping`` across ``keys``."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            val = parser(mapping[key])
+            if val is not None:
+                return val
+    return default
+
+
+def _parse_epoch_or_iso_s(value: object) -> float | None:
+    numeric = safe_nonneg_float(value, default=None)
+    return numeric if numeric is not None else normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
+
+
+def normalize_timestamp_ms(value: object, default: int | None = None) -> int | None:
+    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
+    numeric = safe_nonneg_float(value, default=None)
+    if numeric is None:
+        numeric = _parse_epoch_or_iso_s(value)
+    if numeric is None:
+        return default
+    if numeric == 0.0:
+        return 0
+    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
+        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
+    ):
+        return int(round(numeric * 1000.0))
+    return int(round(numeric))
+
+
+def _ts_ms_to_s(ts_ms: float | int) -> float:
+    return normalize_epoch_sec(ts_ms, default=0.0, allow_zero=True) or 0.0
+
+
+def _is_fresh_obs_ts(obs_ts_s: float | None, now_s: float, max_age_s: float) -> bool:
+    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
+
+
+def extract_timestamp_ms(order: object, default: int | None = None) -> int | None:
+    """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
+
+
+def extract_timestamp_s(order: object, default: float | None = None) -> float | None:
+    """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
+
+
 def is_cache_fresh(
     last_ts: object, now_ts: float, ttl_sec: object, *, force_refresh: object = False
 ) -> bool:

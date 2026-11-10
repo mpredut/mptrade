@@ -38,9 +38,9 @@ from .base import (
     extract_order_id,
 )
 from .order_ohlc_utils import (
-    _derive_128bit_client_order_id,
     build_open_order_entry,
     build_price_history_points,
+    derive_venue_128bit_client_order_id,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,
@@ -135,17 +135,9 @@ def _normalize_kraken_fill(raw: dict) -> dict:
     return norm
 
 
-_KRAKEN_CLIENT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
-
-
 def _kraken_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Kraken's 128-bit hexadecimal UUID form."""
-    return _derive_128bit_client_order_id(
-        client_order_id,
-        venue_label="Kraken",
-        domain_prefix=b"assertguardian:kraken:cloid:v1\0",
-        exact_re=_KRAKEN_CLIENT_ID_RE,
-    )
+    return derive_venue_128bit_client_order_id("kraken", client_order_id)
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:

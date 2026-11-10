@@ -329,7 +329,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
     def test_short_trend_dynamic_window_uses_now_val_and_snapshot_fresh_guards_none_ts(self):
         import threading
         import cacheManager as cm
-        mgr = cm.CacheShortTrendManager([SYMBOL], filename="test_short_trend_tmp.json", writer=False)
+        mgr = cm.CacheShortTrendManager([SYMBOL], filename="test_short_trend_tmp.json")
         hist_now = 1_700_000_000.0
         fake_c24 = types.SimpleNamespace(
             lock=threading.Lock(),

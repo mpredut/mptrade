@@ -6,11 +6,19 @@ import time
 from typing import Any, List, Optional
 
 from botcore import (
+    _TIMESTAMP_KEYS,
+    _first_mapped,
+    _is_fresh_obs_ts,
     _parse_bool_flag,
+    _parse_epoch_or_iso_s,
+    _ts_ms_to_s,
     clean_order_id,
     exact_pos_int,
+    extract_timestamp_ms,
+    extract_timestamp_s,
     normalize_epoch_sec,
     normalize_side,
+    normalize_timestamp_ms,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -24,9 +32,6 @@ class ProviderError(Exception):
     """Venue-neutral error raised by strict strategy-execution adapters."""
 
 
-_TIMESTAMP_KEYS = (
-    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms",
-)
 _ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
 _PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
 _QTY_KEYS = (
@@ -46,18 +51,6 @@ _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
 
-def _first_mapped(mapping: Any, keys: tuple[str, ...], parser: Any, default: Any = None) -> Any:
-    """Return the first non-None parsed value from ``mapping`` across ``keys``."""
-    if not isinstance(mapping, dict):
-        return default
-    for key in keys:
-        if key in mapping and mapping[key] is not None:
-            val = parser(mapping[key])
-            if val is not None:
-                return val
-    return default
-
-
 def _pos_abs_float(value: Any) -> Optional[float]:
     val = abs(safe_float(value, default=0.0))
     return val if val > 0.0 else None
@@ -66,45 +59,6 @@ def _pos_abs_float(value: Any) -> Optional[float]:
 def _nonneg_abs_float(value: Any) -> Optional[float]:
     val = safe_float(value, default=None)
     return abs(val) if val is not None else None
-
-
-def _parse_epoch_or_iso_s(value: Any) -> Optional[float]:
-    numeric = safe_nonneg_float(value, default=None)
-    return numeric if numeric is not None else normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
-
-
-def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
-    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
-    numeric = safe_nonneg_float(value, default=None)
-    if numeric is None:
-        numeric = _parse_epoch_or_iso_s(value)
-    if numeric is None:
-        return default
-    if numeric == 0.0:
-        return 0
-    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
-        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
-    ):
-        return int(round(numeric * 1000.0))
-    return int(round(numeric))
-
-
-def _ts_ms_to_s(ts_ms: float | int) -> float:
-    return normalize_epoch_sec(ts_ms, default=0.0, allow_zero=True) or 0.0
-
-
-def _is_fresh_obs_ts(obs_ts_s: Optional[float], now_s: float, max_age_s: float) -> bool:
-    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
-
-
-def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[int]:
-    """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
-    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
-
-
-def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
-    """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
-    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
@@ -632,6 +586,27 @@ def format_strategy_execution_mode(
     return paper_label if _parse_bool_flag(dry_run, True) else real_label
 
 
+_VENUE_128BIT_CLIENT_ID_SPECS: dict[str, tuple[str, bytes, re.Pattern[str], str]] = {
+    "kraken": (
+        "Kraken",
+        b"assertguardian:kraken:cloid:v1\0",
+        re.compile(r"^[0-9a-fA-F]{32}$"),
+        "",
+    ),
+    "hyperliquid": (
+        "Hyperliquid",
+        b"assertguardian:hyperliquid:cloid:v1\0",
+        re.compile(r"^0x[0-9a-fA-F]{32}$"),
+        "0x",
+    ),
+}
+_VENUE_INTENT_TOKEN_FORMATS: dict[str, str] = {
+    "kraken": "{token}",
+    "binance": "SD_{token}",
+    "hyperliquid": "0x{token}",
+}
+
+
 def _derive_128bit_client_order_id(
     client_order_id: Any,
     *,
@@ -653,6 +628,42 @@ def _derive_128bit_client_order_id(
     if exact_re.fullmatch(raw):
         return raw.lower()
     return hex_prefix + hashlib.sha256(domain_prefix + encoded).hexdigest()[:32]
+
+
+def derive_venue_128bit_client_order_id(venue: str, client_order_id: Any) -> str:
+    """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
+    v_key = str(venue or "").strip().lower()
+    spec = _VENUE_128BIT_CLIENT_ID_SPECS.get(v_key)
+    if spec is None:
+        raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
+    venue_label, domain_prefix, exact_re, hex_prefix = spec
+    return _derive_128bit_client_order_id(
+        client_order_id,
+        venue_label=venue_label,
+        domain_prefix=domain_prefix,
+        exact_re=exact_re,
+        hex_prefix=hex_prefix,
+    )
+
+
+def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
+    """Return the lowercase venue-native forms of one durable client ID across all registered venues."""
+    raw = clean_order_id(client_order_id)
+    if not raw:
+        return set()
+    out = {raw.lower()}
+    for venue_key in _VENUE_128BIT_CLIENT_ID_SPECS:
+        try:
+            out.add(derive_venue_128bit_client_order_id(venue_key, raw).lower())
+        except Exception:
+            pass
+    return out
+
+
+def format_venue_intent_client_order_id(venue: str, token: str) -> Optional[str]:
+    """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
+    fmt = _VENUE_INTENT_TOKEN_FORMATS.get(str(venue or "").strip().lower())
+    return fmt.format(token=token) if fmt else None
 
 
 def require_clean_order_id(

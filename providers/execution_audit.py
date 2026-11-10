@@ -160,13 +160,9 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
              hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest())
     v_slug = _slug(venue).lower()
     normalized_venue = normalize_venue_name(v_slug) or v_slug
-    if normalized_venue == "kraken":
-        return token                         # cl_ord_id: UUID without hyphens
-    if normalized_venue == "binance":
-        return f"SD_{token}"                 # newClientOrderId: 35 <= 36 characters
-    if normalized_venue == "hyperliquid":
-        return f"0x{token}"                  # cloid: uint128 hexadecimal
-    return None                              # T212/unknown venue: local correlation
+    from .order_ohlc_utils import format_venue_intent_client_order_id
+
+    return format_venue_intent_client_order_id(normalized_venue, token)
 
 
 class ExecutionAudit:

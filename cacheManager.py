@@ -25,6 +25,7 @@ import time
 from typing import Optional
 
 from botcore import (
+    _parse_bool_flag,
     load_dotenv,
     safe_nonneg_float,
     single_instance,
@@ -80,7 +81,7 @@ from cachetrend import (
 )
 import instrument_registry as sym
 from instrument_registry import tracked_price_instruments
-from providers.base import MarketDataProvider, _parse_bool_flag
+from providers.base import MarketDataProvider
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
@@ -187,16 +188,11 @@ def get_current_price_manager(
 def get_short_trend_manager(
     symbols=None,
     filename=CacheShortTrendManager.DEFAULT_FILENAME,
-    writer=False,
     *,
     data_sync_mode: Optional[str] = None,
 ):
     """Return the CacheShortTrendManager singleton."""
-    resolved_mode = (
-        CacheManagerInterface.MODE_PRODUCER
-        if _parse_bool_flag(writer, default=False)
-        else _resolve_data_sync_mode(data_sync_mode)[0]
-    )
+    resolved_mode = _resolve_data_sync_mode(data_sync_mode)[0]
     is_writer = resolved_mode == CacheManagerInterface.MODE_PRODUCER
     inst = CacheFactory._instances.get("ShortTrend")
     if inst is not None and not is_writer:
@@ -226,7 +222,6 @@ def get_short_trend_manager(
         inst = CacheShortTrendManager(
             _syms,
             filename,
-            writer=is_writer,
             data_sync_mode=resolved_mode,
             cache24_getter=lambda: get_cache_manager("24Price"),
             current_price_getter=get_current_price_manager,
@@ -478,6 +473,7 @@ class CacheFactory:
                             filename=f"{prefix}{s}.{ext}",
                             symbols=[s],
                             read_only=eff_read_only,
+                            data_sync_mode=resolved_mode,
                             **extra_kwargs,
                         )
                         for s in symbols
@@ -488,6 +484,7 @@ class CacheFactory:
                         filename=config["filename"],
                         symbols=symbols,
                         read_only=eff_read_only,
+                        data_sync_mode=resolved_mode,
                         **extra_kwargs,
                     )
 
@@ -746,7 +743,7 @@ if __name__ == "__main__":
         if isinstance(_trend_cache365, dict):
             for _c365 in _trend_cache365.values():
                 _trend_cpm.subscribe_price(_c365)
-        _trend_mgr = get_short_trend_manager(writer=True)
+        _trend_mgr = get_short_trend_manager(data_sync_mode="producer")
         _trend_mgr.start_computation(
             _trend_cache24, _trend_cpm, run_full_eval=True
         )

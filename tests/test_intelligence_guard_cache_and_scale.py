@@ -2176,7 +2176,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             }),
             encoding="utf-8",
         )
-        stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=False)
+        stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file))
         snap = stm.get_snapshot("TAOUSD")
         assert snap is not None
         assert snap["current_price"] == pytest.approx(400.0)

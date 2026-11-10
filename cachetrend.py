@@ -26,10 +26,14 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import pricewindow as pw
 from botcore import (
+    _parse_bool_flag,
     diff_percent,
+    extract_timestamp_s,
     is_live_network_backfill_enabled,
     load_dotenv,
     normalize_epoch_sec,
+    normalize_side,
+    normalize_timestamp_ms,
     required_env,
     required_float_env,
     resolve_patched_attr,
@@ -62,12 +66,6 @@ from state_io import (
     read_json_dict,
     read_recovering_previous,
     save_json_state,
-)
-from providers.base import (
-    _parse_bool_flag,
-    extract_timestamp_s,
-    normalize_side,
-    normalize_timestamp_ms,
 )
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -175,8 +173,25 @@ class CacheLongTrendManager(CacheTrendManagerBase):
     SOURCE_ANALYSIS_FILENAME = PRICE_ANALYSIS_FILENAME
     T_TREND_FILENAME = CACHE_T_TREND_FILENAME
 
-    def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
-        super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client, read_only=read_only)
+    def __init__(
+        self,
+        sync_ts,
+        symbols,
+        filename,
+        api_client=None,
+        read_only=False,
+        *,
+        data_sync_mode: Optional[str] = None,
+    ):
+        super().__init__(
+            sync_ts,
+            symbols,
+            filename,
+            append_mode=False,
+            api_client=api_client,
+            read_only=read_only,
+            data_sync_mode=data_sync_mode,
+        )
 
     def rebuild_fetchtimes(self):
         last_times = defaultdict(int)
@@ -262,7 +277,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self,
         symbols,
         filename=CACHE_SHORT_TREND_FILENAME,
-        writer=False,
         window_seconds=None,
         thresholds=None,
         sync_ts=None,
@@ -273,11 +287,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         current_price_getter=None,
         data_sync_mode: Optional[str] = None,
     ):
-        resolved_mode = (
-            self.MODE_PRODUCER
-            if _parse_bool_flag(writer, default=False)
-            else self.resolve_data_sync_mode(data_sync_mode)[0]
-        )
+        resolved_mode = self.resolve_data_sync_mode(data_sync_mode)[0]
         self.writer = resolved_mode == self.MODE_PRODUCER   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
         if isinstance(window_seconds, (int, float, str)) and not isinstance(window_seconds, bool):
