@@ -37,6 +37,7 @@ from notify_engine.alertnotifiers import (
     _queue_max_items,
     format_ntfy_url,
     is_fake_alert_text,
+    make_bot_event_alert,
     pass_common_gate,
     pop_due_bulk_batch,
     sanitize_single_line,
@@ -60,18 +61,26 @@ _GUARD_MARKERS = (
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
     "REFUSED", "BLOCKED", "SKIPPED",
 )
+_PRIMARY_ERROR_MARKERS = (
+    "ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED",
+)
 _OPS_MARKERS = (
-    "FAILED", "ERROR", "MANUAL", "GONE", "REJECTED", "CRITICAL", "GIVE UP", "✗",
-    "CORRUPTION", "UNRECOGNIZED", "ESUAT", "ERORI", "DISPARUT",
+    *_PRIMARY_ERROR_MARKERS, "MANUAL", "GONE", "ESUAT", "ERORI", "DISPARUT",
 )
 _EXPLICIT_ERROR_MARKERS = (
-    "FAILED", "ERROR", "EXCEPTION", "CRASH", "REJECTED", "CRITICAL", "GIVE UP",
-    "CORRUPTION", "UNRECOGNIZED", "✗", "ESUAT", "ERORI", "DISPARUT", "GONE",
+    *_PRIMARY_ERROR_MARKERS, "CRASH", "ESUAT", "ERORI", "DISPARUT", "GONE",
 )
 _SERVER_MARKERS = (
     "CONFIG RELOAD", "CONFIG CHANGED", "CONFIG PROPOSAL", "PILOT BACKTEST", "BACKTEST:",
     "SERVER STATUS", "SERVER DOWN", "DEADMAN",
 )
+_PRICE_ALERT_SOURCES = ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
+_PROVIDER_LABELS = {
+    "kraken": "Kraken",
+    "hyperliquid": "Hyperliquid",
+    "t212": "T212",
+    "binance": "Binance",
+}
 
 def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
     if isinstance(val, bool) or val is None:
@@ -103,7 +112,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "SERVER"
     if "MACRO" in t or "macro" in s or "geopolitical" in s:
         return "MACRO"
-    if any(m in t_no_owner for m in ("ERROR", "FAILED", "EXCEPTION", "CRITICAL", "GIVE UP", "CORRUPTION", "REJECTED", "✗", "UNRECOGNIZED")) or "watchdog" in s:
+    if any(m in t_no_owner for m in _PRIMARY_ERROR_MARKERS) or "watchdog" in s:
         return "ERROR"
     if any(m in t_no_owner for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
@@ -122,7 +131,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
     if (
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
         or "listed on" in t.lower() or "coin" in t.lower()
-        or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
+        or any(src in s for src in _PRICE_ALERT_SOURCES)
         or any(m in t for m in ("▲", "▼", "📈", "📉", "RISE", "DROP"))
     ):
         return "PRICE"
@@ -136,14 +145,8 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     bot_str = _clean_str(bot_name)
     src_str = _clean_str(source)
     for cand in (normalize_venue_name(src_str), normalize_venue_name(bot_str)):
-        if cand == "kraken":
-            return "Kraken"
-        if cand == "hyperliquid":
-            return "Hyperliquid"
-        if cand == "t212":
-            return "T212"
-        if cand == "binance":
-            return "Binance"
+        if cand in _PROVIDER_LABELS:
+            return _PROVIDER_LABELS[cand]
     s = src_str.lower()
     b = bot_str.lower()
     if "kraken" in s or "kraken" in b or "xstock" in b:
@@ -439,7 +442,7 @@ class NotificationServer:
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
         if not isinstance(alerts, (list, tuple)) or not alerts:
             return False
-        bot_name = "" if isinstance(bot_name, bool) else str(bot_name or "")
+        bot_name = _clean_str(bot_name)
 
         first = alerts[0]
         # Resolve title, body, and source intelligently based on alert payload type
@@ -481,9 +484,9 @@ class NotificationServer:
                     body = AlertNotifier.format_batch_message(alerts)
                 source = obj_attr(first, "source") or ""
 
-        title = "" if isinstance(title, bool) else str(title or "Alert")
-        body = "" if isinstance(body, bool) else str(body or "")
-        source = "" if isinstance(source, bool) else str(source or "")
+        title = _clean_str(title, "Alert")
+        body = _clean_str(body)
+        source = _clean_str(source)
 
         topic = _canonical_topic_key(webhook_url) if isinstance(webhook_url, str) and webhook_url.strip() else None
         if not topic:
@@ -507,7 +510,7 @@ class NotificationServer:
             topic == price_topic
             or cat == "PRICE"
             or bot_name.lower() in ("price_watcher", "price_watcher.py", "price_alert")
-            or str(source).lower() in ("price_alert", "coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
+            or source.lower() in ("price_alert", *_PRICE_ALERT_SOURCES)
             or any(m in cleaned_title for m in ("▲", "▼"))
         )
 
@@ -556,7 +559,7 @@ class NotificationServer:
     def process_line(self, line: str, bot_name: str):
         if not isinstance(line, str) or isinstance(line, bool):
             return
-        bot_name = "" if isinstance(bot_name, bool) or bot_name is None else str(bot_name)
+        bot_name = _clean_str(bot_name)
         clean_stripped = line.strip()
 
         # Multi-line Python traceback buffering
@@ -664,13 +667,7 @@ class NotificationServer:
                     title = "Price Alert"
                 else:
                     title = f"[{bot_name}] Alert" if bot_name else "Alert"
-                ntfy_alert = {
-                    "type": "bot_event",
-                    "name": title,
-                    "body": msg,
-                    "source": bot_name or "orchestrator",
-                    "symbol": "SYSTEM",
-                }
+                ntfy_alert = make_bot_event_alert(title, msg, bot_name or "orchestrator")
                 self._gate_and_send_ntfy(
                     title,
                     msg,
@@ -711,13 +708,7 @@ class NotificationServer:
                     else:
                         full_title = f"[{bot_name}] {rule['name']}" if bot_name else rule["name"]
 
-                    rule_alert = {
-                        "type": "bot_event",
-                        "name": full_title,
-                        "body": line.strip(),
-                        "source": bot_name or "orchestrator",
-                        "symbol": "SYSTEM",
-                    }
+                    rule_alert = make_bot_event_alert(full_title, line.strip(), bot_name or "orchestrator")
                     self._gate_and_send_ntfy(
                         full_title,
                         line.strip(),
@@ -772,42 +763,34 @@ class NotificationServer:
                         if intent == "ntfy_webhook":
                             if "title" in payload:
                                 title = _clean_str(payload.get("title"))
+                                if not title.startswith("[DELAYED]"):
+                                    title = f"[DELAYED] {title}"
                                 msg = _clean_str(payload.get("message"))
                                 prio = _clean_str(payload.get("priority"), "default", strip=True)
                                 top = _clean_str(payload.get("topic"), strip=True) or self._default_error_topic()
-                                if not title.startswith("[DELAYED]"):
-                                    title = "[DELAYED] " + title
                                 success = await asyncio.to_thread(
-                                    self._send_ntfy,
-                                    title,
-                                    msg,
-                                    prio,
-                                    top,
-                                    True
+                                    self._send_ntfy, title, msg, prio, top, True,
                                 )
                             elif "alerts" in payload:
                                 success = await asyncio.to_thread(
                                     self.dispatch_alerts,
                                     payload.get("alerts") or [],
                                     payload.get("webhook_url"),
-                                    ""
+                                    "",
                                 )
                             else:
                                 success = True
                         elif intent == "email":
                             subj = _clean_str(payload.get("subject"))
-                            emsg = _clean_str(payload.get("message"))
                             if not subj.startswith("[DELAYED]"):
-                                subj = "[DELAYED] " + subj
+                                subj = f"[DELAYED] {subj}"
+                            emsg = _clean_str(payload.get("message"))
                             success = await asyncio.to_thread(
-                                self._send_email,
-                                subj,
-                                emsg,
-                                True
+                                self._send_email, subj, emsg, True,
                             )
                         else:
                             success = True  # Unknown intent, drop it
-                            
+
                         if success:
                             success_count += 1
                             queue_dirty = True

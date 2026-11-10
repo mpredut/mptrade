@@ -1496,10 +1496,10 @@ def send_supervisor_ntfy_http(
 ) -> bool:
     """Gate and send a supervisor ntfy push notification via HTTP POST."""
     try:
-        from notify_engine.alertnotifiers import pass_common_gate
+        from notify_engine.alertnotifiers import make_bot_event_alert, pass_common_gate
         allowed, reason, _, out_payload = pass_common_gate(
             "ntfy", title, body, priority, target_topic,
-            [{"type": "bot_event", "name": title, "body": body, "source": "ai_supervisor", "symbol": "SYSTEM"}],
+            [make_bot_event_alert(title, body, "ai_supervisor")],
             urgent=is_any_error,
         )
         if not allowed:

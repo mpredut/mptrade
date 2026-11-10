@@ -6,6 +6,8 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
+    format_notify_price,
+    format_notify_qty,
     get_stale_cache_retry_delay_sec,
     normalize_side,
     safe_pos_float,
@@ -59,18 +61,6 @@ def resolve_intent_topic_tag(intent: dict[str, Any], venue: str) -> str:
     return "[auto_cryptotrade_executor]"
 
 
-def _fmt_intent_qty(val: Any) -> str:
-    from notify_engine.alertnotifiers import format_notify_qty
-
-    return format_notify_qty(val)
-
-
-def _fmt_intent_px(val: Any, *, comma: bool = False) -> str:
-    from notify_engine.alertnotifiers import format_notify_price
-
-    return format_notify_price(val, comma=comma)
-
-
 def record_shadow_intent_observation(
     inst: Any,
     intent: dict[str, Any],
@@ -93,9 +83,9 @@ def record_shadow_intent_observation(
 ) -> dict[str, Any]:
     """Record a shadow-mode intent observation and dispatch notification."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
-    qty_s = _fmt_intent_qty(target_qty)
-    px_log_s = _fmt_intent_px(price, comma=False)
-    px_body_s = _fmt_intent_px(price, comma=True)
+    qty_s = format_notify_qty(target_qty)
+    px_log_s = format_notify_price(price, comma=False)
+    px_body_s = format_notify_price(price, comma=True)
     if log:
         log.info(
             "[LLM TRADER · SHADOW] Would execute %s %s (qty=%s, price=$%s, notional=$%.2f) on %s. Thesis: %s",
@@ -149,7 +139,7 @@ def execute_enforce_intent_order(
 ) -> dict[str, Any]:
     """Execute an enforce-mode trade intent via Instrument.place with retry on stale account cache."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
-    px_body_s = _fmt_intent_px(price, comma=True)
+    px_body_s = format_notify_price(price, comma=True)
     if not guard_allowed:
         if log:
             log.warning(
@@ -179,7 +169,7 @@ def execute_enforce_intent_order(
     if log:
         log.warning(
             "[LLM TRADER · ENFORCE] Executing %s %s (qty=%s, price=$%s, notional=$%.2f) on %s...",
-            ord_lbl, inst.symbol, _fmt_intent_qty(target_qty), _fmt_intent_px(price, comma=False), effective_usd, inst.provider_name,
+            ord_lbl, inst.symbol, format_notify_qty(target_qty), format_notify_price(price, comma=False), effective_usd, inst.provider_name,
         )
 
     try:
@@ -272,7 +262,7 @@ def execute_enforce_intent_order(
             title = f"{icon} {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
             order_id_str = extract_order_id(order_res, default="N/A")
             body = (
-                f"Venue: {inst.provider_name} · Qty: {_fmt_intent_qty(target_qty)} @ ${_fmt_intent_px(price, comma=True)} "
+                f"Venue: {inst.provider_name} · Qty: {format_notify_qty(target_qty)} @ ${format_notify_price(price, comma=True)} "
                 f"({'LIMIT' if is_limit else 'MARKET'} · ${effective_usd:,.0f})\n"
                 f"Order ID: {order_id_str}\n"
                 f"Thesis: {thesis}"
@@ -679,8 +669,6 @@ def preflight_intent_and_resolve_price(
 
 
 __all__ = [
-    "_fmt_intent_px",
-    "_fmt_intent_qty",
     "cancel_existing_ai_open_orders",
     "execute_enforce_intent_order",
     "find_duplicate_ai_open_limit_order",

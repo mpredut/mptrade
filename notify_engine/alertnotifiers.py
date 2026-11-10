@@ -21,6 +21,8 @@ from botcore import (
     _parse_bool_flag,
     exact_pos_int,
     float_env,
+    format_notify_price,
+    format_notify_qty,
     int_env,
     is_cache_fresh,
     is_live_network_backfill_enabled,
@@ -173,24 +175,22 @@ def format_trade_notification(
     return title, body
 
 
-def format_notify_qty(qty: Any) -> str:
-    """Format a trade/order quantity without trailing zeros."""
-    qf = safe_pos_float(qty, default=0.0) or 0.0
-    return f"{qf:.8f}".rstrip("0").rstrip(".") or "0"
-
-
-def format_notify_price(price: Any, *, comma: bool = True) -> str:
-    """Format a price with optional comma grouping and full sub-dollar precision."""
-    pf = safe_pos_float(price, default=0.0) or 0.0
-    sep = "," if comma else ""
-    if pf >= 1.0 and round(pf, 2) == round(pf, 6):
-        return f"{pf:{sep}.2f}"
-    raw = f"{pf:{sep}.8f}".rstrip("0")
-    if raw.endswith("."):
-        return f"{raw}00"
-    if len(raw.rsplit(".", 1)[-1]) == 1:
-        return f"{raw}0"
-    return raw
+def make_bot_event_alert(
+    title: Any,
+    body: Any,
+    source: Any = "system",
+    symbol: Any = "SYSTEM",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Construct a canonical bot_event alert dictionary."""
+    return {
+        "type": "bot_event",
+        "name": title,
+        "body": body,
+        "source": source,
+        "symbol": symbol,
+        **extra,
+    }
 
 
 def is_fake_alert_text(*parts: Any) -> bool:
@@ -201,9 +201,9 @@ def is_fake_alert_text(*parts: Any) -> bool:
 
 def format_ntfy_url(topic: Any) -> str:
     """Format an ntfy topic name or full HTTP(S) URL into a canonical ntfy endpoint URL."""
-    if not isinstance(topic, str):
+    if not isinstance(topic, str) or isinstance(topic, bool):
         return ""
-    clean = topic.strip()
+    clean = topic.split("#", 1)[0].strip()
     if not clean:
         return ""
     if clean.startswith(("http://", "https://")):
@@ -715,9 +715,7 @@ def pass_common_gate(
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    alerts_list = alerts if alerts else [
-        {"type": "bot_event", "name": title, "body": body, "source": "common_gate", "symbol": "SYSTEM"}
-    ]
+    alerts_list = alerts if alerts else [make_bot_event_alert(title, body, "common_gate")]
     t_key = _canonical_topic_key(topic)
     fingerprint = _delivery_fingerprint(alerts_list)
     norm_title = _normalize_text_for_similarity(title)
@@ -1179,9 +1177,7 @@ class AlertNotifier:
         alerts = [alert] if not isinstance(alert, list) else alert
         if _parse_bool_flag(enable_console, True):
             for item in alerts:
-                print("\n" + "=" * 70)
-                print(str(item))
-                print("=" * 70)
+                AlertNotifier.print_to_console(item)
         if _parse_bool_flag(enable_file, True):
             for item in alerts:
                 AlertNotifier.save_to_file(item, filename=filename)
@@ -1211,7 +1207,7 @@ def notify(title: str, body: str, source: str, symbol: str,
         return
     if is_fake_alert_text(title, body, symbol, source):
         return
-    alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
+    alert = make_bot_event_alert(title, body, source, symbol)
     if _parse_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         if re.search(r"\[auto_[a-z0-9_]+", str(title or "")):

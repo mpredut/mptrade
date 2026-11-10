@@ -243,6 +243,26 @@ def format_price_log(price: object) -> str:
     return f"{px:.2f}" if abs(px) >= 1.0 else (f"{px:.6f}".rstrip("0").rstrip(".") or "0")
 
 
+def format_notify_qty(qty: object) -> str:
+    """Format a trade/order quantity without trailing zeros."""
+    qf = safe_pos_float(qty, default=0.0) or 0.0
+    return f"{qf:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def format_notify_price(price: object, *, comma: bool = True) -> str:
+    """Format a price with optional comma grouping and full sub-dollar precision."""
+    pf = safe_pos_float(price, default=0.0) or 0.0
+    sep = "," if comma else ""
+    if pf >= 1.0 and round(pf, 2) == round(pf, 6):
+        return f"{pf:{sep}.2f}"
+    raw = f"{pf:{sep}.8f}".rstrip("0")
+    if raw.endswith("."):
+        return f"{raw}00"
+    if len(raw.rsplit(".", 1)[-1]) == 1:
+        return f"{raw}0"
+    return raw
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. CONFIGURATION & ENVIRONMENT SSOT (Loading, Parsing, Key-Value & Watcher)
 # ═════════════════════════════════════════════════════════════════════════════

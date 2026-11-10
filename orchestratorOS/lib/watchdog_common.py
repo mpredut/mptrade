@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # orchestratorOS/lib/ -> r
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
+from notify_engine.alertnotifiers import (  # noqa: E402
+    AlertNotifier,
+    format_ntfy_url,
+    make_bot_event_alert,
+)
 from state_io import read_json_dict, save_json_state  # noqa: E402
 
 
@@ -34,16 +38,15 @@ def save_state(state_file, state):
 
 def send_ntfy(title, message):
     # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
-    topic = (os.environ.get("NTFY_TOPIC_ERROR") or "").split("#", 1)[0].strip()
-    phone_url = (os.environ.get("PHONE_ALERT_URL") or "").split("#", 1)[0].strip()
-    url = format_ntfy_url(topic) or format_ntfy_url(phone_url) or None
+    url = (
+        format_ntfy_url(os.environ.get("NTFY_TOPIC_ERROR") or "")
+        or format_ntfy_url(os.environ.get("PHONE_ALERT_URL") or "")
+        or None
+    )
     if not url:
         print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False
-    event = {
-        "type": "bot_event", "symbol": "SYSTEM", "name": title,
-        "source": "watchdog", "body": message, "url": None,
-    }
+    event = make_bot_event_alert(title, message, "watchdog", url=None)
     ok = AlertNotifier.send_phone_webhook_batch([event], webhook_url=url)
     print(f"[watchdog] push {'OK' if ok else 'FAILED'}")
     return bool(ok)

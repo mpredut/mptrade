@@ -45,8 +45,6 @@ from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, read_jsonl_dicts
 from .base import MarketDataProvider
 from .intent_execution import (
-    _fmt_intent_px,
-    _fmt_intent_qty,
     cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
