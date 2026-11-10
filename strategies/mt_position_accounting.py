@@ -121,11 +121,6 @@ def _summarize_orders(orders):
     return total_qty, total_val, sig
 
 
-def _api_cache_identity(api) -> tuple[str, int]:
-    name = getattr(api, "name", None) or getattr(api, "provider_label", None) or type(api).__name__
-    return (str(name), id(api))
-
-
 def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float]:
     """Compute remaining spot-attributed inventory and active cycle cost basis.
 

@@ -283,14 +283,6 @@ def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -
     return out[:3]
 
 
-def _fmt_countdown_min(delta_min: float) -> str:
-    m = int(round(abs(delta_min)))
-    if m < 60:
-        return f"{m}m"
-    h, rem = divmod(m, 60)
-    return f"{h}h{rem:02d}m" if rem else f"{h}h"
-
-
 def resolve_macro_economic_calendar(
     now_ts: Optional[float] = None,
     breaking_news: Optional[Sequence[Any]] = None,
@@ -374,7 +366,10 @@ def resolve_macro_economic_calendar(
                 active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
                 active_window_is_high_impact = is_confirmed_win
             elif delta_min > 0.0:
-                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}", is_confirmed_win))
+                m_cnt = int(round(abs(delta_min)))
+                h_cnt, rem_cnt = divmod(m_cnt, 60)
+                cnt_lbl = f"{m_cnt}m" if m_cnt < 60 else (f"{h_cnt}h{rem_cnt:02d}m" if rem_cnt else f"{h_cnt}h")
+                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {cnt_lbl}", is_confirmed_win))
 
     upcoming.sort(key=lambda x: x[0])
     next_event = upcoming[0][3] if upcoming else "None scheduled"

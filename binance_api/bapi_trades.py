@@ -72,13 +72,6 @@ def _valid_fill_id(val):
     return clean_order_id(val) if isinstance(val, str) else None
 
 
-def _trade_fill_key(trade_obj):
-    if not isinstance(trade_obj, dict):
-        return None
-    raw_key = _valid_fill_id(trade_obj.get('id'))
-    return raw_key if raw_key is not None else _valid_fill_id(trade_obj.get('orderId'))
-
-
 def _resolve_trade_order_id(trade_obj):
     raw_oid = _valid_fill_id(trade_obj.get('orderId'))
     if raw_oid in (None, 0, "0"):
@@ -92,7 +85,8 @@ def _dedup_trades_by_fill_id(all_trades):
     for idx, trade in enumerate(all_trades or ()):
         if not isinstance(trade, dict):
             continue
-        raw_key = _trade_fill_key(trade)
+        raw_id = _valid_fill_id(trade.get('id'))
+        raw_key = raw_id if raw_id is not None else _valid_fill_id(trade.get('orderId'))
         fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         if (
@@ -112,12 +106,6 @@ def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, l
     return order_type, days_val, limit_val
 
 
-def _filter_trades_by_side(trades, order_type):
-    if order_type in ("BUY", "SELL"):
-        return [trade for trade in (trades or ()) if extract_order_side(trade) == order_type]
-    return list(trades or ())
-
-
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     order_type, days_ago, limit = _validate_trade_query_args(
         order_type, symbol, days_ago, default_days=0, limit=limit
@@ -128,8 +116,9 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         trades = [
             t for t in apiorders.paginate_my_trades(api.client, symbol, start_time, limit)
             if (extract_timestamp_ms(t, default=0) or 0) <= end_time
+            and (order_type not in ("BUY", "SELL") or extract_order_side(t) == order_type)
         ]
-        return _dedup_trades_by_fill_id(_filter_trades_by_side(trades, order_type))
+        return _dedup_trades_by_fill_id(trades)
     except Exception as e:
         print(f"get_my_trades_24: An error occurred: {e}")
         return []

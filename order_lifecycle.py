@@ -99,11 +99,6 @@ _DEFINITIVE_REFUSAL_TOKENS = (
 )
 
 
-def _is_definitive_submit_refusal(error: object) -> bool:
-    text = str(error or "").lower()
-    return any(token in text for token in _DEFINITIVE_REFUSAL_TOKENS)
-
-
 def propagate_submission_refusal(response, outcome_context):
     """Bridge Instrument's result channel into the strict lifecycle contract."""
     if response is None and isinstance(outcome_context, dict):
@@ -410,9 +405,10 @@ class TrackedOrderLifecycle:
         client_order_id = pending["client_order_id"]
         order_id = extract_order_id(pending.get("order_id"))
         if not order_id:
+            err_text = str(pending.get("submit_error") or pending.get("refusal_reason") or "").lower()
             if (
                 str(pending.get("submission_outcome") or "").strip().lower() == "refused"
-                or _is_definitive_submit_refusal(pending.get("submit_error") or pending.get("refusal_reason"))
+                or any(token in err_text for token in _DEFINITIVE_REFUSAL_TOKENS)
             ):
                 persist(None)
                 return TrackedOrderResult("refused", pending)

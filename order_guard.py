@@ -612,11 +612,6 @@ def _is_favorable_trend(side: str, trend: str) -> bool:
     return (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear")
 
 
-def _is_adverse_trend(side: str, trend: str) -> bool:
-    """Return True when the market trend opposes the order side."""
-    return (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull")
-
-
 def get_dynamic_window_sec_cfg(
     symbol=None,
     provider=None,
@@ -662,7 +657,7 @@ def get_dynamic_window_sec_cfg(
         )
     if _is_favorable_trend(side, trend):
         hours = max(4.0, min(12.0, favorable_h))
-    elif _is_adverse_trend(side, trend):
+    elif (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull"):
         hours = max(48.0, min(168.0, adverse_h))
     else:  # flat, sideways, chop, or unknown
         hours = max(12.0, min(48.0, flat_h))

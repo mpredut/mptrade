@@ -896,12 +896,6 @@ _TERMINAL_UNFILLED_REFUSALS = _TERMINAL_QTY_OR_LIMIT_REFUSALS | frozenset({
 })
 
 
-def _is_terminal_unfilled_refusal(refusal_reason) -> bool:
-    return bool(refusal_reason) and (
-        refusal_reason in _TERMINAL_UNFILLED_REFUSALS or is_terminal_filter_refusal(refusal_reason)
-    )
-
-
 def _validate_coordinator_config() -> None:
     if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
         raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
@@ -1155,8 +1149,11 @@ class TradingBot:
 
                 if placed_order is None:
                     refusal_reason = outcome_context.get("reason")
+                    is_term_refusal = bool(refusal_reason) and (
+                        refusal_reason in _TERMINAL_UNFILLED_REFUSALS or is_terminal_filter_refusal(refusal_reason)
+                    )
                     self._finish_side_precheck(
-                        side, aborted=bool(_is_terminal_unfilled_refusal(refusal_reason) and not is_opp_filled())
+                        side, aborted=bool(is_term_refusal and not is_opp_filled())
                     )
                     if self._should_exit_on_legacy_refusal(side, opp_side, is_buy, is_opp_filled, refusal_reason):
                         return _complete_followup()

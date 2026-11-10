@@ -45,7 +45,6 @@ from providers.quantity import check_order_filter_refusal
 from state_io import discard_generation_file, read_json_dict, save_json_state
 from strategies.mt_position_accounting import (
     _FifoTradeIdTracker,
-    _api_cache_identity,
     _as_instrument,
     _build_sl_bounce_state,
     _cancel_resting_tp_orders,
@@ -296,7 +295,8 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     sell_orders = _coerce_order_list(sell_orders)
 
     now_ts = safe_pos_float(now_ts, default=time.time())
-    cache_key = (_api_cache_identity(api), cachepaths.canonical_symbol_key(symbol), safe_nonneg_float(maxage_trade_s, 0.0))
+    api_name = getattr(api, "name", None) or getattr(api, "provider_label", None) or type(api).__name__
+    cache_key = ((str(api_name), id(api)), cachepaths.canonical_symbol_key(symbol), safe_nonneg_float(maxage_trade_s, 0.0))
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
     total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
     entry_sig = (buy_sig, sell_sig)

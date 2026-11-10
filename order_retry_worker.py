@@ -210,12 +210,6 @@ def _reconciliation_capabilities(mkt, symbol, provider_name):
     return result if type(getattr(result, "lookup_by_client_order_id", None)) is bool else None
 
 
-def _supports_client_id_reconciliation(mkt, symbol, provider_name):
-    """Return whether the provider explicitly supports client-ID lookup."""
-    capabilities = _reconciliation_capabilities(mkt, symbol, provider_name)
-    return bool(capabilities is not None and capabilities.lookup_by_client_order_id)
-
-
 def _not_found_reliability_status(mkt, record, now, provider_name):
     """Return whether venue absence is recent enough, and the specific failure reason."""
     capabilities = _reconciliation_capabilities(mkt, record.get("symbol"), provider_name)
@@ -439,7 +433,8 @@ def process_once(mkt, now=None):
                 _alert_producer_quarantine(r, reason="producer_identity_unverifiable")
                 continue
             provider_name = _provider_name(mkt, r)
-            if not _supports_client_id_reconciliation(mkt, symbol, provider_name):
+            caps = _reconciliation_capabilities(mkt, symbol, provider_name)
+            if caps is None or not caps.lookup_by_client_order_id:
                 quarantined += 1
                 _alert_producer_quarantine(r, reason="lookup_unavailable")
                 continue

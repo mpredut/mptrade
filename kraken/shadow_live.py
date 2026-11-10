@@ -322,7 +322,7 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
     }
     if not quiet:
         _print(snap)
-    _append_jsonl(pair, interval, snap)
+    append_jsonl_record(os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.jsonl"), snap)
     return snap
 
 
@@ -350,11 +350,6 @@ def _print(snap: dict) -> None:
     print(f"[{snap['ts']}] {snap['pair']} {snap['interval_min']}m  last={snap['last_close']}")
     _print_block("FORWARD (from the anchor)", snap["forward"])
     _print_block("window (context, the complete window)", snap["window"])
-
-
-def _append_jsonl(pair: str, interval: int, snap: dict) -> None:
-    path = os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.jsonl")
-    append_jsonl_record(path, snap)
 
 
 def main() -> int:

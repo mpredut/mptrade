@@ -360,11 +360,6 @@ def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:
     return safe_pos_float(custom_val, default=safe_pos_float(default_val, default=0.0) or 0.0)
 
 
-def _same_buy_price(stored_buy_price: Any, buy_price: float) -> bool:
-    ebp, cbp = safe_pos_float(stored_buy_price, default=None), safe_pos_float(buy_price, default=None)
-    return ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12)
-
-
 def _sanitize_position_state(
     state_map: Dict[str, Dict[str, Any]],
     symbol: str,
@@ -373,8 +368,10 @@ def _sanitize_position_state(
     existing = state_map.get(symbol)
     if existing is None:
         return None
+    stored_bp = existing.get("buy_price") if isinstance(existing, dict) else None
+    ebp, cbp = safe_pos_float(stored_bp, default=None), safe_pos_float(buy_price, default=None)
     if not isinstance(existing, dict) or (
-        existing.get("buy_price") is not None and not _same_buy_price(existing.get("buy_price"), buy_price)
+        stored_bp is not None and not (ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12))
     ):
         state_map.pop(symbol, None)
         return None

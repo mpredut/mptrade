@@ -100,12 +100,6 @@ def _cache_put(method: str, params: dict, ttl: float, result) -> None:
         _CACHE[(method, _params_key(params))] = (now + ttl, result)
 
 
-def _cache_invalidate(methods) -> None:
-    with _CACHE_LOCK:
-        for k in [k for k in _CACHE if k[0] in methods]:
-            _CACHE.pop(k, None)
-
-
 def get_cached_pair_info(candidates, cache_dict: dict | None = None) -> dict | None:
     """Return cached AssetPairs metadata for the first matching candidate without network I/O."""
     store = cache_dict if isinstance(cache_dict, dict) else _CACHE
@@ -218,7 +212,9 @@ class KrakenClient:
         if ttl and result:
             _cache_put(method, data, ttl, result)
         if method in _WRITE_METHODS:                # AddOrder/CancelOrder changed account state
-            _cache_invalidate(_INVALIDATE_ON_WRITE)
+            with _CACHE_LOCK:
+                for k in [k for k in _CACHE if k[0] in _INVALIDATE_ON_WRITE]:
+                    _CACHE.pop(k, None)
         return result
 
     def _public(self, method: str, params: dict | None = None, fresh: bool = False) -> dict:
