@@ -1051,7 +1051,7 @@ def _enrich_positions_with_orders_and_cycles_impl(
         pos_px_f = safe_float(pos.get("price"), 0.0)
         p_lookup_sym = f"{p_sym}_US_EQ" if p_is_eq and not p_sym.endswith(("_EQ", "_US_EQ")) else p_sym
         cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
-        if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px))):
+        if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px, threshold=0.35 if p_is_eq else 0.10))):
             pos_px_f = round(cand_px, 4 if p_venue == "t212" else 6)
             pos["price"] = pos_px_f
             if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:

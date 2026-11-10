@@ -10120,3 +10120,83 @@ def test_resolve_llm_guard_cache_ttl_respects_explicit_ttl_custom_client_and_cus
     assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(600.0)
     assert resolve_llm_guard_cache_ttl(None, True, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(0.0)
     assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=lambda p: {}), 600.0) == pytest.approx(0.0)
+
+
+def test_post_rth_equity_24_5_move_up_to_35pct_aligns_series_orderbook_and_pretrade(tmp_path):
+    """Ensure >10% (<=35%) 24/5 equity moves (e.g. RGNT_US_EQ $1.27 -> $1.52) stay coherent across Section 3A, 3B, and pretrade telemetry."""
+    import json
+    import pytest
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    now_s = 1_794_295_500.0
+    rth_close_ms = int((now_s - 10 * 3600.0) * 1000)
+    rgnt_bars = [
+        [rth_close_ms - (24 - i) * 3600 * 1000, round(1.19 + (i % 6) * 0.07, 4), 1200.0]
+        for i in range(24)
+    ] + [[rth_close_ms, 1.27, 2500.0]]
+    (tmp_path / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_bars}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": [[rth_close_ms, 1.27]]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:RGNT_US_EQ": {
+                    "venue": "t212",
+                    "symbol": "RGNT_US_EQ",
+                    "free_base": 3.93,
+                    "price": 1.52,
+                    "ts": now_s - 20.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "orderbook_depth_RGNT_US_EQ.json").write_text(
+        json.dumps(
+            {
+                "symbol": "RGNT_US_EQ",
+                "imbalance_ratio": 0.45,
+                "mid_price": 1.26,
+                "best_bid": 1.255,
+                "best_ask": 1.265,
+                "spread_bps": 79.4,
+                "bid_depth_usd": 2000.0,
+                "ask_depth_usd": 3000.0,
+                "largest_bid_wall_price": 1.22,
+                "largest_bid_wall_usd": 510.0,
+                "largest_ask_wall_price": 1.28,
+                "largest_ask_wall_usd": 633.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pt_map = {"RGNT_US_EQ": {"price": 1.52, "trend": 0, "growth_coefficient": 0.0}}
+    micro_map = {}
+    enrich_24h_and_microstructure(
+        str(tmp_path),
+        str(tmp_path),
+        pt_map,
+        micro_map,
+        {"RGNT_US_EQ": [[rth_close_ms, 1.27]]},
+        {},
+        now_s,
+        allow_network=False,
+    )
+    assert pt_map["RGNT_US_EQ"]["price"] == pytest.approx(1.52)
+    assert pt_map["RGNT_US_EQ"]["chg_24h_pct"] == pytest.approx(round(((1.52 / 1.19) - 1.0) * 100.0, 2))
+    assert micro_map["RGNT_US_EQ"]["ob_mid_price"] == pytest.approx(1.52)
+    assert micro_map["RGNT_US_EQ"]["ask_wall_px"] > 1.52
+
+    tel_rgnt = collect_pretrade_telemetry("RGNT_US_EQ", cachedb_dir=str(tmp_path), allow_network=False)
+    assert f"24h=+{round(((1.52 / 1.19) - 1.0) * 100.0, 2):.2f}%" in str(
+        tel_rgnt.get("24h Multi-Horizon Price Evolution")
+    )
+    assert "1.5441" in str(tel_rgnt.get("Orderbook Ask Wall Ahead"))
+

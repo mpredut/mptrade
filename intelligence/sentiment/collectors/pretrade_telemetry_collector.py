@@ -738,7 +738,7 @@ def _load_and_normalize_pretrade_24h_series(
         if not rth_fresh_eq and m24:
             for k_stale_eq in _STALE_SHORT_24H_KEYS:
                 m24.pop(k_stale_eq, None)
-        if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1]) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
+        if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1], threshold=0.35) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
             cur_px_est = round(live_cur_px, 4)
             if rth_fresh_eq:
                 eq_pt_ts_ms = (
@@ -1013,8 +1013,9 @@ def _evaluate_and_format_pretrade_7d_telemetry(
     allow_network: bool = False,
 ) -> Tuple[Dict[str, Any], bool]:
     is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
+    eq_div_thr = 0.35 if is_eq else 0.10
     if cur_px_est > 0.0 and arch_vals_7d:
-        if _prices_diverged(cur_px_est, safe_float(arch_vals_7d[-1], 0.0)):
+        if _prices_diverged(cur_px_est, safe_float(arch_vals_7d[-1], 0.0), threshold=eq_div_thr):
             arch_vals_7d = []
         elif abs(cur_px_est - safe_float(arch_vals_7d[-1], 0.0)) > 1e-9:
             arch_vals_7d = list(arch_vals_7d) + [cur_px_est]
@@ -1039,7 +1040,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
             if len(vals_7d) < 2:
                 continue
             if clean_symbol_key(ck) != clean_symbol_key(symbol) and (
-                compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1]))
+                compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1], threshold=eq_div_thr))
             ):
                 continue
             w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
@@ -1047,7 +1048,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
             arch_span_7d_pt = _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0)
             if m7d and (is_eq or arch_span_7d_pt >= 5 * 86400 * 1000 or (0.0 <= w_span_7d < 5 * 86400 * 1000)):
                 continue
-            if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, vals_7d[-1]) and abs(cur_px_est - vals_7d[-1]) > 1e-9:
+            if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, vals_7d[-1], threshold=eq_div_thr) and abs(cur_px_est - vals_7d[-1]) > 1e-9:
                 vals_7d = list(vals_7d) + [cur_px_est]
             if m7d_w := compute_7d_range_metrics(vals_7d, decimals=4 if is_eq else 6):
                 m7d = m7d_w
@@ -1082,7 +1083,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
         high_7d_v = safe_pos_float(m7d.get("high_7d"), 0.0) or cur_px_est
         if cur_px_est > 0.0 and (
             low_7d_v <= cur_px_est <= high_7d_v
-            or not (_prices_diverged(cur_px_est, low_7d_v) and _prices_diverged(cur_px_est, high_7d_v))
+            or not (_prices_diverged(cur_px_est, low_7d_v, threshold=eq_div_thr) and _prices_diverged(cur_px_est, high_7d_v, threshold=eq_div_thr))
         ):
             recalculate_live_price_geometry(m7d, cur_px_est)
     is_sub24h_dup_7d = (

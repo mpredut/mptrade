@@ -1984,7 +1984,7 @@ def evaluate_post_rth_24h_override(
             or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
         )
     ):
-        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
+        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1], threshold=0.35) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
             post_rth_px_override = round(sym_px_cur, 4)
             if len(matched_series_24h) >= 2:
                 rth_vp_anchors = {k_vp: m24[k_vp] for k_vp in _RTH_VP_ANCHOR_KEYS if k_vp in m24}

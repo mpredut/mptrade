@@ -880,7 +880,7 @@ def _harvest_tradable_positions_and_orders_impl(
                     )
                     if exact_pt_px > 0.0:
                         px_rec = exact_pt_px
-                    elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px)):
+                    elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px, threshold=0.35 if v_rec_norm == "t212" else 0.10)):
                         px_rec = cached_pos_px
                     else:
                         px_rec = sib_pt_px

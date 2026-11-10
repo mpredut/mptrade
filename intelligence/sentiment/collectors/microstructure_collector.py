@@ -1365,13 +1365,14 @@ def _enrich_symbol_with_yahoo_5d_chart(
         )
         if not pts_5d:
             return matched_series_24h, m24, active_7d_vals, sym_px_cur, post_rth_px_override, post_rth_series_replaced
+        eq_div_thr = 0.35 if is_eq_sym else 0.10
         if chart_px > 0.0 and (
             sym_px_cur <= 0.0
             or abs(sym_px_cur - chart_px) < 1e-4
             or (
                 (not is_t212_inst or (is_live_network_backfill_enabled() and eq_cache_stale))
                 and chart_tick_fresh
-                and not _prices_diverged(sym_px_cur, chart_px)
+                and not _prices_diverged(sym_px_cur, chart_px, threshold=eq_div_thr)
                 and (
                     sym not in t212_seeded_from_cache
                     or t212_pos_ts.get(sym, 0.0) <= 0.0
@@ -1386,7 +1387,7 @@ def _enrich_symbol_with_yahoo_5d_chart(
         px_diff_from_chart = bool(
             pts_24h
             and sym_px_cur > 0
-            and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
+            and not _prices_diverged(sym_px_cur, pts_24h[-1][1], threshold=eq_div_thr)
             and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4
         )
         px_diverged_05pct = bool(
@@ -1548,6 +1549,7 @@ def _enrich_single_symbol_24h_and_microstructure(
 ) -> None:
     sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
     is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
+    eq_div_thr = 0.35 if is_eq_sym else 0.10
     if sym == "BTCUSDC" and btc_series_24h:
         matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
     else:
@@ -1565,7 +1567,7 @@ def _enrich_single_symbol_24h_and_microstructure(
             and last_24_px > 0.0
             and last_24_pt[0] > 1e11
             and (int(now_ts * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
-            and not _prices_diverged(sym_px_cur, last_24_px)
+            and not _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr)
             and (
                 eff_t212_ts <= 0.0
                 or (last_24_pt[0] / 1000.0) > eff_t212_ts
@@ -1573,7 +1575,7 @@ def _enrich_single_symbol_24h_and_microstructure(
             )
         ):
             prices_and_trends[sym]["price"] = sym_px_cur = round(last_24_px, 4)
-        if _prices_diverged(sym_px_cur, last_24_px):
+        if _prices_diverged(sym_px_cur, last_24_px, threshold=eq_div_thr):
             matched_series_24h = []
         elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
             now_ms_24 = int(now_ts * 1000)
@@ -1595,7 +1597,7 @@ def _enrich_single_symbol_24h_and_microstructure(
                     eq_pt_ts_ms = int(last_24_pt[0] + 1000)
                 matched_series_24h = list(matched_series_24h) + [[eq_pt_ts_ms, sym_px_cur]]
     if sym_px_cur > 0 and arch_vals_7d:
-        if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
+        if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0), threshold=eq_div_thr):
             arch_vals_7d = []
         elif abs(sym_px_cur - safe_float(arch_vals_7d[-1], 0.0)) > 1e-9:
             arch_vals_7d = list(arch_vals_7d) + [sym_px_cur]
