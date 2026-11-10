@@ -144,6 +144,7 @@ def define_candidate_grid() -> dict[str, dict]:
         "25_COMBO_smart_flow": {
             # TP 4% + Adaptive Trail + Progressive DCA 0.25
             "takeprofit_pct": 4.0,
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
             "tp_trail_min": 1.5,
@@ -163,6 +164,7 @@ def define_candidate_grid() -> dict[str, dict]:
         "27_COMBO_high_calmar_runner": {
             # TP 4% + Adaptive Trail + DCA Brake 1.5% + Progressive DCA 0.25 + Reentry 1.5%
             "takeprofit_pct": 4.0,
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
             "tp_trail_min": 1.5,
@@ -186,6 +188,7 @@ def define_candidate_grid() -> dict[str, dict]:
         "29_COMBO_ultimate_balanced": {
             # TP 4.5% + Adaptive Trail k=1.8 + DCA 1.35% with 0.25 growth + Brake 1.5% + Reentry 1.5%
             "takeprofit_pct": 4.5,
+            "tp_mdhtp_enabled": False,
             "tp_trail_adaptive": True,
             "tp_trail_k": 1.8,
             "tp_trail_min": 1.5,

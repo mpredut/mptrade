@@ -1059,3 +1059,106 @@ def test_kraken_backtest__bt_params_float_string_maxdca_and_nan_iter150_s3():
     assert bt_p.max_dca_buys == 8
     with pytest.raises(ValueError):
         k_bt._bt_params({"entry": float("nan")})
+
+
+def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(tmp_path):
+    """Verify cross-venue candidate mapping, baseline lookbacks, and unmasked trailing configs."""
+    import dataclasses
+    from unittest.mock import patch
+    import pytest
+
+    from offline.backtests.evaluation import load_venue_module
+    from offline.backtests.hype_candidates import default_candidates, hype_240_candidates
+    from offline.runners.walk_forward_compare import _resolve_candidate_overrides
+    from offline.runners import binance_walk_forward_baseline as bwf
+    from offline.runners import hyperliquid_walk_forward_baseline as hwf
+    from offline.research.comprehensive_strategy_sweep import define_candidate_grid
+    from offline.research.kraken_continuous_grid import grid as k_grid, grid2 as k_grid2
+    from offline.research.t212_continuous_grid import grid as t_grid
+    from kraken import backtest_trail as k_btt
+    from strategies.spot_engine import StratParams as SpotParams
+
+    # 1. Kraken-scale params preserve historical 500/250 lower_sizing; smaller profiles scale 0.75x.
+    kraken_base = SpotParams(
+        currency="USD", entry_amount=650.0, entry_discount_pct=0.2, dca_amount=325.0,
+        dca_drop_pct=1.25, check_minutes=1.0, takeprofit_pct=4.5, max_budget=3900.0,
+        max_dca_buys=10, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=25.0,
+    )
+    spot_fields = {f.name for f in dataclasses.fields(SpotParams)}
+    lower_cand = next(c for c in default_candidates() if c.name == "lower_sizing")
+    k_over, k_desc = _resolve_candidate_overrides(lower_cand, kraken_base, spot_fields)
+    assert k_over == {"entry_amount": 500.0, "dca_amount": 250.0}
+    assert k_desc == "entry 500 + DCA 250 USD"
+
+    hl_base = dataclasses.replace(
+        kraken_base, currency="USDC", entry_amount=350.0, dca_amount=100.0, max_budget=1050.0,
+    )
+    hl_over, hl_desc = _resolve_candidate_overrides(lower_cand, hl_base, spot_fields)
+    assert hl_over == {"entry_amount": 262.5, "dca_amount": 75.0}
+    assert "0.75x live" in hl_desc
+
+    # 2. Trading 212 StratParams resolves all 18 standard candidates cleanly and rejects adaptive k*sigma.
+    t212_strat = load_venue_module("212trading", "strategy.py", "test_w2_t212_strat")
+    t212_base = t212_strat.StratParams.from_dict({
+        "currency": "EUR", "yahoo_sym": "NVDA", "entry_amount": 12.032, "dca_amount": 12.032,
+        "entry_discount_pct": 0.2, "dca_drop_pct": 3.5, "check_minutes": 5.0,
+        "takeprofit_pct": 8.0, "max_budget": 80.0, "max_dca_buys": 5,
+        "order_ttl_min": 10.0, "stop_loss_pct": 20.0, "fx_fee_pct": 0.15,
+        "trail_pct": 8.0, "trail_min_profit_pct": 5.0, "tp_mdhtp_enabled": True,
+    })
+    t212_fields = {f.name for f in dataclasses.fields(t212_base.__class__)}
+    resolved_t212 = {
+        c.name: _resolve_candidate_overrides(c, t212_base, t212_fields)
+        for c in default_candidates()
+    }
+    assert all(v is not None for v in resolved_t212.values())
+    assert len(resolved_t212) == 18
+    assert resolved_t212["lower_sizing"][0] == {"entry_amount": 9.024, "dca_amount": 9.024}
+    assert resolved_t212["classic_tp"][0] == {
+        "tp_mdhtp_enabled": False, "trail_pct": 0.0, "tp_ladder": [],
+    }
+    assert resolved_t212["trail_2"][0] == {
+        "tp_mdhtp_enabled": False, "enable_takeprofit": False, "trail_pct": 2.0,
+    }
+    assert resolved_t212["confirm_dca_1_5_trail_2"][0] == {
+        "dca_drop_pct": 1.5, "tp_mdhtp_enabled": False, "enable_takeprofit": False, "trail_pct": 2.0,
+    }
+    adaptive_cand = next(c for c in hype_240_candidates() if c.name == "A_adaptive_trail")
+    assert _resolve_candidate_overrides(adaptive_cand, t212_base, t212_fields) is None
+
+    # 3. Hyperliquid and Binance baseline runners fetch full decision-grade lookbacks by default.
+    with patch.object(hwf, "fetch_ohlc_candles", return_value=[]) as mock_hl_fetch:
+        assert hwf.main(["--intervals", "240", "--output-dir", str(tmp_path / "hl")]) == 0
+        assert mock_hl_fetch.call_args.kwargs.get("start_ms") == 0
+    with patch.object(bwf, "fetch_ohlc_candles", return_value=[]) as mock_bn_fetch:
+        assert bwf.main(["--intervals", "240", "--symbol", "BTCUSDC", "--output-dir", str(tmp_path / "bn")]) == 0
+        assert mock_bn_fetch.call_args.kwargs.get("lookback_days") == 630
+    with pytest.raises(SystemExit):
+        hwf.main(["--lookback-days", "0"])
+    with pytest.raises(SystemExit):
+        bwf.main(["--lookback-days", "0"])
+
+    # 4. Sweep combos, Kraken trail compare, and continuous grids explicitly disable tp_mdhtp_enabled.
+    sweep_grid = define_candidate_grid()
+    for combo_name in ("25_COMBO_smart_flow", "27_COMBO_high_calmar_runner", "29_COMBO_ultimate_balanced"):
+        assert sweep_grid[combo_name]["tp_mdhtp_enabled"] is False
+    assert k_grid.CONFIGS["abl_trail_fixed"][0].tp_mdhtp_enabled is False
+    assert k_grid2.FINE["gateoff_trail5"][0].tp_mdhtp_enabled is False
+    assert t_grid.VARIANTS["trail8"][0]["STRAT_TP_MDHTP_ENABLED"] == "false"
+    assert t_grid.VARIANTS["trail_off"][0]["STRAT_TP_MDHTP_ENABLED"] == "false"
+
+    bars = [
+        [100.0, 106.0 if i % 4 == 2 else 101.0, 98.5, 105.5 if i % 4 == 2 else 100.0, 1700000000 + i * 14400]
+        for i in range(40)
+    ]
+    with patch.object(k_btt.rp, "run_replay", wraps=k_btt.rp.run_replay) as spy_replay:
+        k_btt.simulate_trail(bars, {**k_btt.base_params(), "interval": 240, "trail": 3.0})
+        trail_params = spy_replay.call_args.args[1]
+        assert trail_params.tp_trail_adaptive is False
+        assert trail_params.tp_mdhtp_enabled is False
+        assert trail_params.tp_trail_pct == 3.0
+
+        k_btt.simulate_fixed_tp(bars, {**k_btt.base_params(), "interval": 240})
+        fix_params = spy_replay.call_args.args[1]
+        assert fix_params.tp_trend_hold is False
+        assert fix_params.tp_mdhtp_enabled is False

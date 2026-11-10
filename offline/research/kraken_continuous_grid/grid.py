@@ -80,7 +80,7 @@ CONFIGS = {
     # B. ablation of the 23 Sep promotion (live with ONE change reverted)
     "abl_tp5": (R(LIVE, takeprofit_pct=5.0), 0),
     "abl_spacing0": (R(LIVE, dca_spacing_growth_pct=0.0), 0),
-    "abl_trail_fixed": (R(LIVE, tp_trail_adaptive=False), 0),
+    "abl_trail_fixed": (R(LIVE, tp_mdhtp_enabled=False, tp_trail_adaptive=False), 0),
     "abl_gate_off": (R(LIVE, tp_regime_gate=False), 0),
     "abl_floor0": (R(LIVE, tp_trail_profit_floor_pct=0.0), 0),
     "abl_sl12.5": (R(LIVE, stop_loss_pct=12.5), 0),

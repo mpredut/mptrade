@@ -52,6 +52,7 @@ def simulate_trail(ohlc, P):
         re_drop = 0.0
     over = {
         "tp_trend_hold": True,
+        "tp_trail_adaptive": False,
         "tp_trail_pct": trail_val,
         "tp_mdhtp_enabled": False,
         "reentry_drop_pct": re_drop,
@@ -63,6 +64,17 @@ def simulate_trail(ohlc, P):
         fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
         bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
         intrabar_high=True,
+    )
+
+
+def simulate_fixed_tp(ohlc, P):
+    """Run fixed-TP replay with trailing and MDHTP explicitly disabled."""
+    params = _bt_params(P, {"tp_trend_hold": False, "tp_mdhtp_enabled": False})
+    return rp.run_replay(
+        ohlc,
+        params,
+        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
+        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
     )
 
 
@@ -87,7 +99,7 @@ def run_compare(pairs, intervals):
                 print(f"{pair:<9} {iv:<5} not enough data ({len(ohlc)})"); continue
             P_iv = {**P, "interval": iv}
             h = bh(ohlc)
-            f = simulate(ohlc, P_iv)["total"]/P["budget"]*100
+            f = simulate_fixed_tp(ohlc, P_iv)["total"]/P["budget"]*100
             t = simulate_trail(ohlc, P_iv)["total"]/P["budget"]*100
             win = "trailing" if t > f else "TP-fix"
             (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
@@ -112,7 +124,7 @@ def run_wf(pair, interval, segments=4):
         if len(s) < 20:
             continue
         h = bh(s)
-        f = simulate(s, P)["total"]/P["budget"]*100
+        f = simulate_fixed_tp(s, P)["total"]/P["budget"]*100
         t = simulate_trail(s, P)["total"]/P["budget"]*100
         win = "trailing" if t > f else "TP-fix"
         (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)

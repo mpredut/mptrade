@@ -332,6 +332,55 @@ def _candidate_windows(
     return windows
 
 
+def _resolve_candidate_overrides(
+    candidate: Any,
+    base_params: Any,
+    valid_param_fields: set[str],
+) -> tuple[dict[str, Any], str] | None:
+    """Resolve cross-venue candidate overrides and descriptions against base_params."""
+    overrides = dict(candidate.overrides)
+    description = str(candidate.description)
+    if not overrides:
+        return {}, description
+
+    if candidate.name == "lower_sizing":
+        base_entry = safe_pos_float(getattr(base_params, "entry_amount", None), default=0.0)
+        base_dca = safe_pos_float(getattr(base_params, "dca_amount", None), default=0.0)
+        base_budget = safe_pos_float(getattr(base_params, "max_budget", None), default=0.0)
+        if not (base_entry > 500.0 and base_dca > 250.0 and base_budget >= 500.0):
+            scaled_entry = round(base_entry * 0.75, 4)
+            scaled_dca = round(base_dca * 0.75, 4)
+            if scaled_entry <= 0.0 or scaled_dca <= 0.0:
+                return None
+            ccy = str(getattr(base_params, "currency", "USD") or "USD").strip().upper()
+            overrides = {"entry_amount": scaled_entry, "dca_amount": scaled_dca}
+            description = f"entry {scaled_entry:g} + DCA {scaled_dca:g} {ccy} (0.75x live)"
+
+    # Map shared spot trailing and classic-TP candidate keys onto Trading 212 StratParams.
+    if "trail_pct" in valid_param_fields and "tp_trail_pct" not in valid_param_fields:
+        if overrides.get("tp_trend_hold") is False:
+            overrides.pop("tp_trend_hold", None)
+            overrides["tp_mdhtp_enabled"] = False
+            overrides["trail_pct"] = 0.0
+            if "tp_ladder" in valid_param_fields:
+                overrides["tp_ladder"] = []
+        if "tp_trail_pct" in overrides and overrides.get("tp_trail_adaptive") is not True:
+            trail_val = safe_nonneg_float(overrides.pop("tp_trail_pct"), default=0.0)
+            overrides.pop("tp_trail_adaptive", None)
+            overrides["tp_mdhtp_enabled"] = False
+            overrides["enable_takeprofit"] = False
+            overrides["trail_pct"] = trail_val
+            if safe_pos_float(getattr(base_params, "trail_min_profit_pct", None), default=0.0) <= 0.0:
+                tp_pct = safe_pos_float(getattr(base_params, "takeprofit_pct", None), default=0.0)
+                if tp_pct > 0.0 and "trail_min_profit_pct" in valid_param_fields:
+                    overrides["trail_min_profit_pct"] = tp_pct
+
+    incompatible_keys = [k for k in overrides if k not in valid_param_fields]
+    if incompatible_keys:
+        return None
+    return overrides, description
+
+
 def _markdown(report: dict, venue: str = "Kraken") -> str:
     display_venue = venue.capitalize() if venue.lower() not in ("t212", "trading212") else "Trading 212"
     return format_comparison_markdown(
@@ -378,14 +427,15 @@ def main(argv: list[str] | None = None) -> int:
     candidates = hype_240_candidates() if args.candidate_set == "hype-240" else default_candidates()
     valid_param_fields = {f.name for f in dataclasses.fields(base_params.__class__)}
     for candidate in candidates:
-        incompatible_keys = [k for k in candidate.overrides if k not in valid_param_fields]
-        if incompatible_keys:
+        resolved = _resolve_candidate_overrides(candidate, base_params, valid_param_fields)
+        if resolved is None:
             continue
-        params = dataclasses.replace(base_params, **candidate.overrides)
+        resolved_overrides, resolved_desc = resolved
+        params = dataclasses.replace(base_params, **resolved_overrides)
         windows = _candidate_windows(datasets, params, base_fee, execution, segment_fn)
         results[candidate.name] = {
-            "description": candidate.description,
-            "overrides": candidate.overrides,
+            "description": resolved_desc,
+            "overrides": resolved_overrides,
             "summary": summarize_test_windows(windows),
             "by_interval": {
                 str(interval): summarize_test_windows([

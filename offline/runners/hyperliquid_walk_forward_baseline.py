@@ -17,7 +17,7 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import required_env, required_float_env, safe_nonneg_float
+from botcore import required_env, required_float_env, safe_nonneg_float, safe_pos_int
 from strategies.spot_engine import StratParams as SpotStratParams
 from strategies.spot_replay import align_spot_interval_params
 
@@ -57,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
+    parser.add_argument(
+        "--lookback-days", type=int, default=None,
+        help="API fetch lookback in days when --dataset is omitted (defaults to full 5000-candle window)",
+    )
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
         "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
@@ -66,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=ROOT / "offline/results/hyperliquid_walk_forward",
     )
     args = parser.parse_args(argv)
+    lookback_days = None
+    if args.lookback_days is not None:
+        lookback_days = safe_pos_int(args.lookback_days, default=0)
+        if lookback_days <= 0:
+            parser.error("--lookback-days must be positive")
 
     cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("HL_",))
 
@@ -97,7 +106,12 @@ def main(argv: list[str] | None = None) -> int:
             records = validate_dataset(load_dataset(frozen_file), interval_minutes=interval)
             source_label = f"frozen file: {frozen_file}"
         else:
-            raw_candles = fetch_ohlc_candles(coin, interval, drop_incomplete=True)
+            fetch_kwargs = (
+                {"lookback_hours": lookback_days * 24}
+                if lookback_days is not None
+                else {"start_ms": 0}
+            )
+            raw_candles = fetch_ohlc_candles(coin, interval, drop_incomplete=True, **fetch_kwargs)
             if not raw_candles:
                 print(f"[!] No candles returned for {coin} {interval}m; skipping.")
                 continue

@@ -70,22 +70,30 @@ def run_comparison(csv_path=None):
             sl_structural_break_enabled=True,
             **common_reentry,
         ), 240)
+        warmup_bars = 40 if len(bars) > 60 else 0
+        eval_bars = bars[warmup_bars:]
+        warmup_ohlc = bars[:warmup_bars]
         if sl == sl_levels[0] and len(bars) > 40:
-            prewarm_trend_series(bars, warmup=0, params=p_base, bar_minutes=240.0)
+            prewarm_trend_series(bars, warmup=warmup_bars, params=p_base, bar_minutes=240.0)
 
-        res_base = run_replay(bars, p_base, fee_pct=0.26, bar_minutes=240)
-        res_prop = run_replay(bars, p_prop, fee_pct=0.26, bar_minutes=240)
+        res_base = run_replay(eval_bars, p_base, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
+        res_prop = run_replay(eval_bars, p_prop, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
         results.append((sl, res_base, res_prop))
 
-    print("\n" + "=" * 92)
-    print(f"{'SL %':<6} | {'CONFIG':<10} | {'NET PnL ($)':<12} | {'CYCLES':<8} | {'WINS':<6} | {'WIN %':<8} | {'MAX DD ($)':<12} | {'FILLS':<8}")
-    print("=" * 92)
+    print("\n" + "=" * 107)
+    print(
+        f"{'SL %':<6} | {'CONFIG':<10} | {'TOTAL ($)':<12} | {'NET PnL ($)':<12} | "
+        f"{'CYCLES':<8} | {'WINS':<6} | {'WIN %':<8} | {'MAX DD ($)':<12} | {'FILLS':<8}"
+    )
+    print("=" * 107)
 
     for sl, base, prop in results:
         b_cyc = safe_nonneg_int(base.get('cycles'), default=0)
         p_cyc = safe_nonneg_int(prop.get('cycles'), default=0)
         b_wins = safe_nonneg_int(base.get('wins'), default=0)
         p_wins = safe_nonneg_int(prop.get('wins'), default=0)
+        b_tot = safe_float(base.get('total'), 0.0)
+        p_tot = safe_float(prop.get('total'), 0.0)
         b_net = safe_float(base.get('net'), 0.0)
         p_net = safe_float(prop.get('net'), 0.0)
         b_dd = safe_float(base.get('maxdd'), 0.0)
@@ -95,12 +103,17 @@ def run_comparison(csv_path=None):
         base_win_pct = (b_wins / b_cyc * 100) if b_cyc > 0 else 0.0
         prop_win_pct = (p_wins / p_cyc * 100) if p_cyc > 0 else 0.0
 
-        print(f"{sl:<6.1f} | {'Baseline':<10} | {b_net:<12.2f} | {b_cyc:<8} | {b_wins:<6} | {base_win_pct:<8.1f} | {b_dd:<12.2f} | {b_fills:<8}")
-        print(f"{'':<6} | {'Proposed':<10} | {p_net:<12.2f} | {p_cyc:<8} | {p_wins:<6} | {prop_win_pct:<8.1f} | {p_dd:<12.2f} | {p_fills:<8}")
+        print(f"{sl:<6.1f} | {'Baseline':<10} | {b_tot:<12.2f} | {b_net:<12.2f} | {b_cyc:<8} | {b_wins:<6} | {base_win_pct:<8.1f} | {b_dd:<12.2f} | {b_fills:<8}")
+        print(f"{'':<6} | {'Proposed':<10} | {p_tot:<12.2f} | {p_net:<12.2f} | {p_cyc:<8} | {p_wins:<6} | {prop_win_pct:<8.1f} | {p_dd:<12.2f} | {p_fills:<8}")
+        diff_tot = p_tot - b_tot
         diff_net = p_net - b_net
         diff_dd = p_dd - b_dd
-        print(f"{'':<6} | {'Delta':<10} | {'+' if diff_net >= 0 else ''}{diff_net:<12.2f} | {p_cyc - b_cyc:<8} | {p_wins - b_wins:<6} | {prop_win_pct - base_win_pct:<+8.1f} | {diff_dd:<+12.2f} | {p_fills - b_fills:<8}")
-        print("-" * 92)
+        print(
+            f"{'':<6} | {'Delta':<10} | {'+' if diff_tot >= 0 else ''}{diff_tot:<12.2f} | "
+            f"{'+' if diff_net >= 0 else ''}{diff_net:<12.2f} | {p_cyc - b_cyc:<8} | "
+            f"{p_wins - b_wins:<6} | {prop_win_pct - base_win_pct:<+8.1f} | {diff_dd:<+12.2f} | {p_fills - b_fills:<8}"
+        )
+        print("-" * 107)
 
     return results
 

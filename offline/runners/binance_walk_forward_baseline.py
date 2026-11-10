@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import safe_nonneg_float
+from botcore import safe_nonneg_float, safe_pos_int
 from binance_api.market_data import fetch_ohlc_candles
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
 from offline.backtests.datasets import (
@@ -42,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbol", help="defaults to SYMBOL or BINANCE_PAIR (e.g. BTCUSDT)")
     parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=0.10, help="fee per leg (pct), defaults to 0.10%%")
+    parser.add_argument(
+        "--lookback-days", type=int, default=630,
+        help="API fetch lookback in days when --dataset is omitted (defaults to 630)",
+    )
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
         "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
@@ -53,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if safe_nonneg_float(args.fee, default=None) is None:
         parser.error("--fee cannot be negative")
+    lookback_days = safe_pos_int(args.lookback_days, default=0)
+    if lookback_days <= 0:
+        parser.error("--lookback-days must be positive")
 
     cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("BINANCE_",))
 
@@ -100,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             raw_records = fetch_ohlc_candles(
                 symbol,
                 interval=interval,
-                lookback_days=180,
+                lookback_days=lookback_days,
                 drop_incomplete=True,
             )
             if not raw_records or len(raw_records) < 20:

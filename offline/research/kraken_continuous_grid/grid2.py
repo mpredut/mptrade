@@ -38,7 +38,7 @@ FINE = {
     "ov1000_t10_gateoff": (ov(R(LIVE, tp_regime_gate=False), 1000, 10), 0),
     "ov1000_t8_gateoff_tp5": (ov(R(LIVE, tp_regime_gate=False, takeprofit_pct=5.0), 1000, 8), 0),
     "gateoff_tp5": (R(LIVE, tp_regime_gate=False, takeprofit_pct=5.0), 0),
-    "gateoff_trail5": (R(LIVE, tp_regime_gate=False, tp_trail_adaptive=False, tp_trail_pct=5.0), 0),
+    "gateoff_trail5": (R(LIVE, tp_regime_gate=False, tp_mdhtp_enabled=False, tp_trail_adaptive=False, tp_trail_pct=5.0), 0),
     "ov650_t8_brake_gateoff": (R(ov(R(LIVE, tp_regime_gate=False), 650, 8),
                                  dca_trend_brake=True, dca_brake_min_pct=1.5), 0),
 }
