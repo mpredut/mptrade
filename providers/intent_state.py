@@ -556,6 +556,7 @@ def upsert_durable_intent(
 
 __all__ = [
     "_CURRENCY_STRIP_RE",
+    "_INTENTS_LOCK_LOCAL",
     "_NOTIONAL_KEYS",
     "_extract_intent_id",
     "_intent_order_ids",

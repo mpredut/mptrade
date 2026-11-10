@@ -477,8 +477,16 @@ class ExecutionCalibrationTest(unittest.TestCase):
             loaded_intents = intent_state.load_durable_intents_state(intents_path)
             self.assertEqual(loaded_intents, [{"intent_id": "i-1", "confidence": None, "status": "PENDING"}])
             self.assertEqual(
-                intent_execution.resolve_intent_topic_tag({"created_by": "trade_executor"}, "binance"),
+                intent_execution.resolve_intent_topic_tag({"created_by": "auto_trade_executor"}, "binance"),
                 "[auto_cryptotrade_executor]",
+            )
+            self.assertEqual(
+                intent_execution.resolve_intent_topic_tag({"created_by": "trade_executor"}, "t212"),
+                "[auto_sharetrade_executor]",
+            )
+            self.assertEqual(
+                intent_execution.resolve_intent_topic_tag({"created_by": "guard_high_stake"}, "binance"),
+                "[auto_guard_large_order]",
             )
             self.assertEqual(
                 intent_execution.resolve_intent_topic_tag({}, "t212"),

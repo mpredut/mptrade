@@ -59,9 +59,11 @@ from .intent_execution import (
 )
 from .intent_state import (
     _CURRENCY_STRIP_RE,
+    _INTENTS_LOCK_LOCAL,
     _NOTIONAL_KEYS,
     _extract_intent_id,
     _intent_order_ids,
+    _intent_venue_symbol_side_key,
     _parse_currency_pos_float,
     _record_intent_state,
     _resolve_clamped_intent_notional,
@@ -1198,22 +1200,6 @@ def _resolve_intent_execution_details(
 
 def _is_open_resting_detail(det: dict[str, Any]) -> bool:
     return bool(det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"))
-
-
-def _intent_venue_symbol_side_key(
-    venue: Any, symbol: Any, side: Any
-) -> tuple[str, str, tuple[str, ...], str]:
-    s_raw = str(symbol or "").strip().upper()
-    v_norm = normalize_venue_name(venue)
-    base = canonical_base_asset(s_raw) or s_raw
-    if base and (_is_eq_suffix(s_raw) or v_norm == "t212"):
-        base = f"EQ:{base}"
-    return (
-        v_norm,
-        base,
-        compatible_quote_suffixes(s_raw),
-        str(side or "").strip().upper(),
-    )
 
 
 def summarize_recent_ai_intents(
