@@ -548,13 +548,19 @@ class TrailingCore:
 
 
 class TrailingAdapterBase:
-    """Shared base adapter for venue-specific TrailingCore implementations (Binance, Kraken)."""
+    """Shared venue-agnostic base adapter for TrailingCore implementations."""
 
     _VENUE_SLUG: str = ""
     _VENUE_LABEL: str = ""
+    _HEARTBEAT_NAME: str = ""
     _LOG_TAG: str = "[TRAIL]"
     _ENABLED_ENV_VAR: str = "TRAILING_ENABLED"
     _REBUY_MODE_MAP_ATTR: str = "REBUY_MODE_BY_SYMBOL"
+    _LOOKUP_BY_BASE_ASSET: bool = False
+    _PREFER_ASSET_LABEL: bool = False
+    _SELL_LIMIT_SLIPPAGE_FACTOR: float = 1.0
+    _REBUY_LIMIT_CUSHION_FACTOR: float = 1.0
+    _INCLUDE_MARKET_IN_SELL_INTENT: bool = False
 
     def _init_adapter_core(
         self,
@@ -601,7 +607,7 @@ class TrailingAdapterBase:
         canon_sym = canonical_symbol_key(sym_norm) if sym_norm else ""
         cands = (
             (symbol, sym_norm, canon_sym, canonical_base_asset(sym_norm))
-            if cls._VENUE_SLUG == "kraken"
+            if cls._LOOKUP_BY_BASE_ASSET
             else (sym_norm, canon_sym, symbol)
         )
         for cand in cands:
@@ -786,30 +792,22 @@ class TrailingAdapterBase:
                         st.pop("retry_counts", None)
         return result
 
+    def _format_order_target(self, asset, pair, qty) -> str:
+        return f"{qty} {asset}" if self._PREFER_ASSET_LABEL else f"{pair} {qty}"
+
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
         price_f = safe_float(price, 0.0)
-        if self._VENUE_SLUG == "kraken":
-            peak_f = safe_float(peak, 0.0)
-            self.log(
-                f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
-                f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
-            )
-        else:
-            peak_f = safe_float(peak, price_f)
-            self.log(
-                f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
-                f"(peak {peak_f:.4f}, drop >= {trail}%)  "
-                f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
-            )
+        peak_f = safe_float(peak, price_f)
+        self.log(
+            f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
+            f"(peak {peak_f:.4f}, drop >= {trail}%)  "
+            f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
+        )
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
-        price_f = (
-            safe_float(price, 0.0)
-            if self._VENUE_SLUG == "kraken"
-            else safe_nonneg_float(price, 0.0)
-        )
+        price_f = safe_nonneg_float(price, 0.0)
         low_val, _ = extract_rebuy_anchors(rb, price_f)
-        target_desc = f"{qty} {asset}" if self._VENUE_SLUG == "kraken" else f"{pair} {qty}"
+        target_desc = self._format_order_target(asset, pair, qty)
         self.log(
             f"  🟡 {self._LOG_TAG}[DRY] WOULD RE-BUY {target_desc} @ ~{price_f:.4f}  "
             f"(a pullback from the low {low_val:.4f})  [{self._ENABLED_ENV_VAR}=true for it to execute]"
@@ -818,19 +816,11 @@ class TrailingAdapterBase:
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
         price_f = safe_float(price, 0.0)
         stop_f = safe_float(stop_at, 0.0)
-        if self._VENUE_SLUG == "kraken":
-            peak_f = safe_float(peak, 0.0)
-            free_f = safe_float(free, 0.0)
-            self.log(
-                f"  {self._LOG_TAG} {asset}: {price_f:.4f}  peak {peak_f:.4f}  "
-                f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
-            )
-        else:
-            peak_f = safe_float(peak, price_f)
-            self.log(
-                f"  {self._LOG_TAG} {pair}: {price_f:.4f}  peak {peak_f:.4f}  "
-                f"sells below {stop_f:.4f} (-{trail}%)"
-            )
+        peak_f = safe_float(peak, price_f)
+        self.log(
+            f"  {self._LOG_TAG} {pair}: {price_f:.4f}  peak {peak_f:.4f}  "
+            f"sells below {stop_f:.4f} (-{trail}%)"
+        )
 
     def log_skip_rebuy_trend(self, asset) -> None:
         self.log(
@@ -838,7 +828,7 @@ class TrailingAdapterBase:
         )
 
     def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
-        target = asset if self._VENUE_SLUG == "kraken" else pair
+        target = asset if self._PREFER_ASSET_LABEL else pair
         self.log(
             f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)"
         )
@@ -847,60 +837,92 @@ class TrailingAdapterBase:
         self.log(f"  ! {self._LOG_TAG} {key}: {e}")
 
     def log_tick_error(self, e) -> None:
-        if self._VENUE_SLUG == "kraken":
-            self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) — retrying")
+        self.log(f"  ! {self._LOG_TAG} cycle error ({e}) — continuing")
+
+    def _log_sell_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price,
+        order_price,
+        peak,
+        trail,
+        use_market: bool,
+    ) -> None:
+        price_f = safe_float(price, 0.0)
+        peak_f = safe_float(peak, price_f)
+        if result.outcome == "refused":
+            self.log(
+                f"  🛑 {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
+                f"({result.intent.get('refusal_reason')})"
+            )
         else:
-            self.log(f"  ! {self._LOG_TAG} cycle error ({e}) — continuing")
+            self.log(
+                f"  🛑 {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
+                f"(peak {peak_f:.4f}, -{trail}%, orderId={result.intent.get('order_id')})"
+            )
 
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
-        is_kraken = self._VENUE_SLUG == "kraken"
-        use_market = bool(getattr(self, "trailing_market", True)) if is_kraken else True
-        order_price = (price if use_market else (price * 0.995)) if is_kraken else price
+        use_market = bool(getattr(self, "trailing_market", True))
+        order_price = (
+            price
+            if (use_market or self._SELL_LIMIT_SLIPPAGE_FACTOR == 1.0)
+            else (safe_nonneg_float(price, 0.0) * self._SELL_LIMIT_SLIPPAGE_FACTOR)
+        )
         self._sync_retry_count_from_state(pair, "SELL", persist)
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, order_price, anchor=peak, trail=trail,
-            **({"market": use_market} if is_kraken else {}),
+            **({"market": use_market} if self._INCLUDE_MARKET_IN_SELL_INTENT else {}),
         )
         result = self._submit_lifecycle_order(
             intent, persist, pair, "SELL", qty, order_price,
             kind="TRAIL_SELL", bypass_guards={"all"}, market=use_market,
         )
-        if is_kraken:
-            order_desc = "MARKET" if use_market else f"@ ~{order_price:.4f}"
-            status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
-            detail = (
-                result.intent.get("refusal_reason")
-                if result.outcome == "refused"
-                else f"orderId={result.intent.get('order_id')}"
-            )
-            self.log(f"  🛑 {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
-        else:
-            price_f = safe_float(price, 0.0)
-            peak_f = safe_float(peak, price_f)
-            if result.outcome == "refused":
-                self.log(
-                    f"  🛑 {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
-                    f"({result.intent.get('refusal_reason')})"
-                )
-            else:
-                self.log(
-                    f"  🛑 {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
-                    f"(peak {peak_f:.4f}, -{trail}%, orderId={result.intent.get('order_id')})"
-                )
+        self._log_sell_result(
+            result,
+            asset=asset,
+            pair=pair,
+            qty=qty,
+            price=price,
+            order_price=order_price,
+            peak=peak,
+            trail=trail,
+            use_market=use_market,
+        )
         return result
 
+    def _log_rebuy_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price_ref: float,
+        order_price,
+    ) -> None:
+        status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
+        detail = (
+            result.intent.get("refusal_reason")
+            if result.outcome == "refused"
+            else f"orderId={result.intent.get('order_id')}"
+        )
+        self.log(f"  🟢 {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
+
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
-        is_kraken = self._VENUE_SLUG == "kraken"
         self._sync_retry_count_from_state(pair, "REBUY", persist)
-        price_ref = price if is_kraken else safe_nonneg_float(price, 0.0)
+        price_ref = safe_nonneg_float(price, 0.0)
         anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_ref)
         px_f = safe_pos_float(price_ref, default=None)
         sell_f = safe_pos_float(sell_price_val, default=None)
         bypass_guards = {"all"} if (px_f is not None and sell_f is not None and px_f < sell_f) else {"math_reference"}
-        if is_kraken:
-            order_price = price * 1.005
+        if self._REBUY_LIMIT_CUSHION_FACTOR != 1.0:
+            order_price = price_ref * self._REBUY_LIMIT_CUSHION_FACTOR
             if "all" in bypass_guards and sell_price_val > 0 and order_price >= sell_price_val:
-                order_price = price
+                order_price = price_ref
         else:
             order_price = price
         intent = self._order_intent(
@@ -911,25 +933,14 @@ class TrailingAdapterBase:
             intent, persist, pair, "BUY", qty, order_price,
             kind="TRAIL_REBUY", bypass_guards=bypass_guards,
         )
-        if is_kraken:
-            if result.outcome == "refused":
-                self.log(
-                    f"  🟢 {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
-                    f"({result.intent.get('refusal_reason')}) (not catching the knife)"
-                )
-            else:
-                self.log(
-                    f"  🟢 {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
-                    f"(orderId={result.intent.get('order_id')})"
-                )
-        else:
-            status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
-            detail = (
-                result.intent.get("refusal_reason")
-                if result.outcome == "refused"
-                else f"orderId={result.intent.get('order_id')}"
-            )
-            self.log(f"  🟢 {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
+        self._log_rebuy_result(
+            result,
+            asset=asset,
+            pair=pair,
+            qty=qty,
+            price_ref=price_ref,
+            order_price=order_price,
+        )
         return result
 
     def check_once(self) -> None:
@@ -937,30 +948,6 @@ class TrailingAdapterBase:
 
     def print_status(self) -> None:
         state = self.core.load()
-        if self._VENUE_SLUG == "kraken":
-            trail_map = self._module_attr("TRAIL_PCT")
-            rows = (
-                list(trail_map.items())
-                if isinstance(trail_map, dict)
-                else [(s, tr) for s, _a, _p, tr in self.assets()]
-            )
-            for a, t in rows:
-                e = casefold_get(state, a, {}) if isinstance(state, dict) else {}
-                if not isinstance(e, dict):
-                    e = {}
-                peak = safe_pos_float(e.get("peak"), default=None)
-                t_f = safe_nonneg_float(t, default=0.0)
-                rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
-                print(
-                    f"{a}: peak={peak} trailing={t}% "
-                    + (f"sells below {peak * (1 - t_f / 100):.4f}" if peak else "(no peak yet)")
-                    + (f"  | re-buy ARMED (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
-                )
-            rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
-            rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)
-            print(f"ENABLED={self.enabled}  REBUY={rebuy_en} (bounce {rebuy_bounce}%)")
-            return
-
         for s, _asset, _pair, tr in self.assets():
             st = casefold_get(state, s, {}) if isinstance(state, dict) else {}
             if not isinstance(st, dict):
@@ -994,7 +981,7 @@ class TrailingAdapterBase:
     def _run_trailing_loop(self, check_seconds: float, banner_lines: list[str] | tuple[str, ...]) -> None:
         for line in banner_lines:
             self.log(line)
-        hb_name = "Kraken-trailing" if self._VENUE_SLUG == "kraken" else "Binance-trailing"
+        hb_name = self._HEARTBEAT_NAME or f"{self._VENUE_LABEL or 'Trailing'}-trailing"
         touch_module_heartbeat(hb_name, interval_sec=30.0, force=True, intervals={"check_seconds": check_seconds})
         while True:
             try:

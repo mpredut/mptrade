@@ -125,6 +125,7 @@ class TrailingStop(TrailingAdapterBase):
 
     _VENUE_SLUG = "binance"
     _VENUE_LABEL = "Binance"
+    _HEARTBEAT_NAME = "Binance-trailing"
     _LOG_TAG = "[TRAIL]"
     _ENABLED_ENV_VAR = "TRAILING_ENABLED"
 

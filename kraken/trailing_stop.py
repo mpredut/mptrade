@@ -148,9 +148,15 @@ class KrakenTrailing(TrailingAdapterBase):
 
     _VENUE_SLUG = "kraken"
     _VENUE_LABEL = "Kraken"
+    _HEARTBEAT_NAME = "Kraken-trailing"
     _LOG_TAG = "[TRAIL-K]"
     _ENABLED_ENV_VAR = "KRAKEN_TRAILING_ENABLED"
     _REBUY_MODE_MAP_ATTR = "REBUY_MODE_BY_ASSET"
+    _LOOKUP_BY_BASE_ASSET = True
+    _PREFER_ASSET_LABEL = True
+    _SELL_LIMIT_SLIPPAGE_FACTOR = 0.995
+    _REBUY_LIMIT_CUSHION_FACTOR = 1.005
+    _INCLUDE_MARKET_IN_SELL_INTENT = True
 
     def __init__(self, client: KrakenClient, log=log, enabled=None, state_file=STATE_FILE,
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
@@ -388,6 +394,94 @@ class KrakenTrailing(TrailingAdapterBase):
                 market=market, kind=kind,
                 client_order_id=intent["client_order_id"]),
         )
+
+    def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
+        price_f = safe_float(price, 0.0)
+        peak_f = safe_float(peak, 0.0)
+        self.log(
+            f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
+            f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
+        )
+
+    def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
+        price_f = safe_float(price, 0.0)
+        stop_f = safe_float(stop_at, 0.0)
+        peak_f = safe_float(peak, 0.0)
+        free_f = safe_float(free, 0.0)
+        self.log(
+            f"  {self._LOG_TAG} {asset}: {price_f:.4f}  peak {peak_f:.4f}  "
+            f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
+        )
+
+    def log_tick_error(self, e) -> None:
+        self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) — retrying")
+
+    def _log_sell_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price,
+        order_price,
+        peak,
+        trail,
+        use_market: bool,
+    ) -> None:
+        order_desc = "MARKET" if use_market else f"@ ~{order_price:.4f}"
+        status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
+        detail = (
+            result.intent.get("refusal_reason")
+            if result.outcome == "refused"
+            else f"orderId={result.intent.get('order_id')}"
+        )
+        self.log(f"  🛑 {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
+
+    def _log_rebuy_result(
+        self,
+        result,
+        *,
+        asset,
+        pair,
+        qty,
+        price_ref: float,
+        order_price,
+    ) -> None:
+        if result.outcome == "refused":
+            self.log(
+                f"  🟢 {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
+                f"({result.intent.get('refusal_reason')}) (not catching the knife)"
+            )
+        else:
+            self.log(
+                f"  🟢 {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
+                f"(orderId={result.intent.get('order_id')})"
+            )
+
+    def print_status(self) -> None:
+        state = self.core.load()
+        trail_map = self._module_attr("TRAIL_PCT")
+        rows = (
+            list(trail_map.items())
+            if isinstance(trail_map, dict)
+            else [(s, tr) for s, _a, _p, tr in self.assets()]
+        )
+        for a, t in rows:
+            e = casefold_get(state, a, {}) if isinstance(state, dict) else {}
+            if not isinstance(e, dict):
+                e = {}
+            peak = safe_pos_float(e.get("peak"), default=None)
+            t_f = safe_nonneg_float(t, default=0.0)
+            rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
+            print(
+                f"{a}: peak={peak} trailing={t}% "
+                + (f"sells below {peak * (1 - t_f / 100):.4f}" if peak else "(no peak yet)")
+                + (f"  | re-buy ARMED (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
+            )
+        rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
+        rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)
+        print(f"ENABLED={self.enabled}  REBUY={rebuy_en} (bounce {rebuy_bounce}%)")
 
     # -- one step / loop -------------------------------------------------------
     def check_once(self) -> None:

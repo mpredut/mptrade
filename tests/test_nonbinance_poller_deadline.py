@@ -391,6 +391,7 @@ class TestFetchDeadline(unittest.TestCase):
         # 3. TrailingAdapterBase._lookup_symbol_entry with predicate skips non-matching pair entry
         class _DummyTrailing(TrailingAdapterBase):
             _VENUE_SLUG = "kraken"
+            _LOOKUP_BY_BASE_ASSET = True
 
         val = _DummyTrailing._lookup_symbol_entry(
             {"BTCUSD": "invalid", "BTC": "on"},

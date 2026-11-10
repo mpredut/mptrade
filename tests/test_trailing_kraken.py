@@ -1069,3 +1069,41 @@ def test_krakentrailing_string_enabled_trailing_market_and_reconcile_pending_saf
     )
     kt.reconcile_pending({"symbol": " XXBTZUSD ", "action": " sell "}, lambda _p: None)
     assert kt._retry_counts.get(("XXBTZUSD", "SELL")) == 1
+
+
+def test_trailing_core_is_venue_agnostic_ast():
+    """trailing_core.py must contain zero venue SDK imports or hardcoded venue string branches."""
+    import ast
+    from pathlib import Path
+
+    import trailing_core
+
+    src = Path(trailing_core.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    docstring_nodes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                docstring_nodes.add(node.body[0].value)
+
+    forbidden_venues = ("binance", "kraken", "hyperliquid", "t212", "212trading")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0].lower()
+                assert not any(v in root for v in forbidden_venues), f"Forbidden import {alias.name}"
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".")[0].lower()
+            assert not any(v in root for v in forbidden_venues), f"Forbidden import from {node.module}"
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docstring_nodes:
+            low = node.value.lower()
+            assert not any(v in low for v in forbidden_venues), (
+                f"trailing_core.py line {node.lineno} contains hardcoded venue literal {node.value!r}"
+            )
+
