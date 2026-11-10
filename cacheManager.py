@@ -67,7 +67,6 @@ from cacheaccount import (
     api,
     apiorders,
     bind_account_cache_getter,
-    clear_binance_trade_cache_hook,
     disable_account_cache_daemon_writer,
     enable_real_ws_event_sync,
     ensure_account_cache_readers,
@@ -445,10 +444,6 @@ class CacheFactory:
                 pass
 
     @classmethod
-    def _clear_bapi_trade_manager_ref(cls, trade_mgr) -> None:
-        cls._run_teardown_hooks("BinanceTrade", trade_mgr)
-
-    @classmethod
     def shutdown_all(cls, timeout=5.0):
         """Stop every factory-owned synchronization loop and clear the registry."""
         global _current_price_instance, _short_trend_instance
@@ -614,7 +609,6 @@ def get_cache_manager(name, symbols=None, *, start_sync=True):
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.
 bind_account_cache_getter(get_cache_manager)
-CacheFactory.register_teardown_hook("BinanceTrade", clear_binance_trade_cache_hook)
 CachePriceManagerBase.bind_current_price_getter(get_current_price_manager)
 CacheTrendManagerBase.bind_service_getters(
     cache24_getter=lambda: get_cache_manager("24Price"),

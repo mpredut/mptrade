@@ -26,7 +26,6 @@ import uuid
 
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
-from binance_api import bapi_trades as _bapi_trades
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
@@ -2244,7 +2243,6 @@ CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
 # ── Account reader synchronization, user-stream WS bridge & daemon lifecycle ──
 
 _account_cache_getter = None
-clear_binance_trade_cache_hook = _bapi_trades.clear_cache_trade_manager
 
 
 def bind_account_cache_getter(getter_fn) -> None:

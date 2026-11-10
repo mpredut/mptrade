@@ -2646,6 +2646,9 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
         )
     ]
     assert direct_binance_imports == []
+    assert not hasattr(cacheaccount, "_bapi_trades")
+    assert not hasattr(cacheaccount, "clear_binance_trade_cache_hook")
+    assert not hasattr(cm, "clear_binance_trade_cache_hook")
 
     now_ms = int(time.time() * 1000)
     recorded_syncs = []

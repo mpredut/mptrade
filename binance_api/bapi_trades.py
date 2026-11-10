@@ -27,6 +27,20 @@ def clear_cache_trade_manager(expected=None):
         cache_trade_manager = None
 
 
+def _register_trade_cache_teardown_hook(cm_mod=None) -> None:
+    if cm_mod is None:
+        try:
+            import cacheManager as cm_mod
+        except Exception:
+            cm_mod = None
+    factory = getattr(cm_mod, "CacheFactory", None) if cm_mod is not None else None
+    if hasattr(factory, "register_teardown_hook"):
+        factory.register_teardown_hook("BinanceTrade", clear_cache_trade_manager)
+
+
+_register_trade_cache_teardown_hook()
+
+
 def init_cache_trade_manager():
     """Build the cache on the first call that actually consumes trades.
 
@@ -41,9 +55,7 @@ def init_cache_trade_manager():
             import cacheManager as cm
             # Trading processes are read-only consumers. Only the central
             # cacheManager process may poll Binance and publish cache versions.
-            factory = getattr(cm, "CacheFactory", None)
-            if hasattr(factory, "register_teardown_hook"):
-                factory.register_teardown_hook("BinanceTrade", clear_cache_trade_manager)
+            _register_trade_cache_teardown_hook(cm)
             cache_trade_manager = cm.get_cache_manager("BinanceTrade", start_sync=False)
     return cache_trade_manager
 

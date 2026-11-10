@@ -63,21 +63,12 @@ finally:
                 setattr(_binance_package, _child, _PRELOADED_IMPORTS[_full_name])
             elif getattr(_binance_package, _child, None) is _IMPORT_MOCKS[_full_name]:
                 delattr(_binance_package, _child)
-    import cacheaccount as _ca_mod
     if getattr(cm, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
         from binance_api import bapi_allorders as _real_bapi_allorders
         cm.apiorders = _real_bapi_allorders
+        import cacheaccount as _ca_mod
         if getattr(_ca_mod, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
             _ca_mod.apiorders = _real_bapi_allorders
-    if (
-        getattr(cm, "_bapi_trades", None) is _IMPORT_MOCKS["binance_api.bapi_trades"]
-        or getattr(_ca_mod, "_bapi_trades", None) is _IMPORT_MOCKS["binance_api.bapi_trades"]
-    ):
-        from binance_api import bapi_trades as _real_bapi_trades
-        _ca_mod._bapi_trades = _real_bapi_trades
-        _ca_mod.clear_binance_trade_cache_hook = _real_bapi_trades.clear_cache_trade_manager
-        cm.clear_binance_trade_cache_hook = _real_bapi_trades.clear_cache_trade_manager
-        cm.CacheFactory.register_teardown_hook("BinanceTrade", _real_bapi_trades.clear_cache_trade_manager)
 
 mock_bapi = _mock_bapi
 
