@@ -141,7 +141,13 @@ try_fallback_switch() {  # $1=region $2=desc $3=fail_title $4=fail_body $5=ok_ti
 
 establish_vpn_tunnel() {
     discover_regions
+    local cur_reg
+    cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
     if [ -n "$REG_DED_DE" ]; then
+        if [ -n "$cur_reg" ] && [ "$cur_reg" != "$REG_DED_DE" ] && vpn_healthy && ! dip_endpoint_reachable "$REG_DED_DE"; then
+            echo "Already connected and healthy on fallback region '$cur_reg' while Primary Frankfurt DIP ($REG_DED_DE) endpoint :1337 is unreachable; keeping '$cur_reg'."
+            return 0
+        fi
         connect_to_region "$REG_DED_DE" "Frankfurt Dedicated IP" && return 0
         echo "Frankfurt Dedicated IP ($REG_DED_DE) failed."
     fi
