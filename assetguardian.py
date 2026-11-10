@@ -299,11 +299,13 @@ def _price_row(row):
 def _read_symbol_price_rows(symbol):
     """Copy one symbol's shared 24h price history under the manager lock."""
     try:
-        managers = cm.get_cache_manager("24Price", symbols=list(TRACKED_SYMBOLS))
+        managers = cm.get_cache_manager("24Price", symbols=list(TRACKED_SYMBOLS), start_sync=False)
         manager = casefold_get(managers, symbol) if isinstance(managers, dict) else None
         if manager is None:
             print(f"ERROR 24Price manager missing for {symbol}")
             return []
+        if hasattr(manager, "resync_mem_file"):
+            manager.resync_mem_file()
         with manager.lock:
             rows = list(casefold_get(manager.cache, symbol, []))
         print(f"[DEBUG] {symbol} 24Price rows loaded: {len(rows)}")
@@ -424,9 +426,11 @@ def _get_symbol_window_extrema(symbol, current_price,
 def _read_total_asset_value_rows():
     """Copy shared TOTAL portfolio USDC history from AssetValue cache."""
     try:
-        manager = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
+        manager = cm.get_cache_manager("AssetValue", symbols=["TOTAL"], start_sync=False)
         if manager is None:
             return []
+        if hasattr(manager, "resync_mem_file"):
+            manager.resync_mem_file()
         with manager.lock:
             rows = list(manager.cache.get("TOTAL", []))
         return rows

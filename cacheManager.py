@@ -737,6 +737,13 @@ if __name__ == "__main__":
             sync_ts=0.8,
             start_sync=False,
         )
+        if _nb_syms:
+            _nb_poller = _start_nonbinance_trend_poller(
+                _trend_cpm,
+                _nb_syms,
+                interval_sec=10,
+                provider_names=_nb_provider_names,
+            )
     except Exception as _ws_init_err:
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
@@ -783,7 +790,7 @@ if __name__ == "__main__":
             _trend_cache24, _trend_cpm, run_full_eval=True
         )
         print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
-        if _nb_syms:
+        if _nb_syms and _nb_poller is None:
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,
                 _nb_syms,

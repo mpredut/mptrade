@@ -1166,7 +1166,11 @@ def _persist_refreshed_equity_chart_cache(
                 eff_last_pt is not None
                 and (eff_last_pt[0] > check_last_pt[0] or abs(eff_last_pt[1] - check_last_pt[1]) > 1e-4)
             )
-            or (not rth_bar_fresh and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows))
+            or (
+                not rth_bar_fresh
+                and raw_ohlc_cnt == 0
+                and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows)
+            )
         ):
             Cache24PriceManager.persist_external_ohlc_series(
                 p24_target,

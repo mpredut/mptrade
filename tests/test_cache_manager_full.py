@@ -2524,3 +2524,77 @@ def test_cacheshorttrendmanager_string_symbols_writer_false_window_seconds_as_sc
     assert stm.should_wait("b", "BTCUSDC", now=now_ts, use_noise_gate="false") is True
     assert stm.should_wait(" sell ", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
     assert stm.should_wait("s", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
+
+
+def test_nonbinance_trade_cache_snapshot_resync_and_fetchtime_sanitization(tmp_path):
+    """Verify non-Binance JSON trade caches reload external updates without .meta and strip foreign fetchtime keys."""
+    from state_io import save_json_state
+
+    trd_file = str(tmp_path / "cache_trade_kraken.json")
+    save_json_state(
+        trd_file,
+        {
+            "items": {
+                "HYPEUSD": [
+                    {
+                        "id": "101",
+                        "orderId": "101",
+                        "symbol": "HYPEUSD",
+                        "price": 40.0,
+                        "qty": 1.0,
+                        "time": 1700000000000,
+                        "isBuyer": True,
+                    }
+                ]
+            },
+            "fetchtime": {
+                "HYPEUSD": 1700000000000.0,
+                "BTCUSDC": 1600000000000.0,
+            },
+        },
+    )
+    san = cm.CacheTradeManager.load_sanitized_trade_snapshot(trd_file, venue="kraken")
+    assert list(san["items"].keys()) == ["HYPEUSD"]
+    assert list(san["fetchtime"].keys()) == ["HYPEUSD"]
+
+    mgr = cm.CacheTradeManager(
+        venue="kraken",
+        symbols=["HYPEUSD"],
+        filename=trd_file,
+        read_only=True,
+    )
+    assert len(mgr.cache.get("HYPEUSD", [])) == 1
+
+    # Simulate external producer updating JSON snapshot without touching .meta
+    save_json_state(
+        trd_file,
+        {
+            "items": {
+                "HYPEUSD": [
+                    {
+                        "id": "101",
+                        "orderId": "101",
+                        "symbol": "HYPEUSD",
+                        "price": 40.0,
+                        "qty": 1.0,
+                        "time": 1700000000000,
+                        "isBuyer": True,
+                    },
+                    {
+                        "id": "102",
+                        "orderId": "102",
+                        "symbol": "HYPEUSD",
+                        "price": 41.5,
+                        "qty": 2.0,
+                        "time": 1700000060000,
+                        "isBuyer": False,
+                    },
+                ]
+            },
+            "fetchtime": {"HYPEUSD": 1700000060000.0},
+        },
+    )
+    assert mgr._persisted_max_ts() == 1700000060000.0
+    mgr.sync_account_reader_if_needed()
+    assert len(mgr.cache.get("HYPEUSD", [])) == 2
+

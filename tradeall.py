@@ -997,8 +997,14 @@ if __name__ == "__main__":
         ws_manager=bapi_ws.get_ws_manager(),
         symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
+        start_sync=False,
     )
-    cache24_managers = cm.CacheFactory.get("24Price", symbols=_main_symbols)   # dict {symbol: Cache24PriceManager}
+    current_price_mgr.periodic_sync(TIME_SLEEP_GET_PRICE, save_state=False)
+    cache24_managers = cm.CacheFactory.get(
+        "24Price",
+        symbols=_main_symbols,
+        start_sync=False,
+    )   # dict {symbol: Cache24PriceManager}
 
     # Trend manager owns windows, calculations, and the cross-process cache.
     instant_mgr = cm.get_short_trend_manager(symbols=_main_symbols)

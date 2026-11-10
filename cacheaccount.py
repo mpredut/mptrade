@@ -20,11 +20,13 @@ from collections import defaultdict
 from datetime import datetime
 import json
 import os
+import sys
 from typing import Optional
 import uuid
 
 from binance_api import bapi as api
 from binance_api import bapi_allorders as apiorders
+from binance_api import bapi_trades as _bapi_trades
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_now_ts, safe_pos_float
@@ -33,6 +35,7 @@ from cacheInterface import (
     _CACHE_META_SCHEMA_VERSION,
     _cm_override,
     _jsonl_line,
+    _monotonic_time,
     _now_time,
     _strict_int_field,
 )
@@ -344,7 +347,14 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             return
         for _attempt in range(2):
             try:
-                metadata = self._load_versioned_account_meta(optional=True)
+                metadata = (
+                    self._load_versioned_account_meta(optional=True)
+                    if (
+                        self.append_persist
+                        or not getattr(self, "_is_trade_account_cache", False)
+                    )
+                    else None
+                )
                 if metadata is not None:
                     version = str(metadata.get("data_version") or "")
                     with self.lock:
@@ -520,7 +530,12 @@ class CacheTradeManager(CacheAccountManagerBase):
                 clean_items[str(k)] = valid_rows
             clean_fetchtime = {}
             for k, v in loaded["fetchtime"].items():
-                if not isinstance(v, bool) and isinstance(v, (int, float)) and v >= 0:
+                if (
+                    (not clean_items or str(k) in clean_items)
+                    and not isinstance(v, bool)
+                    and isinstance(v, (int, float))
+                    and v >= 0
+                ):
                     clean_fetchtime[str(k)] = float(v)
             return {
                 "items": clean_items,
@@ -612,6 +627,25 @@ class CacheTradeManager(CacheAccountManagerBase):
             extract_order_price(item, default=None) is not None
             or safe_pos_float(item.get("price"), default=None) is not None
         )
+
+    def _persisted_max_ts(self) -> float:
+        meta_ts = super()._persisted_max_ts()
+        if self.append_persist or not os.path.exists(self.filename):
+            return meta_ts
+        try:
+            data = read_json_dict(self.filename)
+            ft = data.get("fetchtime") if isinstance(data, dict) else None
+            if isinstance(ft, dict) and ft:
+                vals = [
+                    float(v)
+                    for v in ft.values()
+                    if not isinstance(v, bool) and isinstance(v, (int, float))
+                ]
+                if vals:
+                    return max(meta_ts, max(vals))
+        except Exception:
+            pass
+        return meta_ts
 
     def _save_state_to_file_impl(self) -> bool:
         if self.append_persist:
@@ -1174,7 +1208,7 @@ class CacheTradeManager(CacheAccountManagerBase):
 
     def _persist_periodic_state(self, sync_complete):
         """Persist one cycle without reversing the Trade generation lock order."""
-        if self.save_state:
+        if self.save_state and self.append_persist:
             with self._generation_lock():
                 persisted = self._save_account_trade_append_if_current_generation_locked()
                 self._publish_periodic_sync_health(sync_complete, persisted)
@@ -1949,4 +1983,187 @@ CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_
 CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
     _venue_order_and_trade_cache_contracts
 )
+
+
+# ── Account reader synchronization, user-stream WS bridge & daemon lifecycle ──
+
+_account_cache_getter = None
+clear_binance_trade_cache_hook = _bapi_trades.clear_cache_trade_manager
+
+
+def bind_account_cache_getter(getter_fn) -> None:
+    """Bind the canonical factory cache getter used by account reader and WS helpers."""
+    global _account_cache_getter
+    _account_cache_getter = getter_fn
+
+
+def _resolve_account_cache_getter():
+    default_getter = _account_cache_getter or _bapi_ws_bridge._default_cache_getter
+    return _cm_override("get_cache_manager", default_getter)
+
+
+def ensure_account_cache_readers(status):
+    """Synchronize this process with both versions in a fresh health marker."""
+    ach = _cm_override("account_cache_health", account_cache_health)
+    getter = _resolve_account_cache_getter()
+    try:
+        order_version = status.order_cache_version
+        trade_version = status.trade_cache_version
+        if not order_version or not trade_version:
+            raise ValueError("health marker has no durable cache versions")
+        getter("BinanceOrder", start_sync=False).ensure_persisted_version(
+            order_version
+        )
+        getter("BinanceTrade", start_sync=False).ensure_persisted_version(
+            trade_version
+        )
+    except ach.AccountCacheNotReady:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ach.AccountCacheNotReady(
+            "account_cache_reader_not_current"
+        ) from exc
+
+
+_ws_bridge = _bapi_ws_bridge._ws_bridge
+
+
+def _ws_cache_getter(name, symbols=None, *, start_sync=False):
+    """Look up caches from WebSocket callbacks without spawning rogue polling loops in consumers."""
+    getter = _resolve_account_cache_getter()
+    try:
+        if symbols is not None:
+            return getter(name, symbols=symbols, start_sync=start_sync)
+        return getter(name, start_sync=start_sync)
+    except TypeError:
+        if symbols is not None:
+            return getter(name, symbols)
+        return getter(name)
+
+
+def _upsert_order_from_execution_report(event):
+    return _bapi_ws_bridge.upsert_order_from_execution_report(
+        event, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
+    )
+
+
+def _append_trade_from_execution_report(event):
+    return _bapi_ws_bridge.append_trade_from_execution_report(
+        event, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
+    )
+
+
+def _persist_ws_updated_caches(event_type):
+    _bapi_ws_bridge.persist_ws_updated_caches(
+        event_type, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
+    )
+
+
+refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
+
+
+def _handle_binance_ws_event(event):
+    _bapi_ws_bridge.handle_binance_ws_event(
+        event,
+        cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter),
+        log_enabled=_cm_override("WS_EVENT_LOG_ENABLED", WS_EVENT_LOG_ENABLED),
+        upsert_order_fn=_cm_override(
+            "_upsert_order_from_execution_report",
+            _upsert_order_from_execution_report,
+        ),
+        append_trade_fn=_cm_override(
+            "_append_trade_from_execution_report",
+            _append_trade_from_execution_report,
+        ),
+        persist_fn=_cm_override(
+            "_persist_ws_updated_caches",
+            _persist_ws_updated_caches,
+        ),
+    )
+
+
+def enable_real_ws_event_sync():
+    global _ws_bridge
+    cm_mod = sys.modules.get("cacheManager")
+    if cm_mod is not None and hasattr(cm_mod, "_ws_bridge"):
+        _ws_bridge = getattr(cm_mod, "_ws_bridge")
+    _bapi_ws_bridge._ws_bridge = _ws_bridge
+    _ws_bridge = _bapi_ws_bridge.enable_real_ws_event_sync(
+        on_event=_cm_override("_handle_binance_ws_event", _handle_binance_ws_event),
+        on_available=_cm_override("_mark_ws_available", _mark_ws_available),
+        on_healthy=_cm_override("_mark_ws_event_received", _mark_ws_event_received),
+        on_unhealthy=_cm_override("_mark_ws_unhealthy", _mark_ws_unhealthy),
+        loss_timeout_sec=_cm_override("WS_LOSS_TIMEOUT_SEC", WS_LOSS_TIMEOUT_SEC),
+    )
+    if cm_mod is not None:
+        cm_mod._ws_bridge = _ws_bridge
+    return _ws_bridge
+
+
+def _initialize_once():
+    _bapi_ws_bridge.initialize_ws_bridge_once(
+        enable_fn=_cm_override("enable_real_ws_event_sync", enable_real_ws_event_sync)
+    )
+
+
+def start_account_cache_daemon(
+    cache_getter=None, sync_started_set: Optional[set] = None
+) -> None:
+    """Enable the account-cache health writer, seed recent sync state, and start the user-stream WS bridge."""
+    ach = _cm_override("account_cache_health", account_cache_health)
+    getter = cache_getter or _resolve_account_cache_getter()
+    ach.enable_writer()
+    now_ms = int(_now_time() * 1000)
+    max_age_ms = int(ach.MAX_AGE_SEC * 1000)
+    for account_cache_name in ("BinanceOrder", "BinanceTrade"):
+        acc_mgr = getter(account_cache_name, start_sync=False)
+        if isinstance(sync_started_set, set):
+            sync_started_set.add(account_cache_name)
+        ver, sync_ms = (
+            acc_mgr.get_persisted_sync_state()
+            if hasattr(acc_mgr, "get_persisted_sync_state")
+            else ("", 0)
+        )
+        if ver and sync_ms > 0 and (now_ms - sync_ms) <= max_age_ms:
+            ach.record_successful_sync(
+                account_cache_name, ver, now_ms=sync_ms
+            )
+    init_fn = _cm_override("_initialize_once", _initialize_once)
+    init_fn()
+
+
+def disable_account_cache_daemon_writer() -> None:
+    """Mark the account-cache health writer stopping before tearing down daemon threads."""
+    ach = _cm_override("account_cache_health", account_cache_health)
+    ach.disable_writer()
+
+
+def _active_ws_bridge():
+    cm_mod = sys.modules.get("cacheManager")
+    if cm_mod is not None and getattr(cm_mod, "_ws_bridge", None) is not None:
+        return getattr(cm_mod, "_ws_bridge")
+    return _ws_bridge or _bapi_ws_bridge._ws_bridge
+
+
+def request_stop_account_ws_streams() -> None:
+    """Signal the account user-data WebSocket bridge to stop."""
+    bridge = _active_ws_bridge()
+    if bridge is not None and hasattr(bridge, "request_stop"):
+        try:
+            bridge.request_stop()
+        except Exception:
+            pass
+
+
+def stop_account_ws_streams(shutdown_deadline: float) -> None:
+    """Join the account user-data WebSocket bridge within ``shutdown_deadline``."""
+    bridge = _active_ws_bridge()
+    if bridge is not None and hasattr(bridge, "stop"):
+        try:
+            bridge.stop(
+                timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
+            )
+        except Exception:
+            pass
+
 
