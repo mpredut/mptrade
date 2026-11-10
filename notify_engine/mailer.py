@@ -95,10 +95,6 @@ def _config() -> dict | None:
     return cfg
 
 
-def is_configured() -> bool:
-    return _config() is not None
-
-
 def _smtp_send(msg: MIMEText, cfg: dict) -> None:
     with smtplib.SMTP(cfg["server"], cfg["port"], timeout=_SMTP_TIMEOUT_SEC) as smtp:
         smtp.starttls()

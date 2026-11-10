@@ -12,13 +12,13 @@ from typing import Any, Dict, Optional
 
 from botcore import safe_nonneg_float, safe_pos_float
 from cachepaths import resolve_binance_lookup_symbol
+from instrument_registry import venue_for_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
-    _resolve_configured_venue,
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json
 from state_io import read_json_dict, save_json_state
@@ -162,7 +162,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        if _resolve_configured_venue(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
             try:
                 if (eq_tel := self._fetch_equity_derivatives(symbol, now)) is not None:
                     return eq_tel
@@ -170,7 +170,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                 logger.warning("Could not fetch equity derivatives telemetry for %s: %s", symbol, eq_exc)
             return self._fallback_stale(symbol, cached)
 
-        is_hl_primary = _resolve_configured_venue(symbol) == "hyperliquid"
+        is_hl_primary = venue_for_symbol(symbol) == "hyperliquid"
         if is_hl_primary:
             try:
                 if (hl_tel := self._fetch_hyperliquid_derivatives(symbol, now)) is not None:

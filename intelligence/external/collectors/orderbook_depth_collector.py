@@ -23,6 +23,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     resolve_kraken_lookup_symbol,
 )
+from instrument_registry import venue_for_symbol
 from providers.base import MarketDataProvider
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
@@ -35,7 +36,6 @@ from intelligence.external.collectors.base_collector import (
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
     _is_multi_venue_base,
-    _resolve_configured_venue,
     round_spread_bps,
 )
 
@@ -133,7 +133,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        if _resolve_configured_venue(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
             try:
                 if (eq_ob := self._fetch_equity_orderbook(symbol, now)) is not None:
                     return eq_ob
@@ -172,7 +172,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 )
                 hl_coin = normalize_cache_base_asset(canon_sym)
                 hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
-                venue = _resolve_configured_venue(canon_sym)
+                venue = venue_for_symbol(canon_sym)
                 multi_venue = _is_multi_venue_base(canon_sym)
                 if venue == "kraken":
                     base_urls = (

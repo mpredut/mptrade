@@ -40,7 +40,7 @@ from notify_engine.alertnotifiers import (
     strip_owner_tags,
 )
 from notify_engine.mailer import (
-    is_configured as email_is_configured,
+    _config as _email_config,
     is_email_mirrored,
     last_error_is_auth_failure,
     send_email,
@@ -385,7 +385,7 @@ class NotificationServer:
     def _send_email(self, subject: str, message: str, is_retry: bool = False, *, dedup: bool = True) -> bool:
         # Retries and synthesized bulk batches bypass dedup: the first attempt already reserved this fingerprint.
         ok = send_email(subject, message, dedup=(dedup and not is_retry))
-        if not ok and not is_retry and email_is_configured() and not last_error_is_auth_failure():
+        if not ok and not is_retry and _email_config() is not None and not last_error_is_auth_failure():
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 

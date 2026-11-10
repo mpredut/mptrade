@@ -8582,15 +8582,15 @@ def test_iter106_equity_crypto_scope_isolation_in_trends_sibling_sync_fills_and_
 
 def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     from datetime import datetime, timezone
-    from instrument_registry import is_symbol_market_open
-    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector, _resolve_configured_venue
+    from instrument_registry import is_symbol_market_open, venue_for_symbol
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
-    assert _resolve_configured_venue("NVDA_US_EQ") == "t212"
-    assert _resolve_configured_venue("SPCX_US_EQ") == "t212"
-    assert _resolve_configured_venue("RGNT_US_EQ") == "t212"
+    assert venue_for_symbol("NVDA_US_EQ") == "t212"
+    assert venue_for_symbol("SPCX_US_EQ") == "t212"
+    assert venue_for_symbol("RGNT_US_EQ") == "t212"
 
     # RTH check: Wednesday 15:00 UTC (10:00 ET) is open; Sunday 15:00 UTC is closed for equities, open for crypto
     wed_rth = datetime(2026, 11, 4, 15, 0, tzinfo=timezone.utc).timestamp()

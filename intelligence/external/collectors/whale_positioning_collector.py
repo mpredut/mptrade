@@ -20,6 +20,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
+from instrument_registry import venue_for_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
@@ -27,7 +28,6 @@ from intelligence.external.collectors.base_collector import (
     _clean_snapshot_symbol,
     _clean_snapshot_ts,
     _has_hyperliquid_instrument,
-    _resolve_configured_venue,
     is_cache_fresh,
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json, resolve_now_ts
@@ -247,7 +247,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
-        if _resolve_configured_venue(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
             try:
                 if (eq_whale := self._fetch_equity_whale(symbol, price_1h_change_pct, now, cached)) is not None:
                     return eq_whale

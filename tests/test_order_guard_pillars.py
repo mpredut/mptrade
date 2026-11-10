@@ -651,8 +651,8 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
     assert dec_zone3.metadata["weibull_survival"] < 0.10
 
     # Verify check_qlimit2_order_guards resolves cached Gaussian horizon when G_QLIMIT1 is active
-    monkeypatch.setattr(qlimit_order_guard, "_resolve_trend_duration", lambda _s: 10.3 * 86400)
-    monkeypatch.setattr(qlimit_order_guard, "_resolve_trend_direction", lambda _s, **_k: "bear")
+    monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda _s: 10.3 * 86400)
+    monkeypatch.setattr(order_guard, "_resolve_trend_direction", lambda _s, **_k: "bear")
     monkeypatch.setattr(qlimit_order_guard, "resolve_cached_gaussian_horizon", lambda _s, **_k: (6.6, 3.0, 11.2))
     m = _margins(
         internal_guard_mode="enforce",
@@ -688,12 +688,12 @@ def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
     )
     # Duration = 8.0 days (> p90_d=6.7d, < default_p90=10.0d, < gauss_horizon=9.38d)
     monkeypatch.setattr(
-        qlimit_order_guard,
+        order_guard,
         "_resolve_trend_duration",
         lambda sym: 8.0 * 86400.0,
     )
     monkeypatch.setattr(
-        qlimit_order_guard,
+        order_guard,
         "_resolve_trend_direction",
         lambda sym, regime_context=None: "bull",
     )

@@ -465,9 +465,9 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     from providers.execution_audit import AuditedStrategyExecutor
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
+    from instrument_registry import venue_for_symbol
     from intelligence.external.collectors.base_collector import (
         _has_hyperliquid_instrument,
-        _resolve_configured_venue,
     )
 
     now = time.time()
@@ -548,11 +548,11 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
         assert kr_prov.get_ssot_cached_price("HYPEUSD") is None
 
     # Telemetry collectors resolve venues via SSOT registry
-    assert _resolve_configured_venue("HYPEUSDC") == "hyperliquid"
-    assert _resolve_configured_venue("HYPEUSD") == "kraken"
-    assert _resolve_configured_venue("ADAUSD") == "kraken"
-    assert _resolve_configured_venue("TAOUSDC") == "binance"
-    assert _resolve_configured_venue("SUIUSD") == "binance"
+    assert venue_for_symbol("HYPEUSDC") == "hyperliquid"
+    assert venue_for_symbol("HYPEUSD") == "kraken"
+    assert venue_for_symbol("ADAUSD") == "kraken"
+    assert venue_for_symbol("TAOUSDC") == "binance"
+    assert venue_for_symbol("SUIUSD") == "binance"
     assert _has_hyperliquid_instrument("HYPEUSDC") is True
     assert _has_hyperliquid_instrument("HYPEUSD") is True
     assert _has_hyperliquid_instrument("ADAUSD") is False
@@ -613,8 +613,8 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
             "KRAKEN_SOL": SimpleNamespace(symbol="SOLUSD", base="SOL", quote="USD", provider="kraken", enabled=True),
             "HL_SOL": SimpleNamespace(symbol="SOLUSDC", base="SOL", quote="USDC", provider="hyperliquid", enabled=False),
         }
-        assert obd_mod._resolve_configured_venue("SOLUSD") == "kraken"
-        assert obd_mod._resolve_configured_venue("SOLUSDC") == "hyperliquid"
+        assert ir_mod.venue_for_symbol("SOLUSD") == "kraken"
+        assert ir_mod.venue_for_symbol("SOLUSDC") == "hyperliquid"
         assert obd_mod._is_multi_venue_base("SOLUSD") is True
         assert obd_mod._has_hyperliquid_instrument("SOLUSD") is True
     finally:

@@ -25,16 +25,6 @@ from intelligence.internal.state.survival import get_cached_t_entry
 import order_guard as _og
 
 
-def _resolve_trend_duration(symbol: str) -> float:
-    """Read trend duration in seconds, delegating to order_guard SSOT."""
-    return _og._resolve_trend_duration(symbol)
-
-
-def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optional[str]:
-    """Read trend direction ('up'/'down'/'bull'/'bear'), delegating to order_guard SSOT."""
-    return _og._resolve_trend_direction(symbol, regime_context=regime_context)
-
-
 def resolve_cached_gaussian_horizon(
     symbol: str, exceed_percent: float = 0.4
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -133,7 +123,7 @@ def check_qlimit2_order_guards(
     # 2. Weibull trend exhaustion check (calibrated past G_QLIMIT1's Gaussian Zone 2 when resolved from live cache)
     explicit_duration_override = safe_pos_float(trend_duration_seconds, 0.0) > 0.0
     dur_sec = resolve_effective_trend_duration(
-        symbol, trend_duration_seconds, regime_context, fallback_resolver=_resolve_trend_duration
+        symbol, trend_duration_seconds, regime_context, fallback_resolver=_og._resolve_trend_duration
     )
 
     if dur_sec > 0.0 and not weibull_only_bypass and not bool(raw_bypass_tokens & {"exhaustion_guard", "weibullexhaustionguard"}):
@@ -141,7 +131,7 @@ def check_qlimit2_order_guards(
         if explicit_duration_override and ctx_rt is None:
             trend_dir = None
         else:
-            trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context)
+            trend_dir = _og._resolve_trend_direction(symbol, regime_context=regime_context)
 
         gauss_horizon_d = None
         p90_d = None

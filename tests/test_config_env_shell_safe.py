@@ -563,7 +563,7 @@ def test_qlimit_tradeall_and_order_retry_hardening(monkeypatch):
 
     # 4. qlimit_order_guard falls back to _resolve_trend_duration when trend_duration_seconds is NaN/bool
     called = []
-    monkeypatch.setattr(qog, "_resolve_trend_duration", lambda sym: called.append(sym) or 0.0)
+    monkeypatch.setattr(qog._og, "_resolve_trend_duration", lambda sym: called.append(sym) or 0.0)
     qog.check_qlimit2_order_guards(
         "BTCUSDC",
         "BUY",

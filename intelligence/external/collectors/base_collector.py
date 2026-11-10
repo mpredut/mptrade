@@ -2,7 +2,7 @@
 
 Unifies:
 - In-memory + disk snapshot caching (`_DiskBackedSymbolCollector`)
-- SSOT venue/symbol resolution (`_resolve_configured_venue`, `_is_multi_venue_base`, `_has_hyperliquid_instrument`)
+- SSOT venue/symbol resolution (`_is_multi_venue_base`, `_has_hyperliquid_instrument`)
 - Hyperliquid L1 `metaAndAssetCtxs` lookup (`_fetch_hyperliquid_asset_ctx`)
 - Numeric and spread normalization (`_clean_dict_float`, `_clean_snapshot_symbol`, `round_spread_bps`)
 """
@@ -80,11 +80,6 @@ def _cached_registry_specs() -> Tuple[Any, ...]:
     return specs
 
 
-def _resolve_configured_venue(symbol: str) -> str:
-    """Return the SSOT configured provider ('t212', 'hyperliquid', 'kraken', or 'binance') for symbol."""
-    return venue_for_symbol(symbol, default="binance")
-
-
 def _is_multi_venue_base(symbol: str) -> bool:
     """Return True when the symbol's base asset is tracked across multiple venues/quotes."""
     base = normalize_cache_base_asset(symbol)
@@ -106,7 +101,7 @@ def _is_multi_venue_base(symbol: str) -> bool:
 
 def _has_hyperliquid_instrument(symbol: str) -> bool:
     """Return True when the symbol or its base asset is configured on Hyperliquid in SSOT."""
-    if _resolve_configured_venue(symbol) == "hyperliquid":
+    if venue_for_symbol(symbol) == "hyperliquid":
         return True
     base = normalize_cache_base_asset(symbol)
     if not base:
@@ -511,7 +506,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
 
     def _is_exact_venue_symbol(self, sym_clean: str) -> bool:
-        venue = _resolve_configured_venue(sym_clean)
+        venue = venue_for_symbol(sym_clean)
         return bool(
             venue in ("hyperliquid", "t212")
             or is_equity_symbol(sym_clean)
