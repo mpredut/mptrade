@@ -216,19 +216,16 @@ class HLClient:
                     self._meta_cache[a["name"]] = a
         return self._meta_cache
 
-    @staticmethod
-    def _strip_spot_quote_suffix(coin: str) -> str:
-        u = coin.upper()
-        if u.endswith("/USDC") and len(coin) > 5:
-            return coin[:-5].strip()
-        if u.endswith("USDC") and len(coin) > 4:
-            return coin[:-4].strip()
-        return coin
-
     @classmethod
     def _coin_candidates(cls, coin: str) -> tuple[str, ...]:
         c = coin.strip()
-        base = cls._strip_spot_quote_suffix(c)
+        u = c.upper()
+        if u.endswith("/USDC") and len(c) > 5:
+            base = c[:-5].strip()
+        elif u.endswith("USDC") and len(c) > 4:
+            base = c[:-4].strip()
+        else:
+            base = c
         return (c,) if base.casefold() == c.casefold() else (c, base)
 
     @classmethod

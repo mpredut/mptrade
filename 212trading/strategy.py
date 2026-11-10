@@ -327,13 +327,6 @@ class Strategy(BaseSpotMixin):
         log(f"  ! {ccy}/USD rate unavailable - treating amounts as USD (1:1). Check STRAT_CURRENCY!")
         return 1.0
 
-    def _qty_for_amount(self, amount: float, price: float) -> float:
-        amt_f, px_f, fx_f = safe_pos_float(amount, None), safe_pos_float(price, None), safe_pos_float(self.fx_to_usd, None)
-        if amt_f is None or px_f is None or fx_f is None:
-            return 0.0
-        usd = safe_pos_float(amt_f * fx_f, default=None)
-        return round(usd / px_f, 2) if usd is not None else 0.0
-
     def _new_pending_submit(self, *, side: str, qty: float, limit: float,
                             amount: float | None, kind: str,
                             level: float | None, market: bool) -> dict:
@@ -555,7 +548,9 @@ class Strategy(BaseSpotMixin):
             log("  ! [STRAT] invalid BUY amount/limit — skipping")
             return False
         limit, amount = lim_f, amt_f
-        qty = self._qty_for_amount(amount, limit)
+        fx_f = safe_pos_float(self.fx_to_usd, None)
+        usd = safe_pos_float(amount * fx_f, default=None) if fx_f is not None else None
+        qty = round(usd / limit, 2) if usd is not None else 0.0
         if qty <= 0:
             log("  ! [STRAT] qty 0 — skipping")
             return False

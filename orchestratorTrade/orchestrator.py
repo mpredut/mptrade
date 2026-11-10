@@ -50,7 +50,10 @@ class BotManager:
         self.recent_lines: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self.last_hb_status_log = time.time()
         self.running = True
-        self.venv = self._resolve_venv()
+        self.venv = os.environ.get("VENV") or next(
+            (cand for cand in (".venv", "myenv") if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate"))),
+            "myenv",
+        )
         if "ORCHESTRATOR_VERBOSE_STDOUT" not in os.environ:
             raise KeyError("Missing required env key 'ORCHESTRATOR_VERBOSE_STDOUT' in config.env")
         self.verbose_stdout = botcore._parse_bool_flag(os.environ["ORCHESTRATOR_VERBOSE_STDOUT"], False)
@@ -61,16 +64,6 @@ class BotManager:
             raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
         self._shutting_down = False
         self._reloading = False
-
-    @staticmethod
-    def _resolve_venv() -> str:
-        venv = os.environ.get("VENV")
-        if not venv:
-            for cand in (".venv", "myenv"):
-                if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate")):
-                    venv = cand
-                    break
-        return venv or "myenv"
 
     def parse_procs_conf(self) -> List[Dict[str, Any]]:
         conf_path = os.path.join(ROOT_DIR, "procs.conf")

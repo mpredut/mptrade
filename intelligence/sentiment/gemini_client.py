@@ -79,16 +79,6 @@ class GeminiClient(GeminiQuotaRouterMixin):
     _TOPIC_LOCKS_GUARD = threading.Lock()
     _JSON_MODE_LOCAL = threading.local()
 
-    @classmethod
-    def _get_topic_lock(cls, topic_key: str) -> threading.Lock:
-        key = str(topic_key or "").strip()
-        with cls._TOPIC_LOCKS_GUARD:
-            lock = cls._TOPIC_LOCKS.get(key)
-            if lock is None:
-                lock = threading.Lock()
-                cls._TOPIC_LOCKS[key] = lock
-            return lock
-
     def __init__(
         self,
         model: Optional[str] = None,
@@ -426,7 +416,12 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     )
                 )
                 if use_topic_session and topic_key:
-                    topic_lock = self._get_topic_lock(topic_key)
+                    t_key = str(topic_key).strip()
+                    with self._TOPIC_LOCKS_GUARD:
+                        topic_lock = self._TOPIC_LOCKS.get(t_key)
+                        if topic_lock is None:
+                            topic_lock = threading.Lock()
+                            self._TOPIC_LOCKS[t_key] = topic_lock
                     topic_lock.acquire()
                 session = TopicSession(conversation_id, "", False)
                 if use_topic_session and not conversation_id:

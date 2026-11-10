@@ -14,7 +14,6 @@ from botcore import (
     safe_pos_int,
 )
 from guard_hierarchy import GUARD_REGISTRY
-from instrument import Instrument
 import order_guard
 import order_retry
 from order_lifecycle import restore_cancelled_orders
@@ -29,7 +28,6 @@ from providers.order_ohlc_utils import (
     extract_remaining_qty,
     resolve_order_actor,
 )
-from providers.market_api import api as mkt
 from providers.quantity import (
     check_order_filter_refusal,
     resolve_assets,
@@ -190,16 +188,6 @@ def _inst_provider(inst: Any = None) -> Optional[str]:
 
 def _mt_attr(name: str, default: Any) -> Any:
     return resolve_patched_attr(name, default, modules=("monitortrades",))
-
-
-def _as_instrument(x):
-    """Accept an Instrument or adapt a symbol string through the provider facade."""
-    inst_cls = _mt_attr("Instrument", Instrument)
-    if isinstance(x, inst_cls):
-        return x
-    sym_s = str(x)
-    facade = _mt_attr("mkt", mkt)
-    return inst_cls(name=sym_s, symbol=sym_s, provider=facade.provider_name_for(sym_s), base=resolve_assets(sym_s)[0])
 
 
 def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:

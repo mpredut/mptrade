@@ -983,19 +983,16 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             or (casefold_get(self._provider_names, ck) if ck else None)
         )
 
-    def _resolve_symbol_ws_ts(self, ts_map: dict, symbol: str) -> float:
-        sym_u, sym_clean = _norm_symbol_keys(symbol)
-        for cand in (symbol, sym_u, sym_clean):
-            if cand and (val := ts_map.get(cand)) is not None:
-                return val
-        return self._ws_default_event_ts
-
     def _is_ws_ts_map_healthy(
         self, ts_map: dict, symbol: Optional[str] = None
     ) -> bool:
         now = _now_time()
         if symbol is not None:
-            last_ts = self._resolve_symbol_ws_ts(ts_map, symbol)
+            sym_u, sym_clean = _norm_symbol_keys(symbol)
+            last_ts = next(
+                (val for cand in (symbol, sym_u, sym_clean) if cand and (val := ts_map.get(cand)) is not None),
+                self._ws_default_event_ts,
+            )
             return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
         if not self.symbols:
             return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
@@ -1020,15 +1017,6 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     def is_rth_gate_enforced(self) -> Optional[bool]:
         return getattr(self, "_enforce_rth_gate", None)
 
-    def _record_price_timestamp(self, symbol: str) -> None:
-        now = _now_time()
-        cutoff = now - self.FREQ_WINDOW_SEC
-        with self.lock:
-            dq = self._update_timestamps[symbol]
-            dq.append(now)
-            while dq and dq[0] < cutoff:
-                dq.popleft()
-
     def push_price(
         self, symbol: str, price: float, ts_ms: Optional[int] = None
     ) -> None:
@@ -1043,7 +1031,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if price_val is None or ts_val is None or ts_val <= 0:
             return
         self._ensure_fetchtimes_initialized()
-        self._record_price_timestamp(symbol)
+        now = _now_time()
+        cutoff = now - self.FREQ_WINDOW_SEC
+        with self.lock:
+            dq = self._update_timestamps[symbol]
+            dq.append(now)
+            while dq and dq[0] < cutoff:
+                dq.popleft()
         self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._notify_price_subscribers(symbol, ts_val, price_val)
 

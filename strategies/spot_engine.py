@@ -406,13 +406,6 @@ class Strategy(BaseSpotMixin):
         if self._state_write_failed:
             raise ProviderError("the intent state could not be persisted")
 
-    def _intent_identity(self, side: str, kind: str, vol: float, price: float) -> str:
-        """Stable semantic ID for retries of one rounded strategy instruction."""
-        return (
-            f"spot-dca:{self.venue_label}:{self.pair}:cycle-{self.s.get('cycle', 1)}:"
-            f"{kind}:{side}:{vol:.{self.vol_dec}f}:{price:.{self.price_dec}f}"
-        )
-
     def _order_from_pending(self, pending: dict) -> dict:
         req_qty = safe_pos_float(pending.get("requested_qty"), 0.0)
         sub_qty = safe_pos_float(pending.get("submitted_qty"), None)
@@ -562,7 +555,10 @@ class Strategy(BaseSpotMixin):
             preflight = getattr(type(self.client), "preflight_order", None)
             if callable(preflight):
                 preflight(self.client, self.pair, side, vol, None if market else price, market=market, kind=kind)
-            intent_id = self._intent_identity(side, kind, vol, price)
+            intent_id = (
+                f"spot-dca:{self.venue_label}:{self.pair}:cycle-{self.s.get('cycle', 1)}:"
+                f"{kind}:{side}:{vol:.{self.vol_dec}f}:{price:.{self.price_dec}f}"
+            )
             client_order_id = intent_client_order_id(self.venue_label, intent_id)
             if not client_order_id:
                 raise ProviderError(f"{self.venue_label}: client_order_id unavailable for the lifecycle")

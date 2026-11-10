@@ -827,15 +827,6 @@ def _cancel_order_confirmed(symbol, order_id):
     return status
 
 
-def _remaining_after_canceled_order(status, submitted_qty):
-    """Return the unfilled terminal remainder, or ``None`` for invalid state."""
-    sub_f = safe_pos_float(submitted_qty, default=None)
-    fill_f = safe_nonneg_float(getattr(status, "filled_qty", None), default=None)
-    if sub_f is None or fill_f is None or fill_f > sub_f + max(1e-12, sub_f * 1e-9):
-        return None
-    return 0.0 if status.fully_filled else max(0.0, sub_f - fill_f)
-
-
 def _place_failure_backoff(reason):
     """Return ``(side, seconds)`` for a terminal placement failure."""
     reason = str(reason or "").strip().lower()
@@ -965,15 +956,6 @@ class TradingBot:
             cond = threading.Condition(threading.RLock())
             self._pair_precheck_cond = cond
         return cond
-
-    def _abort_round(self):
-        cond = self._get_pair_cond()
-        with cond:
-            self._round_aborted = True
-            pending = getattr(self, "_pair_precheck_pending", None)
-            if isinstance(pending, set):
-                pending.clear()
-            cond.notify_all()
 
     def _finish_side_precheck(self, side, *, aborted=False):
         cond = self._get_pair_cond()
@@ -1220,7 +1202,13 @@ class TradingBot:
                     print(f"[{self.symbol}] Cancel {side} order remains ambiguous; replacement is deferred.")
                     return None
 
-                remaining_qty = _remaining_after_canceled_order(final_status, target_qty)
+                sub_f = safe_pos_float(target_qty, default=None)
+                fill_f = safe_nonneg_float(getattr(final_status, "filled_qty", None), default=None)
+                remaining_qty = (
+                    None
+                    if sub_f is None or fill_f is None or fill_f > sub_f + max(1e-12, sub_f * 1e-9)
+                    else (0.0 if final_status.fully_filled else max(0.0, sub_f - fill_f))
+                )
                 if remaining_qty is None:
                     print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
                     return None
@@ -1239,7 +1227,13 @@ class TradingBot:
                 pending_replacement_qty = remaining_qty
         finally:
             if not completed:
-                self._abort_round()
+                cond = self._get_pair_cond()
+                with cond:
+                    self._round_aborted = True
+                    pending = getattr(self, "_pair_precheck_pending", None)
+                    if isinstance(pending, set):
+                        pending.clear()
+                    cond.notify_all()
 
     def repetitive_buy(self, current_price, filled_sell_price):
         return self._repetitive_side_loop("BUY", current_price, filled_sell_price)

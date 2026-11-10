@@ -114,7 +114,12 @@ class PriceChecker:
     def __init__(self, cachePriceAll, alert_callback: Optional[Callable] = None,
                  config: Optional[dict] = None, state_file: Optional[str] = None):
         self.cachePriceAll = cachePriceAll
-        self.alert_callback = alert_callback or self._default_alert_handler
+        self.alert_callback = alert_callback or (
+            lambda alert: [
+                print(f"\n{'=' * 60}\n{item}\n{'=' * 60}")
+                for item in (alert if isinstance(alert, (list, tuple)) else [alert])
+            ]
+        )
         # Use market_alerts.conf configuration, including per_coin, when supplied;
         # otherwise retain the legacy hardcoded defaults.
         self.config = copy.deepcopy(PRICE_ALERT_CONFIG)
@@ -155,23 +160,6 @@ class PriceChecker:
                             self._last_alert_time[k.strip()] = min(ts, now)
         except Exception:
             pass
-
-    def _save_cooldown_state(self) -> None:
-        if not self.state_file:
-            return
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
-            save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
-        except Exception:
-            pass
-
-    def _default_alert_handler(self, alert):
-        """Default handler that prints the alert(s) to the console."""
-        items = alert if isinstance(alert, (list, tuple)) else [alert]
-        for item in items:
-            print("\n" + "=" * 60)
-            print(str(item))
-            print("=" * 60)
 
     def _build_cmc_url(self, symbol: str) -> str:
         try:
@@ -322,7 +310,12 @@ class PriceChecker:
     def _record_alert_sent(self, symbol: str, alert_type: str):
         """Record that an alert was sent."""
         self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
-        self._save_cooldown_state()
+        if self.state_file:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
+                save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
+            except Exception:
+                pass
 
     def check_symbol(self, symbol: str) -> List[PriceAlert]:
         """Check a symbol and return a list of alerts (0, 1, or 2)."""

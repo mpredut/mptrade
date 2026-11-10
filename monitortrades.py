@@ -41,11 +41,10 @@ from providers.order_ohlc_utils import (
     extract_order_side,
 )
 from providers.market_api import api as mkt
-from providers.quantity import check_order_filter_refusal
+from providers.quantity import check_order_filter_refusal, resolve_assets
 from state_io import discard_generation_file, read_json_dict, save_json_state
 from strategies.mt_position_accounting import (
     _FifoTradeIdTracker,
-    _as_instrument,
     _build_sl_bounce_state,
     _cancel_resting_tp_orders,
     _coerce_order_list,
@@ -1521,7 +1520,9 @@ def _evaluate_mt_reentry(
 def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None, lost_threshold=None, now_fn=None):
     """Use injectable ``now_fn`` so replay time can follow its market-data provider."""
     now_fn = now_fn or time.time
-    inst = _as_instrument(inst)
+    if not isinstance(inst, Instrument):
+        sym_s = str(inst)
+        inst = Instrument(name=sym_s, symbol=sym_s, provider=mkt.provider_name_for(sym_s), base=resolve_assets(sym_s)[0])
     symbol = inst.symbol
     _verbose = builtins.print.__name__ != "_dummy_print"
     (

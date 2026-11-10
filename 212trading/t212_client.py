@@ -310,17 +310,16 @@ class T212Client:
             self._last_order = time.monotonic()
 
     # -- auth / headers --------------------------------------------------------
-    def _auth(self) -> str:
-        if self.api_secret:
-            token = base64.b64encode(f"{self.api_key}:{self.api_secret}".encode()).decode()
-            return f"Basic {token}"
-        return self.api_key
-
     def _headers(self, endpoint_key: str | None = None) -> dict:
         # Every request builds headers here, providing one throttle point across threads.
         self._pace(endpoint_key)
+        auth = (
+            f"Basic {base64.b64encode(f'{self.api_key}:{self.api_secret}'.encode()).decode()}"
+            if self.api_secret
+            else self.api_key
+        )
         return {
-            "Authorization": self._auth(),
+            "Authorization": auth,
             "User-Agent": _BROWSER_UA,  # Avoid Cloudflare 403 responses.
             "Accept": "application/json",
         }
