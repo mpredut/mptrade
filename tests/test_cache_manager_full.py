@@ -2634,7 +2634,11 @@ def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
         ),
     )
     monkeypatch.setattr(cm, "account_cache_health", fake_ach)
-    monkeypatch.setattr(cm, "_initialize_once", lambda: init_called.append(True))
+    monkeypatch.setattr(
+        cacheaccount._bapi_ws_bridge,
+        "initialize_ws_bridge_once",
+        lambda **_kw: init_called.append(True),
+    )
 
     sync_set = set()
     cacheaccount.start_account_cache_daemon(

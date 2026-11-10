@@ -82,20 +82,6 @@ def check_errors(c, log_path):
     return errors[-5:]  # At most five relevant lines.
 
 
-def _rel_dir(dir_field):
-    """'$ROOT/212trading' -> '212trading'; '$ROOT' -> ''."""
-    d = dir_field.replace("$ROOT", "").lstrip("/")
-    return d
-
-
-def _log_from_cmd(start_cmd):
-    """Extract the log file from the startup command's '>> x.log' redirection."""
-    if ">>" not in start_cmd:
-        return ""
-    after = start_cmd.split(">>", 1)[1].strip()
-    return after.split()[0] if after else ""
-
-
 def load_procs(c):
     """Read procs.conf from the server and derive the log to scan for each process.
 
@@ -115,14 +101,15 @@ def load_procs(c):
         if len(parts) < 7:
             continue
         pat, dir_field, start_cmd, label, hb_log, _stale, role = (p.strip() for p in parts[:7])
-        reldir = _rel_dir(dir_field)
+        reldir = dir_field.replace("$ROOT", "").lstrip("/")
 
         if role == "fleet":
             pat_tokens = pat.split()
             clean_stem = (label or (os.path.basename(pat_tokens[0]) if pat_tokens else "unknown")).replace(".py", "")
             log = f"logs/{clean_stem}.log"
         else:
-            rel = hb_log or _log_from_cmd(start_cmd)
+            after_redir = start_cmd.split(">>", 1)[1].strip() if ">>" in start_cmd else ""
+            rel = hb_log or (after_redir.split()[0] if after_redir else "")
             if "," in rel:
                 parts_rel = [p.strip() for p in rel.split(",") if p.strip()]
                 log_candidates = [p for p in parts_rel if p.endswith(".log")]

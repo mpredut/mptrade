@@ -2053,19 +2053,14 @@ def _append_trade_from_execution_report(event):
     )
 
 
-def _persist_ws_updated_caches(event_type):
-    _bapi_ws_bridge.persist_ws_updated_caches(
-        event_type, cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter)
-    )
-
-
 refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
 
 
 def _handle_binance_ws_event(event):
+    cache_getter = _cm_override("_ws_cache_getter", _ws_cache_getter)
     _bapi_ws_bridge.handle_binance_ws_event(
         event,
-        cache_getter=_cm_override("_ws_cache_getter", _ws_cache_getter),
+        cache_getter=cache_getter,
         log_enabled=_cm_override("WS_EVENT_LOG_ENABLED", WS_EVENT_LOG_ENABLED),
         upsert_order_fn=_cm_override(
             "_upsert_order_from_execution_report",
@@ -2075,9 +2070,8 @@ def _handle_binance_ws_event(event):
             "_append_trade_from_execution_report",
             _append_trade_from_execution_report,
         ),
-        persist_fn=_cm_override(
-            "_persist_ws_updated_caches",
-            _persist_ws_updated_caches,
+        persist_fn=lambda event_type: _bapi_ws_bridge.persist_ws_updated_caches(
+            event_type, cache_getter=cache_getter
         ),
     )
 
@@ -2098,12 +2092,6 @@ def enable_real_ws_event_sync():
     if cm_mod is not None:
         cm_mod._ws_bridge = _ws_bridge
     return _ws_bridge
-
-
-def _initialize_once():
-    _bapi_ws_bridge.initialize_ws_bridge_once(
-        enable_fn=_cm_override("enable_real_ws_event_sync", enable_real_ws_event_sync)
-    )
 
 
 def start_account_cache_daemon(
@@ -2128,8 +2116,9 @@ def start_account_cache_daemon(
             ach.record_successful_sync(
                 account_cache_name, ver, now_ms=sync_ms
             )
-    init_fn = _cm_override("_initialize_once", _initialize_once)
-    init_fn()
+    _bapi_ws_bridge.initialize_ws_bridge_once(
+        enable_fn=_cm_override("enable_real_ws_event_sync", enable_real_ws_event_sync)
+    )
 
 
 def disable_account_cache_daemon_writer() -> None:

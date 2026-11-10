@@ -305,26 +305,6 @@ def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:
     return split_csv(_cfg_str("taxonomies", key), lower=lower, upper=not lower)
 
 
-def get_market_biases() -> Tuple[str, ...]:
-    return _tax_tuple("market_biases")
-
-
-def get_risk_levels() -> Tuple[str, ...]:
-    return _tax_tuple("risk_levels")
-
-
-def get_recommended_actions() -> Tuple[str, ...]:
-    return _tax_tuple("recommended_actions")
-
-
-def get_threat_levels() -> Tuple[str, ...]:
-    return _tax_tuple("threat_levels")
-
-
-def get_recommended_brakes() -> Tuple[str, ...]:
-    return _tax_tuple("recommended_brakes")
-
-
 def get_cross_asset_regimes() -> Tuple[str, ...]:
     return _tax_tuple("cross_asset_regimes")
 
@@ -451,41 +431,42 @@ def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
 
 def _normalize_taxonomy(
     value: Any,
-    allowed: Tuple[str, ...],
+    tax_key: str,
     alias_cfg_key: str,
     default_idx: int,
     fallback_str: str,
     default: Optional[str] = None,
 ) -> str:
+    allowed = _tax_tuple(tax_key)
     fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
     cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
     return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
 
 
 def normalize_market_bias(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, get_market_biases(), "bias_aliases", 1, "NEUTRAL", default)
+    return _normalize_taxonomy(value, "market_biases", "bias_aliases", 1, "NEUTRAL", default)
 
 
 def normalize_risk_level(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, get_risk_levels(), "risk_aliases", 1, "MODERATE", default)
+    return _normalize_taxonomy(value, "risk_levels", "risk_aliases", 1, "MODERATE", default)
 
 
 def normalize_recommended_action(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, get_recommended_actions(), "action_aliases", 1, "HOLD", default)
+    return _normalize_taxonomy(value, "recommended_actions", "action_aliases", 1, "HOLD", default)
 
 
 def normalize_threat_level(value: Any, default: Optional[str] = None) -> str:
-    return _normalize_taxonomy(value, get_threat_levels(), "threat_aliases", 0, "NORMAL", default)
+    return _normalize_taxonomy(value, "threat_levels", "threat_aliases", 0, "NORMAL", default)
 
 
 def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) -> str:
-    brakes = get_recommended_brakes()
+    brakes = _tax_tuple("recommended_brakes")
     cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
     if cleaned in brakes:
         return cleaned
     if (aliased := _parse_kv_map(_cfg_str("taxonomies", "brake_aliases")).get(cleaned)) is not None:
         return aliased
-    levels = get_threat_levels()
+    levels = _tax_tuple("threat_levels")
     norm_threat = normalize_threat_level(threat_level)
     if len(levels) >= 3 and len(brakes) >= 3 and norm_threat in (levels[1], levels[2]):
         return brakes[2 if norm_threat == levels[2] else 1]

@@ -621,11 +621,6 @@ _CACHED_EXIT_MGR_KEY: Optional[tuple] = None
 _CACHED_EXIT_MGR: Optional[PositionExitManager] = None
 
 
-def _resolve_vol_tuple(sym: str) -> Tuple[float, str]:
-    v = get_symbol_volatility_1h(sym)
-    return (v or 0.0, "1h_cache" if v is not None else "default")
-
-
 def get_exit_manager() -> PositionExitManager:
     """Return a PositionExitManager instance dynamically configured with module parameters and state."""
     global _CACHED_EXIT_MGR_KEY, _CACHED_EXIT_MGR
@@ -670,7 +665,10 @@ def get_exit_manager() -> PositionExitManager:
             reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
             reentry_post_stop_cooldown_sec=MT_REENTRY_POST_STOP_COOLDOWN_SEC,
         )
-        mgr = PositionExitManager(config=config, vol_resolver=_resolve_vol_tuple)
+        mgr = PositionExitManager(
+            config=config,
+            vol_resolver=lambda sym: ((v := get_symbol_volatility_1h(sym)) or 0.0, "1h_cache" if v is not None else "default"),
+        )
         _CACHED_EXIT_MGR_KEY = cfg_key
         _CACHED_EXIT_MGR = mgr
     mgr.sl_bounce_state = _SL_BOUNCE_STATE

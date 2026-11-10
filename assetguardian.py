@@ -944,17 +944,10 @@ def _buy_remaining_cash(state, threshold, allocation):
     return max(0.0, target_cash - prior_spent), target_cash, prior_spent
 
 
-def _ag_client_order_id(prefix, kind, symbol, anchor_ts, threshold, attempt):
-    raw = f"assetguardian:{kind}:{symbol}:{anchor_ts}:{float(threshold):g}:{int(attempt)}"
+def _ag_client_order_id(kind, symbol, state, threshold, attempt):
+    prefix, anchor_key = ("AGS", "trough_ts") if kind == "sell" else ("AGB", "peak_ts")
+    raw = f"assetguardian:{kind}:{symbol}:{state.get(anchor_key)}:{float(threshold):g}:{int(attempt)}"
     return prefix + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
-
-
-def _sell_client_order_id(symbol, state, threshold, attempt):
-    return _ag_client_order_id("AGS", "sell", symbol, state.get("trough_ts"), threshold, attempt)
-
-
-def _buy_client_order_id(symbol, state, threshold, attempt):
-    return _ag_client_order_id("AGB", "buy", symbol, state.get("peak_ts"), threshold, attempt)
 
 
 def _finalize_terminal_campaign_state(
@@ -1123,12 +1116,13 @@ def _normalize_legacy_pending(symbol, pending, side, kind):
     return normalized
 
 
-def _reconcile_pending_campaign(symbol, kind, state, record_terminal_fn):
+def _reconcile_pending_campaign(symbol, kind, state):
     """Adapt generic tracked-order truth to BUY/SELL campaign accounting."""
     pending = state.get("pending")
     if not isinstance(pending, dict) or not pending:
         return state, "none"
     side_label = kind.upper()
+    record_terminal_fn = _record_terminal_sell if kind == "sell" else _record_terminal_buy
     pending = _normalize_legacy_pending(
         symbol, pending, side_label, f"ASSET_GUARDIAN_{side_label}_TIER"
     )
@@ -1157,14 +1151,6 @@ def _reconcile_pending_campaign(symbol, kind, state, record_terminal_fn):
         f"orderId={result.intent.get('order_id')} "
         f"filled={_finite_float(result.intent.get('filled_qty')) or 0.0:.8f}")
     return state, "active"
-
-
-def _reconcile_pending_sell(symbol, state):
-    return _reconcile_pending_campaign(symbol, "sell", state, _record_terminal_sell)
-
-
-def _reconcile_pending_buy(symbol, state):
-    return _reconcile_pending_campaign(symbol, "buy", state, _record_terminal_buy)
 
 
 def _active_sell_orders(provider, symbol):
@@ -1377,16 +1363,17 @@ def _safe_tier_attempt(attempts_map, key):
 
 
 def _submit_campaign_tier(
-    symbol, kind, state, threshold, requested_qty, requested_price,
-    client_id_fn, intent_kind, metadata, refusal_reason, submit_fn,
+    symbol, kind, state, threshold, requested_qty, requested_price, metadata, submit_fn,
 ):
     side_label = kind.upper()
+    intent_kind = f"ASSET_GUARDIAN_{side_label}_TIER"
+    refusal_reason = f"{kind}_not_accepted"
     key = _tier_key(threshold)
     raw_attempts = state.get("attempts_by_tier")
     attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
     attempt = _safe_tier_attempt(attempts, key)
     attempts[key] = attempt
-    client_order_id = client_id_fn(symbol, state, threshold, attempt)
+    client_order_id = _ag_client_order_id(kind, symbol, state, threshold, attempt)
     state = dict(state)
     state["attempts_by_tier"] = attempts
     last_ref = state.get("last_refusal")
@@ -1427,8 +1414,7 @@ def _submit_sell_tier(symbol, current_price, tier, state):
     threshold, allocation, qty = tier
     return _submit_campaign_tier(
         symbol, "sell", state, threshold, qty, current_price,
-        _sell_client_order_id, "ASSET_GUARDIAN_SELL_TIER",
-        {"threshold": threshold, "allocation": allocation}, "sell_not_accepted",
+        {"threshold": threshold, "allocation": allocation},
         lambda client_order_id: sell_asset(
             symbol, qty=qty, current_price=current_price,
             client_order_id=client_order_id, tier_threshold=threshold,
@@ -1445,9 +1431,7 @@ def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
         return False
     return _submit_campaign_tier(
         symbol, "buy", state, threshold, cash_f / px_f, current_price,
-        _buy_client_order_id, "ASSET_GUARDIAN_BUY_TIER",
         {"threshold": threshold, "allocation": allocation, "requested_cash": cash_amount},
-        "buy_not_accepted",
         lambda client_order_id: buy_with_all_cash(
             buy_symbol=symbol, cash_amount=cash_amount,
             client_order_id=client_order_id, respect_guard=respect_guard,
@@ -1544,11 +1528,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         print(f"[{symbol}] Invalid AssetGuardian symbol; skip evaluation.")
         return False
 
-    for kind, reconcile in (("sell", _reconcile_pending_sell), ("buy", _reconcile_pending_buy)):
+    for kind in ("sell", "buy"):
         campaign = _symbol_campaign(symbol, kind)
         if not campaign.get("pending"):
             continue
-        _campaign, pending_outcome = reconcile(symbol, campaign)
+        _campaign, pending_outcome = _reconcile_pending_campaign(symbol, kind, campaign)
         if pending_outcome == "active":
             evaluation["pending_tier"] = True
             return False

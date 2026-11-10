@@ -45,7 +45,6 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
     single_instance,
     split_csv,
     touch_module_heartbeat,
@@ -352,14 +351,6 @@ def poll_loop(client):
 
 # ── Real-time ZERO-LAG `ownTrades` WS; complete but disabled by default ────────
 # Enable with KRAKEN_CACHE_MODE=ws; requires `websocket-client`.
-def _ws_token(client):
-    """Return a short-lived private-WS token, refreshed on every reconnect."""
-    res = client._private("GetWebSocketsToken", fresh=True)
-    if not isinstance(res, dict) or isinstance(res.get("token"), bool) or not str(res.get("token") or "").strip():
-        raise RuntimeError("Kraken GetWebSocketsToken returned no token")
-    return str(res["token"]).strip()
-
-
 def _merge_rest_into(client, cache):
     """Fetch Ledgers via REST and merge incrementally into an active WS cache without losing WS fills."""
     rest_cache = {"items": {}, "fetchtime": {}}
@@ -413,9 +404,13 @@ def ws_loop(client):
 
     def on_open(ws):
         try:
+            res = client._private("GetWebSocketsToken", fresh=True)
+            token = "" if not isinstance(res, dict) or isinstance(res.get("token"), bool) else str(res.get("token") or "").strip()
+            if not token:
+                raise RuntimeError("Kraken GetWebSocketsToken returned no token")
             ws.send(json.dumps({
                 "event": "subscribe",
-                "subscription": {"name": "ownTrades", "token": _ws_token(client)},
+                "subscription": {"name": "ownTrades", "token": token},
             }))
             log("[kraken_cache][ws] subscribed ownTrades")
         except Exception as e:

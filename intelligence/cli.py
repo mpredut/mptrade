@@ -61,23 +61,18 @@ def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True
     return data
 
 
-def _with_formatted_hb_age(res: Dict[str, Any]) -> Dict[str, Any]:
+def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
+    """Inspect the running background telemetry daemon."""
+    res = inspect_daemon_heartbeat(
+        cache_dir,
+        ("globaltelemetry_collector.heartbeat", "intelligence_daemon.heartbeat"),
+        max_alive_age_sec=120.0,
+        include_symbols=True,
+    )
     if "pid" in res:
         age = res.get("age_seconds")
         res["age_formatted"] = _format_age(age if age is not None else float("inf"))
     return res
-
-
-def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
-    """Inspect the running background telemetry daemon."""
-    return _with_formatted_hb_age(
-        inspect_daemon_heartbeat(
-            cache_dir,
-            ("globaltelemetry_collector.heartbeat", "intelligence_daemon.heartbeat"),
-            max_alive_age_sec=120.0,
-            include_symbols=True,
-        )
-    )
 
 
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:

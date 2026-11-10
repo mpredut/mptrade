@@ -450,7 +450,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("closed", 1.5, 337.5, 0.4)):
                 campaign = ag._symbol_campaign("TAOUSDC", "buy")
-                campaign, outcome = ag._reconcile_pending_buy("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "buy", campaign)
 
             self.assertEqual(outcome, "terminal")
             self.assertNotIn("pending", campaign)
@@ -475,7 +475,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("canceled", 0.5, 112.5, 0.2)):
                 campaign = ag._symbol_campaign("TAOUSDC", "buy")
-                campaign, outcome = ag._reconcile_pending_buy("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "buy", campaign)
                 remaining, target, spent = ag._buy_remaining_cash(
                     campaign, 7.0, 0.35)
 
@@ -499,7 +499,7 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertFalse(ag._submit_buy_tier(
                     "TAOUSDC", 225.0, 348.25, (7.0, 0.35), campaign))
                 buy_state = ag._symbol_campaign("TAOUSDC", "buy")
-                buy_state, outcome = ag._reconcile_pending_buy("TAOUSDC", buy_state)
+                buy_state, outcome = ag._reconcile_pending_campaign("TAOUSDC", "buy", buy_state)
 
             self.assertEqual(outcome, "retryable")
             self.assertNotIn("pending", buy_state)
@@ -514,7 +514,7 @@ class AssetGuardianTest(unittest.TestCase):
                 "spent_quote_by_tier": {},
                 "attempts_by_tier": {"7": 1},
             }
-            client_id = ag._buy_client_order_id("TAOUSDC", campaign, 7.0, 1)
+            client_id = ag._ag_client_order_id("buy", "TAOUSDC", campaign, 7.0, 1)
             campaign["pending"] = {
                 "intent_id": client_id,
                 "client_order_id": client_id,
@@ -775,7 +775,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 1.0, 115.0, 0.1)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual(outcome, "active")
             self.assertEqual(campaign["pending"]["filled_qty"], 1.0)
@@ -807,7 +807,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status", side_effect=statuses) as status_call, \
                  mock.patch.object(ag.mkt, "cancel_order") as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual(outcome, "terminal")
             cancel.assert_called_once_with(
@@ -838,7 +838,7 @@ class AssetGuardianTest(unittest.TestCase):
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)), \
                  mock.patch.object(ag.mkt, "cancel_order") as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual(outcome, "active")
             self.assertNotIn("cancel_attempted_at", campaign["pending"])
@@ -868,8 +868,8 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(
                      ag.mkt, "cancel_order", side_effect=RuntimeError("timeout")) as cancel:
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome1 = ag._reconcile_pending_sell("TAOUSDC", campaign)
-                campaign, outcome2 = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome1 = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
+                campaign, outcome2 = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual((outcome1, outcome2), ("active", "active"))
             self.assertEqual(cancel.call_count, 1)
@@ -893,7 +893,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("closed", 3.0, 345.0, 0.2)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual(outcome, "terminal")
             self.assertEqual(campaign["completed_tiers"], [15.0])
@@ -918,7 +918,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("canceled", 1.0, 115.0, 0.1)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
                 tier, _, _ = ag._sell_campaign_tier(
                     "TAOUSDC", 116.0, {"timestamp": 20, "price": 110.0}, 9.0,
                     self.sell_provider)
@@ -946,7 +946,7 @@ class AssetGuardianTest(unittest.TestCase):
                      ag.mkt, "order_status",
                      return_value=OrderStatus("open", 0.0, 0.0, 0.0)):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
-                campaign, outcome = ag._reconcile_pending_sell("TAOUSDC", campaign)
+                campaign, outcome = ag._reconcile_pending_campaign("TAOUSDC", "sell", campaign)
 
             self.assertEqual(outcome, "active")
             self.assertEqual(campaign["pending"]["order_id"], "80")
