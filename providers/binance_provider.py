@@ -1,5 +1,6 @@
 """Binance MarketDataProvider adapter for market data, account reads, and order mechanics."""
 
+import importlib
 from typing import Any, List, Optional
 
 from botcore import (
@@ -182,7 +183,6 @@ class BinanceProvider(MarketDataProvider):
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         import binance_cache_health as health
-        import cacheManager as cm
 
         since_s = require_pos_float(since_s, "since_s")
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
@@ -193,8 +193,8 @@ class BinanceProvider(MarketDataProvider):
         if spec is None:
             return None
         status = health.require_fresh_account_cache()
-        cm.ensure_account_cache_readers(status)
-        manager = cm.get_cache_manager("BinanceTrade")
+        self.ensure_ssot_account_cache_readers(status)
+        manager = self.get_ssot_cache_manager("BinanceTrade")
         with manager.lock:
             bucket = None
             for cand in [symbol] + cache_symbol_variants(symbol):
@@ -379,10 +379,9 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:
-        import cacheManager as cm
         from binance_api import bapi_placeorder as _po
 
-        ref = cm.get_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
+        ref = self.get_ssot_cache_manager("BinanceTrade").get_last_opposite_fill_price(symbol, order_type)
         if ref is None:
             ref = _po._last_opposite_fill_price_api(symbol, order_type)  # direct API fallback
         return ref
@@ -615,3 +614,54 @@ class BinanceProvider(MarketDataProvider):
     def cancel_order(self, symbol: str, order_id: str) -> None:
         oid = require_int_order_id(order_id, f"cancel_order({order_id})")
         self._execute_confirmed_cancel(order_id, lambda: _get_bapi().cancel_order(symbol, oid))
+
+    @classmethod
+    def resolve_default_api_client(cls):
+        """Return the Binance REST client facade (`binance_api.bapi`) without caching test sys.modules mocks."""
+        return importlib.import_module("binance_api.bapi")
+
+    @classmethod
+    def resolve_allorders_module(cls):
+        """Return the Binance order/trade pagination module (`binance_api.bapi_allorders`)."""
+        return importlib.import_module("binance_api.bapi_allorders")
+
+    @classmethod
+    def resolve_ws_bridge_module(cls):
+        """Return the Binance user-data WebSocket bridge module (`binance_api.bapi_ws_bridge`)."""
+        return importlib.import_module("binance_api.bapi_ws_bridge")
+
+    @classmethod
+    def get_default_price_ws_manager(cls):
+        """Return or initialize the shared Binance Combined Stream price WebSocket manager."""
+        return importlib.import_module("binance_api.bapi_ws").get_ws_manager()
+
+    @classmethod
+    def request_stop_price_ws_manager(cls) -> None:
+        """Signal the Binance price WebSocket manager to stop without blocking."""
+        try:
+            bws_mgr = getattr(importlib.import_module("binance_api.bapi_ws"), "bapi_ws_manager", None)
+        except Exception:
+            bws_mgr = None
+        if bws_mgr is not None and hasattr(bws_mgr, "request_stop"):
+            try:
+                bws_mgr.request_stop()
+            except Exception:
+                pass
+
+    @classmethod
+    def stop_price_ws_manager(cls, timeout: float) -> None:
+        """Stop the Binance price WebSocket manager and periodic clock resync thread."""
+        try:
+            bws_mgr = getattr(importlib.import_module("binance_api.bapi_ws"), "bapi_ws_manager", None)
+        except Exception:
+            bws_mgr = None
+        if bws_mgr is not None and hasattr(bws_mgr, "stop"):
+            try:
+                bws_mgr.stop(timeout=timeout)
+            except Exception:
+                pass
+        try:
+            importlib.import_module("binance_api.bapi_client").stop_periodic_resync()
+        except Exception:
+            pass
+

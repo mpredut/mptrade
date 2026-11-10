@@ -65,9 +65,9 @@ from .binance_provider import (  # noqa: F401
 def _runtime_market_regime_snapshot(symbol: str, now=None):
     """Read the optional short-trend snapshot at the application boundary."""
     try:
-        import cacheManager as cm
         import pricewindow as pw
-        mgr = cm.get_short_trend_manager()
+
+        mgr = MarketDataProvider.get_ssot_short_trend_manager()
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
         return pw.resolve_dynamic_trend_snapshot(snap, symbol)
@@ -576,9 +576,9 @@ class MarketApi:
 
         Run the complete provider-agnostic policy pipeline with provider hooks.
         This replaces direct legacy smart/safe placement calls. Derive base and
-        quote from the symbol when absent. Lazy Instrument import avoids a cycle.
+        quote from the symbol when absent.
         """
-        from instrument import Instrument
+        inst_cls = MarketDataProvider.resolve_instrument_class()
         explicit_provider_name = kwargs.pop("provider_name", None)
         inst_params = kwargs.pop("params", None)
         provider = self._provider_explicit_or_routed(
@@ -602,8 +602,8 @@ class MarketApi:
                 else MarketDataProvider.default_quote_asset(provider)
             )
             quote = quote or res_quote or default_quote
-        inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
-                          base=base, quote=quote, params=inst_params or {}, api=self)
+        inst = inst_cls(name=symbol, symbol=symbol, provider=prov_name,
+                        base=base, quote=quote, params=inst_params or {}, api=self)
         return inst.place(side, price, qty, **kwargs)
 
     def supports_symbol(self, symbol: str) -> bool:

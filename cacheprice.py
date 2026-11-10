@@ -29,14 +29,6 @@ import time
 from typing import Any, Callable, Optional
 import websockets as _websockets
 
-from binance_api import bapi as api
-from binance_api.bapi_ws import (
-    PublicPriceStreamBase,
-    WS_CLOSE_TIMEOUT,
-    WS_PING_INTERVAL,
-    WS_PING_TIMEOUT,
-    WS_RECV_TIMEOUT,
-)
 from botcore import (
     _is_fresh_obs_ts,
     _parse_bool_flag,
@@ -79,6 +71,8 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     get_cachedb_dir,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cache_dir_path,
     resolve_cachedb_filepath,
@@ -93,7 +87,15 @@ from instrument_registry import (
     is_symbol_market_open,
 )
 import providers.market_api as _market_api
-from providers.base import MarketDataProvider, live_price_fetch_context
+from providers.base import (
+    MarketDataProvider,
+    PublicPriceStreamBase,
+    WS_CLOSE_TIMEOUT,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_RECV_TIMEOUT,
+    live_price_fetch_context,
+)
 from state_io import (
     atomic_snapshot_file,
     atomic_text_writer,
@@ -132,11 +134,18 @@ for _name, _value in (
         raise ValueError(f"{_name} must be positive")
 
 
+_bn_price_prov_cls = MarketDataProvider.resolve_venue_provider_class("binance")
+
+
 class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
-    _default_api_client = api
+    _default_api_client = (
+        _bn_price_prov_cls.resolve_default_api_client()
+        if _bn_price_prov_cls is not None
+        else None
+    )
     _default_current_price_getter: Optional[Callable[..., Any]] = None
 
     @classmethod
@@ -1237,10 +1246,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         for symbol in list(self.symbols):
             if self._ws_is_healthy(symbol):
                 continue
-            is_rth_sym = (
-                normalize_venue_name(self.provider_name_for(symbol) or "") == "t212"
-                or is_equity_symbol(symbol)
-            )
+            is_rth_sym = is_equity_venue(
+                self.provider_name_for(symbol) or ""
+            ) or is_equity_symbol(symbol)
             if is_rth_sym and is_rth_gate_enabled(
                 getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
             ):
@@ -1597,7 +1605,7 @@ def resolve_cached_symbol_price(
     if not sym_u:
         return float("nan")
     venue_norm = normalize_venue_name(str(venue or "")) or ""
-    inst_is_eq = venue_norm == "t212" or _is_eq_suffix(sym_u)
+    inst_is_eq = is_equity_venue_or_suffix(sym_u, venue_norm)
     inst_base = (
         base.strip().upper()
         if isinstance(base, str) and base.strip()
@@ -2295,14 +2303,12 @@ def attach_default_price_ws_stream(
     data_sync_mode: str = CacheManagerInterface.MODE_DISK_READER,
 ) -> Optional[CacheCurrentPriceManager]:
     """Attach the default venue price WebSocket manager to ``CacheCurrentPriceManager``."""
-    from binance_api import bapi_ws
-
     default_getter = CachePriceManagerBase._default_current_price_getter
     getter = cpm_getter or _cm_override("get_current_price_manager", default_getter)
-    if not callable(getter):
+    if not callable(getter) or _bn_price_prov_cls is None:
         return None
     return getter(
-        ws_manager=bapi_ws.get_ws_manager(),
+        ws_manager=_bn_price_prov_cls.get_default_price_ws_manager(),
         sync_ts=sync_ts,
         data_sync_mode=data_sync_mode,
     )
@@ -2310,38 +2316,15 @@ def attach_default_price_ws_stream(
 
 def request_stop_price_ws_streams() -> None:
     """Signal the default venue price WebSocket manager to stop."""
-    try:
-        from binance_api import bapi_ws as _bws
-
-        bws_mgr = getattr(_bws, "bapi_ws_manager", None)
-    except Exception:
-        bws_mgr = None
-    if bws_mgr is not None and hasattr(bws_mgr, "request_stop"):
-        try:
-            bws_mgr.request_stop()
-        except Exception:
-            pass
+    if _bn_price_prov_cls is not None:
+        _bn_price_prov_cls.request_stop_price_ws_manager()
 
 
 def stop_price_ws_streams(shutdown_deadline: float) -> None:
     """Stop the default venue price WebSocket manager and periodic clock resync thread."""
-    try:
-        from binance_api import bapi_ws as _bws
+    if _bn_price_prov_cls is not None:
+        _bn_price_prov_cls.stop_price_ws_manager(
+            timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
+        )
 
-        bws_mgr = getattr(_bws, "bapi_ws_manager", None)
-    except Exception:
-        bws_mgr = None
-    if bws_mgr is not None and hasattr(bws_mgr, "stop"):
-        try:
-            bws_mgr.stop(
-                timeout=min(0.3, max(0.05, shutdown_deadline - _monotonic_time()))
-            )
-        except Exception:
-            pass
-    try:
-        from binance_api import bapi_client
-
-        bapi_client.stop_periodic_resync()
-    except Exception:
-        pass
 

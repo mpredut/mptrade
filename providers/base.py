@@ -143,19 +143,108 @@ class MarketDataProvider(ABC):
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
+    _ssot_cache_manager_getter: Any = None
+    _ssot_short_trend_getter: Any = None
+    _ssot_ensure_account_readers_fn: Any = None
+    _ssot_current_price_cls: Any = None
+    _ssot_price24_cls: Any = None
+    _ssot_trade_cache_cls: Any = None
     _policy_weight_limit_fn: Any = None
     _policy_window_cfg_fn: Any = None
     _policy_window_reference_fn: Any = None
+    _bound_instrument_cls: Any = None
+
+    @classmethod
+    def bind_instrument_class(cls, instrument_cls: Any) -> None:
+        """Bind the ``Instrument`` gateway class from the higher Order Gateway layer."""
+        if instrument_cls is not None:
+            cls._bound_instrument_cls = instrument_cls
+
+    @classmethod
+    def resolve_instrument_class(cls) -> Any:
+        """Return the bound ``Instrument`` class (respecting ``instrument`` monkeypatches)."""
+        if cls._bound_instrument_cls is None:
+            importlib.import_module("instrument")
+        inst_cls = resolve_patched_attr(
+            "Instrument",
+            cls._bound_instrument_cls,
+            modules=("instrument",),
+            require_callable=True,
+        )
+        if inst_cls is None:
+            raise RuntimeError("Instrument class is not bound")
+        return inst_cls
 
     @classmethod
     def bind_ssot_cache_readers(
         cls,
         *,
         current_price_reader: Any = None,
+        cache_manager_getter: Any = None,
+        short_trend_getter: Any = None,
+        ensure_account_readers_fn: Any = None,
+        current_price_cls: Any = None,
+        price24_cls: Any = None,
+        trade_cache_cls: Any = None,
     ) -> None:
-        """Bind read-only SSOT memory cache getter for current price."""
+        """Bind read-only SSOT cache getters and snapshot classes from ``cacheManager`` without upward imports."""
         if current_price_reader is not None:
             cls._ssot_current_price_reader = staticmethod(current_price_reader)
+        if cache_manager_getter is not None:
+            cls._ssot_cache_manager_getter = staticmethod(cache_manager_getter)
+        if short_trend_getter is not None:
+            cls._ssot_short_trend_getter = staticmethod(short_trend_getter)
+        if ensure_account_readers_fn is not None:
+            cls._ssot_ensure_account_readers_fn = staticmethod(ensure_account_readers_fn)
+        if current_price_cls is not None:
+            cls._ssot_current_price_cls = current_price_cls
+        if price24_cls is not None:
+            cls._ssot_price24_cls = price24_cls
+        if trade_cache_cls is not None:
+            cls._ssot_trade_cache_cls = trade_cache_cls
+
+    @classmethod
+    def _ensure_ssot_cache_bindings(cls) -> None:
+        if cls._ssot_cache_manager_getter is None:
+            importlib.import_module("cacheManager")
+
+    @classmethod
+    def ensure_ssot_account_cache_readers(cls, status: Any) -> Any:
+        """Synchronize account-cache reader versions via bound hook (respecting ``cacheManager`` monkeypatches)."""
+        cls._ensure_ssot_cache_bindings()
+        fn = resolve_patched_attr(
+            "ensure_account_cache_readers",
+            cls._ssot_ensure_account_readers_fn,
+            modules=("cacheManager",),
+            require_callable=True,
+        )
+        return fn(status) if callable(fn) else None
+
+    @classmethod
+    def get_ssot_cache_manager(cls, cache_name: str) -> Any:
+        """Return a named SSOT cache manager via bound hook (respecting ``cacheManager`` monkeypatches)."""
+        cls._ensure_ssot_cache_bindings()
+        fn = resolve_patched_attr(
+            "get_cache_manager",
+            cls._ssot_cache_manager_getter,
+            modules=("cacheManager",),
+            require_callable=True,
+        )
+        if not callable(fn):
+            raise RuntimeError("SSOT cache manager getter is not bound")
+        return fn(cache_name)
+
+    @classmethod
+    def get_ssot_short_trend_manager(cls) -> Any:
+        """Return the ShortTrend cache manager via bound hook (respecting ``cacheManager`` monkeypatches)."""
+        cls._ensure_ssot_cache_bindings()
+        fn = resolve_patched_attr(
+            "get_short_trend_manager",
+            cls._ssot_short_trend_getter,
+            modules=("cacheManager",),
+            require_callable=True,
+        )
+        return fn() if callable(fn) else None
 
     @classmethod
     def bind_order_guard_hooks(
@@ -213,12 +302,6 @@ class MarketDataProvider(ABC):
         prov_cls = cls.resolve_venue_provider_class(venue)
         tag = getattr(prov_cls, "_DEFAULT_INTENT_EXECUTOR_TAG", None) if prov_cls is not None else None
         return str(tag) if isinstance(tag, str) and tag.strip() else cls._DEFAULT_INTENT_EXECUTOR_TAG
-
-    @classmethod
-    def is_equity_venue(cls, venue: Any) -> bool:
-        """Return True when ``venue`` resolves to an equities-scoped provider (e.g. Trading 212)."""
-        prov_cls = cls.resolve_venue_provider_class(venue)
-        return str(getattr(prov_cls, "_ASSET_SCOPE", "crypto") or "crypto").strip().lower() == "equities"
 
     @classmethod
     def load_venue_env_defaults(cls, workspace_dir: Any, *, asset_scope: str = "all") -> None:
@@ -891,11 +974,13 @@ class MarketDataProvider(ABC):
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
-        from cacheprice import CacheCurrentPriceManager
-
+        self._ensure_ssot_cache_bindings()
+        cp_cls = self._ssot_current_price_cls
+        if cp_cls is None:
+            return None
         custom_path = getattr(self, "_ssot_price_cache_path", None)
         price_path = str(custom_path) if custom_path else cache_path(CACHE_CURRENT_PRICE_FILENAME)
-        return CacheCurrentPriceManager.read_ssot_current_price_candidates(
+        return cp_cls.read_ssot_current_price_candidates(
             candidates,
             price_path,
             eff_age,
@@ -915,9 +1000,11 @@ class MarketDataProvider(ABC):
         candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
-        from cacheprice import Cache24PriceManager
-
-        return Cache24PriceManager.read_ssot_price_history(
+        self._ensure_ssot_cache_bindings()
+        p24_cls = self._ssot_price24_cls
+        if p24_cls is None:
+            return None
+        return p24_cls.read_ssot_price_history(
             candidates,
             lookback_hours,
             max_latest_age_sec=max_latest_age_sec,
@@ -984,9 +1071,11 @@ class MarketDataProvider(ABC):
         """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return None
-        from cacheaccount import CacheTradeManager
-
-        return CacheTradeManager.read_venue_fills_snapshot(
+        self._ensure_ssot_cache_bindings()
+        tm_cls = self._ssot_trade_cache_cls
+        if tm_cls is None:
+            return None
+        return tm_cls.read_venue_fills_snapshot(
             symbol,
             cache_file,
             max_stale_sec=max_stale_sec,
@@ -997,9 +1086,17 @@ class MarketDataProvider(ABC):
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
-        from cacheaccount import CacheTradeManager
+        self._ensure_ssot_cache_bindings()
+        tm_cls = self._ssot_trade_cache_cls
+        return bool(tm_cls.write_venue_fills_snapshot(symbol, cache_file, fills)) if tm_cls is not None else False
 
-        return CacheTradeManager.write_venue_fills_snapshot(symbol, cache_file, fills)
+    def merge_ssot_fills_cache(self, cache_file: str, fills_by_symbol: dict) -> bool:
+        """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""
+        if not cache_file or not isinstance(fills_by_symbol, dict):
+            return False
+        self._ensure_ssot_cache_bindings()
+        tm_cls = self._ssot_trade_cache_cls
+        return bool(tm_cls.merge_venue_fills_snapshot(cache_file, fills_by_symbol)) if tm_cls is not None else False
 
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None
@@ -1007,14 +1104,15 @@ class MarketDataProvider(ABC):
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
-        from cacheaccount import CacheTradeManager
-
-        CacheTradeManager.invalidate_venue_fills_snapshot(
-            symbol,
-            cache_file,
-            match_fn=match_fn,
-            candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
-        )
+        self._ensure_ssot_cache_bindings()
+        tm_cls = self._ssot_trade_cache_cls
+        if tm_cls is not None:
+            tm_cls.invalidate_venue_fills_snapshot(
+                symbol,
+                cache_file,
+                match_fn=match_fn,
+                candidate_keys=None if callable(match_fn) else self._ssot_symbol_candidates(symbol),
+            )
 
 
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,

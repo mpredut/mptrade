@@ -3129,20 +3129,26 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
 
 
 def test_cache_modules_delegate_venue_ws_protocols_to_providers():
-    """Enforce zero concrete provider imports or wss:// URLs in cache*.py and verify provider WS helpers."""
+    """Enforce zero concrete provider or venue-transport imports and wss:// URLs in cache*.py."""
     import ast
     from pathlib import Path
+    from binance_api import bapi_ws
     import cacheprice as cp
+    from providers.base import (
+        AsyncReconnectStreamBase,
+        PublicPriceStreamBase,
+    )
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
 
     repo_root = Path(__file__).resolve().parent.parent
-    concrete_provider_mods = {
+    forbidden_exact_mods = {
         "providers.binance_provider",
         "providers.kraken_provider",
         "providers.hyperliquid_provider",
         "providers.t212_provider",
     }
+    forbidden_root_pkgs = {"binance_api", "kraken", "hyperliquid", "212trading"}
     for mod_name in (
         "cacheInterface.py",
         "cacheaccount.py",
@@ -3154,12 +3160,20 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
         assert "wss://" not in src, f"{mod_name} must not hardcode venue wss:// URLs"
         tree = ast.parse(src, filename=mod_name)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module in concrete_provider_mods:
-                raise AssertionError(f"{mod_name} imports concrete provider {node.module}")
+            if isinstance(node, ast.ImportFrom) and node.module:
+                root_pkg = node.module.split(".")[0]
+                if node.module in forbidden_exact_mods or root_pkg in forbidden_root_pkgs:
+                    raise AssertionError(f"{mod_name} imports forbidden venue module {node.module}")
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name in concrete_provider_mods:
-                        raise AssertionError(f"{mod_name} imports concrete provider {alias.name}")
+                    root_pkg = alias.name.split(".")[0]
+                    if alias.name in forbidden_exact_mods or root_pkg in forbidden_root_pkgs:
+                        raise AssertionError(f"{mod_name} imports forbidden venue module {alias.name}")
+
+    # Canonical SSOT WebSocket stream bases in providers.base
+    assert bapi_ws.BinanceWSBase is AsyncReconnectStreamBase
+    assert bapi_ws.PublicPriceStreamBase is PublicPriceStreamBase
+    assert issubclass(cp._VenuePriceStreamBase, PublicPriceStreamBase)
 
     # Declarative venue price stream registry on _VenuePriceStreamBase
     registered_venues = {

@@ -379,12 +379,10 @@ class T212Provider(MarketDataProvider):
             if isinstance(items, list):
                 by_sym = self.normalize_history_items(items) if items else {}
                 if publish_cache and cache_file:
-                    from cacheaccount import CacheTradeManager
-
                     to_publish = dict(by_sym)
                     if not any(k.upper() == sym_u or _t212_tickers_match(symbol, k) for k in to_publish):
                         to_publish[sym_u] = []
-                    CacheTradeManager.merge_venue_fills_snapshot(cache_file, to_publish)
+                    self.merge_ssot_fills_cache(cache_file, to_publish)
                 if by_sym:
                     matched: List[dict] = []
                     for k, rows in by_sym.items():

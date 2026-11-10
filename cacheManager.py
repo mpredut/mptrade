@@ -627,6 +627,12 @@ CacheTrendManagerBase.bind_service_getters(
 if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     MarketDataProvider.bind_ssot_cache_readers(
         current_price_reader=lambda: CacheFactory._instances.get("CurrentPrice"),
+        cache_manager_getter=get_cache_manager,
+        short_trend_getter=get_short_trend_manager,
+        ensure_account_readers_fn=ensure_account_cache_readers,
+        current_price_cls=CacheCurrentPriceManager,
+        price24_cls=Cache24PriceManager,
+        trade_cache_cls=CacheTradeManager,
     )
 
 

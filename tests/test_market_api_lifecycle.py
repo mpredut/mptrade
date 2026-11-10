@@ -468,8 +468,19 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         "strategy_executor.py",
         "execution_audit.py",
         "intent_state.py",
+        "intent_execution.py",
     )
-    forbidden_upward_layers = {"market_regime", "order_guard", "instrument", "strategies"}
+    forbidden_upward_layers = {
+        "cacheInterface",
+        "cacheaccount",
+        "cacheprice",
+        "cachetrend",
+        "cacheManager",
+        "market_regime",
+        "order_guard",
+        "instrument",
+        "strategies",
+    }
     for mod_file in non_facade_modules:
         mod_src = (root / "providers" / mod_file).read_text(encoding="utf-8")
         mod_tree = ast.parse(mod_src, filename=f"providers/{mod_file}")
@@ -483,6 +494,20 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         assert not (mod_roots & forbidden_upward_layers), (
             f"Upward DAG violation in providers/{mod_file}: {mod_roots & forbidden_upward_layers}"
         )
+
+    facade_src = (root / "providers" / "market_api.py").read_text(encoding="utf-8")
+    facade_tree = ast.parse(facade_src, filename="providers/market_api.py")
+    facade_roots = set()
+    for node in ast.walk(facade_tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                facade_roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            facade_roots.add(node.module.split(".")[0])
+    forbidden_facade_upward = forbidden_upward_layers - {"market_regime"}
+    assert not (facade_roots & forbidden_facade_upward), (
+        f"Upward DAG violation in providers/market_api.py: {facade_roots & forbidden_facade_upward}"
+    )
 
     gateway_modules = (
         "instrument.py",

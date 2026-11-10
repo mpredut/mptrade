@@ -29,11 +29,22 @@ import instrument_registry as sym
 import utils as u
 from botcore import (
     _parse_bool_flag,
-    async_interruptible_sleep,
     safe_float,
     safe_pos_float,
     safe_nonneg_float,
     safe_nonneg_int,
+)
+from providers.base import (
+    AsyncReconnectStreamBase,
+    MarketDataProvider,
+    PublicPriceStreamBase,
+    WS_CLOSE_TIMEOUT,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_RECV_TIMEOUT,
+    WS_RETRY_INITIAL,
+    WS_RETRY_MAX,
+    WS_STOP_TIMEOUT,
 )
 
 import credentials as _credentials
@@ -47,14 +58,7 @@ logger = logging.getLogger("binance.ws")
 WS_BASE_URL      = "wss://stream.binance.com:9443/stream"   # market data
 WS_API_URL       = "wss://ws-api.binance.com:443/ws-api/v3"  # user-data (auth)
 WS_MAX_STREAMS   = 1024        # Binance limit per connection
-WS_RECV_TIMEOUT  = 0.5         # Must be lower than WS_STOP_TIMEOUT (market).
 WS_USERDATA_RECV_TIMEOUT = 30.0
-WS_STOP_TIMEOUT  = 8.0
-WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT  = 10
-WS_CLOSE_TIMEOUT = 0.5
-WS_RETRY_INITIAL = 1.0
-WS_RETRY_MAX     = 60.0
 WS_USERDATA_KEEPALIVE_SEC = 30 * 60
 WS_USERDATA_LOSS_TIMEOUT_SEC = 40
 
@@ -64,236 +68,7 @@ class _Cmd:
     UNSUBSCRIBE = "UNSUBSCRIBE"
 
 
-# ==============================================================================
-# Shared base: thread, asyncio, reconnect backoff, and clean shutdown.
-# ==============================================================================
-
-class BinanceWSBase:
-    # Reset backoff only after a session remains stable for this duration.
-    # Prevent repeated logins from causing a reconnect storm and hitting rate limits.
-    STABLE_SESSION_SEC = 60.0
-
-    def __init__(self):
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._main_task: Optional[asyncio.Task] = None
-        self._retry_delay = WS_RETRY_INITIAL
-        self._start_lock = threading.Lock()
-
-    # Thread lifecycle.
-    def start(self, name: str = "BinanceWS", daemon: bool = True) -> "BinanceWSBase":
-        eff_name = str(name).strip() if isinstance(name, str) and name.strip() else "BinanceWS"
-        eff_daemon = _parse_bool_flag(daemon, default=True)
-        with self._start_lock:          # [F2] concurrent start() calls are safe
-            if self.is_running:
-                logger.info("%s already running", eff_name)
-                return self
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._thread_worker, name=eff_name, daemon=eff_daemon)
-            self._thread.start()
-        logger.info("%s started", eff_name)
-        return self
-
-    def request_stop(self) -> None:
-        self._stop_event.set()
-
-    def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
-        self.request_stop()
-        loop = getattr(self, "_loop", None)
-        task = getattr(self, "_main_task", None)
-        if loop is not None and task is not None and not loop.is_closed():
-            try:
-                loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError:
-                pass
-        eff_timeout = safe_nonneg_float(timeout, default=float(WS_STOP_TIMEOUT))
-        if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
-            self._thread.join(timeout=eff_timeout)
-            if self._thread.is_alive():
-                logger.warning("WS thread did not stop within %.1fs", eff_timeout)
-                return False
-        return True
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def _thread_worker(self) -> None:
-        try:
-            asyncio.run(self._main())
-        except (asyncio.CancelledError, Exception) as e:
-            if not isinstance(e, asyncio.CancelledError) and not self._is_shutdown_error(e):
-                logger.exception("WS thread crashed: %s", e)
-        finally:
-            self._loop = None
-            self._main_task = None
-            logger.info("WS thread exited")
-
-    # Generic reconnect loop.
-    async def _main(self) -> None:
-        """Reconnect around ``_connect_and_run`` by default.
-
-        Subclasses may override this when setup must occur in the correct event
-        loop, such as creation of an asynchronous queue.
-        """
-        await self._run_with_reconnect(self._connect_and_run)
-
-    async def _run_with_reconnect(self, body: Callable) -> None:
-        # Reconnect with backoff. Sleep for ``_retry_delay`` between every attempt,
-        # including clean disconnects, as the rate-limit safeguard
-        # to prevent reconnect storms. Reset backoff only after a stable session;
-        # repeated flapping therefore increases the delay.
-        try:
-            self._loop = asyncio.get_running_loop()
-            self._main_task = asyncio.current_task()
-        except RuntimeError:
-            pass
-        while not self._stop_event.is_set():
-            t0 = time.time()
-            exc = None
-            try:
-                await body()                          # Return or raise when the session ends.
-            except asyncio.CancelledError:
-                if self._stop_event.is_set():
-                    break
-                raise
-            except Exception as e:
-                exc = e
-                if self._is_shutdown_error(e):
-                    break
-                logger.warning("WS error: %s", e)
-            self._on_session_end(exc)
-            if self._stop_event.is_set():
-                break
-            if time.time() - t0 >= self.STABLE_SESSION_SEC:
-                self._retry_delay = WS_RETRY_INITIAL  # A stable session restores the short delay.
-            logger.info("WS reconnect in %.1fs", self._retry_delay)
-            await self._interruptible_sleep(self._retry_delay)
-            self._retry_delay = min(self._retry_delay * 2, WS_RETRY_MAX)
-        logger.info("WS reconnect loop stopped")
-
-    def _on_session_end(self, exc: Optional[Exception]) -> None:
-        """Handle session completion; ``exc`` is None after a clean termination."""
-        pass
-
-    async def _connect_and_run(self) -> None:
-        """Run one complete connection; subclasses return or raise on disconnect."""
-        raise NotImplementedError
-
-    # --- Shared helpers ------------------------------------------------------
-    async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
-        await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)
-
-    @staticmethod
-    def _is_shutdown_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return isinstance(exc, RuntimeError) and (
-            "cannot schedule new futures after shutdown" in msg
-            or "event loop is closed" in msg
-        )
-
-
-# ==============================================================================
-#  Market data - Shared Public Price Stream Base & Binance Combined Stream
-# ==============================================================================
-
-class PublicPriceStreamBase(BinanceWSBase):
-    """Shared base class for public WebSocket price streams across all venues (Binance, Hyperliquid, Kraken)."""
-
-    _MAX_STREAMS: Optional[int] = None
-
-    @staticmethod
-    def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if not isinstance(symbol, str):
-            return None
-        s = symbol.strip().upper().replace("/", "")
-        return s or None
-
-    def __init__(self, symbols: Optional[list] = None):
-        super().__init__()
-        self._prices: Dict[str, float] = {}
-        self._subscribed: Set[str]     = set()
-        self._lock = threading.Lock()
-        self._subscribers = []
-        if isinstance(symbols, str):
-            raw_syms = [symbols]
-        elif symbols is None or isinstance(symbols, (bool, bytes, dict)):
-            raw_syms = []
-        else:
-            try:
-                raw_syms = list(symbols)
-            except TypeError:
-                raw_syms = []
-        norm_list = []
-        for s in raw_syms:
-            norm_s = self._norm_ws_symbol(s)
-            if norm_s and norm_s not in self._subscribed:
-                self._subscribed.add(norm_s)
-                norm_list.append(norm_s)
-        self._symbols = tuple(norm_list)
-
-    def subscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber not in self._subscribers:
-                self._subscribers.append(subscriber)
-
-    def unsubscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber in self._subscribers:
-                self._subscribers.remove(subscriber)
-
-    def _notify_subscribers(self, symbol: str, items) -> None:
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for sub in subscribers:
-            try:
-                sub.on_items_update(symbol, items)
-            except Exception as e:
-                logger.error("Subscriber notify error: %s", e)
-
-    def add_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s in self._subscribed:
-                logger.debug("[%s] Already subscribed", norm_s)
-                return False
-            if self._MAX_STREAMS is not None and len(self._subscribed) >= self._MAX_STREAMS:
-                logger.warning("Max streams (%d) reached, cannot add %s", self._MAX_STREAMS, norm_s)
-                return False
-            self._subscribed.add(norm_s)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
-        return True
-
-    def remove_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s not in self._subscribed:
-                return False
-            self._subscribed.discard(norm_s)
-            self._symbols = tuple(s for s in self._symbols if s != norm_s)
-            self._prices.pop(norm_s, None)
-        return True
-
-    def get_price(self, symbol: str) -> Optional[float]:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return None
-        with self._lock:
-            return self._prices.get(norm_s)
-
-    def get_all_prices(self) -> Dict[str, float]:
-        with self._lock:
-            return dict(self._prices)
-
-    @property
-    def running_symbols(self) -> Set[str]:
-        with self._lock:
-            return set(self._subscribed)
+BinanceWSBase = AsyncReconnectStreamBase
 
 
 class BinancePriceStream(PublicPriceStreamBase):
@@ -423,8 +198,6 @@ class BinancePriceStream(PublicPriceStreamBase):
                 raise ValueError(f"invalid ticker price: {data['c']!r}")
             raw_b = data.get("b")
             raw_a = data.get("a")
-            from providers.base import MarketDataProvider
-
             price = MarketDataProvider.clamp_price_to_bbo_mid(price, raw_b, raw_a)
             if price is None:
                 raise ValueError(f"invalid ticker price: {data['c']!r}")

@@ -24,9 +24,6 @@ import threading
 from typing import Any, Optional, Sequence
 import uuid
 
-from binance_api import bapi as api
-from binance_api import bapi_allorders as apiorders
-from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 import binance_cache_health as account_cache_health
 from botcore import (
     _is_fresh_obs_ts,
@@ -90,6 +87,23 @@ from state_io import (
     save_json_state,
     stage_previous_generation,
     format_jsonl_bucket_line,
+)
+
+_bn_acc_prov_cls = MarketDataProvider.resolve_venue_provider_class("binance")
+api = (
+    _bn_acc_prov_cls.resolve_default_api_client()
+    if _bn_acc_prov_cls is not None
+    else None
+)
+apiorders = (
+    _bn_acc_prov_cls.resolve_allorders_module()
+    if _bn_acc_prov_cls is not None
+    else None
+)
+_bapi_ws_bridge = (
+    _bn_acc_prov_cls.resolve_ws_bridge_module()
+    if _bn_acc_prov_cls is not None
+    else None
 )
 
 
@@ -476,9 +490,7 @@ class CacheTradeManager(CacheAccountManagerBase):
         "binance": CACHE_BINANCE_TRADE_FILENAME,
         "kraken": CACHE_KRAKEN_TRADE_FILENAME,
         "hyperliquid": CACHE_HYPERLIQUID_TRADE_FILENAME,
-        "hl": CACHE_HYPERLIQUID_TRADE_FILENAME,
         "t212": CACHE_T212_TRADE_FILENAME,
-        "trading212": CACHE_T212_TRADE_FILENAME,
     }
 
     @classmethod
@@ -489,15 +501,10 @@ class CacheTradeManager(CacheAccountManagerBase):
         symbols=None,
     ) -> str:
         v_norm = normalize_venue_name(venue)
-        if v_norm in ("binance", "kraken", "hyperliquid", "t212"):
+        if v_norm in cls.VENUE_FILENAMES:
             return v_norm
         base_f = os.path.basename(str(filename or "")).lower()
-        for cand_v, cand_f in (
-            ("binance", CACHE_BINANCE_TRADE_FILENAME),
-            ("kraken", CACHE_KRAKEN_TRADE_FILENAME),
-            ("hyperliquid", CACHE_HYPERLIQUID_TRADE_FILENAME),
-            ("t212", CACHE_T212_TRADE_FILENAME),
-        ):
+        for cand_v, cand_f in cls.VENUE_FILENAMES.items():
             if base_f == cand_f.lower() or f"_{cand_v}." in base_f:
                 return cand_v
         if not base_f and symbols:
@@ -514,9 +521,7 @@ class CacheTradeManager(CacheAccountManagerBase):
     def venue_for_symbol(symbol: object, *, default: str = "binance") -> str:
         """Resolve the configured venue ('binance', 'kraken', 'hyperliquid', 't212') for ``symbol`` via ``instrument_registry``."""
         try:
-            from instrument_registry import venue_for_symbol as _reg_venue_for_symbol
-
-            return _reg_venue_for_symbol(symbol, default=default)
+            return sym.venue_for_symbol(symbol, default=default)
         except Exception:
             return default
 
@@ -939,11 +944,11 @@ class CacheTradeManager(CacheAccountManagerBase):
     ):
         self.venue = self._normalize_trade_venue(venue, filename, symbols)
         eff_filename = str(filename) if filename else self.resolve_cache_filepath(venue=self.venue)
-        if symbols is None and self.venue != "binance":
+        default_disk_name = self.disk_filename(self.venue)
+        is_json_snapshot_venue = not default_disk_name.lower().endswith(".jsonl")
+        if symbols is None and is_json_snapshot_venue:
             try:
-                from instrument_registry import symbols_for as _reg_symbols_for
-
-                eff_symbols = list(_reg_symbols_for(self.venue))
+                eff_symbols = list(sym.symbols_for(self.venue))
             except Exception:
                 eff_symbols = []
         else:
@@ -956,7 +961,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 raise ValueError(f"Unsupported stream_format={stream_format!r}; expected 'jsonl' or 'json'")
             eff_append_persist = fmt == "jsonl"
         else:
-            eff_append_persist = self.venue == "binance" or eff_filename.lower().endswith(".jsonl")
+            eff_append_persist = (not is_json_snapshot_venue) or eff_filename.lower().endswith(".jsonl")
         self.stream_format = "jsonl" if eff_append_persist else "json"
         eff_read_only = _parse_bool_flag(read_only, default=False)
         super().__init__(
@@ -2228,17 +2233,17 @@ class CacheAssetValueManager(CacheAccountManagerBase):
 
 
 def _venue_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
-    return (
-        (CacheTradeManager.disk_filename("kraken"), "kraken"),
-        (CacheTradeManager.disk_filename("hyperliquid"), "hyperliquid"),
-        (CacheTradeManager.disk_filename("t212"), "t212"),
+    return tuple(
+        (fname, v_key)
+        for v_key, fname in CacheTradeManager.VENUE_FILENAMES.items()
+        if not fname.lower().endswith(".jsonl")
     )
 
 
 CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
 CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
     lambda: (
-        (CacheOrderManager.disk_filename("binance"), "binance"),
+        *((fname, v_key) for v_key, fname in CacheOrderManager.VENUE_FILENAMES.items()),
         *_venue_trade_cache_contracts(),
     )
 )

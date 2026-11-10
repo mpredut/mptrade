@@ -1541,3 +1541,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         quote=raw_quote if isinstance(raw_quote, str) else None,
         cache_dir=cache_dir,
     )
+
+
+MarketDataProvider.bind_instrument_class(Instrument)
+
