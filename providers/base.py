@@ -482,17 +482,6 @@ class MarketDataProvider(ABC):
             and (start_ms <= 0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
 
-    def refresh_ssot_fills_cache(self, symbol: str, fills: Optional[List[dict]] = None) -> List[dict]:
-        """Authoritatively fetch (if ``fills`` not provided) and explicitly publish ``symbol`` fills to the SSOT trade cache."""
-        self.validate_symbol(symbol)
-        if fills is None:
-            rows = self._invoke_fills_from_api(symbol, publish_cache=True)
-            return list(rows) if isinstance(rows, list) else []
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.write_ssot_fills_cache(symbol, cache_file, fills)
-        return list(fills)
-
     def get_orders(
         self,
         symbol: str,
@@ -1086,9 +1075,18 @@ class MarketDataProvider(ABC):
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return False
         self._ensure_ssot_cache_bindings()
         tm_cls = self._ssot_trade_cache_cls
-        return bool(tm_cls.write_venue_fills_snapshot(symbol, cache_file, fills)) if tm_cls is not None else False
+        if tm_cls is None:
+            return False
+        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        return bool(
+            tm_cls.merge_venue_fills_snapshot(
+                cache_file, {sym_key: list(fills or ())}, is_snapshot=True
+            )
+        )
 
     def merge_ssot_fills_cache(self, cache_file: str, fills_by_symbol: dict) -> bool:
         """Atomically merge normalized multi-symbol fills into a shared SSOT trade cache snapshot."""

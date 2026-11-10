@@ -2019,68 +2019,6 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
             enforce_freshness=enforce_freshness,
         )
 
-    def refresh_caches(
-        self,
-        cachedb_dir: str = "cachedb",
-        symbol: str = "",
-        *,
-        now_ts: Optional[float] = None,
-    ) -> Dict[str, bool]:
-        """Producer-only entrypoint: refresh sibling microstructure, T212 position prices, and Yahoo 5d equity charts."""
-        if cachedb_dir == "cachedb":
-            cachedb_dir = get_cachedb_dir()
-        eff_now = resolve_now_ts(now_ts)
-        status: Dict[str, bool] = {
-            "microstructure_refreshed": False,
-            "t212_positions_refreshed": False,
-            "equity_chart_refreshed": False,
-        }
-        _rj = _resolve_read_json_cached()
-        sym_raw = str(symbol or "").strip()
-        if sym_raw:
-            session_policy = self.resolve_session_policy(sym_raw)
-            sym_quotes = compatible_quote_suffixes(sym_raw)
-            is_usd_sym = "USD" in sym_quotes
-            is_eq_sym = session_policy.is_equity or is_equity_symbol(sym_raw)
-            _, quote_variants = _scope_symbol_variants(sym_raw, is_eq_sym, is_usd_sym, sym_quotes)
-            try:
-                _ensure_fresh_pretrade_microstructure(
-                    cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
-                )
-                status["microstructure_refreshed"] = True
-            except Exception:
-                pass
-            if is_eq_sym and is_live_network_backfill_enabled():
-                try:
-                    sym_u_eq = sym_raw.upper()
-                    alt_series_24h, _ = load_symbol_price_series(cachedb_dir, sym_u_eq, include_7d=False)
-                    eq_rth_open = bool(is_symbol_market_open(sym_u_eq, eff_now))
-                    memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
-                    memo_ttl_eq = 240.0 if (eq_rth_open or memo_chart_eq is None) else 1800.0
-                    memo_fresh = bool(memo_chart_eq is not None and 0.0 <= (eff_now - memo_chart_eq[0]) < memo_ttl_eq)
-                    pts_5d_eq, _, _, _, _, _, _ = TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
-                        cachedb_dir,
-                        sym_u_eq,
-                        raw_series_24h=list(alt_series_24h),
-                        now_ts=eff_now,
-                        eq_rth_open=eq_rth_open,
-                        memo_chart=memo_chart_eq,
-                        memo_chart_fresh=memo_fresh,
-                        persist=True,
-                    )
-                    status["equity_chart_refreshed"] = bool(pts_5d_eq)
-                except Exception:
-                    pass
-        try:
-            vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-            if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
-                status["t212_positions_refreshed"] = bool(
-                    _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
-                )
-        except Exception:
-            pass
-        return status
-
     def collect(
         self,
         cachedb_dir: str,
@@ -2142,7 +2080,59 @@ def refresh_pretrade_telemetry_caches(
 ) -> Dict[str, bool]:
     """Producer-only function refreshing pre-trade caches (microstructure, T212 position prices, Yahoo 5d equity chart)."""
     orchestrator = TelemetryCollectorFactory.get_collector(PretradeTelemetryOrchestrator, start_sync=True)
-    return orchestrator.refresh_caches(cachedb_dir=cachedb_dir, symbol=symbol, now_ts=now_ts)
+    if cachedb_dir == "cachedb":
+        cachedb_dir = get_cachedb_dir()
+    eff_now = resolve_now_ts(now_ts)
+    status: Dict[str, bool] = {
+        "microstructure_refreshed": False,
+        "t212_positions_refreshed": False,
+        "equity_chart_refreshed": False,
+    }
+    _rj = _resolve_read_json_cached()
+    sym_raw = str(symbol or "").strip()
+    if sym_raw:
+        session_policy = orchestrator.resolve_session_policy(sym_raw)
+        sym_quotes = compatible_quote_suffixes(sym_raw)
+        is_usd_sym = "USD" in sym_quotes
+        is_eq_sym = session_policy.is_equity or is_equity_symbol(sym_raw)
+        _, quote_variants = _scope_symbol_variants(sym_raw, is_eq_sym, is_usd_sym, sym_quotes)
+        try:
+            _ensure_fresh_pretrade_microstructure(
+                cachedb_dir, sym_raw, quote_variants, is_usd_sym, is_eq_sym, _rj, allow_network=True
+            )
+            status["microstructure_refreshed"] = True
+        except Exception:
+            pass
+        if is_eq_sym and is_live_network_backfill_enabled():
+            try:
+                sym_u_eq = sym_raw.upper()
+                alt_series_24h, _ = load_symbol_price_series(cachedb_dir, sym_u_eq, include_7d=False)
+                eq_rth_open = bool(is_symbol_market_open(sym_u_eq, eff_now))
+                memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq)
+                memo_ttl_eq = 240.0 if (eq_rth_open or memo_chart_eq is None) else 1800.0
+                memo_fresh = bool(memo_chart_eq is not None and 0.0 <= (eff_now - memo_chart_eq[0]) < memo_ttl_eq)
+                pts_5d_eq, _, _, _, _, _, _ = TelemetryCollectorFactory.get_yahoo_chart_collector().collect(
+                    cachedb_dir,
+                    sym_u_eq,
+                    raw_series_24h=list(alt_series_24h),
+                    now_ts=eff_now,
+                    eq_rth_open=eq_rth_open,
+                    memo_chart=memo_chart_eq,
+                    memo_chart_fresh=memo_fresh,
+                    persist=True,
+                )
+                status["equity_chart_refreshed"] = bool(pts_5d_eq)
+            except Exception:
+                pass
+    try:
+        vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+        if os.path.exists(vb_path) and isinstance(vb_d := _rj(vb_path), dict):
+            status["t212_positions_refreshed"] = bool(
+                _refresh_stale_t212_cached_positions(vb_d, vb_path, eff_now)
+            )
+    except Exception:
+        pass
+    return status
 
 
 def collect_pretrade_telemetry(

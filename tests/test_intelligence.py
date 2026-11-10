@@ -1122,7 +1122,9 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
         "slope_small": 0.05,
         "final_trend": 120.0,
     }
-    assert CacheShortTrendManager.extract_direction(sample_snap) == "up"
+    import pricewindow as pw
+
+    assert pw.eval_short_trend_upward(sample_snap) is True
     assert CacheShortTrendManager.extract_slope(sample_snap, "BTCUSDC") != 0.0
 
     # 2. CachedHttpJsonCollector respects monkeypatching intelligence.macro.daemon_ssot.fetch_public_json

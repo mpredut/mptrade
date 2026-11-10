@@ -538,14 +538,14 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     # Short-trend slope resolution lives canonically in CacheShortTrendManager (decoupled from providers)
     from cachetrend import CacheShortTrendManager
 
-    hl_snap = CacheShortTrendManager.resolve_ssot_snapshot(
-        hl_prov._ssot_symbol_candidates("HYPEUSDC"), custom_path=str(trend_cache)
+    hl_snap = CacheShortTrendManager.read_ssot_short_trend_file(
+        str(trend_cache), hl_prov._ssot_symbol_candidates("HYPEUSDC")
     )
-    kr_hype_snap = CacheShortTrendManager.resolve_ssot_snapshot(
-        kr_prov._ssot_symbol_candidates("HYPEUSD"), custom_path=str(trend_cache)
+    kr_hype_snap = CacheShortTrendManager.read_ssot_short_trend_file(
+        str(trend_cache), kr_prov._ssot_symbol_candidates("HYPEUSD")
     )
-    kr_ada_snap = CacheShortTrendManager.resolve_ssot_snapshot(
-        kr_prov._ssot_symbol_candidates("ADAUSD"), custom_path=str(trend_cache)
+    kr_ada_snap = CacheShortTrendManager.read_ssot_short_trend_file(
+        str(trend_cache), kr_prov._ssot_symbol_candidates("ADAUSD")
     )
     assert CacheShortTrendManager.extract_slope(hl_snap, "HYPEUSDC") == pytest.approx(0.42)
     assert CacheShortTrendManager.extract_slope(kr_hype_snap, "HYPEUSD") == pytest.approx(-0.18)

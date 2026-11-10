@@ -445,8 +445,8 @@ class ExecutionCalibrationTest(unittest.TestCase):
                 self.assertEqual(len(orders), 1)
                 self.assertFalse(os.path.exists(fills_cache))
 
-                # Explicit cache publication via refresh_ssot_fills_cache or publish_cache=True
-                published = prov.refresh_ssot_fills_cache("HYPEUSDC")
+                # Explicit cache publication via publish_cache=True
+                published = prov.get_orders("HYPEUSDC", "BUY", 3600.0, authoritative=True, publish_cache=True)
                 self.assertEqual(len(published), 1)
                 self.assertTrue(os.path.exists(fills_cache))
 

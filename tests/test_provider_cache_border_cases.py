@@ -103,12 +103,6 @@ def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: 
             )
             is None
         )
-        assert (
-            CacheShortTrendManager.resolve_ssot_snapshot(
-                ("BTCUSDC",), max_age_sec=bad_age, now_s=now_s, custom_path=str(trend_file)
-            )
-            is None
-        )
 
     fills_file = tmp_path / "cache_trade_kraken.json"
     fills_file.write_text(

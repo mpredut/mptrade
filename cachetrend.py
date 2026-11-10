@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import bisect
 import builtins
-import contextlib
 import math
 import os
 import threading
@@ -1526,63 +1525,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             pass
         return None
 
-    @classmethod
-    def resolve_ssot_snapshot(
-        cls,
-        candidates: tuple[str, ...] | List[str],
-        max_age_sec: float = 15.0,
-        *,
-        custom_path: Optional[str] = None,
-        memory_manager: Any = None,
-        reader_fn: Any = None,
-        now_s: Optional[float] = None,
-    ) -> Optional[dict]:
-        """Resolve a fresh short-trend snapshot from in-memory ``CacheShortTrendManager`` or ``cache_short_trend.json``."""
-        if not candidates:
-            return None
-        max_age = 15.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
-        if max_age is None:
-            return None
-        eff_now = resolve_now_ts(now_s)
-        if custom_path is None:
-            stm = (
-                memory_manager
-                if memory_manager is not None
-                else cls.resolve_active_instance("ShortTrend", reader_fn=reader_fn)
-            )
-            if stm is not None:
-                if callable(getattr(type(stm), "get_cached_memory_snapshot", None)):
-                    for cand in candidates:
-                        with contextlib.suppress(Exception):
-                            snap = stm.get_cached_memory_snapshot(cand, max_age_sec=max_age, now_s=eff_now)
-                            if isinstance(snap, dict):
-                                return snap
-                else:
-                    stm_mem = getattr(stm, "_mem", None)
-                    if isinstance(stm_mem, dict):
-                        lock_ctx = (
-                            getattr(stm, "_lock", None)
-                            or getattr(stm, "lock", None)
-                            or contextlib.nullcontext()
-                        )
-                        with contextlib.suppress(Exception), lock_ctx:
-                            for cand in candidates:
-                                snap = casefold_get(stm_mem, cand)
-                                if isinstance(snap, dict) and _is_fresh_obs_ts(
-                                    extract_timestamp_s(snap, default=None), eff_now, max_age
-                                ):
-                                    return dict(snap)
-                    elif hasattr(stm, "get_fresh_snapshot"):
-                        for cand in candidates:
-                            with contextlib.suppress(Exception):
-                                snap = stm.get_fresh_snapshot(cand)
-                                if isinstance(snap, dict):
-                                    raw_ts = extract_timestamp_s(snap, default=None)
-                                    if raw_ts is None or _is_fresh_obs_ts(raw_ts, eff_now, max_age):
-                                        return dict(snap)
-        trend_path = str(custom_path) if custom_path else cache_path(CACHE_SHORT_TREND_FILENAME)
-        return cls.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=eff_now)
-
     @staticmethod
     def extract_slope(snap: Optional[dict], symbol: Optional[str] = None) -> float:
         """Extract instant-trend slope (>0 up, <0 down, 0.0 neutral/unknown) from a short-trend snapshot."""
@@ -1599,23 +1541,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             if val is not None and val != 0.0:
                 return val
         return 0.0
-
-    @staticmethod
-    def extract_direction(snap: Optional[dict]) -> Optional[str]:
-        """Extract short-trend direction ('up', 'down', or 'flat') from a short-trend snapshot, or None."""
-        if not isinstance(snap, dict):
-            return None
-        try:
-            if pw.eval_short_trend_upward(snap):
-                return "up"
-            inv_snap = dict(snap)
-            for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
-                val = safe_float(inv_snap.get(key), default=None)
-                if val is not None:
-                    inv_snap[key] = -val
-            return "down" if pw.eval_short_trend_upward(inv_snap) else "flat"
-        except Exception:
-            return None
 
     def should_wait(
         self,

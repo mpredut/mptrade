@@ -694,18 +694,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         return best_rows
 
     @classmethod
-    def write_venue_fills_snapshot(
-        cls, symbol: str, cache_file: str, fills: list[dict]
-    ) -> bool:
-        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
-            return False
-        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
-        return cls.merge_venue_fills_snapshot(
-            cache_file, {sym_key: list(fills or ())}, is_snapshot=True
-        )
-
-    @classmethod
     def merge_venue_fills_into_dict(
         cls,
         cache_obj: dict,
@@ -852,15 +840,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         return changed
 
     @classmethod
-    def touch_venue_ws_fetchtimes(cls, cache_file: str, symbols, ts_ms: int) -> None:
-        """Refresh ``fetchtime`` on disk for ``symbols`` while a venue WebSocket stream is healthy."""
-        loaded = cls._load_venue_snapshot_dict(cache_file)
-        if loaded is not None and cls.touch_venue_ws_fetchtimes_in_dict(
-            loaded, ts_ms, symbols=symbols, create_missing=False
-        ):
-            save_json_state(cache_file, loaded)
-
-    @classmethod
     def invalidate_venue_fills_snapshot(
         cls,
         symbol: str,
@@ -905,29 +884,6 @@ class CacheTradeManager(CacheAccountManagerBase):
                 save_json_state(str(cache_file), data)
         except Exception:
             pass
-
-    @classmethod
-    def extract_venue_symbol_trades(
-        cls,
-        payload: object,
-        symbol: str,
-        *,
-        cand_keys=None,
-    ) -> list:
-        """Extract the list of trade rows for ``symbol`` (or ``cand_keys``) from a venue trade snapshot."""
-        if not isinstance(payload, dict):
-            return []
-        items = payload.get("items") if isinstance(payload.get("items"), dict) else payload
-        if not isinstance(items, dict):
-            return []
-        keys = tuple(cand_keys) if cand_keys is not None else cache_symbol_variants(symbol, include_base=True)
-        for cand in keys:
-            if not cand:
-                continue
-            rows = casefold_get(items, cand)
-            if isinstance(rows, list) and rows:
-                return rows
-        return []
 
     def __init__(
         self,
@@ -1610,12 +1566,18 @@ class CacheTradeManager(CacheAccountManagerBase):
         latest_key = None
         latest_price = None
         with self.lock:
-            bucket = (
-                casefold_get(self.cache, symbol)
-                or casefold_get(self.cache, sym_clean)
-                or (self.extract_venue_symbol_trades(self.cache, symbol) if not self.append_persist else None)
-                or []
-            )
+            bucket = casefold_get(self.cache, symbol) or casefold_get(self.cache, sym_clean)
+            if not bucket and not self.append_persist and isinstance(self.cache, dict):
+                items_map = (
+                    self.cache.get("items")
+                    if isinstance(self.cache.get("items"), dict)
+                    else self.cache
+                )
+                for cand in cache_symbol_variants(symbol, include_base=True):
+                    if cand and isinstance(rows := casefold_get(items_map, cand), list) and rows:
+                        bucket = rows
+                        break
+            bucket = bucket or []
             for trade in bucket:
                 if self.append_persist:
                     if not self._is_valid_item(trade):
@@ -2232,19 +2194,14 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         return [snapshot]
 
 
-def _venue_trade_cache_contracts() -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (fname, v_key)
-        for v_key, fname in CacheTradeManager.VENUE_FILENAMES.items()
-        if not fname.lower().endswith(".jsonl")
-    )
-
-
-CacheAccountManagerBase.venue_trade_cache_contracts = staticmethod(_venue_trade_cache_contracts)
 CacheAccountManagerBase.venue_order_and_trade_cache_contracts = staticmethod(
     lambda: (
         *((fname, v_key) for v_key, fname in CacheOrderManager.VENUE_FILENAMES.items()),
-        *_venue_trade_cache_contracts(),
+        *(
+            (fname, v_key)
+            for v_key, fname in CacheTradeManager.VENUE_FILENAMES.items()
+            if not fname.lower().endswith(".jsonl")
+        ),
     )
 )
 
@@ -2406,9 +2363,12 @@ def attach_hyperliquid_user_fills_bridge(
         try:
             with ws_stream._lock:
                 symbols = ws_stream._symbols
-            CacheTradeManager.touch_venue_ws_fetchtimes(
-                _resolve_fills_cache_file(), symbols, ts_ms
-            )
+            cache_file = _resolve_fills_cache_file()
+            loaded = CacheTradeManager._load_venue_snapshot_dict(cache_file)
+            if loaded is not None and CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+                loaded, ts_ms, symbols=symbols, create_missing=False
+            ):
+                save_json_state(cache_file, loaded)
             ws_stream._last_fills_touch_ms = ts_ms
         except Exception:
             pass
