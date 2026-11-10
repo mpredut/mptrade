@@ -50,6 +50,8 @@ from cacheaccount import (
     disable_account_cache_daemon_writer,
     ensure_account_cache_readers,
     request_stop_account_ws_streams,
+    run_kraken_trade_poll_loop,
+    run_kraken_trade_ws_loop,
     start_account_cache_daemon,
     stop_account_ws_streams,
 )

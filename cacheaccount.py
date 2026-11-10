@@ -2445,3 +2445,217 @@ def attach_hyperliquid_user_fills_bridge(
         )
 
 
+def run_kraken_trade_poll_loop(
+    client,
+    *,
+    cache_file: str,
+    pairs: Sequence[str],
+    poll_interval: float,
+    backoff_init: float,
+    backoff_max: float,
+    lookback_sec: float,
+    heartbeat_fn=None,
+) -> None:
+    """Run the REST Ledgers polling loop for Kraken trade cache persistence."""
+    from providers.kraken_provider import KrakenProvider
+
+    cache = CacheTradeManager.load_sanitized_trade_snapshot(
+        cache_file, venue="kraken"
+    )
+    backoff = float(backoff_init)
+    if callable(heartbeat_fn):
+        heartbeat_fn(force=True)
+    while True:
+        try:
+            by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+                client, pairs=pairs, lookback_sec=lookback_sec
+            )
+            CacheTradeManager.merge_venue_fills_into_dict(
+                cache, by_sym, is_snapshot=True
+            )
+            save_json_state(cache_file, cache, indent=1)
+            log(
+                f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
+                f"for {list(cache['items'].keys())}"
+            )
+            backoff = float(backoff_init)
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            _sleep_time(poll_interval)
+        except Exception as exc:
+            log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {exc}")
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+            _sleep_time(backoff)
+            backoff = min(backoff * 2.0, float(backoff_max))
+
+
+def run_kraken_trade_ws_loop(
+    client,
+    *,
+    cache_file: str,
+    pairs: Sequence[str],
+    poll_interval: float,
+    backoff_init: float,
+    backoff_max: float,
+    lookback_sec: float,
+    ws_url: str = "wss://ws-auth.kraken.com/",
+    heartbeat_fn=None,
+) -> None:
+    """Run the real-time Kraken ``ownTrades`` WebSocket bridge with periodic REST Ledgers reconciliation."""
+    from providers.kraken_provider import KrakenProvider
+
+    try:
+        import websocket
+    except ImportError as exc:
+        log(
+            f"[kraken_cache][ws] websocket-client unavailable ({exc}); falling back to poll_loop"
+        )
+        return run_kraken_trade_poll_loop(
+            client,
+            cache_file=cache_file,
+            pairs=pairs,
+            poll_interval=poll_interval,
+            backoff_init=backoff_init,
+            backoff_max=backoff_max,
+            lookback_sec=lookback_sec,
+            heartbeat_fn=heartbeat_fn,
+        )
+
+    cache = CacheTradeManager.load_sanitized_trade_snapshot(
+        cache_file, venue="kraken"
+    )
+    last_flush_ms = [0]
+    last_rest_sync_ms = [0]
+    rest_sync_interval_ms = int(max(30.0, float(poll_interval or 30.0)) * 1000)
+    if callable(heartbeat_fn):
+        heartbeat_fn(force=True)
+
+    def _merge_rest() -> None:
+        by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
+            client, pairs=pairs, lookback_sec=lookback_sec
+        )
+        CacheTradeManager.merge_venue_fills_into_dict(
+            cache, by_sym, is_snapshot=False
+        )
+
+    def _touch_fetchtimes(now_ms: Optional[int] = None) -> None:
+        CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+            cache, now_ms=now_ms, symbols=pairs, create_missing=True
+        )
+
+    try:
+        _merge_rest()
+        save_json_state(cache_file, cache, indent=1)
+        now_init_ms = resolve_now_ms()
+        last_flush_ms[0] = now_init_ms
+        last_rest_sync_ms[0] = now_init_ms
+    except Exception as exc:
+        log(f"[kraken_cache][ws] REST seed failed: {exc}")
+
+    def on_open(ws) -> None:
+        try:
+            res = client._private("GetWebSocketsToken", fresh=True)
+            token = (
+                ""
+                if not isinstance(res, dict) or isinstance(res.get("token"), bool)
+                else str(res.get("token") or "").strip()
+            )
+            if not token:
+                raise RuntimeError("Kraken GetWebSocketsToken returned no token")
+            ws.send(
+                encode_json_payload(
+                    {
+                        "event": "subscribe",
+                        "subscription": {"name": "ownTrades", "token": token},
+                    }
+                )
+            )
+            log("[kraken_cache][ws] subscribed ownTrades")
+        except Exception as exc:
+            log(f"[kraken_cache][ws] subscribe failed: {exc}")
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def on_message(ws, msg) -> None:
+        data = parse_json_payload(msg)
+        if data is None:
+            return
+        now_ms = resolve_now_ms()
+        fills_by_sym = KrakenProvider.extract_ws_own_trades(data, pairs=pairs)
+        if fills_by_sym is None:
+            if isinstance(data, dict):
+                ev = str(data.get("event") or "").strip().lower()
+                if (
+                    ev == "subscriptionstatus"
+                    and str(data.get("status") or "").strip().lower() == "error"
+                ):
+                    log(
+                        f"[kraken_cache][ws] ownTrades subscription error: {data.get('errorMessage') or data}"
+                    )
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                    return
+                if (
+                    ev in ("heartbeat", "systemstatus", "subscriptionstatus")
+                    and (now_ms - last_flush_ms[0]) >= 15_000
+                ):
+                    if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+                        try:
+                            _merge_rest()
+                            last_rest_sync_ms[0] = now_ms
+                            log(
+                                f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
+                                f"for {list(cache['items'].keys())}"
+                            )
+                        except Exception as exc:
+                            log(
+                                f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc}"
+                            )
+                    if last_rest_sync_ms[0] > 0:
+                        _touch_fetchtimes(now_ms)
+                        save_json_state(cache_file, cache, indent=1)
+                        last_flush_ms[0] = now_ms
+                    if callable(heartbeat_fn):
+                        heartbeat_fn()
+            return
+        changed = CacheTradeManager.merge_venue_fills_into_dict(
+            cache, fills_by_sym, now_ms=now_ms, is_snapshot=False
+        )
+        if changed or (now_ms - last_flush_ms[0]) >= 15_000:
+            _touch_fetchtimes(now_ms)
+            save_json_state(cache_file, cache, indent=1)
+            last_flush_ms[0] = now_ms
+            if callable(heartbeat_fn):
+                heartbeat_fn()
+
+    def on_error(_ws, err) -> None:
+        log(f"[kraken_cache][ws] error: {err}")
+
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                ws_url, on_open=on_open, on_message=on_message, on_error=on_error
+            )
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as exc:
+            log(f"[kraken_cache][ws] run_forever: {exc}")
+        log("[kraken_cache][ws] disconnected; reconnect in 5s")
+        if callable(heartbeat_fn):
+            heartbeat_fn()
+        _sleep_time(5)
+        try:
+            _merge_rest()
+            save_json_state(cache_file, cache, indent=1)
+            now_resync_ms = resolve_now_ms()
+            last_flush_ms[0] = now_resync_ms
+            last_rest_sync_ms[0] = now_resync_ms
+        except Exception as exc:
+            log(f"[kraken_cache][ws] REST resync after disconnect failed: {exc}")
+
+
+
