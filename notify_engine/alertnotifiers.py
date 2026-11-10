@@ -550,6 +550,10 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
                 venue = inner.lower()
             else:
                 tags.append(inner)
+        if not venue:
+            body_venue_m = re.search(r"\bVenue:\s*([A-Za-z0-9_]+)", str(it.get("body") or ""), re.IGNORECASE)
+            if body_venue_m and body_venue_m.group(1).lower() in _KNOWN_NOTIFY_VENUES:
+                venue = body_venue_m.group(1).lower()
         item_venues.append(venue)
         item_tags.append(tags)
 
@@ -561,7 +565,14 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
         ]
         item_tokens.append(tokens)
 
-    common_venue = item_venues[0] if item_venues and all(v and v == item_venues[0] for v in item_venues) else ""
+    non_empty_venues = [v for v in item_venues if v]
+    common_venue = non_empty_venues[0] if non_empty_venues and len(set(non_empty_venues)) == 1 else ""
+
+    def _canon_tag(tg: str) -> str:
+        tl = tg.lower()
+        if tl in ("auto_cryptotrade_executor", "auto_sharetrade_executor", "auto_trade_executor"):
+            return "ai_executor"
+        return tl
 
     common_tag = ""
     if item_tags and all(item_tags):
@@ -572,6 +583,8 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
         ]
         if shared:
             common_tag = shared[0]
+        elif all(any(_canon_tag(other) == "ai_executor" for other in tg_list) for tg_list in item_tags):
+            common_tag = "ai_executor"
         else:
             auto_prefixes = []
             for tg_list in item_tags:

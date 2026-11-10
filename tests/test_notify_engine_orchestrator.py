@@ -1559,6 +1559,60 @@ class EmailMirrorTest(unittest.TestCase):
         ])
         self.assertEqual(b_macro, "📦 Bulk (2): MACRO [auto_macro]")
 
+        b_exec_pair, _, _, _ = synthesize_bulk_notifications([
+            {"title": "🎉 [auto_cryptotrade_executor] EXECUTED SELL ARBUSDC $1940", "body": "Venue: binance · Qty: 11554", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+            {"title": "SELL ARBUSDC@0.1679 [binance:ai_executor]", "body": "FILLED ~1940.00 USDC", "priority": "urgent", "topic": "ntfy-trades-1978", "count": 1},
+        ])
+        self.assertEqual(b_exec_pair, "📦 Bulk (2): SELL ARBUSDC [binance:ai_executor]")
+
+        import subprocess
+        with tempfile.TemporaryDirectory() as bash_tmp:
+            os.makedirs(os.path.join(bash_tmp, "logs"), exist_ok=True)
+            script = f"""
+set -euo pipefail
+ROOT="{bash_tmp}"
+env_get() {{ echo "${{2:-}}"; }}
+source "{ROOT_DIR}/orchestratorOS/lib/os_notify.sh"
+send_os_email() {{ :; }}
+curl() {{
+    local title="" body=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -H)
+                case "$2" in
+                    Title:\\ *) title="${{2#Title: }}" ;;
+                esac
+                shift 2
+                ;;
+            -d) body="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf 'TITLE=%s\\nBODY=%s\\n===\\n' "$title" "$body" >> "$ROOT/out.txt"
+    return 0
+}}
+export OS_NOTIFY_DEDUP_SECONDS=900
+export OS_NOTIFY_GATE_SECONDS=300
+export OS_NOTIFY_TOPIC_BULK_SECONDS=300
+# 1. Open and close gate
+send_os_ntfy "DEV CI Regression FAILED" "Commit aaaaaaa failed: first error" "high" "ntfy-error-test"
+# 2. Buffered while gate is closed
+send_os_ntfy "DEV CI Regression FAILED" "Commit bbbbbbb failed: second error" "high" "ntfy-error-test"
+# 3. Expire gate timestamps and send a 3rd failure -> must synthesize bulk with 'DEV CI Regression FAILED'
+printf '100\\n' > "$ROOT/logs/.os_notify_dedup/.global_gate_ts"
+printf '100\\n' > "$ROOT/logs/.os_notify_dedup/.topic_gate_ntfy-error-test"
+send_os_ntfy "DEV CI Regression FAILED" "Commit ccccccc failed: third error" "high" "ntfy-error-test"
+# 4. Buffer a single failure, then send RECOVERED -> must strip the single FAILED line and send RECOVERED standalone
+send_os_ntfy "DEV CI Regression FAILED" "Commit ddddddd failed: fourth error" "high" "ntfy-error-test"
+send_os_ntfy "DEV CI Regression RECOVERED" "Commit eeeeeee passed all tests" "default" "ntfy-error-test"
+"""
+            subprocess.run(["bash", "-c", script], check=True)
+            with open(os.path.join(bash_tmp, "out.txt"), "r", encoding="utf-8") as f:
+                out_text = f.read()
+            self.assertIn("TITLE=📦 Bulk (2): DEV CI Regression FAILED\n", out_text)
+            self.assertIn("second error\n\n2. DEV CI Regression FAILED: Commit ccccccc failed: third error", out_text)
+            self.assertIn("TITLE=DEV CI Regression RECOVERED\nBODY=Commit eeeeeee passed all tests\n", out_text)
+
         self.assertEqual(format_owner_tags("tradeall"), (" [tradeall]", " (tradeall)"))
         self.assertEqual(format_owner_tags("unspecified"), ("", ""))
         self.assertEqual(format_owner_tags("order_retry"), ("", ""))

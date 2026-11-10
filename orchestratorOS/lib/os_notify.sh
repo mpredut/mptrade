@@ -103,7 +103,11 @@ send_os_ntfy() {
                     local rec_prefix="${title% RECOVERED*}"
                     rec_prefix="${rec_prefix% RESTORED*}"
                     if [ -n "$rec_prefix" ] && [ "$rec_prefix" != "$title" ] && [ -f "$bulk_file" ]; then
-                        grep -vF "${rec_prefix} FAILED:" "$bulk_file" > "${bulk_file}.tmp" 2>/dev/null && mv -f "${bulk_file}.tmp" "$bulk_file" || rm -f "${bulk_file}.tmp"
+                        if grep -vF "${rec_prefix} FAILED:" "$bulk_file" > "${bulk_file}.tmp" 2>/dev/null; then
+                            mv -f "${bulk_file}.tmp" "$bulk_file"
+                        else
+                            rm -f "$bulk_file" "${bulk_file}.tmp"
+                        fi
                     fi
                     ;;
             esac
@@ -122,34 +126,54 @@ send_os_ntfy() {
             fi
             if [ -s "$bulk_file" ]; then
                 local bulk_count=$(( $(wc -l < "$bulk_file" 2>/dev/null || echo 0) + 1 ))
+                local topic_label="ERROR"
+                case "${topic,,}" in
+                    *deadman*) topic_label="DEADMAN" ;;
+                    *error*)   topic_label="ERROR" ;;
+                    *guard*)   topic_label="GUARD" ;;
+                    *trade*)   topic_label="TRADES" ;;
+                    *macro*)   topic_label="MACRO" ;;
+                    *price*)   topic_label="PRICE" ;;
+                    *server*)  topic_label="SERVER" ;;
+                esac
                 local common_summary
                 common_summary="$(
-                    { awk -F': ' '{print $1}' "$bulk_file" 2>/dev/null; printf '%s\n' "$title"; } | awk -v fallback="${topic_type^^}" '
+                    { awk -F': ' '{print $1}' "$bulk_file" 2>/dev/null; printf '%s\n' "$title"; } | awk -v fallback="$topic_label" '
                     {
                         lines[++n] = $0
                         delete seen_line
                         for (i = 1; i <= NF; i++) {
                             tok = $i
                             gsub(/^:+|:+$/, "", tok)
-                            if (length(tok) > 1 && !(tok in seen_line)) {
-                                seen_line[tok] = 1
-                                counts[tok]++
-                                if (n == 1) order[++m] = tok
+                            tl = tolower(tok)
+                            if (length(tok) > 1 && tl !~ /^(in|on|to|by|for|the|of|and|or|at|is|are|with|from|a|an)$/ && !(tl in seen_line)) {
+                                seen_line[tl] = 1
+                                counts[tl]++
+                                if (n == 1) {
+                                    order[++m] = tl
+                                    display[tl] = tok
+                                }
                             }
                         }
                     }
                     END {
                         out = ""
                         for (j = 1; j <= m; j++) {
-                            t = order[j]
-                            if (counts[t] == n) {
-                                out = (out == "" ? t : out " " t)
+                            tl = order[j]
+                            if (counts[tl] == n) {
+                                out = (out == "" ? display[tl] : out " " display[tl])
                             }
                         }
                         print (out != "" ? out : (fallback != "" ? fallback : "Alerts"))
                     }'
                 )"
-                body="$(awk '{printf "%d. %s\n\n", NR, $0}' "$bulk_file" 2>/dev/null)$(printf '%d. %s: %s\n' "$bulk_count" "$title" "$body")"
+                [ -z "$common_summary" ] && common_summary="$topic_label"
+                local flat_body
+                flat_body="$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-300)"
+                body="$(
+                    { cat "$bulk_file" 2>/dev/null; printf '%s: %s\n' "$title" "$flat_body"; } \
+                    | awk '{ if (NR > 1) printf "\n\n"; printf "%d. %s", NR, $0 } END { printf "\n" }'
+                )"
                 title="📦 Bulk ($bulk_count): $common_summary"
                 used_bulk=1
             fi
