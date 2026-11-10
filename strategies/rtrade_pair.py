@@ -584,77 +584,6 @@ class PairCoordinator:
         )
         self.shock = max(0.0, now - self.started_at) <= self.policy.quote_ttl_sec * self.policy.fast_fill_ratio
 
-    def _ensure_anchored_exit(self, exposure_side: str, net_qty: float,
-                              entry_avg: float, current: float) -> bool:
-        exit_side = "SELL" if exposure_side == "LONG" else "BUY"
-        target = anchored_exit_price(
-            exit_side, entry_avg, current,
-            self.policy.adjustment_fraction, self.policy.min_edge_fraction, self.policy.price_decimals,
-        )
-        ticket = next(
-            (t for t in reversed(self.tickets) if t.side.upper() == exit_side and t.active),
-            None,
-        )
-        latest_exit = next(
-            (c for c in reversed(self.tickets) if c.side.upper() == exit_side and c is not self.stop_ticket),
-            None,
-        )
-        remaining = (
-            max(0.0, ticket.qty - self.snapshots.get(ticket.order_id, OrderSnapshot()).filled_qty)
-            if ticket is not None else 0.0
-        )
-        adequate_price = bool(ticket and (
-            (exit_side == "SELL" and ticket.price >= target) or (exit_side == "BUY" and ticket.price <= target)
-        ))
-        adequate_qty = ticket is not None and math.isclose(remaining, abs(net_qty), rel_tol=1e-6, abs_tol=1e-8)
-        if adequate_price and adequate_qty:
-            return True
-        cache_permit = None
-        replacement_qty = abs(net_qty)
-        if ticket is not None:
-            cache_permit = self.venue.preflight_order(
-                exit_side, replacement_qty, target, market=False, kind="rtrade_pair_quote"
-            )
-            _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-            if cancel_reason is not None:
-                self.reason = "exit_cancel_failed" if cancel_reason == "cancel_failed" else "exit_cancel_ambiguous"
-                return False
-            final_net = self._net_qty()
-            if abs(final_net) <= 1e-8:
-                self.phase, self.reason = "complete", None
-                return True
-            final_exit_side = "SELL" if final_net > 0 else "BUY"
-            replacement_qty = abs(final_net)
-            current_revision = self.limit_revisions[exit_side]
-            if current_revision >= _MAX_LIMIT_REVISION:
-                self.reason = "exit_revision_exhausted"
-                return False
-            self.limit_revisions[exit_side] = current_revision + 1
-            if final_exit_side != exit_side or replacement_qty > abs(net_qty) + 1e-8:
-                self.reason = "exit_exposure_changed_during_cancel"
-                return False
-        elif latest_exit is not None:
-            latest_snapshot = self.snapshots.get(latest_exit.order_id, OrderSnapshot())
-            if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
-                self.reason = "exit_status_unconfirmed"
-                return False
-            current_revision = max(self.limit_revisions[exit_side], int(latest_exit.revision))
-            self.limit_revisions[exit_side] = current_revision
-            if int(latest_exit.revision) == current_revision:
-                if current_revision >= _MAX_LIMIT_REVISION:
-                    self.reason = "exit_revision_exhausted"
-                    return False
-                self.limit_revisions[exit_side] = current_revision + 1
-        replacement = self.venue.place_limit(
-            exit_side, target, replacement_qty, self.pair_id,
-            cache_permit=cache_permit, revision=self.limit_revisions[exit_side]
-        )
-        if replacement is None:
-            self.reason = "exit_place_failed"
-            return False
-        self._append_unique_ticket(replacement)
-        return True
-
     def _retry_terminal_hard_stop(self, net_qty: float) -> bool:
         """Submit one bounded new revision for a terminal stop remainder."""
         if abs(net_qty) <= 1e-8:
@@ -861,7 +790,73 @@ class PairCoordinator:
                     self.hard_stop_reason = hs_reason
                     self.phase = "stopping"
                     return self.outcome()
-            self._ensure_anchored_exit(exposure_side, net, entry_avg, current)
+            exit_side = "SELL" if exposure_side == "LONG" else "BUY"
+            target = anchored_exit_price(
+                exit_side, entry_avg, current,
+                self.policy.adjustment_fraction, self.policy.min_edge_fraction, self.policy.price_decimals,
+            )
+            ticket = next(
+                (t for t in reversed(self.tickets) if t.side.upper() == exit_side and t.active),
+                None,
+            )
+            latest_exit = next(
+                (c for c in reversed(self.tickets) if c.side.upper() == exit_side and c is not self.stop_ticket),
+                None,
+            )
+            remaining = (
+                max(0.0, ticket.qty - self.snapshots.get(ticket.order_id, OrderSnapshot()).filled_qty)
+                if ticket is not None else 0.0
+            )
+            adequate_price = bool(ticket and (
+                (exit_side == "SELL" and ticket.price >= target) or (exit_side == "BUY" and ticket.price <= target)
+            ))
+            adequate_qty = ticket is not None and math.isclose(remaining, abs(net), rel_tol=1e-6, abs_tol=1e-8)
+            if adequate_price and adequate_qty:
+                return self.outcome()
+            cache_permit = None
+            replacement_qty = abs(net)
+            if ticket is not None:
+                cache_permit = self.venue.preflight_order(
+                    exit_side, replacement_qty, target, market=False, kind="rtrade_pair_quote"
+                )
+                _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+                if cancel_reason is not None:
+                    self.reason = "exit_cancel_failed" if cancel_reason == "cancel_failed" else "exit_cancel_ambiguous"
+                    return self.outcome()
+                final_net = self._net_qty()
+                if abs(final_net) <= 1e-8:
+                    self.phase, self.reason = "complete", None
+                    return self.outcome()
+                final_exit_side = "SELL" if final_net > 0 else "BUY"
+                replacement_qty = abs(final_net)
+                current_revision = self.limit_revisions[exit_side]
+                if current_revision >= _MAX_LIMIT_REVISION:
+                    self.reason = "exit_revision_exhausted"
+                    return self.outcome()
+                self.limit_revisions[exit_side] = current_revision + 1
+                if final_exit_side != exit_side or replacement_qty > abs(net) + 1e-8:
+                    self.reason = "exit_exposure_changed_during_cancel"
+                    return self.outcome()
+            elif latest_exit is not None:
+                latest_snapshot = self.snapshots.get(latest_exit.order_id, OrderSnapshot())
+                if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
+                    self.reason = "exit_status_unconfirmed"
+                    return self.outcome()
+                current_revision = max(self.limit_revisions[exit_side], int(latest_exit.revision))
+                self.limit_revisions[exit_side] = current_revision
+                if int(latest_exit.revision) == current_revision:
+                    if current_revision >= _MAX_LIMIT_REVISION:
+                        self.reason = "exit_revision_exhausted"
+                        return self.outcome()
+                    self.limit_revisions[exit_side] = current_revision + 1
+            replacement = self.venue.place_limit(
+                exit_side, target, replacement_qty, self.pair_id,
+                cache_permit=cache_permit, revision=self.limit_revisions[exit_side]
+            )
+            if replacement is None:
+                self.reason = "exit_place_failed"
+                return self.outcome()
+            self._append_unique_ticket(replacement)
             return self.outcome()
 
         if now - self.started_at >= self.policy.quote_ttl_sec:

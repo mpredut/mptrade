@@ -1199,126 +1199,123 @@ class CacheTradeManager(CacheAccountManagerBase):
             self.resync_mem_file()
             return
         with self._generation_lock():
-            self._ensure_trade_version_generation_locked(required_version)
-
-    def _ensure_trade_version_generation_locked(self, required_version):
-        reason = self._account_reader_reason()
-        try:
-            metadata = self._load_versioned_account_meta(
-                required_version=required_version
-            )
-            with self.lock:
-                can_append = (
-                    bool(self._loaded_data_version)
-                    and not self._account_cache_dirty
-                    and self._loaded_stream_id == metadata["stream_id"]
-                    and self._loaded_committed_bytes <= metadata["committed_bytes"]
+            reason = self._account_reader_reason()
+            try:
+                metadata = self._load_versioned_account_meta(
+                    required_version=required_version
                 )
-                old_boundary = self._loaded_committed_bytes
-                old_version = self._loaded_data_version
-                old_counts = dict(self._loaded_counts)
-                old_trade_ids = (
-                    {
-                        str(symbol).upper(): {str(int(item["id"])) for item in items}
-                        for symbol, items in self.cache.items()
-                    }
-                    if can_append
-                    else {}
-                )
-                old_digest = self._loaded_content_digest
-
-            if can_append:
-                try:
-                    records = self._read_trade_records_strict(
-                        old_boundary, metadata["committed_bytes"]
+                with self.lock:
+                    can_append = (
+                        bool(self._loaded_data_version)
+                        and not self._account_cache_dirty
+                        and self._loaded_stream_id == metadata["stream_id"]
+                        and self._loaded_committed_bytes <= metadata["committed_bytes"]
                     )
-                    suffix_ids = defaultdict(set)
-                    for symbol, item in records:
-                        normalized_symbol = str(symbol).upper()
-                        trade_id = str(int(item["id"]))
-                        if (
-                            trade_id in old_trade_ids.get(normalized_symbol, set())
-                            or trade_id in suffix_ids[normalized_symbol]
-                        ):
-                            raise ValueError("duplicate immutable Trade ID in suffix")
-                        suffix_ids[normalized_symbol].add(trade_id)
-                    delta_counts = self._counts_for_records(records)
-                    candidate_counts = dict(old_counts)
-                    for symbol, count in delta_counts.items():
-                        candidate_counts[symbol] = (
-                            candidate_counts.get(symbol, 0) + count
+                    old_boundary = self._loaded_committed_bytes
+                    old_version = self._loaded_data_version
+                    old_counts = dict(self._loaded_counts)
+                    old_trade_ids = (
+                        {
+                            str(symbol).upper(): {str(int(item["id"])) for item in items}
+                            for symbol, items in self.cache.items()
+                        }
+                        if can_append
+                        else {}
+                    )
+                    old_digest = self._loaded_content_digest
+
+                if can_append:
+                    try:
+                        records = self._read_trade_records_strict(
+                            old_boundary, metadata["committed_bytes"]
                         )
-                    if candidate_counts != metadata["counts"]:
-                        raise ValueError("Trade suffix counts differ from manifest")
-                    if (
-                        self._trade_records_digest(records, old_digest)
-                        != metadata["content_digest"]
+                        suffix_ids = defaultdict(set)
+                        for symbol, item in records:
+                            normalized_symbol = str(symbol).upper()
+                            trade_id = str(int(item["id"]))
+                            if (
+                                trade_id in old_trade_ids.get(normalized_symbol, set())
+                                or trade_id in suffix_ids[normalized_symbol]
+                            ):
+                                raise ValueError("duplicate immutable Trade ID in suffix")
+                            suffix_ids[normalized_symbol].add(trade_id)
+                        delta_counts = self._counts_for_records(records)
+                        candidate_counts = dict(old_counts)
+                        for symbol, count in delta_counts.items():
+                            candidate_counts[symbol] = (
+                                candidate_counts.get(symbol, 0) + count
+                            )
+                        if candidate_counts != metadata["counts"]:
+                            raise ValueError("Trade suffix counts differ from manifest")
+                        if (
+                            self._trade_records_digest(records, old_digest)
+                            != metadata["content_digest"]
+                        ):
+                            raise ValueError("Trade suffix digest differs from manifest")
+                        candidate_cache = None
+                        if not self.read_only:
+                            discard_generation_file(self._previous_generation_path())
+                    except (
+                        account_cache_health.AccountCacheNotReady,
+                        OSError,
+                        TypeError,
+                        ValueError,
+                        json.JSONDecodeError,
                     ):
-                        raise ValueError("Trade suffix digest differs from manifest")
-                    candidate_cache = None
-                    if not self.read_only:
-                        discard_generation_file(self._previous_generation_path())
-                except (
-                    account_cache_health.AccountCacheNotReady,
-                    OSError,
-                    TypeError,
-                    ValueError,
-                    json.JSONDecodeError,
-                ):
-                    if not os.path.exists(self._previous_generation_path()):
-                        raise
-                    can_append = False
+                        if not os.path.exists(self._previous_generation_path()):
+                            raise
+                        can_append = False
+                        candidate_cache, candidate_counts = (
+                            self._read_trade_snapshot_recovering_previous_locked(metadata)
+                        )
+                        records = []
+                else:
                     candidate_cache, candidate_counts = (
                         self._read_trade_snapshot_recovering_previous_locked(metadata)
                     )
                     records = []
-            else:
-                candidate_cache, candidate_counts = (
-                    self._read_trade_snapshot_recovering_previous_locked(metadata)
-                )
-                records = []
 
-            if (
-                self._load_versioned_account_meta(required_version=required_version)
-                != metadata
-            ):
-                raise ValueError("Trade manifest changed during reload")
-
-            if can_append:
-                with self.lock:
-                    append_still_valid = (
-                        not self._account_cache_dirty
-                        and self._loaded_data_version == old_version
-                        and self._loaded_stream_id == metadata["stream_id"]
-                        and self._loaded_committed_bytes == old_boundary
-                        and self._loaded_content_digest == old_digest
-                        and self._loaded_counts == old_counts
-                        and {s: len(v) for s, v in self.cache.items()}
-                        == self._nonzero_counts(old_counts)
-                    )
-                    if append_still_valid:
-                        for symbol, item in records:
-                            self.cache.setdefault(symbol, []).append(item)
-                        self._remember_loaded_trade_manifest_locked(
-                            metadata, candidate_counts
-                        )
-                        return
-                candidate_cache, candidate_counts = (
-                    self._read_trade_snapshot_recovering_previous_locked(metadata)
-                )
                 if (
                     self._load_versioned_account_meta(required_version=required_version)
                     != metadata
                 ):
-                    raise ValueError("Trade manifest changed during full reload")
+                    raise ValueError("Trade manifest changed during reload")
 
-            with self.lock:
-                self.cache = candidate_cache
-                self._remember_loaded_trade_manifest_locked(metadata, candidate_counts)
-        except account_cache_health.AccountCacheNotReady:
-            raise
-        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise account_cache_health.AccountCacheNotReady(reason) from exc
+                if can_append:
+                    with self.lock:
+                        append_still_valid = (
+                            not self._account_cache_dirty
+                            and self._loaded_data_version == old_version
+                            and self._loaded_stream_id == metadata["stream_id"]
+                            and self._loaded_committed_bytes == old_boundary
+                            and self._loaded_content_digest == old_digest
+                            and self._loaded_counts == old_counts
+                            and {s: len(v) for s, v in self.cache.items()}
+                            == self._nonzero_counts(old_counts)
+                        )
+                        if append_still_valid:
+                            for symbol, item in records:
+                                self.cache.setdefault(symbol, []).append(item)
+                            self._remember_loaded_trade_manifest_locked(
+                                metadata, candidate_counts
+                            )
+                            return
+                    candidate_cache, candidate_counts = (
+                        self._read_trade_snapshot_recovering_previous_locked(metadata)
+                    )
+                    if (
+                        self._load_versioned_account_meta(required_version=required_version)
+                        != metadata
+                    ):
+                        raise ValueError("Trade manifest changed during full reload")
+
+                with self.lock:
+                    self.cache = candidate_cache
+                    self._remember_loaded_trade_manifest_locked(metadata, candidate_counts)
+            except account_cache_health.AccountCacheNotReady:
+                raise
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise account_cache_health.AccountCacheNotReady(reason) from exc
 
     def _load_jsonl(self):
         """Load Trade JSONL under the generation lock."""

@@ -249,8 +249,104 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
 
         if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
             try:
-                if (eq_whale := self._fetch_equity_whale(symbol, price_1h_change_pct, now, cached)) is not None:
-                    return eq_whale
+                ctx = self._fetch_equity_market_context(symbol, now)
+                if isinstance(ctx, dict):
+                    bars = ctx.get("bars") or []
+                    mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
+                    if mark_px > 0.0 or bars:
+                        def _bars_buy_sell(bar_slice: list) -> tuple[float, float]:
+                            b_usd = 0.0
+                            s_usd = 0.0
+                            for idx, (_t, o_p, h_p, l_p, c_p, vol) in enumerate(bar_slice):
+                                if vol <= 0.0 or c_p <= 0.0:
+                                    continue
+                                if h_p > l_p:
+                                    clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
+                                else:
+                                    prev_c = bar_slice[idx - 1][4] if idx > 0 else o_p
+                                    if abs(c_p - prev_c) <= 1e-9:
+                                        prev_c = next(
+                                            (b_prev[4] for b_prev in reversed(bars) if b_prev[0] < _t and abs(b_prev[4] - c_p) > 1e-9),
+                                            prev_c,
+                                        )
+                                    clv = 0.65 if c_p > prev_c else (0.35 if c_p < prev_c else 0.5)
+                                turn_usd = vol * c_p
+                                b_usd += turn_usd * clv
+                                s_usd += turn_usd * (1.0 - clv)
+                            return round(b_usd, 2), round(s_usd, 2)
+
+                        def _horizon_stats(bar_slice: list) -> tuple[Optional[float], Optional[float]]:
+                            b_u, s_u = _bars_buy_sell(bar_slice)
+                            if (b_u + s_u) <= 0.0:
+                                return None, None
+                            r_val = round(b_u / s_u, 4) if b_u > 0.0 and s_u > 0.0 else (2.0 if b_u > 0.0 else 0.5)
+                            return r_val, round(b_u - s_u, 0)
+
+                        active_bars = [b for b in bars if b[5] > 0.0] or list(bars)
+                        taker_buy, taker_sell = _bars_buy_sell(active_bars[-3:])
+                        taker_ratio = (
+                            round(taker_buy / taker_sell, 4)
+                            if taker_buy > 0.0 and taker_sell > 0.0
+                            else (1.25 if taker_buy > 0.0 else (0.8 if taker_sell > 0.0 else 1.0))
+                        )
+                        tr_5m, cvd_5m = _horizon_stats(active_bars[-1:])
+                        tr_1h, cvd_1h = _horizon_stats(active_bars[-12:]) if len(active_bars) >= 4 else (None, None)
+                        tr_4h, cvd_4h = _horizon_stats(active_bars[-48:]) if len(active_bars) >= 13 else (None, None)
+
+                        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
+                        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
+                        total_opt = call_oi + put_oi
+                        if total_opt > 0.0:
+                            top_long_pct = round(call_oi / total_opt, 4)
+                            top_ratio = round(call_oi / put_oi, 4) if put_oi > 0.0 else 2.0
+                            oi_usd = round(total_opt * 100.0 * mark_px, 2)
+                        else:
+                            b_1h, s_1h = _bars_buy_sell(active_bars[-12:]) if len(active_bars) >= 4 else (taker_buy, taker_sell)
+                            top_long_pct = round(b_1h / (b_1h + s_1h), 4) if (b_1h + s_1h) > 0.0 else 0.5
+                            top_ratio = round(b_1h / s_1h, 4) if b_1h > 0.0 and s_1h > 0.0 else taker_ratio
+                            oi_usd = 0.0
+
+                        if abs(price_1h_change_pct) < 1e-6 and len(active_bars) >= 12 and active_bars[-12][4] > 0.0:
+                            price_1h_change_pct = ((active_bars[-1][4] - active_bars[-12][4]) / active_bars[-12][4]) * 100.0
+
+                        prev_snap = (
+                            (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached)
+                            if cached
+                            else self._load_from_disk(symbol, now, ignore_ttl=True, exact_only=True)
+                        )
+                        prev_oi = safe_pos_float(obj_attr(prev_snap, "open_interest_usd", None), default=0.0) or 0.0
+                        oi_chg_pct = round(((oi_usd - prev_oi) / prev_oi) * 100.0, 2) if (oi_usd > 0.0 and prev_oi > 0.0) else 0.0
+                        prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
+                        funding_rate = 0.0
+
+                        regime = self.classify_regime(
+                            price_1h_change_pct=price_1h_change_pct,
+                            oi_change_pct=oi_chg_pct,
+                            taker_ratio=taker_ratio,
+                            funding_rate=funding_rate,
+                            prev_regime=prev_reg,
+                            top_long_pct=top_long_pct,
+                        )
+                        eq_snapshot = WhalePositioningSnapshot(
+                            symbol=symbol,
+                            top_traders_long_ratio=top_ratio,
+                            top_traders_long_pct=top_long_pct,
+                            taker_buy_sell_ratio=taker_ratio,
+                            taker_buy_vol_usd=taker_buy,
+                            taker_sell_vol_usd=taker_sell,
+                            open_interest_usd=oi_usd,
+                            open_interest_1h_change_pct=oi_chg_pct,
+                            divergence_regime=regime,
+                            ts=now,
+                            funding_rate=funding_rate,
+                            taker_ratio_5m=tr_5m,
+                            taker_ratio_1h=tr_1h,
+                            taker_ratio_4h=tr_4h,
+                            cvd_5m_usd=cvd_5m,
+                            cvd_1h_usd=cvd_1h,
+                            cvd_4h_usd=cvd_4h,
+                        )
+                        return self._commit_snapshot(symbol, now, eq_snapshot)
             except Exception as eq_exc:
                 logger.warning("Could not fetch equity whale positioning for %s: %s", symbol, eq_exc)
             return self._fallback_stale(symbol, cached)
@@ -449,117 +545,6 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             funding_rate=funding_rate,
             taker_ratio_5m=taker_ratio if (taker_buy + taker_sell) > 0.0 and taker_ratio > 0.0 else None,
             cvd_5m_usd=round(taker_buy - taker_sell, 0) if (taker_buy + taker_sell) > 0.0 else None,
-        )
-        return self._commit_snapshot(symbol, now, snapshot)
-
-    def _fetch_equity_whale(
-        self,
-        symbol: str,
-        price_1h_change_pct: float,
-        now: float,
-        cached: Any,
-    ) -> Optional[WhalePositioningSnapshot]:
-        """Build a WhalePositioningSnapshot for an equity symbol using Cboe options positioning & 5m CLV block flow."""
-        ctx = self._fetch_equity_market_context(symbol, now)
-        if not isinstance(ctx, dict):
-            return None
-        bars = ctx.get("bars") or []
-        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
-        if mark_px <= 0.0 and not bars:
-            return None
-
-        def _bars_buy_sell(bar_slice: list) -> tuple[float, float]:
-            b_usd = 0.0
-            s_usd = 0.0
-            for idx, (_t, o_p, h_p, l_p, c_p, vol) in enumerate(bar_slice):
-                if vol <= 0.0 or c_p <= 0.0:
-                    continue
-                if h_p > l_p:
-                    clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
-                else:
-                    prev_c = bar_slice[idx - 1][4] if idx > 0 else o_p
-                    if abs(c_p - prev_c) <= 1e-9:
-                        prev_c = next(
-                            (b_prev[4] for b_prev in reversed(bars) if b_prev[0] < _t and abs(b_prev[4] - c_p) > 1e-9),
-                            prev_c,
-                        )
-                    clv = 0.65 if c_p > prev_c else (0.35 if c_p < prev_c else 0.5)
-                turn_usd = vol * c_p
-                b_usd += turn_usd * clv
-                s_usd += turn_usd * (1.0 - clv)
-            return round(b_usd, 2), round(s_usd, 2)
-
-        def _horizon_stats(bar_slice: list) -> tuple[Optional[float], Optional[float]]:
-            b_u, s_u = _bars_buy_sell(bar_slice)
-            if (b_u + s_u) <= 0.0:
-                return None, None
-            r_val = round(b_u / s_u, 4) if b_u > 0.0 and s_u > 0.0 else (2.0 if b_u > 0.0 else 0.5)
-            return r_val, round(b_u - s_u, 0)
-
-        # Use last 3 active 5m bars (15m) for primary taker buy/sell volume, plus 5m / 1h / 4h windows
-        active_bars = [b for b in bars if b[5] > 0.0] or list(bars)
-        taker_buy, taker_sell = _bars_buy_sell(active_bars[-3:])
-        taker_ratio = (
-            round(taker_buy / taker_sell, 4)
-            if taker_buy > 0.0 and taker_sell > 0.0
-            else (1.25 if taker_buy > 0.0 else (0.8 if taker_sell > 0.0 else 1.0))
-        )
-        tr_5m, cvd_5m = _horizon_stats(active_bars[-1:])
-        tr_1h, cvd_1h = _horizon_stats(active_bars[-12:]) if len(active_bars) >= 4 else (None, None)
-        tr_4h, cvd_4h = _horizon_stats(active_bars[-48:]) if len(active_bars) >= 13 else (None, None)
-
-        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
-        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
-        total_opt = call_oi + put_oi
-        if total_opt > 0.0:
-            top_long_pct = round(call_oi / total_opt, 4)
-            top_ratio = round(call_oi / put_oi, 4) if put_oi > 0.0 else 2.0
-            oi_usd = round(total_opt * 100.0 * mark_px, 2)
-        else:
-            b_1h, s_1h = _bars_buy_sell(active_bars[-12:]) if len(active_bars) >= 4 else (taker_buy, taker_sell)
-            top_long_pct = round(b_1h / (b_1h + s_1h), 4) if (b_1h + s_1h) > 0.0 else 0.5
-            top_ratio = round(b_1h / s_1h, 4) if b_1h > 0.0 and s_1h > 0.0 else taker_ratio
-            oi_usd = 0.0
-
-        if abs(price_1h_change_pct) < 1e-6 and len(active_bars) >= 12 and active_bars[-12][4] > 0.0:
-            price_1h_change_pct = ((active_bars[-1][4] - active_bars[-12][4]) / active_bars[-12][4]) * 100.0
-
-        prev_snap = (
-            (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached)
-            if cached
-            else self._load_from_disk(symbol, now, ignore_ttl=True, exact_only=True)
-        )
-        prev_oi = safe_pos_float(obj_attr(prev_snap, "open_interest_usd", None), default=0.0) or 0.0
-        oi_chg_pct = round(((oi_usd - prev_oi) / prev_oi) * 100.0, 2) if (oi_usd > 0.0 and prev_oi > 0.0) else 0.0
-        prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
-        funding_rate = 0.0
-
-        regime = self.classify_regime(
-            price_1h_change_pct=price_1h_change_pct,
-            oi_change_pct=oi_chg_pct,
-            taker_ratio=taker_ratio,
-            funding_rate=funding_rate,
-            prev_regime=prev_reg,
-            top_long_pct=top_long_pct,
-        )
-        snapshot = WhalePositioningSnapshot(
-            symbol=symbol,
-            top_traders_long_ratio=top_ratio,
-            top_traders_long_pct=top_long_pct,
-            taker_buy_sell_ratio=taker_ratio,
-            taker_buy_vol_usd=taker_buy,
-            taker_sell_vol_usd=taker_sell,
-            open_interest_usd=oi_usd,
-            open_interest_1h_change_pct=oi_chg_pct,
-            divergence_regime=regime,
-            ts=now,
-            funding_rate=funding_rate,
-            taker_ratio_5m=tr_5m,
-            taker_ratio_1h=tr_1h,
-            taker_ratio_4h=tr_4h,
-            cvd_5m_usd=cvd_5m,
-            cvd_1h_usd=cvd_1h,
-            cvd_4h_usd=cvd_4h,
         )
         return self._commit_snapshot(symbol, now, snapshot)
 

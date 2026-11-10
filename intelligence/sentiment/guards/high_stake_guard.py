@@ -217,117 +217,6 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
             extra_meta["cache_hit"] = True
         return GuardDecision.allow(self.GUARD_NAME, shadow_msg, shadow_decision=dec, **extra_meta)
 
-    def _resolve_pretrade_telemetry_snapshot(
-        self,
-        symbol: str,
-        *,
-        snapshot: Optional[PretradeTelemetrySnapshot] = None,
-        telemetry: Optional[Any] = None,
-        regime_context: Optional[Any] = None,
-        dur_sec: Optional[float] = None,
-        now_ts: float,
-        max_telemetry_age_sec: Optional[float] = None,
-    ) -> PretradeTelemetrySnapshot:
-        """Resolve an explicit read-only ``PretradeTelemetrySnapshot`` without triggering network or cache writes."""
-        eff_max_age = (
-            safe_pos_float(max_telemetry_age_sec, default=None)
-            if max_telemetry_age_sec is not None and not isinstance(max_telemetry_age_sec, bool)
-            else self.max_telemetry_age_sec
-        )
-        enforce_fresh = eff_max_age is not None
-        if snapshot is not None:
-            return PretradeTelemetrySnapshot.from_raw(
-                snapshot,
-                symbol=symbol,
-                now_ts=now_ts,
-                source="explicit",
-                max_age_sec=eff_max_age,
-                enforce_freshness=enforce_fresh,
-            )
-        if telemetry is not None:
-            return PretradeTelemetrySnapshot.from_raw(
-                telemetry,
-                symbol=symbol,
-                now_ts=now_ts,
-                source="explicit",
-                max_age_sec=eff_max_age,
-                enforce_freshness=enforce_fresh,
-            )
-
-        target_modules = (
-            self.__class__.__module__,
-            __name__,
-            "intelligence.sentiment.collectors.macro_telemetry_collector",
-            "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-            "intelligence.macro_sentiment_ssot",
-        )
-        _telem_fn = resolve_patched_attr(
-            "collect_pretrade_telemetry",
-            collect_pretrade_telemetry,
-            defaults=(_default_collect_pretrade_telemetry,),
-            modules=target_modules,
-            require_callable=True,
-        )
-        _snap_fn = resolve_patched_attr(
-            "read_pretrade_telemetry_snapshot",
-            read_pretrade_telemetry_snapshot,
-            defaults=(_default_read_pretrade_telemetry_snapshot,),
-            modules=target_modules,
-            require_callable=True,
-        )
-        try:
-            if _telem_fn is not _default_collect_pretrade_telemetry:
-                call_kwargs: Dict[str, Any] = {"regime_context": regime_context}
-                if dur_sec is not None:
-                    call_kwargs["dur_sec"] = dur_sec
-                try:
-                    raw_telem = _telem_fn(symbol, **call_kwargs, allow_network=False, now_ts=now_ts)
-                except TypeError:
-                    raw_telem = _telem_fn(symbol, **call_kwargs)
-                if isinstance(raw_telem, PretradeTelemetrySnapshot):
-                    return PretradeTelemetrySnapshot.from_raw(
-                        raw_telem,
-                        symbol=symbol,
-                        now_ts=now_ts,
-                        max_age_sec=eff_max_age,
-                        enforce_freshness=enforce_fresh,
-                    )
-                return PretradeTelemetrySnapshot.from_raw(
-                    raw_telem,
-                    symbol=symbol,
-                    now_ts=now_ts,
-                    source="collector",
-                    max_age_sec=eff_max_age,
-                    enforce_freshness=enforce_fresh,
-                )
-
-            resolved = _snap_fn(
-                symbol,
-                regime_context=regime_context,
-                dur_sec=dur_sec,
-                now_ts=now_ts,
-                max_age_sec=eff_max_age,
-                enforce_freshness=enforce_fresh,
-            )
-            if isinstance(resolved, PretradeTelemetrySnapshot):
-                return resolved
-            return PretradeTelemetrySnapshot.from_raw(
-                resolved,
-                symbol=symbol,
-                now_ts=now_ts,
-                source="cachedb",
-                max_age_sec=eff_max_age,
-                enforce_freshness=enforce_fresh,
-            )
-        except Exception as exc:
-            logger.warning("Pre-trade telemetry read failed for %s: %s", symbol, exc)
-            return PretradeTelemetrySnapshot.unavailable(
-                symbol,
-                reason="telemetry_unavailable",
-                now_ts=now_ts,
-                max_age_sec=eff_max_age,
-            )
-
     def _execute_pretrade_guard_eval(
         self,
         *,
@@ -397,15 +286,107 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                         },
                     )
 
-        resolved_snapshot = self._resolve_pretrade_telemetry_snapshot(
-            symbol,
-            snapshot=snapshot,
-            telemetry=telemetry,
-            regime_context=regime_context,
-            dur_sec=dur_sec,
-            now_ts=now_ts,
-            max_telemetry_age_sec=max_telemetry_age_sec,
+        eff_max_age = (
+            safe_pos_float(max_telemetry_age_sec, default=None)
+            if max_telemetry_age_sec is not None and not isinstance(max_telemetry_age_sec, bool)
+            else self.max_telemetry_age_sec
         )
+        enforce_fresh = eff_max_age is not None
+        if snapshot is not None:
+            resolved_snapshot = PretradeTelemetrySnapshot.from_raw(
+                snapshot,
+                symbol=symbol,
+                now_ts=now_ts,
+                source="explicit",
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+        elif telemetry is not None:
+            resolved_snapshot = PretradeTelemetrySnapshot.from_raw(
+                telemetry,
+                symbol=symbol,
+                now_ts=now_ts,
+                source="explicit",
+                max_age_sec=eff_max_age,
+                enforce_freshness=enforce_fresh,
+            )
+        else:
+            target_modules = (
+                self.__class__.__module__,
+                __name__,
+                "intelligence.sentiment.collectors.macro_telemetry_collector",
+                "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+                "intelligence.macro_sentiment_ssot",
+            )
+            _telem_fn = resolve_patched_attr(
+                "collect_pretrade_telemetry",
+                collect_pretrade_telemetry,
+                defaults=(_default_collect_pretrade_telemetry,),
+                modules=target_modules,
+                require_callable=True,
+            )
+            _snap_fn = resolve_patched_attr(
+                "read_pretrade_telemetry_snapshot",
+                read_pretrade_telemetry_snapshot,
+                defaults=(_default_read_pretrade_telemetry_snapshot,),
+                modules=target_modules,
+                require_callable=True,
+            )
+            try:
+                if _telem_fn is not _default_collect_pretrade_telemetry:
+                    call_kwargs: Dict[str, Any] = {"regime_context": regime_context}
+                    if dur_sec is not None:
+                        call_kwargs["dur_sec"] = dur_sec
+                    try:
+                        raw_telem = _telem_fn(symbol, **call_kwargs, allow_network=False, now_ts=now_ts)
+                    except TypeError:
+                        raw_telem = _telem_fn(symbol, **call_kwargs)
+                    if isinstance(raw_telem, PretradeTelemetrySnapshot):
+                        resolved_snapshot = PretradeTelemetrySnapshot.from_raw(
+                            raw_telem,
+                            symbol=symbol,
+                            now_ts=now_ts,
+                            max_age_sec=eff_max_age,
+                            enforce_freshness=enforce_fresh,
+                        )
+                    else:
+                        resolved_snapshot = PretradeTelemetrySnapshot.from_raw(
+                            raw_telem,
+                            symbol=symbol,
+                            now_ts=now_ts,
+                            source="collector",
+                            max_age_sec=eff_max_age,
+                            enforce_freshness=enforce_fresh,
+                        )
+                else:
+                    resolved = _snap_fn(
+                        symbol,
+                        regime_context=regime_context,
+                        dur_sec=dur_sec,
+                        now_ts=now_ts,
+                        max_age_sec=eff_max_age,
+                        enforce_freshness=enforce_fresh,
+                    )
+                    resolved_snapshot = (
+                        resolved
+                        if isinstance(resolved, PretradeTelemetrySnapshot)
+                        else PretradeTelemetrySnapshot.from_raw(
+                            resolved,
+                            symbol=symbol,
+                            now_ts=now_ts,
+                            source="cachedb",
+                            max_age_sec=eff_max_age,
+                            enforce_freshness=enforce_fresh,
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("Pre-trade telemetry read failed for %s: %s", symbol, exc)
+                resolved_snapshot = PretradeTelemetrySnapshot.unavailable(
+                    symbol,
+                    reason="telemetry_unavailable",
+                    now_ts=now_ts,
+                    max_age_sec=eff_max_age,
+                )
         snap_meta: Dict[str, Any] = {
             "telemetry_symbol": resolved_snapshot.canonical_symbol,
             "telemetry_asset_scope": resolved_snapshot.asset_scope,

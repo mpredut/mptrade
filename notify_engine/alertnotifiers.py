@@ -438,8 +438,67 @@ def _topic_tier(topic: str) -> int:
     return next((tier for key, _, tier in _TOPIC_CATEGORY_SPECS if key in tl), 0)
 
 
-def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
-    """Extract only the common/grouping elements (action, symbol, topic category, [venue:module]) across bulk items."""
+def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
+    """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
+    if not items:
+        return ("Alert", "", "default", "")
+    best_priority = max(
+        (str(it.get("priority") or "default") for it in items),
+        key=lambda p: _PRIO_RANK.get(p, 1),
+    )
+    best_topic = str(items[0].get("topic") or "")
+    best_tier = _topic_tier(best_topic)
+    for it in items[1:]:
+        t = str(it.get("topic") or "")
+        tier = _topic_tier(t)
+        if tier > best_tier:
+            best_topic = t
+            best_tier = tier
+
+    if len(items) == 1:
+        it = items[0]
+        cnt = exact_pos_int(it.get("count", 1), 1)
+        raw_title = str(it.get("title") or "Alert")
+        out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
+        out_body = str(it.get("body") or "")
+        return (out_title, out_body, best_priority, best_topic)
+
+    body_lines = []
+    for idx, it in enumerate(items, 1):
+        cnt = exact_pos_int(it.get("count", 1), 1)
+        t = str(it.get("title") or "Alert").strip()
+        repeat_tag = f" (×{cnt})" if cnt > 1 else ""
+        cleaned = _LAST_LOGS_RE.sub("", str(it.get("body") or "")).strip()
+        raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+        if not raw_lines:
+            compact_body = ""
+        else:
+            lines: list[str] = []
+            prefix_tag = ""
+            for l_idx, ln in enumerate(raw_lines):
+                if l_idx == 0 and (m := _REDUNDANT_BULK_LINE_RE.match(ln)):
+                    inner = (m.group(1) or m.group(2) or "").strip()
+                    risk_only = (m.group(3) or "").strip()
+                    if inner:
+                        prefix_tag = f"[{inner}]"
+                    elif risk_only:
+                        prefix_tag = f"[Risk: {risk_only}]"
+                    continue
+                lines.append(ln)
+            if not lines:
+                compact_body = prefix_tag or raw_lines[0]
+            else:
+                compact_body = " | ".join(lines[:4])
+                if prefix_tag:
+                    compact_body = f"{prefix_tag} {compact_body}"
+                if len(compact_body) > 900:
+                    cut = compact_body[:900].rsplit(" ", 1)[0]
+                    compact_body = (cut if len(cut) >= 450 else compact_body[:900]) + "..."
+        if compact_body and compact_body.lower() != t.lower():
+            body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
+        else:
+            body_lines.append(f"{idx}. {t}{repeat_tag}")
+
     item_venues: list[str] = []
     item_tags: list[list[str]] = []
     item_tokens: list[list[str]] = []
@@ -539,73 +598,8 @@ def _synthesize_bulk_subject_summary(items: list[dict], best_topic: str) -> str:
     else:
         core_label = _topic_category_label(best_topic) or "Alerts"
 
-    if bracket_str and core_label:
-        return f"{core_label} {bracket_str}"
-    return bracket_str or core_label
-
-
-def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
-    """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
-    if not items:
-        return ("Alert", "", "default", "")
-    best_priority = max(
-        (str(it.get("priority") or "default") for it in items),
-        key=lambda p: _PRIO_RANK.get(p, 1),
-    )
-    best_topic = str(items[0].get("topic") or "")
-    best_tier = _topic_tier(best_topic)
-    for it in items[1:]:
-        t = str(it.get("topic") or "")
-        tier = _topic_tier(t)
-        if tier > best_tier:
-            best_topic = t
-            best_tier = tier
-
-    if len(items) == 1:
-        it = items[0]
-        cnt = exact_pos_int(it.get("count", 1), 1)
-        raw_title = str(it.get("title") or "Alert")
-        out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
-        out_body = str(it.get("body") or "")
-        return (out_title, out_body, best_priority, best_topic)
-
-    body_lines = []
-    for idx, it in enumerate(items, 1):
-        cnt = exact_pos_int(it.get("count", 1), 1)
-        t = str(it.get("title") or "Alert").strip()
-        repeat_tag = f" (×{cnt})" if cnt > 1 else ""
-        cleaned = _LAST_LOGS_RE.sub("", str(it.get("body") or "")).strip()
-        raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-        if not raw_lines:
-            compact_body = ""
-        else:
-            lines: list[str] = []
-            prefix_tag = ""
-            for l_idx, ln in enumerate(raw_lines):
-                if l_idx == 0 and (m := _REDUNDANT_BULK_LINE_RE.match(ln)):
-                    inner = (m.group(1) or m.group(2) or "").strip()
-                    risk_only = (m.group(3) or "").strip()
-                    if inner:
-                        prefix_tag = f"[{inner}]"
-                    elif risk_only:
-                        prefix_tag = f"[Risk: {risk_only}]"
-                    continue
-                lines.append(ln)
-            if not lines:
-                compact_body = prefix_tag or raw_lines[0]
-            else:
-                compact_body = " | ".join(lines[:4])
-                if prefix_tag:
-                    compact_body = f"{prefix_tag} {compact_body}"
-                if len(compact_body) > 900:
-                    cut = compact_body[:900].rsplit(" ", 1)[0]
-                    compact_body = (cut if len(cut) >= 450 else compact_body[:900]) + "..."
-        if compact_body and compact_body.lower() != t.lower():
-            body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
-        else:
-            body_lines.append(f"{idx}. {t}{repeat_tag}")
-
-    summary_subject = (_synthesize_bulk_subject_summary(items, best_topic) or "").strip() or _topic_category_label(best_topic) or "Alerts"
+    raw_summary = f"{core_label} {bracket_str}" if (bracket_str and core_label) else (bracket_str or core_label)
+    summary_subject = (raw_summary or "").strip() or _topic_category_label(best_topic) or "Alerts"
     bulk_title = f"📦 Bulk ({len(items)}): {summary_subject}"
     bulk_body = "\n\n".join(body_lines)
     return (bulk_title, bulk_body, best_priority, best_topic)

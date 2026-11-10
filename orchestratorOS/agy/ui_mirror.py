@@ -125,77 +125,6 @@ def sync_topic_thread_from_ui(
                 pass
 
 
-def _mirror_to_daemon_ghost_cids(
-    dst_base: str,
-    dst_db: str,
-    src_brain: str,
-    active_cid: str,
-    clean_title: str,
-) -> None:
-    """Keep any retired daemon-loaded conversation IDs for ``clean_title`` readable with latest topic turns."""
-    if not clean_title or not os.path.exists(dst_db):
-        return
-    loaded_titles = daemon_loaded_titles(dst_base)
-    if not loaded_titles:
-        return
-    src_b = active_cid.encode("utf-8")
-    for ghost_cid, ghost_title in loaded_titles.items():
-        if ghost_cid == active_cid or (ghost_title or "").strip() != clean_title:
-            continue
-        if read_summary_row(dst_base, ghost_cid) is not None:
-            continue
-        try:
-            ghost_db = conversation_db(dst_base, ghost_cid)
-            dst_b = ghost_cid.encode("utf-8")
-            if not src_b or len(src_b) != len(dst_b) or active_cid == ghost_cid or not os.path.exists(dst_db):
-                continue
-            tmp_db = ghost_db + ".tmp"
-            os.makedirs(os.path.dirname(ghost_db), exist_ok=True)
-            if os.path.exists(ghost_db):
-                checkpoint_db(ghost_db)
-            shutil.copy2(dst_db, tmp_db)
-            conn = sqlite3.connect(tmp_db)
-            try:
-                tables = [
-                    r[0]
-                    for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                    if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
-                ]
-                for tbl in tables:
-                    cols = [r[1] for r in conn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
-                    if not cols:
-                        continue
-                    col_sql = ",".join(f"`{c}`" for c in cols)
-                    rows = conn.execute(f"SELECT rowid, {col_sql} FROM `{tbl}`").fetchall()
-                    for row in rows:
-                        rid = row[0]
-                        vals = list(row[1:])
-                        changed = False
-                        for idx, val in enumerate(vals):
-                            if isinstance(val, str) and active_cid in val:
-                                vals[idx] = val.replace(active_cid, ghost_cid)
-                                changed = True
-                            elif isinstance(val, (bytes, bytearray, memoryview)):
-                                raw_v = bytes(val)
-                                if src_b in raw_v:
-                                    vals[idx] = raw_v.replace(src_b, dst_b)
-                                    changed = True
-                        if changed:
-                            set_sql = ",".join(f"`{c}`=?" for c in cols)
-                            conn.execute(f"UPDATE `{tbl}` SET {set_sql} WHERE rowid=?", vals + [rid])
-                conn.commit()
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                conn.close()
-            drop_wal_sidecars(tmp_db, force=True)
-            drop_wal_sidecars(ghost_db, force=True)
-            durable_replace_file(tmp_db, ghost_db)
-            if src_brain and os.path.isdir(src_brain):
-                shutil.copytree(src_brain, os.path.join(dst_base, "brain", ghost_cid), dirs_exist_ok=True)
-        except (OSError, sqlite3.Error) as exc:
-            logger.debug("Failed updating ghost topic trajectory %s -> %s: %s", active_cid, ghost_cid, exc)
-
-
 def mirror_topic_thread_to_ui(
     cid: str,
     title: str,
@@ -278,7 +207,64 @@ def mirror_topic_thread_to_ui(
                     delete_threads(dup_cids, dst_base, defer_active_ui_files=True)
             except sqlite3.Error:
                 pass
-            _mirror_to_daemon_ghost_cids(dst_base, dst_db, src_brain, cid, clean_title)
+            if os.path.exists(dst_db):
+                loaded_titles = daemon_loaded_titles(dst_base)
+                src_b = cid.encode("utf-8")
+                for ghost_cid, ghost_title in (loaded_titles or {}).items():
+                    if ghost_cid == cid or (ghost_title or "").strip() != clean_title:
+                        continue
+                    if read_summary_row(dst_base, ghost_cid) is not None:
+                        continue
+                    try:
+                        ghost_db = conversation_db(dst_base, ghost_cid)
+                        dst_b = ghost_cid.encode("utf-8")
+                        if not src_b or len(src_b) != len(dst_b) or cid == ghost_cid or not os.path.exists(dst_db):
+                            continue
+                        tmp_db = ghost_db + ".tmp"
+                        os.makedirs(os.path.dirname(ghost_db), exist_ok=True)
+                        if os.path.exists(ghost_db):
+                            checkpoint_db(ghost_db)
+                        shutil.copy2(dst_db, tmp_db)
+                        gconn = sqlite3.connect(tmp_db)
+                        try:
+                            tables = [
+                                r[0]
+                                for r in gconn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                                if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
+                            ]
+                            for tbl in tables:
+                                cols = [r[1] for r in gconn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
+                                if not cols:
+                                    continue
+                                col_sql = ",".join(f"`{c}`" for c in cols)
+                                rows = gconn.execute(f"SELECT rowid, {col_sql} FROM `{tbl}`").fetchall()
+                                for r_row in rows:
+                                    rid = r_row[0]
+                                    vals = list(r_row[1:])
+                                    changed = False
+                                    for idx, val in enumerate(vals):
+                                        if isinstance(val, str) and cid in val:
+                                            vals[idx] = val.replace(cid, ghost_cid)
+                                            changed = True
+                                        elif isinstance(val, (bytes, bytearray, memoryview)):
+                                            raw_v = bytes(val)
+                                            if src_b in raw_v:
+                                                vals[idx] = raw_v.replace(src_b, dst_b)
+                                                changed = True
+                                    if changed:
+                                        set_sql = ",".join(f"`{c}`=?" for c in cols)
+                                        gconn.execute(f"UPDATE `{tbl}` SET {set_sql} WHERE rowid=?", vals + [rid])
+                            gconn.commit()
+                            gconn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        finally:
+                            gconn.close()
+                        drop_wal_sidecars(tmp_db, force=True)
+                        drop_wal_sidecars(ghost_db, force=True)
+                        durable_replace_file(tmp_db, ghost_db)
+                        if src_brain and os.path.isdir(src_brain):
+                            shutil.copytree(src_brain, os.path.join(dst_base, "brain", ghost_cid), dirs_exist_ok=True)
+                    except (OSError, sqlite3.Error) as exc:
+                        logger.debug("Failed updating ghost topic trajectory %s -> %s: %s", cid, ghost_cid, exc)
         return True
     except (OSError, sqlite3.Error) as e:
         logger.warning("Failed mirroring topic thread %s to the UI store: %s", cid, e)

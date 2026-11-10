@@ -398,14 +398,9 @@ class Cache24PriceManager(CachePriceManagerBase):
         return super()._persist_periodic_state(sync_complete)
 
     def _before_snapshot_commit_locked(self, persisted_max_ts: int) -> None:
-        if persisted_max_ts > self._last_disk_sync_max_ts:
-            self._merge_newer_disk_ohlc_series_locked()
-
-    def _filter_reloaded_items_locked(self, items: dict) -> dict:
-        return {s: v for s, v in items.items() if s in self.symbols}
-
-    def _merge_newer_disk_ohlc_series_locked(self) -> None:
         """Preserve 3-element OHLCV bars written to disk by enrichment while retaining recent in-memory ticks."""
+        if persisted_max_ts <= self._last_disk_sync_max_ts:
+            return
         backup_path = self._previous_generation_path()
         if not os.path.exists(self.filename) and not os.path.exists(backup_path):
             return
@@ -473,6 +468,9 @@ class Cache24PriceManager(CachePriceManagerBase):
                     self._trim_old_data(s)
         except Exception as exc:
             print(f"[{self.cls_name}][Error] merge disk OHLC {self.filename}: {exc}")
+
+    def _filter_reloaded_items_locked(self, items: dict) -> dict:
+        return {s: v for s, v in items.items() if s in self.symbols}
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float):
         """Receive every new WebSocket or HTTP price from CacheCurrentPriceManager."""

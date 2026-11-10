@@ -1311,208 +1311,6 @@ def _resolve_mt_inst_cfg(inst):
     return vals
 
 
-def _evaluate_mt_open_position(
-    inst, symbol: str, current_price: float, buy_price: float, owned_qty: float,
-    sellable_qty: float, current_time_s: int, prov_label: Optional[str],
-    gain_threshold: float, lost_threshold: float, hard_tp_pct: float, hard_tp_frac: float,
-    hard_tp_cd: float, min_qty: float, sbs: float, verbose: bool,
-) -> Tuple[bool, Optional[PositionExitManager], Optional[float], Optional[bool]]:
-    """Evaluate open BUY position for Hard-TP, TP trend-ride, or SL bounce/execution."""
-    snapshot = PositionSnapshot(
-        symbol=symbol, current_price=current_price, avg_buy_price=buy_price,
-        net_qty=owned_qty, sellable_qty=sellable_qty, current_time_s=current_time_s,
-        trend_up=False, vol_1h=0.0, vol_source="default", provider=prov_label,
-    )
-    if verbose:
-        print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
-    if symbol in _PENDING_STOP_EXIT and _is_pending_exit_active(
-        symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price
-    ):
-        return True, None, None, None
-    if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
-        if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
-            return True, None, None, None
-
-    state_dirty = False
-    for st_map in (_TP_RIDE_STATE, _SL_BOUNCE_STATE, _SL_EPISODE_STATE):
-        if symbol in st_map and not _state_matches_buy_price(st_map.get(symbol), buy_price):
-            st_map.pop(symbol, None)
-            state_dirty = True
-    if state_dirty:
-        _save_mt_state()
-
-    exit_mgr: Optional[PositionExitManager] = None
-    sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
-    if not sl_price_territory and symbol in _SL_EPISODE_STATE:
-        exit_mgr = get_exit_manager()
-        exit_mgr.reset_sl_episode(symbol)
-        _save_mt_state()
-    if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
-        print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
-        _SL_BOUNCE_STATE.pop(symbol, None)
-        _save_mt_state()
-
-    in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
-    in_tp_territory = (symbol in _TP_RIDE_STATE) or (
-        (not in_sl_territory) and snapshot.in_tp_territory(gain_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
-    )
-
-    vol_1h: Optional[float] = None
-    current_trend_up: Optional[bool] = None
-    if in_tp_territory or in_sl_territory:
-        if exit_mgr is None:
-            exit_mgr = get_exit_manager()
-        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
-        current_trend_up = bool(is_trend_up(symbol))
-        snapshot.trend_up = current_trend_up
-        snapshot.vol_1h = vol_1h
-        snapshot.vol_source = "1h_cache" if vol_1h > 0 else "default"
-
-    if in_tp_territory:
-        pending_tp = _PENDING_STOP_EXIT.get(symbol)
-        prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
-        tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
-        if tp_decision.reason != "not_in_tp_territory":
-            if tp_decision.action == ExitAction.HOLD:
-                _PENDING_STOP_EXIT.pop(symbol, None)
-                _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
-                _save_mt_state()
-            elif _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold, pending_tp):
-                return True, exit_mgr, vol_1h, current_trend_up
-        else:
-            _handle_position_recovery(inst, snapshot, lost_threshold)
-    elif in_sl_territory:
-        pending_stop = _PENDING_STOP_EXIT.get(symbol)
-        _TP_RIDE_STATE.pop(symbol, None)
-        prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
-        sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
-        if sl_decision.action == ExitAction.HOLD:
-            _PENDING_STOP_EXIT.pop(symbol, None)
-            _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
-            _save_mt_state()
-            return True, exit_mgr, vol_1h, current_trend_up
-        if _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop):
-            return True, exit_mgr, vol_1h, current_trend_up
-    else:
-        _handle_position_recovery(inst, snapshot, lost_threshold)
-
-    return False, exit_mgr, vol_1h, current_trend_up
-
-
-def _evaluate_mt_reentry(
-    inst, symbol: str, current_price: float, buy_price: Optional[float], sell_price: Optional[float],
-    buy_time: float, sell_time: float, trade_orders_sell: list, position_closed_by_sell: bool,
-    position: dict, tp_ref: str, gain_threshold: float, lost_threshold: float,
-    buy_budget: Optional[float], buy_qty_cfg: Optional[float], max_budget: Optional[float],
-    min_qty: float, sbs: float, avail_qty: float, owned_qty: float, isolation: str,
-    current_time_s: int, exit_mgr: Optional[PositionExitManager], vol_1h: Optional[float],
-    current_trend_up: Optional[bool], verbose: bool,
-) -> bool:
-    """Evaluate SELL history and execute post-exit re-entry BUY when eligible."""
-    sell_price_f = safe_pos_float(sell_price, 0.0)
-    if sell_price_f <= 0.0:
-        if verbose:
-            print("No sell_price !!!!!")
-        return True
-    sell_price = sell_price_f
-    sell_time_f = normalize_epoch_sec(sell_time, default=None)
-    if sell_time_f is not None:
-        sell_time = sell_time_f
-    if (
-        sell_time
-        and symbol not in _LAST_EXIT_KIND
-        and symbol not in _REENTRY_STATE
-        and _REENTRY_DONE_SELL_TIME.get(symbol) == float(sell_time)
-    ):
-        if verbose:
-            print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} — skipping duplicate")
-        return True
-    if exit_mgr is None:
-        exit_mgr = get_exit_manager()
-    if vol_1h is None:
-        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
-    if current_trend_up is None:
-        current_trend_up = bool(is_trend_up(symbol))
-
-    prev_reentry_state = _update_mt_reentry_state(
-        symbol, sell_price, current_price, current_time_s, sell_time, _REENTRY_STATE, _LAST_EXIT_KIND
-    )
-    last_exit_kind = _infer_mt_exit_kind(
-        symbol, trade_orders_sell, position_closed_by_sell,
-        buy_price, sell_price, buy_time, sell_time, position, tp_ref, lost_threshold,
-        _LAST_EXIT_KIND,
-    )
-
-    reentry_snap = ReentrySnapshot(
-        symbol=symbol, current_price=current_price, last_sell_price=sell_price,
-        last_exit_kind=last_exit_kind, post_sell_peak=prev_reentry_state["peak"],
-        post_sell_trough=prev_reentry_state["trough"], current_time_s=current_time_s,
-        last_sell_time_s=sell_time, trend_up=current_trend_up, trend_down=not current_trend_up,
-        vol_1h=vol_1h, vol_source="1h_cache" if vol_1h > 0 else "default",
-    )
-    if verbose:
-        print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
-
-    if not current_trend_up:
-        _restore_reentry_state(symbol, prev_reentry_state)
-        if verbose:
-            print("No action taken, because trend is down!")
-        return True
-
-    reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
-    if not reentry_dec.should_enter:
-        _save_mt_state()
-        print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
-        return True
-
-    qty = 1
-    _effective_held_qty = max(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
-    _pos_value = _effective_held_qty * current_price
-    _initial_buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-    _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
-    if max_budget and _initial_projected_value > max_budget:
-        _restore_reentry_state(symbol, prev_reentry_state)
-        print(f"[{symbol}] budget cap exceeded post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
-        return True
-
-    _reentry_applied_scale = 1.0
-    if last_exit_kind == "STOP":
-        if not _can_pass_buy_quantity_policy(
-            inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty, sell_price=sell_price
-        ):
-            _restore_reentry_state(symbol, prev_reentry_state)
-            return True
-        print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
-        _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
-        if _is_simulated_env_or_inst(inst):
-            allowed = True
-        else:
-            allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
-                symbol, current_price, sell_price, sell_time, reentry_snap,
-                buy_budget, buy_qty_cfg, qty, inst=inst,
-            )
-        _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
-        if not allowed:
-            _restore_reentry_state(symbol, prev_reentry_state)
-            return True
-    else:
-        print(f"Price decreased with {reentry_snap.sale_drop_ratio * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
-
-    _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-    _projected_value = _pos_value + (_buy_qty * current_price)
-    if max_budget and _projected_value > max_budget:
-        _restore_reentry_state(symbol, prev_reentry_state, save=False)
-        print(f"[{symbol}] budget cap exceeded post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
-    else:
-        _execute_reentry_buy(
-            inst, symbol, current_price, _buy_qty, min_qty, sbs,
-            last_exit_kind, prev_reentry_state,
-            applied_scale=_reentry_applied_scale,
-            sell_price=sell_price,
-        )
-    return False
-
-
 def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None, lost_threshold=None, now_fn=None):
     """Use injectable ``now_fn`` so replay time can follow its market-data provider."""
     now_fn = now_fn or time.time
@@ -1612,23 +1410,183 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print("No buy_price !!!!!")
             return
         buy_price = buy_price_f
-        should_return, exit_mgr, vol_1h, current_trend_up = _evaluate_mt_open_position(
-            inst, symbol, current_price, buy_price, owned_qty, sellable_qty, current_time_s,
-            _prov_label, gain_threshold, lost_threshold, hard_tp_pct, hard_tp_frac, hard_tp_cd,
-            min_qty, sbs, _verbose,
+        snapshot = PositionSnapshot(
+            symbol=symbol, current_price=current_price, avg_buy_price=buy_price,
+            net_qty=owned_qty, sellable_qty=sellable_qty, current_time_s=current_time_s,
+            trend_up=False, vol_1h=0.0, vol_source="default", provider=_prov_label,
         )
-        if should_return:
-            return
-
-    if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
-        if _evaluate_mt_reentry(
-            inst, symbol, current_price, buy_price, sell_price, buy_time, sell_time,
-            trade_orders_sell, position_closed_by_sell, position, tp_ref,
-            gain_threshold, lost_threshold, buy_budget, buy_qty_cfg, max_budget,
-            min_qty, sbs, avail_qty, owned_qty, isolation, current_time_s,
-            exit_mgr, vol_1h, current_trend_up, _verbose,
+        if _verbose:
+            print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
+        if symbol in _PENDING_STOP_EXIT and _is_pending_exit_active(
+            symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price
         ):
             return
+        if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
+            if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
+                return
+
+        state_dirty = False
+        for st_map in (_TP_RIDE_STATE, _SL_BOUNCE_STATE, _SL_EPISODE_STATE):
+            if symbol in st_map and not _state_matches_buy_price(st_map.get(symbol), buy_price):
+                st_map.pop(symbol, None)
+                state_dirty = True
+        if state_dirty:
+            _save_mt_state()
+
+        sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
+        if not sl_price_territory and symbol in _SL_EPISODE_STATE:
+            exit_mgr = get_exit_manager()
+            exit_mgr.reset_sl_episode(symbol)
+            _save_mt_state()
+        if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
+            print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
+            _SL_BOUNCE_STATE.pop(symbol, None)
+            _save_mt_state()
+
+        in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
+        in_tp_territory = (symbol in _TP_RIDE_STATE) or (
+            (not in_sl_territory) and snapshot.in_tp_territory(gain_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
+        )
+
+        if in_tp_territory or in_sl_territory:
+            if exit_mgr is None:
+                exit_mgr = get_exit_manager()
+            vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+            current_trend_up = bool(is_trend_up(symbol))
+            snapshot.trend_up = current_trend_up
+            snapshot.vol_1h = vol_1h
+            snapshot.vol_source = "1h_cache" if vol_1h > 0 else "default"
+
+        if in_tp_territory:
+            pending_tp = _PENDING_STOP_EXIT.get(symbol)
+            prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
+            tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
+            if tp_decision.reason != "not_in_tp_territory":
+                if tp_decision.action == ExitAction.HOLD:
+                    _PENDING_STOP_EXIT.pop(symbol, None)
+                    _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
+                    _save_mt_state()
+                elif _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold, pending_tp):
+                    return
+            else:
+                _handle_position_recovery(inst, snapshot, lost_threshold)
+        elif in_sl_territory:
+            pending_stop = _PENDING_STOP_EXIT.get(symbol)
+            _TP_RIDE_STATE.pop(symbol, None)
+            prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
+            sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
+            if sl_decision.action == ExitAction.HOLD:
+                _PENDING_STOP_EXIT.pop(symbol, None)
+                _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
+                _save_mt_state()
+                return
+            if _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop):
+                return
+        else:
+            _handle_position_recovery(inst, snapshot, lost_threshold)
+
+    if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
+        sell_price_f = safe_pos_float(sell_price, 0.0)
+        if sell_price_f <= 0.0:
+            if _verbose:
+                print("No sell_price !!!!!")
+            return
+        sell_price = sell_price_f
+        sell_time_f = normalize_epoch_sec(sell_time, default=None)
+        if sell_time_f is not None:
+            sell_time = sell_time_f
+        if (
+            sell_time
+            and symbol not in _LAST_EXIT_KIND
+            and symbol not in _REENTRY_STATE
+            and _REENTRY_DONE_SELL_TIME.get(symbol) == float(sell_time)
+        ):
+            if _verbose:
+                print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} — skipping duplicate")
+            return
+        if exit_mgr is None:
+            exit_mgr = get_exit_manager()
+        if vol_1h is None:
+            vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        if current_trend_up is None:
+            current_trend_up = bool(is_trend_up(symbol))
+
+        prev_reentry_state = _update_mt_reentry_state(
+            symbol, sell_price, current_price, current_time_s, sell_time, _REENTRY_STATE, _LAST_EXIT_KIND
+        )
+        last_exit_kind = _infer_mt_exit_kind(
+            symbol, trade_orders_sell, position_closed_by_sell,
+            buy_price, sell_price, buy_time, sell_time, position, tp_ref, lost_threshold,
+            _LAST_EXIT_KIND,
+        )
+
+        reentry_snap = ReentrySnapshot(
+            symbol=symbol, current_price=current_price, last_sell_price=sell_price,
+            last_exit_kind=last_exit_kind, post_sell_peak=prev_reentry_state["peak"],
+            post_sell_trough=prev_reentry_state["trough"], current_time_s=current_time_s,
+            last_sell_time_s=sell_time, trend_up=current_trend_up, trend_down=not current_trend_up,
+            vol_1h=vol_1h, vol_source="1h_cache" if vol_1h > 0 else "default",
+        )
+        if _verbose:
+            print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
+
+        if not current_trend_up:
+            _restore_reentry_state(symbol, prev_reentry_state)
+            if _verbose:
+                print("No action taken, because trend is down!")
+            return
+
+        reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
+        if not reentry_dec.should_enter:
+            _save_mt_state()
+            print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
+            return
+
+        qty = 1
+        _effective_held_qty = max(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+        _pos_value = _effective_held_qty * current_price
+        _initial_buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
+        if max_budget and _initial_projected_value > max_budget:
+            _restore_reentry_state(symbol, prev_reentry_state)
+            print(f"[{symbol}] budget cap exceeded post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
+            return
+
+        _reentry_applied_scale = 1.0
+        if last_exit_kind == "STOP":
+            if not _can_pass_buy_quantity_policy(
+                inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty, sell_price=sell_price
+            ):
+                _restore_reentry_state(symbol, prev_reentry_state)
+                return
+            print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
+            _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
+            if _is_simulated_env_or_inst(inst):
+                allowed = True
+            else:
+                allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
+                    symbol, current_price, sell_price, sell_time, reentry_snap,
+                    buy_budget, buy_qty_cfg, qty, inst=inst,
+                )
+            _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
+            if not allowed:
+                _restore_reentry_state(symbol, prev_reentry_state)
+                return
+        else:
+            print(f"Price decreased with {reentry_snap.sale_drop_ratio * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
+
+        _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _projected_value = _pos_value + (_buy_qty * current_price)
+        if max_budget and _projected_value > max_budget:
+            _restore_reentry_state(symbol, prev_reentry_state, save=False)
+            print(f"[{symbol}] budget cap exceeded post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
+        else:
+            _execute_reentry_buy(
+                inst, symbol, current_price, _buy_qty, min_qty, sbs,
+                last_exit_kind, prev_reentry_state,
+                applied_scale=_reentry_applied_scale,
+                sell_price=sell_price,
+            )
 
     _save_mt_state()
 

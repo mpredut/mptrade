@@ -516,42 +516,6 @@ class KrakenProvider(MarketDataProvider):
             print(f"[Kraken] balance {asset}: {e}")
             return None
 
-    def _ensure_usd_funding_from_usdc(
-        self,
-        symbol: str,
-        side_norm: str,
-        qty: float,
-        price: Optional[float],
-    ) -> None:
-        """Auto-convert needed USDC -> ZUSD on zero-fee USDCUSD before a live *USD BUY when cash sits in USDC."""
-        if side_norm != "BUY" or split_kraken_pair(symbol)[1] != "USD":
-            return
-        try:
-            cli = self._client()
-            bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
-            if not isinstance(bal, dict):
-                return
-            _, zusd = self._lookup_balance_candidates(bal, ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F"))
-            _, usdc = self._lookup_balance_candidates(bal, ("USDC", "USDC.F", "USDC.S"))
-            zusd_f = zusd or 0.0
-            usdc_f = usdc or 0.0
-            if usdc_f < 5.0:
-                return
-            eff_px = safe_pos_float(price, default=None) or safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
-            if eff_px <= 0.0:
-                return
-            req_usd = qty * eff_px * 1.005
-            if req_usd <= zusd_f + 0.01:
-                return
-            shortfall = min(usdc_f, max(5.0, round((req_usd - zusd_f) * 1.002, 2)))
-            print(
-                f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via zero-fee USDCUSD "
-                f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
-            )
-            cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)
-        except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
-
     def open_orders(self, symbol: str) -> List[dict]:
         """Return a strict Binance-shaped snapshot of active Kraken orders."""
         raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({symbol})")
@@ -1000,7 +964,32 @@ class KrakenProvider(MarketDataProvider):
         cl_ord_id: Optional[str] = None,
         include_none_cl_ord_id: bool = False,
     ):
-        self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, submit_price or raw_price)
+        if s_norm == "BUY" and split_kraken_pair(symbol)[1] == "USD":
+            try:
+                cli = self._client()
+                bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
+                if isinstance(bal, dict):
+                    _, zusd = self._lookup_balance_candidates(bal, ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F"))
+                    _, usdc = self._lookup_balance_candidates(bal, ("USDC", "USDC.F", "USDC.S"))
+                    zusd_f = zusd or 0.0
+                    usdc_f = usdc or 0.0
+                    if usdc_f >= 5.0:
+                        eff_px = (
+                            safe_pos_float(submit_price or raw_price, default=None)
+                            or safe_pos_float(self.get_current_price(symbol), default=0.0)
+                            or 0.0
+                        )
+                        if eff_px > 0.0:
+                            req_usd = qty * eff_px * 1.005
+                            if req_usd > zusd_f + 0.01:
+                                shortfall = min(usdc_f, max(5.0, round((req_usd - zusd_f) * 1.002, 2)))
+                                print(
+                                    f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via zero-fee USDCUSD "
+                                    f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
+                                )
+                                cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)
+            except Exception as e:  # noqa: BLE001
+                print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
         order_kwargs: dict[str, Any] = {"ordertype": ordertype, "validate": False}
         if cl_ord_id is not None or include_none_cl_ord_id:
             order_kwargs["cl_ord_id"] = cl_ord_id
