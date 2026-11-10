@@ -201,9 +201,9 @@ def is_fake_alert_text(*parts: Any) -> bool:
 
 def format_ntfy_url(topic: Any) -> str:
     """Format an ntfy topic name or full HTTP(S) URL into a canonical ntfy endpoint URL."""
-    if isinstance(topic, bool) or topic is None:
+    if not isinstance(topic, str):
         return ""
-    clean = str(topic).strip()
+    clean = topic.strip()
     if not clean:
         return ""
     if clean.startswith(("http://", "https://")):

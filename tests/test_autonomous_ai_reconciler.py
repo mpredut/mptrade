@@ -2101,8 +2101,8 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
         patch.object(ccc, "expected_symbols", return_value=["BTCUSDC", "HYPEUSD", "SPCX_US_EQ"]),
         patch.object(
             ccc,
-            "load",
-            side_effect=lambda name: (
+            "read_json_dict",
+            side_effect=lambda path, **_kw: (
                 {
                     "items": {
                         "BTCUSDC": {"ts": now_s - 5, "current_price": 65000.0, "gradient_recent": 0.1},
@@ -2110,7 +2110,7 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
                         "SPCX": {"ts": now_s - 5, "current_price": 12.3, "gradient_recent": 0.05},
                     }
                 }
-                if name == "cache_short_trend.json"
+                if str(path).endswith("cache_short_trend.json")
                 else {
                     "fetchtime": {"BTCUSDC": now_s - 3, "HYPEUSDC": now_s - 4},
                     "items": {

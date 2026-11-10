@@ -17,20 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
-from botcore import load_env_stack  # noqa: E402
 from state_io import read_json_dict, save_json_state  # noqa: E402
-
-
-def _watchdog_event(title, message):
-    return {
-        "type": "bot_event", "symbol": "SYSTEM", "name": title,
-        "source": "watchdog", "body": message, "url": None,
-    }
-
-
-def load_env():
-    """Load .env (gitignored secrets) + config.env (versioned) from the repository root."""
-    load_env_stack()
 
 
 def load_state(state_file):
@@ -45,28 +32,18 @@ def save_state(state_file, state):
         print(f"[watchdog] cannot write state: {e}")
 
 
-def _valid_webhook_url(raw_url: str) -> str | None:
-    if not isinstance(raw_url, str):
-        return None
-    return format_ntfy_url(raw_url) or None
-
-
 def send_ntfy(title, message):
     # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
     topic = (os.environ.get("NTFY_TOPIC_ERROR") or "").split("#", 1)[0].strip()
     phone_url = (os.environ.get("PHONE_ALERT_URL") or "").split("#", 1)[0].strip()
-    topic_url = _valid_webhook_url(topic) if topic else None
-    fallback_url = _valid_webhook_url(phone_url) if phone_url else None
-    url = topic_url or fallback_url or None
+    url = format_ntfy_url(topic) or format_ntfy_url(phone_url) or None
     if not url:
         print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False
-    ok = AlertNotifier.send_phone_webhook_batch([_watchdog_event(title, message)], webhook_url=url)
+    event = {
+        "type": "bot_event", "symbol": "SYSTEM", "name": title,
+        "source": "watchdog", "body": message, "url": None,
+    }
+    ok = AlertNotifier.send_phone_webhook_batch([event], webhook_url=url)
     print(f"[watchdog] push {'OK' if ok else 'FAILED'}")
-    return ok
-
-
-def alert(title, message):
-    """Send the push to the ERROR topic; notify_engine mirrors that topic to email
-    (policy: notify_engine/mailer.py), so no separate email call is made here."""
-    return bool(send_ntfy(title, message))
+    return bool(ok)

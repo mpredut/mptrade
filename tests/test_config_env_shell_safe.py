@@ -1004,7 +1004,7 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
         },
     )
     monkeypatch.setattr(orw.wc, "save_state", lambda _f, _s: None)
-    monkeypatch.setattr(orw.wc, "alert", lambda _t, _m: True)
+    monkeypatch.setattr(orw.wc, "send_ntfy", lambda _t, _m: True)
     assert orw.check_once(
         now=1000.0,
         total_ticks=500,

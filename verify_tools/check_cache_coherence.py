@@ -18,10 +18,6 @@ CACHEDB = os.path.join(ROOT, "cachedb")
 STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant trend refreshes every few seconds / 20s).
 
 
-def load(name):
-    return read_json_dict(os.path.join(CACHEDB, name), default=None, recover_previous=True)
-
-
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
     syms = symbols_for("binance")
@@ -41,7 +37,7 @@ def main() -> int:
     print(f"expected symbols: {exp}")
 
     # 1. short trend
-    raw_st = load("cache_short_trend.json") or {}
+    raw_st = read_json_dict(os.path.join(CACHEDB, "cache_short_trend.json"), default=None, recover_previous=True) or {}
     it = raw_st.get("items") if isinstance(raw_st.get("items"), dict) else raw_st
     print(f"-- cache_short_trend.json: {sorted(it.keys())}")
     for s in exp:
@@ -68,7 +64,7 @@ def main() -> int:
         )
 
     # 2. current price
-    cp = load("cache_current_price.json") or {}
+    cp = read_json_dict(os.path.join(CACHEDB, "cache_current_price.json"), default=None, recover_previous=True) or {}
     # format: {'fetchtime': {...}, 'items': {symbol: price_or_rows}} (or directly per symbol)
     raw_items = cp.get("items", cp) if isinstance(cp, dict) else {}
     items = raw_items if isinstance(raw_items, dict) else {}

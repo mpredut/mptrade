@@ -1892,7 +1892,7 @@ def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tm
     assert ticks_json == [(1700000000.0, 100.0), (1700000020.0, 102.0)]
 
 
-def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guards(monkeypatch):
+def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guards(monkeypatch, tmp_path):
     import sys
     import types
     from offline.backtests.evaluation import load_venue_module
@@ -1938,8 +1938,7 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
     monkeypatch.setenv("RISK_DD_ALERT_PCT", "-15.0")
     monkeypatch.setenv("RISK_DD_REALERT_HOURS", "6.0")
     monkeypatch.setenv("RISK_DD_WORSEN_PCT", "-5.0")
-    monkeypatch.setattr(ps, "_alert_state", lambda: {})
-    monkeypatch.setattr(ps, "_save_alert_state", lambda st: None)
+    monkeypatch.setattr(ps, "ALERT_STATE", str(tmp_path / "alerts.json"))
     monkeypatch.setattr(ps, "_ntfy", lambda title, body: None)
     fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": False, "qty": 1.0, "dd_pct": -2.0}])
     assert fired == []

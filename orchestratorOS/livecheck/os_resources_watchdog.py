@@ -12,6 +12,7 @@ import watchdog_common as wc
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
+    load_env_stack,
     required_bool_env,
     required_float_env,
     required_int_env,
@@ -24,7 +25,7 @@ from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
 STATE_FILE = ROOT / ".resource_watchdog_state.json"
-wc.load_env()
+load_env_stack()
 
 CPU_THRESHOLD = required_float_env("RESOURCE_CPU_THRESHOLD_PCT")
 MEMORY_THRESHOLD_MB = required_float_env("RESOURCE_MEMORY_THRESHOLD_MB")
@@ -255,10 +256,10 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             lines.append(f"PID {proc.get('pid', '?')} — {', '.join(reasons)} for at least "
                          f"{checks * CHECK_INTERVAL_MIN:.0f} min — {action} — {proc.get('command', '?')}")
         wc.save_state(STATE_FILE, state)
-        wc.alert("High sustained process resource usage", "\n".join(lines))
+        wc.send_ntfy("High sustained process resource usage", "\n".join(lines))
     if recovered:
         lines = [f"PID {proc.get('pid', '?')} — {proc.get('command', '?')}" for proc in recovered]
-        wc.alert("Process resource usage recovered", "\n".join(lines))
+        wc.send_ntfy("Process resource usage recovered", "\n".join(lines))
     if not offenders and not recovered:
         print(f"[resources] OK — sampled {len(processes)} processes")
     return bool(offenders or recovered)

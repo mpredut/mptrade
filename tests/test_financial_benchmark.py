@@ -342,7 +342,7 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
             alert_file.write_text("[]", encoding="utf-8")
             with patch.object(ps, "KRAKEN_DIR", tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
                 self.assertIsNone(ps._load_state("HYPEUSD"))
-                self.assertEqual(ps._alert_state(), {})
+                self.assertEqual(ps.run_alerts([]), [])
 
 
 if __name__ == "__main__":

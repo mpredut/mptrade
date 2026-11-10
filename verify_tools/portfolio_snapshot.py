@@ -166,17 +166,6 @@ def _ntfy(title: str, body: str) -> None:
         pass
 
 
-def _alert_state() -> dict:
-    return read_json_dict(ALERT_STATE, default={}, recover_previous=True)
-
-
-def _save_alert_state(st: dict) -> None:
-    try:
-        save_json_state(ALERT_STATE, st)
-    except (OSError, ValueError, TypeError):
-        pass
-
-
 def run_alerts(kr: list[dict]) -> list[str]:
     """Check the drawdown of every REAL position and send an ntfy alert past the threshold.
 
@@ -186,7 +175,7 @@ def run_alerts(kr: list[dict]) -> list[str]:
     realert_hours = abs(_policy_float("RISK_DD_REALERT_HOURS"))
     worsen_pct = abs(_policy_float("RISK_DD_WORSEN_PCT"))
     now = datetime.now(timezone.utc)
-    st = _alert_state()
+    st = read_json_dict(ALERT_STATE, default={}, recover_previous=True)
     fired = []
     for r in kr:
         if not isinstance(r, dict):
@@ -222,7 +211,10 @@ def run_alerts(kr: list[dict]) -> list[str]:
                 f"threshold {threshold:.0f}%). Check the position.")
             st[engine] = {"dd": dd, "ts": now.isoformat(timespec="seconds")}
             fired.append(f"{engine} DD {dd:.1f}%")
-    _save_alert_state(st)
+    try:
+        save_json_state(ALERT_STATE, st)
+    except (OSError, ValueError, TypeError):
+        pass
     return fired
 
 

@@ -1253,7 +1253,7 @@ def _wd_proc(pid=10, ticks=100, rss=100, command="worker.py"):
 
 def test_alerts_only_after_sustained_cpu_use():
     with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
-            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "alert") as alert:
+            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(ticks=100), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=160), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=220), cpu_count=1)
@@ -1265,7 +1265,7 @@ def test_alerts_only_after_sustained_cpu_use():
 def test_short_memory_spike_does_not_alert():
     with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
             _wd_patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
-            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "alert") as alert:
+            _wd_patch.object(wd, "CONSECUTIVE", 3), _wd_patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=100), cpu_count=1)
         alert.assert_not_called()
@@ -1275,7 +1275,7 @@ def test_sustained_memory_use_alerts_and_then_recovers():
     with tempfile.TemporaryDirectory() as tmp, _wd_patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
             _wd_patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
             _wd_patch.object(wd, "CONSECUTIVE", 2), _wd_patch.object(wd, "RECOVERY_CHECKS", 2), \
-            _wd_patch.object(wd.wc, "alert") as alert:
+            _wd_patch.object(wd.wc, "send_ntfy") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_wd_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_wd_proc(ticks=101, rss=800), cpu_count=1)
         wd.check_once(now=240, total_ticks=1200, processes=_wd_proc(ticks=102, rss=100), cpu_count=1)

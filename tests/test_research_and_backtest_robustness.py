@@ -3204,7 +3204,7 @@ def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
 
     # 3. os_resources_watchdog handles proc dict missing pid/command without KeyError
     monkeypatch.setattr(orw, "STATE_FILE", tmp_path / "rw_state.json")
-    monkeypatch.setattr(orw.wc, "alert", lambda *a, **kw: True)
+    monkeypatch.setattr(orw.wc, "send_ntfy", lambda *a, **kw: True)
     procs = {"999:1": {"rss_mb": orw.MEMORY_THRESHOLD_MB + 100.0}}
     for step in range(orw.CONSECUTIVE + 1):
         orw.check_once(now=1000.0 + step * 60.0, total_ticks=1000 + step * 100, processes=procs, cpu_count=1)
@@ -3427,12 +3427,12 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     # Float-string step_count ("10.0" > 6) must be preserved as human interactive thread even with all_threads_in_project=True
     assert plt.prune_old_cli_threads(cli_base=str(tmp_path), all_threads_in_project=True, dry_run=True) == (0, 0)
 
-    # 2. watchdog_common._valid_webhook_url rejects bare slash topic or root ntfy URL without topic
-    assert wc._valid_webhook_url("/") is None
-    assert wc._valid_webhook_url("///") is None
-    assert wc._valid_webhook_url("https://ntfy.sh/") is None
-    assert wc._valid_webhook_url("/my-topic") == "https://ntfy.sh/my-topic"
-    assert wc._valid_webhook_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic"
+    # 2. watchdog_common.format_ntfy_url rejects bare slash topic or root ntfy URL without topic
+    assert wc.format_ntfy_url("/") == ""
+    assert wc.format_ntfy_url("///") == ""
+    assert wc.format_ntfy_url("https://ntfy.sh/") == ""
+    assert wc.format_ntfy_url("/my-topic") == "https://ntfy.sh/my-topic"
+    assert wc.format_ntfy_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic"
 
     # 3. os_resources_watchdog._parse_bool_flag normalizes string "false" in persisted state
     assert orw._parse_bool_flag("false", default=True) is False
