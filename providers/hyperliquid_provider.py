@@ -355,8 +355,8 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] free_balance({asset}) failed: {e}")
             return None
 
-    def _fills_from_api(self, symbol: str) -> List[dict]:
-        """Fall back to direct Hyperliquid user_fills for this spot pair and refresh SSOT cache."""
+    def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
+        """Authoritatively fetch Hyperliquid user_fills for this spot pair, publishing to SSOT cache only when requested."""
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -373,9 +373,10 @@ class HyperliquidProvider(MarketDataProvider):
             f for f in fills
             if isinstance(f, dict) and f.get("coin") == pair
         ]
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
+        if publish_cache:
+            cache_file = self._fills_cache_file()
+            if cache_file:
+                self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
         return spot_fills
 
     def open_orders(self, symbol: str) -> List[dict]:

@@ -734,26 +734,17 @@ def _resolve_non_static_prev_metric(
     return ref_val
 
 
-def update_microstructure_cycle_deltas(
-    cache_dir: Optional[str],
+def evaluate_microstructure_cycle_deltas(
     microstructure: Dict[str, Any],
+    history: Optional[Dict[str, Any]] = None,
     *,
     now_ts: Optional[float] = None,
-    persist: bool = True,
-) -> None:
-    """Compute and optionally persist rolling microstructure `cycle_delta` metrics in `microstructure_cycle_history.json`."""
-    if not cache_dir or not microstructure:
-        return
+) -> Tuple[Dict[str, Any], Dict[str, Any], bool]:
+    """Pure in-memory evaluation of rolling microstructure `cycle_delta` metrics from `history`."""
+    mhist: Dict[str, Any] = history if isinstance(history, dict) else {}
+    if not isinstance(microstructure, dict) or not microstructure:
+        return microstructure if isinstance(microstructure, dict) else {}, mhist, False
     eff_now = resolve_now_ts(now_ts)
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
-    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
-    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
-    raw_mh = (
-        read_json_file(mhist_path, default={})
-        if os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)
-        else None
-    )
-    mhist: Dict[str, Any] = dict(raw_mh) if isinstance(raw_mh, dict) else {}
     orig_mhist: Dict[str, Any] = dict(mhist)
     mhist_dirty = False
 
@@ -923,12 +914,34 @@ def update_microstructure_cycle_deltas(
                 ):
                     if shared_dk in prim_cd:
                         sib_cd[shared_dk] = prim_cd[shared_dk]
-    if persist and mhist_dirty and (is_live_network_backfill_enabled() or not is_repo_cachedb):
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
-            save_json_state(mhist_path, mhist, indent=2)
-        except Exception:
-            pass
+    return microstructure, mhist, mhist_dirty
+
+
+def update_microstructure_cycle_deltas(
+    cache_dir: Optional[str],
+    microstructure: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    persist: bool = True,
+    history: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Load cycle history via collector, evaluate rolling `cycle_delta` metrics in-memory, and optionally persist."""
+    if not isinstance(microstructure, dict) or not microstructure:
+        return history if isinstance(history, dict) else {}
+    if isinstance(history, dict):
+        mhist = history
+    elif cache_dir:
+        from intelligence.sentiment.collectors.microstructure_collector import load_microstructure_cycle_history
+
+        mhist = load_microstructure_cycle_history(cache_dir)
+    else:
+        return {}
+    _, mhist, mhist_dirty = evaluate_microstructure_cycle_deltas(microstructure, mhist, now_ts=now_ts)
+    if persist and mhist_dirty and cache_dir:
+        from intelligence.sentiment.collectors.microstructure_collector import save_microstructure_cycle_history
+
+        save_microstructure_cycle_history(cache_dir, mhist)
+    return mhist
 
 
 def enrich_cross_venue_trends(
@@ -1188,7 +1201,8 @@ def sync_sibling_symbol_telemetry(
     cache_dir: Optional[str] = None,
     now_ts: Optional[float] = None,
     persist_cycle_deltas: bool = True,
-) -> None:
+    cycle_history: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Symmetric cross-venue & sibling symbol synchronization across Binance, Kraken, Hyperliquid, and T212/xStocks."""
     if not isinstance(prices_and_trends, dict):
         prices_and_trends = {}
@@ -1310,7 +1324,16 @@ def sync_sibling_symbol_telemetry(
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
 
     reconcile_sibling_flow_and_liq_regimes(microstructure, prices_and_trends)
-    update_microstructure_cycle_deltas(cache_dir, microstructure, now_ts=now_ts, persist=persist_cycle_deltas)
+    if isinstance(cycle_history, dict) and not persist_cycle_deltas:
+        MicrostructureCycleDeltaEvaluator().evaluate(microstructure, history=cycle_history, now_ts=now_ts)
+        return cycle_history
+    return update_microstructure_cycle_deltas(
+        cache_dir,
+        microstructure,
+        now_ts=now_ts,
+        persist=persist_cycle_deltas,
+        history=cycle_history,
+    )
 
 
 def reconcile_sibling_flow_and_liq_regimes(
@@ -1558,12 +1581,24 @@ class MicrostructureCycleDeltaEvaluator(MicrostructureEvaluatorBase):
         self,
         data: Any,
         *,
+        history: Optional[Dict[str, Any]] = None,
         now_ts: Optional[float] = None,
-        cache_dir: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        m_map = data if isinstance(data, dict) else {}
-        update_microstructure_cycle_deltas(cache_dir, m_map, now_ts=now_ts)
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("microstructure"), dict)
+            and history is None
+            and ("history" in data or "cycle_history" in data)
+        ):
+            m_map = data["microstructure"]
+            raw_hist = data.get("history") if isinstance(data.get("history"), dict) else data.get("cycle_history")
+            eff_hist = raw_hist if isinstance(raw_hist, dict) else {}
+        else:
+            m_map = data if isinstance(data, dict) else {}
+            raw_hist = history if isinstance(history, dict) else kwargs.get("cycle_history")
+            eff_hist = raw_hist if isinstance(raw_hist, dict) else {}
+        evaluate_microstructure_cycle_deltas(m_map, eff_hist, now_ts=now_ts)
         return m_map
 
 
@@ -1607,13 +1642,24 @@ class SiblingSymbolTelemetrySyncEvaluator(MicrostructureEvaluatorBase):
         data: Any,
         *,
         microstructure: Optional[Dict[str, Any]] = None,
+        cycle_history: Optional[Dict[str, Any]] = None,
         cache_dir: Optional[str] = None,
         now_ts: Optional[float] = None,
+        persist_cycle_deltas: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         pt_map = data if isinstance(data, dict) else {}
         m_map = microstructure if isinstance(microstructure, dict) else {}
-        sync_sibling_symbol_telemetry(pt_map, m_map, cache_dir=cache_dir, now_ts=now_ts)
+        raw_hist = cycle_history if isinstance(cycle_history, dict) else kwargs.get("history")
+        eff_hist = raw_hist if isinstance(raw_hist, dict) else ({} if not persist_cycle_deltas and not cache_dir else None)
+        sync_sibling_symbol_telemetry(
+            pt_map,
+            m_map,
+            cache_dir=cache_dir,
+            now_ts=now_ts,
+            persist_cycle_deltas=persist_cycle_deltas,
+            cycle_history=eff_hist,
+        )
         return pt_map
 
 
@@ -1646,6 +1692,7 @@ __all__ = [
     "compute_liquidation_clusters",
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
+    "evaluate_microstructure_cycle_deltas",
     "is_ob_mid_fresher_than_series",
     "reconcile_sibling_flow_and_liq_regimes",
     "rescale_orderbook_walls_to_price",

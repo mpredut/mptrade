@@ -49,7 +49,9 @@ from intelligence.external.collectors.base_collector import (
 import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
+    load_microstructure_cycle_history,
     resolve_cached_btc_24h_change_pct,
+    save_microstructure_cycle_history,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     _load_cached_ai_intents_list,
@@ -1003,13 +1005,30 @@ def _populate_market_and_portfolio_snapshot_impl(
         enrich_cross_venue_trends(
             snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
         )
+    cycle_history = load_microstructure_cycle_history(cache_dir)
+    orig_cycle_history = dict(cycle_history)
     try:
         sync_sibling_symbol_telemetry(
-            snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts,
-            persist_cycle_deltas=(persist and allow_network),
+            snapshot.prices_and_trends,
+            snapshot.microstructure,
+            cache_dir=cache_dir,
+            now_ts=now_ts,
+            persist_cycle_deltas=False,
+            cycle_history=cycle_history,
         )
     except TypeError:
-        sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts)
+        try:
+            sync_sibling_symbol_telemetry(
+                snapshot.prices_and_trends,
+                snapshot.microstructure,
+                cache_dir=cache_dir,
+                now_ts=now_ts,
+                persist_cycle_deltas=(persist and allow_network),
+            )
+        except TypeError:
+            sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts)
+    if persist and allow_network and cycle_history != orig_cycle_history:
+        save_microstructure_cycle_history(cache_dir, cycle_history)
 
     kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
         cache_dir, workspace_dir, logs_dirs, snapshot.portfolio_summary, snapshot.prices_and_trends,

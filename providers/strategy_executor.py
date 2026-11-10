@@ -22,11 +22,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from .order_ohlc_utils import extract_order_id
-
-
-class ProviderError(Exception):
-    """Venue-neutral error raised by strict strategy-execution adapters."""
+from .order_ohlc_utils import ProviderError, extract_order_id
 
 
 class OrderNotFound(ProviderError):

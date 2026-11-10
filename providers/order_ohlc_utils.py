@@ -20,6 +20,10 @@ from botcore import (
 from cachepaths import canonical_base_asset
 
 
+class ProviderError(Exception):
+    """Venue-neutral error raised by strict strategy-execution adapters."""
+
+
 _TIMESTAMP_KEYS = (
     "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms",
 )
@@ -626,9 +630,6 @@ def format_strategy_execution_mode(
     if _parse_bool_flag(observe_only, False):
         return "OBSERVE ONLY (AI managed)"
     return paper_label if _parse_bool_flag(dry_run, True) else real_label
-
-
-from .strategy_executor import ProviderError  # noqa: E402
 
 
 def _derive_128bit_client_order_id(

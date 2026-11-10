@@ -139,9 +139,11 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get, is_equity_symbol
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
+    read_json_file,
     read_json_recovering,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
+    save_json_state,
 )
 
 read_json_cached = _default_read_json_cached
@@ -2157,6 +2159,47 @@ def enrich_24h_and_microstructure(
     )
 
 
+def load_microstructure_cycle_history(
+    cache_dir: Optional[str],
+    *,
+    read_json_fn: Any = None,
+) -> Dict[str, Any]:
+    """Load rolling microstructure cycle history from `microstructure_cycle_history.json`."""
+    if not cache_dir:
+        return {}
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
+    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
+    if not (os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)):
+        return {}
+    rj = read_json_fn if callable(read_json_fn) else read_json_file
+    try:
+        raw_mh = rj(mhist_path, default={})
+    except TypeError:
+        raw_mh = rj(mhist_path)
+    return dict(raw_mh) if isinstance(raw_mh, dict) else {}
+
+
+def save_microstructure_cycle_history(
+    cache_dir: Optional[str],
+    history: Dict[str, Any],
+) -> bool:
+    """Persist rolling microstructure cycle history to `microstructure_cycle_history.json`."""
+    if not cache_dir or not isinstance(history, dict):
+        return False
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
+    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
+    if not (is_live_network_backfill_enabled() or not is_repo_cachedb):
+        return False
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
+        save_json_state(mhist_path, history, indent=2)
+        return True
+    except Exception:
+        return False
+
+
 __all__ = [
     "CompositeSymbolPriceSeriesLoader",
     "EquityYahoo5dChartCollector",
@@ -2169,7 +2212,9 @@ __all__ = [
     "discover_reference_microstructure_symbols",
     "enrich_24h_and_microstructure",
     "ensure_fresh_symbol_microstructure",
+    "load_microstructure_cycle_history",
     "load_symbol_microstructure",
     "load_symbol_price_series",
     "resolve_cached_btc_24h_change_pct",
+    "save_microstructure_cycle_history",
 ]

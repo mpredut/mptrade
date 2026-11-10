@@ -346,6 +346,145 @@ class ExecutionCalibrationTest(unittest.TestCase):
         self.assertEqual(report["summary"]["all"]["first_fill_latency_s"]["min"], 2.0)
         self.assertEqual(report["summary"]["all"]["first_fill_latency_s"]["max"], 4.0)
 
+    def test_provider_import_cycle_cache_decoupling_and_intent_split(self):
+        import subprocess
+        import sys
+        import time
+        from intelligence.sentiment.collectors.microstructure_collector import (
+            load_microstructure_cycle_history,
+            save_microstructure_cycle_history,
+        )
+        from intelligence.sentiment.evaluators.microstructure_evaluator import (
+            MicrostructureCycleDeltaEvaluator,
+            evaluate_microstructure_cycle_deltas,
+        )
+        from providers import hyperliquid_provider as hlp_mod
+        from providers import intent_execution, intent_state, order_ohlc_utils
+
+        # 1. Fresh Python process imports providers.strategy_executor first without circular ImportError
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import providers.strategy_executor as se, providers.order_ohlc_utils as ou; "
+                    "assert se.ProviderError is ou.ProviderError"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIs(ProviderError, order_ohlc_utils.ProviderError)
+
+        # 2. MicrostructureCycleDeltaEvaluator.evaluate is pure over (snapshot, history) and never writes disk
+        with tempfile.TemporaryDirectory() as tmp_cdir:
+            hist_file = os.path.join(tmp_cdir, "microstructure_cycle_history.json")
+            hist = {
+                "BTCUSDC": [
+                    {
+                        "ts": 1_700_000_000.0,
+                        "ob_imbalance": 0.40,
+                        "cvd_15m_usd": 100_000.0,
+                        "whale_long_pct": 0.50,
+                        "oi_usd": 1_000_000.0,
+                        "taker_buy_sell_ratio": 0.90,
+                    }
+                ]
+            }
+            micro = {
+                "BTCUSDC": {
+                    "ob_imbalance": 0.55,
+                    "cvd_15m_usd": 250_000.0,
+                    "whale_long_pct": 0.62,
+                    "oi_usd": 1_100_000.0,
+                    "taker_buy_sell_ratio": 1.15,
+                }
+            }
+            ev_res = MicrostructureCycleDeltaEvaluator().evaluate(
+                micro,
+                history=hist,
+                cache_dir=tmp_cdir,
+                now_ts=1_700_000_400.0,
+            )
+            self.assertFalse(os.path.exists(hist_file))
+            self.assertEqual(ev_res["BTCUSDC"]["cycle_delta"]["ob_imbalance_delta"], 0.15)
+            self.assertEqual(len(hist["BTCUSDC"]), 2)
+
+            # Producer explicitly persists and reloads history
+            self.assertTrue(save_microstructure_cycle_history(tmp_cdir, hist))
+            self.assertTrue(os.path.exists(hist_file))
+            reloaded = load_microstructure_cycle_history(tmp_cdir)
+            self.assertEqual(len(reloaded["BTCUSDC"]), 2)
+            _, _, dirty_same = evaluate_microstructure_cycle_deltas(
+                micro, reloaded, now_ts=1_700_000_410.0
+            )
+            self.assertFalse(dirty_same)
+
+        # 3. Hyperliquid get_orders() / _fills_from_api() does not mutate SSOT cache unless publish_cache=True
+        with tempfile.TemporaryDirectory() as tmp_hl:
+            fills_cache = os.path.join(tmp_hl, "hl_trades.json")
+            prov = hlp_mod.HyperliquidProvider("HYPE")
+            prov._spot_pair = "@107"
+            prov._fills_cache_file = lambda: fills_cache
+            fake_client = mock.MagicMock()
+            fake_client.info.user_fills.return_value = [
+                {
+                    "coin": "@107",
+                    "oid": 901,
+                    "side": "B",
+                    "px": "25.0",
+                    "sz": "2.0",
+                    "time": int(time.time() * 1000) - 5000,
+                }
+            ]
+            prov._hl = lambda: fake_client
+            with mock.patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0xabc"}, clear=False):
+                orders = prov.get_orders("HYPEUSDC", "BUY", 3600.0)
+                self.assertEqual(len(orders), 1)
+                self.assertFalse(os.path.exists(fills_cache))
+
+                # Explicit cache publication via refresh_ssot_fills_cache or publish_cache=True
+                published = prov.refresh_ssot_fills_cache("HYPEUSDC")
+                self.assertEqual(len(published), 1)
+                self.assertTrue(os.path.exists(fills_cache))
+
+                # Authoritative read bypasses cache without mutating it unless publish_cache=True
+                fake_client.info.user_fills.return_value = [
+                    {
+                        "coin": "@107",
+                        "oid": 902,
+                        "side": "S",
+                        "px": "26.5",
+                        "sz": "1.5",
+                        "time": int(time.time() * 1000) - 1000,
+                    }
+                ]
+                auth_orders = prov.get_orders("HYPEUSDC", "SELL", 3600.0, authoritative=True)
+                self.assertEqual(len(auth_orders), 1)
+                self.assertEqual(str(auth_orders[0].get("orderId")), "902")
+
+        # 4. Intent state & execution split and direct botcore.clean_json_value usage
+        with tempfile.TemporaryDirectory() as tmp_int:
+            intents_path = os.path.join(tmp_int, "intents.json")
+            self.assertTrue(
+                intent_state.save_durable_intents_state(
+                    intents_path,
+                    [{"intent_id": "i-1", "confidence": float("nan"), "status": "PENDING"}],
+                )
+            )
+            loaded_intents = intent_state.load_durable_intents_state(intents_path)
+            self.assertEqual(loaded_intents, [{"intent_id": "i-1", "confidence": None, "status": "PENDING"}])
+            self.assertEqual(
+                intent_execution.resolve_intent_topic_tag({"created_by": "trade_executor"}, "binance"),
+                "[auto_cryptotrade_executor]",
+            )
+            self.assertEqual(
+                intent_execution.resolve_intent_topic_tag({}, "t212"),
+                "[auto_sharetrade_executor]",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

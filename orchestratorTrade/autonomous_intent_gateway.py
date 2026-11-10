@@ -44,16 +44,20 @@ from instrument import (
     resolve_tradable_instrument,
 )
 from providers.execution_audit import (
-    append_intent_history,
+    reconcile_intents_from_execution_audit,
+)
+from providers.intent_execution import (
     cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
-    load_durable_intents_state,
-    parse_intent_gateway_config,
     preflight_intent_and_resolve_price,
-    reconcile_intents_from_execution_audit,
     record_shadow_intent_observation,
     resolve_intent_topic_tag,
+)
+from providers.intent_state import (
+    append_intent_history,
+    load_durable_intents_state,
+    parse_intent_gateway_config,
     save_durable_intents_state,
     upsert_durable_intent,
     validate_and_build_intent_dict,

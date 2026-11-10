@@ -164,8 +164,36 @@ class MarketDataProvider(ABC):
                 symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
             )
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Return normalized recent orders (fills aggregated by orderId), reading SSOT cache first and falling back to ``_fills_from_api``."""
+    def refresh_ssot_fills_cache(self, symbol: str, fills: Optional[List[dict]] = None) -> List[dict]:
+        """Authoritatively fetch (if ``fills`` not provided) and explicitly publish ``symbol`` fills to the SSOT trade cache."""
+        self.validate_symbol(symbol)
+        if fills is None:
+            api_fn = getattr(self, "_fills_from_api", None)
+            if not callable(api_fn):
+                return []
+            try:
+                rows = api_fn(symbol, publish_cache=True)
+            except TypeError:
+                rows = api_fn(symbol)
+                cache_file = self._fills_cache_file()
+                if cache_file and rows is not None:
+                    self.write_ssot_fills_cache(symbol, cache_file, rows)
+            return list(rows) if isinstance(rows, list) else []
+        cache_file = self._fills_cache_file()
+        if cache_file:
+            self.write_ssot_fills_cache(symbol, cache_file, fills)
+        return list(fills)
+
+    def get_orders(
+        self,
+        symbol: str,
+        side: Optional[str],
+        since_s: float,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
+        """Return normalized recent orders (fills aggregated by orderId), reading SSOT cache first unless ``authoritative=True``."""
         api_fn = getattr(self, "_fills_from_api", None)
         if not callable(api_fn):
             return []
@@ -175,9 +203,16 @@ class MarketDataProvider(ABC):
             return []
         try:
             cache_fn = getattr(self, "_fills_from_cache", None)
-            rows = cache_fn(symbol) if callable(cache_fn) else None
+            rows = cache_fn(symbol) if (callable(cache_fn) and not authoritative and not publish_cache) else None
             if rows is None:
-                rows = api_fn(symbol)
+                try:
+                    rows = api_fn(symbol, publish_cache=publish_cache)
+                except TypeError:
+                    rows = api_fn(symbol)
+                    if publish_cache and rows is not None:
+                        cache_file = self._fills_cache_file()
+                        if cache_file:
+                            self.write_ssot_fills_cache(symbol, cache_file, rows)
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             return aggregate_fills_by_order_id(rows, cutoff_ms=(time.time() - since_val) * 1000.0, side=side)
@@ -187,8 +222,21 @@ class MarketDataProvider(ABC):
             print(f"[{self.name}] get_orders({symbol},{side}) failed: {e}")
             raise ProviderError(f"get_orders({symbol}): {e}") from e
 
-    def get_trades(self, symbol: str, since_s: float) -> List[dict]:
-        return self.get_orders(symbol, None, since_s)
+    def get_trades(
+        self,
+        symbol: str,
+        since_s: float,
+        *,
+        authoritative: bool = False,
+        publish_cache: bool = False,
+    ) -> List[dict]:
+        return self.get_orders(
+            symbol,
+            None,
+            since_s,
+            authoritative=authoritative,
+            publish_cache=publish_cache,
+        )
 
     @staticmethod
     def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
