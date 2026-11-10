@@ -2958,10 +2958,17 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
     ):
         assert not hasattr(cm.CacheTradeManager, removed_attr)
 
-    # 3. Polymorphic MarketDataProvider.resolve_venue_provider_class covers kraken, hyperliquid, t212
+    # 3. Polymorphic MarketDataProvider.resolve_venue_provider_class covers binance, kraken, hyperliquid, t212
+    assert MarketDataProvider.resolve_venue_provider_class("binance").__name__ == "BinanceProvider"
     assert MarketDataProvider.resolve_venue_provider_class("kraken").__name__ == "KrakenProvider"
     assert MarketDataProvider.resolve_venue_provider_class("hyperliquid").__name__ == "HyperliquidProvider"
     assert MarketDataProvider.resolve_venue_provider_class("t212").__name__ == "T212Provider"
+    assert not hasattr(MarketDataProvider, "_is_binance")
+    from providers.quantity import venue_adjust_partial_sell_quantity
+    adj_q, adj_m = venue_adjust_partial_sell_quantity("t212", "SELL", 0.5, 0.8, 10.0, min_notional_usd=2.0)
+    assert adj_m in ("leave_min_6_remainder", "avoid_sub_6_dust")
+    assert adj_q > 0
+    assert venue_adjust_partial_sell_quantity("binance", "SELL", 0.5, 0.8, 10.0) == (0.5, None)
 
     # 4. CacheTradeManager.get_remote_items routes polymorphically for t212 without venue branches
     fake_t212_client = MagicMock()

@@ -126,6 +126,10 @@ class BinanceProvider(MarketDataProvider):
     strategy execution obtains completed OHLC closes through ``ohlc_closes``.
     """
 
+    _REQUIRES_CACHE_PERMIT: bool = True
+    _DEFERS_SMART_CANCELLATION: bool = True
+    _SUPPORTS_BUSINESS_MINIMUM: bool = True
+
     @property
     def name(self) -> str:
         return "Binance"

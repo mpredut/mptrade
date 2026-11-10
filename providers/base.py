@@ -1,6 +1,7 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
 import contextlib
+import importlib
 import math
 import os
 import threading
@@ -102,6 +103,15 @@ class MarketDataProvider(ABC):
     _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
     _FILLS_CACHE_MAX_STALE_S: float = 60.0
+    _REQUIRES_CACHE_PERMIT: bool = False
+    _DEFERS_SMART_CANCELLATION: bool = False
+    _SUPPORTS_BUSINESS_MINIMUM: bool = False
+    _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
+        "binance": ("providers.market_api", "BinanceProvider"),
+        "kraken": ("providers.kraken_provider", "KrakenProvider"),
+        "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
+        "t212": ("providers.t212_provider", "T212Provider"),
+    }
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
@@ -124,23 +134,14 @@ class MarketDataProvider(ABC):
         """Return non-blocking cached fee tier and precision/limit overrides for ``symbol``."""
         return {}
 
-    @staticmethod
-    def resolve_venue_provider_class(venue: Any) -> Any:
-        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue``."""
-        v_norm = normalize_venue_name(venue)
-        if v_norm == "kraken":
-            from .kraken_provider import KrakenProvider
-
-            return KrakenProvider
-        if v_norm == "hyperliquid":
-            from .hyperliquid_provider import HyperliquidProvider
-
-            return HyperliquidProvider
-        if v_norm == "t212":
-            from .t212_provider import T212Provider
-
-            return T212Provider
-        return None
+    @classmethod
+    def resolve_venue_provider_class(cls, venue: Any) -> Any:
+        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` via declarative registry."""
+        spec = cls._VENUE_PROVIDER_SPECS.get(normalize_venue_name(venue))
+        if spec is None:
+            return None
+        mod_path, cls_name = spec
+        return getattr(importlib.import_module(mod_path), cls_name, None)
 
     @staticmethod
     def resolve_provider_cached_fee_and_limits(
@@ -489,20 +490,25 @@ class MarketDataProvider(ABC):
     def guards_internally(self) -> bool:
         return False
 
-    def _is_binance(self) -> bool:
-        return normalize_venue_name(getattr(self, "name", "")) == "binance"
+    def _resolve_capability_flag(self, attr: str) -> bool:
+        if getattr(self, attr, False):
+            return True
+        if attr in type(self).__dict__:
+            return bool(getattr(self, attr, False))
+        prov_cls = self.resolve_venue_provider_class(getattr(self, "name", ""))
+        return bool(getattr(prov_cls, attr, False)) if prov_cls is not None else False
 
     def requires_cache_permit(self) -> bool:
         """Return whether this provider enforces account-cache submit permits."""
-        return self._is_binance()
+        return self._resolve_capability_flag("_REQUIRES_CACHE_PERMIT")
 
     def defers_smart_cancellation(self) -> bool:
         """Return whether opposing order cancellation is deferred until dispatch."""
-        return self._is_binance()
+        return self._resolve_capability_flag("_DEFERS_SMART_CANCELLATION")
 
     def supports_business_minimum(self) -> bool:
         """Return whether this provider enforces venue business minimum rules."""
-        return self._is_binance()
+        return self._resolve_capability_flag("_SUPPORTS_BUSINESS_MINIMUM")
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""

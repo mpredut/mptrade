@@ -274,6 +274,9 @@ _VENUE_BUY_SLIPPAGE_FEE_BUFFERS: dict[str, float] = {
 _VENUE_SELL_BALANCE_CAPS: dict[str, Any] = {
     "t212": t212_sell_balance_cap,
 }
+_VENUE_PARTIAL_SELL_ADJUSTERS: dict[str, Any] = {
+    "t212": t212_adjust_partial_sell_qty,
+}
 
 
 def venue_fee_cap_quantity(
@@ -290,6 +293,25 @@ def venue_fee_cap_quantity(
         return avail_f * _VENUE_BUY_SLIPPAGE_FEE_BUFFERS.get(venue_l, default_buy_buf)
     sell_cap_fn = _VENUE_SELL_BALANCE_CAPS.get(venue_l)
     return sell_cap_fn(avail_f, price) if sell_cap_fn is not None else avail_f
+
+
+def venue_adjust_partial_sell_quantity(
+    venue: Any,
+    side: str,
+    requested_qty: float,
+    balance: float,
+    price: float,
+    *,
+    min_notional_usd: float = 0.0,
+) -> Tuple[float, Optional[str]]:
+    """Apply venue-specific partial SELL remainder/dust adjustments via declarative venue tables."""
+    req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
+    if normalize_side(side) != "SELL" or req_f <= 0.0:
+        return req_f, None
+    adjust_fn = _VENUE_PARTIAL_SELL_ADJUSTERS.get(normalize_venue_name(str(venue or "")))
+    if adjust_fn is None:
+        return req_f, None
+    return adjust_fn(req_f, balance, price, min_notional_usd=min_notional_usd)
 
 
 def clamp_notional_to_wallet_balance(
@@ -356,8 +378,10 @@ def clamp_notional_to_wallet_balance(
         return False, 0.0, f"Insufficient free {target_asset} balance (${avail_usd:.2f} < ${min_usd:.2f})"
     if avail_usd < desired_usd:
         return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
-    if side_u == "SELL" and venue_l == "t212" and price > 0:
-        adj_qty, adj_mode = t212_adjust_partial_sell_qty(desired_usd / price, bal, price, min_notional_usd=min_usd)
+    if price > 0:
+        adj_qty, adj_mode = venue_adjust_partial_sell_quantity(
+            venue_l, side_u, desired_usd / price, bal, price, min_notional_usd=min_usd
+        )
         if adj_mode == "leave_min_6_remainder":
             max_part_usd = round(adj_qty * price, 4)
             return (
@@ -496,15 +520,16 @@ def decide_quantity(
 
     final = _round_qty(min(requested, balance_cap, policy_cap, fee_cap))
     venue_l = normalize_venue_name(provider) or normalize_venue_name(getattr(provider, "provider_name", None))
-    if side == "SELL" and venue_l == "t212" and final > 0:
-        final = _round_qty(
-            t212_adjust_partial_sell_qty(
-                final,
-                balance_cap,
-                price,
-                min_notional_usd=6.0 if _parse_bool_flag(enforce_business_minimum, default=True) else 0.0,
-            )[0]
-        )
+    adj_final, adj_mode = venue_adjust_partial_sell_quantity(
+        venue_l,
+        side,
+        final,
+        balance_cap,
+        price,
+        min_notional_usd=6.0 if _parse_bool_flag(enforce_business_minimum, default=True) else 0.0,
+    )
+    if adj_mode is not None:
+        final = _round_qty(adj_final)
 
     scale_applied = False
     applied_scale = 1.0
