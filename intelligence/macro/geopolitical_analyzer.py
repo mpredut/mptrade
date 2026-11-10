@@ -91,7 +91,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         self,
         data: Dict[str, Any],
         *,
-        default_risk_score: float = 0.5,
+        default_risk_score: float = 0.1,
         headlines_analyzed: Optional[int] = None,
         ts: Optional[float] = None,
         is_fallback: Optional[bool] = None,
@@ -137,9 +137,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             ts=ts_val,
             is_fallback=fb_flag,
         )
-
-    def _deserialize_from_disk(self, data: Dict[str, Any]) -> GeopoliticalThreatAssessment:
-        return self._build_assessment(data, default_risk_score=0.1)
 
     def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
         raw_digest = data.get("headlines_digest")

@@ -1523,7 +1523,7 @@ class TestCacheFactory(unittest.TestCase):
 
     def test_factory_default_symbols_use_ssot_price_tracking(self):
         tracked = (["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"], ["HYPEUSD"], {"HYPEUSD": "kraken"})
-        with patch.object(cm, "_default_price_tracking", return_value=tracked), \
+        with patch.object(cm, "tracked_price_instruments", return_value=tracked), \
              patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
              patch.object(cm.CacheLongTrendManager, "load_state", return_value=None):
             cm.CacheFactory.remove("CurrentPrice")

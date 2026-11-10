@@ -103,11 +103,6 @@ _current_price_instance: Optional[CacheCurrentPriceManager] = None
 _current_price_lock = threading.RLock()
 
 
-def _default_price_tracking():
-    """Return ``(symbols, nonbinance_symbols, provider_names)`` from ``instruments.conf``."""
-    return tracked_price_instruments()
-
-
 def get_current_price_manager(
     ws_manager=None,
     symbols=None,
@@ -147,7 +142,7 @@ def get_current_price_manager(
                 _current_price_instance.periodic_sync(save_state=False)
             return _current_price_instance
         if symbols is None:
-            _syms, _, _default_providers = _default_price_tracking()
+            _syms, _, _default_providers = tracked_price_instruments()
             if provider_names is None and _default_providers:
                 provider_names = _default_providers
         else:
@@ -196,7 +191,7 @@ def get_short_trend_manager(
                 _short_trend_instance.become_writer()
             return _short_trend_instance
         if symbols is None:
-            _syms = _default_price_tracking()[0]
+            _syms = tracked_price_instruments()[0]
         else:
             _syms = (
                 _coerce_symbol_list(symbols) if isinstance(symbols, str) else symbols
@@ -366,7 +361,7 @@ class CacheFactory:
                     if name == "AssetValue":
                         symbols = ["TOTAL"]
                     elif name in _PRICE_TREND_CACHES:
-                        symbols, _, _default_providers = _default_price_tracking()
+                        symbols, _, _default_providers = tracked_price_instruments()
                         if (
                             name == "CurrentPrice"
                             and provider_names is None
@@ -735,7 +730,7 @@ if __name__ == "__main__":
     _nb_poller = None
     _trend_mgr = None
 
-    _trend_syms, _nb_syms, _nb_provider_names = _default_price_tracking()
+    _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments()
     if _nb_syms:
         builtins.print(
             f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}"

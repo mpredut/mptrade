@@ -831,9 +831,6 @@ class CacheTradeManager(CacheAccountManagerBase):
         if not self.append_persist:
             self.resync_mem_file()
             return
-        self._ensure_trade_version(required_version)
-
-    def _ensure_trade_version(self, required_version):
         with self._generation_lock():
             self._ensure_trade_version_generation_locked(required_version)
 
@@ -1555,7 +1552,7 @@ class CacheOrderManager(CacheAccountManagerBase):
         try:
             metadata = self._load_versioned_account_meta(optional=True)
             if metadata is not None:
-                self._ensure_order_version(str(metadata["data_version"]))
+                self._ensure_account_version(str(metadata["data_version"]))
                 return
             with self._generation_lock():
                 self._load_order_state_generation_locked()
@@ -1578,9 +1575,6 @@ class CacheOrderManager(CacheAccountManagerBase):
         )
 
     def _ensure_account_version(self, required_version: str) -> None:
-        self._ensure_order_version(required_version)
-
-    def _ensure_order_version(self, required_version):
         with self._generation_lock():
             self._ensure_order_version_generation_locked(required_version)
 

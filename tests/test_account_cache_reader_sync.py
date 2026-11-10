@@ -111,7 +111,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             reader.ensure_persisted_version(writer._persisted_data_version)
 
             with patch.object(
-                    reader, "_ensure_order_version") as reload_snapshot:
+                    reader, "_ensure_account_version") as reload_snapshot:
                 reader.ensure_persisted_version(writer._persisted_data_version)
             reload_snapshot.assert_not_called()
 

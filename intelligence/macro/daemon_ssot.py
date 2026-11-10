@@ -670,9 +670,6 @@ class CachedTopicAssessmentAgent:
 
         return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
 
-    def _deserialize_from_disk(self, data: Dict[str, Any]) -> Any:
-        return self._build_assessment(data)  # type: ignore[attr-defined]
-
     def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
         pass
 
@@ -694,7 +691,7 @@ class CachedTopicAssessmentAgent:
             data = _read_fn(path, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return
-            assessment = self._deserialize_from_disk(data)
+            assessment = self._build_assessment(data)  # type: ignore[attr-defined]
             self._cached_assessment = assessment
             self._last_eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
             self._on_loaded_from_disk(data, assessment)

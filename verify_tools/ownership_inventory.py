@@ -78,14 +78,6 @@ def _account_ref(
     ).strip()
 
 
-def _manifest(root: Path) -> list[str]:
-    return [p["pattern"] for p in parse_procs_manifest(str(root), roles=("bot", "fleet"))]
-
-
-def _pattern(patterns: list[str], target: str) -> str | None:
-    return next((pattern for pattern in patterns if pattern == target), None)
-
-
 def _commands() -> list[str]:
     try:
         result = subprocess.run(
@@ -177,7 +169,7 @@ def _record(
 
 def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> list[Owner]:
     root = root.resolve()
-    patterns = _manifest(root)
+    patterns = {p["pattern"] for p in parse_procs_manifest(str(root), roles=("bot", "fleet"))}
     owners: list[Owner] = []
 
     root_env = _env(root / "config.env", root / ".env")
@@ -193,7 +185,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         owner_id="kraken-spot-dca", venue="kraken", account_ref=kraken_ref,
         symbol=kraken_pair, role="primary", coordination="spot-dca",
         pattern=kraken_bot,
-        configured=_pattern(patterns, kraken_bot) is not None,
+        configured=kraken_bot in patterns,
         enabled=(
             _parse_bool_flag(kraken_env.get("STRAT_EXECUTE"))
             and not _parse_bool_flag(kraken_env.get("KRAKEN_BOT_OBSERVE_ONLY"))
@@ -210,7 +202,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         account_ref=_account_ref(kraken_env, "kraken", "kraken-trailing"),
         symbol=kraken_pair, role="protective", coordination="free-balance-only",
         pattern="kraken/trailing_stop.py",
-        configured=_pattern(patterns, "kraken/trailing_stop.py") is not None,
+        configured="kraken/trailing_stop.py" in patterns,
         enabled=_parse_bool_flag(trailing_env.get("KRAKEN_TRAILING_ENABLED")),
         source="kraken/trailing.conf", commands=commands,
     ))
@@ -222,7 +214,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         symbol=dn_pair,
         base=dn_pair, quote="USDC", role="primary", coordination="delta-neutral",
         pattern="dn_bot.py$",
-        configured=_pattern(patterns, "dn_bot.py$") is not None,
+        configured="dn_bot.py$" in patterns,
         enabled=_parse_bool_flag(hl_env.get("STRAT_EXECUTE")),
         source="hyperliquid/config.env", commands=commands,
     ))
@@ -237,7 +229,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         ),
         symbol=f"{hl_token}USDC", base=hl_token, quote="USDC",
         role="primary", coordination="spot-dca", pattern="hl_bot.py",
-        configured=_pattern(patterns, "hl_bot.py") is not None,
+        configured="hl_bot.py" in patterns,
         enabled=(
             _parse_bool_flag(hl_env.get("STRAT_EXECUTE"))
             and _parse_bool_flag(hl_env.get("HL_LIVE_ORDERS"))
@@ -247,7 +239,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     ))
 
     monitor_pattern = "monitortrades.py"
-    monitor_configured = _pattern(patterns, monitor_pattern) is not None
+    monitor_configured = monitor_pattern in patterns
     trade_enabled = _parse_bool_flag(
         trade_settings.get("trade_enabled")
         or trade_settings.get("TRADE_ENABLED")
@@ -303,7 +295,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             ))
 
     t212_pattern = "t212_bot.py"
-    t212_configured = _pattern(patterns, t212_pattern) is not None
+    t212_configured = t212_pattern in patterns
     for path in sorted((root / "212trading").glob("config.*.env")):
         profile = path.name[len("config."):-len(".env")]
         profile_env = _env(path)
@@ -330,7 +322,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         ("binance-trailing", "binance_api/trailing_stop.py", symbols, "protective"),
     )
     for owner_id, process, owned_symbols, role in binance_specs:
-        configured = _pattern(patterns, process) is not None
+        configured = process in patterns
         enabled = True
         if owner_id == "binance-trailing":
             trailing = _env(root / "binance_api" / "trailing.conf", root / ".env")
