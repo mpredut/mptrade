@@ -2445,7 +2445,10 @@ def run_kraken_trade_poll_loop(
     cache = CacheTradeManager.load_sanitized_trade_snapshot(
         cache_file, venue="kraken"
     )
-    backoff = float(backoff_init)
+    init_bo = safe_pos_float(backoff_init, default=5.0) or 5.0
+    max_bo = safe_pos_float(backoff_max, default=60.0) or 60.0
+    poll_s = safe_nonneg_float(poll_interval, default=30.0) or 0.0
+    backoff = init_bo
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
     while not (stop_event is not None and stop_event.is_set()):
@@ -2461,14 +2464,14 @@ def run_kraken_trade_poll_loop(
                 f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
                 f"for {list(cache['items'].keys())}"
             )
-            backoff = float(backoff_init)
+            backoff = init_bo
             if callable(heartbeat_fn):
                 heartbeat_fn()
             if stop_event is not None:
-                if stop_event.wait(timeout=max(0.0, float(poll_interval))):
+                if stop_event.wait(timeout=poll_s):
                     break
             else:
-                _sleep_time(poll_interval)
+                _sleep_time(poll_s)
         except Exception as exc:
             log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {exc}")
             if callable(heartbeat_fn):
@@ -2478,7 +2481,7 @@ def run_kraken_trade_poll_loop(
                     break
             else:
                 _sleep_time(backoff)
-            backoff = min(backoff * 2.0, float(backoff_max))
+            backoff = min(backoff * 2.0, max_bo)
 
 
 def run_kraken_trade_ws_loop(
@@ -2524,7 +2527,9 @@ def run_kraken_trade_ws_loop(
     )
     last_flush_ms = [0]
     last_rest_sync_ms = [0]
-    rest_sync_interval_ms = int(max(30.0, float(poll_interval or 30.0)) * 1000)
+    rest_sync_interval_ms = int(
+        max(30.0, safe_pos_float(poll_interval, default=30.0) or 30.0) * 1000
+    )
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
 
@@ -2733,7 +2738,7 @@ class _KrakenAccountTradeBridge:
         self.request_stop()
         t = self._thread
         if t is not None and t.is_alive():
-            t.join(timeout=max(0.05, float(timeout)))
+            t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
 
 
 _kraken_ws_bridge: Optional[_KrakenAccountTradeBridge] = None

@@ -1376,7 +1376,8 @@ def resolve_now_ms(now_ms: object = None) -> int:
 
 
 _TIMESTAMP_KEYS = (
-    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms",
+    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime",
+    "filledAt", "dateExecuted", "dateModified", "createdAt", "dateCreated", "T", "E", "ts", "ts_ms",
 )
 
 

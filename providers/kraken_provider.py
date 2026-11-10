@@ -887,7 +887,14 @@ class KrakenProvider(MarketDataProvider):
         lookback_sec: float = 14 * 86400.0,
     ) -> dict[str, list[dict]]:
         """Query Kraken ``Ledgers`` via ``client`` and group normalized fills by configured pair without touching disk."""
-        res = client._private("Ledgers", {"start": int(time.time() - float(lookback_sec))}, fresh=True)
+        lb_sec = (
+            14 * 86400.0
+            if lookback_sec is None
+            else safe_pos_float(lookback_sec, default=None)
+        )
+        if lb_sec is None:
+            return {}
+        res = client._private("Ledgers", {"start": int(time.time() - lb_sec)}, fresh=True)
         fills = cls.ledger_to_fills((res or {}).get("ledger", {}) or {})
         by_sym: dict[str, list[dict]] = {s: [] for s in (pairs or ()) if s and s != "*"}
         for f in fills:
@@ -916,17 +923,29 @@ class KrakenProvider(MarketDataProvider):
         """Fetch normalized Kraken fills for ``symbol`` via ``Ledgers`` (when ``client`` is provided) or ``TradesHistory``."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
+        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
+        if start_ms is None:
+            return []
         if client is not None and callable(getattr(client, "_private", None)):
-            start_sec = int(
-                normalize_epoch_sec(start_time_ms, default=None)
-                or (time.time() - 14 * 86400.0)
-            )
+            sym_u = str(symbol).strip().upper()
+            now_s = time.time()
+            start_sec = (
+                normalize_epoch_sec(start_ms, default=None)
+                if start_ms > 0.0
+                else None
+            ) or (now_s - 14 * 86400.0)
             by_sym = self.fetch_ledger_fills_by_symbol(
                 client,
-                pairs=[symbol],
-                lookback_sec=max(60.0, time.time() - float(start_sec)),
+                pairs=[sym_u],
+                lookback_sec=max(60.0, now_s - start_sec),
             )
-            return list(by_sym.get(symbol, []))
+            rows = casefold_get(by_sym, sym_u) or []
+            return [
+                dict(r)
+                for r in rows
+                if isinstance(r, dict)
+                and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
+            ]
         return super().fetch_remote_trades(symbol, start_time_ms)
 
     def _fills_from_api(self, symbol: str):

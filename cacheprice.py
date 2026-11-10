@@ -215,7 +215,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         """Parse a cached price entry (dict, ``[ts, px]``, or nested list) into ``(ts_ms, price)``."""
         if isinstance(entry, dict):
             ts_ms = extract_timestamp_ms(entry, default=None)
-            if ts_ms is None and fallback_ts is not None:
+            if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
                 ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
             px_f = extract_current_price_item(entry)
             if px_f is None:
@@ -227,7 +227,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
         if isinstance(entry, (list, tuple)):
             if len(entry) >= 2 and not isinstance(entry[0], (list, tuple, dict)):
                 ts_ms = normalize_timestamp_ms(entry[0], default=None)
-                if ts_ms is None and fallback_ts is not None:
+                if (ts_ms is None or ts_ms <= 0) and fallback_ts is not None:
                     ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
                 px_f = safe_pos_float(entry[1], default=None)
                 if ts_ms is not None and ts_ms > 0 and px_f is not None:

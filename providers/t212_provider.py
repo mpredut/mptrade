@@ -36,7 +36,6 @@ from .base import (
 from .order_ohlc_utils import (
     build_open_order_entry,
     normalize_order,
-    normalize_timestamp_ms,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -218,12 +217,7 @@ class T212Provider(MarketDataProvider):
         latest_fill_ts_ms: Optional[int] = None
         seen_fill_ids: set[str] = set()
         for order, fill in matches:
-            cand_ts = normalize_timestamp_ms(
-                (fill.get("filledAt") if isinstance(fill, dict) else None)
-                or order.get("createdAt")
-                or order.get("dateCreated"),
-                default=None,
-            )
+            cand_ts = extract_timestamp_ms(fill, default=None) or extract_timestamp_ms(order, default=None)
             if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
                 latest_fill_ts_ms = cand_ts
             if not isinstance(fill, dict):
