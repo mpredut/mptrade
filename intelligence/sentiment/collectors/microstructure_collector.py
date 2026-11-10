@@ -648,11 +648,11 @@ def load_symbol_microstructure(
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     read_json_fn = _resolve_read_json_cached(read_json_fn)
     sym_u = str(sym or "").strip().upper()
-    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
+    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym_u)
     sym_cands = [
         c
         for c in cache_symbol_variants(sym, include_base=True)
-        if c.upper().endswith(("_EQ", "_US_EQ")) == is_eq_sym
+        if (c.upper().endswith(("_EQ", "_US_EQ")) or is_equity_symbol(c)) == is_eq_sym
     ]
 
     def _first_telemetry_dict(prefix: str, *, prefer_freshest: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

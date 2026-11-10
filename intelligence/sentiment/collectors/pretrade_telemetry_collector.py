@@ -618,6 +618,7 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
         not m24_d
         or m24_d.get("vp_source") != "TPO"
         or sym_u_pt.endswith(("_EQ", "_US_EQ"))
+        or is_equity_symbol(sym_u_pt)
         or (
             not (allow_network and is_live_network_backfill_enabled())
             and os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") != "1"
@@ -934,7 +935,7 @@ def _format_pretrade_24h_and_btc_telemetry(
             f"va_pos={m24.get('va_pos_pct')}%{vp_src_s}"
         )
 
-    if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
+    if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")) and not is_equity_symbol(symbol):
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
         )
@@ -1012,7 +1013,7 @@ def _evaluate_and_format_pretrade_7d_telemetry(
     *,
     allow_network: bool = False,
 ) -> Tuple[Dict[str, Any], bool]:
-    is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
+    is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ")) or is_equity_symbol(symbol)
     eq_div_thr = 0.35 if is_eq else 0.10
     if cur_px_est > 0.0 and arch_vals_7d:
         if _prices_diverged(cur_px_est, safe_float(arch_vals_7d[-1], 0.0), threshold=eq_div_thr):

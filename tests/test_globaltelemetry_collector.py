@@ -1453,6 +1453,36 @@ def test_unified_external_macro_collectors_four_pillar_guards_and_venue_runtime_
     assert "rally_from_major_low_pct" not in rgnt_breakdown
 
 
+def test_bare_equity_symbol_matches_suffixed_equity_in_pretrade_telemetry(tmp_path):
+    """Bare equity ticker ('NVDA') must resolve EquityRthSessionPolicy and match 'NVDA_US_EQ' without crypto BTC relative strength."""
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.price_series_evaluator import resolve_asset_session_policy
+
+    assert resolve_asset_session_policy("NVDA").is_equity is True
+    assert resolve_asset_session_policy("NVDA_US_EQ").is_equity is True
+
+    now_ms = int(time.time() * 1000)
+    pts_24h = [[now_ms - (24 - i) * 3600 * 1000, 170.0 + i * 0.25, 1000.0 + i * 10.0] for i in range(25)]
+    btc_24h = [[now_ms - (24 - i) * 3600 * 1000, 70000.0 + i * 100.0, 500.0] for i in range(25)]
+    (tmp_path / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": pts_24h}}), encoding="utf-8"
+    )
+    (tmp_path / "cache_ohlc_24h_NVDA_US_EQ.json").write_text(
+        json.dumps({"ts": now_ms / 1000.0, "symbol": "NVDA_US_EQ", "points": pts_24h}), encoding="utf-8"
+    )
+    (tmp_path / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": btc_24h}}), encoding="utf-8"
+    )
+
+    t_bare = collect_pretrade_telemetry("NVDA", cachedb_dir=str(tmp_path), allow_network=False)
+    t_eq = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(tmp_path), allow_network=False)
+    assert "Relative Strength vs BTC (24h Benchmark)" not in t_bare
+    assert "Relative Strength vs BTC (24h Benchmark)" not in t_eq
+    assert t_bare.get("24h Multi-Horizon Price Evolution") == t_eq.get("24h Multi-Horizon Price Evolution")
+    assert t_bare.get("24h Volume Profile (POC / Value Area)") == t_eq.get("24h Volume Profile (POC / Value Area)")
+
+
+
 
 
 

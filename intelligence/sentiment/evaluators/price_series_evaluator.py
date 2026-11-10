@@ -13,6 +13,7 @@ from botcore import (
     safe_nonneg_float,
 )
 from cachepaths import cache_path, canonical_base_asset
+from instrument_registry import is_equity_symbol
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
@@ -1263,7 +1264,7 @@ def _apply_24h_series_enrichment(
     cur_e_px = safe_pos_float(entry.get("price"), default=None)
     l24_e, h24_e = safe_pos_float(entry.get("low_24h"), default=None), safe_pos_float(entry.get("high_24h"), default=None)
     l7d_e, h7d_e = safe_pos_float(entry.get("low_7d"), default=None), safe_pos_float(entry.get("high_7d"), default=None)
-    is_eq = sym.endswith(("_EQ", "_US_EQ"))
+    is_eq = sym.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym)
     if cur_e_px is not None and l24_e is not None and h24_e is not None and l7d_e is not None and h7d_e is not None:
         if l24_e < l7d_e or h24_e > h7d_e:
             eff_dec_7d = 4 if is_eq else 6
@@ -1508,7 +1509,8 @@ def prepend_older_non_diverged_points(cur_ser: list, cand_ser: list) -> list:
 
 def strip_off_rth_flat_poller_tail(rows: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
     """Strip or downsample flat off-RTH poller tails on equity price series."""
-    is_eq_sym_load = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+    sym_u_load = str(symbol).strip().upper()
+    is_eq_sym_load = sym_u_load.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym_u_load)
     if not is_eq_sym_load or len(rows) < 3:
         return rows
     if len(rows) >= 10:
@@ -1686,8 +1688,9 @@ def extract_archive_24h_and_7d_slices(
         return series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms
     try:
         if (last_pt := _parse_ts_px_row(archive_pts[-1])) is not None:
+            sym_u_arch = str(symbol).strip().upper()
             if (
-                str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+                (sym_u_arch.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym_u_arch))
                 and series_24h
                 and isinstance(series_24h[-1], (list, tuple))
                 and len(series_24h[-1]) >= 3
@@ -2415,7 +2418,7 @@ _EQUITY_RTH_POLICY = EquityRthSessionPolicy()
 def resolve_asset_session_policy(symbol: str) -> AssetSessionPolicy:
     """Resolve the polymorphic AssetSessionPolicy for ``symbol``."""
     sym_u = str(symbol or "").strip().upper()
-    if sym_u.endswith(("_EQ", "_US_EQ")):
+    if sym_u.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym_u):
         return _EQUITY_RTH_POLICY
     return _CRYPTO_24X7_POLICY
 
