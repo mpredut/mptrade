@@ -54,11 +54,10 @@ discover_regions() {
 connect_to_region() {
     local target_region="$1" desc="$2" max_attempts="${3:-12}" current_reg
     current_reg=$(pia get region 2>/dev/null | tr -d '\r')
-    if [ "$current_reg" = "$target_region" ]; then
-        if vpn_healthy; then
-            echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
-            return 0
-        fi
+    if [ "$current_reg" = "$target_region" ] && vpn_healthy; then
+        echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+        return 0
+    elif [ "$current_reg" = "$target_region" ]; then
         echo "Tunnel on $desc ($target_region) is unhealthy; disconnecting before session reset..."
         pia disconnect >/dev/null 2>&1 || true
         sleep 2
