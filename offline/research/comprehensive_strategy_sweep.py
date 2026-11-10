@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive multi-factor backtest and strategy sweep.
 
-Evaluates high-profit / low-drawdown ("profit mare si pierdere mica") candidates across:
+Evaluates high-profit / low-drawdown candidates across:
 1. Walk-Forward 31 out-of-sample folds (628 days, HYPE 240m)
 2. Full continuous replay over 628 days (~3,772 bars)
 3. Live Kraken forward window (206 forward bars + 720 historical bars)

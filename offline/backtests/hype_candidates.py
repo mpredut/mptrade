@@ -24,8 +24,8 @@ def default_candidates() -> list[Candidate]:
         Candidate("trail_2", "trailing 2%", {"tp_trail_adaptive": False, "tp_trail_pct": 2.0}),
         Candidate("trail_4", "trailing 4%", {"tp_trail_adaptive": False, "tp_trail_pct": 4.0}),
         Candidate("trail_5", "trailing 5%", {"tp_trail_adaptive": False, "tp_trail_pct": 5.0}),
-        Candidate("tp_4", "prag TP 4%", {"takeprofit_pct": 4.0}),
-        Candidate("tp_6", "prag TP 6%", {"takeprofit_pct": 6.0}),
+        Candidate("tp_4", "TP threshold 4%", {"takeprofit_pct": 4.0}),
+        Candidate("tp_6", "TP threshold 6%", {"takeprofit_pct": 6.0}),
         Candidate("dca_drop_1", "DCA on a 1% drop", {"dca_drop_pct": 1.0}),
         Candidate("dca_drop_1_5", "DCA on a 1.5% drop", {"dca_drop_pct": 1.5}),
         Candidate("dca_drop_2", "DCA on a 2% drop", {"dca_drop_pct": 2.0}),
@@ -38,14 +38,14 @@ def default_candidates() -> list[Candidate]:
         Candidate("lower_sizing", "entry 500 + DCA 250 USD", {"entry_amount": 500.0, "dca_amount": 250.0}),
         Candidate(
             "confirm_dca_1_5_trail_2",
-            "confirmare: DCA 1,5% + trailing 2%",
+            "confirmation: DCA 1.5% + trailing 2%",
             {"dca_drop_pct": 1.5, "tp_trail_adaptive": False, "tp_trail_pct": 2.0},
         ),
     ]
 
 
 def _tp4(name: str) -> Candidate:
-    return Candidate(name, "prag TP 4%", {"takeprofit_pct": 4.0})
+    return Candidate(name, "TP threshold 4%", {"takeprofit_pct": 4.0})
 
 
 def _dca15(name: str) -> Candidate:
@@ -66,7 +66,7 @@ def _dca_vol_m1(name: str) -> Candidate:
 
 def _adaptive_trail(name: str) -> Candidate:
     return Candidate(
-        name, "trailing adaptiv k=2, clamp 1,5-8%",
+        name, "adaptive trailing k=2, clamp 1.5-8%",
         {
             "tp_trail_adaptive": True,
             "tp_trail_k": 2.0,
@@ -90,7 +90,7 @@ def _dca_brake(name: str) -> Candidate:
 
 def _overlay650t8() -> Candidate:
     return Candidate(
-        "overlay650t8", "overlay redus: top-up 650, trail 8%",
+        "overlay650t8", "reduced overlay: top-up 650, trail 8%",
         {
             "trend_overlay": True,
             "trend_topup": 650.0,
@@ -105,7 +105,7 @@ def hype_240_candidates() -> list[Candidate]:
     return [
         Candidate("live", "the live configuration, unchanged", {}),
         Candidate(
-            "overlay_orig", "overlay original: top-up 2000, trail 5%",
+            "overlay_orig", "original overlay: top-up 2000, trail 5%",
             {"trend_overlay": True, "trend_topup": 2000.0,
              "trend_trail_pct": 5.0, "trend_interval": 240},
         ),
@@ -139,13 +139,13 @@ def financial_priority_candidates() -> list[Candidate]:
         _overlay650t8(),
         Candidate(
             "trail_profit_floor_sl18",
-            "trailing soft la minimum +1% brut; hard stop MARKET la -18%",
+            "soft trailing at +1% gross minimum; hard MARKET stop at -18%",
             {"tp_trail_profit_floor_pct": 1.0, "stop_loss_pct": 18.0},
         ),
         Candidate(
             "trail_profit_floor_sl125",
             "DECOUPLED: a gross profit floor of +1%, but a hard stop at 12.5% (the baseline) "
-            "— izoleaza upside-ul profit-floor de penalizarea de DD a stop-ului larg",
+            "— isolates profit-floor upside from the wide-stop drawdown penalty",
             {"tp_trail_profit_floor_pct": 1.0},
         ),
     ]
