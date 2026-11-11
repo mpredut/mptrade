@@ -172,6 +172,24 @@ logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 _resolve_read_json_cached = resolve_read_json_cached
 
 
+def _load_venue_balances_state(
+    cache_dir: Optional[str],
+    read_json_fn: Any = None,
+) -> Tuple[Optional[str], Dict[str, Any], float]:
+    if not cache_dir:
+        return None, {}, 0.0
+    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
+    if not os.path.exists(bcache_path):
+        return bcache_path, {}, 0.0
+    _rj = _resolve_read_json_cached(read_json_fn)
+    raw_cb = _rj(bcache_path)
+    try:
+        bcache_mtime = os.path.getmtime(bcache_path)
+    except OSError:
+        bcache_mtime = 0.0
+    return bcache_path, (raw_cb if isinstance(raw_cb, dict) else {}), bcache_mtime
+
+
 def _filter_ohlc_closes_since(
     series_obj: Any,
     cutoff_ts: float,
@@ -1305,15 +1323,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True
         )
-        bcache_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json"))) if cachedb_dir else None
-        raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
-        bcache_mtime = 0.0
-        if bcache_path and os.path.exists(bcache_path):
-            try:
-                bcache_mtime = os.path.getmtime(bcache_path)
-            except OSError:
-                bcache_mtime = 0.0
-        cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
+        bcache_path, cached_bals, bcache_mtime = _load_venue_balances_state(cachedb_dir, _rj)
         t212_seeded_from_cache: set[str] = set()
         t212_pos_ts: Dict[str, float] = {}
         t212_seed_tickers = [ticker for _, ticker in _iter_t212_state_files(workspace_dir)]

@@ -15,13 +15,16 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import safe_float, safe_int, safe_pos_float
+from botcore import safe_pos_float
 import pricewindow as pw
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_all_signals,
+    evaluate_mt_model_symbol_cell,
     load_archive_series,
     make_tape,
+    print_mt_sweep_header,
+    print_mt_sweep_row,
 )
 
 
@@ -97,19 +100,10 @@ def run_multiwindow_sweep(use_365: bool = False):
                 900: sig_900,
                 "prod": sig_prod,
             }
-            cfg = rrb.SYMBOLS[sym]
-            key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
             for m_idx, (_m_name, fn) in enumerate(models):
-                rrb._TREND_TAPE_CACHE.clear()
-                rrb._TREND_TAPE_CACHE[key] = tuple(
-                    fn(sym_sigs, sym) if fn.__code__.co_argcount >= 2 else fn(sym_sigs)
-                )
-                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-                net = safe_float(res.get("net"), 0.0)
+                net, _bh, cell = evaluate_mt_model_symbol_cell(sym, series, sym_sigs, fn)
                 model_totals[m_idx] += net
-                model_cells[m_idx].append(
-                    f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)"
-                )
+                model_cells[m_idx].append(cell)
             rrb._TREND_TAPE_CACHE.clear()
             del sym_sigs, series
     finally:
@@ -120,13 +114,9 @@ def run_multiwindow_sweep(use_365: bool = False):
         rrb._LAST_HARD_TP_TOUCHED.clear()
         rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
-    hdr = f"{'Multi-Window Policy':<36} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
-    print("\n" + hdr)
-    print("-" * len(hdr))
+    print_mt_sweep_header("Multi-Window Policy", symbols, col_width=36)
     for m_idx, (m_name, _fn) in enumerate(models):
-        cells = model_cells[m_idx]
-        tot_net = model_totals[m_idx]
-        print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+        print_mt_sweep_row(m_name, model_cells[m_idx], model_totals[m_idx], col_width=36)
 
 
 if __name__ == "__main__":

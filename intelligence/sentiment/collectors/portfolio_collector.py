@@ -46,6 +46,7 @@ import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
     _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
+    _load_venue_balances_state,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _first_variant_dict,
@@ -759,10 +760,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         venue_quote_cash: Dict[str, Dict[str, Any]] = {}
         inst_by_sym: Dict[str, Any] = {}
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
-        bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
         _rj_bals = _resolve_read_json_cached()
-        raw_cb = _rj_bals(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
-        cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
+        bcache_path, cached_bals, _ = _load_venue_balances_state(cache_dir, _rj_bals)
         updated_bals: Dict[str, Any] = {}
         live_open_ok_venues: set[str] = set()
         failed_open_venues: set[str] = set()

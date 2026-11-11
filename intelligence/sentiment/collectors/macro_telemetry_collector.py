@@ -997,8 +997,12 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             or os.path.exists(os.path.join(workspace_dir, "hyperliquid", "config.env"))
             or (scope == "equities" and os.path.isdir(os.path.join(workspace_dir, "212trading")))
         )
+        should_harvest = False
+        inst_map: Dict[str, Any] = {}
+        allow_empty_recovery = False
+        harvest_persist = persist
         if callable(load_tradable_fn) and has_inst_source:
-            inst_load_failed = False
+            should_harvest = True
             try:
                 try:
                     inst_map = load_tradable_fn(only_workspace_conf=(scope != "equities"), include_closed_rth=(scope == "equities"), asset_scope=scope)
@@ -1008,40 +1012,27 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 if log:
                     log.debug("Could not load tradable instruments for telemetry: %s", exc)
                 inst_map = {}
-                inst_load_failed = True
-
-            try:
-                tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
-                    inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
-                    known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
-                    verified_open_venues=verified_open_venues,
-                    allow_empty_inst_recovery=inst_load_failed,
-                    allow_network=allow_network,
-                    persist=persist,
-                )
-            except TypeError:
-                tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
-                    inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
-                    known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
-                    verified_open_venues=verified_open_venues,
-                    allow_empty_inst_recovery=inst_load_failed,
-                )
+                allow_empty_recovery = True
         elif not allow_network and cache_dir:
+            should_harvest = True
+            allow_empty_recovery = True
+            harvest_persist = False
+        if should_harvest:
             try:
                 tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
-                    {}, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                    inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
                     known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
                     verified_open_venues=verified_open_venues,
-                    allow_empty_inst_recovery=True,
-                    allow_network=False,
-                    persist=False,
+                    allow_empty_inst_recovery=allow_empty_recovery,
+                    allow_network=allow_network,
+                    persist=harvest_persist,
                 )
             except TypeError:
                 tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
-                    {}, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
+                    inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
                     known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
                     verified_open_venues=verified_open_venues,
-                    allow_empty_inst_recovery=True,
+                    allow_empty_inst_recovery=allow_empty_recovery,
                 )
 
         if tradable_positions:
@@ -1055,15 +1046,19 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             snapshot.portfolio_summary["trailing_peaks"] = trailing_map
 
         watcher_price_items = watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
-        try:
-            enrich_cross_venue_trends(
-                snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items,
-                allow_network=False if not allow_network else None,
-            )
-        except TypeError:
-            enrich_cross_venue_trends(
-                snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
-            )
+
+        def _run_enrich_cross_venue_trends() -> None:
+            try:
+                enrich_cross_venue_trends(
+                    snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items,
+                    allow_network=False if not allow_network else None,
+                )
+            except TypeError:
+                enrich_cross_venue_trends(
+                    snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
+                )
+
+        _run_enrich_cross_venue_trends()
 
         cur_p_items = prices_data.get("items", {}) if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict) else {}
         try:
@@ -1075,15 +1070,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             enrich_24h_and_microstructure(
                 cache_dir, workspace_dir, snapshot.prices_and_trends, snapshot.microstructure, cur_p_items, inst_by_sym, now_ts, _rj
             )
-        try:
-            enrich_cross_venue_trends(
-                snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items,
-                allow_network=False if not allow_network else None,
-            )
-        except TypeError:
-            enrich_cross_venue_trends(
-                snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
-            )
+        _run_enrich_cross_venue_trends()
         cycle_history = load_microstructure_cycle_history(cache_dir)
         orig_cycle_history = dict(cycle_history)
         try:

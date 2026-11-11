@@ -665,11 +665,9 @@ class HyperliquidProvider(MarketDataProvider):
         price_f = safe_pos_float(price, default=None)
         if price_f is None:
             return 0.0
-        try:
-            pp = self.pair_precision(symbol)
-            sz_dec = safe_nonneg_int(getattr(pp, "volume_decimals", 2), default=2) if pp is not None else 2
-        except Exception:
-            sz_dec = 2
+        sz_dec = safe_nonneg_int(
+            self._pair_precision_attr(symbol, "volume_decimals", 2), default=2
+        )
         _round_px = _hl_client_module()._round_px
         try:
             return _round_px(price_f, sz_decimals=sz_dec, is_perp=False)

@@ -289,6 +289,37 @@ def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, fl
     return load_price_series(path, sym)
 
 
+def evaluate_mt_model_symbol_cell(
+    sym: str,
+    series: list,
+    sig_input: object,
+    tape_fn,
+) -> tuple[float, float, str]:
+    """Run ``tape_fn`` for ``sym`` over ``series`` and format the net-PnL/trade-count table cell."""
+    key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
+    rrb._TREND_TAPE_CACHE.clear()
+    rrb._TREND_TAPE_CACHE[key] = tuple(
+        tape_fn(sig_input, sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig_input)
+    )
+    cfg = rrb.SYMBOLS[sym]
+    res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+    net = safe_float(res.get("net"), 0.0)
+    buy_hold = safe_float(res.get("buy_hold"), 0.0)
+    cell = f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)"
+    return net, buy_hold, cell
+
+
+def print_mt_sweep_header(title_col: str, symbols: list[str], *, col_width: int = 34) -> str:
+    hdr = f"{title_col:<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
+    print("\n" + hdr)
+    print("-" * len(hdr))
+    return hdr
+
+
+def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_width: int = 34) -> None:
+    print(f"{name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {total_net:>+14.2f}")
+
+
 def run_mt_model_sweep_table(
     models,
     symbols: list[str],
@@ -300,9 +331,7 @@ def run_mt_model_sweep_table(
     include_buy_hold: bool = False,
 ) -> None:
     """Evaluate a list of ``(model_name, tape_fn)`` definitions across ``symbols`` and print a comparison table."""
-    hdr = f"{title_col:<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
-    print("\n" + hdr)
-    print("-" * len(hdr))
+    hdr = print_mt_sweep_header(title_col, symbols, col_width=col_width)
 
     saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
     saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
@@ -310,22 +339,16 @@ def run_mt_model_sweep_table(
     bh_Wait = {}
     try:
         for m_name, tape_fn in models:
-            rrb._TREND_TAPE_CACHE.clear()
             cells = []
             tot_net = 0.0
             for sym in symbols:
-                series = series_map[sym]
-                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-                rrb._TREND_TAPE_CACHE[key] = tuple(
-                    tape_fn(sig_map[sym], sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig_map[sym])
+                net, bh_val, cell = evaluate_mt_model_symbol_cell(
+                    sym, series_map[sym], sig_map[sym], tape_fn
                 )
-                cfg = rrb.SYMBOLS[sym]
-                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-                net = safe_float(res.get("net"), 0.0)
-                bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
+                bh_Wait[sym] = bh_val
                 tot_net += net
-                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
-            print(f"{m_name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+                cells.append(cell)
+            print_mt_sweep_row(m_name, cells, tot_net, col_width=col_width)
     finally:
         rrb._TREND_TAPE_CACHE.clear()
         rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
