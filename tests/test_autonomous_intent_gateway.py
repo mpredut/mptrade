@@ -10,7 +10,20 @@ from orchestratorTrade.autonomous_intent_gateway import (
     AUTONOMOUS_BYPASS_GUARDS,
     AutonomousIntentGateway,
 )
-from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+from providers.execution_audit import (
+    _resolve_intent_execution_details,
+    build_last_cycle_execution_status,
+    collect_known_ai_order_ids,
+    extract_intent_notional,
+    reconcile_intents_from_execution_audit,
+    summarize_recent_ai_intents,
+)
+import json
+from datetime import datetime
+from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
+from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
+from providers.hyperliquid_provider import HyperliquidProvider
+from types import SimpleNamespace
 
 
 @pytest.fixture
@@ -478,7 +491,6 @@ def test_submit_is_the_single_validated_entry_point(temp_workspace):
 
 
 def test_reconcile_failed_intent_from_execution_audit_and_capture_outcome_reason(temp_workspace):
-    import json
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
@@ -544,7 +556,6 @@ def test_reconcile_failed_intent_from_execution_audit_and_capture_outcome_reason
 
 
 def test_resolve_instrument_and_live_price_support_cross_venue_quote_variants(temp_workspace):
-    import json
     ws, cache_dir = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="shadow")
 
@@ -568,7 +579,6 @@ def test_resolve_instrument_and_live_price_support_cross_venue_quote_variants(te
 
 
 def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp_workspace):
-    from datetime import datetime
     from zoneinfo import ZoneInfo
 
     ws, _ = temp_workspace
@@ -637,7 +647,6 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
 
 
 def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_trend(temp_workspace):
-    import json
     from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
 
@@ -714,7 +723,6 @@ def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_
 
 
 def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_workspace):
-    import json
     from botcore import clean_scale
     from providers.execution_audit import (
         extract_intent_notional as _extract_intent_notional,
@@ -805,7 +813,6 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
 
 
 def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_workspace):
-    import json
     from providers.order_id_context import REPRICEABLE_BOTS, resolve_order_owner
     from orchestratorOS.agy.topics import condense_decision
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
@@ -933,7 +940,6 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
 
     from orchestratorOS.agy.topics import topic_spec
     from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
 
     # Verify prompt contains contrarian dip accumulation & dual execution mode instructions
     snap = TelemetrySensorSnapshot(
@@ -1064,7 +1070,6 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
 
 def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect_ai_ids():
     """Verify unfilled resting LIMIT orders and non-executed intents do not inherit prior fills from recent_orders."""
-    from providers.execution_audit import build_last_cycle_execution_status, collect_known_ai_order_ids
 
     now_ts = 1_760_000_100.0
     intents = [
@@ -1179,7 +1184,7 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
 def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_intent_cids():
     """AI orders are never repriced by monitororder, and bot/repriced orders are never adopted as AI orders."""
     from providers import order_id_context as rc
-    from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
+    from providers.execution_audit import cancel_existing_ai_open_orders
 
     # 1. AI_ cids resolve to ai_executor and are protected from monitororder repricing
     assert rc.resolve_order_owner("AI_20261102-BUY-BTCUSDC_ab12cd_7f9e1a2") == "ai_executor"
@@ -1232,8 +1237,6 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
     # 4. Kraken / Hyperliquid hash the AI_ client ID into 128-bit form: response-lost intents still match
     #    their own resting order, open orders are labeled AI, and another AI intent's order is not adopted.
     from providers.order_ohlc_utils import normalize_open_order
-    from providers.execution_audit import collect_known_ai_order_ids
-    from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
 
     for venue_name, native_cid in (
@@ -1254,7 +1257,6 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
 
 def test_execution_details_finds_own_ai_fill_behind_later_bot_fill_and_matches_by_order_id():
     """A later same-side BOT fill (e.g. monitororder-repriced tradeall order) must not hide the intent's own fill."""
-    from providers.execution_audit import _resolve_intent_execution_details
 
     now_ts = time.time()
     intent = {
@@ -1281,9 +1283,7 @@ def test_execution_details_finds_own_ai_fill_behind_later_bot_fill_and_matches_b
 
 def test_reconcile_from_audit_scans_only_days_since_oldest_pending_intent(tmp_path):
     """Audit reconciliation skips UTC-day files older than the oldest pending intent (minus 1 day) and caches files."""
-    import json
-    from datetime import datetime, timezone
-    from providers.execution_audit import reconcile_intents_from_execution_audit
+    from datetime import timezone
 
     audit_dir = tmp_path / "execution_audit"
     audit_dir.mkdir()
@@ -1429,7 +1429,6 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
 
         # Even when replace_open_orders=True is passed, an identical resting AI limit order is preserved
         # while any stale AI open order at a different price is still canceled
-        from providers.hyperliquid_provider import HyperliquidProvider
         ai_cloid = HyperliquidProvider.derive_client_order_id("AI_intent_1793644299_sell_hypeusdc")
         hl_inst.open_orders.return_value = [
             {
@@ -1535,7 +1534,6 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
 
 
 def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(tmp_path):
-    from providers.execution_audit import build_last_cycle_execution_status, reconcile_intents_from_execution_audit
 
     now_ts = 1793660000.0
     intents = [
@@ -1627,7 +1625,6 @@ def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(
 
     # Partial fill in audit does not prematurely lock reconciled_terminal=True before final FILLED audit arrives,
     # and a non-fill cancel audit does not overwrite a fill audit on the same intent.
-    import json
     audit_file = tmp_path / "execution_audit_2026-11-03.jsonl"
     audit_file.write_text(
         json.dumps({
@@ -1682,7 +1679,6 @@ def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(
 
 
 def test_enforce_intent_order_cleans_up_refused_retry_record_when_second_attempt_succeeds(tmp_path, monkeypatch):
-    import json
     import order_retry
     from providers.execution_audit import execute_enforce_intent_order
 
@@ -1753,8 +1749,6 @@ def test_enforce_intent_order_cleans_up_refused_retry_record_when_second_attempt
 
 
 def test_harvest_bot_runtime_states_excludes_executed_and_rejected_ai_intents(tmp_path):
-    import json
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
 
     now_ts = time.time()
     intents_file = tmp_path / "autonomous_trade_intents_state.json"
@@ -1883,7 +1877,6 @@ def test_process_intent_replace_open_orders_unlocks_bot_order_when_free_remainde
 
 
 def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_sell_and_updates_bcache(tmp_path):
-    import json
     from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
 
     bcache_file = tmp_path / "venue_balances_state.json"
@@ -1943,7 +1936,6 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     assert cached_pos["trailing_peak"] == pytest.approx(440.0)
 
     # Verify harvest_bot_runtime_states does NOT classify a 100%-locked SELL position (value_usd=0, locked_base_usd=600) as dust
-    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
     ag_path = tmp_path / "assetguardian_state.json"
     ag_path.write_text(
         json.dumps({"symbols": {"TAOUSDC": {"sell": {"pending": False, "reason": "guard_watch"}}}}),
@@ -2003,7 +1995,7 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
 
 def test_autonomousaireconciler_synthesize_and_diagnose_handles_none_bool_nan_in_prices_and_trends_iter56_s4(tmp_path):
     """[ITER56 #4] AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary."""
-    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler, LogEventSummary, TelemetrySensorSnapshot
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler, LogEventSummary
     # 4. AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary
     (tmp_path / "order_guard.conf").write_text("supervisor_mode = shadow\nsupervisor_notify = 0\n", encoding="utf-8")
     (tmp_path / "config.env").write_text("NTFY_TOPIC_GUARD=test-guard\n", encoding="utf-8")
@@ -2052,9 +2044,7 @@ def test_autonomousaireconciler_synthesize_and_diagnose_handles_none_bool_nan_in
 
 def test_autonomousintentgateway__get_live_price_rejects_boolean_true_prices_from_provider_iter65_s3(tmp_path):
     """[ITER65 #3] AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache."""
-    import json
     import math
-    from types import SimpleNamespace
     # 3. AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache
     ws = tmp_path / "gw_ws"
     ws.mkdir()
@@ -2082,7 +2072,6 @@ def test_autonomousintentgateway__get_live_price_rejects_boolean_true_prices_fro
 
 def test_autonomousintentgateway_resolve_instrument_rejects_empty_boolean_symbol_venue_and_iter120_s5(monkeypatch, tmp_path):
     """[ITER120 #5] AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode."""
-    from types import SimpleNamespace
     # 5. AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode
     gw = AutonomousIntentGateway(
         workspace_dir=str(tmp_path),

@@ -5,6 +5,10 @@
 """
 import os, sys, json, time, tempfile, unittest
 from unittest.mock import MagicMock, patch
+import cacheintegrity
+import pricewindow as pw_mod
+from binance_api import bapi_allorders, bapi_trades, bapi_ws, bapi_ws_bridge
+from market_monitor import pricefetcher as pf
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -763,7 +767,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
 
     def test_price_multi_init_and_reload_metadata(self):
-        from market_monitor import pricefetcher as pf
 
         pf_file = os.path.join(self.tmp, "cache_watcher_all_price.json")
         now_sec = time.time()
@@ -888,7 +891,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_legacy_migration_respects_previous_and_ws_bridge_init_rollback(self):
         from cachepaths import migrate_legacy_filename_if_needed
-        from binance_api import bapi_ws_bridge
 
         mig_dir = os.path.join(self.tmp, "mig")
         os.makedirs(mig_dir, exist_ok=True)
@@ -1026,12 +1028,10 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(order_mgr._persisted_max_ts(), 0)
         with open(order_mgr.filename, "w", encoding="utf-8") as fh:
             json.dump({"items": {"BTCUSDT": "not-a-list"}, "fetchtime": {"BTCUSDT": 1700000000000}}, fh)
-        import cacheintegrity
         with self.assertRaises(ValueError):
             cacheintegrity.read_legacy_order_snapshot_strict(order_mgr.filename, None)
 
         # BinancePriceStream._process_message rejects non-dict envelopes, bool prices, and invalid timestamps
-        from binance_api import bapi_ws
 
         ps = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"])
         for bad_raw in (
@@ -1064,7 +1064,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(extract_remaining_qty({"origQty": True, "executedQty": False}), 0.0)
 
         # bapi_ws_bridge skips redundant persistence on non-fill executionReport events and isolates persist errors
-        from binance_api import bapi_ws_bridge
 
         persisted_events = []
         bapi_ws_bridge.handle_binance_ws_event(
@@ -1144,7 +1143,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertTrue(c24_mgr._save_jsonl_append())
 
         # build_account_meta_snapshot rejects bool/negative timestamps in fetchtime/rest_sync_cursor
-        import cacheintegrity
 
         with self.assertRaises(ValueError):
             cacheintegrity.build_account_meta_snapshot(
@@ -1349,7 +1347,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(cpm.get_sample_rate("BTCUSDT", fallback=1.5), 1.5)
 
         # paginate_my_trades handles string IDs and breaks on non-advancing IDs
-        from binance_api import bapi_allorders, bapi_trades
 
         class _MockTradeClient:
             def __init__(self):
@@ -1443,7 +1440,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             self.assertEqual(c24.get_recent_entries("BTCUSDT", bad_sec), [])
 
         # 5. PriceWindow coerces string sample_rate and string prices safely
-        import pricewindow as pw_mod
 
         pw = pw_mod.PriceWindow("BTCUSDT", 20, sample_rate_sec=float("nan"), window_seconds=60.0)
         self.assertEqual(pw.sample_rate_sec, 0.8)
@@ -1468,7 +1464,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         """Audit #39: _pid_is_alive overflow guard, sub-satoshi get_filled_orders/aggregate_trades, and _classify non-dict inner event."""
         import threading
         import account_cache_health as bch
-        from binance_api import bapi_allorders, bapi_trades, bapi_ws
 
         # 1. _pid_is_alive guards against OverflowError / invalid PIDs without raising
         self.assertFalse(bch._pid_is_alive(2**80))
@@ -1641,7 +1636,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
     def test_audit42_long_trend_neutral_snapshot_and_pricefetcher_guards(self):
         """Audit #42: explicit trailing None in cache_long_trend.json stops reverse scan, order_guard recovers .previous, and pricefetcher guards malformed entries."""
         import order_guard
-        from market_monitor import pricefetcher as pf
 
         # 1. Explicit trailing None in cache_long_trend.json is a neutral snapshot and does not resurrect stale entry
         lt_path = os.path.join(self.tmp, "cache_long_trend.json")
@@ -1758,7 +1752,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_proportional_recent_gradient_for_large_windows_and_root_dyn222_sync(self):
         """Windows > 222s scale recent_gradient_seconds proportionally; evaluate_full syncs dynamic['222'] with root."""
-        import pricewindow as pw_mod
 
         # 1. effective_recent_gradient_seconds keeps 60s for <= 222s and scales proportionally for > 222s
         self.assertEqual(pw_mod.effective_recent_gradient_seconds(None), 60.0)

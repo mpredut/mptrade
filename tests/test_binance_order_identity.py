@@ -2,10 +2,14 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from providers import order_id_context as rc
-from binance_api import bapi as api
+from binance_api import bapi, bapi as api
 import monitororder
 from providers.base import MarketDataProvider
 from providers.market_api import MarketApi
+import order_retry as oq
+import os
+import tempfile
+import time
 
 
 class TestBinanceOrderIdContext(unittest.TestCase):
@@ -204,9 +208,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
         self.assertNotIn("prefix", runner_target)
 
     def test_order_retry_infers_owner_and_cleans_up_accepted_trackers(self):
-        import os
-        import tempfile
-        import order_retry as oq
 
         with tempfile.TemporaryDirectory() as tmpdir:
             qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
@@ -271,9 +272,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
                 self.assertEqual(oq.load_all(), [oq.get(rep_id)])
 
     def test_same_deferred_stream_consolidates_across_deferral_reasons(self):
-        import os
-        import tempfile
-        import order_retry as oq
 
         with tempfile.TemporaryDirectory() as tmpdir:
             qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
@@ -328,7 +326,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
     def test_tradeall_cancels_outbox_accepted_orders_and_resolves_tracker(self):
         import tradeall as ta
-        import order_retry as oq
 
         ta._symbol_order_ids.clear()
         with patch.object(ta.api, "cancel_expired_orders"), \
@@ -365,8 +362,6 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             mock_resolve.assert_called_once_with("BTCUSDC", inst, kind="TP")
 
     def test_cancel_open_recent_and_opposite_orders_resolve_accepted_retry_tracker(self):
-        import time
-        from binance_api import bapi
         from binance_api import bapi_placeorder as bp
         import order_retry
 
@@ -412,7 +407,6 @@ def test__base36_handles_none_bool_inf_nan_and_invalid_iter67_s3():
 
 def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
     """[ITER108 #4] bapi / bapi_allorders / bapi_trades / order_id_context."""
-    from binance_api import bapi
     from binance_api import bapi_allorders
     from binance_api import bapi_trades
     # 4. bapi / bapi_allorders / bapi_trades / order_id_context
@@ -444,7 +438,6 @@ def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_t
 
 def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
     """Verify MarketApi.get_open_orders, cancel_open_orders, and cancel_expired_orders across venue shapes."""
-    import time
     from providers.strategy_executor import OrderReconciliationCapabilities
 
     class _DummyProvider(MarketDataProvider):

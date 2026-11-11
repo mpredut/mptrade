@@ -20,6 +20,9 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import monitortrades as mt
 from providers.base import MarketDataProvider
 from types import SimpleNamespace
+import json
+import order_guard
+from providers.quantity import QuantityDecision
 
 
 NOW = 2_000_000_000.0
@@ -819,7 +822,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
         """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
-        import json
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_data = {
                 "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
@@ -2068,7 +2070,6 @@ def test_monitortrades__resolve_exit_and__handle_position_recovery_clear__sl_epi
 
 def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_and_checks_go1_iter10_s3(monkeypatch):
     """[ITER10 #3] monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard."""
-    import order_guard
     # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
     qdec_kwargs = []
 
@@ -2109,8 +2110,6 @@ def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_an
 
 def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_iter14_s1(monkeypatch):
     """[ITER14 #1] monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass."""
-    import order_guard
-    from providers.quantity import QuantityDecision
     # 1. monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass
     captured_apply_policy = []
 
@@ -2154,12 +2153,9 @@ def test_monitortrades__can_pass_buy_quantity_policy_honors_g_qlimit1_bypass_ite
 
 def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_iter22_s2(tmp_path, monkeypatch):
     """[ITER22 #2] monitortrades._load_mt_state re-anchors clock-skewed future timestamps and rejects NaN."""
-    import json
     import pytest
     from unittest.mock import MagicMock
-    import order_guard
     from instrument import Instrument
-    from providers.quantity import QuantityDecision
     import rtrade
     pg_bypasses = []
     class FakeKrakenProvider:
@@ -2377,7 +2373,6 @@ def test_monitortrades__extract_trade_uid_rejects_and_normalizes_iter158_s1():
 
 def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter158_s2(monkeypatch, tmp_path):
     """[ITER158 #2] monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries."""
-    import json
     # 2. monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries
     mt_state_file = tmp_path / "mt_state.json"
     mt_state_file.write_text(json.dumps({

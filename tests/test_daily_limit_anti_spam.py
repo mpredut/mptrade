@@ -15,6 +15,8 @@ from providers.kraken_provider import KrakenProvider
 import order_guard
 import order_retry
 from instrument import Instrument
+import threading
+from providers.hyperliquid_provider import HyperliquidProvider
 
 
 class FakeProvider(MarketDataProvider):
@@ -256,8 +258,6 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
     def test_hyperliquid_transient_startup_timeout_does_not_permanently_disable_client(self):
         """A transient network timeout during HyperliquidProvider._new_client() must not
         permanently set _client_tried=True; subsequent calls must retry initialization."""
-        import threading
-        from providers.hyperliquid_provider import HyperliquidProvider
 
         hp = HyperliquidProvider.__new__(HyperliquidProvider)
         hp._lock = threading.Lock()
@@ -349,8 +349,6 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
     def test_hyperliquid_order_status_does_not_use_unrelated_fill_price_for_hype_fee(self):
         """When self._token != 'HYPE' and feeToken == 'HYPE', order_status must not
         fall back to the non-HYPE token's fill_price if HYPE mid price is unavailable."""
-        import threading
-        from providers.hyperliquid_provider import HyperliquidProvider
         from providers.strategy_executor import ProviderError
 
         class FakeHLInfo:

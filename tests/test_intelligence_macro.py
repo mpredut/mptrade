@@ -30,7 +30,23 @@ from intelligence.sentiment.sentiment_advisor import (
 from datetime import datetime
 from types import SimpleNamespace
 from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval, compute_dynamic_sentiment_interval
-from intelligence.macro.lexicon_ssot import discover_dynamic_terms_from_headlines, is_excluded_reference_news_item, load_dynamic_lexicon, match_high_severity_keywords, record_dynamic_crisis_terms_from_assessment, update_dynamic_lexicon
+from intelligence.macro.lexicon_ssot import (
+    build_dynamic_rss_url,
+    discover_dynamic_terms_from_headlines,
+    get_active_acute_shock_phrases,
+    has_financial_or_geopolitical_context,
+    is_excluded_reference_news_item,
+    load_dynamic_lexicon,
+    match_high_severity_keywords,
+    record_dynamic_crisis_terms_from_assessment,
+    update_dynamic_lexicon,
+)
+import botcore
+from intelligence.macro_sentiment_ssot import extract_high_severity_headlines_and_digest
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_equity_macro_regime
+from zoneinfo import ZoneInfo
 
 
 SAMPLE_RSS_XML_WAR = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -558,7 +574,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert normalize_recommended_brake("ALLOW", threat_level="NORMAL") == "NONE"
 
     def test_global_trading_sessions_europe_morning_buy_and_evening_close(self):
-        from zoneinfo import ZoneInfo
         from intelligence.macro.calendar_ssot import (
             did_cross_session_checkpoint,
             resolve_global_trading_session,
@@ -604,8 +619,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert did_cross_session_checkpoint(t_1730, t_1835) == "EU_EVENING_POSITION_CLOSE"
 
     def test_dynamic_sentiment_interval_adapts_to_context(self):
-        from zoneinfo import ZoneInfo
-        from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
         from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
         tz_eet = ZoneInfo("Europe/Bucharest")
@@ -753,7 +766,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
             get_fear_greed_endpoint_url,
             get_market_breadth_endpoint_url,
         )
-        from intelligence.macro.lexicon_ssot import build_dynamic_rss_url, get_active_acute_shock_phrases, get_active_severity_keywords, get_specialized_rss_urls
+        from intelligence.macro.lexicon_ssot import get_active_severity_keywords, get_specialized_rss_urls
 
         # 1. Config-driven endpoints, exclusions, and specialized feeds
         assert "alternative.me" in get_fear_greed_endpoint_url()
@@ -959,7 +972,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert geo_itv == pytest.approx(min(scaled_itvs["max_dynamic_geopolitical_interval_sec"], 27000.0 * 1.15))
 
     def test_freeze_stem_excludes_freezers_and_normal_assessment_demotes_dynamic_acute_terms(self, tmp_path):
-        from intelligence.macro.lexicon_ssot import demote_dynamic_acute_terms, get_active_acute_shock_phrases
+        from intelligence.macro.lexicon_ssot import demote_dynamic_acute_terms
 
         # 1. "freezers" must not match the "freeze" crisis stem unless an actual crisis word is in the bigram
         freezer_headlines = [
@@ -1009,9 +1022,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert demote_dynamic_acute_terms(cache_dir=str(tmp_path), now_ts=1_700_000_030.0) is False
 
     def test_geopolitical_surge_counts_only_new_headlines_and_preserves_digest_until_stale(self, tmp_path):
-        from intelligence.macro_sentiment_ssot import (
-            extract_high_severity_headlines_and_digest,
-        )
 
         # Simulate a 6h rolling pool with high_severity_count=79 where 11 of top 12 were already in last_headlines_digest
         old_titles = [f"Tariff trade negotiations round {i}" for i in range(11)]
@@ -1389,7 +1399,6 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
     harvest_log_anomalies_from_dirs / log.py, and duplicate load_dotenv log suppression in botcore.
     """
     import logging
-    import botcore
     import log as log_mod
     from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
 
@@ -1512,13 +1521,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         get_yahoo_chart_url,
     )
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        MACRO_BENCHMARK_SPECS,
-        compute_cross_asset_regime,
-        compute_equity_macro_regime,
-        format_equity_macro_regime_line,
-        format_macro_benchmarks_summary_line,
-    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import MACRO_BENCHMARK_SPECS, compute_cross_asset_regime, format_equity_macro_regime_line, format_macro_benchmarks_summary_line
     from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
 
     # 1. Declarative SSOT config includes VIX (^VIX) and cross_asset_regimes
@@ -1862,7 +1865,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     pt_closed_eq = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir))
     assert "CB_Premium=-2.0bps" in str(pt_closed_cr.get("Equity & Macro Regime"))
     assert "CB_Premium=-2.0bps" in str(pt_closed_eq.get("Equity & Macro Regime"))
-    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
 
     harvested_sensors, _ = harvest_macro_and_news_sensors(str(cdir), now_ts=1_793_865_000.0)
     assert harvested_sensors["macro_benchmarks"]["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
@@ -1883,11 +1885,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
 
     # 8. Generalized Deribit Options Surface (BTC & ETH) and Pre-Market Futures Lead (NQ=F vs QQQ, ES=F vs SPY)
     from intelligence.macro_sentiment_ssot import get_deribit_options_currencies
-    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-        compute_deribit_options_surface,
-        compute_equity_macro_regime,
-        compute_futures_premarket_lead,
-    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_deribit_options_surface, compute_futures_premarket_lead
     from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
 
     assert get_deribit_options_currencies() == ("BTC", "ETH")
@@ -2185,7 +2183,6 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     assert is_excluded_reference_news_item(
         "China's Military Helicopters: A Guide - TWZ"
     ) is True
-    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
 
     assert has_financial_or_geopolitical_context(
         "How much in Roth conversions can you do in 2027 with the new tax brackets?"
@@ -2197,8 +2194,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
 
 def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path, monkeypatch):
     """Verify semantic stem deduplication of dynamic bigrams, UTC publication timestamps on headlines, and polluted digest de-escalation."""
-    from intelligence.macro.lexicon_ssot import _bigram_stem_signature, build_dynamic_rss_url
-    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.macro.lexicon_ssot import _bigram_stem_signature
     from orchestratorOS.supervisor.prompt_sections import _age_sfx
 
     now = 1_793_920_000.0
@@ -2338,7 +2334,6 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     assert is_excluded_reference_news_item(
         "Stocks making the biggest moves after hours: Nvidia, Cloudflare, Airbnb & more"
     ) is False
-    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
     assert has_financial_or_geopolitical_context(
         "Here's what's driving Iren's stock higher after a brutal selloff"
     ) is False
@@ -2793,7 +2788,7 @@ def test_intelligencetelemetrydaemon_handles_dict_snapshots_none_bool__last___ts
 
 def test_feargreedcollector_marketbreadthcollector_newsfeedcollector_accept_now_ts_and_tolerate_none_iter180_s3(tmp_path):
     """[ITER180 #3] FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts."""
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     # 3. FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts
     fg = FearGreedCollector(cache_ttl_sec=60.0)
@@ -2815,9 +2810,6 @@ def test_feargreedcollector_marketbreadthcollector_newsfeedcollector_accept_now_
 
 def test_extract_high_severity_headlines_and_digest_supports_both_dicts_and_objects_iter182_s3():
     """[ITER182 #3] extract_high_severity_headlines_and_digest supports both dicts and objects."""
-    from intelligence.macro_sentiment_ssot import (
-        extract_high_severity_headlines_and_digest,
-    )
     # 3. extract_high_severity_headlines_and_digest supports both dicts and objects
     snap = SimpleNamespace(
         headlines=[
@@ -2832,7 +2824,6 @@ def test_extract_high_severity_headlines_and_digest_supports_both_dicts_and_obje
 
 def test_fetch_public_json_is_centralized_in_botcore_and_re_exported_iter184_s1():
     """[ITER184 #1] fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot."""
-    import botcore
     import intelligence.macro_sentiment_ssot as ssot
     # 1. fetch_public_json is centralized in botcore and re-exported in macro_sentiment_ssot
     assert ssot.fetch_public_json is botcore.fetch_public_json

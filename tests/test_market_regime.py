@@ -9,6 +9,8 @@ from market_regime import (
     MarketRegimeHorizon,
     MarketRegimeService,
 )
+import market_regime as mr
+import pytest
 
 
 class MarketRegimeEvaluatorTest(unittest.TestCase):
@@ -463,8 +465,6 @@ def test_marketregimeservice__evaluate_provider_source_clock_skew_iter27_s3():
 
 def test_market_regime_marketregimedecision_marketregimecontext_marketregimeevidence_marketregimeevaluator_marketregimeservice_iter47_s2():
     """[ITER47 #2] market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService."""
-    import pytest
-    import market_regime as mr
     # 2. market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService
     dec_bool = mr.MarketRegimeDecision(
         regime="bull", gradient=True, epsilon=0.01, strength=float("nan"), fresh=True, reason="ok", n_samples=10
@@ -506,7 +506,6 @@ def test_market_regime_marketregimedecision_marketregimecontext_marketregimeevid
 
 def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_and_iter88_s1():
     """[ITER88 #1] MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans & MarketRegimeEvidence.temporal_state handles non-numeric max_age_seconds without ValueError & MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default."""
-    import pytest
     # 1. MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans
     dec = MarketRegimeDecision(
         regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="directional_signal"
@@ -555,7 +554,6 @@ def test_marketregimecontext_from_decision_accepts_provider_objects_with_name_an
 
 def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_closes_validation_iter98_s1():
     """[ITER98 #1] MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation."""
-    import pytest
     # 1. MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation
     assert MarketRegimeHorizon.parse(" short ") == MarketRegimeHorizon.SHORT
     with pytest.raises(ValueError, match="unsupported market-regime horizon"):
@@ -581,9 +579,7 @@ def test_marketregimehorizon_parse_adverse_to_and_marketregimeservice_interval_c
 
 def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_iter107_s2():
     """[ITER107 #2] market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series."""
-    import pytest
     from types import SimpleNamespace
-    import market_regime as mr
     # 2. market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series
     dec = mr.MarketRegimeEvaluator().unknown()
     ctx = mr.MarketRegimeContext(
@@ -616,7 +612,6 @@ def test_market_regime_marketregimecontext_is_valid_for_compose__closed_series_i
 
 def test_marketregimeservice__age_limit_ignores_boolean_interval_min_and_resolve_with_evidence_validates_iter121_s2():
     """[ITER121 #2] MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds."""
-    import pytest
     # 2. MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds
     assert MarketRegimeService._age_limit({1: 180.0, "default": 300.0}, MarketRegimeHorizon.SHORT, interval_min=True) == 300.0
     svc = MarketRegimeService()
@@ -627,7 +622,6 @@ def test_marketregimeservice__age_limit_ignores_boolean_interval_min_and_resolve
 
 def test_market_regime_evaluate_closes_with_interval_min_evaluate_with_n_samples_and_iter161_s3():
     """[ITER161 #3] market_regime: evaluate_closes with interval_min='5.0', evaluate with n_samples='15.0', and is_valid_for with require_identity='false'."""
-    import market_regime as mr
     # 3. market_regime: evaluate_closes with interval_min="5.0", evaluate with n_samples="15.0", and is_valid_for with require_identity="false"
     svc = mr.MarketRegimeService(cache_max="64.0")
     assert svc.cache_max == 64
@@ -642,7 +636,6 @@ def test_market_regime_evaluate_closes_with_interval_min_evaluate_with_n_samples
 
 def test_marketregimedecision_adverse_to_supports_bid_ask_a_and_marketregimecontext_iter179_s3():
     """[ITER179 #3] MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict."""
-    import pytest
     # 3. MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict
     bear_dec = MarketRegimeDecision(regime="bear", gradient="-0.01", epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples="11")
     bull_dec = MarketRegimeDecision(regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples=11)

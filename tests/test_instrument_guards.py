@@ -28,6 +28,12 @@ from providers.strategy_executor import (
 from instrument import Instrument
 import order_guard
 import order_lifecycle as outcomes_log
+import instrument as _inst_mod
+import order_retry as _oq
+import order_retry as oq
+import order_retry_worker as worker
+import pytest
+from providers.quantity import decide_quantity
 
 SYMBOL = "ZZZFAKEUSD"
 
@@ -92,13 +98,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self._log_tmp = tempfile.mkdtemp()
         self._orig_log_dir = outcomes_log.ORDER_OUTCOMES_LOG_DIR
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._log_tmp
-        import instrument as _inst_mod
         self._orig_exec_audit_dir = _inst_mod._EXECUTION_AUDIT.directory
         _inst_mod._EXECUTION_AUDIT.directory = self._log_tmp
         # The re-placement queue: isolated — Instrument.place() enqueues on failure, and
         # these tests trigger many expected failures (cooldown/daily-limit) -> they must NOT
         # pollute the real cachedb/order_retry_queue.jsonl.
-        import order_retry as _oq
         _oq.QUEUE_FILE = os.path.join(self._tmp, "order_retry_queue.jsonl")
         _oq.LOCK_FILE = os.path.join(self._tmp, "order_retry_queue.lock")
         # Explicit pin — the tests must not depend on the kill switch in the live config
@@ -107,14 +111,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self._clear_state()
 
     def _clear_state(self):
-        import order_retry as _oq
         open(_oq.QUEUE_FILE, 'w').close()
         for f in glob.glob(os.path.join(self._log_tmp, "order_outcomes_*.log")):
             os.remove(f)
 
     def tearDown(self):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._orig_log_dir
-        import instrument as _inst_mod
         _inst_mod._EXECUTION_AUDIT.directory = self._orig_exec_audit_dir
 
     def _inst(self, provider, params=None):
@@ -132,8 +134,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_provider_balance_routing_and_disabled_execution(self):
         with self.subTest("disabled_execution_never_creates_a_later_live_retry"):
-            import order_retry as oq
-            import order_retry_worker as worker
 
             class SwitchableProvider(_FakeProvider):
                 live = False
@@ -155,8 +155,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(oq.load_all(), [])
 
     def test_live_producer_retains_sole_submit_after_lease_expiry(self):
-        import order_retry as oq
-        import order_retry_worker as worker
 
         entered_provider = threading.Event()
         release_provider = threading.Event()
@@ -399,7 +397,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("intent_persisted_with_same_client_id_before_submit"):
             self._clear_state()
-            import order_retry as oq
 
             class _InspectProvider(_FakeProvider):
                 def place_order(self, symbol, side, price, qty, **kwargs):
@@ -422,7 +419,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("truthy_payload_without_order_id_is_unknown"):
             self._clear_state()
-            import order_retry as oq
 
             class _AmbiguousProvider(_FakeProvider):
                 def place_order(self, symbol, side, price, qty, **kwargs):
@@ -442,7 +438,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("submit_response_loss_keeps_pre_submit_intent"):
             self._clear_state()
-            import order_retry as oq
 
             class _LostResponseProvider(_FakeProvider):
                 def place_order(self, symbol, side, price, qty, **kwargs):
@@ -556,7 +551,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def test_retry_enqueue_and_tracking_lifecycle(self):
         with self.subTest("failed_order_enqueued_for_retry"):
             self._clear_state()
-            import order_retry as _oq
             p = _FakeProvider()
             p.seed_trade("SELL", age_sec=5.0, price=90.0)
             inst = self._inst(p)
@@ -569,7 +563,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("retry_flag_prevents_reenqueue"):
             self._clear_state()
-            import order_retry as _oq
             p = _FakeProvider()
             p.seed_trade("SELL", age_sec=5.0, price=90.0)
             inst = self._inst(p)
@@ -579,7 +572,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("success_remains_tracked_until_terminal"):
             self._clear_state()
-            import order_retry as _oq
             p = _FakeProvider()
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0)
@@ -592,7 +584,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("success_does_not_remove_independent_same_side_intent"):
             self._clear_state()
-            import order_retry as _oq
             _oq.RETRY_DEDUP = False
             _oq.enqueue(SYMBOL, "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
             _oq.enqueue(SYMBOL, "SELL", 1.0, {}, requested_price=101.0, now=1001.0)
@@ -645,7 +636,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("protective_bypass_still_applies_terminal_venue_filter"):
             self._clear_state()
-            import order_retry as oq
 
             business_minimum_flags = []
 
@@ -689,7 +679,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("terminal_filter_refusal_after_prequeue_removes_claim"):
             self._clear_state()
-            import order_retry as oq
 
             class _LateDustProvider(_FakeProvider):
                 def place_order(self, *_args, **_kwargs):
@@ -733,7 +722,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                                 for line in self._log_lines()))
 
         with self.subTest("auto_quantity_enters_outbox_with_numeric_qty"):
-            import order_retry as oq
             open(oq.QUEUE_FILE, 'w').close()
             class _Deferred2:
                 @staticmethod
@@ -799,7 +787,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         mock_profit_guard.assert_called_once_with(
             p, inst.symbol, "BUY", 100.0, ANY, window_ref=None, regime_context=ctx, qty=1.0
         )
-        import order_retry as oq
         queued = oq.load_all()
         self.assertEqual(len(queued), 1)
         self.assertNotIn("regime_context", queued[0]["place_kwargs"])
@@ -908,8 +895,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 self.assertIs(calls[0][3], expected)
 
     def test_supplied_context_stays_ephemeral_and_retry_recomputes_it(self):
-        import order_retry as oq
-        import order_retry_worker as worker
 
         old = order_guard.MarketRegimeContext.from_decision(
             order_guard.MarketRegimeDecision(
@@ -1255,7 +1240,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(prov.placed[-1][3], 1.0)
 
             # 5. Action = 'defer' on SELL without explicit regime_context resolves context lazily
-            import order_retry as oq
             self.assertTrue(oq.is_non_failure_deferral("medium_trend_deferred"))
             outcome = {}
             with patch.object(inst._api, "market_regime_context", return_value=bull_ctx) as mock_ctx:
@@ -1268,7 +1252,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             mock_ctx.assert_called_once_with(inst.symbol, provider_name=inst.provider_name)
 
     def test_aborted_by_caller_and_invalid_price_never_enqueued_and_ttl_sec_forwarded(self):
-        import order_retry as oq
         prov = _FakeProvider()
         inst = self._inst(prov)
 
@@ -1427,7 +1410,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         order_retry outbox state transitions, _EXECUTION_AUDIT events, and provider
         place_order kwargs across all placement stages.
         """
-        import order_retry as oq
         import instrument as inst_mod
 
         def read_audit_events():
@@ -2152,7 +2134,6 @@ def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
     provider.get_orders.return_value = []
     provider.get_trades.return_value = []
     provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
-    from providers.quantity import decide_quantity
     provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
 
     captured_bypasses = []
@@ -2186,7 +2167,6 @@ def test_category_token_revocation_on_sell_g_prof_and_buy_iter5_s1(monkeypatch):
 
 def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_already_iter10_s1(monkeypatch):
     """[ITER10 #1] GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry."""
-    import pytest
     # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
     submitted_qtys = []
     provider = MagicMock()
@@ -2207,7 +2187,6 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
     provider.get_orders.return_value = []
     provider.get_trades.return_value = []
     provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
-    from providers.quantity import decide_quantity
     provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
 
     def _fake_place_order(_sym, side, price, qty, **_kw):
@@ -2268,7 +2247,6 @@ def test_gt_m_medium_trend_action_scale_idempotency_when_applied_scale_is_alread
 
 def test_instrument_place_preserves_g_qlimit2_when_revoking_g_qlimit1_from_iter21_s2(monkeypatch):
     """[ITER21 #2] Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,."""
-    import pytest
     from tests.conftest import make_test_regime_context as _build_test_context
     from providers.quantity import QuantityDecision
     # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
@@ -2420,7 +2398,6 @@ def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_pl
 
 def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
     """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
-    import pytest
     # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
     class _GuardInternalProvider(MarketDataProvider):
         name = "guard_internal"

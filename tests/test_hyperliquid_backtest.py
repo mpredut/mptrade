@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+import json
+from offline.backtests.execution import ExecutionModel
+from unittest.mock import MagicMock, patch
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -296,7 +299,6 @@ def test_hyperliquid_intrabar_stop_loss():
 
 
 def test_hyperliquid_ambiguous_bars_and_execution_model():
-    from offline.backtests.execution import ExecutionModel
 
     # Bar 0: places entry at 99.8
     # Bar 1: fills entry at 99.8, places TP at ~101.8
@@ -393,8 +395,6 @@ def test_validate_replay_metrics_across_all_venues():
 
 
 def test_hyperliquid_market_data_fetchers():
-    import json
-    from unittest.mock import MagicMock
 
     _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_test", reload=True)
     fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
@@ -434,7 +434,6 @@ def test_hyperliquid_market_data_fetchers():
 
 
 def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
-    import json
     _wf_mod = load_local_module(
         os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
@@ -465,7 +464,6 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
 
 
 def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
-    import json
     _wf_mod = load_local_module(
         os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
@@ -493,7 +491,6 @@ def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
 
 
 def test_hyperliquid_replay_partial_fills():
-    from offline.backtests.execution import ExecutionModel
     # Bars:
     # Bar 0: places limit open at 99.8 (100 * (1 - 0.002))
     # Bar 1: low touches 99.5 -> fills first 50% chunk (partial_fill_ratio=0.5)
@@ -764,7 +761,6 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
 
 
 def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
-    import json
     from offline.runners import binance_walk_forward_baseline as bwf
     from offline.runners import hyperliquid_walk_forward_baseline as hwf
 
@@ -807,8 +803,6 @@ def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
 
 
 def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
-    import json
-    from unittest.mock import MagicMock
     from providers.market_api import clean_order_id
 
     _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_case_test", reload=True)
@@ -865,7 +859,6 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
 import json as _json
 import time as _time
 import unittest as _unittest
-from unittest.mock import patch
 
 _DN_DIR = os.path.join(_ROOT, "archive", "hyperliquid", "delta_neutral")
 if _DN_DIR not in sys.path:

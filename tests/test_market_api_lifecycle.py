@@ -10,6 +10,14 @@ from providers.strategy_executor import (
     OrderStatus,
     ProviderError,
 )
+import ast
+import providers.market_api as ma
+import pytest
+from pathlib import Path
+from providers import market_api as mapi
+from providers.hyperliquid_provider import HyperliquidProvider
+from providers.kraken_provider import KrakenProvider
+from providers.t212_provider import T212Provider
 
 
 class FakeProvider(MarketDataProvider):
@@ -304,8 +312,6 @@ def test_marketapi_provider_by_name_handles_non_string_safely_iter86_s4():
 
 def test_marketapi_rejects_bool_none_blank_order_id_and_client_order_id_iter112_s3():
     """[ITER112 #3] MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion."""
-    import pytest
-    import providers.market_api as ma
     # 3. MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion
     with pytest.raises(ProviderError):
         ma.api.order_by_client_id("BTCUSDC", True)
@@ -318,8 +324,6 @@ def test_marketapi_rejects_bool_none_blank_order_id_and_client_order_id_iter112_
 
 def test_marketapi_latest_fill_price_and_market_regime_context_raise_valueerror_on_none_iter112_s4():
     """[ITER112 #4] MarketApi.latest_fill_price and market_regime_context raise ValueError on None/non-numeric."""
-    import pytest
-    import providers.market_api as ma
     # 4. MarketApi.latest_fill_price and market_regime_context raise ValueError on None/non-numeric
     with pytest.raises(ValueError):
         ma.api.latest_fill_price("BTCUSDC", "BUY", None)
@@ -330,8 +334,6 @@ def test_marketapi_latest_fill_price_and_market_regime_context_raise_valueerror_
 
 def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
     """[ITER170 #1] market_api._parse_bool_flag and require_int_order_id."""
-    import pytest
-    from providers import market_api as mapi
     from providers import strategy_executor as sexec
     # 1. market_api._parse_bool_flag and require_int_order_id
     assert mapi._parse_bool_flag("y", False) is True
@@ -343,8 +345,6 @@ def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
 
 def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_s2():
     """[ITER170 #2] MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force."""
-    import pytest
-    from providers import market_api as mapi
     # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
     captured = {}
 
@@ -374,11 +374,7 @@ def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_
 
 def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
     """Verify venue-agnostic MarketDataProvider capabilities, SSOT cold-start client detection, and unified MarketApi routing."""
-    import pytest
     import botcore
-    from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider
-    from providers.t212_provider import T212Provider
 
     assert not hasattr(MarketDataProvider, "_REAL_CLIENT_CLASS_NAMES")
     assert not hasattr(MarketApi, "_provider_routed_or_default")
@@ -416,9 +412,6 @@ def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
 
 def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     """Enforce strict downward DAG across providers/ and verify unified submit_order, ClosedPriceSeries SSOT, and declarative intent tags."""
-    import ast
-    from pathlib import Path
-    import pytest
     import market_regime
     import order_guard
     from providers.base import ClosedPriceSeries as BaseClosedPriceSeries
@@ -694,9 +687,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     assert _find_sccs(pkg_edges) == [], f"Top-level package SCC cycle detected: {_find_sccs(pkg_edges)}"
     assert _find_sccs(mod_edges) == [], f"Module-level SCC cycle detected: {_find_sccs(mod_edges)}"
 
-    from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider
-    from providers.t212_provider import T212Provider
 
     assert T212Provider().supports_order_validity() is True
     assert KrakenProvider().supports_order_validity() is False
@@ -779,8 +769,6 @@ def test_replay_execution_metrics_and_config_ssot_identity():
 
 def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     """Lock Open-Closed Principle: core providers, MarketApi facade, gateway, cache domain hierarchy, instrument registry, external collectors, and sentiment collectors/evaluators contain zero venue name comparisons."""
-    import ast
-    from pathlib import Path
     from cachepaths import is_primary_stream_venue, uses_cycle_state_files
 
     root = Path(__file__).resolve().parents[1]

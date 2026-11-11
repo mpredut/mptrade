@@ -27,6 +27,16 @@ from providers.kraken_provider import KrakenProvider
 from providers.market_api import BinanceProvider
 from providers.strategy_executor import ProviderError
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+import external_order_guard
+import llm_order_guard
+import priceAnalysis as pa
+import qlimit_order_guard
+from cachepaths import canonical_base_asset
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from pathlib import Path
 
 
 _BASE_MARGINS = dict(order_guard._load_margins())
@@ -192,7 +202,6 @@ class TestIntelligenceQuantityScaling:
 class TestCacheSafetyAndHotReload:
     def test_order_guard_conf_mtime_hot_reload(self, monkeypatch, tmp_path):
         """Verify _load_margins reloads if file mtime updates."""
-        from pathlib import Path
         real_conf = Path(order_guard.__file__).with_name("order_guard.conf").read_text(encoding="utf-8")
         conf_file = tmp_path / "order_guard.conf"
         conf_file.write_text(real_conf + "\nparabolic_surge_pct = 15.0\n", encoding="utf-8")
@@ -980,7 +989,6 @@ class TestSisterArchitecturalDefects:
     def test_sister6_parabolic_surge_consolidates_over_window_without_requiring_pullback(self):
         """Sister 6: Parabolic surge must disarm after consolidating past window_seconds,
         even if price did not pull back by the required percentage."""
-        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         guard = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=2.0, window_seconds=7200.0)
 
         # 1. Surge occurs from 100 to 110 (+10% > 5%) at ts=1000
@@ -1003,7 +1011,6 @@ class TestSisterArchitecturalDefects:
     def test_sister7_price_analysis_resolves_cross_venue_symbols_via_normalized_base(self, monkeypatch):
         """Sister 7: priceAnalysis.get_weight_for_cash_permission_at_quant_time must resolve
         cross-venue quote symbols (e.g. ARBUSD) against base-asset cache records (ARBUSDC)."""
-        import priceAnalysis as pa
         import cacheManager as cm
 
         # Mock CacheLongTrendManager cache with ARBUSDC having an active trend
@@ -1126,7 +1133,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        import llm_order_guard
         monkeypatch.setattr(
             llm_order_guard,
             "check_geopolitical_order_guards",
@@ -1209,9 +1215,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch6_external_funding_min_short_rate_and_defer_notify(self, monkeypatch):
         """external_order_guard must pass funding_min_short_rate to FundingCrowdingGuard and notify on DEFER_WAIT."""
-        import external_order_guard
         import notify_engine.alertnotifiers as alertnotifiers
-        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
         telem = DerivativesTelemetry(
             symbol="BTCUSDC",
@@ -1259,7 +1263,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch6_geopolitical_string_shadow_notify_no_crash(self, monkeypatch):
         """llm_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
-        import llm_order_guard
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 
         class DummyAnalyzer:
@@ -1291,7 +1294,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_collectors_cache_fallback_ttl_and_usdcusdt(self, tmp_path):
         """Verify OrderbookDepthCollector non-tuple cache fallback, WhalePositioningCollector funding disk TTL,
         and USDCUSDT preservation."""
-        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
         ob_collector = OrderbookDepthCollector(cache_ttl_sec=0.0, cache_dir=str(tmp_path))
         snap = OrderbookSnapshot(
@@ -1377,7 +1379,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch7_high_stake_guard_symmetric_buy_sell_prompt_and_telemetry(self):
         """HighStakeGuard prompt and telemetry must be symmetric for BUY and SELL."""
-        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 
         prompts = []
         class FakeGeminiClient:
@@ -1410,7 +1411,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
     def test_batch7_parabolic_and_weibull_symmetric_sell_and_direction_aware(self):
         """ParabolicSurgeGuard and WeibullExhaustionGuard must operate symmetrically on BUY and SELL."""
-        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from qlimit_order_guard import check_qlimit2_order_guards
 
@@ -1477,7 +1477,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch7_whale_divergence_symmetric_sell_checks(self):
         """WhaleDivergenceGuard must symmetrically protect SELL orders against capitulation, squeeze, and taker buying."""
         from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 
         guard = WhaleDivergenceGuard(
             min_taker_ratio=0.65,
@@ -1641,7 +1640,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch8_orderbook_wall_downscale_propagation_and_gateway_ssot(self, monkeypatch):
         """Verify OrderbookWallGuard DOWNSCALE_QTY propagates in check_external_order_guards,
         and AutonomousIntentGateway uses order_guard._load_margins and extract_order_id."""
-        import external_order_guard
         from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
         monkeypatch.setattr(
@@ -1748,14 +1746,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
         and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
         from cachepaths import resolve_binance_lookup_symbol
-        from intelligence.external.collectors.derivatives_telemetry_collector import (
-            DerivativesTelemetry,
-            DerivativesTelemetryCollector,
-        )
-        from intelligence.external.collectors.whale_positioning_collector import (
-            WhalePositioningCollector,
-            WhalePositioningSnapshot,
-        )
+        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
         from llm_order_guard import check_llm_order_guards
 
         assert resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
@@ -1834,7 +1825,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
             "_intelligence_decisions_by_key",
             {cache_key: {"gemini_notional": 2000.0, "gemini_decision": (False, "wrong_sym_cached_veto", 0.0)}},
         )
-        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         monkeypatch.setattr(
             HighStakeGuard,
@@ -1931,7 +1921,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_gaussian_horizon_and_collector_symbol_variants_normalization(self, tmp_path, monkeypatch):
         """Bug 2 & Bug 3 regression: resolve_cached_gaussian_horizon normalizes cross-venue/case symbols,
         and _symbol_variants prioritizes USDC before USDT and supports bare base assets."""
-        import qlimit_order_guard
         from intelligence.internal.state import survival
         from cachepaths import cache_symbol_variants
 
@@ -2003,9 +1992,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         4. collect_pretrade_telemetry resolving 24h price evolution, short slopes, and fills across symbol variants.
         5. profit_guard evaluating check_intelligence_guards when notional_eur > 0 is passed with qty=None.
         """
-        import priceAnalysis as pa
         import utils as u
-        from cachepaths import canonical_base_asset
         from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
         assert canonical_base_asset("HYPE/USDC") == "HYPE"
@@ -2149,8 +2136,6 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
     without re-reading telemetry or re-querying LLM unless notional increases by > 100%, and
     check_intelligence_guards skips redundant G_QLIMIT2 re-evaluations when price/duration are unchanged."""
     from intelligence.sentiment.guards import high_stake_guard as hsg_mod
-    import llm_order_guard
-    import qlimit_order_guard
 
     hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
     monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
@@ -2308,7 +2293,6 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
 def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_decision_when_trend_duration_seconds_iter12_s2(monkeypatch):
     """[ITER12 #2] check_intelligence_guards invalidates cached Weibull 'trend_exhausted' decision when trend_duration_seconds changes & canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR & check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale."""
     from types import SimpleNamespace
-    import llm_order_guard
     # 2. check_intelligence_guards invalidates cached Weibull "trend_exhausted" decision when trend_duration_seconds changes
     base_m = dict(order_guard._load_margins())
     base_m.update(
@@ -2361,7 +2345,6 @@ def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_de
 
 
     # 3. canonical_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR
-    from cachepaths import canonical_base_asset
     assert canonical_base_asset("USDCUSDT") == "USDCUSDT"
     assert canonical_base_asset("USDC/USDT") == "USDCUSDT"
     assert canonical_base_asset("BTCUSDC") == "BTC"
@@ -2389,7 +2372,6 @@ def test_check_intelligence_guards_invalidates_cached_weibull_trend_exhausted_de
 def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
     """Verify order_guard never imports priceAnalysis, guards never import orchestratorOS, and state_io JSON SSOT holds."""
     import ast
-    from pathlib import Path
     import botcore
     from providers.intent_execution import resolve_intent_topic_tag
 

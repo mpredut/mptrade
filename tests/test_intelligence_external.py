@@ -10,7 +10,7 @@ from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
-from cachepaths import normalize_cache_base_asset
+from cachepaths import cache_symbol_variants, normalize_cache_base_asset
 from intelligence.composite import CompositeMarketIntelligence
 from intelligence.daemon import IntelligenceTelemetryDaemon
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
@@ -20,6 +20,19 @@ from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceG
 from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
 from intelligence.macro_analyzer import MacroAnalyzer
 from types import SimpleNamespace
+import external_order_guard
+import json
+import order_guard
+import os
+import pytest
+import tempfile
+from intelligence.cli import inspect_symbol_intelligence
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+from unittest.mock import MagicMock, patch
 
 
 class TestExternalCollectors(unittest.TestCase):
@@ -206,7 +219,6 @@ class TestExternalGuards(unittest.TestCase):
         self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
 
     def test_disk_serialization_round_trip(self):
-        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Whale collector disk round-trip
@@ -278,7 +290,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
     """Verify Pillar 2 guards wire cleanly into order_guard.check_intelligence_guards."""
 
     def test_whale_guard_shadow_allows_while_enforce_blocks(self):
-        import order_guard
 
         fakeout_snap = WhalePositioningSnapshot(
             symbol="BTCUSDT",
@@ -293,7 +304,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             ts=time.time(),
         )
 
-        import external_order_guard
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         collector.record_snapshot(fakeout_snap)
 
@@ -340,8 +350,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             order_guard._MARGINS = orig_margins
 
     def test_orderbook_wall_guard_shadow_and_enforce(self):
-        import external_order_guard
-        import order_guard
 
         wall_snap = OrderbookSnapshot(
             symbol="BTCUSDT",
@@ -395,8 +403,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             order_guard._MARGINS = orig_margins
 
     def test_funding_crowding_guard_downscales_in_enforce(self):
-        import external_order_guard
-        import order_guard
 
         crowded_snap = DerivativesTelemetry(
             symbol="BTCUSDT",
@@ -447,8 +453,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             order_guard._MARGINS = orig_margins
 
     def test_whale_guard_severe_and_moderate_taker_selling(self):
-        import external_order_guard
-        import order_guard
 
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         orig_collector = external_order_guard._whale_collector
@@ -530,7 +534,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_rtrade_whale_flow_checks(self):
         from rtrade import _whale_flow_blocks_side, _effective_adjustment_fraction
-        import external_order_guard
 
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         orig_collector = external_order_guard._whale_collector
@@ -717,9 +720,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertTrue(dec_buy.allowed)
 
     def test_volatility_cache_symbol_variants_and_composite_high_stake_default(self):
-        import json
-        import os
-        import tempfile
         from intelligence.internal.state.volatility import resolve_cached_volatility_1h
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
 
@@ -756,7 +756,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertEqual(g2.fallback_action, "veto")
 
     def test_monitortrades_stale_sl_bounce_buy_price_does_not_bypass_gt_s_timer(self):
-        from unittest.mock import patch, MagicMock
         import monitortrades as mt
 
         sym = "TESTSLUSDC"
@@ -823,10 +822,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertEqual(safe_nonneg_int(-1, default=3), 3)
 
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
-        import json
-        import os
-        import tempfile
-        from unittest.mock import MagicMock, patch
         from intelligence.sentiment.evaluators.microstructure_evaluator import (
             compute_liquidation_clusters,
             enrich_microstructure_cvd,
@@ -964,8 +959,6 @@ if __name__ == "__main__":
 
 def test_whalepositioningcollector__resolve_price_1h_change_pct_supports_seconds_timestamps_iter6_s3(tmp_path):
     """[ITER6 #3] WhalePositioningCollector._resolve_price_1h_change_pct supports seconds timestamps."""
-    import json
-    import pytest
     # 3. WhalePositioningCollector._resolve_price_1h_change_pct supports seconds timestamps
     c24_dir = tmp_path / "c24"
     c24_dir.mkdir()
@@ -987,7 +980,6 @@ def test_whalepositioningcollector__resolve_price_1h_change_pct_supports_seconds
 
 def test_orderbookdepthcollector_ttl_on_direct_orderbooksnapshot_underscore_symbol_variants_iter9_s2(tmp_path):
     """[ITER9 #2] OrderbookDepthCollector TTL on direct OrderbookSnapshot & underscore symbol variants."""
-    from cachepaths import cache_symbol_variants
     # 2. OrderbookDepthCollector TTL on direct OrderbookSnapshot & underscore symbol variants
     assert normalize_cache_base_asset("TAO_USD") == "TAO"
     assert normalize_cache_base_asset("BTCFDUSD") == "BTC"
@@ -1002,8 +994,6 @@ def test_orderbookdepthcollector_ttl_on_direct_orderbooksnapshot_underscore_symb
 
 def test_whalepositioningcollector_recovers_previous_on_corrupted_primary_json_and_iter11_s3(tmp_path):
     """[ITER11 #3] WhalePositioningCollector recovers .previous on corrupted primary JSON and sanitizes symbol in _resolve_cached_funding_rate."""
-    import pytest
-    import json
     # 3. WhalePositioningCollector recovers .previous on corrupted primary JSON and sanitizes symbol in _resolve_cached_funding_rate
     wc = WhalePositioningCollector(cache_dir=str(tmp_path))
     corrupt_p24 = tmp_path / "cache_24_price_BTCUSDC.json"
@@ -1021,9 +1011,6 @@ def test_whalepositioningcollector_recovers_previous_on_corrupted_primary_json_a
 
 def test_external_order_guard_preserves_active_reason_of_the_stricter_upstream_downscale_iter11_s4(monkeypatch):
     """[ITER11 #4] external_order_guard preserves active_reason of the stricter upstream downscale."""
-    import pytest
-    import external_order_guard
-    import order_guard
     # 4. external_order_guard preserves active_reason of the stricter upstream downscale
     monkeypatch.setattr(
         external_order_guard,
@@ -1148,7 +1135,6 @@ def test_external_collectors_usdcusdt_preserved_in__extract_base_asset_clock_ske
 
 def test_bybitliquidationcollector_get_summary_and_liquidationcascadeguard_check_honor_now_iter17_s2():
     """[ITER17 #2] BybitLiquidationCollector.get_summary and LiquidationCascadeGuard.check honor `now`."""
-    import pytest
     # 2. BybitLiquidationCollector.get_summary and LiquidationCascadeGuard.check honor `now`
     liq_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
     liq_col.record_event("BTCUSDT", "LONG", 600_000.0, ts=5000.0)
@@ -1160,11 +1146,7 @@ def test_bybitliquidationcollector_get_summary_and_liquidationcascadeguard_check
 
 def test_macroanalyzer_string_shadow_notify_previous_fallback_recovery_clock_skew_iter18_s1(tmp_path, monkeypatch):
     """[ITER18 #1] MacroAnalyzer string shadow_notify + .previous / fallback recovery + clock-skew run_cycle & GlobalTelemetryCollector and IntelligenceTelemetryDaemon backward clock-skew resilience & External collectors + check_external_order_guards `now` propagation & NaN filtering."""
-    import json
-    import pytest
-    import external_order_guard
     # 1. MacroAnalyzer string shadow_notify + .previous / fallback recovery + clock-skew run_cycle
-    import order_guard
     orig_margins = order_guard._load_margins()
     custom_margins = dict(orig_margins)
     custom_margins["shadow_notify"] = "false"
@@ -1368,9 +1350,7 @@ def test_liquidationcapitulationtrigger_now_propagation_iter19_s4():
 
 def test_intelligence_cli_previous_recovery_iter19_s5(tmp_path):
     """[ITER19 #5] intelligence.cli .previous recovery."""
-    import json
-    import os
-    from intelligence.cli import get_daemon_status, inspect_symbol_intelligence
+    from intelligence.cli import get_daemon_status
     WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0).record_snapshot(
         WhalePositioningSnapshot(
             symbol='BTCUSDC', top_traders_long_ratio=2.0, top_traders_long_pct=0.68,
@@ -1397,7 +1377,6 @@ def test_intelligence_cli_previous_recovery_iter19_s5(tmp_path):
 
 def test_snapshot_from_dict_tolerates_none_bool_nan_fields_iter23_s3():
     """[ITER23 #3] Snapshot.from_dict tolerates None / bool / NaN fields."""
-    import pytest
     # 3. Snapshot.from_dict tolerates None / bool / NaN fields
     ob_snap = OrderbookSnapshot.from_dict({"symbol": "BTCUSDC", "imbalance_ratio": None, "largest_ask_wall_usd": "NaN"})
     assert ob_snap.imbalance_ratio == pytest.approx(0.5)
@@ -1413,9 +1392,7 @@ def test_snapshot_from_dict_tolerates_none_bool_nan_fields_iter23_s3():
 
 def test_survival_get_trend_survival_metrics_estimate_t_safety_compositemarketintelligence_evaluate_guards_honors_bypass_guards_iter24_s1(tmp_path, monkeypatch):
     """[ITER24 #1] survival.get_trend_survival_metrics & estimate_T safety & CompositeMarketIntelligence.evaluate_guards honors bypass_guards & GeopoliticalShockGuard tolerates None fields & External guards tolerate None/NaN attributes on synthetic snapshots & MarketRegimeContext.is_valid_for matches TAO/USD and TAOUSD on same venue."""
-    import json
     import intelligence.internal.state.survival as survival
-    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from market_regime import MarketRegimeContext, MarketRegimeDecision
     # 1. survival.get_trend_survival_metrics & estimate_T safety
     t_cache = tmp_path / "cache_T_trend.json"
@@ -1543,8 +1520,6 @@ def test_survival_get_trend_survival_metrics_estimate_t_safety_compositemarketin
 
 def test_whalepositioningcollector__resolve_cached_funding_rate_classify_regime_iter29_s3(tmp_path):
     """[ITER29 #3] WhalePositioningCollector._resolve_cached_funding_rate & classify_regime."""
-    import json
-    import pytest
     # 3. WhalePositioningCollector._resolve_cached_funding_rate & classify_regime
     w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=120.0, cache_dir=str(tmp_path))
     f_path = tmp_path / "derivatives_telemetry_BTCUSDT.json"
@@ -1593,15 +1568,12 @@ def test_collectors_fetch_with_nan_bool_now_iter29_s4(tmp_path):
 
 def test_bybitliquidationcollector_hardening_marketbreadthcollector_parse_tickers_with_nan_min_volume_usd_lowercase_iter30_s1(tmp_path):
     """[ITER30 #1] BybitLiquidationCollector hardening & MarketBreadthCollector.parse_tickers with NaN min_volume_usd & lowercase symbols & SentimentAdvisor & GeopoliticalThreatAnalyzer non-dict LLM response & enum sanitization & NewsFeedCollector.get_pool_snapshot filters future-skewed / NaN timestamps & Triggers & CompositeMarketIntelligence hardening."""
-    import json
     import math
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
-    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
-    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
     # 1. BybitLiquidationCollector hardening
     liq_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
     now_s = time.time()
@@ -1734,7 +1706,6 @@ def test_external_guards_with_none_side_iter31_s2():
 
 def test_external_order_guard_fails_fast_on_empty_margins_allows_partial_iter37_s1(monkeypatch):
     """[ITER37 #1] external_order_guard fails fast on empty margins={}, allows partial margins with guard modes,."""
-    import pytest
     import external_order_guard as eog
     # 1. external_order_guard fails fast on empty margins={}, allows partial margins with guard modes,
     #    allows now=0.0, and sanitizes NaN/bool suggested_scale
@@ -1832,8 +1803,7 @@ def test_intelligence_collectors_macroanalyzer_sanitize_bool_nan_inf_ttl_iter53_
 
 def test_intelligence_cli_daemon_globaltelemetrycollector_iter54_s3(tmp_path):
     """[ITER54 #3] Intelligence CLI & Daemon / GlobalTelemetryCollector."""
-    import json
-    from intelligence.cli import inspect_symbol_intelligence, print_intelligence_report
+    from intelligence.cli import print_intelligence_report
     # 3. Intelligence CLI & Daemon / GlobalTelemetryCollector
     ob_file = tmp_path / "orderbook_depth_BTCUSDC.json"
     ob_file.write_text(json.dumps({"mid_price": None, "imbalance_ratio": float("nan"), "ts": 0.0}).replace("NaN", "null"))
@@ -1873,8 +1843,6 @@ def test_intelligence_cli_daemon_globaltelemetrycollector_iter54_s3(tmp_path):
 
 def test_liquidation_signal_safe_pos_float__ingest_handle_overflowerror_and_start_has_iter63_s1():
     """[ITER63 #1] liquidation_signal safe_pos_float & _ingest handle OverflowError and start() has _start_lock."""
-    import pytest
-    import json
     from botcore import safe_pos_float
     # 1. liquidation_signal safe_pos_float & _ingest handle OverflowError and start() has _start_lock
     assert safe_pos_float(10**400, 42.0) == 42.0
@@ -1903,11 +1871,8 @@ def test_macroanalyzer_globaltelemetrycollector_and_intelligencetelemetrydaemon_
 
 def test_parabolic_funding_orderbook_cascade_whale_highstake_extremegreed_panicwashout_iter101_s2():
     """[ITER101 #2] Parabolic, Funding, Orderbook, Cascade, Whale, HighStake, ExtremeGreed, PanicWashout, Geopolitical side safety."""
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     # 2. Parabolic, Funding, Orderbook, Cascade, Whale, HighStake, ExtremeGreed, PanicWashout, Geopolitical side safety
     pg = ParabolicSurgeGuard()
     assert pg.check("BTCUSDC", True, 100.0).reason == "unsupported_side_skipped"
@@ -1946,7 +1911,7 @@ def test_parabolic_funding_orderbook_cascade_whale_highstake_extremegreed_panicw
 
 def test_orderbook_depth_helpers_collector_iter103_s1():
     """[ITER103 #1] orderbook_depth helpers & collector."""
-    from cachepaths import cache_symbol_variants, resolve_binance_lookup_symbol
+    from cachepaths import resolve_binance_lookup_symbol
     # 1. orderbook_depth helpers & collector
     assert normalize_cache_base_asset(True) == ""
     assert resolve_binance_lookup_symbol(True) == ""
@@ -1977,7 +1942,6 @@ def test_whale_positioning_collector_from_dict_iter103_s3():
 
 def test_bybit_liquidations_record_event_get_summary_iter103_s4():
     """[ITER103 #4] bybit_liquidations record_event & get_summary."""
-    import pytest
     # 4. bybit_liquidations record_event & get_summary
     blc = BybitLiquidationCollector()
     blc.record_event(True, "LONG", 50000.0)
@@ -2001,7 +1965,6 @@ def test_bybitliquidationcollector_stop_self_join_and_invalid_timeout_safety_ite
 
 def test_orderbookdepthcollector_fetch_unsorted_bids_asks_and_crossed_book_iter98_s2(tmp_path, monkeypatch):
     """[ITER98 #2] OrderbookDepthCollector.fetch: unsorted bids/asks and crossed book rejection."""
-    import json
     # 2. OrderbookDepthCollector.fetch: unsorted bids/asks and crossed book rejection
     ob = OrderbookDepthCollector(cache_dir=str(tmp_path), depth_band_pct=2.0, cache_ttl_sec=0.0)
 
@@ -2059,7 +2022,6 @@ def test_globaltelemetrycollector__run_step_bounded_sanitizes_invalid_timeout_se
 
 def test_intelligence_cli_treats_permissionerror_from_os_kill_pid_iter121_s3(monkeypatch, tmp_path):
     """[ITER121 #3] intelligence.cli treats PermissionError from os.kill(pid, 0) as alive and rejects boolean symbol."""
-    import json
     from intelligence import cli as intel_cli
     # 3. intelligence.cli treats PermissionError from os.kill(pid, 0) as alive and rejects boolean symbol
     hb_file = tmp_path / "globaltelemetry_collector.heartbeat"
@@ -2079,8 +2041,6 @@ def test_bybitliquidationcollector_splits_comma_separated_string_symbols_iter123
 
 def test_parabolicsurgeguard_whaledivergenceguard_orderbookwallguard_fundingcrowdingguard_highstakeguard_accept_bid_ask_iter174_s3():
     """[ITER174 #3] ParabolicSurgeGuard, WhaleDivergenceGuard, OrderbookWallGuard, FundingCrowdingGuard, HighStakeGuard accept BID/ASK/LONG/SHORT."""
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
     # 3. ParabolicSurgeGuard, WhaleDivergenceGuard, OrderbookWallGuard, FundingCrowdingGuard, HighStakeGuard accept BID/ASK/LONG/SHORT
     pg = ParabolicSurgeGuard(surge_threshold_pct=5.0)
     assert pg.check("BTCUSDC", "BID", current_price=100.0, price_history=[(1000.0, 90.0), (1100.0, 100.0)], now=1100.0).allowed is False
@@ -2134,8 +2094,6 @@ def test_liquidationcascadeguard_accepts_bid_ask_long_short_and_dict_iter176_s2(
 
 def test_sentimentcontrariantrigger_marketbreadthtrigger_liquidationcapitulationtrigger_accept_dict_snapshots_iter176_s3():
     """[ITER176 #3] SentimentContrarianTrigger, MarketBreadthTrigger, LiquidationCapitulationTrigger accept dict snapshots."""
-    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
-    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
     # 3. SentimentContrarianTrigger, MarketBreadthTrigger, LiquidationCapitulationTrigger accept dict snapshots
     sig_s, ev_s = SentimentContrarianTrigger().evaluate("BTCUSDC", 100.0, {"value": 15, "classification": "Extreme Fear"})
     assert sig_s == "CONTRARIAN_BUY" and ev_s is not None
@@ -2156,7 +2114,6 @@ def test_sentimentcontrariantrigger_marketbreadthtrigger_liquidationcapitulation
 
 def test_bybitliquidationcollector_record_event_accepts_bid_and_ask_side_aliases_iter177_s5():
     """[ITER177 #5] BybitLiquidationCollector.record_event accepts BID and ASK side aliases."""
-    import pytest
     # 5. BybitLiquidationCollector.record_event accepts BID and ASK side aliases
     col = BybitLiquidationCollector(symbols=["BTCUSDT"])
     col.record_event("BTCUSDT", "BID", 150_000.0, ts=1000.0)
@@ -2167,7 +2124,6 @@ def test_bybitliquidationcollector_record_event_accepts_bid_and_ask_side_aliases
 
 def test_orderbookdepthcollector_record_snapshot_accepts_dict_and_fetch_tolerates_non_iter178_s1():
     """[ITER178 #1] OrderbookDepthCollector.record_snapshot accepts dict and fetch() tolerates non-finite/None cache ts."""
-    import pytest
     # 1. OrderbookDepthCollector.record_snapshot accepts dict and fetch() tolerates non-finite/None cache ts
     ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
     ob_col.record_snapshot({"symbol": "BTCUSDC", "mid_price": 95000.0, "imbalance_ratio": 0.65, "ts": 1000.0})
@@ -2178,7 +2134,6 @@ def test_orderbookdepthcollector_record_snapshot_accepts_dict_and_fetch_tolerate
 
 def test_derivativestelemetrycollector_record_snapshot_accepts_dict_and_fetch_tolerates_none_iter178_s2():
     """[ITER178 #2] DerivativesTelemetryCollector.record_snapshot accepts dict and fetch() tolerates None cache ts."""
-    import pytest
     # 2. DerivativesTelemetryCollector.record_snapshot accepts dict and fetch() tolerates None cache ts
     dt_col = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
     dt_col.record_snapshot({"symbol": "BTCUSDC", "funding_rate": 0.0004, "open_interest_usd": 5_000_000.0, "ts": 1000.0})
@@ -2199,7 +2154,6 @@ def test_whalepositioningcollector_record_snapshot_accepts_dict_and_fetch_tolera
 
 def test__diskbackedsymbolcollector__fetch_json_dict_and__fetch_latest_json_row_validate_payload_types_iter183_s4(monkeypatch):
     """[ITER183 #4] _DiskBackedSymbolCollector._fetch_json_dict and _fetch_latest_json_row validate payload types."""
-    import pytest
     from intelligence.external.collectors.orderbook_depth_collector import _DiskBackedSymbolCollector
     # 4. _DiskBackedSymbolCollector._fetch_json_dict and _fetch_latest_json_row validate payload types
     import io

@@ -20,6 +20,7 @@ from providers.strategy_executor import (
     ProviderError,
     StrategyExecutor,
 )
+import pytest
 
 
 class _Executor:
@@ -505,7 +506,6 @@ if __name__ == "__main__":
 def test_executionaudit_record_strips_nan_inf_fields_strict_json_iter43_s3(tmp_path):
     """[ITER43 #3] ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock."""
     from types import SimpleNamespace
-    import pytest
     # 3. ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock
     audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: float("nan"))
     ok = audit.record(
@@ -567,7 +567,6 @@ def test_providers_execution_audit_intent_client_order_id_rejects_none_bool_empt
 
 def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id__clean_order_id_arg_iter151_s3():
     """[ITER151 #3] execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg."""
-    import pytest
     from providers.execution_audit import _parse_bool_flag as ea_parse_bool
     from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
     # 3. execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg

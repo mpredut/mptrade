@@ -12,7 +12,7 @@ import pytest
 
 from notify_engine import alertnotifiers
 import botcore
-from botcore import load_env_stack, parse_dotenv
+from botcore import load_env_stack, normalize_scalar_order_id, parse_dotenv
 from cachepaths import (
     cache_path,
     get_cachedb_dir,
@@ -28,6 +28,10 @@ from credentials import (
 import utils
 from providers.base import mount_connect_retry
 from strategies.state_store import JsonStateStore
+import botcore as bc
+import requests
+import sys
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,10 +200,8 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertIsNone(botcore.exact_pos_int(0, None))
         self.assertEqual(botcore.exact_nonneg_int(0, None), 0)
         from cachepaths import normalize_venue_name
-        from types import SimpleNamespace
         self.assertEqual(normalize_venue_name(SimpleNamespace(name="Kraken_Spot")), "kraken")
         self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
-        from botcore import normalize_scalar_order_id
         from order_retry import exact_int
         from state_io import exact_nonneg_int
         self.assertEqual(normalize_scalar_order_id(large_id), large_id)
@@ -687,7 +689,6 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
     assert should_wait_short_trend(DummyShortTM(False), "SELL", "BTCUSDC") is False
 
     # 4. load_local_module supports custom module_key and register=False, and ensure_local_module_priority evicts foreign modules
-    import sys
     from botcore import ensure_local_module_priority
     mod_dir = tmp_path / "venue_mod"
     mod_dir.mkdir()
@@ -812,7 +813,6 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
 
 
 def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
-    import sys
     import threading
 
     mod_path = tmp_path / "slow_venue_client.py"
@@ -847,7 +847,6 @@ def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
 
 
 def test_canonical_package1_unified_primitives():
-    import sys
     import types
     from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 
@@ -902,7 +901,7 @@ def test_canonical_package1_unified_primitives():
 
     # 5. Wave 2 primitives: require_*, clean_json_value, normalize_trend_direction, sanitizers, lru, order_id, cache root
     from collections import OrderedDict
-    from botcore import clean_order_id_str, normalize_scalar_order_id
+    from botcore import clean_order_id_str
     from cachepaths import cachedb_root_for_file
     from providers.order_ohlc_utils import parse_ohlc_interval_minutes
 
@@ -958,7 +957,6 @@ def test_canonical_package1_unified_primitives():
 
 class HttpResilienceTest(unittest.TestCase):
     def _retry(self, **kw):
-        import requests
 
         session = requests.Session()
         self.assertTrue(mount_connect_retry(session, **kw))
@@ -971,7 +969,6 @@ class HttpResilienceTest(unittest.TestCase):
         self.assertEqual(retry.status, 0)
 
     def test_both_schemes_share_the_mounted_adapter(self):
-        import requests
 
         session = requests.Session()
         mount_connect_retry(session)
@@ -1069,7 +1066,6 @@ def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monke
 
 def test_http_resilience_mount_connect_retry_rejects_boolean_negative_and_non_finite_iter84_s4():
     """[ITER84 #4] http_resilience.mount_connect_retry rejects boolean, negative, and non-finite retry parameters."""
-    import requests
     from providers import base as http_resilience
     # 4. http_resilience.mount_connect_retry rejects boolean, negative, and non-finite retry parameters
     sess = requests.Session()
@@ -1125,7 +1121,6 @@ def test_utils_timestamp_decay_helpers_iter99_s3():
 
 def test_providers_http_resilience_mount_connect_retry_rejects_boolean_status_forcelist_iter109_s2():
     """[ITER109 #2] providers.http_resilience: mount_connect_retry rejects boolean status_forcelist."""
-    from types import SimpleNamespace
     from providers import base as hres
     # 2. providers.http_resilience: mount_connect_retry rejects boolean status_forcelist
     assert hres.mount_connect_retry(SimpleNamespace(), status_forcelist=True) is False
@@ -1143,7 +1138,6 @@ def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
 
 def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter114_s2():
     """[ITER114 #2] botcore._dotenv_pairs, required_env, defined_env, required_bool_env."""
-    import botcore as bc
     # 2. botcore._dotenv_pairs, required_env, defined_env, required_bool_env
     assert bc._dotenv_pairs(None) == ([], False)
     assert bc._dotenv_pairs(True) == ([], False)
@@ -1176,7 +1170,6 @@ def test_jsonstatestore_fail_closed_boolean_parsing_iter155_s1(tmp_path):
 
 def test_botcore_rejects_none_pair_id_and_cleans_order_id_metadata_iter160_s2():
     """[ITER160 #2] botcore: rejects 'None'/'0' pair_id and cleans '.0'/'0' order_id metadata."""
-    import botcore as bc
     # 2. botcore: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
     assert bc.clean_order_id("None") is None
     assert bc.clean_order_id("0") is None

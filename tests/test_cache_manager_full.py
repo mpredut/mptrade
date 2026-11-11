@@ -15,6 +15,16 @@ Coverage:
 """
 import gzip, os, sys, json, time, tempfile, threading, unittest
 from unittest.mock import MagicMock, patch
+import ast
+import cacheaccount
+import cacheintegrity
+import contextlib
+import inspect
+import io
+import priceAnalysis as pa
+import pytest
+from cachetrend import CacheShortTrendManager
+from types import SimpleNamespace
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -1601,7 +1611,6 @@ class TestGetCurrentPriceManagerSingleton(_CurrentPriceResetTestCase):
 
     def test_every_factory_manager_accepts_read_only(self):
         """CacheFactory passes read_only to every class it builds, including PriceMulti."""
-        import inspect
         from market_monitor.pricefetcher import CacheAllPriceFetcherManager
 
         classes = [config["class"] for config in cm.CacheFactory._CONFIG.values()]
@@ -1647,7 +1656,6 @@ class TestFactorySingletonWarning(unittest.TestCase):
     def test_factory_singleton_warning_behavior(self):
         with self.subTest("same instance returned and warns"):
             m1 = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
-            import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 m2 = cm.get_cache_manager("AssetValue", symbols=["OTHER"])
@@ -1656,7 +1664,6 @@ class TestFactorySingletonWarning(unittest.TestCase):
 
         with self.subTest("no warning same symbols"):
             cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
-            import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
@@ -2085,7 +2092,6 @@ class TestAtomicWrite(TempDirTestCase):
 
         # bapi_ws_normalize rejects boolean IDs and falls back when l/L are NaN/Inf
         from binance_api import bapi_ws_normalize
-        import cacheintegrity
 
         self.assertIsNone(
             bapi_ws_normalize.parse_order_execution_report(
@@ -2271,7 +2277,6 @@ def test_cachetrend__short_trend_symbol_variants_preserves_usdcusdt_intact_and_s
 
 def test_cacheshorttrendmanager_slash_sanitization_cross_venue_dynamic_window_resolution_iter23_s4(tmp_path):
     """[ITER23 #4] CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution."""
-    from cachetrend import CacheShortTrendManager
     # 4. CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution
     st_file = tmp_path / "cache_short_trend.json"
     (tmp_path / "24trend").mkdir(parents=True, exist_ok=True)
@@ -2297,7 +2302,6 @@ def test_cacheshorttrendmanager_slash_sanitization_cross_venue_dynamic_window_re
 
 def test_cacheshorttrendmanager_should_wait_gt_s_with_none_growth_coefficient_gradient_recent_fast_iter27_s1():
     """[ITER27 #1] CacheShortTrendManager.should_wait (GT_S) with None growth_coefficient / gradient_recent_fast."""
-    from cachetrend import CacheShortTrendManager
     # 1. CacheShortTrendManager.should_wait (GT_S) with None growth_coefficient / gradient_recent_fast
     mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
     mgr.window_seconds = (1800,)
@@ -2321,8 +2325,6 @@ def test_cacheshorttrendmanager_should_wait_gt_s_with_none_growth_coefficient_gr
 
 def test_priceanalysis_get_weight_for_cash_permission_at_quant_time_iter27_s2(monkeypatch):
     """[ITER27 #2] priceAnalysis.get_weight_for_cash_permission_at_quant_time."""
-    from types import SimpleNamespace
-    import priceAnalysis as pa
     # 2. priceAnalysis.get_weight_for_cash_permission_at_quant_time
     fake_lt_cache = {
         "TAOUSD": [
@@ -2366,8 +2368,6 @@ def test_priceanalysis_get_weight_for_cash_permission_at_quant_time_iter27_s2(mo
 
 def test_cacheintegrity_trade_data_version_trade_semantic_signature_build_account_meta_snapshot_iter71_s1():
     """[ITER71 #1] cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot."""
-    import pytest
-    import cacheintegrity
     # 1. cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot
     with pytest.raises(ValueError):
         cacheintegrity.trade_data_version("", 1)
@@ -2390,8 +2390,6 @@ def test_cacheintegrity_trade_data_version_trade_semantic_signature_build_accoun
 
 def test_priceanalysis_format_duration_format_timestamp_get_trade_weight_get_weight_for_cash_permission_at_quant_time_iter102_s2():
     """[ITER102 #2] priceAnalysis: format_duration, format_timestamp, get_trade_weight, get_weight_for_cash_permission_at_quant_time."""
-    import pytest
-    import priceAnalysis as pa
     # 2. priceAnalysis: format_duration, format_timestamp, get_trade_weight, get_weight_for_cash_permission_at_quant_time
     assert pa.format_duration(None) == "0m"
     assert pa.format_duration(True) == "0m"
@@ -2429,7 +2427,6 @@ def test_cachepaths_migrate_legacy_filename_if_needed_and_cache_path_with_pathli
 
 def test_priceanalysis_detect_long_term_trend_with_int_strings_mk_alpha_string_bool_iter163_s2():
     """[ITER163 #2] priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau='false'."""
-    import priceAnalysis as pa
     # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
     ts = [float(i * 3600) for i in range(1, 100)]
     px = [100.0 + i * 0.5 for i in range(1, 100)]
@@ -2452,7 +2449,6 @@ def test_priceanalysis_detect_long_term_trend_with_int_strings_mk_alpha_string_b
 
 def test_cachetrademanager_string_symbols_normalization_read_only_true_flag_and_iter165_s2(tmp_path, monkeypatch):
     """[ITER165 #2] CacheTradeManager: string symbols normalization, read_only='true' flag, and 'B'/'S' side aliases in get_last_opposite_fill_price."""
-    import pytest
     # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
     monkeypatch.setattr("cachepaths.cache_path", lambda fn: str(tmp_path / fn))
     tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
@@ -2574,9 +2570,6 @@ def test_nonbinance_trade_cache_snapshot_resync_and_fetchtime_sanitization(tmp_p
 
 def test_decoupled_account_and_price_ws_daemon_lifecycle_helpers(monkeypatch):
     """Verify cacheManager delegates account/price WS lifecycle to cacheaccount and cacheprice without direct binance_api imports."""
-    import ast
-    from types import SimpleNamespace
-    import cacheaccount
     import cacheprice
 
     with open(cm.__file__, encoding="utf-8") as fh:
@@ -2722,7 +2715,6 @@ def test_cache24pricemanager_external_ohlc_reload_and_merge(tmp_path):
 
 def test_consumer_safe_defaults_and_auto_resync(tmp_path):
     """Verify the 3 cache operating models (producer, live_reader, disk_reader) via data_sync_mode."""
-    import inspect
 
     for fn in (
         cm.get_cache_manager,
@@ -2822,7 +2814,6 @@ def test_consumer_safe_defaults_and_auto_resync(tmp_path):
 
 def test_ast_only_producers_enable_cache_sync_or_writer():
     """Verify via AST that no consumer module passes data_sync_mode='producer' or writer=True."""
-    import ast
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cache_getters = {
@@ -2979,7 +2970,6 @@ def test_venue_agnostic_trade_cache_and_t212_ssot_price_routing(tmp_path):
 
 def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
     """Verify cache modules use state_io/cacheintegrity instead of raw open/json calls and unify factory getters."""
-    import ast
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     checked_files = (
@@ -3040,7 +3030,6 @@ def test_ssot_state_io_hygiene_and_unified_cache_factory_getters():
 
 def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     """Verify _KrakenAccountTradeBridge starts in poll mode, persists fills, and stops cleanly."""
-    import cacheaccount
     from state_io import read_json_dict
 
     cache_file = str(tmp_path / "cache_trade_kraken.json")
@@ -3097,7 +3086,6 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
 
 def test_cache_modules_delegate_venue_ws_protocols_to_providers():
     """Enforce zero concrete provider or venue-transport imports and wss:// URLs in cache*.py."""
-    import ast
     from pathlib import Path
     import cacheprice as cp
     from providers.base import (

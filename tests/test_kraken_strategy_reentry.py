@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+import random
 
 KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 ROOT = os.path.dirname(KRAKEN_DIR)
@@ -83,7 +84,6 @@ class TestEffectiveReentryDropPct(unittest.TestCase):
 
         with self.subTest(msg="adaptive_uses_volatility_when_enough_history"):
             s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
-            import random
             random.seed(42)
             price = 100.0
             for i in range(30):
@@ -96,7 +96,6 @@ class TestEffectiveReentryDropPct(unittest.TestCase):
 
         with self.subTest(msg="adaptive_respects_shadow_k_reentry_env_override"):
             s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2, shadow_k_reentry=2.0)
-            import random
             random.seed(7)
             price = 100.0
             for i in range(30):
@@ -989,7 +988,6 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
             self.assertEqual(exited[0][1], "TP")
 
         with self.subTest("dynamic_surge_gain_pct"):
-            import strategies.spot_rules as sr
             self.assertEqual(sr.dynamic_surge_gain_pct(1.5), 24.0)
             self.assertEqual(sr.dynamic_surge_gain_pct(2.7), 27.0)
             self.assertEqual(sr.dynamic_surge_gain_pct(4.0), 32.0)

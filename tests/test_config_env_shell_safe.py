@@ -7,7 +7,25 @@ import os
 import subprocess
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from types import SimpleNamespace
-from strategies.position_exit_manager import PositionSnapshot
+from strategies.position_exit_manager import PositionExitManager, PositionSnapshot
+import botcore
+import external_order_guard as eog
+import json
+import math
+import numpy as np
+import pytest
+import time
+from botcore import resolve_now_ts
+from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+from intelligence.internal.triggers.kalman_trigger import KalmanTrend
+from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+from intelligence.macro_analyzer import MacroAnalyzer
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+from market_monitor import pricefetcher as pf
+from market_monitor.pricechecker import PriceChecker
+from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,7 +99,6 @@ def test_env_common_env_get_works_under_set_u_without_home():
 
 
 def test_watchdog_and_gateway_hardening(tmp_path):
-    import pytest
     from orchestratorOS.lib import watchdog_common as wc
     from orchestratorOS.livecheck import os_resources_watchdog as rw
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
@@ -105,10 +122,8 @@ def test_watchdog_and_gateway_hardening(tmp_path):
 
 
 def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
-    import pytest
-    import botcore
     from rtrade_pair_store import RTradePairStore
-    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy, anchored_exit_price, quote_prices
+    from strategies.rtrade_pair import anchored_exit_price, quote_prices
 
     assert botcore.float_env("K", {"K": 0}) == 0.0
     assert botcore.float_env("K", {"K": 1.5}) == 1.5
@@ -140,7 +155,6 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
 
 
 def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
-    import pytest
     import order_lifecycle as order_outcomes_log
     import botcore as shadow_runtime
     import shadow_signals
@@ -182,12 +196,11 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
 
 def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     from decimal import Decimal
-    import pytest
     import active_intents
     import account_cache_health
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from providers import quantity as binance_filters, execution_audit
-    from strategies.position_exit_manager import PositionExitManager, ReentrySnapshot
+    from strategies.position_exit_manager import ReentrySnapshot
 
     monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "5000 # inline comment")
     assert execution_audit._parse_cache_max() == 5000
@@ -237,8 +250,6 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
 
 def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
     import importlib.util
-    import json
-    import math
     from datetime import datetime, timezone
     from pathlib import Path
     from notify_engine import alertnotifiers
@@ -313,7 +324,6 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
 
 
 def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
-    import pytest
     from binance_api import market_data as b_md
     from binance_api import trailing_stop as b_ts
     from kraken import shadow_live
@@ -335,11 +345,7 @@ def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
 
 
 def test_market_monitor_and_pricewindow_hardening():
-    import time
-    import pytest
-    import botcore
     from market_monitor import alerts_config
-    from market_monitor.pricechecker import PriceChecker
     from pricewindow import IncrementalTrendBuffer, PriceWindow
 
     with pytest.raises(ValueError):
@@ -379,17 +385,8 @@ def test_cooldown_and_internal_state_hardening(tmp_path):
 
 
 def test_triggers_guards_and_collectors_hardening(tmp_path):
-    import json
-    import time
-    import numpy as np
     from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
-    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
     dec_nan = GuardDecision.downscale("test_guard", float("nan"), "nan_scale")
     assert dec_nan.allowed is False
@@ -479,7 +476,6 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
 
 def test_order_id_context_and_pricefetcher_hardening(tmp_path):
     from providers import order_id_context as oic
-    from market_monitor import pricefetcher as pf
 
     assert oic._base36(-5) == "0"
     cid = oic.create_client_order_id("VERY_LONG_PROCESS_NAME_EXCEEDING_THIRTY_SIX_CHARS")
@@ -496,7 +492,7 @@ def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):
     from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvaluator, MarketRegimeService
     import monitororder as mo
     import priceAnalysis as pa
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
+    from strategies.position_exit_manager import PositionExitConfig
 
     # 1. PositionExitManager preserves t=0.0 episode/bounce/peak timestamps across simulation ticks
     mgr = PositionExitManager(
@@ -601,7 +597,6 @@ def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
     assert sell_px > 200.0
 
     monkeypatch.setattr(rt, "_is_gi_whale_enforced", lambda bg=None: True)
-    import external_order_guard as eog
     monkeypatch.setattr(
         eog,
         "get_whale_collector",
@@ -627,10 +622,8 @@ def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
 
 
 def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatch):
-    import pytest
-    import external_order_guard as eog
     import monitortrades as mt
-    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+    from strategies.rtrade_pair import PairCoordinator
     from strategies.position_exit_manager import ExitAction, ExitDecision
 
     # 1. external_order_guard.check_external_order_guards fails fast on empty margins and works with explicit keys
@@ -767,7 +760,6 @@ def test_spot_engine_trailing_core_and_pricewindow_hardening():
 
 
 def test_shadow_signals_utils_and_volatility_hardening():
-    import math
     import shadow_signals as ss
     import utils as u
     from intelligence.internal.state import volatility as vol
@@ -795,10 +787,7 @@ def test_shadow_signals_utils_and_volatility_hardening():
 
 
 def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
-    import json
-    import math
     from intelligence import cli as icli
-    from intelligence.macro_analyzer import MacroAnalyzer
     from instrument import Instrument
 
     # 1. intelligence.cli._format_age and get_daemon_status handle None/NaN/bool safely
@@ -816,7 +805,6 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
     assert status["age_formatted"] == "unknown"
 
     # 2. resolve_now_ts handles NaN/bool/None safely
-    from botcore import resolve_now_ts
     now_res = resolve_now_ts(float("nan"))
     assert math.isfinite(now_res) and now_res > 0
     now_bool = resolve_now_ts(True)
@@ -852,10 +840,8 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
 
 
 def test_persistence_survival_and_triggers_hardening():
-    import numpy as np
     from intelligence.internal.state import persistence as pers
     from intelligence.internal.state import survival as surv
-    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
     from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 
     # 1. persistence.calculate_mann_kendall and calculate_hurst_exponent handle None/mixed sequences safely
@@ -886,7 +872,6 @@ def test_persistence_survival_and_triggers_hardening():
 
 
 def test_collectors_and_gemini_client_hardening():
-    import math
     from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     from intelligence.sentiment.gemini_client import GeminiClient
 
@@ -916,7 +901,6 @@ def test_collectors_and_gemini_client_hardening():
 
 
 def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
-    import math
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
@@ -965,7 +949,6 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
     from orchestratorOS.livecheck import os_resources_watchdog as orw
 
     # 1. smart_stop_loss_guard handles bool/NaN/None in _format_price, resolve_now_ts, and on_recovered
-    from botcore import resolve_now_ts
     assert sslg._format_price(True) == ""
     assert resolve_now_ts(0.0, allow_zero=True) == 0.0
     assert resolve_now_ts(float("nan"), allow_zero=True) > 1_000_000_000.0
@@ -1012,12 +995,7 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
 def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
-    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
     # 1. LiquidationCapitulationTrigger handles None/bool fields on summary and <=0 min_notional_usd
     lt = LiquidationCapitulationTrigger(min_notional_usd=0.0, ratio_threshold=float("nan"), window_sec=True)
@@ -1060,12 +1038,7 @@ def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
 
 
 def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
-    import json
-    import time
-    import pytest
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-    from intelligence.macro_analyzer import MacroAnalyzer
-    from market_monitor.pricechecker import PriceChecker
 
     # 1. NewsFeedCollector._history alias and MacroAnalyzer.assess_geopolitical_threat with news_feed_collect.json
     now_ts = time.time()
@@ -1165,9 +1138,7 @@ def test_external_sentiment_parabolic_and_composite_guards_hardening():
 
 def test_new_coins_discovery_and_pricefetcher_hardening():
     import pandas as pd
-    import pytest
     from market_monitor import new_coins_discovery as ncd
-    from market_monitor import pricefetcher as pf
 
     assert ncd.is_trackable_symbol(123) is False
     assert ncd.is_trackable_symbol(True) is False
@@ -1209,8 +1180,6 @@ def test_new_coins_discovery_and_pricefetcher_hardening():
 
 
 def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
-    import json
-    import math
     from intelligence.external.collectors import bybit_liquidations_collector as ls
     import cachetrend as ct
     import active_intents as ai
@@ -1261,7 +1230,6 @@ def test_log_configure_and_verify_tools_hardening():
 
 
 def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
-    import pytest
     from visuals import tradeall_observe as tobs
     from orchestratorOS.agy import topics as top_mod
     from verify_tools import watch_trade_decisions as wtd
@@ -1298,7 +1266,6 @@ def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
 
 
 def test_backtest_metrics_walk_forward_and_execution_hardening():
-    import pytest
     from offline.backtests import metrics as bm
     from offline.backtests import walk_forward as bwf
     from offline.backtests import execution as bex
@@ -1340,7 +1307,6 @@ def test_backtest_metrics_walk_forward_and_execution_hardening():
 
 
 def test_datasets_execution_calibration_and_benchmark_hardening():
-    import pytest
     from offline.backtests import datasets as bds
     from offline.backtests import execution_calibration as bec
     from offline.backtests import financial_benchmark as bfb
@@ -1446,7 +1412,6 @@ def test_backup_sync_common_modular_primitives(tmp_path):
 
 
 def test_pia_common_ssot_and_bounded_wait_for_vpn(tmp_path):
-    import time
 
     with open(os.path.join(ROOT, "config.env"), encoding="utf-8") as fh:
         cfg_text = fh.read()

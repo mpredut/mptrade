@@ -8,6 +8,11 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import assetguardian as ag
 from botcore import required_env
 from providers.strategy_executor import OrderStatus
+import json
+import order_guard
+import pytest
+import time
+from types import SimpleNamespace
 
 
 class MemoryState:
@@ -1106,7 +1111,6 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(tier2, (9.0, 0.12, 1.2))
 
         with self.subTest(msg="test_terminal_buy_and_sell_tolerate_none_or_nan_cost_and_fee"):
-            from types import SimpleNamespace
             state = MemoryState()
             raw_status = SimpleNamespace(status="canceled", filled_qty=None, cost=None, fee=float("nan"))
             with mock.patch.object(ag, "STATE", state):
@@ -1414,9 +1418,6 @@ if __name__ == "__main__":
 
 def test_assetguardian__read_p3b_sentiment_recovers_from_previous_when_primary_is_iter13_s1(tmp_path):
     """[ITER13 #1] AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,."""
-    import pytest
-    import json
-    import time
     now_ts = time.time()
     # 1. AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,
     #    and _p3b_threshold_multipliers honors GLLM2 bypass.
@@ -1458,7 +1459,6 @@ def test_assetguardian__read_p3b_sentiment_recovers_from_previous_when_primary_i
 
 def test_resolve_caller_module_short_codes_and_client_order_id_prefix_fallback_iter20_s1():
     """[ITER20 #1] resolve_caller_module short codes and client_order_id -> prefix fallback."""
-    import order_guard
     # 1. resolve_caller_module short codes and client_order_id -> prefix fallback
     assert order_guard.resolve_caller_module("AG") == "assetguardian"
     assert order_guard.resolve_caller_module("MT") == "monitortrades"
@@ -1476,7 +1476,6 @@ def test_resolve_caller_module_short_codes_and_client_order_id_prefix_fallback_i
 
 def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_filled_on_iter21_s1(tmp_path, monkeypatch):
     """[ITER21 #1] assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill."""
-    import pytest
     # 1. assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill
     state_file = tmp_path / "ag_state.json"
     monkeypatch.setattr(ag, "STATE", ag.AssetGuardianState(str(state_file), fail_closed=False))
@@ -1524,10 +1523,6 @@ def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_fill
 
 def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_with_venue_bypass_guards_iter23_s1(tmp_path, monkeypatch):
     """[ITER23 #1] assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards & check_external_order_guards & check_llm_order_guards honor intelligence_guards_mode='off'."""
-    import json
-    import time
-    import pytest
-    import order_guard
     from external_order_guard import check_external_order_guards
     from llm_order_guard import check_llm_order_guards
     from qlimit_order_guard import resolve_cached_gaussian_horizon
@@ -1578,7 +1573,6 @@ def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_wi
 
 def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_corrupted_prior_spent_fee_iter63_s4(monkeypatch):
     """[ITER63 #4] assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee."""
-    import pytest
     import assetguardian
     # 4. assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee
     rem, target, prior = assetguardian._buy_remaining_cash(
@@ -1591,7 +1585,6 @@ def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_c
 
     saved = {}
     monkeypatch.setattr(assetguardian, "_save_symbol_campaign", lambda sym, kind, st: saved.update(st))
-    from types import SimpleNamespace
     updated = assetguardian._record_terminal_buy(
         "BTCUSDC",
         {

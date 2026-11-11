@@ -6,7 +6,12 @@ import sqlite3
 
 import pytest
 
-from orchestratorOS.agy import paths
+from orchestratorOS.agy import (
+    paths,
+    protobuf,
+    summary_store,
+    topics,
+)
 from orchestratorOS.agy.paths import visible_conversations_dir
 from orchestratorOS.agy.protobuf import (
     drop_entries,
@@ -34,7 +39,9 @@ from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 from tests.conftest import setup_isolated_agy_stores
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import subprocess
+from orchestratorOS.admin import agy_store_fix as asf
 
 
 @pytest.fixture(autouse=True)
@@ -188,8 +195,6 @@ class TestTopics:
             prepare_topic_session("not_a_topic", compact_steps=6)
 
     def test_gemini_client_compacts_after_prompt_preserving_json_decision(self, tmp_path):
-        from unittest.mock import MagicMock
-        import subprocess
         from intelligence.sentiment import gemini_client as gc
         from orchestratorOS.agy.topics import TopicSession
 
@@ -363,7 +368,6 @@ class TestMirrorTopicThreadToUi:
         assert "ntfy-guard:" not in header
 
     def test_gemini_client_one_off_fallback_injects_rolling_topic_history(self, tmp_path, monkeypatch):
-        import subprocess
 
         cli_base = str(tmp_path / "cli")
         os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
@@ -469,7 +473,6 @@ class TestMirrorTopicThreadToUi:
 
     def test_bapi_submit_permit_normalizes_symbol_and_side_and_hl_none_price_uses_ioc(self, monkeypatch):
         from types import SimpleNamespace
-        from unittest.mock import MagicMock
         from binance_api import bapi_placeorder as bp
         from providers.hyperliquid_provider import HyperliquidProvider
         from providers.strategy_executor import SubmissionRefused
@@ -540,7 +543,6 @@ class TestMirrorTopicThreadToUi:
         assert invoke_calls[0][4]["tif"] == "Ioc"
 
     def test_query_json_falls_back_to_next_model_when_candidate_returns_non_json_prose(self, tmp_path, monkeypatch):
-        import subprocess
 
         fake_bin = tmp_path / "agy-bot"
         fake_bin.write_text("#!/bin/sh\n")
@@ -577,7 +579,6 @@ class TestMirrorTopicThreadToUi:
         assert parsed == {"decision": "HOLD", "confidence": 0.91}
 
     def test_agy_store_fix_mode_post_links_files_mirrored_during_pre_post_gap(self, tmp_path, monkeypatch):
-        from orchestratorOS.admin import agy_store_fix as asf
 
         d1 = tmp_path / "d1"
         d2 = tmp_path / "d2"
@@ -599,7 +600,6 @@ class TestMirrorTopicThreadToUi:
     def test_prune_ui_store_protects_interactive_and_record_topic_turn_adopts_when_existing_missing(
         self, tmp_path, monkeypatch
     ):
-        from orchestratorOS.admin import agy_store_fix as asf
 
         bot_base = str(tmp_path / "bot_cli")
         ui_base = str(tmp_path / "ui_cli")
@@ -691,7 +691,6 @@ class TestMirrorTopicThreadToUi:
     def test_execute_cli_isolates_trading_topics_from_repo_rules_and_includes_for_self_heal(
         self, tmp_path, monkeypatch
     ):
-        import subprocess
         from intelligence.sentiment.gemini_client import _ROOT_DIR
 
         fake_bin = tmp_path / "agy-bot"
@@ -744,7 +743,6 @@ class TestMirrorTopicThreadToUi:
     def test_execute_cli_restores_newly_dirtied_tracked_files_on_timeout_and_preserves_preexisting_dirty(
         self, tmp_path, monkeypatch
     ):
-        import subprocess
         import intelligence.sentiment.gemini_client as gc_mod
         from intelligence.sentiment.gemini_client import _ORIG_SUBPROCESS_RUN
 
@@ -846,7 +844,6 @@ def test_summary_store_safe_nonneg_int_and_topics_safe_int_iter57_s1(monkeypatch
 
 def test_protobuf_dec_varint_rejects_overly_long_varints_and_parse_fields_iter80_s1():
     """[ITER80 #1] protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0."""
-    from orchestratorOS.agy import protobuf
     # 1. protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0
     with pytest.raises(ValueError, match="varint too long"):
         protobuf.dec_varint(b"\x80" * 11, 0)
@@ -856,7 +853,6 @@ def test_protobuf_dec_varint_rejects_overly_long_varints_and_parse_fields_iter80
 
 def test_summary_store_parse_db_timestamp_preserves_negative_positive_timezone_offsets_without_iter80_s2():
     """[ITER80 #2] summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits."""
-    from orchestratorOS.agy import summary_store
     # 2. summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits
     dt_neg = summary_store.parse_db_timestamp("2026-10-26T14:30:00.12-05:00")
     assert dt_neg == datetime(2026, 10, 26, 19, 30, 0, 120000, tzinfo=timezone.utc)
@@ -865,7 +861,6 @@ def test_summary_store_parse_db_timestamp_preserves_negative_positive_timezone_o
 
 def test_protobuf_summary_ui_visible_self_heals_corrupted_raw_bytes_and_iter81_s1():
     """[ITER81 #1] protobuf.summary_ui_visible self-heals corrupted raw bytes and preserves title."""
-    from orchestratorOS.agy import protobuf
     # 1. protobuf.summary_ui_visible self-heals corrupted raw bytes and preserves title
     repaired = protobuf.summary_ui_visible(b"\x80\x80", title="Recovered Thread", reset_running=True)
     assert protobuf.summary_annotation_title(repaired) == "Recovered Thread"
@@ -888,7 +883,6 @@ def test_agy_store_fix_rejects_non_finite_idle_sec_and_handles_missing_iter81_s2
 
 def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_iter82_s1():
     """[ITER82 #1] topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences."""
-    from orchestratorOS.agy import topics
     # 1. topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences
     hybrid = "Analysis:\n```python\nprint('hello')\n```\nFinal decision:\n{\"decision\": \"ALLOW\", \"confidence\": 0.9}"
     assert topics.extract_json_object(hybrid) == {"decision": "ALLOW", "confidence": 0.9}
@@ -897,7 +891,7 @@ def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_ite
 
 def test_orchestratoros_agy_topics_summary_store_ui_mirror_iter105_s1(tmp_path):
     """[ITER105 #1] orchestratorOS.agy.topics & summary_store & ui_mirror."""
-    from orchestratorOS.agy import topics, summary_store, ui_mirror
+    from orchestratorOS.agy import ui_mirror
     # 1. orchestratorOS.agy.topics & summary_store & ui_mirror
     assert topics.canonical_topic_key(True) == ""
     assert topics.canonical_topic_key("  auto_trade_executor  ") == "auto_cryptotrade_executor"

@@ -6,6 +6,8 @@ import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+from notify_engine import alertnotifiers as an
+from notify_engine.alertnotifiers import pop_due_bulk_batch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -486,7 +488,6 @@ if __name__ == "__main__":
 
 def test_alertnotifier_format_human_readable_time_and_pop_due_bulk_batch_handle_bool_nan_safely_iter55_s4():
     """[ITER55 #4] AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely."""
-    from notify_engine.alertnotifiers import pop_due_bulk_batch
     # 4. AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely
     assert AlertNotifier.format_human_readable_time(True) == "N/A"
     assert AlertNotifier.format_human_readable_time(False) == "N/A"
@@ -507,7 +508,7 @@ def test_synthesize_bulk_notifications_handles_float_string_negative_or_invalid_
 
 def test_pass_common_gate_and_pop_due_bulk_batch_tolerate_out_of_range_now_iter66_s2(tmp_path, monkeypatch):
     """[ITER66 #2] pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields."""
-    from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
+    from notify_engine.alertnotifiers import pass_common_gate
     # 2. pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields
     state_file = tmp_path / "notif_state.json"
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
@@ -595,7 +596,6 @@ def test_poststopreentryguard__maybe_notify_deduplicates_across_symbol_formattin
 
 def test_alertnotifiers_utf8_header_strips_cr_lf_and_rejects_bool_iter114_s3():
     """[ITER114 #3] alertnotifiers: utf8_header strips CR/LF and rejects bool/None."""
-    from notify_engine import alertnotifiers as an
     # 3. alertnotifiers: utf8_header strips CR/LF and rejects bool/None
     assert an.AlertNotifier.utf8_header(None) == ""
     assert an.AlertNotifier.utf8_header(True) == ""
@@ -603,7 +603,6 @@ def test_alertnotifiers_utf8_header_strips_cr_lf_and_rejects_bool_iter114_s3():
 
 def test_alertnotifiers__parse_bool_flag_default_preservation_iter163_s3():
     """[ITER163 #3] alertnotifiers: _parse_bool_flag default preservation."""
-    from notify_engine import alertnotifiers as an
     # 3. alertnotifiers: _parse_bool_flag default preservation
     assert an._parse_bool_flag("invalid_token", default=True) is True
     assert an._parse_bool_flag("false", default=True) is False

@@ -9,6 +9,9 @@ import textwrap
 import unittest
 
 import pytest
+import json
+import time
+from instrument_registry import InstrumentSpec, ROLES
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -16,7 +19,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
-from instrument_registry import ROLES  # noqa: E402
 import instrument_registry as ic  # noqa: E402
 from types import SimpleNamespace
 
@@ -459,8 +461,6 @@ def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
 
 
 def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
-    import json
-    import time
     from providers.base import live_price_fetch_context
     from providers.execution_audit import AuditedStrategyExecutor
     from providers.hyperliquid_provider import HyperliquidProvider
@@ -632,10 +632,8 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
 
 def test_registry_execution_independence_and_layered_binding(tmp_path):
     import ast
-    import json
     from cacheprice import resolve_cached_symbol_price
     from instrument import Instrument
-    from instrument_registry import InstrumentSpec
 
     # 1. AST hygiene: instrument_registry has zero imports of execution/cache/intelligence layers and zero reload()
     reg_src = (ROOT / "instrument_registry.py").read_text(encoding="utf-8")
@@ -716,7 +714,6 @@ if __name__ == "__main__":
 
 def test_marketapi_place_inherits_instrument_params_from_instrument_registry_bool_iter28_s4(monkeypatch):
     """[ITER28 #4] MarketApi.place inherits instrument params from instrument_registry & bool rejections."""
-    import time
     import order_guard
     import threading
     import cacheManager as cm
@@ -830,7 +827,6 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
 
 def test_instrumentspec_programmatic_non_string_and_mixed_case_params_iter97_s1():
     """[ITER97 #1] InstrumentSpec programmatic non-string and mixed-case params handling."""
-    from instrument_registry import InstrumentSpec
     # 1. InstrumentSpec programmatic non-string and mixed-case params handling
     spec = InstrumentSpec(
         name="BTC",

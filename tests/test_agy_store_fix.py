@@ -7,6 +7,7 @@ import pytest
 
 from orchestratorOS.admin import agy_store_fix as asf
 from datetime import datetime, timezone
+import json
 
 
 def _pb_with_cids(cids):
@@ -114,7 +115,6 @@ def test_invalid_idle_fails_fast(store, tmp_path):
 
 
 def test_mirrored_5min_topic_thread_does_not_block_idle_sync(store, tmp_path):
-    import json
 
     cli, d1, _ = store
     (tmp_path / "llm_topic_threads.json").write_text(
@@ -142,7 +142,6 @@ def test_orphan_summary_row_without_db_file_does_not_trigger_new_sync(store):
 
 
 def test_stale_running_status_does_not_deadlock_ui_sync_while_fresh_running_blocks(store, tmp_path):
-    import json
 
     cli, d1, d2 = store
     conn = sqlite3.connect(asf.DB)
@@ -267,7 +266,6 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
 
 
 def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
-    import json
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -356,7 +354,6 @@ def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
 
 def test_repeating_schedule_loop_does_not_block_ui_sync(store):
     """An autonomous loop with multiple schedule calls must not permanently starve UI sync."""
-    import json
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -398,7 +395,6 @@ def test_repeating_schedule_loop_does_not_block_ui_sync(store):
 
 def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
     """A conversation where user input occurred >30m ago does not block UI sync even if a timer is active."""
-    import json
 
     cli, d1, _ = store
     (d1 / "pending-topic.db").write_text("y")
@@ -527,7 +523,6 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
 
 
 def test_mode_pre_protects_topic_cids_and_archives_orphan_annotations(store, tmp_path, monkeypatch):
-    import json
 
     cli, d1, d2 = store
     ann = cli / "annotations"
@@ -615,7 +610,6 @@ def test_last_store_activity_handles_oneshot_cli_logs_and_file_watcher_noise(sto
 
 
 def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store, tmp_path, monkeypatch):
-    import json
     from orchestratorOS.agy.protobuf import summary_ui_visible
     from orchestratorOS.agy.topics import topic_spec
     from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
@@ -730,7 +724,6 @@ def test_rotated_topic_preserves_ghost_trajectory_until_mode_pre_reaps_it(store,
 
 
 def test_active_background_command_and_subagent_block_restart_until_completed(store, tmp_path, monkeypatch):
-    import json
 
     cli, d1, _ = store
     monkeypatch.setattr(asf, "LOG_FILE", str(tmp_path / "agy_store_fix.log"))

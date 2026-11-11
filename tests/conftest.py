@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import MagicMock
 
 import pytest
+import cacheManager as cm
 
 
 # Set at import time, before the test modules are collected. That way not even the calls
@@ -229,7 +230,6 @@ def make_test_regime_context(symbol: str = "BTCUSDC", provider: str = "binance",
 
 def make_cache24_test_manager(symbol: str, entries: list, tmp_dir: str, *, api_client=None):
     """Create a ``Cache24PriceManager`` pre-populated with ``entries = [[ts_ms, price], ...]``."""
-    import cacheManager as cm
 
     fname = os.path.join(tmp_dir, f"cache_24_{symbol}.json")
     with open(fname, "w", encoding="utf-8") as fh:
@@ -307,7 +307,6 @@ def _isolate_monitortrades_state(tmp_path, monkeypatch):
 @pytest.fixture(scope="session", autouse=True)
 def _shutdown_runtime_threads_after_suite():
     yield
-    import cacheManager as cm
 
     cm.CacheManagerInterface.shutdown_all_instances()
     cm.CacheShortTrendManager.shutdown_all_instances()
