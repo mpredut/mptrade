@@ -28,6 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import (
     int_env,
+    load_local_module,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -36,8 +37,10 @@ from botcore import (
 from state_io import append_jsonl_record, read_jsonl_dicts
 from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
-from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 
+load_isolated_kraken_cfg = load_local_module(
+    os.path.join(ROOT, "kraken"), "kraken_common", module_key="kraken_common"
+).load_isolated_kraken_cfg
 _KRAKEN_CFG = load_isolated_kraken_cfg(os.path.join(ROOT, "kraken"))
 
 FLAGS = {"peak": False}

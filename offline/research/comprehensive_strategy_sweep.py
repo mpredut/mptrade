@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import (
+    load_local_module,
     normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
@@ -32,10 +33,12 @@ from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
 from offline.backtests.evaluation import evaluate_segment
 from offline.backtests.execution import ExecutionModel
-from kraken.kraken_common import load_isolated_kraken_cfg
 
 # Load live configuration into an isolated dict without polluting os.environ
 KRAKEN_DIR = ROOT / "kraken"
+load_isolated_kraken_cfg = load_local_module(
+    str(KRAKEN_DIR), "kraken_common", module_key="kraken_common"
+).load_isolated_kraken_cfg
 _KRAKEN_CFG = load_isolated_kraken_cfg(KRAKEN_DIR)
 LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 

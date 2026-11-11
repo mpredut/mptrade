@@ -31,6 +31,9 @@ from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noq
 
 _DEV_PROFILE = parse_dotenv(os.path.join(ROOT, "offline", "runners", "dev_backtest.env"))
 BRANCH = (os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+_ALLOWED_PILOT_PARAM_NAMES = frozenset(
+    fk.split(".", 1)[1] for fk in sp.PILOT_KEYS if "." in fk
+)
 
 
 def _resolve_branch() -> str:
@@ -81,10 +84,10 @@ def main(argv: list[str] | None = None):
         print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
         return
 
-    branch = _resolve_branch()
-    proposals = _read_proposals(branch)
+    proposals = _read_proposals()
     if not proposals:
-        print(f"[apply] no proposal on branch {branch} -- nothing to do")
+        branch_label = (BRANCH or os.environ.get("BACKTEST_PROPOSALS_BRANCH") or "backtest-proposals").strip()
+        print(f"[apply] no proposal on branch {branch_label} -- nothing to do")
         return
 
     with FileLock("/tmp/mptrade_apply_proposals.lock"):
@@ -106,7 +109,7 @@ def main(argv: list[str] | None = None):
             section = section.strip()
             key = key.strip()
             symbol = symbol.strip()
-            if fk != f"{section}.{key}" or fk not in sp.PILOT_KEYS:
+            if fk != f"{section}.{key}" or key not in _ALLOWED_PILOT_PARAM_NAMES:
                 sp._append_audit({
                     "full_key": fk, "symbol": symbol, "source": "apply_proposals",
                     "action": "skipped_unlisted_key",

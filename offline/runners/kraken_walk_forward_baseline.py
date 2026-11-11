@@ -21,7 +21,7 @@ KRAKEN_DIR = ROOT / "kraken"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
+from botcore import _parse_bool_flag, load_local_module, safe_nonneg_float  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -42,8 +42,11 @@ from offline.backtests.evaluation import (  # noqa: E402
     parse_intervals,
     resolve_window_sizes,
 )
-from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 from offline.backtests.execution import ExecutionModel  # noqa: E402
+
+load_isolated_kraken_cfg = load_local_module(
+    str(KRAKEN_DIR), "kraken_common", module_key="kraken_common"
+).load_isolated_kraken_cfg
 
 
 def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: float,

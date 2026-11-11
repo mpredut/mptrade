@@ -210,12 +210,19 @@ def _file_signal(path: str) -> dict:
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
         return {**NEUTRAL, "source": "file(corrupt)"}
+    has_explicit_ts = "ts" in d or "timestamp" in d
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     eff_env = _hl_signals_env()
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN", eff_env) * 60
     if ts is None:
-        return {**NEUTRAL, "source": "file(expired)"}
-    ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
+        if has_explicit_ts:
+            return {**NEUTRAL, "source": "file(expired)"}
+        try:
+            ts_f = normalize_epoch_sec(os.path.getmtime(str(path)), default=0.0) or 0.0
+        except OSError:
+            return {**NEUTRAL, "source": "file(expired)"}
+    else:
+        ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
     if ts_f <= 0:
         return {**NEUTRAL, "source": "file(expired)"}
     age = time.time() - ts_f
