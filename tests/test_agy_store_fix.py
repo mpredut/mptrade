@@ -839,6 +839,22 @@ def test_active_background_command_and_subagent_block_restart_until_completed(st
                 "tool_calls": [{"name": "manage_subagents", "args": {"Action": "kill", "ConversationIds": [sub_cid]}}],
             }
         )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 7,
+                "type": "GENERIC",
+                "status": "DONE",
+                "created_at": cmd_iso,
+                "content": (
+                    "Created At: 2026-11-11T13:59:12+02:00\n"
+                    "Completed At: 2026-11-11T13:59:13+02:00\n"
+                    "Showing lines 760-830 of 1085\n"
+                    '768: "Tool is running as a background task with task id: other-cid/task-9999\\n"\n'
+                    '822: \'Created the following subagent:\\n{"conversationId": "phantom-sub-1"}\'\n'
+                ),
+            }
+        )
         + "\n",
         encoding="utf-8",
     )

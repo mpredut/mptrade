@@ -843,19 +843,28 @@ def last_store_activity() -> float:
                     sched_calls = 0
                     latest_user_input_ts = max(latest_user_input_ts, _record_ts(rec))
                 if awaiting_sched_task_id and step_type == "GENERIC":
-                    m_tid = re.search(r"background task with task id:\s*(\S+)", content)
+                    m_tid = re.match(
+                        r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)",
+                        content,
+                    )
                     if m_tid and ("Timer:" in content or "Cron:" in content or "schedule" in content):
                         sched_task_id = m_tid.group(1).strip()
                     awaiting_sched_task_id = False
                 if step_type == "GENERIC":
-                    m_bg = re.search(r"Tool is running as a background task with task id:\s*(\S+)", content)
-                    if m_bg and not re.search(r"Task Description:\s*(?:Timer|Cron):", content):
+                    m_bg = re.match(
+                        r"\A(?:Created At: [^\n]+\n)?Tool is running as a background task with task id:\s*(\S+)\s*(?:\n|\Z)",
+                        content,
+                    )
+                    if m_bg and not re.search(r"^Task Description:\s*(?:Timer|Cron):", content, re.MULTILINE):
                         bg_tid = m_bg.group(1).strip()
-                        if bg_tid and bg_tid != sched_task_id:
+                        if bg_tid and bg_tid.startswith(f"{cid}/") and bg_tid != sched_task_id:
                             active_bg_tasks[bg_tid] = _record_ts(rec)
-                    if "Created the following subagent" in content:
+                    if re.match(
+                        r'\A(?:Created At: [^\n]+\nCompleted At: [^\n]+\n)?Created the following subagent:\s*\{',
+                        content,
+                    ):
                         sub_ts = _record_ts(rec)
-                        for m_sub in re.finditer(r'"conversationId"\s*:\s*"([^"]+)"', content):
+                        for m_sub in re.finditer(r'"conversationId"\s*:\s*"([^"\s]+)"', content):
                             sub_cid = m_sub.group(1).strip()
                             if sub_cid:
                                 active_subagents[sub_cid] = sub_ts

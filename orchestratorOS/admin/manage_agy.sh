@@ -124,6 +124,12 @@ do_restart() {
             [ -S \"\${XDG_RUNTIME_DIR}/bus\" ] && export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
             exec 200>'$LOCK_FILE'
             flock -w 20 200 || true
+            sleep 4
+            for _ in {1..15}; do
+                running_cnt=\$(/usr/bin/python3 -c \"import os,sqlite3; db=os.path.expanduser('~/.gemini/antigravity-cli/conversation_summaries.db'); c=sqlite3.connect('file:'+db+'?mode=ro',uri=True); print(c.execute(\\\"SELECT count(*) FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING'\\\").fetchone()[0]); c.close()\" 2>/dev/null || echo 0)
+                [ \"\${running_cnt:-0}\" -eq 0 ] && break
+                sleep 2
+            done
             sleep 3
             '$AGY_BIN' remote-control stop || true
             for _ in {1..10}; do
