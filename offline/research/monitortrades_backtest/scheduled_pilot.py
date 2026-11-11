@@ -59,7 +59,9 @@ from botcore import (
     int_env,
     load_env_stack,
     load_ini_config,
+    resolve_mem_bounded_worker_cap,
     safe_float,
+    safe_pos_float,
     single_instance,
     split_csv,
 )
@@ -307,6 +309,13 @@ def _seed_cached_half(symbol: str, params: dict, series: list, res: dict | None,
     _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
 
 
+def _valid_pilot_grid_value(param_name: str, raw_val: object) -> float | None:
+    vf = safe_pos_float(raw_val, default=None)
+    if vf is None or (param_name == "mt.hardtp_fraction" and vf > 1.0):
+        return None
+    return vf
+
+
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     grid_values = scan_backtest_ranges(INSTRUMENTS_CONF).get(full_key)
     if not grid_values:
@@ -320,10 +329,12 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if len(half1) < 100 or len(half2) < 100:
         return {"full_key": full_key, "action": "skipped", "reason": "not enough history for 2 windows"}
 
-    test_values = [v for v in grid_values if safe_float(v, default=None) is not None]
+    test_values = [v for v in grid_values if _valid_pilot_grid_value(key, v) is not None]
     if not test_values:
         return {"full_key": full_key, "action": "skipped", "reason": "no_grid_annotation"}
-    if not any(abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values):
+    if _valid_pilot_grid_value(key, current) is not None and not any(
+        abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values
+    ):
         test_values.append(_num_str(current))
 
     eval_order = sorted(test_values, key=lambda x: safe_float(x, 0.0)) if key == "mt.hardtp" else test_values
@@ -529,202 +540,212 @@ def main():
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
     # output suppression is required (otherwise console I/O dominates execution time).
     log.disable_print()
+    try:
+        only_terms = list(split_csv(args.only))
+        keys = {k: v for k, v in PILOT_KEYS.items()
+                if not only_terms or any(t in k for t in only_terms)}
+        if not keys:
+            log.enable_print()
+            print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
+            return
 
-    only_terms = list(split_csv(args.only))
-    keys = {k: v for k, v in PILOT_KEYS.items()
-            if not only_terms or any(t in k for t in only_terms)}
-    if not keys:
-        log.enable_print()
-        print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
-        return
+        hard_tp_globally_enabled = bool(getattr(rb.mt, "HARD_TP_ENABLED", False))
+        active_keys = {
+            fk: v for fk, v in keys.items()
+            if hard_tp_globally_enabled or not v[2].startswith("mt.hardtp")
+        }
 
-    hard_tp_globally_enabled = bool(getattr(rb.mt, "HARD_TP_ENABLED", False))
-    active_keys = {
-        fk: v for fk, v in keys.items()
-        if hard_tp_globally_enabled or not v[2].startswith("mt.hardtp")
-    }
+        # Preload price series and trend tapes once in parent process so forked workers share them via COW.
+        unique_sym_base = sorted({(sym, base) for sym, base, _key in active_keys.values()})
+        for sym, _base in unique_sym_base:
+            _split_series(sym)
 
-    # Preload price series and trend tapes once in parent process so forked workers share them via COW.
-    unique_sym_base = sorted({(sym, base) for sym, base, _key in active_keys.values()})
-    for sym, _base in unique_sym_base:
-        _split_series(sym)
-
-    # Precompute baseline (base_params) once per symbol half across workers so all keys per symbol
-    # reuse the cached baseline and balanced workers evaluate both halves concurrently.
-    max_workers = int_env("WORKERS") or min(2, os.cpu_count() or 2)
-    all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
-    baseline_tasks = []
-    for sym, base in unique_sym_base:
-        half1, half2 = _split_series(sym)
-        if len(half1) >= 100 and len(half2) >= 100:
-            bp = dict(rb.SYMBOLS[sym]["params"])
-            baseline_tasks.append((sym, base, bp, 0, len(half1)))
-            baseline_tasks.append((sym, base, bp, 1, len(half2)))
-    baseline_tasks.sort(key=lambda t: -t[4])
-
-    base_results: dict[str, dict] = {}
-    if baseline_tasks:
-        with _futures.ProcessPoolExecutor(max_workers=min(len(baseline_tasks), max_workers)) as pre_ex:
-            for sym, bp, half_idx, res, diag in pre_ex.map(
-                _eval_one_half,
-                [(s, b, p, h) for s, b, p, h, _ in baseline_tasks],
-                chunksize=1,
-            ):
-                entry_b = base_results.setdefault(sym, {"base_params": bp, "r": [None, None], "diag": [{}, {}]})
-                entry_b["r"][half_idx] = res
-                entry_b["diag"][half_idx] = diag
-
-    for sym, entry_b in base_results.items():
-        base_params = entry_b["base_params"]
-        r1, r2 = entry_b["r"]
-        diag1, diag2 = entry_b["diag"]
-        if base_params is not None:
+        # Precompute baseline (base_params) once per symbol half across workers so all keys per symbol
+        # reuse the cached baseline and balanced workers evaluate both halves concurrently.
+        max_workers = resolve_mem_bounded_worker_cap(max_workers=2)
+        all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
+        baseline_tasks = []
+        for sym, base in unique_sym_base:
             half1, half2 = _split_series(sym)
-            _seed_cached_half(sym, base_params, half1, r1, diag1)
-            _seed_cached_half(sym, base_params, half2, r2, diag2)
-            htp1 = diag1.get("hard_tp_touched", True)
-            htp2 = diag2.get("hard_tp_touched", True)
-            base_htp = safe_float(base_params.get("mt.hardtp"), 0.0)
-            base_cd_s = safe_float(base_params.get("mt.hardtp_cooldown_h"), 6.0) * 3600.0
-            base_tr = safe_float(base_params.get("trailing.pct"), 0.0)
-            base_tr_r = base_tr / 100.0
-            for fk, (k_sym, _k_base, k_name) in active_keys.items():
-                if k_sym != sym:
-                    continue
-                for gv in all_ranges.get(fk, ()):
-                    gv_f = safe_float(gv, default=None)
-                    if gv_f is None:
+            if len(half1) >= 100 and len(half2) >= 100:
+                bp = dict(rb.SYMBOLS[sym]["params"])
+                baseline_tasks.append((sym, base, bp, 0, len(half1)))
+                baseline_tasks.append((sym, base, bp, 1, len(half2)))
+        baseline_tasks.sort(key=lambda t: -t[4])
+
+        base_results: dict[str, dict] = {}
+        if baseline_tasks:
+            with _futures.ProcessPoolExecutor(max_workers=min(len(baseline_tasks), max_workers)) as pre_ex:
+                for sym, bp, half_idx, res, diag in pre_ex.map(
+                    _eval_one_half,
+                    [(s, b, p, h) for s, b, p, h, _ in baseline_tasks],
+                    chunksize=1,
+                ):
+                    entry_b = base_results.setdefault(sym, {"base_params": bp, "r": [None, None], "diag": [{}, {}]})
+                    entry_b["r"][half_idx] = res
+                    entry_b["diag"][half_idx] = diag
+
+        for sym, entry_b in base_results.items():
+            base_params = entry_b["base_params"]
+            r1, r2 = entry_b["r"]
+            diag1, diag2 = entry_b["diag"]
+            if base_params is not None:
+                half1, half2 = _split_series(sym)
+                _seed_cached_half(sym, base_params, half1, r1, diag1)
+                _seed_cached_half(sym, base_params, half2, r2, diag2)
+                htp1 = diag1.get("hard_tp_touched", True)
+                htp2 = diag2.get("hard_tp_touched", True)
+                base_htp = safe_float(base_params.get("mt.hardtp"), 0.0)
+                base_cd_s = safe_float(base_params.get("mt.hardtp_cooldown_h"), 6.0) * 3600.0
+                base_tr = safe_float(base_params.get("trailing.pct"), 0.0)
+                base_tr_r = base_tr / 100.0
+                for fk, (k_sym, _k_base, k_name) in active_keys.items():
+                    if k_sym != sym:
                         continue
-                    p = dict(base_params, **{k_name: gv})
-                    if k_name == "mt.hardtp_fraction":
-                        if not htp1:
-                            _seed_cached_half(sym, p, half1, r1, diag1)
-                        if not htp2:
-                            _seed_cached_half(sym, p, half2, r2, diag2)
-                    elif k_name == "mt.hardtp_cooldown_h":
-                        cand_cd_s = gv_f * 3600.0
-                        if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag1.get("hard_tp_cooldown_dts", ())):
-                            _seed_cached_half(sym, p, half1, r1, diag1)
-                        if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag2.get("hard_tp_cooldown_dts", ())):
-                            _seed_cached_half(sym, p, half2, r2, diag2)
-                    elif k_name == "mt.hardtp" and base_htp > 0 and gv_f >= base_htp:
-                        gv_r = gv_f / 100.0
-                        if not htp1 or diag1.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
-                            _seed_cached_half(sym, p, half1, r1, diag1)
-                        if not htp2 or diag2.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
-                            _seed_cached_half(sym, p, half2, r2, diag2)
-                    elif k_name == "trailing.pct" and base_tr > 0:
-                        gv_r = gv_f / 100.0
-                        if (gv_r >= base_tr_r and gv_r <= diag1.get("min_trail_trigger_ratio", 0.0)) or (
-                            gv_r <= base_tr_r and gv_r > diag1.get("max_untriggered_trail_ratio", 1.0)
-                        ):
-                            _seed_cached_half(sym, p, half1, r1, diag1)
-                        if (gv_r >= base_tr_r and gv_r <= diag2.get("min_trail_trigger_ratio", 0.0)) or (
-                            gv_r <= base_tr_r and gv_r > diag2.get("max_untriggered_trail_ratio", 1.0)
-                        ):
-                            _seed_cached_half(sym, p, half2, r2, diag2)
+                    for gv in all_ranges.get(fk, ()):
+                        gv_f = _valid_pilot_grid_value(k_name, gv)
+                        if gv_f is None:
+                            continue
+                        p = dict(base_params, **{k_name: gv})
+                        if k_name == "mt.hardtp_fraction":
+                            if not htp1:
+                                _seed_cached_half(sym, p, half1, r1, diag1)
+                            if not htp2:
+                                _seed_cached_half(sym, p, half2, r2, diag2)
+                        elif k_name == "mt.hardtp_cooldown_h":
+                            cand_cd_s = gv_f * 3600.0
+                            if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag1.get("hard_tp_cooldown_dts", ())):
+                                _seed_cached_half(sym, p, half1, r1, diag1)
+                            if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag2.get("hard_tp_cooldown_dts", ())):
+                                _seed_cached_half(sym, p, half2, r2, diag2)
+                        elif k_name == "mt.hardtp" and base_htp > 0 and gv_f >= base_htp:
+                            gv_r = gv_f / 100.0
+                            if not htp1 or diag1.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
+                                _seed_cached_half(sym, p, half1, r1, diag1)
+                            if not htp2 or diag2.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
+                                _seed_cached_half(sym, p, half2, r2, diag2)
+                        elif k_name == "trailing.pct" and base_tr > 0:
+                            gv_r = gv_f / 100.0
+                            if (gv_r >= base_tr_r and gv_r <= diag1.get("min_trail_trigger_ratio", 0.0)) or (
+                                gv_r <= base_tr_r and gv_r > diag1.get("max_untriggered_trail_ratio", 1.0)
+                            ):
+                                _seed_cached_half(sym, p, half1, r1, diag1)
+                            if (gv_r >= base_tr_r and gv_r <= diag2.get("min_trail_trigger_ratio", 0.0)) or (
+                                gv_r <= base_tr_r and gv_r > diag2.get("max_untriggered_trail_ratio", 1.0)
+                            ):
+                                _seed_cached_half(sym, p, half2, r2, diag2)
 
-    # Pre-evaluate all remaining uncached (symbol, base, params, half_idx) tasks across the worker pool,
-    # sorted by descending series length so no single worker is left with a long tail.
-    pending_tasks = []
-    seen_task_cks = set()
-    for fk, (sym, base, key) in active_keys.items():
-        grid_values = all_ranges.get(fk)
-        if not grid_values:
-            continue
-        half1, half2 = _split_series(sym)
-        if len(half1) < 100 or len(half2) < 100:
-            continue
-        section = fk.split(".", 1)[0]
-        try:
-            current = _current_value(section, key)
-        except (KeyError, ValueError):
-            continue
-        base_params = dict(rb.SYMBOLS[sym]["params"])
-        test_values = [v for v in grid_values if safe_float(v, default=None) is not None]
-        if not test_values:
-            continue
-        if not any(abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values):
-            test_values.append(_num_str(current))
-        for v in test_values:
-            p = dict(base_params, **{key: v})
-            for half_idx, h_series in ((0, half1), (1, half2)):
-                ck = _run_one_cache_key(sym, p, h_series)
-                if ck not in _RUN_ONE_CACHE and ck not in seen_task_cks:
-                    seen_task_cks.add(ck)
-                    pending_tasks.append((sym, base, p, half_idx, len(h_series)))
-    pending_tasks.sort(key=lambda t: -t[4])
-
-    proposals = []
-    sys.stderr.write(
-        f"[scheduled_pilot] {len(keys)} keys ({len(pending_tasks)} uncached half-window runs) "
-        f"on {max_workers} parallel workers\n"
-    )
-    if pending_tasks:
-        with _futures.ProcessPoolExecutor(max_workers=min(len(pending_tasks), max_workers)) as ex:
-            for sym, p, half_idx, res, diag in ex.map(
-                _eval_one_half,
-                [(s, b, prm, h) for s, b, prm, h, _ in pending_tasks],
-                chunksize=1,
-            ):
-                h_series = _split_series(sym)[half_idx]
-                ck = _run_one_cache_key(sym, p, h_series)
-                _RUN_ONE_CACHE[ck] = res
-                _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
-                tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
-                rb._LAST_RUN_DIAGNOSTICS[tk] = diag
-                rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
-
-    entries = {}
-    for fk, (sym, base, key) in keys.items():
-        if fk not in active_keys:
-            entries[fk] = {
-                "full_key": fk,
-                "symbol": sym,
-                "action": "skipped",
-                "reason": "hard_tp_disabled_globally",
-            }
-            continue
-        try:
-            entries[fk] = evaluate_key(fk, sym, base, key, args.dry_run, args.propose)
-        except Exception as exc:  # noqa: BLE001
-            sys.stderr.write(f"[scheduled_pilot] Error evaluating {fk}: {exc}\n")
-            entries[fk] = {"full_key": fk, "action": "error", "reason": str(exc)}
-    for full_key, (symbol, base, key) in keys.items():   # Processing in a stable order.
-        entry = entries[full_key]
-        _append_audit(entry)
-        sys.stderr.write(f"=== {full_key} ===\n"
-                         + encode_json_payload({k: v for k, v in entry.items() if k != "results"},
-                                               indent=2, default=str) + "\n")
-        if args.propose and entry.get("action") == "proposed":
-            proposals.append({
-                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "full_key": full_key,
-                "section": full_key.split(".", 1)[0], "key": key, "symbol": symbol,
-                "current_on_dev": entry["current_value"],
-                "winner_value": entry["winner_value"],
-                "margin_vs_current": entry.get("margin_vs_current"),
-                "dev_commit": _git_head_short(),
-            })
-
-    if args.propose:
-        # a snapshot of the current proposals (overwriting -- the file means "what dev proposes
-        # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
-        # confirmed signal in this cycle (prod has nothing to apply).
-        atomic_write_json(args.propose_out, proposals, indent=2, default=str)
-        print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
-        if proposals and bool_env("PILOT_NOTIFY_PROPOSALS", default=False):
-            # notify user that new proposals are available to review and apply
+        # Pre-evaluate all remaining uncached (symbol, base, params, half_idx) tasks across the worker pool,
+        # sorted by descending series length so no single worker is left with a long tail.
+        pending_tasks = []
+        seen_task_cks = set()
+        for fk, (sym, base, key) in active_keys.items():
+            grid_values = all_ranges.get(fk)
+            if not grid_values:
+                continue
+            half1, half2 = _split_series(sym)
+            if len(half1) < 100 or len(half2) < 100:
+                continue
+            section = fk.split(".", 1)[0]
             try:
-                load_env_stack()
-                lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
-                         for p in proposals]
-                alert.notify(title=f"Backtest: {len(proposals)} new config proposal(s)",
-                             body="Run offline/runners/apply_proposals.py on prod (with guardrails):\n"
-                                  + "\n".join(lines),
-                             source="scheduled_pilot.py", symbol="backtest")
-            except Exception as e:  # noqa: BLE001
-                print(f"[scheduled_pilot] proposals notification error: {e}")
-    log.enable_print()
+                current = _current_value(section, key)
+            except (KeyError, ValueError):
+                continue
+            base_params = dict(rb.SYMBOLS[sym]["params"])
+            test_values = [v for v in grid_values if _valid_pilot_grid_value(key, v) is not None]
+            if not test_values:
+                continue
+            if _valid_pilot_grid_value(key, current) is not None and not any(
+                abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values
+            ):
+                test_values.append(_num_str(current))
+            for v in test_values:
+                p = dict(base_params, **{key: v})
+                for half_idx, h_series in ((0, half1), (1, half2)):
+                    ck = _run_one_cache_key(sym, p, h_series)
+                    if ck not in _RUN_ONE_CACHE and ck not in seen_task_cks:
+                        seen_task_cks.add(ck)
+                        pending_tasks.append((sym, base, p, half_idx, len(h_series)))
+        pending_tasks.sort(key=lambda t: -t[4])
+
+        proposals = []
+        sys.stderr.write(
+            f"[scheduled_pilot] {len(keys)} keys ({len(pending_tasks)} uncached half-window runs) "
+            f"on {max_workers} parallel workers\n"
+        )
+        if pending_tasks:
+            with _futures.ProcessPoolExecutor(max_workers=min(len(pending_tasks), max_workers)) as ex:
+                for sym, p, half_idx, res, diag in ex.map(
+                    _eval_one_half,
+                    [(s, b, prm, h) for s, b, prm, h, _ in pending_tasks],
+                    chunksize=1,
+                ):
+                    h_series = _split_series(sym)[half_idx]
+                    ck = _run_one_cache_key(sym, p, h_series)
+                    _RUN_ONE_CACHE[ck] = res
+                    _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
+                    tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
+                    rb._LAST_RUN_DIAGNOSTICS[tk] = diag
+                    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
+
+        entries = {}
+        for fk, (sym, base, key) in keys.items():
+            if fk not in active_keys:
+                entries[fk] = {
+                    "full_key": fk,
+                    "symbol": sym,
+                    "action": "skipped",
+                    "reason": "hard_tp_disabled_globally",
+                }
+                continue
+            try:
+                entries[fk] = evaluate_key(fk, sym, base, key, args.dry_run, args.propose)
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"[scheduled_pilot] Error evaluating {fk}: {exc}\n")
+                entries[fk] = {"full_key": fk, "action": "error", "reason": str(exc)}
+        for full_key, (symbol, base, key) in keys.items():   # Processing in a stable order.
+            entry = entries[full_key]
+            _append_audit(entry)
+            sys.stderr.write(f"=== {full_key} ===\n"
+                             + encode_json_payload({k: v for k, v in entry.items() if k != "results"},
+                                                   indent=2, default=str) + "\n")
+            if args.propose and entry.get("action") == "proposed":
+                proposals.append({
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "full_key": full_key,
+                    "section": full_key.split(".", 1)[0], "key": key, "symbol": symbol,
+                    "current_on_dev": entry["current_value"],
+                    "winner_value": entry["winner_value"],
+                    "margin_vs_current": entry.get("margin_vs_current"),
+                    "dev_commit": _git_head_short(),
+                })
+
+        log.enable_print()
+        if args.propose:
+            if active_keys and all(entries[fk].get("action") == "error" for fk in active_keys):
+                sys.stderr.write(
+                    f"[scheduled_pilot] ERROR: all {len(active_keys)} active pilot keys failed; "
+                    f"refusing to overwrite {args.propose_out}\n"
+                )
+                sys.exit(1)
+            # a snapshot of the current proposals (overwriting -- the file means "what dev proposes
+            # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
+            # confirmed signal in this cycle (prod has nothing to apply).
+            atomic_write_json(args.propose_out, proposals, indent=2, default=str)
+            print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
+            if proposals and bool_env("PILOT_NOTIFY_PROPOSALS", default=False):
+                # notify user that new proposals are available to review and apply
+                try:
+                    load_env_stack()
+                    lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
+                             for p in proposals]
+                    alert.notify(title=f"Backtest: {len(proposals)} new config proposal(s)",
+                                 body="Run offline/runners/apply_proposals.py on prod (with guardrails):\n"
+                                      + "\n".join(lines),
+                                 source="scheduled_pilot.py", symbol="backtest")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[scheduled_pilot] proposals notification error: {e}")
+    finally:
+        log.enable_print()
 
 
 if __name__ == "__main__":

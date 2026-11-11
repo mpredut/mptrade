@@ -33,6 +33,7 @@ if _ROOT not in sys.path:
 
 
 from botcore import (
+    exact_nonneg_int,
     exact_pos_int,
     load_local_module,
     log,
@@ -110,7 +111,7 @@ def run(coin, ohlc, ts, fund, sig, P, direction, budget):
     return total_pct, m, wr
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Complete DCA+TP backtester on Hyperliquid.")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--coin", default=None)
@@ -123,7 +124,7 @@ def main() -> int:
     ap.add_argument("--band", default=None)
     ap.add_argument("--win", default=None)
     ap.add_argument("--step", default=None)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     days_i = exact_pos_int(args.days, default=None)
     if days_i is None:
         ap.error("--days must be a positive integer")
@@ -131,7 +132,18 @@ def main() -> int:
     cfg = load_isolated_hl_cfg(_HERE)
 
     coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
+    if (
+        not coin
+        or coin.startswith("-")
+        or ".." in coin
+        or "/" in coin
+        or "\\" in coin
+        or any(ch.isspace() for ch in coin)
+    ):
+        ap.error(f"invalid --coin: {coin!r}")
     direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
+    if direction not in ("long", "short"):
+        ap.error(f"invalid --direction: {direction!r}")
     entry = args.entry if args.entry is not None else required_float_env("STRAT_ENTRY", env=cfg)
     dca = args.dca if args.dca is not None else required_float_env("STRAT_DCA", env=cfg)
     disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env=cfg)
@@ -178,12 +190,35 @@ def main() -> int:
     strat_mode = optional_env("STRATEGY_MODE", "avg_tp", env=cfg).strip().lower()
     enable_tp = strat_mode != "dca_only"
 
+    if (budget := safe_pos_float(budget, default=None)) is None:
+        ap.error("--budget must be > 0")
+    if (entry := safe_pos_float(entry, default=None)) is None:
+        ap.error("--entry must be > 0")
+    if (maxdca := exact_nonneg_int(maxdca, default=None)) is None:
+        ap.error("--maxdca must be a non-negative integer")
+    if maxdca > 0:
+        if (dca := safe_pos_float(dca, default=None)) is None:
+            ap.error("--dca must be > 0 when maxdca > 0")
+    elif (dca := safe_nonneg_float(dca, default=None)) is None:
+        ap.error("--dca must be >= 0")
+    if (drop := safe_pos_float(drop, default=None)) is None:
+        ap.error("--drop must be > 0")
+    if enable_tp:
+        if (tp := safe_pos_float(tp, default=None)) is None:
+            ap.error("--tp must be > 0 when take-profit is enabled")
+    elif (tp := safe_nonneg_float(tp, default=None)) is None:
+        ap.error("--tp must be >= 0")
+    if (disc := safe_nonneg_float(disc, default=None)) is None or disc >= 100.0:
+        ap.error("--disc must be in [0, 100)")
+    if (fee := safe_nonneg_float(fee, default=None)) is None or fee >= 100.0:
+        ap.error("--fee must be in [0, 100)")
+    if (sl := safe_nonneg_float(sl, default=None)) is None:
+        ap.error("--sl must be >= 0")
+
     warmup_h = max(slow_h + 6, math.ceil(win_h + step_h * 14), 48) if args.signal != "off" else 5
     records = fetch_ohlc_candles(coin, "1h", lookback_hours=days_i * 24 + warmup_h, drop_incomplete=True)
     if len(records) < 50:
         log("! too few candles"); return 1
-    if budget <= 0:
-        log("! budget must be > 0"); return 1
     all_closes = [r["close"] for r in records]
     all_ts_sec = [r["timestamp"] for r in records]
     all_sig = precompute_signal(all_closes, all_ts_sec, args.signal, fast_h, slow_h, band_pct / 100.0, win_h, step_h)

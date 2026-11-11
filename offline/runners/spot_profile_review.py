@@ -15,7 +15,7 @@ import subprocess
 
 from botcore import parse_dotenv_line, safe_pos_float
 from state_io import atomic_write_json, encode_json_payload, read_bytes_file, read_json_file, read_text_file
-from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
+from strategies.spot_replay import make_spot_replay_adapter, prepare_spot_interval_params
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
 from offline.backtests.evaluation import ReplayContext, evaluate_segment, to_ohlc
@@ -28,18 +28,65 @@ from offline.backtests.walk_forward import walk_forward_splits
 from offline.runners.kraken_financial_benchmark import DEFAULT_DATASET, DEFAULT_MANIFEST, ROOT
 
 
+_CORE_REQUIRED_STRAT_KEYS = frozenset({
+    "STRATEGY_MODE",
+    "STRAT_CURRENCY",
+    "STRAT_ENTRY_DISCOUNT_PCT",
+    "STRAT_DCA_DROP_PCT",
+    "STRAT_TAKEPROFIT_PCT",
+    "STRAT_CHECK_MINUTES",
+    "STRAT_MAX_DCA_BUYS",
+    "STRAT_ORDER_TTL_MIN",
+})
+
 _HISTORICAL_FEATURE_DEFAULTS = {
+    "STRAT_ENTRY": "0",
+    "STRAT_DCA": "0",
+    "STRAT_MAX_BUDGET": "0",
+    "STRAT_TOTAL_BUDGET": "0",
+    "STRAT_ALLOC_PCT": "0",
+    "STRAT_ENTRY_PCT": "0",
+    "STRAT_DCA_PCT": "0",
+    "STRAT_ADOPT_COST": "0",
+    "STRAT_ADOPT_QTY": "0",
+    "STRAT_TP_TRANCHES": "",
+    "STRAT_STOP_LOSS_PCT": "0",
     "STRAT_TP_MDHTP_ENABLED": "false",
+    "STRAT_TP_DYNAMIC_FLAT": "false",
     "STRAT_SL_MHDSL_ENABLED": "false",
-    "STRAT_REENTRY_ENABLED": "false",
-    "STRAT_HYBRID_REENTRY_ENABLED": "false",
+    "STRAT_REENTRY_HYBRID_ENABLED": "false",
+    "STRAT_REENTRY_PEAK_RELATIVE": "false",
+    "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
+    "STRAT_REENTRY_DROP_PCT": "0",
+    "STRAT_REENTRY_BEAR_BOUNCE_PCT": "0",
+    "STRAT_REENTRY_TTL_HOURS": "0",
+    "STRAT_REENTRY_ADAPTIVE": "false",
     "STRAT_TREND_OVERLAY": "false",
-    "STRAT_CONFIRM_ENTRY": "false",
-    "STRAT_CONFIRM_DCA": "false",
     "STRAT_TP_TREND_HOLD": "false",
     "STRAT_TP_TRAIL_ADAPTIVE": "false",
+    "STRAT_TREND_TRAIL_DYNAMIC": "false",
+    "STRAT_DCA_TREND_BRAKE": "false",
+    "STRAT_DCA_SPACING_GROWTH_PCT": "0",
+    "STRAT_FAST_PROFIT_GUARD": "false",
+    "STRAT_SURGE_GUARD": "false",
+    "STRAT_SURGE_DYNAMIC": "false",
+    "STRAT_SLOW_GRIND_GUARD": "false",
+    "STRAT_CONFIRM_ENTRY": "false",
+    "STRAT_CONFIRM_DCA": "false",
     "STRAT_ENTRY_POST_ONLY": "false",
 }
+
+
+def _historical_schema_defaults() -> dict[str, str]:
+    schema_path = ROOT / "hyperliquid" / "config.env"
+    base_env: dict[str, str] = {}
+    if schema_path.is_file():
+        for line in read_text_file(schema_path).splitlines():
+            parsed = parse_dotenv_line(line)
+            if parsed is not None and parsed[0] not in _CORE_REQUIRED_STRAT_KEYS:
+                base_env[parsed[0]] = parsed[1]
+    base_env.update(_HISTORICAL_FEATURE_DEFAULTS)
+    return base_env
 
 
 def _git_head_or_unknown() -> str:
@@ -71,9 +118,9 @@ def revision_params(spec: str) -> StratParams:
     try:
         return StratParams.from_env(env)
     except ValueError:
-        if not any(k in env for k in ("STRAT_ENTRY", "STRAT_ENTRY_PCT", "STRAT_MAX_BUDGET")):
+        if not any(k in env for k in ("STRAT_ENTRY", "STRAT_ENTRY_PCT", "STRAT_MAX_BUDGET", "STRAT_TOTAL_BUDGET")):
             raise
-        merged = {**_HISTORICAL_FEATURE_DEFAULTS, **env}
+        merged = {**_historical_schema_defaults(), **env}
         return StratParams.from_env(merged)
 
 
@@ -111,7 +158,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
         raise ValueError("dataset too small for walk-forward splits")
     reports = {}
     for name, params in profiles.items():
-        aligned_params = align_spot_interval_params(params, 240)
+        aligned_params = prepare_spot_interval_params(params, 240)
         report = {"strategy_params": asdict(aligned_params), "initial_capital_usd": cash,
                   "dataset": {"sha256": digest, "bars": len(records)},
                   "walk_forward": {"interval_minutes": 240, "train": 720,

@@ -39,6 +39,7 @@ from providers.replay_provider import SimClock, backtest_isolation_context  # no
 from state_io import append_text_line, atomic_write_json, iter_jsonl_dicts, read_json_dict
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
+from offline.backtests.evaluation import parse_cli_float
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
@@ -691,14 +692,35 @@ def main():
     p.add_argument("--kalman-primary", action="store_true",
                    help="Kalman drives (BUY on ->UP, SELL likewise on ->DOWN); the old model only "
                         "journals. For an A/B on P&L against the normal run.")
-    p.add_argument("--trend-gate-timeout-sec", type=float, default=None,
+    p.add_argument("--trend-gate-timeout-sec", type=parse_cli_float, default=None,
                    help="29 Jul: a 'wait for a better price' gate for BUY/SELL (faithful to live: "
                         "it DELAYS until a favourable tick, it does NOT block). A SHORT dynamic "
                         "trend window. Default None = OFF (the old behaviour).")
-    p.add_argument("--trend-gate-max-wait-sec", type=float, default=3600.0,
+    p.add_argument("--trend-gate-max-wait-sec", type=parse_cli_float, default=3600.0,
                    help="how long a delayed order waits at most before being placed anyway "
                         "(default 3600 = the live value).")
     args = p.parse_args()
+
+    symbol = args.symbol.strip().upper()
+    if (
+        not symbol
+        or symbol.startswith("-")
+        or ".." in symbol
+        or "/" in symbol
+        or "\\" in symbol
+        or any(ch.isspace() for ch in symbol)
+    ):
+        p.error(f"Invalid --symbol: {args.symbol!r}")
+    if args.run_id is not None:
+        clean_run_id = args.run_id.strip()
+        if not clean_run_id or ".." in clean_run_id or "/" in clean_run_id or "\\" in clean_run_id:
+            p.error(f"Invalid --run-id: {args.run_id!r}")
+    else:
+        clean_run_id = None
+    if args.trend_gate_timeout_sec is not None and safe_nonneg_float(args.trend_gate_timeout_sec, default=None) is None:
+        p.error("--trend-gate-timeout-sec must be >= 0")
+    if safe_nonneg_float(args.trend_gate_max_wait_sec, default=None) is None:
+        p.error("--trend-gate-max-wait-sec must be >= 0")
 
     try:
         start_ts = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
@@ -712,9 +734,9 @@ def main():
             p.error(f"Invalid --end date (expected YYYY-MM-DD): {args.end!r}")
         if end_ts < start_ts:
             p.error("--end date cannot be earlier than --start date")
-    run_id = args.run_id or f"{args.symbol}_{args.start}_{safe_int(resolve_now_ts(), 0)}"
+    run_id = clean_run_id or f"{symbol}_{args.start}_{safe_int(resolve_now_ts(), 0)}"
 
-    run_backtest(args.symbol, start_ts, end_ts, args.speed, run_id, args.source, args.cache24_file,
+    run_backtest(symbol, start_ts, end_ts, args.speed, run_id, args.source, args.cache24_file,
                  args.quiet, kalman_primary=args.kalman_primary,
                  trend_gate_timeout_sec=args.trend_gate_timeout_sec,
                  trend_gate_max_wait_sec=args.trend_gate_max_wait_sec)

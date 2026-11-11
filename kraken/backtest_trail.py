@@ -35,7 +35,7 @@ from botcore import (
 from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
-from strategies.replay_metrics import buy_hold_pct as bh
+from strategies.replay_metrics import buy_hold_pct as bh, parse_bt_cli_int
 
 
 _ISOLATED_COMPARISON_OVERRIDES = {
@@ -245,12 +245,12 @@ def run_intraday(pair, tz_offset=3):
         print(f"  rest of day    : avg {statistics.fmean(rest):+.3f}%/hour ({len(rest)} obs)")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--wf", metavar="PAIR", help="walk-forward on a single pair")
     ap.add_argument("--intraday", metavar="PAIR", help="the pattern by hour of day")
-    ap.add_argument("--interval", type=int, default=60)
-    args = ap.parse_args()
+    ap.add_argument("--interval", type=parse_bt_cli_int, default=60)
+    args = ap.parse_args(argv)
     if args.interval <= 0:
         ap.error("--interval must be > 0")
     if args.wf:

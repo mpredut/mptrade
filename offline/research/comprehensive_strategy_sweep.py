@@ -29,7 +29,7 @@ from botcore import (
 from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
 from strategies.spot_engine import StratParams
 from strategies import spot_replay as kraken_replay
-from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
+from strategies.spot_replay import prepare_spot_interval_params
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
 from offline.backtests.evaluation import evaluate_segment
@@ -249,9 +249,8 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     live_candidate_windows = []
 
     for name, overrides in candidates.items():
-        params = scale_subbar_timeout_params(
-            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
-            interval,
+        params = prepare_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
         adapter = kraken_replay.make_spot_replay_adapter(
             params,
@@ -327,9 +326,8 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
         kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
-        params = scale_subbar_timeout_params(
-            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
-            interval,
+        params = prepare_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
         budget = params.allocated_budget()
         m = kraken_replay.run_replay(
@@ -464,9 +462,8 @@ def run_live_forward_shadow(
         )
 
     for name, overrides in candidates.items():
-        params = scale_subbar_timeout_params(
-            align_spot_interval_params(dataclasses.replace(LIVE_PARAMS, **overrides), interval),
-            interval,
+        params = prepare_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
         budget = params.allocated_budget()
 
@@ -518,6 +515,10 @@ def main():
     cont_results = run_continuous_628d_replay(candidates, records)
     shadow_results = run_live_forward_shadow(candidates, records=records)
 
+    if not wf_results and not cont_results:
+        print("ERROR: Strategy sweep produced zero walk-forward and continuous results; refusing to write empty reports.", file=sys.stderr)
+        sys.exit(1)
+
     # Combine into unified master dictionary
     master = []
     for name in candidates:
@@ -552,12 +553,22 @@ def main():
         "| Rank | Candidate | WF Mean % | WF Median % | WF Worst % | WF Worst DD % | Pos Folds | W/T/L vs Live |\n",
         "|---:|---|---:|---:|---:|---:|---:|---:|\n",
     ]
-    sorted_wf = sorted(master, key=lambda x: (x.get("wf_mean_ret", 0), -x.get("wf_worst_dd", 100)), reverse=True)
+    sorted_wf = sorted(
+        master,
+        key=lambda x: (safe_float(x.get("wf_mean_ret"), 0.0), -safe_float(x.get("wf_worst_dd"), 100.0)),
+        reverse=True,
+    )
     for rank, r in enumerate(sorted_wf, 1):
+        wf_mean = safe_float(r.get("wf_mean_ret"), 0.0)
+        wf_med = safe_float(r.get("wf_median_ret"), 0.0)
+        wf_worst = safe_float(r.get("wf_worst_ret"), 0.0)
+        wf_wdd = safe_float(r.get("wf_worst_dd"), 0.0)
+        wf_pos = safe_nonneg_int(r.get("wf_pos_count"), default=0)
+        wf_tf = safe_nonneg_int(r.get("wf_total_folds"), default=total_folds)
         lines.append(
-            f"| {rank} | `{r['name']}` | {r.get('wf_mean_ret', 0):+.3f}% | {r.get('wf_median_ret', 0):+.3f}% | "
-            f"{r.get('wf_worst_ret', 0):+.2f}% | {r.get('wf_worst_dd', 0):.2f}% | "
-            f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', total_folds)} | {r.get('vs_live_WTL', '-')} |\n"
+            f"| {rank} | `{r['name']}` | {wf_mean:+.3f}% | {wf_med:+.3f}% | "
+            f"{wf_worst:+.2f}% | {wf_wdd:.2f}% | "
+            f"{wf_pos}/{wf_tf} | {r.get('vs_live_WTL') or '-'} |\n"
         )
 
     lines.append(f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n")
@@ -582,12 +593,16 @@ def main():
         reverse=True,
     )
     for rank, r in enumerate(sorted_cont, 1):
-        cycles = r.get("cont_cycles", 0)
-        wins = r.get("cont_wins", 0)
+        cycles = safe_nonneg_int(r.get("cont_cycles"), default=0)
+        wins = safe_nonneg_int(r.get("cont_wins"), default=0)
         win_rate = (wins / cycles * 100.0) if cycles > 0 else 0.0
+        c_net = safe_float(r.get("cont_net_pct"), 0.0)
+        c_tot = safe_float(r.get("cont_total_pct"), 0.0)
+        c_dd = safe_float(r.get("cont_max_dd"), 0.0)
+        c_cal = safe_float(r.get("cont_calmar"), 0.0)
         lines.append(
-            f"| {rank} | `{r['name']}` | {r.get('cont_net_pct', 0):+.2f}% | {r.get('cont_total_pct', 0):+.2f}% | "
-            f"{r.get('cont_max_dd', 0):.2f}% | **{r.get('cont_calmar', 0):.2f}** | {cycles} | {win_rate:.1f}% |\n"
+            f"| {rank} | `{r['name']}` | {c_net:+.2f}% | {c_tot:+.2f}% | "
+            f"{c_dd:.2f}% | **{c_cal:.2f}** | {cycles} | {win_rate:.1f}% |\n"
         )
 
     lines.append(f"\n## 3. Kraken Live Shadow Performance (Forward ~{fwd_days}d & Window ~{full_days}d)\n\n")
@@ -597,10 +612,16 @@ def main():
         lines.append("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
         lines.append("|---|---:|---:|---:|---:|---:|---:|\n")
         for r in master:
+            f_net = safe_float(r.get("fwd_net"), 0.0)
+            f_tot = safe_float(r.get("fwd_total"), 0.0)
+            f_dd = safe_float(r.get("fwd_dd"), 0.0)
+            w_net = safe_float(r.get("full_net"), 0.0)
+            w_tot = safe_float(r.get("full_total"), 0.0)
+            w_dd = safe_float(r.get("full_dd"), 0.0)
             lines.append(
-                f"| `{r['name']}` | {r.get('fwd_net', 0):+.2f}% | {r.get('fwd_total', 0):+.2f}% | "
-                f"{r.get('fwd_dd', 0):.2f}% | {r.get('full_net', 0):+.2f}% | {r.get('full_total', 0):+.2f}% | "
-                f"{r.get('full_dd', 0):.2f}% |\n"
+                f"| `{r['name']}` | {f_net:+.2f}% | {f_tot:+.2f}% | "
+                f"{f_dd:.2f}% | {w_net:+.2f}% | {w_tot:+.2f}% | "
+                f"{w_dd:.2f}% |\n"
             )
 
     atomic_write_text(md_path, "".join(lines))

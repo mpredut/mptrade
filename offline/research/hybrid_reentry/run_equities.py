@@ -17,7 +17,7 @@ from offline.research.hybrid_reentry.harness import (
     print_ablation_suite_banner,
     save_validated_ablation_results,
 )
-from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
+from strategies.spot_replay import prepare_spot_interval_params
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 
@@ -108,9 +108,7 @@ def main():
         cfg["STRAT_REENTRY_TTL_HOURS"] = "0.0"
         if safe_pos_float(cfg.get("STRAT_REENTRY_DROP_PCT"), default=None) is None:
             cfg["STRAT_REENTRY_DROP_PCT"] = "2.0"
-        base_params = scale_subbar_timeout_params(
-            align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0), 1440.0
-        )
+        base_params = prepare_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
         asset_rows = evaluate_asset(
             asset_name=symbol,
             ohlc=ohlc,

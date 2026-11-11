@@ -45,7 +45,7 @@ from offline.backtests.evaluation import parse_cli_float, parse_cli_int
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_engine as strat, spot_replay as _spot_replay
 from strategies.spot_replay import (
-    align_spot_interval_params,
+    prepare_spot_interval_params,
     run_replay,
     scale_subbar_timeout_params,
     split_warmup_ohlc,
@@ -62,7 +62,7 @@ DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
-    return align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
+    return prepare_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
 
 R = dataclasses.replace
 
@@ -542,6 +542,8 @@ def main():
     baseline = next((r for r in results if r["id"] == "BASELINE_SURGE_OFF"), None)
     if baseline is None:
         raise RuntimeError("Incomplete sweep; refusing to rank results against a missing control (BASELINE_SURGE_OFF)")
+    if total_cands > 1 and len(results) <= 1:
+        raise RuntimeError("All non-control candidates failed; refusing to write degenerate sweep report")
     failed_cands = max(0, total_cands - len(results))
     if failed_cands > 0:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: {failed_cands} candidates failed; proceeding with {len(results)} successful candidates.", flush=True)

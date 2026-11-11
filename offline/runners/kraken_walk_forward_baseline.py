@@ -26,7 +26,7 @@ from providers.market_api import api as mkt  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params  # noqa: E402
+from strategies.spot_replay import prepare_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
     load_dataset,
@@ -53,7 +53,7 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
                           test_size: int, step_size: int, warmup_bars: int = 0,
                           execution: ExecutionModel | None = None) -> dict:
     adapter = kraken_replay.make_spot_replay_adapter(
-        scale_subbar_timeout_params(align_spot_interval_params(params, interval), interval),
+        prepare_spot_interval_params(params, interval),
         fee_pct=fee_pct,
         bar_minutes=interval,
         execution=execution,
@@ -97,10 +97,21 @@ def main(argv: list[str] | None = None) -> int:
         pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
         if not pair:
             parser.error("missing pair: --pair or KRAKEN_PAIR")
+        if (
+            pair.startswith("-")
+            or ".." in pair
+            or "\\" in pair
+            or pair.startswith("/")
+            or pair.endswith("/")
+            or pair.count("/") > 1
+            or any(ch.isspace() for ch in pair)
+        ):
+            parser.error(f"invalid pair: {pair!r}")
         params = StratParams.from_env(cfg)
         supplied = parse_dataset_specs(args.dataset)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         parser.error(str(exc))
+    safe_pair = pair.replace("/", "_")
     output_dir = Path(args.output_dir).expanduser().resolve()
     dataset_dir = output_dir / "datasets"
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
@@ -144,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         records = validate_dataset(records, interval_minutes=interval)
         meta = dataset_metadata(records, interval_minutes=interval)
         digest = meta["sha256"]
-        frozen_path = dataset_dir / f"{pair}_{interval}m_{digest[:12]}.csv"
+        frozen_path = dataset_dir / f"{safe_pair}_{interval}m_{digest[:12]}.csv"
         save_dataset(records, frozen_path)
         train_size, validation_size, test_size, step_size = resolve_window_sizes(
             args, len(records)
@@ -171,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
-    report_path = output_dir / f"baseline_{pair}_{stamp}.json"
+    report_path = output_dir / f"baseline_{safe_pair}_{stamp}.json"
     atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
 
     print(f"Baseline saved: {report_path}")

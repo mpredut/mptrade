@@ -25,7 +25,15 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
-from botcore import normalize_epoch_sec, safe_float, safe_int, safe_pos_float, safe_pos_int  # noqa: E402
+from botcore import (  # noqa: E402
+    normalize_epoch_sec,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
+from offline.backtests.evaluation import parse_cli_float, parse_cli_int  # noqa: E402
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor  # noqa: E402
 from sklearn.linear_model import LogisticRegression  # noqa: E402
 from sklearn.pipeline import make_pipeline  # noqa: E402
@@ -158,17 +166,55 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     }
 
 
-def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> dict:
+def validate_forecast_symbol(raw: object) -> str | None:
+    if not isinstance(raw, str) or isinstance(raw, bool):
+        return None
+    sym = raw.strip().upper()
+    if (
+        not sym
+        or sym.startswith("-")
+        or ".." in sym
+        or "/" in sym
+        or "\\" in sym
+        or any(ch.isspace() for ch in sym)
+    ):
+        return None
+    return sym
+
+
+def live_forecast(
+    px: np.ndarray,
+    X,
+    y_dir,
+    y_mag,
+    rep: dict,
+    symbol: str,
+    ts: np.ndarray | None = None,
+) -> dict:
     """Train on ALL history and forecast from the latest candle."""
     boost_acc = safe_float(rep.get("boost"), default=None) if isinstance(rep, dict) else None
     logit_acc = safe_float(rep.get("logit"), default=None) if isinstance(rep, dict) else None
     lindy_acc = safe_float(rep.get("lindy"), default=None) if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and (logit_acc is None or boost_acc >= logit_acc)
     px_arr = _to_price_array(px)
+    gap_detected = False
+    if ts is not None:
+        raw_ts = _to_price_array(ts)
+        if len(raw_ts) != len(px_arr) or len(px_arr) <= WARMUP:
+            gap_detected = True
+        else:
+            t_start = normalize_epoch_sec(raw_ts[-1 - WARMUP], default=None, allow_zero=True)
+            t_end = normalize_epoch_sec(raw_ts[-1], default=None, allow_zero=True)
+            if (
+                t_start is None
+                or t_end is None
+                or abs((t_end - t_start) - WARMUP * 3600.0) > 1800.0
+            ):
+                gap_detected = True
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     has_valid_features = False
-    if len(px_arr) > WARMUP:
+    if not gap_detected and len(px_arr) > WARMUP:
         raw_row = _feat_row(len(px_arr) - 1, logp, px_arr)
         has_valid_features = all(np.isfinite(v) for v in raw_row)
     else:
@@ -183,7 +229,7 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
             clf = make_pipeline(StandardScaler(),
                                 LogisticRegression(max_iter=1000)).fit(X, y_dir)
         proba_up = safe_float(clf.predict_proba(row)[0][1], 0.5)
-    elif len(unique_classes) == 1:
+    elif not gap_detected and len(unique_classes) == 1:
         proba_up = 1.0 if safe_int(unique_classes[0], 0) == 1 else 0.0
     else:
         proba_up = 0.5
@@ -195,7 +241,7 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     selected_acc = boost_acc if use_boost else logit_acc
     if selected_acc is None:
         selected_acc = boost_acc if boost_acc is not None else logit_acc
-    return {
+    out = {
         "trend": "up" if proba_up >= 0.5 else "down",
         "confidence": round(abs(proba_up - 0.5) * 2, 2),
         "ts": time.time(),
@@ -207,16 +253,19 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
         "walkforward_accuracy": round(selected_acc, 3) if selected_acc is not None else None,
         "baseline_accuracy": round(lindy_acc, 3) if lindy_acc is not None else None,
     }
+    if gap_detected:
+        out["gap_detected"] = True
+    return out
 
 
 def create_ml_forecast_parser(description: str) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--symbol", default="TAOUSDC")
-    ap.add_argument("--days", type=int, default=400)
+    ap.add_argument("--days", type=parse_cli_int, default=400)
     return ap
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = create_ml_forecast_parser("Walk-forward machine learning forecast benchmark.")
     ap.add_argument("--eval", action="store_true", help="the walk-forward report only")
     ap.add_argument("--forecast", action="store_true", help="write forecast.json")
@@ -224,29 +273,51 @@ def main() -> int:
         "--out",
         default=os.path.join(_ROOT, "offline", "results", "ml_forecast", "forecast.json"),
     )
-    ap.add_argument("--loop", type=float, default=0, help="minutes between forecasts (0 = once)")
-    args = ap.parse_args()
+    ap.add_argument("--loop", type=parse_cli_float, default=0.0, help="minutes between forecasts (0 = once)")
+    args = ap.parse_args(argv)
+    if (symbol := validate_forecast_symbol(args.symbol)) is None:
+        ap.error(f"invalid --symbol: {args.symbol!r}")
     if (days := safe_pos_int(args.days, default=None)) is None:
         ap.error("--days must be positive")
+    if (loop_nonneg := safe_nonneg_float(args.loop, default=None)) is None:
+        ap.error("--loop must be >= 0")
+    loop_min = safe_pos_float(loop_nonneg, default=None)
 
     while True:
-        ts, px = fetch_klines(args.symbol, days)
+        ts, px = fetch_klines(symbol, days)
         if len(px) < WARMUP + HORIZON_H + 100:
-            print(f"! insufficient history ({len(px)} candles)")
-            return 1
+            print(f"! insufficient history ({len(px)} candles)", file=sys.stderr)
+            if loop_min is None:
+                return 1
+            time.sleep(loop_min * 60)
+            continue
         X, y_dir, y_mag = build_dataset(px, ts=ts)
-        print(f"[{args.symbol}] {len(px)} 1h candles -> {len(X)} samples, horizon {HORIZON_H}h")
+        print(f"[{symbol}] {len(px)} 1h candles -> {len(X)} samples, horizon {HORIZON_H}h")
+        if len(X) == 0:
+            print(f"! no valid contiguous samples for {symbol}; refusing to overwrite {args.out}", file=sys.stderr)
+            if loop_min is None:
+                return 1
+            time.sleep(loop_min * 60)
+            continue
         rep = walk_forward(X, y_dir, y_mag)
         print(f"  Direction accuracy on {rep['n_test']} UNSEEN hours:")
         print(f"    lindy (persistence): {rep['lindy']:.3f}   logit: {rep['logit']:.3f}   boost: {rep['boost']:.3f}")
         print(f"  24h amplitude:  MAE model {rep['mae_move_pct']:.2f}%  vs baseline(0) {rep['mae_baseline_pct']:.2f}%")
         if args.forecast:
-            out = live_forecast(px, X, y_dir, y_mag, rep, args.symbol)
+            out = live_forecast(px, X, y_dir, y_mag, rep, symbol, ts=ts)
+            if out.get("gap_detected"):
+                print(
+                    f"! latest {WARMUP}h window has timestamp gap for {symbol}; refusing to overwrite {args.out}",
+                    file=sys.stderr,
+                )
+                if loop_min is None:
+                    return 1
+                time.sleep(loop_min * 60)
+                continue
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             atomic_write_json(args.out, out, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")
-        loop_min = safe_pos_float(args.loop, default=None)
         if loop_min is None:
             return 0
         time.sleep(loop_min * 60)

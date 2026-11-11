@@ -26,7 +26,12 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from botcore import safe_float, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
-from offline.research.ml_forecast.forecast import _to_price_array, create_ml_forecast_parser  # noqa: E402
+from offline.backtests.evaluation import parse_cli_int  # noqa: E402
+from offline.research.ml_forecast.forecast import (  # noqa: E402
+    _to_price_array,
+    create_ml_forecast_parser,
+    validate_forecast_symbol,
+)
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
 MAX_CONTEXT = 512                       # maximum history hours supplied per prediction
@@ -84,7 +89,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
             "mae_baseline_persistence": 0.0,
             "improvement_pct": None,
             "direction_accuracy": 0.0,
-            "corr_model_vs_actual": math.nan,
+            "corr_model_vs_actual": None,
         }
     pipe = _load_pipeline()
     preds, bases, actuals = [], [], []
@@ -121,7 +126,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
             "mae_baseline_persistence": 0.0,
             "improvement_pct": None,
             "direction_accuracy": 0.0,
-            "corr_model_vs_actual": math.nan,
+            "corr_model_vs_actual": None,
         }
     mae_model = safe_float(np.mean(np.abs(preds_arr - actuals_arr)), 0.0)
     mae_base = safe_float(np.mean(np.abs(bases_arr - actuals_arr)), 0.0)
@@ -142,17 +147,19 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         "mae_baseline_persistence": mae_base,
         "improvement_pct": round(100 * (1 - mae_model / mae_base_pos), 1) if mae_base_pos is not None else None,
         "direction_accuracy": round(dir_acc, 3),
-        "corr_model_vs_actual": round(corr, 3) if np.isfinite(corr) else math.nan,
+        "corr_model_vs_actual": round(corr, 3) if np.isfinite(corr) else None,
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = create_ml_forecast_parser("Chronos zero-shot volatility forecast benchmark.")
-    ap.add_argument("--win", type=int, default=24, help="the window (hours) for the realized volatility")
-    ap.add_argument("--horizon", type=int, default=24, help="how many hours ahead we predict")
-    ap.add_argument("--stride", type=int, default=6, help="the step between test windows (hours)")
+    ap.add_argument("--win", type=parse_cli_int, default=24, help="the window (hours) for the realized volatility")
+    ap.add_argument("--horizon", type=parse_cli_int, default=24, help="how many hours ahead we predict")
+    ap.add_argument("--stride", type=parse_cli_int, default=6, help="the step between test windows (hours)")
     ap.add_argument("--eval", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    if (symbol := validate_forecast_symbol(args.symbol)) is None:
+        ap.error(f"invalid --symbol: {args.symbol!r}")
     days, win, horizon, stride = (
         safe_pos_int(getattr(args, k), default=None)
         for k in ("days", "win", "horizon", "stride")
@@ -160,20 +167,27 @@ def main() -> int:
     if None in (days, win, horizon, stride):
         ap.error("--days, --win, --horizon, and --stride must be positive integers")
 
-    ts, px = fetch_klines(args.symbol, days)
-    print(f"[{args.symbol}] {len(px)} 1h candles")
-    rv = realized_vol_series(px, win)
+    ts, px = fetch_klines(symbol, days)
+    print(f"[{symbol}] {len(px)} 1h candles")
     warmup = win + MAX_CONTEXT // 4
+    if len(px) <= warmup + horizon:
+        print(f"! insufficient history ({len(px)} candles, need > {warmup + horizon})", file=sys.stderr)
+        return 1
+    rv = realized_vol_series(px, win)
     if args.eval:
         rep = walk_forward_vol(rv, horizon, warmup, stride)
         imp = rep["improvement_pct"]
         imp_str = f"{imp}% {'better' if imp > 0 else 'worse'}" if imp is not None else "n/a"
+        corr_val = rep["corr_model_vs_actual"]
+        corr_str = f"{corr_val:.3f}" if corr_val is not None else "n/a"
         print(f"  tested on {rep['n_test']} windows (stride={stride}h), "
               f"horizon={horizon}h, vol_window={win}h")
         print(f"    MAE model={rep['mae_model']:.5f}  baseline(persistence)={rep['mae_baseline_persistence']:.5f}"
               f"  -> {imp_str}")
         print(f"    direction accuracy (vol rises/falls): {rep['direction_accuracy']}")
-        print(f"    correlation model vs actual: {rep['corr_model_vs_actual']}")
+        print(f"    correlation model vs actual: {corr_str}")
+        if rep["n_test"] == 0:
+            return 1
     return 0
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+from datetime import datetime, timezone
 import inspect
 import os
 import sys
@@ -25,15 +26,32 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from strategies.spot_replay import (
-    align_spot_interval_params,
+    prepare_spot_interval_params,
     prewarm_trend_series,
     run_replay,
-    scale_subbar_timeout_params,
     split_warmup_ohlc,
 )
 from strategies import spot_engine as strat
 from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
 from state_io import atomic_write_json, read_text_lines
+
+
+def _parse_csv_timestamp_sec(raw: object) -> int | None:
+    ts_sec = normalize_epoch_sec(raw, default=None, allow_zero=True)
+    if ts_sec is None and isinstance(raw, str) and not isinstance(raw, bool):
+        clean = raw.strip()
+        if clean:
+            try:
+                iso_str = f"{clean[:-1]}+00:00" if clean.endswith(("Z", "z")) else clean
+                parsed_dt = datetime.fromisoformat(iso_str)
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                ts_sec = parsed_dt.timestamp()
+            except ValueError:
+                ts_sec = None
+    if ts_sec is not None and ts_sec >= 0.0:
+        return safe_nonneg_int(round(ts_sec), default=None)
+    return None
 
 
 def load_ohlc_with_timestamps_csv(
@@ -60,6 +78,7 @@ def load_ohlc_with_timestamps_csv(
         ts_idx, o_idx, h_idx, l_idx, c_idx = None, 0, 1, 2, 3
     min_len = max(o_idx, h_idx, l_idx, c_idx) + 1
     iterable = reader if has_header else [first, *reader]
+    paired: list[tuple[tuple[float, float, float, float], int | None]] = []
     for line in iterable:
         if not line or len(line) < min_len:
             continue
@@ -72,21 +91,22 @@ def load_ohlc_with_timestamps_csv(
             and h >= max(o, l, c)
             and l <= min(o, h, c)
         ):
-            rows.append((o, h, l, c))
-            if ts_idx is not None and ts_idx < len(line):
-                ts_sec = normalize_epoch_sec(line[ts_idx], default=None)
-                if ts_sec is not None and ts_sec >= 0.0:
-                    ts_int = safe_nonneg_int(round(ts_sec), default=None)
-                    if ts_int is not None:
-                        timestamps.append(ts_int)
-    if timestamps and len(timestamps) == len(rows):
+            ts_int = (
+                _parse_csv_timestamp_sec(line[ts_idx])
+                if ts_idx is not None and ts_idx < len(line)
+                else None
+            )
+            paired.append(((o, h, l, c), ts_int))
+    if any(ts_val is not None for _row, ts_val in paired):
         by_ts: dict[int, tuple[float, float, float, float]] = {}
-        for ts_val, row in zip(timestamps, rows):
-            by_ts[ts_val] = row
+        for row, ts_val in paired:
+            if ts_val is not None:
+                by_ts[ts_val] = row
         ordered_ts = sorted(by_ts)
         timestamps = ordered_ts
         rows = [by_ts[t] for t in ordered_ts]
     else:
+        rows = [row for row, _ts_val in paired]
         timestamps = []
     return rows, timestamps
 
@@ -211,9 +231,7 @@ def evaluate_asset(
     """Run all ablation tests on an asset and return structured metrics."""
     if not ohlc:
         return []
-    aligned_base = scale_subbar_timeout_params(
-        align_spot_interval_params(base_params, bar_minutes), bar_minutes
-    )
+    aligned_base = prepare_spot_interval_params(base_params, bar_minutes)
     variants = build_ablation_variants(aligned_base)
     results = []
     # Warmup first 30 bars if available to seed regime

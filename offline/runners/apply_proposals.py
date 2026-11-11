@@ -30,17 +30,19 @@ from state_io import parse_json_payload  # noqa: E402
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
 
 _DEV_PROFILE = parse_dotenv(os.path.join(ROOT, "offline", "runners", "dev_backtest.env"))
-BRANCH = (optional_env("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+_DEFAULT_BRANCH = (optional_env("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+BRANCH = _DEFAULT_BRANCH
 _ALLOWED_PILOT_PARAM_NAMES = frozenset(
     fk.split(".", 1)[1] for fk in sp.PILOT_KEYS if "." in fk
 )
 
 
 def _configured_branch(default: str = "") -> str:
+    if BRANCH != _DEFAULT_BRANCH:
+        return str(BRANCH or default).strip()
     return (
-        BRANCH
-        or optional_env("BACKTEST_PROPOSALS_BRANCH")
-        or str(_DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "")
+        optional_env("BACKTEST_PROPOSALS_BRANCH")
+        or _DEFAULT_BRANCH
         or default
     ).strip()
 
@@ -60,7 +62,7 @@ def _resolve_branch() -> str:
 
 
 def _read_proposals(branch: str | None = None):
-    """Read backtest_proposals.json from origin/BRANCH WITHOUT a checkout (git show)."""
+    """Read backtest_proposals.json from fetched tip WITHOUT a checkout (git show)."""
     target_branch = _resolve_branch() if branch is None else _validate_branch_name(branch)
     try:
         fetch_res = subprocess.run(
@@ -70,9 +72,14 @@ def _read_proposals(branch: str | None = None):
         if fetch_res.returncode != 0:
             return []
         out = subprocess.run(
-            ["git", "-C", ROOT, "show", f"origin/{target_branch}:backtest_proposals.json"],
+            ["git", "-C", ROOT, "show", "FETCH_HEAD:backtest_proposals.json"],
             capture_output=True, text=True, timeout=15,
         )
+        if out.returncode != 0:
+            out = subprocess.run(
+                ["git", "-C", ROOT, "show", f"origin/{target_branch}:backtest_proposals.json"],
+                capture_output=True, text=True, timeout=15,
+            )
     except (OSError, subprocess.SubprocessError):
         return []
     if out.returncode != 0:
