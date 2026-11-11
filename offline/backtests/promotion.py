@@ -89,12 +89,6 @@ def _assumption_signature(assumptions: object) -> object:
 def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, dict]:
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         raise ValueError("baseline and candidate must be dictionaries")
-    for label, rep in (("baseline", baseline), ("candidate", candidate)):
-        ds = rep.get("dataset") if isinstance(rep.get("dataset"), dict) else {}
-        sha = ds.get("sha256")
-        bars = exact_pos_int(ds.get("bars"), default=None)
-        if not isinstance(sha, str) or not sha.strip() or bars is None:
-            raise ValueError(f"{label} dataset metadata (sha256, bars) is missing or invalid")
     if _identity(baseline) != _identity(candidate):
         raise ValueError("baseline and candidate use different datasets or windows")
     base_wf = baseline.get("walk_forward") if isinstance(baseline.get("walk_forward"), dict) else {}
@@ -111,6 +105,15 @@ def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, 
     candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
     if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
         raise ValueError("baseline and candidate must have the same scenarios")
+    for name in sorted(base_scenarios):
+        if not isinstance(base_scenarios[name], dict) or not isinstance(candidate_scenarios[name], dict):
+            raise ValueError(f"invalid scenario structure in scenario {name}")
+    for label, rep in (("baseline", baseline), ("candidate", candidate)):
+        ds = rep.get("dataset") if isinstance(rep.get("dataset"), dict) else {}
+        sha = ds.get("sha256")
+        bars = exact_pos_int(ds.get("bars"), default=None)
+        if not isinstance(sha, str) or not sha.strip() or bars is None:
+            raise ValueError(f"{label} dataset metadata (sha256, bars) is missing or invalid")
     return base_scenarios, candidate_scenarios
 
 

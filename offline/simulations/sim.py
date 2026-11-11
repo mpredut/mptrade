@@ -32,15 +32,18 @@ class PriceWindow:
         self.max_index = mi  # The threshold at which normalisation happens.
         self.epsilon = eps  # The tolerance for approximately equal lows.
 
-    def _evict_expired(self, dq: deque) -> None:
-        cutoff = self.current_index - self.window_size
-        while dq and dq[0][0] <= cutoff:
+    def _evict_before(self, dq: deque, min_valid_index: int) -> None:
+        while dq and dq[0][0] < min_valid_index:
             dq.popleft()
+
+    def _evict_expired(self, dq: deque) -> None:
+        self._evict_before(dq, self.current_index - self.window_size + 1)
 
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
-        self._evict_expired(self.min_deque)
-        self._evict_expired(self.max_deque)
+        window_start = self.current_index - len(self.prices)
+        self._evict_before(self.min_deque, window_start)
+        self._evict_before(self.max_deque, window_start)
         min_index = min(
             (d[0][0] for d in (self.min_deque, self.max_deque) if d),
             default=self.current_index,
@@ -54,15 +57,15 @@ class PriceWindow:
         if px is None:
             return
 
+        if self.current_index >= self.max_index:
+            self.normalize_indices()
+
         # Add the new price to the price list.
         self.prices.append(px)
 
         # Remove the prices that fall out of the window.
         if len(self.prices) > self.window_size:
             self.prices.popleft()
-
-        if self.current_index >= self.max_index:
-            self.normalize_indices()
 
         # Handling of the current low and high.
         self._manage_minimum(px)

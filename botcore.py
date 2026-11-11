@@ -1590,6 +1590,9 @@ def _sign_ed25519(signing_key, payload: str) -> str:
     return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
 
 
+_CACHE_PATH_TLS = threading.local()
+
+
 def _cache_path_impl(name):
     """Return the cache path under ``cachedb``, preserving paths that already carry a directory separator."""
     if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
@@ -1602,13 +1605,27 @@ def _cache_path_impl(name):
     return _cp_cache_path(name_str)
 
 
+_cache_path_impl._is_botcore_cache_path = True  # type: ignore[attr-defined]
+
+
 def cache_path(name):
     """Return the cache path under ``cachedb``, honoring test monkeypatches on ``utils.cache_path``."""
-    u_mod = sys.modules.get("utils")
-    u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
-    if callable(u_cp) and u_cp is not cache_path and u_cp is not _cache_path_impl:
-        return u_cp(name)
+    if not getattr(_CACHE_PATH_TLS, "active", False):
+        u_mod = sys.modules.get("utils")
+        u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
+        if callable(u_cp) and not getattr(u_cp, "_is_botcore_cache_path", False):
+            _CACHE_PATH_TLS.active = True
+            try:
+                return u_cp(name)
+            finally:
+                _CACHE_PATH_TLS.active = False
     return _cache_path_impl(name)
+
+
+cache_path._is_botcore_cache_path = True  # type: ignore[attr-defined]
+_u_reload_mod = sys.modules.get("utils")
+if _u_reload_mod is not None and getattr(getattr(_u_reload_mod, "cache_path", None), "_is_botcore_cache_path", False):
+    _u_reload_mod.cache_path = cache_path  # type: ignore[attr-defined]
 
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
@@ -1760,12 +1777,16 @@ def _is_fresh_obs_ts(obs_ts_s: float | None, now_s: float, max_age_s: float) -> 
 
 
 def extract_timestamp_ms(order: object, default: int | None = None) -> int | None:
-    """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
+    """Extract and normalize an order/fill/tick timestamp in milliseconds from any venue shape."""
+    if isinstance(order, (list, tuple)):
+        return normalize_timestamp_ms(order[0], default=default) if order else default
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
 
 
 def extract_timestamp_s(order: object, default: float | None = None) -> float | None:
-    """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
+    """Extract and normalize an order/fill/tick timestamp in seconds from any venue shape."""
+    if isinstance(order, (list, tuple)):
+        return normalize_epoch_sec(order[0], default=default, allow_zero=True, allow_iso=True) if order else default
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
 
 

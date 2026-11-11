@@ -349,7 +349,7 @@ def test_batch_b_metrics_absorbing_ruin_and_promotion_zero_base_and_assumptions(
         run_tp_drop_sl_sweep({}, lambda _p: {}, budget=0.0)
 
     assert _relative_change(0.0, 5.0) is None
-    sig_ro = _assumption_signature({"maker_fee_pct": 0.16, "taker_fee_pct": 0.26, "description": "text vechi"})
+    sig_ro = _assumption_signature({"maker_fee_pct": 0.16, "taker_fee_pct": 0.26, "description": "legacy text"})
     sig_en = _assumption_signature({"maker_fee_pct": 0.16, "taker_fee_pct": 0.26, "description": "new text"})
     assert sig_ro == sig_en
 
@@ -488,12 +488,48 @@ def test_batch_d_chop_intelligence_short_trend_report3_and_sim_window(tmp_path, 
     lines = report3.generate_report(str(exp_dir))
     assert any("| sl0 | -/- |" in line for line in lines)
 
-    # 5. sim.PriceWindow rejects non-integer window_size and keeps duplicate lows across window expiry
+    # 5. sim.PriceWindow rejects non-integer window_size, preserves active min across normalize_indices, and keeps duplicate lows across window expiry
     with pytest.raises(ValueError):
         PriceWindow(4.7)
+    pw_norm = PriceWindow(window_size=3, max_index=5)
+    for px in (10.0, 20.0, 30.0, 40.0):
+        pw_norm.process_price(px)
+    pw_norm.normalize_indices()
+    assert pw_norm.get_min()[0] == pytest.approx(20.0)
     pw = PriceWindow(window_size=3, epsilon=1e-5)
     for px in (10.0, 20.0, 10.0 + 5e-6):
         pw.process_price(px)
     assert pw.get_min()[0] == pytest.approx(10.0)
     pw.process_price(30.0)  # Index 0 (10.0) expires; index 2 (10.000005) is still in window!
     assert pw.get_min()[0] == pytest.approx(10.0 + 5e-6)
+
+
+def test_botcore_cache_path_reload_and_sequence_timestamp_extraction(monkeypatch):
+    import importlib
+    import botcore
+    import utils
+    from offline.backtests.promotion import evaluate_promotion
+
+    # 1. Reloading botcore does not trigger RecursionError in botcore.cache_path / utils.cache_path
+    importlib.reload(botcore)
+    p1 = botcore.cache_path("cache_current_price.json")
+    p2 = utils.cache_path("cache_current_price.json")
+    assert p1 == p2 and p1.endswith("cache_current_price.json")
+
+    orig_cp = utils.cache_path
+    monkeypatch.setattr(utils, "cache_path", lambda name: f"/custom/{orig_cp(name).split('/')[-1]}")
+    assert botcore.cache_path("cache_current_price.json") == "/custom/cache_current_price.json"
+
+    # 2. extract_timestamp_ms / extract_timestamp_s support [ts, price] sequence records
+    assert botcore.extract_timestamp_ms(["1700000000000", 100.0], default=0) == 1_700_000_000_000
+    assert botcore.extract_timestamp_ms([None, 100.0], default=0) == 0
+    assert botcore.extract_timestamp_ms([True, 100.0], default=0) == 0
+    assert botcore.extract_timestamp_s([1_700_000_000_000, 100.0], default=0.0) == pytest.approx(1_700_000_000.0)
+
+    # 3. evaluate_promotion checks invalid scenario structure first, then dataset metadata
+    bad_scen = {"dataset": {}, "walk_forward": {}, "scenarios": {"central": None}}
+    with pytest.raises(ValueError, match="invalid scenario structure"):
+        evaluate_promotion(bad_scen, bad_scen)
+    missing_ds = {"dataset": {}, "walk_forward": {}, "scenarios": {"central": {"windows": [], "aggregate": {}}}}
+    with pytest.raises(ValueError, match="dataset metadata"):
+        evaluate_promotion(missing_ds, missing_ds)
