@@ -890,7 +890,6 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
     def test_dynamic_telemetry_interval_scaling_from_executor_cadence(self, tmp_path, monkeypatch):
         from datetime import datetime, timezone
         from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-        from intelligence.macro_analyzer import MacroAnalyzer
         from intelligence.macro_sentiment_ssot import (
             resolve_crypto_executor_interval_sec,
             resolve_derived_telemetry_intervals,
@@ -1539,7 +1538,6 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
 
 def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     """Verify VIX benchmark spec, symmetric cross_asset_regime classification, and unified Crypto/Equity AI telemetry."""
-    import json
     from types import SimpleNamespace
     from intelligence.macro_sentiment_ssot import (
         get_cross_asset_regimes,
@@ -1554,7 +1552,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         format_equity_macro_regime_line,
         format_macro_benchmarks_summary_line,
     )
-    from intelligence.sentiment.gemini_client import GeminiClient
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
 
@@ -2243,7 +2240,6 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
 
 def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path, monkeypatch):
     """Verify semantic stem deduplication of dynamic bigrams, UTC publication timestamps on headlines, and polluted digest de-escalation."""
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
     from intelligence.macro.lexicon_ssot import (
         _bigram_stem_signature,
         build_dynamic_rss_url,
@@ -2332,7 +2328,6 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     assert "UTC, age=" in _age_sfx(b_news[0], parens=True)
 
     # Verify GeopoliticalThreatAnalyzer formats UTC timestamp + age and retains older context alongside fresh headline
-    from intelligence.sentiment.gemini_client import GeminiClient
 
     captured_prompts = []
 
@@ -2411,9 +2406,7 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
 
 def test_sentimentadvisor_geopoliticalthreatanalyzer_recover_previous_file_when_primary_is_iter9_s3(tmp_path):
     """[ITER9 #3] SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt."""
-    import json
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt
     sa_file = tmp_path / "sentiment_eval.json"
     sa_prev = tmp_path / "sentiment_eval.json.previous"
@@ -2439,9 +2432,7 @@ def test_sentimentadvisor_geopoliticalthreatanalyzer_recover_previous_file_when_
 
 def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__last_eval_ts_is_iter13_s4(tmp_path, monkeypatch):
     """[ITER13 #4] SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)."""
-    import time
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
     now_ts = time.time()
     # 4. SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)
     sa = SentimentAdvisor(cache_ttl_sec=3600.0, cache_file=str(tmp_path / "sa_eval.json"))
@@ -2507,12 +2498,7 @@ def test_sentimentadvisor_and_geopoliticalthreatanalyzer_invalidate_cache_when__
 
 def test_geopoliticalthreatanalyzer_sentimentadvisor_and_newsfeedcollector_sanitize_non_finite_bool_iter17_s5(tmp_path):
     """[ITER17 #5] GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous."""
-    import json
-    import time
-    import pytest
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     # 5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous
     geo_path = tmp_path / "geopolitical_eval.json"
     geo_prev = tmp_path / "geopolitical_eval.json.previous"
@@ -2594,9 +2580,7 @@ def test_geopoliticalthreatanalyzer_sentimentadvisor_and_newsfeedcollector_sanit
 
 def test_macroanalyzer_assess_market_advisor_null_json_fields_iter26_s3(tmp_path):
     """[ITER26 #3] MacroAnalyzer.assess_market_advisor null JSON fields."""
-    import json
     from types import SimpleNamespace
-    from intelligence.macro_analyzer import MacroAnalyzer
     # 3. MacroAnalyzer.assess_market_advisor null JSON fields
     (tmp_path / "fear_greed_collect.json").write_text(
         json.dumps({
@@ -2665,7 +2649,6 @@ def test_newsfeedcollector__aggregate_prunes_corrupted_nan_entries_safely_iter54
 
 def test_llm_order_guard_side_normalization_bool_rejection_and_clean_scale_iter100_s4():
     """[ITER100 #4] llm_order_guard side normalization, bool rejection, and clean_scale."""
-    import pytest
     import llm_order_guard
     # 4. llm_order_guard side normalization, bool rejection, and clean_scale
     assert llm_order_guard.clean_scale(True) == 1.0
@@ -2684,8 +2667,6 @@ def test_llm_order_guard_side_normalization_bool_rejection_and_clean_scale_iter1
 
 def test_geopoliticalthreatanalyzer__load_from_disk_with_bool_summary_threat_level_headlines_digest_iter104_s1(tmp_path):
     """[ITER104 #1] GeopoliticalThreatAnalyzer _load_from_disk with bool summary / threat_level / headlines_digest."""
-    import json
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     # 1. GeopoliticalThreatAnalyzer _load_from_disk with bool summary / threat_level / headlines_digest
     state_file = tmp_path / "geo_state.json"
     state_file.write_text(
@@ -2710,11 +2691,9 @@ def test_geopoliticalthreatanalyzer__load_from_disk_with_bool_summary_threat_lev
 
 def test_newsfeedcollector__normalize_title__load_history_get_pool_snapshot_and_parse_rss_xml_iter104_s2(tmp_path):
     """[ITER104 #2] NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml."""
-    import json
     from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
     # 2. NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml
     hist_file = tmp_path / "news_hist.json"
-    import time
     now_ts = time.time()
     hist_file.write_text(
         json.dumps([
@@ -2739,9 +2718,6 @@ def test_newsfeedcollector__normalize_title__load_history_get_pool_snapshot_and_
 
 def test_newsfeedcollector__load_history_parses_string_false_for_is_high_severity_as_iter123_s2(tmp_path):
     """[ITER123 #2] NewsFeedCollector._load_history parses string 'false' for is_high_severity as False."""
-    import json
-    import time
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     # 2. NewsFeedCollector._load_history parses string "false" for is_high_severity as False
     nf_path = tmp_path / "news_feed_collect.json"
     nf_path.write_text(
@@ -2764,7 +2740,6 @@ def test_newsfeedcollector__load_history_parses_string_false_for_is_high_severit
 
 def test_geopoliticalshockguard_ignores_boolean_summary_threat_level_iter125_s4():
     """[ITER125 #4] GeopoliticalShockGuard ignores boolean summary/threat_level."""
-    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     # 4. GeopoliticalShockGuard ignores boolean summary/threat_level
     geo_guard = GeopoliticalShockGuard()
     fake_assess = type("A", (), {"threat_level": "CRITICAL_SHOCK", "recommended_brake": True, "summary": True, "risk_score": True})()
@@ -2774,7 +2749,6 @@ def test_geopoliticalshockguard_ignores_boolean_summary_threat_level_iter125_s4(
 
 def test_geopoliticalshockguard_accepts_dict_assessment_iter175_s2():
     """[ITER175 #2] GeopoliticalShockGuard accepts dict assessment."""
-    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     # 2. GeopoliticalShockGuard accepts dict assessment
     g_dec = GeopoliticalShockGuard().check(
         "BTCUSDC",
@@ -2785,9 +2759,7 @@ def test_geopoliticalshockguard_accepts_dict_assessment_iter175_s2():
 
 def test_geopoliticalthreatanalyzer_assess_accepts_dict_news_snapshot_and_dict_headlines_iter175_s3(tmp_path):
     """[ITER175 #3] GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines & SentimentAdvisor.review accepts dict fear_greed and dict breadth."""
-    import pytest
     from types import SimpleNamespace
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     # 3. GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines
     captured_prompts = []
@@ -2843,7 +2815,6 @@ def test_geopoliticalthreatanalyzer_assess_accepts_dict_news_snapshot_and_dict_h
 
 def test_compositemarketintelligence_evaluate_populates_metrics_from_dict_snapshots_iter176_s4():
     """[ITER176 #4] CompositeMarketIntelligence.evaluate populates metrics from dict snapshots."""
-    from intelligence.composite import CompositeMarketIntelligence
     # 4. CompositeMarketIntelligence.evaluate populates metrics from dict snapshots
     cmi = CompositeMarketIntelligence()
     res = cmi.evaluate(
@@ -2883,7 +2854,6 @@ def test_feargreedcollector_marketbreadthcollector_newsfeedcollector_accept_now_
     """[ITER180 #3] FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts."""
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-    from intelligence.macro.news_feed_collector import NewsFeedCollector
     # 3. FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts
     fg = FearGreedCollector(cache_ttl_sec=60.0)
     fg._cached_snapshot = FearGreedSnapshot(50, "Neutral", 1000.0, (50,), 0, False, False)

@@ -1068,7 +1068,6 @@ if __name__ == "__main__":
 
 def test_positionexitmanager_preserves_episode_started_at_across_trend_up_flips_prevents_smart_iter8_s2():
     """[ITER8 #2] PositionExitManager preserves episode_started_at across trend_up flips & prevents Smart-SL re-arm."""
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
     # 2. PositionExitManager preserves episode_started_at across trend_up flips & prevents Smart-SL re-arm
     smart_calls = []
 
@@ -1136,7 +1135,6 @@ def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guar
     from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
     from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-    from strategies.position_exit_manager import ReentrySnapshot
     # 1. get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode
     base_m = dict(order_guard._load_margins())
     m_llm_off = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "off"}
@@ -1267,7 +1265,6 @@ def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guar
 
 def test_positionexitmanager__evaluate_stop_loss_core_sets_sl_timer_expired_true_and_prioritizes_timeout_iter16_s2():
     """[ITER16 #2] PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break."""
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
     # 2. PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break
     cfg = PositionExitConfig(
         lost_threshold=0.05,
@@ -1324,7 +1321,6 @@ def test_positionexitmanager__evaluate_stop_loss_core_sets_sl_timer_expired_true
 
 def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter20_s3():
     """[ITER20 #3] PositionExitManager is_valid_price rejects Inf/NaN and re-anchors future SL/TP/Re-entry timestamps."""
-    from strategies.position_exit_manager import ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentryAction, ReentrySnapshot
     # 3. PositionExitManager is_valid_price rejects Inf/NaN and re-anchors future SL/TP/Re-entry timestamps
     snap_inf = PositionSnapshot(symbol="BTCUSDC", current_price=float("inf"), avg_buy_price=100.0)
     assert snap_inf.is_valid_price is False
@@ -1395,7 +1391,6 @@ def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter2
 def test_positionsnapshot_reentrysnapshot_reject_bool_none_prices_positionexitmanager_disaster_iter32_s2():
     """[ITER32 #2] PositionSnapshot & ReentrySnapshot reject bool/None prices & PositionExitManager disaster buffer fallback on NaN vol_1h & reentry with NaN trough."""
     import math
-    from strategies.position_exit_manager import ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentryAction, ReentrySnapshot
     # 2. PositionSnapshot & ReentrySnapshot reject bool/None prices
     snap_bool = PositionSnapshot(symbol="BTCUSDC", current_price=True, avg_buy_price=85000.0)
     assert snap_bool.is_valid_price is False
@@ -1455,7 +1450,6 @@ def test_positionsnapshot_reentrysnapshot_reject_bool_none_prices_positionexitma
 
 def test_positionexitmanager_preserves_started_at_across_subsequent_ticks_without_calling_iter33_s2(monkeypatch):
     """[ITER33 #2] PositionExitManager preserves started_at=0.0 across subsequent ticks without calling time.time()."""
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
     # 2. PositionExitManager preserves started_at=0.0 across subsequent ticks without calling time.time()
     cfg = PositionExitConfig(
         lost_threshold=0.05,
@@ -1502,7 +1496,6 @@ def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_
     import math
     from types import SimpleNamespace
     import monitortrades as mt
-    from strategies.position_exit_manager import ReentrySnapshot
     # 3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN
     captured_trough = []
 
@@ -1543,7 +1536,6 @@ def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_
 
 def test_positionexitmanager_evaluate_reentry_honors_lower_external_post_sell_trough_and_higher_iter121_s1():
     """[ITER121 #1] PositionExitManager.evaluate_reentry honors lower external post_sell_trough and higher post_sell_peak across ticks, plus lowercase 'stop'."""
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentrySnapshot
     # 1. PositionExitManager.evaluate_reentry honors lower external post_sell_trough and higher post_sell_peak across ticks, plus lowercase "stop"
     pem = PositionExitManager(
         PositionExitConfig(
@@ -1614,7 +1606,6 @@ def test_all_str_enum_classes_return_raw_value_on_iter125_s1():
     from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
     from market_regime import MarketRegimeHorizon
-    from strategies.position_exit_manager import ExitAction, ReentryAction
     # 1. All (str, Enum) classes return raw value on str() in Python 3.12+
     assert str(TriggerAction.ENTRY) == "ENTRY"
     assert str(TriggerSide.BUY) == "BUY"
@@ -1625,7 +1616,6 @@ def test_all_str_enum_classes_return_raw_value_on_iter125_s1():
 
 def test_positionsnapshot_reentrysnapshot_normalize_string_nan_boolean_flags_and_iter146_s1():
     """[ITER146 #1] PositionSnapshot & ReentrySnapshot normalize string/NaN boolean flags and guard tol_pct/threshold."""
-    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot
     # 1. PositionSnapshot & ReentrySnapshot normalize string/NaN boolean flags and guard tol_pct/threshold
     ps = PositionSnapshot(symbol="BTCUSDC", current_price="95.0", avg_buy_price="100.0", trend_up="false")  # type: ignore[arg-type]
     assert ps.trend_up is False
@@ -1674,7 +1664,6 @@ def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s
     """[ITER173 #2] PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal."""
     import pytest
     from decimal import Decimal
-    from strategies.position_exit_manager import PositionExitConfig, PositionSnapshot, ReentrySnapshot
     # 2. PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal
     cfg = PositionExitConfig(smart_sl_enabled="", sl_bounce_ratchet_enabled="")
     assert cfg.smart_sl_enabled is True
@@ -1698,7 +1687,6 @@ def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s
 def test_positionexitmanager_symbol_whitespace_normalization_in_restore_reentry_state_record_hard_tp_iter173_s3():
     """[ITER173 #3] PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp."""
     import pytest
-    from strategies.position_exit_manager import PositionExitManager
     # 3. PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp
     mgr = PositionExitManager()
     mgr.reentry_state["BTCUSDC"] = {"trough": 90.0}

@@ -292,7 +292,6 @@ def test_hyperliquid_funding_at_seconds_to_ms_and_param_immutability():
 
 def test_tradeall_iter_jsonl_ticks_does_not_abort_on_out_of_order_end_ts(tmp_path):
     """_iter_jsonl_ticks skips out-of-order lines with ts > end_ts instead of terminating early."""
-    import json
     from offline.backtests.tradeall import _iter_jsonl_ticks
 
     p = tmp_path / "ticks.jsonl"
@@ -387,7 +386,6 @@ def test_clear_position_stats_cache_respects_mt_persistence(tmp_path, monkeypatc
 
 def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
     """tradeall exports WINDOW_SECONDS_SMALL/BIG and offline.backtests.tradeall.run_backtest runs end-to-end."""
-    import json
     import tradeall as ta
     from offline.backtests import tradeall as bt_ta
 
@@ -518,7 +516,6 @@ def test_research_scripts_do_not_monkeypatch_at_import_time():
 def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
     """Per-trade PnL in intelligence_backtest and chop_weight_backtest includes buy fees and reconciles with net_profit_usd."""
     import math
-    from offline.research.chop_weight_backtest import run_single_simulation
     from offline.research.intelligence_backtest import run_intelligence_backtest
 
     # Create synthetic oscillating price series that triggers trades
@@ -1383,7 +1380,6 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
 
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):
     """Verify null-safe Yahoo/Kraken/Hyperliquid payloads and T212/HL strategy edge cases."""
-    import os
     import sys
     from unittest.mock import MagicMock
     from botcore import load_local_module
@@ -2097,7 +2093,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
 
 def test_composite_and_macro_advisor_robustness(tmp_path):
     """Verify composite market intelligence, geopolitical analyzer, sentiment advisor, and post-stop guard normalization."""
-    import json
     from types import SimpleNamespace
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.daemon import IntelligenceTelemetryDaemon
@@ -2213,7 +2208,6 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
 
 def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
     """Verify intelligence.cli, bapi_ws_health, bapi_ws, and pricefetcher handle string booleans, whitespace symbols, and FearGreedSnapshot schema."""
-    import json
     from binance_api.bapi_ws import BinancePriceStream
     from binance_api.bapi_ws_bridge import mark_ws_available, should_poll_for_manager
     from intelligence.cli import inspect_symbol_intelligence
@@ -2363,7 +2357,6 @@ def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
 
 def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
     """Verify PositionExitManager, rtrade_pair, trailing_stop, and bapi_placeorder handle malformed inputs safely."""
-    import pytest
     from binance_api import bapi_placeorder as bpo
     from binance_api.trailing_stop import TRAIL_PCT, TrailingStop
     from providers.strategy_executor import SubmissionRefused
@@ -2439,7 +2432,6 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
 
 def test_cache_manager_item_validation_and_kraken_trailing_hardening():
     """Verify CacheTradeManager, CacheOrderManager, CacheCurrentPriceManager, and KrakenTrailing handle malformed inputs safely."""
-    import pytest
     from cacheManager import CacheCurrentPriceManager, CacheOrderManager, CacheTradeManager
     from kraken.trailing_stop import TRAIL_PCT as KRAKEN_TRAIL_PCT, KrakenTrailing
 
@@ -2487,7 +2479,6 @@ def test_venue_market_data_and_client_hardening():
     """Verify Binance, Kraken, Hyperliquid, and T212 market_data/client helpers reject malformed inputs."""
     import importlib
     import importlib.util
-    import pytest
     from botcore import load_local_module
     from binance_api import bapi
     from binance_api import market_data as b_md
@@ -2584,8 +2575,6 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
 
 
 def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
-    import json
-    import os
     from botcore import load_local_module
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2845,7 +2834,6 @@ def test_cooldown_and_market_monitor_hardening(tmp_path):
 
 
 def test_batch6_hardening(tmp_path):
-    import json
     from types import SimpleNamespace
     from market_monitor import alerts_config
     from market_monitor.new_coins_discovery import NewCoinsMonitor
@@ -2908,7 +2896,6 @@ def test_batch7_hardening():
     from offline.backtests.evaluation import load_venue_module
     from offline.backtests.metrics import calculate_performance_metrics
     from offline.backtests.walk_forward import summarize_test_windows
-    from offline.research.chop_weight_backtest import run_single_simulation
 
     # 1. datasets.normalize_record accepts integer-valued float string timestamp and rejects fractional/non-finite
     rec = normalize_record({"timestamp": "1700000000.0", "open": 100, "high": 105, "low": 99, "close": 102})
@@ -3094,8 +3081,6 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
 
 
 def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
-    import json
-    import pytest
     from orchestratorOS.agy import summary_store, topics, ui_mirror
 
     # 1. delete_threads refuses empty/dot/traversal cids and never wipes root brain/ dir
@@ -4094,7 +4079,6 @@ def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
 
 def test_batch29_cross_venue_module_collision_and_syspath_isolation():
     import importlib.util
-    import os
     import sys
     import types
     from botcore import prepare_shadow_runtime
@@ -4283,8 +4267,6 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
 
 
 def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening(tmp_path):
-    import json
-    import pytest
     from offline.research.ml_forecast.priceprediction import PricePrediction
     from offline.research.backtest_ranges import scan_all
     from offline.backtests.promotion import (
@@ -4349,7 +4331,6 @@ def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening
 
 def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
     import argparse
-    import pytest
     from offline.backtests.metrics import (
         calculate_performance_metrics,
         format_performance_summary,
@@ -4410,11 +4391,9 @@ def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
 
 def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_path, monkeypatch):
     import io
-    import json
     import time
     from types import SimpleNamespace
     import urllib.request
-    import pytest
     from market_monitor import new_coins_discovery as ncd
     from market_monitor import pricefetcher as pf
     from kraken import trailing_stop as k_ts
@@ -4523,7 +4502,6 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
     """Verify cacheintegrity, instrument_registry, rtrade_pair_store, HyperliquidProvider, and ReplayMarketDataProvider edge cases."""
     import sys
     from types import SimpleNamespace
-    import pytest
     import cacheintegrity
     import instrument_registry
     from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
@@ -4581,7 +4559,6 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
 def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_path):
     """Verify StratParams/Strategy, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
     from types import SimpleNamespace
-    import pytest
     import order_retry_worker as orw
     import state_io
     import utils
@@ -4638,7 +4615,6 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
 
 def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(tmp_path, monkeypatch):
     """Verify spot_replay non-finite metric rounding, intelligence_backtest._safe_float, volatility._extract_vol_ratio_from_file fallback, high_stake_guard telemetry fault isolation, intelligence.cli symbol variants, and verify_tools recovery."""
-    import json
     from types import SimpleNamespace
     import intelligence.cli as icli
     from intelligence.internal.state import volatility as vol_mod
@@ -4738,7 +4714,6 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
 
 def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch):
     """Verify 212trading strategy/replay/backtest, hyperliquid strategy, kraken_client.add_order, and bapi_ws_normalize."""
-    import os
     from types import SimpleNamespace
     from binance_api import bapi_ws_normalize as ws_norm
     from botcore import load_local_module
@@ -4888,7 +4863,6 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
 
     log_f = ws_dir / "logs" / "tradeall.log"
     log_f.write_text("active\n", encoding="utf-8")
-    import os
     os.utime(str(log_f), (950.0, 950.0))
     ph_fresh = mon.check_processes(now=1000.0)
     assert len(ph_fresh) == 1 and ph_fresh[0].heartbeat_fresh is True
@@ -5027,7 +5001,6 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
 
 def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(tmp_path, monkeypatch):
     """Verify survival._effective_t_cache_file & symbol normalization, qlimit2/external guard bool/NaN resilience, and monitortrades state cleanup."""
-    import json
     import time
     import numpy as np
     from intelligence.internal.state import survival
@@ -5118,7 +5091,6 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
 
 def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening(tmp_path, monkeypatch):
     """Verify Batch 38 fixes across rtrade_pair_store, trailing_core, log, pricewindow, cachetrend, cacheManager, and bapi_trades."""
-    import json
     import time
     from types import SimpleNamespace
     import rtrade_pair_store as rps
@@ -5262,7 +5234,6 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
 
 
 def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
-    import pytest
     from providers.base import extract_order_price
     from providers.order_ohlc_utils import extract_order_fee
     from providers.market_api import MarketApi, ProviderError
@@ -5355,10 +5326,8 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
 def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     import importlib
     import importlib.util
-    import os
     import sys
     from types import SimpleNamespace
-    import pytest
     from kraken.kraken_client import KrakenClient
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -5446,7 +5415,6 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
 
 def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import pytest
     from binance_api import bapi, bapi_allorders, bapi_trades, bapi_ws_normalize
     import cacheintegrity as ci
     import priceAnalysis as pa
@@ -5771,7 +5739,6 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
 
 
 def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
-    import json
     from notify_engine import alertnotifiers, mailer
     from orchestratorOS.admin import agy_store_fix
     from orchestratorOS.agy import topics
@@ -5919,7 +5886,6 @@ def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
 
 
 def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
-    import os
     from types import SimpleNamespace
     from botcore import load_local_module
 
@@ -6102,7 +6068,6 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
 def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monkeypatch, tmp_path):
     """Verify upward-trend epsilon k clamping, pilot rate-limit SSOT, and hybrid reentry interval alignment."""
     from datetime import datetime, timezone
-    import json
     from offline.research.monitortrades_backtest.replay_trend_source import (
         UPWARD_EPSILON_K,
         _is_trend_up_tuple,
@@ -6159,11 +6124,9 @@ def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monk
 
 def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_guard(tmp_path):
     """Verify load_ohlc_tuples_csv SSOT, t212 grid 1d interval alignment & report 1d-only rows, and vol_chronos scalar guard."""
-    import json
     from offline.backtests.datasets import load_ohlc_tuples_csv
     from offline.research.ml_forecast.vol_chronos import realized_vol_series
     from offline.research.t212_continuous_grid import grid as t212_grid
-    from offline.research.t212_continuous_grid import report as t212_report
 
     # 1. load_ohlc_tuples_csv filters invalid OHLC invariants and non-positive values
     csv_path = tmp_path / "sample.csv"

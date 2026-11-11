@@ -1316,8 +1316,6 @@ class Instrument:
 
     def cached_fee_and_limits(self, *, price: Optional[float] = None) -> dict:
         """Return non-blocking cached fee tier and exchange limit overrides from the bound provider."""
-        from providers.base import MarketDataProvider
-
         return MarketDataProvider.resolve_provider_cached_fee_and_limits(
             self.provider_name,
             self.symbol,

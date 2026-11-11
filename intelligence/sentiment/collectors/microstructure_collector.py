@@ -744,7 +744,6 @@ def _refresh_stale_t212_cached_positions(
         return False
     try:
         from providers.t212_provider import T212Provider
-        from state_io import save_json_state
 
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
         try:
@@ -895,7 +894,7 @@ def _persist_refreshed_equity_chart_cache(
     if not (cache_dir and os.path.isdir(cache_dir) and is_live_network_backfill_enabled()):
         return
     try:
-        from state_io import read_json_dict, save_json_state
+        from state_io import read_json_dict
 
         _ensure_cacheprice_classes_bound()
         eff_p24_pts = pts_24h_to_save or pts_24h_bars

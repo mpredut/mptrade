@@ -816,8 +816,6 @@ if __name__ == "__main__":
 def test_hyperliquidprovider_preflight_order_order_status_cancel_order_reject_nan_bool_iter40_s4(monkeypatch):
     """[ITER40 #4] HyperliquidProvider preflight_order, order_status, cancel_order reject NaN/bool."""
     import pytest
-    from providers.strategy_executor import ProviderError
-    from providers.hyperliquid_provider import HyperliquidProvider
     # 4. HyperliquidProvider preflight_order, order_status, cancel_order reject NaN/bool
     hp = HyperliquidProvider()
     monkeypatch.setattr(hp, "free_balance", lambda asset: 1000.0)
@@ -834,8 +832,6 @@ def test_hyperliquidprovider_preflight_order_order_status_cancel_order_reject_na
 
 def test_hl_client__round_px_mid_spot_mid_position_strict_spot_balance_strict_iter49_s1():
     """[ITER49 #1] hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict."""
-    import os
-    import sys
     from types import SimpleNamespace
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
@@ -884,8 +880,6 @@ def test_hl_client__round_px_mid_spot_mid_position_strict_spot_balance_strict_it
 
 def test_hyperliquid_market_data_normalize_closed_candles_rejects_bool_and_invalid_ohlc_iter49_s2():
     """[ITER49 #2] hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
     mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
@@ -918,8 +912,6 @@ def test_hyperliquid_market_data_normalize_closed_candles_rejects_bool_and_inval
 
 def test_hyperliquid_price_analysis_detect_long_term_trend_ignores_nan_bool_points_iter49_s3():
     """[ITER49 #3] hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
     mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
@@ -946,8 +938,6 @@ def test_hyperliquid_price_analysis_detect_long_term_trend_ignores_nan_bool_poin
 
 def test_hyperliquid_strategy_replay_step_ignores_nan_bool_price_iter49_s4():
     """[ITER49 #4] hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
     mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
@@ -985,7 +975,6 @@ def test_hyperliquidprovider_free_balance_get_price_history_ohlc_series_order_st
     from types import SimpleNamespace
     import pytest
     from providers.base import ProviderError
-    from providers.hyperliquid_provider import HyperliquidProvider
     # 4. HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status
     hlp = HyperliquidProvider()
     monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef1234567890abcdef12345678")
@@ -1029,8 +1018,6 @@ def test_hyperliquidprovider_free_balance_get_price_history_ohlc_series_order_st
 def test_hyperliquidprovider_submit_order_market_rejects_nan_mid_price_iter58_s5(monkeypatch):
     """[ITER58 #5] HyperliquidProvider.submit_order market rejects NaN mid price."""
     import pytest
-    from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.strategy_executor import ProviderError
     # 5. HyperliquidProvider.submit_order market rejects NaN mid price
     hp = HyperliquidProvider(token="HYPE", live_enabled=True)
     monkeypatch.setattr(hp, "_pair", lambda: "@107")
@@ -1040,8 +1027,6 @@ def test_hyperliquidprovider_submit_order_market_rejects_nan_mid_price_iter58_s5
 
 def test_hlclient_metadata_and_order_placement_reject_boolean_nan_iter59_s5():
     """[ITER59 #5] HLClient metadata and order placement reject boolean/NaN/non-positive inputs."""
-    import os
-    import sys
     import pytest
     from unittest.mock import MagicMock
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
@@ -1079,8 +1064,6 @@ def test_hlclient_metadata_and_order_placement_reject_boolean_nan_iter59_s5():
 
 def test_hl_strategy_normalizes_uppercase_long_to_sign_and_iter60_s1():
     """[ITER60 #1] HL Strategy normalizes uppercase 'LONG' to sign=+1 and rejects invalid direction."""
-    import os
-    import sys
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
@@ -1116,8 +1099,6 @@ def test_hl_strategy_normalizes_uppercase_long_to_sign_and_iter60_s1():
 
 def test_hl_price_analysis_detect_long_term_trend_rejects_step_hours_preventing_infinite_loop_iter60_s2():
     """[ITER60 #2] HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
     hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
@@ -1144,8 +1125,6 @@ def test_hl_price_analysis_detect_long_term_trend_rejects_step_hours_preventing_
 
 def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60_s4(monkeypatch):
     """[ITER60 #4] T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0."""
-    import os
-    import sys
     import pytest
     import json
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
@@ -1196,8 +1175,6 @@ def test_t212client_get_historical_order_does_not_dilute_fillprice_when_a_iter60
 
 def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
     """[ITER68 #4] _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters."""
-    import os
-    import sys
     from types import SimpleNamespace
     import pytest
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1215,7 +1192,6 @@ def test__round_px_hlclient_cancel_candles_reject_inf_bool_invalid_iter68_s4():
 
 def test_hyperliquid_market_data_normalize_closed_candles_float_string_timestamps_fetch_ohlc_candles_interval_iter69_s1():
     """[ITER69 #1] hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks."""
-    import os
     import pytest
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1234,7 +1210,6 @@ def test_hyperliquid_market_data_normalize_closed_candles_float_string_timestamp
 def test_hyperliquid_signals__file_signal_catches_overflowerror_on_huge_ts_iter69_s2(tmp_path):
     """[ITER69 #2] hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence."""
     import json
-    import os
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
     hl_sig = load_local_module(hl_dir, "signals.py", module_key="_hl_signals_69", reload=True)
@@ -1247,7 +1222,6 @@ def test_hyperliquid_signals__file_signal_catches_overflowerror_on_huge_ts_iter6
 
 def test_hyperliquid_strategy_stratparams_from_dict_strategy__place_validation_iter69_s3():
     """[ITER69 #3] hyperliquid.strategy.StratParams.from_dict & Strategy._place validation."""
-    import os
     import pytest
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1282,7 +1256,6 @@ def test_fetch_hyperliquid_candles_resolve_spot_pair_validate_continuity_iter72_
 
 def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
     import importlib
-    import sys
     from offline.runners import hyperliquid_walk_forward_baseline as hl_wf
     from offline.runners import t212_walk_forward_baseline as t212_wf
     from offline.runners import fetch_hyperliquid_candles as fhc
@@ -1300,7 +1273,6 @@ def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
 
 def test_hlclient_spot_order_place_limit_reject_non_bool_is_buy_and_iter92_s1(monkeypatch):
     """[ITER92 #1] HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals."""
-    import os
     import pytest
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1320,7 +1292,6 @@ def test_hlclient_spot_order_place_limit_reject_non_bool_is_buy_and_iter92_s1(mo
 
 def test_hyperliquid_market_data_validation_iter92_s2(monkeypatch):
     """[ITER92 #2] hyperliquid.market_data validation."""
-    import os
     import pytest
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1336,7 +1307,6 @@ def test_hyperliquid_market_data_validation_iter92_s2(monkeypatch):
 
 def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_loss_avoids_iter92_s3(monkeypatch):
     """[ITER92 #3] hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure."""
-    import os
     import pytest
     from botcore import load_local_module
     hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
@@ -1375,7 +1345,6 @@ def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_
 
 def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_owned_iter93_s3(monkeypatch):
     """[ITER93 #3] hyperliquid.replay validation & 212trading.strategy ladder validation & owned parsing."""
-    import os
     import pytest
     from botcore import load_local_module
     # 3. hyperliquid.replay validation
@@ -1403,7 +1372,6 @@ def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_own
 
 def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_hours_iter94_s4(monkeypatch):
     """[ITER94 #4] priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection."""
-    import os
     from botcore import load_local_module
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # 4. priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection
@@ -1430,7 +1398,6 @@ def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_
     """[ITER95 #3] HyperliquidProvider token/live_enabled/order_id/ohlc_series validation."""
     import pytest
     from providers.hyperliquid_provider import HyperliquidProvider, _spot_symbol_alias
-    from providers.strategy_executor import ProviderError
     # 3. HyperliquidProvider token/live_enabled/order_id/ohlc_series validation
     assert _spot_symbol_alias(True, "HYPE") is False
     with pytest.raises(ValueError, match="invalid Hyperliquid token"):
@@ -1468,8 +1435,6 @@ def test_hyperliquidprovider_iter111_s2():
 
 def test_hlclient_strict_position_spot_balance_market_data_guards_iter115_s4():
     """[ITER115 #4] HLClient strict position/spot_balance & market_data guards."""
-    import os
-    import sys
     from types import SimpleNamespace
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
@@ -1519,8 +1484,6 @@ def test_hlclient_strict_position_spot_balance_market_data_guards_iter115_s4():
 
 def test_hl_and_t212_strategy_state_sanitization_iter115_s5():
     """[ITER115 #5] HL and T212 strategy state sanitization."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1572,8 +1535,6 @@ def test_hl_and_t212_strategy_state_sanitization_iter115_s5():
 
 def test_hlclient_spot_order_is_market_tif_validation_iter116_s3():
     """[ITER116 #3] HLClient.spot_order is_market & tif validation."""
-    import os
-    import sys
     from types import SimpleNamespace
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -1609,8 +1570,6 @@ def test_hlclient_spot_order_is_market_tif_validation_iter116_s3():
 
 def test_t212client___init___place_market_order_extended_hours_false_and_get_historical_order_currency_iter116_s4(monkeypatch):
     """[ITER116 #4] T212Client.__init__, place_market_order extended_hours='false', and get_historical_order currency=True."""
-    import os
-    import sys
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -1662,8 +1621,6 @@ def test_t212client___init___place_market_order_extended_hours_false_and_get_his
 
 def test_hl_stratparams_from_dict_rejects_direction_false_and_out_iter118_s1():
     """[ITER118 #1] HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True."""
-    import os
-    import sys
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -1700,8 +1657,6 @@ def test_hl_stratparams_from_dict_rejects_direction_false_and_out_iter118_s1():
 
 def test_hl_strategy__apply_close_preserves_avg_cost_and_updates_iter118_s2(monkeypatch):
     """[ITER118 #2] HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close."""
-    import os
-    import sys
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1746,8 +1701,6 @@ def test_hl_strategy__apply_close_preserves_avg_cost_and_updates_iter118_s2(monk
 
 def test_hl_replay_validates_ohlc_envelope_and_accepts_tuple_iter118_s3():
     """[ITER118 #3] HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)."""
-    import os
-    import sys
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -1781,8 +1734,6 @@ def test_hl_replay_validates_ohlc_envelope_and_accepts_tuple_iter118_s3():
 
 def test_t212_strategy__reconcile_real_falls_back_to_order_limit_iter118_s4(monkeypatch):
     """[ITER118 #4] T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0."""
-    import os
-    import sys
     from types import SimpleNamespace
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -1843,8 +1794,6 @@ def test_t212_strategy__reconcile_real_falls_back_to_order_limit_iter118_s4(monk
 
 def test_hyperliquid_backtest_precompute_signal_validates_signal_source_and_normalizes_iter119_s4():
     """[ITER119 #4] hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace."""
-    import os
-    import sys
     import pytest
     hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
     orig_sys_path = list(sys.path)
@@ -1916,7 +1865,6 @@ def test_intent_client_order_id_and_auditedstrategyexecutor_reject_sentinel_stri
 def test_hyperliquidprovider_open_orders_skips_entries_with_missing_zero_sentinel_iter141_s3():
     """[ITER141 #3] HyperliquidProvider.open_orders skips entries with missing/zero/sentinel orderId."""
     from types import SimpleNamespace
-    from providers.hyperliquid_provider import HyperliquidProvider
     # 3. HyperliquidProvider.open_orders skips entries with missing/zero/sentinel orderId
     hl = HyperliquidProvider(token="HYPE", live_enabled=False)
     hl._spot_pair = "@107"
@@ -1933,7 +1881,6 @@ def test_hyperliquidprovider_open_orders_skips_entries_with_missing_zero_sentine
 
 def test_hyperliquid_signals__file_signal_guards_directory_bool_empty_paths_iter147_s3(tmp_path):
     """[ITER147 #3] hyperliquid/signals._file_signal guards directory/bool/empty paths."""
-    import os
     from botcore import load_local_module
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # 3. hyperliquid/signals._file_signal guards directory/bool/empty paths
@@ -1955,7 +1902,6 @@ def test_hyperliquidprovider_execution_enabled_rejects_nan_false_containers_iter
 
 def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_timestamps_iter153_s2(monkeypatch):
     """[ITER153 #2] hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps."""
-    import os
     from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     hl_sl = load_local_module(os.path.join(root, "hyperliquid"), "shadow_longterm.py", module_key="hl_shadow_longterm_it153", reload=True)
@@ -1976,7 +1922,6 @@ def test_hyperliquid_shadow_longterm__fetch_with_ts_deduplicates_identical_times
 
 def test_hyperliquid_archive_delta_neutral_funding_scan_py_rank__spot_tokens_safety_iter153_s3():
     """[ITER153 #3] hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety."""
-    import os
     from types import SimpleNamespace
     from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -2005,7 +1950,6 @@ def test_hyperliquid_archive_delta_neutral_funding_scan_py_rank__spot_tokens_saf
 def test_hyperliquid_archive_delta_neutral_delta_neutral_py_state_path_for__load_sanitization_iter153_s4(tmp_path, monkeypatch):
     """[ITER153 #4] hyperliquid/archive/delta_neutral/delta_neutral.py state_path_for & _load sanitization."""
     import json
-    import os
     from types import SimpleNamespace
     from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -2047,8 +1991,6 @@ def test_hyperliquid_archive_delta_neutral_delta_neutral_py_state_path_for__load
 
 def test_simulate_sys_modules_market_data_polluted_by_hyperliquid_market_data_iter154_s1(monkeypatch):
     """[ITER154 #1] Simulate sys.modules['market_data'] polluted by hyperliquid/market_data.py."""
-    import os
-    import sys
     from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     # 1. Simulate sys.modules["market_data"] polluted by hyperliquid/market_data.py
@@ -2061,7 +2003,6 @@ def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_it
     """[ITER169 #2] HyperliquidProvider underscore alias and LONG/ASK side normalization."""
     import pytest
     from providers import hyperliquid_provider as hlp
-    from providers.strategy_executor import ProviderError
     # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
     hl = hlp.HyperliquidProvider(token="HYPE", live_enabled=False)
     assert hl.supports_symbol("HYPE_USDC") is True

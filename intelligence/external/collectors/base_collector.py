@@ -565,8 +565,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 and is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None))
             ):
                 try:
-                    from instrument_registry import is_symbol_market_open
-
                     if not is_symbol_market_open(sym_clean, now_f):
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0

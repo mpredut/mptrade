@@ -820,7 +820,6 @@ def test_external_collectors_and_ssot_prompt_modularization():
 
 def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ssot(tmp_path):
     """Verify Step 1-4 modularization: *_collector.py naming, microstructure/portfolio boundary, tca_risk_evaluator, and daemon_ssot."""
-    import json
     import time as _time
     import intelligence.external.collectors as ext_cols
     from intelligence.external.collectors import (
@@ -882,7 +881,6 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
 
 def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_bucket_dedup(tmp_path, monkeypatch):
     """Verify dict-wrapped intents unwrapping, read_json_cached list-root fallback, whale wall preservation, and nSigFigs bucket dedup."""
-    import json
     from types import SimpleNamespace
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.sentiment.collectors.macro_telemetry_collector import (
@@ -1418,7 +1416,6 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
 
 
 def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_collector_forwarding(monkeypatch, tmp_path):
-    import pytest
     import cacheManager as cm
     import cachetrend
     import intelligence.macro_sentiment_ssot as ssot_mod
@@ -1516,7 +1513,6 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
 
 
 def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_ssot_monkeypatch(monkeypatch, tmp_path):
-    import os
     from botcore import load_local_module
     import intelligence.macro.daemon_ssot as daemon_ssot
     import intelligence.macro_sentiment_ssot as ssot_mod
@@ -1699,7 +1695,6 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
 
 
 def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_guards(monkeypatch, tmp_path):
-    import json
     import time as _time
     import intelligence.macro_sentiment_ssot as ssot
     import intelligence.sentiment.collectors.macro_telemetry_collector as mtc
@@ -1901,7 +1896,6 @@ def test_iter54_breadth_vol_share_intent_timestamp_iso_ms_and_evaluator_sanitiza
 
 
 def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_history_dict(tmp_path, monkeypatch):
-    import json
     import intelligence.macro.geopolitical_analyzer as geo_mod
     import intelligence.sentiment.sentiment_advisor as sa_mod
     import intelligence.sentiment.guards.high_stake_guard as hsg_mod
@@ -2048,7 +2042,6 @@ def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_
 
 
 def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases(tmp_path, monkeypatch):
-    import json
     import intelligence.external.collectors.derivatives_telemetry_collector as dt_mod
     import intelligence.external.collectors.whale_positioning_collector as wp_mod
     import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
@@ -2197,9 +2190,7 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
 
 
 def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision(tmp_path, monkeypatch):
-    from intelligence.composite import CompositeMarketIntelligence
     from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
     from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
@@ -2349,7 +2340,6 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
 
 
 def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_path, monkeypatch):
-    from intelligence.cli import inspect_symbol_intelligence
     from intelligence.internal.state import survival as surv_mod
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
         enrich_sentiment_advisor_live_flow_divergence,
@@ -2460,15 +2450,10 @@ def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_
 
 
 def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp_path):
-    import numpy as np
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall
     from intelligence.macro.calendar_ssot import (
         compute_dynamic_geopolitical_interval,
@@ -2579,7 +2564,6 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
     )
     from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-    from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 
     # 1. KalmanTrend / KalmanTrendTrigger normalize millisecond timestamps so 60s steps do not trigger gap reset
     ktt = KalmanTrendTrigger()
@@ -2825,7 +2809,6 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
 
 
 def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(monkeypatch, tmp_path, capsys):
-    import json
     from intelligence.cli import _stamp_age, print_intelligence_report
     from intelligence.macro.calendar_ssot import did_cross_session_checkpoint
     from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
@@ -2931,7 +2914,6 @@ def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(m
 
 
 def test_iter64_breadth_rotation_fields_taxonomy_spaces_and_ms_timestamps(tmp_path):
-    import json
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.macro_sentiment_ssot import (
@@ -3045,19 +3027,8 @@ def test_iter64_breadth_rotation_fields_taxonomy_spaces_and_ms_timestamps(tmp_pa
 
 
 def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_timestamps(monkeypatch, tmp_path):
-    import json
-    import numpy as np
-    from intelligence.internal.state.volatility import calculate_volatility_1h
-    from intelligence.internal.state.persistence import calculate_mann_kendall
     from intelligence.internal.state.survival import block_slopes, episodes
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
-    from intelligence.internal.triggers.trigger_event import TriggerEvent
     from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
-    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
-    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
@@ -3169,7 +3140,6 @@ def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_times
 
 
 def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_order(tmp_path, monkeypatch):
-    import json
     from guard_hierarchy import (
         GUARD_REGISTRY,
         make_intel_cache_key,
@@ -3320,7 +3290,6 @@ def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_o
 def test_iter67_pricewindow_sample_rate_cachetrend_ms_and_composite_granular_qlimit2(tmp_path, monkeypatch):
     from pricewindow import IncrementalTrendBuffer, PriceWindow
     from cachetrend import CacheShortTrendManager
-    from intelligence.composite import CompositeMarketIntelligence
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     import qlimit_order_guard
 
@@ -3586,12 +3555,10 @@ def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_pric
 
 def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
     import importlib.util
-    import os
     from types import SimpleNamespace
     import utils as u
     import shadow_signals
     import tradeall
-    from intelligence.internal.state.volatility import calculate_volatility_1h
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
     from strategies.spot_engine import Strategy as SpotStrategy, StratParams as SpotParams
 
@@ -3699,7 +3666,6 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
 
 
 def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
-    import json
     import subprocess
     import botcore
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
@@ -3808,7 +3774,6 @@ def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
 
 
 def test_iter72_series_24h_double_ms_order_ts_iso_and_portfolio_enrichment(tmp_path):
-    import json
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
     from intelligence.sentiment.collectors.portfolio_collector import (
         _load_audit_terminal_orders,
@@ -4053,9 +4018,7 @@ def test_iter73_warmup_shadow_prices_cost_basis_fill_id_and_ohlc_window():
 
 
 def test_iter74_resolve_patched_attr_qlimit2_sub_bypasses_and_ssot_fills_freshest(tmp_path):
-    import json
     import sys
-    import time
     import types
     import botcore
     from guard_hierarchy import resolve_qlimit2_sub_bypasses
@@ -4123,8 +4086,6 @@ def test_iter74_resolve_patched_attr_qlimit2_sub_bypasses_and_ssot_fills_freshes
 
 
 def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_items(tmp_path):
-    import os
-    import time
     import types
     import cachetrend
     import order_guard
@@ -5023,7 +4984,6 @@ def test_iter83_mt_exit_kind_stop_variants_state_store_and_price_analysis_ms():
 
 def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tmp_path, monkeypatch):
     import importlib
-    import json
     import sys
     from types import SimpleNamespace
     import botcore
@@ -5143,7 +5103,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
 
 def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes(tmp_path, monkeypatch, capsys):
     import importlib
-    import json
     import sys
     from types import SimpleNamespace
     import binance_api
@@ -5431,7 +5390,6 @@ def test_iter87_kalman_multiprocess_merge_execution_audit_cancel_ts_and_archive_
     tmp_path, monkeypatch
 ):
     import importlib
-    import json
     from intelligence.internal.state.survival import estimate_remaining_trend_hours
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         enrich_microstructure_cvd,
@@ -5627,7 +5585,6 @@ def test_iter87_kalman_multiprocess_merge_execution_audit_cancel_ts_and_archive_
 def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_and_sidecar_migration(
     tmp_path, monkeypatch
 ):
-    import json
     import subprocess
     from types import SimpleNamespace
     import cachetrend
@@ -5762,7 +5719,6 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
 
 
 def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, monkeypatch):
-    import json
     import types
     from intelligence.sentiment.collectors import microstructure_collector as mc_mod
     from intelligence.sentiment.collectors.microstructure_collector import (
@@ -5886,7 +5842,6 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
 def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes_and_sibling_geometry(
     tmp_path, monkeypatch
 ):
-    import json
     from intelligence.macro.geopolitical_analyzer import (
         GeopoliticalThreatAnalyzer,
         GeopoliticalThreatAssessment,
@@ -6088,12 +6043,10 @@ def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
 def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_clause_and_non_tradable_ro_sync(
     tmp_path,
 ):
-    import json
     from intelligence.macro.calendar_ssot import (
         compute_dynamic_geopolitical_interval,
         parse_cited_taker_ratio,
     )
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
     from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
         enrich_positions_with_orders_and_cycles,
@@ -6245,7 +6198,6 @@ def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_claus
 
 
 def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_path):
-    import json
     from intelligence.sentiment.collectors.microstructure_collector import (
         enrich_24h_and_microstructure,
     )
@@ -6313,8 +6265,6 @@ def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_pa
 
 
 def test_iter91_multi_fill_stale_7d_pnl_post_sell_new_cycle_lifo_reset_t212_retry_and_manifest_shutdown_order(tmp_path):
-    import json
-    from unittest.mock import MagicMock
     from intelligence.sentiment.evaluators.portfolio_evaluator import (
         extract_symbol_recent_fills,
         reconcile_venue_cycles_with_recent_orders,
@@ -6450,8 +6400,6 @@ def test_iter91_multi_fill_stale_7d_pnl_post_sell_new_cycle_lifo_reset_t212_retr
 
 
 def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest_and_watchdog_recovery(tmp_path):
-    import json
-    import time
     from types import SimpleNamespace
     from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
     from intelligence.macro_analyzer import MacroAnalyzer
@@ -6622,8 +6570,6 @@ def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest
 
 
 def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_pattern(tmp_path):
-    import json
-    import time
     from intelligence.sentiment.collectors.microstructure_collector import (
         enrich_24h_and_microstructure,
         load_symbol_price_series,
@@ -7797,7 +7743,6 @@ def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_mic
 
 
 def test_iter100_portfolio_collector_audit_origins_hl_active_cycle_best_fills_and_ag_dust(tmp_path):
-    import json
     from intelligence.sentiment.collectors.portfolio_collector import (
         _load_recent_audit_origins,
         harvest_bot_runtime_states,
@@ -8136,7 +8081,6 @@ def test_iter102_pretrade_telemetry_quote_price_scope_and_micro_arb_isolation(tm
 
 
 def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_isolation(tmp_path):
-    import json
     from intelligence.sentiment.collectors.microstructure_collector import (
         discover_reference_microstructure_symbols,
         enrich_24h_and_microstructure,
@@ -8225,7 +8169,6 @@ def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_is
 
 
 def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_path):
-    import json
     from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
     from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
     from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment
@@ -8346,7 +8289,6 @@ def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_
 
 
 def test_iter105_same_venue_wallet_dedup_xstocks_px_and_cycle_equity_scope(tmp_path):
-    import json
     from intelligence.sentiment.collectors.portfolio_collector import harvest_kraken_xstocks
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import reconcile_live_venue_equity_summary
     from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
@@ -8408,7 +8350,6 @@ def test_iter105_same_venue_wallet_dedup_xstocks_px_and_cycle_equity_scope(tmp_p
 
 
 def test_iter22_near_balanced_cvd_spot_absorbing_single_stock_shares_and_calm_geo_refresh(tmp_path):
-    import json
     from intelligence.macro.lexicon_ssot import (
         has_financial_or_geopolitical_context,
         is_off_topic_general_news_title,
@@ -8702,7 +8643,6 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
 
 
 def test_iter107_equity_crypto_scope_isolation_in_instrument_registry_and_execution_audit(tmp_path):
-    import json
     import math
     from types import SimpleNamespace
     from instrument import resolve_instrument_live_price, resolve_tradable_instrument
@@ -8931,7 +8871,6 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
 
 
 def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tmp_path):
-    import json
     from types import SimpleNamespace
     from cachepaths import cache_symbol_variants
     from intelligence.sentiment.collectors.portfolio_collector import (
@@ -9046,7 +8985,6 @@ def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tm
 
 
 def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daemon_timeout_recovery(tmp_path):
-    import json
     from cachepaths import cache_symbol_variants
     from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
     from intelligence.sentiment.evaluators.microstructure_evaluator import align_equity_orderbook_to_spot
@@ -9132,7 +9070,6 @@ def test_iter24_btc_phantom_lot_avg_reconciliation_eq_bid_ask_precision_and_daem
 
 
 def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and_daemon_recovery(tmp_path):
-    import json
     from types import SimpleNamespace
     import botcore
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
@@ -9260,7 +9197,6 @@ def test_iter25_held_open_lots_retention_pretrade_lifo_lots_equity_ohlc_sync_and
 
 def test_resolve_cached_gaussian_horizon_recovers_from_previous_generation_file_iter8_s3(tmp_path, monkeypatch):
     """[ITER8 #3] resolve_cached_gaussian_horizon recovers from .previous generation file."""
-    import json
     import intelligence.internal.state.survival as survival_mod
     from qlimit_order_guard import resolve_cached_gaussian_horizon
     # 3. resolve_cached_gaussian_horizon recovers from .previous generation file
@@ -9276,8 +9212,6 @@ def test_resolve_cached_gaussian_horizon_recovers_from_previous_generation_file_
 
 def test_weibullexhaustionguard_with_policy_block_from_order_guard_conf__discrete_policy_sets_iter12_s1():
     """[ITER12 #1] WeibullExhaustionGuard with policy='block' (from order_guard.conf _DISCRETE_POLICY_SETS) vetoes exhausted trend."""
-    import pytest
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     # 1. WeibullExhaustionGuard with policy="block" (from order_guard.conf _DISCRETE_POLICY_SETS) vetoes exhausted trend
     wg_block = WeibullExhaustionGuard(default_p90_days=7.0, policy="block", exhausted_scale=0.25)
     dec_block = wg_block.check(
@@ -9292,8 +9226,6 @@ def test_weibullexhaustionguard_with_policy_block_from_order_guard_conf__discret
 
 def test_compositemarketintelligence_evaluate_guards_passes_inferred_trend_direction_from_gradient_iter13_s3(monkeypatch):
     """[ITER13 #3] CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient."""
-    import pytest
-    from intelligence.composite import CompositeMarketIntelligence
     # 3. CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient
     #    to WeibullExhaustionGuard.check so counter-trend SELL in mature bull trend (gradient > 0) is not downscaled
     cmi = CompositeMarketIntelligence()
@@ -9327,8 +9259,6 @@ def test_compositemarketintelligence_evaluate_guards_passes_inferred_trend_direc
 
 def test_volatility_py_usdcusdt_preserved_ron_gbp_stripped_items_iter16_s1(tmp_path):
     """[ITER16 #1] volatility.py: USDCUSDT preserved, RON/GBP stripped, {'items': {...}} + .previous recovery."""
-    import json
-    import pytest
     from intelligence.internal.state import volatility as vol_mod
     # 1. volatility.py: USDCUSDT preserved, RON/GBP stripped, {"items": {...}} + .previous recovery
     assert vol_mod._vol_symbol_variants("USDCUSDT") == ("USDCUSDT",)
@@ -9367,8 +9297,6 @@ def test_calculate_mann_kendall_and_calculate_hurst_exponent_filter_nan_inf_with
 
 def test_parabolicsurgeguard_clock_skew_nan_future_history_resilience_iter19_s1():
     """[ITER19 #1] ParabolicSurgeGuard clock-skew & NaN/future history resilience."""
-    import pytest
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
     # 1. ParabolicSurgeGuard clock-skew & NaN/future history resilience
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5, window_seconds=3600.0)
     p_guard._states["BTCUSDC"] = {
@@ -9398,9 +9326,7 @@ def test_parabolicsurgeguard_clock_skew_nan_future_history_resilience_iter19_s1(
 
 def test_kalmantrend_meanreversiontrigger_nan_inf_backward_ts_protection_iter19_s3():
     """[ITER19 #3] KalmanTrend & MeanReversionTrigger NaN/Inf/backward-ts protection."""
-    import pytest
     from intelligence.internal.triggers.kalman_trigger import KalmanTrend
-    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
     # 3. KalmanTrend & MeanReversionTrigger NaN/Inf/backward-ts protection
     import math
     kf = KalmanTrend()
@@ -9426,7 +9352,6 @@ def test_kalmantrend_meanreversiontrigger_nan_inf_backward_ts_protection_iter19_
 
 def test_parabolicsurgeguard_symbol_normalization_bool_string_resilience_iter31_s1():
     """[ITER31 #1] ParabolicSurgeGuard symbol normalization & bool/string resilience."""
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
     # 1. ParabolicSurgeGuard symbol normalization & bool/string resilience
     pg = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
     # Bool price in history (True -> 1.0 if unguarded) must be ignored
@@ -9437,8 +9362,6 @@ def test_parabolicsurgeguard_symbol_normalization_bool_string_resilience_iter31_
 
 def test_compositemarketintelligence_prioritizes_executable_triggers_with_highest_strength_and_iter83_s1():
     """[ITER83 #1] CompositeMarketIntelligence prioritizes executable triggers with highest strength and keeps SELL effective_scale at 1.0."""
-    from intelligence.composite import CompositeMarketIntelligence
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     from intelligence.internal.guards.guard_decision import GuardDecision
     # 1. CompositeMarketIntelligence prioritizes executable triggers with highest strength and keeps SELL effective_scale at 1.0
     comp = CompositeMarketIntelligence()
@@ -9473,7 +9396,6 @@ def test_compositemarketintelligence_prioritizes_executable_triggers_with_highes
 
 def test_weibullexhaustionguard_bool_empty_unknown_trend_direction_must_not_bypass_iter101_s1():
     """[ITER101 #1] WeibullExhaustionGuard: bool/empty/unknown trend_direction must not bypass exhaustion check as 'flat'."""
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     # 1. WeibullExhaustionGuard: bool/empty/unknown trend_direction must not bypass exhaustion check as 'flat'
     wg = WeibullExhaustionGuard(default_p90_days=5.0, policy="veto")
     dec_bool_dir = wg.check("BTCUSDC", " b ", trend_duration_seconds=10 * 86400.0, trend_direction=True)
@@ -9488,8 +9410,6 @@ def test_weibullexhaustionguard_bool_empty_unknown_trend_direction_must_not_bypa
 
 def test_compositemarketintelligence_bypass_guards_all_bypasses_code_none_guards_noise_iter102_s1():
     """[ITER102 #1] CompositeMarketIntelligence: bypass_guards={'all'} bypasses code=None guards (noise, parabolic, cascade)."""
-    import pytest
-    from intelligence.composite import CompositeMarketIntelligence
     # 1. CompositeMarketIntelligence: bypass_guards={"all"} bypasses code=None guards (noise, parabolic, cascade)
     cmi = CompositeMarketIntelligence()
     # Without bypass: gradient=0.01 <= epsilon=1.0 -> NoiseFloorGuard defers
@@ -9548,7 +9468,6 @@ def test_survival_verdict_accepts_string_keys_as_persisted_in_iter98_s3():
 def test_kalman_trigger_pos_float_env_strips_inline_comments_and_requires_triggerevent_iter122_s4(monkeypatch):
     """[ITER122 #4] botcore.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action."""
     from botcore import pos_float_env
-    from intelligence.internal.triggers.trigger_event import TriggerEvent
     # 4. botcore.pos_float_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
     monkeypatch.setenv("TEST_KALMAN_ENV", "0.0025 # comment")
     assert pos_float_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
@@ -9562,8 +9481,6 @@ def test_kalman_trigger_pos_float_env_strips_inline_comments_and_requires_trigge
 
 def test_trendsignificanceguard_normalizes_lowercase_trigger_action_and_side_iter125_s1():
     """[ITER125 #1] TrendSignificanceGuard normalizes lowercase trigger action and side."""
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-    from intelligence.internal.triggers.trigger_event import TriggerEvent
     # 1. TrendSignificanceGuard normalizes lowercase trigger action and side
     ts_guard = TrendSignificanceGuard(max_p_value=0.05)
     t_low = TriggerEvent(
@@ -9582,8 +9499,6 @@ def test_trendsignificanceguard_normalizes_lowercase_trigger_action_and_side_ite
 
 def test_trendsignificanceguard_handles_both_enum_members_and_lowercase_strings_iter126_s1():
     """[ITER126 #1] TrendSignificanceGuard handles both Enum members and lowercase strings."""
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     # 1. TrendSignificanceGuard handles both Enum members and lowercase strings
     ts_guard = TrendSignificanceGuard(max_p_value=0.05)
     t_enum = TriggerEvent(
@@ -9602,7 +9517,6 @@ def test_trendsignificanceguard_handles_both_enum_members_and_lowercase_strings_
 
 def test_compositemarketintelligence_evaluate_guards_honours_both_g_qlimit2_and_legacy_component_iter126_s2():
     """[ITER126 #2] CompositeMarketIntelligence.evaluate_guards honours both G_QLIMIT2 and legacy component names."""
-    from intelligence.composite import CompositeMarketIntelligence
     # 2. CompositeMarketIntelligence.evaluate_guards honours both G_QLIMIT2 and legacy component names
     comp = CompositeMarketIntelligence(parabolic_surge_pct=2.0)
     hist_surge = [(1000.0, 100.0), (1600.0, 110.0)]
@@ -9630,8 +9544,6 @@ def test_get_trend_survival_metrics_does_not_call_estimate_t_when_allow_network_
 
 def test_weibullexhaustionguard_supports_bid_ask_long_short_side_aliases_iter174_s2():
     """[ITER174 #2] WeibullExhaustionGuard supports BID/ASK/LONG/SHORT side aliases and uptrend/bearish trend_direction."""
-    import pytest
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     # 2. WeibullExhaustionGuard supports BID/ASK/LONG/SHORT side aliases and uptrend/bearish trend_direction
     wg = WeibullExhaustionGuard(default_p90_days=1.0, policy="downscale")
     dec_bid = wg.check("BTCUSDC", "BID", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="uptrend")
@@ -9643,9 +9555,7 @@ def test_weibullexhaustionguard_supports_bid_ask_long_short_side_aliases_iter174
 
 def test_theme_compositemarketintelligence_evaluate_guards_does_not_pass_gaussian_horizon_days_when_iter177_s1(monkeypatch):
     """[ITER177 #1] Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed."""
-    import pytest
     import intelligence.composite as comp_mod
-    from intelligence.composite import CompositeMarketIntelligence
     # 1. Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed
     monkeypatch.setattr(
         comp_mod,
@@ -9668,7 +9578,6 @@ def test_theme_compositemarketintelligence_evaluate_guards_does_not_pass_gaussia
 
 def test_triggerevent_is_executable_accepts_bid_ask_long_short_side_iter177_s2():
     """[ITER177 #2] TriggerEvent.is_executable accepts BID/ASK/LONG/SHORT side aliases."""
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
     # 2. TriggerEvent.is_executable accepts BID/ASK/LONG/SHORT side aliases
     ev_bid = TriggerEvent(action=TriggerAction.ENTRY, side="BID", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
     ev_ask = TriggerEvent(action=TriggerAction.EXIT, side="ASK", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
@@ -9677,7 +9586,6 @@ def test_triggerevent_is_executable_accepts_bid_ask_long_short_side_iter177_s2()
 
 def test_guarddecision_downscale_normalizes_percentage_scale_scale_iter177_s3():
     """[ITER177 #3] GuardDecision.downscale normalizes percentage scale (1.0 < scale <= 100.0)."""
-    import pytest
     from intelligence.internal.guards.guard_decision import GuardDecision
     # 3. GuardDecision.downscale normalizes percentage scale (1.0 < scale <= 100.0)
     dec_pct = GuardDecision.downscale("TestGuard", scale=35.0, reason="pct_scale")
@@ -9685,7 +9593,6 @@ def test_guarddecision_downscale_normalizes_percentage_scale_scale_iter177_s3():
 
 def test_trendsignificanceguard_evaluate_accepts_dict_trigger_and_bid_short_iter177_s4():
     """[ITER177 #4] TrendSignificanceGuard.evaluate accepts dict trigger and BID/SHORT side aliases."""
-    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
     # 4. TrendSignificanceGuard.evaluate accepts dict trigger and BID/SHORT side aliases
     tsg = TrendSignificanceGuard(max_p_value=0.05)
     dec_inv = tsg.evaluate({"action": "ENTRY", "side": "BID"}, [100.0 - i for i in range(12)])
@@ -9715,7 +9622,6 @@ def test_resolve_hierarchical_guard_mode_cascades_intelligence_guards_mode_pilla
 
 def test_triggerevent_directional_builds_entry_buy_for_bull_and_iter183_s2():
     """[ITER183 #2] TriggerEvent.directional builds ENTRY/BUY for bull and EXIT/SELL for bear."""
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     # 2. TriggerEvent.directional builds ENTRY/BUY for bull and EXIT/SELL for bear
     bull_ev = TriggerEvent.directional(
         True,

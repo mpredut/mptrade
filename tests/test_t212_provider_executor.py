@@ -733,9 +733,7 @@ if __name__ == "__main__":
 
 def test_t212provider_get_orders_and_order_status_iter29_s2():
     """[ITER29 #2] T212Provider.get_orders and order_status."""
-    import time
     from types import SimpleNamespace
-    from providers.t212_provider import T212Provider
     # 2. T212Provider.get_orders and order_status
     fake_cli = SimpleNamespace(
         get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "averagePrice": 120.0, "quantity": 5.0}],
@@ -766,8 +764,6 @@ def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1()
     """[ITER41 #1] T212Provider rejects boolean qty/price/order_id/fill fields."""
     from types import SimpleNamespace
     import pytest
-    from providers.strategy_executor import ProviderError
-    from providers.t212_provider import T212Provider
     # 1. T212Provider rejects boolean qty/price/order_id/fill fields
     tp = T212Provider(
         client=SimpleNamespace(
@@ -795,8 +791,6 @@ def test_t212provider_rejects_boolean_qty_price_order_id_fill_fields_iter41_s1()
 
 def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_before_iter50_s1():
     """[ITER50 #1] T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP."""
-    import os
-    import sys
     import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -836,8 +830,6 @@ def test_t212client_place_limit_order_place_market_order_reject_bool_nan_inf_bef
 
 def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__portfolio_position_step_iter50_s2():
     """[ITER50 #2] 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step."""
-    import os
-    import sys
     from types import SimpleNamespace
     import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -891,8 +883,6 @@ def test_212trading_strategy_generate_tp_ladder_adapt_ladder_rungs__avg_cost__po
 
 def test_212trading_replay__fx_rates__ols_slope_pct_reject_bool_nan_inf_iter50_s3():
     """[ITER50 #3] 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf."""
-    import os
-    import sys
     import pytest
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -929,7 +919,6 @@ def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fe
     from types import SimpleNamespace
     import pytest
     from providers.base import ProviderError
-    from providers.t212_provider import T212Provider
     # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
     tp = T212Provider()
     fake_t212 = SimpleNamespace(
@@ -947,8 +936,6 @@ def test_t212provider_order_status_rejects_nan_inf_filledquantity_filledvalue_fe
 
 def test_212trading_order_manager__portfolio_qty__matching_active_orders__reconcile_record_iter53_s1():
     """[ITER53 #1] 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record."""
-    import os
-    import sys
     from types import SimpleNamespace
     # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
@@ -986,8 +973,6 @@ def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57
     """[ITER57 #4] 212trading/strategy.py generate_tp_ladder & _active_order_identity."""
     import pytest
     # 4. 212trading/strategy.py generate_tp_ladder & _active_order_identity
-    import os
-    import sys
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
     mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
@@ -1022,8 +1007,6 @@ def test_212trading_strategy_py_generate_tp_ladder__active_order_identity_iter57
 def test_212trading_strategy_py_stratparams_from_env_rejects_nan_in_iter58_s6():
     """[ITER58 #6] 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER."""
     import pytest
-    import os
-    import sys
     # 6. 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
     orig_sys_path = list(sys.path)
@@ -1081,7 +1064,6 @@ def test_t212provider_free_balance_eur_converts_ron_using_usd_ron_eur_usd_iter61
 
 def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4():
     """[ITER69 #4] 212trading.market_data & 212trading.strategy.generate_tp_ladder."""
-    import os
     import pytest
     from botcore import load_local_module
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
@@ -1099,7 +1081,6 @@ def test_212trading_market_data_212trading_strategy_generate_tp_ladder_iter69_s4
 
 def test_212trading_t212_bot_verify_instrument_isin_tolerates_non_dict_items_in_iter70_s2():
     """[ITER70 #2] 212trading.t212_bot.verify_instrument_isin tolerates non-dict items in instruments list."""
-    import os
     from types import SimpleNamespace
     from botcore import load_local_module
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
@@ -1186,7 +1167,6 @@ def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_i
     """[ITER94 #1] T212Client get_order_status / cancel_order & 212trading.t212_bot relative import isolation & verify_instrument_isin validation."""
     import importlib
     import importlib.util
-    import sys
     # 1. T212Client get_order_status / cancel_order
     t212_client_mod = importlib.import_module("212trading.t212_client")
     cli = t212_client_mod.T212Client(
@@ -1208,8 +1188,6 @@ def test_t212client_get_order_status_cancel_order_212trading_t212_bot_relative_i
 def test_t212provider_string_live_enabled_empty_symbol_in__position_and_iter95_s1():
     """[ITER95 #1] T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders."""
     import pytest
-    from providers.strategy_executor import ProviderError
-    from providers.t212_provider import T212Provider
     # 1. T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders
     t212_p = T212Provider(
         client=type("C", (), {"get_portfolio": lambda self: [{"ticker": "", "quantity": 10.0, "averagePrice": 50.0}]})(),
@@ -1308,8 +1286,6 @@ def test_t212provider_order_status_and_cancel_order_accept_integer_floats_while_
     """[ITER138 #2] T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers."""
     import pytest
     from types import SimpleNamespace
-    from providers.strategy_executor import ProviderError
-    from providers.t212_provider import T212Provider
     # 2. T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers
     seen_ids = []
     fake_cli = SimpleNamespace(
@@ -1397,7 +1373,6 @@ def test__sanitize_t212_state_parses_string_boolean_flags_false_false_and_iter14
 
 def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
     """[ITER150 #2] 212trading/analyze_volatility.py pct & pullbacks."""
-    import os
     from botcore import load_local_module
     # 2. 212trading/analyze_volatility.py pct & pullbacks
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1421,7 +1396,6 @@ def test_t212provider__orders_live_rejects_nan_false_containers_iter152_s3():
 def test_t212provider__position_none_strict_false_returns_none_without_iter164_s4():
     """[ITER164 #4] T212Provider: _position(None, strict='false') returns None without raising ProviderError."""
     from types import SimpleNamespace
-    from providers.t212_provider import T212Provider
     # 4. T212Provider: _position(None, strict="false") returns None without raising ProviderError
     tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
     assert tp._position(None, strict="false") is None
