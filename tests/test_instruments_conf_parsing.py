@@ -721,7 +721,6 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
     import order_guard
     import threading
     from types import SimpleNamespace
-    import pytest
     import cacheManager as cm
     import instrument_registry
     from providers.market_api import MarketApi
@@ -833,7 +832,6 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
 
 def test_instrumentspec_programmatic_non_string_and_mixed_case_params_iter97_s1():
     """[ITER97 #1] InstrumentSpec programmatic non-string and mixed-case params handling."""
-    import pytest
     from instrument_registry import InstrumentSpec
     # 1. InstrumentSpec programmatic non-string and mixed-case params handling
     spec = InstrumentSpec(
@@ -866,7 +864,6 @@ def test_scan_backtest_ranges_rejects_bool_int_path_and_strips_trailing_iter139_
 
 def test_instrument_registry_select_instruments_accepts_provider_object_with_name_and_iter162_s4():
     """[ITER162 #4] instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider."""
-    import pytest
     import instrument_registry as ir
     # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
     class _DummyProv:
@@ -879,7 +876,6 @@ def test_instrument_registry_select_instruments_accepts_provider_object_with_nam
 
 def test_symbols_validate_ordertype_validate_symbols_and_validate_params_with_case_slash_iter167_s1():
     """[ITER167 #1] symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs."""
-    import pytest
     import instrument_registry as sym_mod
     # 1. symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs
     valid_sym = sym_mod.symbols[0]

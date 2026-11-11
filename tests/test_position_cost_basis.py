@@ -617,7 +617,6 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     assert rows[0]["_fillIds"] == ["801", "802"]
 
     # 2. CacheTradeManager.update_cache_per_symbol deduplicates by immutable trade ID and enriches fees
-    from types import SimpleNamespace
     tsym = "TEST_POLY_TRADE_USDC"
     trade_file = str(tmp_path / "trade_poly.jsonl")
     open(trade_file, "w", encoding="utf-8").close()

@@ -308,10 +308,7 @@ def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_c
 
 def test_212trading_order_manager_waiting_with_sentinel_order_id_returns_false_iter153_s1(tmp_path, monkeypatch):
     """[ITER153 #1] 212trading/order_manager: waiting with sentinel order_id='0' returns False, not True."""
-    import json
-    import os
     from types import SimpleNamespace
-    from botcore import load_local_module
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     om = load_local_module(os.path.join(root, "212trading"), "order_manager.py", module_key="t212_order_manager_it153", reload=True)
     # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True

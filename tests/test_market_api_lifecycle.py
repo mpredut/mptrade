@@ -345,7 +345,6 @@ def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
 def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_s2():
     """[ITER170 #2] MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force."""
     import pytest
-    import time
     from providers import market_api as mapi
     # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
     captured = {}
@@ -378,11 +377,9 @@ def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
     """Verify venue-agnostic MarketDataProvider capabilities, SSOT cold-start client detection, and unified MarketApi routing."""
     import pytest
     import botcore
-    from providers.base import MarketDataProvider
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
     from providers.t212_provider import T212Provider
-    from providers.market_api import MarketApi
 
     assert not hasattr(MarketDataProvider, "_REAL_CLIENT_CLASS_NAMES")
     assert not hasattr(MarketApi, "_provider_routed_or_default")
@@ -427,7 +424,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     import order_guard
     from providers.base import ClosedPriceSeries as BaseClosedPriceSeries, MarketDataProvider
     from providers.intent_execution import resolve_intent_topic_tag
-    from providers.market_api import MarketApi
     from providers.order_ohlc_utils import ClosedPriceSeries as OhlcClosedPriceSeries
     from providers.replay_provider import ReplayMarketDataProvider
     from providers.strategy_executor import StrategyExecutor, SubmissionRefused

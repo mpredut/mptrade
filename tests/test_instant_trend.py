@@ -580,7 +580,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120, now=now_entry))
 
     def test_provider_timestamp_propagates_to_cache24(self):
-        from binance_api.bapi_ws import BinancePriceStream
 
         stream = BinancePriceStream(["BTCUSDT"])
         c24 = _make_cache24("BTCUSDT", [], self.tmp)
@@ -765,7 +764,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
 
     def test_price_multi_init_and_reload_metadata(self):
         from market_monitor import pricefetcher as pf
-        from unittest.mock import patch
 
         pf_file = os.path.join(self.tmp, "cache_watcher_all_price.json")
         now_sec = time.time()

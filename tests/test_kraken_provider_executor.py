@@ -727,7 +727,6 @@ def test_kraken_client__read_ttl_last_price_price_decimals_add_order_ohlc_closes
     import pytest
     orig_sys_path = list(sys.path)
     try:
-        from kraken import kraken_client as kc
         from kraken import kraken_xstock_watch as kxw
     finally:
         sys.path[:] = orig_sys_path
@@ -769,7 +768,6 @@ def test_kraken_xstock_watch__bot_alive_rejects_boolean_true_pid_systemd_and_ite
     """[ITER48 #3] kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1."""
     orig_sys_path = list(sys.path)
     try:
-        from kraken import kraken_client as kc
         from kraken import kraken_xstock_watch as kxw
     finally:
         sys.path[:] = orig_sys_path

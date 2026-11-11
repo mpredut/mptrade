@@ -413,7 +413,6 @@ def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
     from binance_api import bapi
     from binance_api import bapi_allorders
     from binance_api import bapi_trades
-    from providers import order_id_context as rc
     # 4. bapi / bapi_allorders / bapi_trades / order_id_context
     assert bapi.update_price(True) is None
     assert bapi.get_current_price(True) is None
@@ -425,7 +424,6 @@ def test_bapi_bapi_allorders_bapi_trades_order_id_context_iter108_s4():
 
 def test_resolve_order_owner_matches_uppercase_mixed_case_manual_prefixes_iter124_s3():
     """[ITER124 #3] resolve_order_owner matches uppercase/mixed-case manual prefixes."""
-    from providers import order_id_context as rc
     # 3. resolve_order_owner matches uppercase/mixed-case manual prefixes
     assert rc.resolve_order_owner("WEB_abc123") == "manual"
     assert rc.resolve_order_owner("IOS_xyz987") == "manual"
@@ -433,7 +431,6 @@ def test_resolve_order_owner_matches_uppercase_mixed_case_manual_prefixes_iter12
 
 def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_treats_iter159_s1():
     """[ITER159 #1] order_id_context: _base36 parses float strings ('36.0') and resolve_order_owner treats 'None'/'null'/'0' as unspecified."""
-    from providers import order_id_context as rc
     # 1. order_id_context: _base36 parses float strings ("36.0") and resolve_order_owner treats "None"/"null"/"0" as unspecified
     assert rc._base36("36.0") == "10"
     assert rc._base36(True) == "0"

@@ -504,11 +504,8 @@ if __name__ == "__main__":
 
 def test_executionaudit_record_strips_nan_inf_fields_strict_json_iter43_s3(tmp_path):
     """[ITER43 #3] ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock."""
-    import json
     from types import SimpleNamespace
     import pytest
-    from providers.execution_audit import ExecutionAudit, AuditedStrategyExecutor
-    from providers.strategy_executor import ProviderError
     # 3. ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock
     audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: float("nan"))
     ok = audit.record(
@@ -542,7 +539,6 @@ def test_executionaudit_record_strips_nan_inf_fields_strict_json_iter43_s3(tmp_p
 
 def test_executionaudit_handles_out_of_range_clock_timestamps_and_iter59_s3(tmp_path):
     """[ITER59 #3] ExecutionAudit handles out-of-range clock timestamps and set/frozenset fields."""
-    from providers.execution_audit import ExecutionAudit
     # 3. ExecutionAudit handles out-of-range clock timestamps and set/frozenset fields
     audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: 1e30)
     assert audit.record(
@@ -574,7 +570,6 @@ def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id
     import pytest
     from providers.execution_audit import _parse_bool_flag as ea_parse_bool
     from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
-    from providers.strategy_executor import ProviderError
     # 3. execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg
     assert ea_parse_bool("false", True) is False
     assert ea_parse_bool(float("nan"), False) is False

@@ -1144,7 +1144,6 @@ def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, mo
 
 def test_strategy__order_from_pending_honors_submitted_qty_and_scales_amount_proportionally_iter10_s4():
     """[ITER10 #4] Strategy._order_from_pending honors submitted_qty and scales amount proportionally."""
-    import pytest
     from types import SimpleNamespace
     from strategies.spot_engine import Strategy
     # 4. Strategy._order_from_pending honors submitted_qty and scales amount proportionally
@@ -1232,7 +1231,6 @@ def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
 
 def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1():
     """[ITER45 #1] spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices."""
-    import pytest
     from strategies import spot_rules as sr
     # 1. spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices
     assert sr.hit_stop(100.0, 0.0, 5.0) is False
@@ -1254,7 +1252,6 @@ def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1()
 
 def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_iter64_s3():
     """[ITER64 #3] spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion."""
-    import pytest
     from strategies import spot_rules as sr
     # 3. spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion
     trig, gain, drop = sr.check_fast_profit_reversal(
@@ -1314,7 +1311,6 @@ def test_spot_rules_entry_price_tp_price_check_parabolic_surge_exhaustion_and_ch
 
 def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_series_iter93_s1():
     """[ITER93 #1] strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used."""
-    import pytest
     # 1. strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used
     from offline.backtests.execution import ExecutionModel
     from strategies.spot_engine import StratParams as SpotStratParams
@@ -1359,7 +1355,6 @@ def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_s
 
 def test_strategies_spot_engine__parse_tranches_rejects_booleans_iter93_s2():
     """[ITER93 #2] strategies.spot_engine._parse_tranches rejects booleans."""
-    import pytest
     # 2. strategies.spot_engine._parse_tranches rejects booleans
     from strategies.spot_engine import _parse_tranches
 
@@ -1382,7 +1377,6 @@ def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_
 
 def test_spot_engine_state_path_for_handles_bool_punctuation_only_and_path_iter119_s1(tmp_path):
     """[ITER119 #1] spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir."""
-    import os
     import strategies.spot_engine as se
     # 1. spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir
     assert se.state_path_for(True).endswith(".state_unknown.json")
@@ -1392,7 +1386,6 @@ def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
     """[ITER119 #2] spot_engine._apply_fill handles order with amount=None by falling back to vol * price."""
     from types import SimpleNamespace
     import strategies.spot_engine as se
-    from providers.strategy_executor import PairPrecision
     # 2. spot_engine._apply_fill handles order with amount=None by falling back to vol * price
     dummy_exec = SimpleNamespace(pair_precision=lambda _p: PairPrecision(2, 4, 0.01, "HYPE"))
     params = se.StratParams(

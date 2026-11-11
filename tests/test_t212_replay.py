@@ -762,9 +762,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertIn("ambiguous_bars", res["metrics"])
 
     def test_fetch_yahoo_candles_parsing_and_drop_forming_bar(self):
-        import json
         import time
-        from unittest.mock import MagicMock, patch
         _md = load_local_module(T212_DIR, "market_data", module_key="t212_md_test", reload=True)
 
         self.assertEqual(_md.parse_interval_minutes("5m"), 5)
@@ -922,9 +920,7 @@ if __name__ == "__main__":
 
 def test_212trading_replay__fx_rates_accepts_scalar_numeric_strings_without_iter70_s1():
     """[ITER70 #1] 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character."""
-    import os
     import pytest
-    from botcore import load_local_module
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
     t212_rep = load_local_module(t212_dir, "replay.py", module_key="_t212_replay_70", reload=True)
     # 1. 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character
@@ -945,8 +941,6 @@ def test_walk_forward_compare_load_venue_module_registers_sys_modules_before_ite
 
 def test_212trading_replay_run_replay_validates_non_sequence_ohlc_and_iter117_s7():
     """[ITER117 #7] 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope."""
-    import os
-    import sys
     import pytest
     # 7. 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope
     t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))

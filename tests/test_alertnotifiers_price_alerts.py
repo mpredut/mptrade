@@ -517,7 +517,6 @@ def test_pass_common_gate_and_pop_due_bulk_batch_tolerate_out_of_range_now_iter6
 def test_alertnotifier_format_batch_message_save_to_file_handle_non_numeric_prices_percent_change_iter66_s3(tmp_path):
     """[ITER66 #3] AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change."""
     from types import SimpleNamespace
-    from notify_engine.alertnotifiers import AlertNotifier
     # 3. AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change
     msg = AlertNotifier.format_batch_message([
         {

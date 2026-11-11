@@ -153,7 +153,6 @@ class MarketExitModeTest(unittest.TestCase):
     real loss >= the emergency threshold still forces a market exit."""
 
     def test_emergency_only_holds_until_emergency_even_when_regime_is_adverse(self):
-        import types
         from unittest.mock import patch
         fake = types.SimpleNamespace(symbol="TAOUSDC")
         adverse = types.SimpleNamespace(

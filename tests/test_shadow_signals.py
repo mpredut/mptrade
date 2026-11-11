@@ -83,12 +83,11 @@ class TestKalmanTrendGapReset(unittest.TestCase):
 
     def test_long_gap_resets_trend_even_when_conf_exit_is_zero(self):
         """Even if CONF_EXIT is 0.0, a gap > GAP_RESET_SEC must reset trend to 0."""
-        from unittest.mock import patch
-        import intelligence.internal.triggers.kalman_trigger as kt
+        import pricewindow as pw
         kf = ss.KalmanTrend()
         ts, price, out = self._warm_up_uptrend(kf, 1_000_000.0, 100.0)
         self.assertEqual(out["trend"], 1)
-        with patch.object(kt, "CONF_EXIT", 0.0):
+        with patch.object(pw, "CONF_EXIT", 0.0):
             out_after = kf.update(ts + 3600.0, price, epsilon=0.01)
         self.assertEqual(out_after["trend"], 0)
         self.assertEqual(out_after["old_trend"], 1)
@@ -127,7 +126,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_prepare_shadow_runtime_is_idempotent(self):
         from botcore import prepare_shadow_runtime
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
             try:
@@ -180,7 +178,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_tradeall_logic_small_acceleration_surge(self):
         """logic_small triggers accel_surge_up when short-term velocity and acceleration are strongly positive."""
-        from unittest.mock import patch
         import tradeall as ta
         from pricewindow import PriceWindow
 
@@ -205,7 +202,6 @@ class TestShadowRuntime(unittest.TestCase):
 
     def test_tradeall_logic_small_acceleration_plunge(self):
         """logic_small triggers accel_plunge_down when short-term velocity and acceleration are strongly negative."""
-        from unittest.mock import patch
         import tradeall as ta
         from pricewindow import PriceWindow
 
@@ -232,7 +228,6 @@ class TestShadowRuntime(unittest.TestCase):
     def test_kalman_state_tracker_ports_legacy_shadow_state_to_kalman_state(self):
         """KalmanStateTracker ports legacy shadow_state.json to cache_kalman_trend.json on init and loads state."""
         import json
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             legacy_path = os.path.join(tmp_dir, "shadow_state.json")
             new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")

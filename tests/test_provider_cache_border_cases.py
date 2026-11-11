@@ -646,7 +646,6 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
         venue_adjust_partial_sell_quantity,
         venue_fee_cap_quantity,
     )
-    from providers.t212_provider import T212Provider
 
     # 1. Open-Closed custom MarketDataProvider subclass works without touching any central dict
     class _CustomDexProvider(MarketDataProvider):
@@ -779,13 +778,9 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
 
 def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     """Verify parse_ratio_or_pct, derive_client_order_id, cancel grace, and extreme lookback border cases."""
-    from types import SimpleNamespace
     import intelligence.macro_sentiment_ssot as mss
     from botcore import clean_scale, parse_ratio_or_pct
-    from providers.base import MarketDataProvider
     from providers.binance_provider import BinanceProvider
-    from providers.hyperliquid_provider import HyperliquidProvider
-    from providers.kraken_provider import KrakenProvider
     from providers.order_ohlc_utils import build_price_history_points, resolve_ohlc_time_window_ms
     from providers.strategy_executor import ProviderError
 
@@ -879,7 +874,6 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
 def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkeypatch, tmp_path):
     """Verify state_io embedded JSON helpers, botcore.fetch_public_bytes, HLClient._coin_candidates/candles, and iter_venue_cycle_state_files."""
     import os
-    from types import SimpleNamespace
     from cachepaths import iter_venue_cycle_state_files
     from state_io import decode_embedded_json_dict, extract_json_object
 
@@ -961,7 +955,6 @@ def test_embedded_json_ssot_fetch_public_bytes_and_hl_client_border_cases(monkey
 
 def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, tmp_path):
     """Verify cache_path SSOT, http_request body, guard config validation, geo ts normalization, MarketRegimeService, OrderLifecycle, and order_retry border cases."""
-    from types import SimpleNamespace
     import cachepaths
     import intelligence.macro.geopolitical_analyzer as geo_an_mod
     import intelligence.macro.geopolitical_guard as geo_gd_mod

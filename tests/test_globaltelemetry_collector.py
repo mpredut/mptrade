@@ -238,7 +238,6 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
 
 
 def test_three_tier_polymorphic_telemetry_evaluators_and_collectors(temp_cache_dir):
-    import pytest
     from cacheprice import (
         Cache24PriceManager,
         Cache365PriceManager,

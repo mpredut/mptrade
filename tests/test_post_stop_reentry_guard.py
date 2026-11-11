@@ -781,7 +781,6 @@ def test_poststopreentryguard_mode_false_sets_mode_off_instead_of_iter125_s6():
 def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post_stop_reentry_mode_iter180_s1():
     """[ITER180 #1] get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'."""
     from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
-    from intelligence.sentiment.gemini_client import GeminiClient
     # 1. get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'
     ps_guard = get_post_stop_reentry_guard(
         margins={"llm_guard_mode": "shadow"},
@@ -793,7 +792,6 @@ def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps
     """[ITER180 #2] PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps."""
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, _POST_STOP_DECISION_CACHE
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, _HIGH_STAKE_DECISION_CACHE
-    from intelligence.sentiment.gemini_client import GeminiClient
     # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
     ps_enforced = PostStopReentryGuard(
         gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "trap"}'),

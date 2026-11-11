@@ -1417,7 +1417,6 @@ def test_assetguardian__read_p3b_sentiment_recovers_from_previous_when_primary_i
     import pytest
     import json
     import time
-    import assetguardian as ag
     now_ts = time.time()
     # 1. AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,
     #    and _p3b_threshold_multipliers honors GLLM2 bypass.
@@ -1478,7 +1477,6 @@ def test_resolve_caller_module_short_codes_and_client_order_id_prefix_fallback_i
 def test_assetguardian__sell_campaign_tier_does_not_double_subtract_already_filled_on_iter21_s1(tmp_path, monkeypatch):
     """[ITER21 #1] assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill."""
     import pytest
-    import assetguardian as ag
     # 1. assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill
     state_file = tmp_path / "ag_state.json"
     monkeypatch.setattr(ag, "STATE", ag.AssetGuardianState(str(state_file), fail_closed=False))
@@ -1530,7 +1528,6 @@ def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_wi
     import time
     import pytest
     import order_guard
-    import assetguardian as ag
     from external_order_guard import check_external_order_guards
     from llm_order_guard import check_llm_order_guards
     from qlimit_order_guard import resolve_cached_gaussian_horizon
@@ -1610,8 +1607,6 @@ def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_c
 
 def test_assetguardian_boolean_flags__safe_tier_attempt_and__reuse_unaccepted_attempt_iter157_s4(monkeypatch, tmp_path):
     """[ITER157 #4] assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt."""
-    import assetguardian as ag
-    from providers.strategy_executor import OrderStatus
     # 4. assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt
     st = ag.AssetGuardianState(path=str(tmp_path / "ag.json"), fail_closed="false")
     assert st.fail_closed is False

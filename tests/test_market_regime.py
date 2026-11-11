@@ -435,7 +435,6 @@ if __name__ == "__main__":
 
 def test_marketregimeservice__evaluate_provider_source_clock_skew_iter27_s3():
     """[ITER27 #3] MarketRegimeService._evaluate_provider_source clock skew."""
-    from market_regime import MarketRegimeService, ClosedPriceSeries
     # 3. MarketRegimeService._evaluate_provider_source clock skew
     svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
 

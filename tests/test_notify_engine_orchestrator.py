@@ -1067,7 +1067,6 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
 
             # Verify mailer.send_email treats bounded-queue overflow drops as policy-handled (True)
             # so NotificationServer._send_email does not re-enqueue dropped overflow emails into notify_queue.json
-            from notify_engine import mailer
             with mock.patch.object(mailer, "_config", return_value={"server": "smtp.test", "port": 587, "username": "u", "password": "p", "to": "t@test"}), \
                  mock.patch.object(mailer, "pass_common_gate", return_value=(False, "queue_full_dropped", False, None)):
                 if os.path.exists(self.server.queue_file):

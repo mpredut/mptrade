@@ -1064,7 +1064,6 @@ def test_kraken_backtest__bt_params_float_string_maxdca_and_nan_iter150_s3():
 def test_wave2_cross_venue_candidate_resolution_and_unmasked_trailing_variants(tmp_path):
     """Verify cross-venue candidate mapping, baseline lookbacks, and unmasked trailing configs."""
     import dataclasses
-    from unittest.mock import patch
     import pytest
 
     from offline.backtests.evaluation import load_venue_module

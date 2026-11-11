@@ -2016,7 +2016,6 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
 
 def test_autonomousaireconciler_synthesize_and_diagnose_handles_none_bool_nan_in_prices_and_trends_iter56_s4(tmp_path):
     """[ITER56 #4] AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary."""
-    from unittest.mock import MagicMock
     from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler, LogEventSummary, TelemetrySensorSnapshot
     # 4. AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary
     (tmp_path / "order_guard.conf").write_text("supervisor_mode = shadow\nsupervisor_notify = 0\n", encoding="utf-8")
@@ -2100,7 +2099,6 @@ def test_autonomousintentgateway__get_live_price_rejects_boolean_true_prices_fro
 def test_autonomousintentgateway_resolve_instrument_rejects_empty_boolean_symbol_venue_and_iter120_s5(monkeypatch, tmp_path):
     """[ITER120 #5] AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode."""
     from types import SimpleNamespace
-    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     # 5. AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode
     gw = AutonomousIntentGateway(
         workspace_dir=str(tmp_path),

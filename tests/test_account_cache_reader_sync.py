@@ -1802,7 +1802,6 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
 
     def test_data_sync_mode_reader_resync_regressions(self):
         import time
-        from unittest.mock import patch
 
         with self.subTest("non_append_trade_cache_get_last_opposite_fill_price_resyncs_disk_state"):
             tmp_dir = tempfile.mkdtemp()

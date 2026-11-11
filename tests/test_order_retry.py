@@ -1081,7 +1081,6 @@ if __name__ == "__main__":
 
 def test_terminal_filter_refusal_classification_across_non_binance_providers_iter7_s1():
     """[ITER7 #1] Terminal filter refusal classification across non-Binance providers."""
-    import order_retry as oq
     # 1. Terminal filter refusal classification across non-Binance providers
     assert oq.is_terminal_filter_refusal("filter_lot_size_min:0.001<0.05") is True
     assert oq.is_terminal_filter_refusal("qty_zero_or_negative") is True
@@ -1254,7 +1253,6 @@ def test_order_lifecycle__lifecycle_finite_and_trackedorderlifecycle_reject_bool
 
 def test_order_retry_enqueue_update_claimed_qty_resolve_record_ttl_reject_boolean_inputs_iter36_s3():
     """[ITER36 #3] order_retry.enqueue / update_claimed_qty / resolve_record_ttl reject boolean inputs."""
-    import order_retry as oq
     # 3. order_retry.enqueue / update_claimed_qty / resolve_record_ttl reject boolean inputs
     assert oq.enqueue("BTCUSDC", "BUY", True) is None
     assert oq.enqueue("BTCUSDC", "BUY", 1.0, now=True) is None
@@ -1379,7 +1377,6 @@ def test_order_retry_enqueue_rejects_whitespace_only_boolean_symbols_and_iter88_
 def test_order_retry_valid_record__same_deferred_stream_claim_discard_and_trackedorderlifecycle_validation_iter97_s2():
     """[ITER97 #2] order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation."""
     import pytest
-    import order_retry as oq
     # 2. order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation
     base_rec = {
         "id": "rec1",
@@ -1677,7 +1674,6 @@ def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context
 
 def test_order_retry_valid_record_enqueue_sentinel_order_id_replaces_order_id_rejection_iter156_s2(tmp_path, monkeypatch):
     """[ITER156 #2] order_retry valid_record & enqueue sentinel order_id / replaces_order_id rejection."""
-    import order_retry as oq
     # 2. order_retry valid_record & enqueue sentinel order_id / replaces_order_id rejection
     q_file = tmp_path / "order_retry_queue.jsonl"
     l_file = tmp_path / "order_retry_queue.lock"

@@ -2273,8 +2273,6 @@ def test_cachetrend__short_trend_symbol_variants_preserves_usdcusdt_intact_and_s
 
 def test_cacheshorttrendmanager_slash_sanitization_cross_venue_dynamic_window_resolution_iter23_s4(tmp_path):
     """[ITER23 #4] CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution."""
-    import json
-    import os
     from cachetrend import CacheShortTrendManager
     # 4. CacheShortTrendManager slash sanitization & cross-venue dynamic window resolution
     st_file = tmp_path / "cache_short_trend.json"

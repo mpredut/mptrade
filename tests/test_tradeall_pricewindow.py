@@ -285,7 +285,6 @@ class TestPriceWindowSampleRate(unittest.TestCase):
             self.assertEqual(pw.window_size, 50)
 
     def test_from_cache24_stores_window_seconds(self):
-        import tempfile
         tmp = tempfile.mkdtemp()
         mgr = _make_cache24_manager("BTCUSDT", _synthetic_entries(30), tmp)
         pw = ta.PriceWindow.from_cache24("BTCUSDT", 24.0, mgr)
@@ -1295,7 +1294,6 @@ def test_pricetrendanalyzer_calculate_gradient_handles_empty_prices_iter63_s3():
 
 def test_visuals_tradeall_observe__log_dates_and_build_backtest_state_text_iter77_s2(tmp_path):
     """[ITER77 #2] visuals.tradeall_observe _log_dates and build_backtest_state_text."""
-    import json
     from visuals import tradeall_observe
     # 2. visuals.tradeall_observe _log_dates and build_backtest_state_text
     assert tradeall_observe._log_dates(False) == []

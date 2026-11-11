@@ -968,7 +968,6 @@ class TestMinProfit(Base):
         with self.subTest(msg="corrupted_peak_or_warmup_and_market_data_hardening"):
             self.tearDown(); self.setUp()
             from botcore import load_local_module
-            from trailing_core import should_sell
             from kraken.market_data import pair_precision
 
             hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
