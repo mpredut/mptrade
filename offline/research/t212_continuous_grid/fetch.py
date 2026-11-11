@@ -5,11 +5,18 @@ import csv, os, sys, time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from offline.backtests.evaluation import load_venue_module
+from providers.market_api import api as mkt
 from state_io import atomic_text_writer
 
-_t212_md = load_venue_module("212trading", "market_data.py", "t212_md")
-fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
+
+def fetch_yahoo_candles(sym: str, *, range_: str = "730d", interval: str = "1h", drop_incomplete: bool = True) -> list[dict]:
+    return mkt.fetch_ohlc_candles(
+        sym,
+        interval=interval,
+        range_=range_,
+        drop_incomplete=drop_incomplete,
+        provider_name="t212",
+    )
 
 DATA = os.path.join(os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid"), "data")
 ASSETS = ["NVDA", "SPCX", "RGNT", "AAPL", "MSFT", "AMD", "TSLA", "AVGO", "META", "AMZN",

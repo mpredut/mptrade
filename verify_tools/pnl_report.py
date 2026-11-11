@@ -9,8 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float, safe_pos_float
-from binance_api import bapi_allorders as ao
-from binance_api import bapi
+from providers.market_api import api as mkt
 from providers.order_id_context import resolve_order_owner
 from instrument_registry import symbols_for
 from providers.base import (
@@ -28,7 +27,9 @@ WINDOW_D = 120
 
 def binance_symbol(symbol):
     st = int((time.time() - WINDOW_D * 24 * 3600) * 1000)
-    fills = [f for f in (ao.paginate_my_trades(bapi.client, symbol, st) or []) if isinstance(f, dict)]
+    bn = mkt.provider_by_name("binance")
+    raw_fills = bn.fetch_remote_trades_with_client(symbol, st, strict=False) if bn is not None else []
+    fills = [f for f in (raw_fills or []) if isinstance(f, dict)]
     fills.sort(key=lambda t: extract_timestamp_ms(t, default=0) or 0)
     qty = cost = realized = 0.0
     buys = sells = 0
@@ -46,7 +47,7 @@ def binance_symbol(symbol):
                 m = min(q, qty); avg = cost / qty
                 realized += (p - avg) * m; cost -= avg * m; qty -= m
     try:
-        cur = safe_pos_float(bapi.get_current_price(symbol), default=0.0)
+        cur = safe_pos_float(mkt.get_current_price(symbol), default=0.0)
     except Exception:
         cur = 0.0
     unreal = (qty * cur - cost) if (qty > 1e-9 and cur > 0) else 0.0
@@ -70,7 +71,8 @@ def _bot(cid):
 
 def per_bot(symbol):
     try:
-        orders = bapi.client.get_all_orders(symbol=symbol, limit=1000) or []
+        bn = mkt.provider_by_name("binance")
+        orders = (bn.fetch_recent_orders(symbol, limit=1000) if bn is not None else None) or []
     except Exception as e:  # noqa: BLE001
         print(f"  {symbol}: ERROR {e}"); return
     g = defaultdict(lambda: {"bq": 0.0, "bv": 0.0, "sq": 0.0, "sv": 0.0})

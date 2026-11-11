@@ -196,6 +196,12 @@ class KrakenProvider(MarketDataProvider):
         # Explicit-only: claim no pattern and remain reachable only through Instrument.
         return False
 
+    @staticmethod
+    def build_client(api_key: Optional[str] = None, api_secret: Optional[str] = None):
+        """Instantiate ``KrakenClient`` without exposing direct ``kraken.*`` imports to callers."""
+        KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
+        return KrakenClient(api_key, api_secret)
+
     # -- Lazy client. ----------------------------------------------------------
     def _client(self):
         if self._cli is not None:
@@ -203,7 +209,6 @@ class KrakenProvider(MarketDataProvider):
         with self._ensure_client_lock():
             if self._cli is not None:
                 return self._cli
-            KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
             # Read Kraken-specific credentials, with environment variables taking
             # precedence. Preserve the existing whole-profile priority: primary,
             # then SPARE, then BOT. The resolver prevents cross-profile key mixing.
@@ -220,7 +225,7 @@ class KrakenProvider(MarketDataProvider):
                 api_key, api_secret = credentials.key, credentials.secret
             except CredentialProfileMissingError:
                 api_key = api_secret = None
-            cli = KrakenClient(api_key, api_secret)
+            cli = self.build_client(api_key, api_secret)
             # Cache only a credentialed client. When keys are initially absent, retry
             # loading them on the next tick so the process can recover without restart.
             if api_key and api_secret:
@@ -1317,6 +1322,25 @@ class KrakenProvider(MarketDataProvider):
             return (f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",), ()
         kraken_pair = resolve_kraken_lookup_symbol(symbol)
         return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
+
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = 60,
+        *,
+        drop_incomplete: bool = True,
+        **kwargs: Any,
+    ) -> List[dict]:
+        md = load_local_module(_KRAKEN_DIR, "market_data")
+        return list(
+            md.fetch_ohlc_candles(
+                symbol,
+                interval,
+                drop_incomplete=drop_incomplete,
+                **kwargs,
+            )
+            or []
+        )
 
     def fetch_historical_ohlc_points(
         self,

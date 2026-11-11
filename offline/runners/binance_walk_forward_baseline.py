@@ -16,8 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import safe_nonneg_float, safe_pos_float, safe_pos_int
-from binance_api.market_data import fetch_ohlc_candles
+from providers.market_api import api as mkt
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
+
+
+def fetch_ohlc_candles(symbol: str, *, interval: int = 60, **kwargs) -> list[dict]:
+    return mkt.fetch_ohlc_candles(symbol, interval=interval, provider_name="binance", **kwargs)
 from offline.backtests.datasets import (
     dataset_metadata,
     load_dataset,

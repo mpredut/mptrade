@@ -13,7 +13,9 @@ does not require the SDK or credentials. Unavailable read dependencies generally
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
+import io
 import math
 import os
 import re
@@ -30,6 +32,7 @@ from botcore import (
     exact_pos_int,
     is_live_network_backfill_enabled,
     load_env_stack,
+    load_local_module,
     normalize_side,
     required_bool_env,
     safe_float,
@@ -304,6 +307,59 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[HL] get_current_price({symbol}) failed: {e}")
             return None
+
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = 60,
+        *,
+        drop_incomplete: bool = True,
+        **kwargs: Any,
+    ) -> List[dict]:
+        md = load_local_module(_HL_DIR, "market_data")
+        return list(
+            md.fetch_ohlc_candles(
+                symbol,
+                interval,
+                drop_incomplete=drop_incomplete,
+                **kwargs,
+            )
+            or []
+        )
+
+    def spot_balances_and_mid(self, coin: str = "HYPE", quote: str = "USDC") -> dict:
+        """Return read-only spot balances and mid price for ``coin``/``quote`` without polluting sys.modules."""
+        saved_common = sys.modules.get("common")
+        had_common = "common" in sys.modules
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                load_env_stack(os.path.join(_HL_DIR, ".env"))
+                HLClient = _hl_client_module().HLClient
+                addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+                c = HLClient.public(account_address=addr, mainnet=True)
+                ss = c.info.spot_user_state(addr)
+                mid = safe_float(c.spot_mid(c.resolve_spot_pair(coin)), 0.0)
+        finally:
+            if had_common:
+                sys.modules["common"] = saved_common
+            else:
+                sys.modules.pop("common", None)
+        raw_balances = (
+            ss.get("balances")
+            if isinstance(ss, dict) and isinstance(ss.get("balances"), list)
+            else []
+        )
+        coin_u = str(coin or "HYPE").strip().upper()
+        quote_u = str(quote or "USDC").strip().upper()
+        base_qty = next(
+            (safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and str(b.get("coin") or "").upper() == coin_u),
+            0.0,
+        )
+        quote_qty = next(
+            (safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and str(b.get("coin") or "").upper() == quote_u),
+            0.0,
+        )
+        return {"qty": base_qty, "cash_usd": quote_qty, "mid": mid}
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""

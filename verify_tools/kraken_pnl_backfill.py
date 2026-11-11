@@ -19,11 +19,11 @@ if ROOT not in sys.path:
 
 from botcore import env_value, safe_nonneg_float, safe_nonneg_int, safe_pos_float
 from credentials import CredentialConfigurationError, kraken_credentials
-from kraken.kraken_client import KrakenClient
 from providers.base import (
     extract_order_price,
     extract_timestamp_ms,
 )
+from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
@@ -44,7 +44,7 @@ def _client():
         credentials = kraken_credentials('analysis', values=values)
     except CredentialConfigurationError as exc:
         sys.exit(f'[kraken_pnl] invalid Kraken analysis credentials: {exc}')
-    return KrakenClient(credentials.key, credentials.secret)
+    return KrakenProvider.build_client(credentials.key, credentials.secret)
 
 
 def fetch_all_trades(cli):

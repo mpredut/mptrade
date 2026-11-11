@@ -22,8 +22,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
+from providers.market_api import api as mkt  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
-from kraken import market_data as kraken_market_data  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         records = (
             load_dataset(source)
             if source
-            else kraken_market_data.fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+            else mkt.fetch_ohlc_candles(pair, interval, drop_incomplete=True, provider_name="kraken")
         )
         if not records:
             raise RuntimeError(f"an empty dataset for {pair} {interval}m")

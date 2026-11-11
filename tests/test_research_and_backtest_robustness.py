@@ -1263,12 +1263,14 @@ def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
     assert mon.add_new_coin_to_watchlist({}) is False
 
     # 3. verify_tools.pnl_report.binance_symbol returns 0.0 unrealized when current price is unavailable
-    monkeypatch.setattr(
-        pr.ao,
-        "paginate_my_trades",
-        lambda _c, _s, _st: [{"price": "100.0", "executedQty": "2.0", "side": "BUY", "time": 1000}],
+    from types import SimpleNamespace
+    fake_bn_pr = SimpleNamespace(
+        fetch_remote_trades_with_client=lambda _s, _st, strict=False: [
+            {"price": "100.0", "executedQty": "2.0", "side": "BUY", "time": 1000}
+        ]
     )
-    monkeypatch.setattr(pr.bapi, "get_current_price", lambda _s: None)
+    monkeypatch.setattr(pr.mkt, "provider_by_name", lambda name: fake_bn_pr if name == "binance" else None)
+    monkeypatch.setattr(pr.mkt, "get_current_price", lambda _s: None)
     res = pr.binance_symbol("BTCUSDC")
     assert res["pos"] == 2.0
     assert res["unreal"] == 0.0
@@ -3213,17 +3215,14 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
     assert portfolio_snapshot._parse_bool_flag(1, False) is True
 
     # 3. pnl_report.per_bot skips orders where both cummulativeQuoteQty and price are zero
-    monkeypatch.setattr(
-        pnl_report.bapi,
-        "client",
-        SimpleNamespace(
-            get_all_orders=lambda **kw: [
-                {"clientOrderId": "TA_1", "side": "BUY", "executedQty": "2.0", "cummulativeQuoteQty": "200.0", "price": "100.0"},
-                {"clientOrderId": "TA_2", "side": "BUY", "executedQty": "8.0", "cummulativeQuoteQty": "0.0", "price": "0.0"},
-                {"clientOrderId": "TA_3", "side": "SELL", "executedQty": "2.0", "cummulativeQuoteQty": "240.0", "price": "120.0"},
-            ]
-        ),
+    fake_bn_pb = SimpleNamespace(
+        fetch_recent_orders=lambda sym, limit=1000: [
+            {"clientOrderId": "TA_1", "side": "BUY", "executedQty": "2.0", "cummulativeQuoteQty": "200.0", "price": "100.0"},
+            {"clientOrderId": "TA_2", "side": "BUY", "executedQty": "8.0", "cummulativeQuoteQty": "0.0", "price": "0.0"},
+            {"clientOrderId": "TA_3", "side": "SELL", "executedQty": "2.0", "cummulativeQuoteQty": "240.0", "price": "120.0"},
+        ]
     )
+    monkeypatch.setattr(pnl_report.mkt, "provider_by_name", lambda name: fake_bn_pb if name == "binance" else None)
     pnl_report.per_bot("BTCUSDC")
     out = capsys.readouterr().out
     assert "+40.00" in out

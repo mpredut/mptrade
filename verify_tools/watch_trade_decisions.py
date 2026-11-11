@@ -19,14 +19,14 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from binance_api import bapi as api  # noqa: E402
-from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import (
     extract_order_price,
     extract_timestamp_ms,
 )
-from providers.order_ohlc_utils import extract_order_qty
+from providers.market_api import api as mkt  # noqa: E402
+from providers.order_ohlc_utils import extract_order_qty, summarize_order_position
+from providers.quantity import resolve_assets  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
 from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
@@ -34,13 +34,17 @@ import pricewindow as pw  # noqa: E402
 SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
-from providers.order_ohlc_utils import summarize_order_position  # noqa: E402
-from providers.quantity import resolve_assets  # noqa: E402
-from verify_tools.verify_account_facade import free_direct  # noqa: E402
+class _MarketOrdersAdapter:
+    @staticmethod
+    def get_trade_orders(order_type: str, symbol: str, max_age_seconds: float) -> list[dict]:
+        return mkt.get_orders(symbol, order_type, max_age_seconds)
+
+
+apiorders = _MarketOrdersAdapter()
 
 
 def free_qty(symbol):
-    return free_direct(resolve_assets(symbol)[0])
+    return safe_float(mkt.free_balance(resolve_assets(symbol)[0], provider_name="binance"), default=0.0)
 
 
 def position(symbol, maxage=17 * 24 * 3600):
@@ -74,7 +78,7 @@ def main():
         snap = mgr.get_snapshot(s) or {}
         if not isinstance(snap, dict):
             snap = {}
-        px = safe_float(snap.get("current_price"), default=0.0) or safe_float(api.get_current_price(s), default=0.0) or 0.0
+        px = safe_float(snap.get("current_price"), default=0.0) or safe_float(mkt.get_current_price(s), default=0.0) or 0.0
         gr = pw.extract_short_trend_slope(snap, s)
         avg, net, n_sells, last_buy = position(s)
         free = free_qty(s)

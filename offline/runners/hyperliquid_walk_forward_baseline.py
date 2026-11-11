@@ -37,8 +37,12 @@ from offline.backtests.evaluation import (
     parse_intervals,
 )
 
-_hl_md = load_venue_module("hyperliquid", "market_data.py", "hl_wf_md")
-fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
+from providers.market_api import api as mkt
+
+
+def fetch_ohlc_candles(symbol: str, interval: int | str = 60, **kwargs) -> list[dict]:
+    return mkt.fetch_ohlc_candles(symbol, interval, provider_name="hyperliquid", **kwargs)
+
 
 _hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter

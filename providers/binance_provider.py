@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     normalize_epoch_sec,
     require_pos_float,
     resolve_patched_attr,
@@ -171,11 +172,12 @@ class BinanceProvider(MarketDataProvider):
         client: Any = None,
         *,
         allorders_mod: Any = None,
+        strict: bool = True,
     ) -> List[dict]:
         """Paginate raw Binance fills from ``client`` via ``bapi_allorders.paginate_my_trades``."""
         ao = allorders_mod if allorders_mod is not None else _get_allorders()
-        raw_client = getattr(client, "client", client)
-        return list(ao.paginate_my_trades(raw_client, symbol, start_time_ms, limit=1000, strict=True) or [])
+        raw_client = getattr(client, "client", client) if client is not None else _get_bapi().client
+        return list(ao.paginate_my_trades(raw_client, symbol, start_time_ms, limit=1000, strict=strict) or [])
 
     def get_orders(
         self,
@@ -203,6 +205,11 @@ class BinanceProvider(MarketDataProvider):
             )
             or []
         )
+
+    def fetch_recent_orders(self, symbol: str, limit: int = 1000) -> List[dict]:
+        """Return recent raw venue orders for per-owner attribution diagnostics."""
+        lim = exact_pos_int(limit, default=1000) or 1000
+        return list(_get_bapi().client.get_all_orders(symbol=symbol, limit=lim) or [])
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
@@ -490,14 +497,32 @@ class BinanceProvider(MarketDataProvider):
         )
         return spot_urls, (f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",)
 
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = 60,
+        *,
+        drop_incomplete: bool = True,
+        **kwargs: Any,
+    ) -> List[dict]:
+        md = importlib.import_module("binance_api.market_data")
+        return list(
+            md.fetch_ohlc_candles(
+                symbol,
+                interval=interval,
+                drop_incomplete=drop_incomplete,
+                **kwargs,
+            )
+            or []
+        )
+
     def fetch_historical_ohlc_points(
         self,
         symbol: str,
         days: int,
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
-        md = importlib.import_module("binance_api.market_data")
-        candles = md.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
+        candles = self.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
         out: list[tuple[float, float]] = []
         for c in candles:
             if not isinstance(c, dict):

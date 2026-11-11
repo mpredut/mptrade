@@ -155,6 +155,23 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return provider.ohlc_closes(symbol, interval_min) if hasattr(provider, "ohlc_closes") else []
 
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = 60,
+        *,
+        drop_incomplete: bool = True,
+        provider_name=None,
+        **kwargs: Any,
+    ) -> List[dict]:
+        """Return historical OHLC bar dictionaries routed through the target venue provider."""
+        return self._provider_explicit_or_routed(symbol, provider_name).fetch_ohlc_candles(
+            symbol,
+            interval,
+            drop_incomplete=drop_incomplete,
+            **kwargs,
+        )
+
     def fetch_historical_ohlc_points(
         self,
         symbol: str,
@@ -183,9 +200,15 @@ class MarketApi:
         return pts
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
-    def free_balance(self, asset: str) -> Optional[float]:
-        """Return free balance for asset from its routed provider."""
-        return self._provider_for(asset).free_balance(asset)
+    def free_balance(self, asset: str, *, provider_name=None) -> Optional[float]:
+        """Return free balance for asset from its routed or explicitly named provider."""
+        if provider_name is None:
+            provider = self._provider_for(asset)
+        else:
+            provider = self.provider_by_name(provider_name)
+            if provider is None:
+                raise ValueError(f"Unknown provider: {provider_name!r}")
+        return provider.free_balance(asset)
 
     def get_orders(
         self,

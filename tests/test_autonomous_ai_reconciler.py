@@ -1510,17 +1510,17 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     assert len(alerts_Sent) == 1
     assert fired == ["Kraken:HYPEUSD DD -25.0%"]
 
-    monkeypatch.setattr(
-        pnl_report.ao,
-        "paginate_my_trades",
-        lambda cl, sym, st: [
+    from types import SimpleNamespace
+    fake_bn = SimpleNamespace(
+        fetch_remote_trades_with_client=lambda sym, st, strict=False: [
             "bad",
             {"side": "BUY", "price": "200.0", "qty": "1.5", "time": 1000},
             {"side": "BUY", "price": "-5.0", "qty": "1.0", "time": 1500},
             {"side": "SELL", "price": "220.0", "qty": "0.5", "time": 2000},
-        ],
+        ]
     )
-    monkeypatch.setattr(pnl_report.bapi, "get_current_price", lambda sym: "230.0")
+    monkeypatch.setattr(pnl_report.mkt, "provider_by_name", lambda name: fake_bn if name == "binance" else None)
+    monkeypatch.setattr(pnl_report.mkt, "get_current_price", lambda sym: "230.0")
     res_pnl = pnl_report.binance_symbol("TAOUSDC")
     assert res_pnl["realized"] == 10.0
     assert res_pnl["pos"] == 1.0

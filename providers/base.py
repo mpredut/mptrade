@@ -1309,6 +1309,17 @@ class MarketDataProvider(ABC):
         """Return historical ``(epoch_sec, close_price)`` OHLC points for ``symbol``."""
         return []
 
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = 60,
+        *,
+        drop_incomplete: bool = True,
+        **kwargs: Any,
+    ) -> List[dict]:
+        """Return historical OHLC bar dictionaries ``{'timestamp', 'open', 'high', 'low', 'close'}``."""
+        return []
+
     @classmethod
     def normalize_orderbook_payload(cls, raw_data: Any) -> Optional[dict]:
         """Normalize L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""

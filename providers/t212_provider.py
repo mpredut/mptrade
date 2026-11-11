@@ -21,6 +21,7 @@ from botcore import (
     _parse_bool_flag,
     env_value,
     env_values_map,
+    load_local_module,
     normalize_epoch_sec,
     normalize_side,
     safe_float,
@@ -842,6 +843,25 @@ class T212Provider(MarketDataProvider):
             raise
         except Exception as exc:
             raise ProviderError(f"open_orders({symbol}): {exc}") from exc
+
+    def fetch_ohlc_candles(
+        self,
+        symbol: str,
+        interval: Any = "1h",
+        *,
+        drop_incomplete: bool = True,
+        **kwargs: Any,
+    ) -> List[dict]:
+        md = load_local_module(_T212_DIR, "market_data")
+        return list(
+            md.fetch_yahoo_candles(
+                symbol,
+                interval=interval,
+                drop_incomplete=drop_incomplete,
+                **kwargs,
+            )
+            or []
+        )
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         if not isinstance(symbol, str) or not symbol.strip():

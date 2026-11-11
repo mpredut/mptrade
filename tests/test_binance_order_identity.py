@@ -534,8 +534,44 @@ def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
     assert len(facade.get_trade_orders("BUY", "SOL/USD", 3600.0)) == 1
 
 
+def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+
+    class _DummyOHLCProvider(MarketDataProvider):
+        def __init__(self, venue_name: str):
+            self._name = venue_name
+            self.calls = []
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return False
+
+        def fetch_ohlc_candles(self, symbol: str, interval=60, *, drop_incomplete: bool = True, **kwargs):
+            self.calls.append((symbol, interval, drop_incomplete, kwargs))
+            return [{"timestamp": 1700000000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+
+    p_bn = _DummyOHLCProvider("Binance")
+    p_kr = _DummyOHLCProvider("Kraken")
+    p_hl = _DummyOHLCProvider("Hyperliquid")
+    p_t2 = _DummyOHLCProvider("T212")
+    facade = MarketApi(providers=[p_bn, p_kr, p_hl, p_t2])
+
+    assert len(facade.fetch_ohlc_candles("BTCUSDC", 240, start_ms=100, provider_name="binance")) == 1
+    assert len(facade.fetch_ohlc_candles("HYPEUSD", 60, provider_name="kraken")) == 1
+    assert len(facade.fetch_ohlc_candles("HYPE", "1h", lookback_hours=48, provider_name="hyperliquid")) == 1
+    assert len(facade.fetch_ohlc_candles("NVDA", "1d", range_="10y", provider_name="t212")) == 1
+    assert p_bn.calls == [("BTCUSDC", 240, True, {"start_ms": 100})]
+    assert p_kr.calls == [("HYPEUSD", 60, True, {})]
+    assert p_hl.calls == [("HYPE", "1h", True, {"lookback_hours": 48})]
+    assert p_t2.calls == [("NVDA", "1d", True, {"range_": "10y"})]
+
+
 def test_production_runtime_zero_direct_venue_sdk_imports_ast():
-    """Lock DAG boundary: no production runtime module outside venue adapters & providers imports venue SDKs."""
+    """Lock DAG boundary: no module outside venue adapters & providers imports venue SDKs directly."""
     import ast
     import pathlib
 
@@ -547,17 +583,19 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
         "hyperliquid/",
         "212trading/",
         "providers/",
-        "verify_tools/",
         "tests/",
-        "offline/",
-        "visuals/",
+        "archive/",
         ".venv/",
         "myenv/",
     )
+    # Single intentional cross-check script comparing legacy binance_api against MarketApi parity:
+    exempt_files = frozenset({"verify_tools/verify_account_facade.py"})
     violations: list[str] = []
     for py_file in sorted(repo_root.rglob("*.py")):
         rel = py_file.relative_to(repo_root).as_posix()
-        if rel.startswith(exempt_prefixes):
+        if any(part.startswith(".") for part in py_file.relative_to(repo_root).parts):
+            continue
+        if rel.startswith(exempt_prefixes) or rel in exempt_files:
             continue
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
         for node in ast.walk(tree):
@@ -568,4 +606,4 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 if node.module.split(".", 1)[0] in forbidden_roots:
                     violations.append(f"{rel}:{node.lineno}: from {node.module} import ...")
-    assert violations == [], f"Forbidden direct venue SDK imports in production runtime: {violations}"
+    assert violations == [], f"Forbidden direct venue SDK imports outside venue adapters/providers: {violations}"

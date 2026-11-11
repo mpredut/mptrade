@@ -35,14 +35,12 @@ with contextlib.redirect_stdout(io.StringIO()):
     from botcore import (  # noqa: E402
         _parse_bool_flag,
         is_live_network_backfill_enabled,
-        load_env_stack,
-        load_local_module,
         parse_dotenv,
         required_float_env,
         safe_float,
     )
-    from kraken.kraken_client import KrakenClient  # noqa: E402
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+    from providers.market_api import api as mkt  # noqa: E402
     from state_io import read_json_dict, save_json_state  # noqa: E402
     from strategies.state_store import state_path_for  # noqa: E402
 
@@ -64,7 +62,7 @@ def _load_state(pair: str) -> dict | None:
 
 def _kraken_price(pair: str):
     try:
-        return KrakenClient.public().last_price(pair)
+        return mkt.get_current_price(pair, provider_name="kraken")
     except Exception:  # noqa: BLE001 — the snapshot must not die on one missed price
         return None
 
@@ -102,19 +100,13 @@ def kraken_rows() -> list[dict]:
 
 def hl_row() -> dict | None:
     try:
-        hl_dir = os.path.join(ROOT, "hyperliquid")
-        # load_dotenv/HLClient write logs to stdout — we suppress them so they do not
-        # pollute the --json output (the cron jsonl).
-        with contextlib.redirect_stdout(io.StringIO()):
-            load_env_stack(os.path.join(hl_dir, ".env"))
-            HLClient = load_local_module(hl_dir, "hl_client").HLClient
-            addr = os.environ.get("HL_ACCOUNT_ADDRESS")
-            c = HLClient.public(account_address=addr, mainnet=True)
-            ss = c.info.spot_user_state(addr)
-            mid = safe_float(c.spot_mid(c.resolve_spot_pair("HYPE")), 0.0)
-        raw_balances = ss.get("balances") if isinstance(ss, dict) and isinstance(ss.get("balances"), list) else []
-        hype = next((safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "HYPE"), 0.0)
-        usdc = next((safe_float(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "USDC"), 0.0)
+        hl_prov = mkt.provider_by_name("hyperliquid")
+        if hl_prov is None:
+            raise RuntimeError("hyperliquid provider unavailable")
+        summary = hl_prov.spot_balances_and_mid("HYPE", "USDC")
+        hype = safe_float(summary.get("qty"), 0.0)
+        usdc = safe_float(summary.get("cash_usd"), 0.0)
+        mid = safe_float(summary.get("mid"), 0.0)
         return {"engine": "HL HYPE (long-hold)", "paper": False, "qty": round(hype, 4),
                 "value_usd": round(hype * mid, 2), "cash_usd": round(usdc, 2)}
     except Exception as e:  # noqa: BLE001
