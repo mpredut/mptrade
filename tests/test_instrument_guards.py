@@ -45,9 +45,13 @@ SYMBOL = "ZZZFAKEUSD"
 class _FakeProvider(MarketDataProvider):
     """Minimal in-memory provider whose guards are handled by Instrument."""
 
-    def __init__(self, name="FakeVenue", price=100.0):
+    def __init__(self, name="FakeVenue", price=100.0, *, live=True, policy_cap=None, window_ref=None, supports=False):
         self._name = name
         self._price = price
+        self.live = live
+        self._policy_cap = policy_cap
+        self._window_ref = window_ref
+        self._supports = supports
         self._orders = []   # [{"side","price","qty","timestamp"(ms)}]
         self.placed = []    # REAL calls to place_order (after every gate)
         self.status_calls = []
@@ -56,14 +60,27 @@ class _FakeProvider(MarketDataProvider):
     def name(self):
         return self._name
 
+    def execution_enabled(self):
+        return self.live
+
     def get_current_price(self, symbol):
         return self._price
 
     def supports_symbol(self, symbol):
-        return False
+        return self._supports
 
     def free_balance(self, asset):
         return 1_000_000.0   # Enough that it never limits qty artificially in the tests.
+
+    def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
+        if self._policy_cap is not None:
+            return self._policy_cap(symbol, side, price, qty, available_qty) if callable(self._policy_cap) else self._policy_cap
+        return super().policy_cap_quantity(symbol, side, price, qty, available_qty, **kwargs)
+
+    def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
+        if self._window_ref is not None:
+            return self._window_ref
+        return super().profit_guard_window_ref(symbol, side, safeback_sec, **kwargs)
 
     def get_orders(self, symbol, side, since_s):
         cutoff_ms = time.time() * 1000 - since_s * 1000
@@ -143,14 +160,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def test_provider_balance_routing_and_disabled_execution(self):
         with self.subTest("disabled_execution_never_creates_a_later_live_retry"):
-
-            class SwitchableProvider(_FakeProvider):
-                live = False
-
-                def execution_enabled(self):
-                    return self.live
-
-            provider = SwitchableProvider()
+            provider = _FakeProvider(live=False)
             instrument = self._inst(provider)
 
             self.assertIsNone(instrument.place("BUY", 100.0, 1.0))
@@ -267,14 +277,9 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def test_reference_only_bypass_behaviors(self):
         with self.subTest("keeps_quantity_policy_active"):
             quantity_calls = []
-
-            class _QuantityCapProvider(_FakeProvider):
-                def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
-                                        **kwargs):
-                    quantity_calls.append((symbol, side, price, qty, available_qty))
-                    return 0.25
-
-            p = _QuantityCapProvider()
+            p = _FakeProvider(
+                policy_cap=lambda sym, side, px, q, avail: quantity_calls.append((sym, side, px, q, avail)) or 0.25
+            )
             p.seed_trade("SELL", age_sec=400.0, price=100.0)
             inst = self._inst(p)
 
@@ -1670,15 +1675,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # ------------------------------------------------------------------
         with self.subTest("pre_submit_refusal_enqueues_scaled_qty_only_when_orig_qty_is_none"):
             clear_all()
-
-            class _FixedCapProvider(_FakeProvider):
-                def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
-                    return 20.0
-
-                def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
-                    return 100.0
-
-            p_cap = _FixedCapProvider(price=100.0)
+            p_cap = _FakeProvider(price=100.0, policy_cap=20.0, window_ref=100.0)
             inst_cap = self._inst(
                 p_cap,
                 params={"medium_trend_action": "scale", "medium_trend_scale": "0.5"},
@@ -2323,19 +2320,7 @@ def test_instrument__apply_late_intelligence_scale_nan_bool_safety_instrument_pl
 def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2():
     """[ITER98 #2] Instrument.place side normalization & invalid side handling, and Instrument.param safety."""
     # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
-    class _GuardInternalProvider(_GuardsInternallyProvider):
-        def __init__(self):
-            super().__init__(name="guard_internal")
-            self.last_side = None
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
-            self.last_side = side
-            return {"orderId": "OID-98", "status": "NEW"}
-
-    gip = _GuardInternalProvider()
+    gip = _GuardsInternallyProvider(name="guard_internal", supports=True)
     api = MarketApi([gip])
     inst = Instrument(
         name="BTC",
@@ -2356,8 +2341,8 @@ def test_instrument_place_side_normalization_invalid_side_handling_and_iter98_s2
     assert out_ctx2["reason"] == "invalid_side"
 
     res = inst.place(" b ", 100.0, 1.0)
-    assert res == {"orderId": "OID-98", "status": "NEW"}
-    assert gip.last_side == "BUY"
+    assert res == {"orderId": 1}
+    assert gip.placed[-1][1] == "BUY"
 
     assert inst.param("mt", "gain", default=1.0, cast=float) == pytest.approx(9.5)
     assert inst.param("mt", "nan_val", default=2.5, cast=float) == pytest.approx(2.5)

@@ -1586,21 +1586,9 @@ def test_orderticket_rejects_blank_boolean_order_id_and_paircoordinator__cancel_
     with pytest.raises(ValueError, match="invalid rtrade ticket"):
         OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
 
-    class _RaiseCancelVenue:
-        def current_price(self):
-            return 100.0
-        def preflight_order(self, *a, **kw):
-            return None
-        def place_limit(self, side, price, qty, pair_id, **kw):
-            return OrderTicket(order_id=f"id-{side}", side=side, price=price, qty=qty, pair_id=pair_id)
-        def place_market_exit(self, *a, **kw):
-            return None
-        def order_status(self, order_id):
-            return OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0)
-        def cancel(self, order_id):
-            raise RuntimeError("network error on cancel")
-
-    coord = PairCoordinator(_RaiseCancelVenue(), 1.0, PairPolicy(adjustment_fraction=0.01, quote_ttl_sec=10.0), clock=lambda: 100.0)
+    venue = FakeVenue(current=100.0)
+    venue.cancel_raise = {"L1", "L2"}
+    coord = PairCoordinator(venue, 1.0, PairPolicy(adjustment_fraction=0.01, quote_ttl_sec=10.0), clock=lambda: 100.0)
     coord.start(100.0)
     outcome = coord.step(now=120.0)
     assert outcome.reason == "quote_cancel_pending"

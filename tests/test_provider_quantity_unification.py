@@ -36,27 +36,33 @@ from providers import base as pbase, order_ohlc_utils as oou
 class CustomProvider(MarketDataProvider):
     name = "custom"
 
-    def __init__(self, decimals=3, min_qty=0.05, balance=100.0):
+    def __init__(self, decimals=3, min_qty=0.05, balance=100.0, price=10.0, price_decimals=2, orders=None):
         self._decimals = decimals
         self._min_qty = min_qty
         self._balance = balance
+        self._price = price
+        self._price_decimals = price_decimals
+        self._orders = orders
 
     def supports_symbol(self, symbol: str) -> bool:
         return True
 
     def get_current_price(self, symbol: str):
-        return 10.0
+        return self._price
 
     def free_balance(self, asset: str):
         return self._balance
 
     def pair_precision(self, symbol: str):
         return PairPrecision(
-            price_decimals=2,
+            price_decimals=self._price_decimals,
             volume_decimals=self._decimals,
             order_min=self._min_qty,
             base_asset="TEST",
         )
+
+    def get_orders(self, symbol: str, side, since_s: float):
+        return list(self._orders or [])
 
     def policy_cap_quantity(self, symbol: str, side: str, price: float,
                             qty: float, available_qty: float, **kwargs):
@@ -600,28 +606,16 @@ def test_fee_cap_quantity_nan_bool_safety_iter35_s2():
 def test_marketdataprovider_round_quantity_round_price_order_filter_refusal_and_last_opposite_fill_iter38_s4():
     """[ITER38 #4] MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill."""
     # 4. MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill
-    class _DummyProv(MarketDataProvider):
-        @property
-        def name(self) -> str:
-            return "dummy"
-
-        def get_current_price(self, symbol: str):
-            return 100.0
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def pair_precision(self, symbol: str):
-            return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.01)
-
-        def get_orders(self, symbol: str, side, since_s: float):
-            return [
-                {"timestamp": 1000, "price": 50000.0, "qty": 1.0},
-                {"timestamp": 2000, "price": 0.0, "qty": 1.0},
-                "malformed",
-            ]
-
-    dp = _DummyProv()
+    dp = CustomProvider(
+        decimals=3,
+        min_qty=0.01,
+        price=100.0,
+        orders=[
+            {"timestamp": 1000, "price": 50000.0, "qty": 1.0},
+            {"timestamp": 2000, "price": 0.0, "qty": 1.0},
+            "malformed",
+        ],
+    )
     assert dp.round_quantity("BTCUSDC", True) == 0.0
     assert dp.round_quantity("BTCUSDC", float("nan")) == 0.0
     assert dp.round_price("BTCUSDC", True) == 0.0
@@ -681,21 +675,7 @@ def test_aggregate_fills_by_order_id_does_not_dilute_vwap_when_a_partial_iter59_
 def test_marketdataprovider_round_quantity_and_round_price_clamp_negative_inputs_to_iter59_s2():
     """[ITER59 #2] MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals."""
     # 2. MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals
-    class _DummyProvider(MarketDataProvider):
-        @property
-        def name(self) -> str:
-            return "dummy"
-
-        def get_current_price(self, symbol: str):
-            return 1.0
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def pair_precision(self, symbol: str):
-            return PairPrecision(price_decimals=50, volume_decimals=50)
-
-    dp = _DummyProvider()
+    dp = CustomProvider(decimals=50, price_decimals=50, price=1.0)
     assert dp.round_quantity("BTCUSDC", -1.5) == 0.0
     assert dp.round_price("BTCUSDC", -10.0) == 0.0
     assert dp.round_quantity("BTCUSDC", 1.23456) > 0.0

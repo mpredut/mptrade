@@ -23,26 +23,63 @@ from tests.conftest import TempDirTestCase
 
 
 class FakeMkt:
-    def __init__(self, price=100.0, succeed=True):
+    def __init__(
+        self,
+        price=100.0,
+        succeed=True,
+        *,
+        refuse_reason=None,
+        refuse_state="refused",
+        lookup_result=None,
+        lookup_error=None,
+        status_error=None,
+        order_id=1,
+    ):
         self.price = price
         self.succeed = succeed
+        self.refuse_reason = refuse_reason
+        self.refuse_state = refuse_state
+        self.lookup_result = lookup_result
+        self.lookup_error = lookup_error
+        self.status_error = status_error
+        self.order_id = order_id
         self.calls = []
         self.status = OrderStatus("open", 0.0, 0.0, 0.0, "NEW")
         self.status_calls = []
         self.lookup_calls = []
-    def get_current_price(self, symbol):
+
+    def get_current_price(self, symbol, provider_name=None):
         return self.price
+
     def place(self, symbol, side, price, qty, **kw):
         self.calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty, "kw": kw})
-        return {"orderId": 1} if self.succeed else None
+        ctx = kw.get("_outcome_context")
+        if self.refuse_reason is not None:
+            if isinstance(ctx, dict):
+                ctx.update(accepted=False, reason=self.refuse_reason)
+                if self.refuse_state is not None:
+                    ctx["state"] = self.refuse_state
+            return None
+        if self.succeed:
+            if isinstance(ctx, dict):
+                ctx.update(accepted=True, reason=None, state="accepted")
+            return {"orderId": self.order_id}
+        return None
+
     def order_status(self, symbol, order_id, provider_name=None):
         self.status_calls.append((symbol, str(order_id), provider_name))
+        if self.status_error is not None:
+            raise RuntimeError(self.status_error)
         return self.status
+
     def order_by_client_id(self, symbol, client_order_id, provider_name=None):
         self.lookup_calls.append((symbol, client_order_id, provider_name))
-        # Explicit absence authorizes a fresh submit; missing lookup support now
-        # remains ambiguous and correctly defers production retries.
-        return None
+        if self.lookup_error is not None:
+            raise RuntimeError(self.lookup_error)
+        if callable(self.lookup_result):
+            return self.lookup_result(client_order_id)
+        return self.lookup_result
+
     def reconciliation_capabilities(self, symbol, provider_name=None):
         return OrderReconciliationCapabilities(
             True, True, True, True,
@@ -243,18 +280,10 @@ class ProcessOnceTest(TempDirTestCase):
             oq.rewrite([])
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
 
-            class TrendDeferredMkt(FakeMkt):
-                def place(self, symbol, side, price, qty, **kw):
-                    self.calls.append({
-                        "symbol": symbol, "side": side, "price": price,
-                        "qty": qty, "kw": kw,
-                    })
-                    kw["_outcome_context"].update(
-                        accepted=False, reason="trend_deferred")
-                    return None
-
             now = 1000.0 + 400
-            stats = worker.process_once(TrendDeferredMkt(), now=now)
+            stats = worker.process_once(
+                FakeMkt(refuse_reason="trend_deferred", refuse_state=None), now=now
+            )
             rec = oq.load_all()[0]
             self.assertEqual(stats["attempted"], 1)
             self.assertEqual(stats["succeeded"], 0)
@@ -266,19 +295,10 @@ class ProcessOnceTest(TempDirTestCase):
             oq.rewrite([])
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
 
-            class StaleAccountCacheMkt(FakeMkt):
-                def place(self, symbol, side, price, qty, **kw):
-                    self.calls.append({
-                        "symbol": symbol, "side": side, "price": price,
-                        "qty": qty, "kw": kw,
-                    })
-                    kw["_outcome_context"].update(
-                        accepted=False, state="refused",
-                        reason="account_cache_not_fresh")
-                    return None
-
             now = 1000.0 + 400
-            stats = worker.process_once(StaleAccountCacheMkt(), now=now)
+            stats = worker.process_once(
+                FakeMkt(refuse_reason="account_cache_not_fresh"), now=now
+            )
             rec = oq.load_all()[0]
             self.assertEqual(stats["attempted"], 1)
             self.assertEqual(stats["succeeded"], 0)
@@ -294,15 +314,10 @@ class ProcessOnceTest(TempDirTestCase):
                 "BTCUSDC", "BUY", 1.0, {},
                 requested_price=100.0, now=1000.0)
 
-            class SnapshotChangedMkt(FakeMkt):
-                def place(self, symbol, side, price, qty, **kw):
-                    kw["_outcome_context"].update(
-                        accepted=False, state="refused",
-                        reason="account_cache_snapshot_changed")
-                    return None
-
             now = 1400.0
-            worker.process_once(SnapshotChangedMkt(), now=now)
+            worker.process_once(
+                FakeMkt(refuse_reason="account_cache_snapshot_changed"), now=now
+            )
             rec = oq.load_all()[0]
             self.assertEqual(rec["attempts"], 0)
             self.assertEqual(
@@ -387,11 +402,7 @@ class ProcessOnceTest(TempDirTestCase):
                 lifecycle="awaiting_cancel", replaces_order_id="old-4",
                 replaces_original_qty=2.0)
 
-            class BrokenStatusMkt(FakeMkt):
-                def order_status(self, symbol, order_id, provider_name=None):
-                    raise RuntimeError("status unavailable")
-
-            worker.process_once(BrokenStatusMkt(), now=1400.0)
+            worker.process_once(FakeMkt(status_error="status unavailable"), now=1400.0)
 
             rec = oq.load_all()[0]
             self.assertEqual(rec["lifecycle"], "awaiting_cancel")
@@ -584,14 +595,7 @@ class ProcessOnceTest(TempDirTestCase):
                 failure_reason="submit_ambiguous",
                 provider_name="Second", now=1000.0)
 
-            class BrokenLookupMkt(FakeMkt):
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    raise RuntimeError("lookup outage")
-
-            mkt = BrokenLookupMkt(price=100.0)
+            mkt = FakeMkt(price=100.0, lookup_error="lookup outage")
             stats = worker.process_once(mkt, now=1400.0)
 
             self.assertEqual(stats["attempted"], 0)
@@ -700,14 +704,7 @@ class ProcessOnceTest(TempDirTestCase):
                         claimed, "accepted", now=1001.0,
                         order=accepted_order, provider_name="Binance")
 
-            class ExistingOrderMkt(FakeMkt):
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    return accepted_order
-
-            mkt = ExistingOrderMkt(price=100.0)
+            mkt = FakeMkt(price=100.0, lookup_result=accepted_order)
             stats = worker.process_once(mkt, now=1302.0)
 
             self.assertEqual(stats["attempted"], 0)
@@ -722,19 +719,6 @@ class ProcessOnceTest(TempDirTestCase):
             self.assertNotIn("claim_token", durable)
 
         with self.subTest("expired_live_producer_absence_or_outage"):
-            class LiveProducerLookupMkt(FakeMkt):
-                def __init__(self, lookup_error):
-                    super().__init__(price=100.0)
-                    self.lookup_error = lookup_error
-
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    if self.lookup_error:
-                        raise RuntimeError("lookup outage")
-                    return None
-
             for lookup_error in (False, True):
                 with self.subTest(lookup_error=lookup_error):
                     oq.rewrite([])
@@ -743,7 +727,10 @@ class ProcessOnceTest(TempDirTestCase):
                     claimed = oq.enqueue_claimed(
                         "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                         provider_name="Binance", now=1000.0, lease_sec=301.0)
-                    mkt = LiveProducerLookupMkt(lookup_error)
+                    mkt = FakeMkt(
+                        price=100.0,
+                        lookup_error="lookup outage" if lookup_error else None,
+                    )
 
                     first = worker.process_once(mkt, now=1302.0)
                     second = worker.process_once(mkt, now=1303.0)
@@ -765,16 +752,11 @@ class ProcessOnceTest(TempDirTestCase):
                     self.assertEqual(durable["attempts"], 0)
 
         with self.subTest("dead_or_reused_producer_identity"):
-            class ExistingOrderMkt2(FakeMkt):
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    return {
-                        "orderId": 72,
-                        "status": "NEW",
-                        "clientOrderId": client_order_id,
-                    }
+            existing_72 = lambda cid: {
+                "orderId": 72,
+                "status": "NEW",
+                "clientOrderId": cid,
+            }
 
             for owner_state in ("dead", "mismatched"):
                 with self.subTest(owner_state=owner_state):
@@ -782,7 +764,7 @@ class ProcessOnceTest(TempDirTestCase):
                     claimed = oq.enqueue_claimed(
                         "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                         provider_name="Binance", now=1000.0, lease_sec=301.0)
-                    mkt = ExistingOrderMkt2(price=100.0)
+                    mkt = FakeMkt(price=100.0, lookup_result=existing_72)
 
                     with patch.object(
                             oq, "producer_claim_owner_state",
@@ -801,7 +783,7 @@ class ProcessOnceTest(TempDirTestCase):
             claimed = oq.enqueue_claimed(
                 "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
                 provider_name="Binance", now=1000.0, lease_sec=301.0)
-            mkt = ExistingOrderMkt2(price=100.0)
+            mkt = FakeMkt(price=100.0, lookup_result=existing_72)
 
             with patch.object(
                     oq, "producer_claim_owner_state",
@@ -824,18 +806,14 @@ class ProcessOnceTest(TempDirTestCase):
             claimed = oq.claim([record_id], now=1400.0)[0]
             dispatched = oq.begin_claimed_submit(claimed, now=1400.0)
 
-            class AcceptedDuringCrashMkt(FakeMkt):
-                def order_by_client_id(
-                        self, symbol, client_order_id, provider_name=None):
-                    self.lookup_calls.append(
-                        (symbol, client_order_id, provider_name))
-                    return {
-                        "orderId": 73,
-                        "status": "NEW",
-                        "clientOrderId": client_order_id,
-                    }
-
-            mkt = AcceptedDuringCrashMkt(price=100.0)
+            mkt = FakeMkt(
+                price=100.0,
+                lookup_result=lambda cid: {
+                    "orderId": 73,
+                    "status": "NEW",
+                    "clientOrderId": cid,
+                },
+            )
             with patch.object(
                     oq, "producer_claim_owner_state", return_value="dead"):
                 stats = worker.process_once(mkt, now=1600.0)
@@ -971,15 +949,7 @@ class ProcessOnceTest(TempDirTestCase):
                 "DRYUSD", "BUY", 1.0, {}, requested_price=100.0,
                 provider_name="Dry", now=1000.0)
 
-            class DisabledMkt(FakeMkt):
-                def place(self, symbol, side, price, qty, **kw):
-                    self.calls.append((symbol, side, price, qty))
-                    kw["_outcome_context"].update(
-                        accepted=False, state="refused",
-                        reason="execution_disabled")
-                    return None
-
-            market = DisabledMkt(price=100.0)
+            market = FakeMkt(price=100.0, refuse_reason="execution_disabled")
             stats = worker.process_once(market, now=1400.0)
 
             self.assertEqual(stats["attempted"], 1)
@@ -996,15 +966,7 @@ class ProcessOnceTest(TempDirTestCase):
                     "BTCUSDC", "BUY", 0.01, {}, requested_price=100.0,
                     failure_reason="profit_guard", now=1000.0)
 
-                class FilterRefusedMkt(FakeMkt):
-                    def place(self, symbol, side, price, qty, **kw):
-                        self.calls.append((symbol, side, price, qty))
-                        kw["_outcome_context"].update(
-                            accepted=False, state="refused",
-                            reason=refusal_reason)
-                        return None
-
-                market = FilterRefusedMkt(price=100.0)
+                market = FakeMkt(price=100.0, refuse_reason=refusal_reason)
                 stats = worker.process_once(market, now=1400.0)
 
                 self.assertEqual(stats["attempted"], 1)
@@ -1047,12 +1009,10 @@ class ProcessOnceTest(TempDirTestCase):
             oq.rewrite([])
             oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
 
-            class ReconcileMkt(FakeMkt):
-                def order_by_client_id(self, symbol, client_order_id,
-                                       provider_name=None):
-                    return {"orderId": 77, "status": "FILLED", "clientOrderId": client_order_id}
-
-            mkt = ReconcileMkt(price=100.0)
+            mkt = FakeMkt(
+                price=100.0,
+                lookup_result=lambda cid: {"orderId": 77, "status": "FILLED", "clientOrderId": cid},
+            )
             stats = worker.process_once(mkt, now=1400.0)
             self.assertEqual(stats["reconciled"], 1)
             self.assertEqual(stats["succeeded"], 1)
@@ -1201,12 +1161,7 @@ class ProcessOnceTest(TempDirTestCase):
                 oq.claim([rid], now=1100.0)[0], "accepted",
                 order={"orderId": 60}, now=1100.0)
 
-            class BrokenStatusMkt(FakeMkt):
-                def order_status(self, symbol, order_id, provider_name=None):
-                    self.status_calls.append((symbol, str(order_id), provider_name))
-                    raise RuntimeError("venue unavailable")
-
-            mkt = BrokenStatusMkt()
+            mkt = FakeMkt(status_error="venue unavailable")
             audit_events = []
             orig_audit = worker._audit_event
             worker._audit_event = lambda rec, ev, **kw: (audit_events.append((ev, kw)), orig_audit(rec, ev, **kw))[1]
@@ -1523,17 +1478,7 @@ class ProcessOnceTest(TempDirTestCase):
                 ttl_sec=3600.0,
             )
 
-            class _InsufficientFundsMkt:
-                def get_current_price(self, _sym, **_kw):
-                    return 80.0
-
-                def place(self, _sym, _side, _px, _qty, **kwargs):
-                    ctx = kwargs.get("_outcome_context")
-                    if isinstance(ctx, dict):
-                        ctx.update(accepted=False, reason="insufficient_funds", state="refused")
-                    return None
-
-            mkt = _InsufficientFundsMkt()
+            mkt = FakeMkt(price=80.0, refuse_reason="insufficient_funds")
             # First retry transitions submission_state to "refused" with reason="insufficient_funds" -> audited once
             res1 = worker.process_once(mkt, now=1400.0)
             self.assertEqual(res1["remaining"], 1)
@@ -1548,14 +1493,9 @@ class ProcessOnceTest(TempDirTestCase):
             self.assertEqual(audit_events, [])
 
             # Once funds appear before TTL, order is accepted and audited
-            class _FundedMkt(_InsufficientFundsMkt):
-                def place(self, _sym, _side, _px, _qty, **kwargs):
-                    ctx = kwargs.get("_outcome_context")
-                    if isinstance(ctx, dict):
-                        ctx.update(accepted=True, reason=None, state="accepted")
-                    return {"orderId": "OOK-FUNDED-1"}
-
-            res4 = worker.process_once(_FundedMkt(), now=2600.0)
+            res4 = worker.process_once(
+                FakeMkt(price=80.0, succeed=True, order_id="OOK-FUNDED-1"), now=2600.0
+            )
             self.assertEqual(res4["succeeded"], 1)
             self.assertEqual([e[0] for e in audit_events], ["submit_requested", "submit_accepted"])
             self.assertIsNotNone(oq.get(rec_id))
@@ -1581,34 +1521,19 @@ def test_order_retry_worker_preserves_wait_for_trend_false_for_kind_stop_enforce
     monkeypatch.setattr(oq, "RETRY_TTL_SEC", 86400.0)
     monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
 
-    class DummyMkt:
-        def __init__(self):
-            self.calls = []
-        def get_current_price(self, symbol, provider_name=None):
-            return 100.0
-        def place(self, symbol, side, price, qty, **kw):
-            self.calls.append(kw)
-            return {"orderId": "1"}
-        def order_status(self, symbol, order_id, provider_name=None):
-            return OrderStatus("open", 0.0, 0.0, 0.0, "NEW")
-        def order_by_client_id(self, symbol, cid, provider_name=None):
-            return None
-        def reconciliation_capabilities(self, symbol, provider_name=None):
-            return OrderReconciliationCapabilities(True, True, True, True, not_found_reliable_for_seconds=86400)
-
     oq.rewrite([])
     oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="STOP", now=1000.0)
-    mkt_stop = DummyMkt()
+    mkt_stop = FakeMkt()
     worker.process_once(mkt_stop, now=1500.0)
     assert len(mkt_stop.calls) == 1
-    assert mkt_stop.calls[0]["wait_for_trend"] is False
+    assert mkt_stop.calls[0]["kw"]["wait_for_trend"] is False
 
     oq.rewrite([])
     oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="TP", now=1000.0)
-    mkt_tp = DummyMkt()
+    mkt_tp = FakeMkt()
     worker.process_once(mkt_tp, now=1500.0)
     assert len(mkt_tp.calls) == 1
-    assert mkt_tp.calls[0]["wait_for_trend"] is True
+    assert mkt_tp.calls[0]["kw"]["wait_for_trend"] is True
 
 def test__persistentquarantineset___contains___syncs_from_disk_across_restart_maintains_iter20_s2(tmp_path, monkeypatch):
     """[ITER20 #2] _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous."""

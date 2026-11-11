@@ -19,7 +19,7 @@ import order_lifecycle as ol
 import pytest
 from order_lifecycle import extract_order_restore_params
 from providers.execution_audit import AuditedStrategyExecutor
-from tests.conftest import TempDirTestCase
+from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
 
 
 class OrderRetryStoreTest(TempDirTestCase):
@@ -1110,65 +1110,6 @@ def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_s
     # 2. Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs
     enqueued_kwargs = []
 
-    class _DeferProv:
-        name = "binance"
-
-        @staticmethod
-        def guards_internally():
-            return False
-
-        @staticmethod
-        def execution_enabled():
-            return True
-
-        @staticmethod
-        def requires_cache_permit():
-            return False
-
-        @staticmethod
-        def defers_smart_cancellation():
-            return False
-
-        @staticmethod
-        def supports_business_minimum():
-            return False
-
-        @staticmethod
-        def get_current_price(_sym):
-            return 100.0
-
-        @staticmethod
-        def format_price(_sym, p):
-            return float(p)
-
-        @staticmethod
-        def format_quantity(_sym, q):
-            return float(q)
-
-        @staticmethod
-        def validate_order(_sym, _side, _px, _q):
-            return None
-
-        @staticmethod
-        def min_notional(_sym):
-            return 5.0
-
-        @staticmethod
-        def free_balance(_asset):
-            return 1000.0
-
-        @staticmethod
-        def get_orders(_sym, _side, _since):
-            return []
-
-        @staticmethod
-        def quantity_decision(_sym, _side, _px, req_qty, **_kw):
-            return SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
-
-        @staticmethod
-        def should_wait_for_short_trend(_sym, _side):
-            return True
-
     monkeypatch.setattr(
         oq,
         "enqueue",
@@ -1181,7 +1122,7 @@ def test_instrument_place_persists_medium_trend_action_medium_trend_scale_from_s
     inst_obj.base = "BTC"
     inst_obj.quote = "USDC"
     inst_obj.enabled = True
-    inst_obj._provider = _DeferProv()
+    inst_obj._provider = DummySpotExecutionProvider(name="binance", free_bal=1000.0, wait_short_trend=True)
     inst_obj._api = SimpleNamespace(
         market_regime_context=lambda *_a, **_k: SimpleNamespace(resolved_trend="flat")
     )

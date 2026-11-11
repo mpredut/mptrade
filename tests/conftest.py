@@ -310,10 +310,21 @@ class DummySpotExecutionProvider:
 
     name = "kraken"
 
-    def __init__(self, *, symbol: str | None = None, order_id: str = "ord-1", free_bal: float = 10000.0):
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        symbol: str | None = None,
+        order_id: str = "ord-1",
+        free_bal: float = 10000.0,
+        wait_short_trend: bool = False,
+    ):
+        if name is not None:
+            self.name = name
         self._symbol = symbol
         self._order_id = order_id
         self._free_bal = free_bal
+        self._wait_short_trend = wait_short_trend
 
     def supports_symbol(self, sym):
         return self._symbol is None or sym == self._symbol
@@ -330,6 +341,9 @@ class DummySpotExecutionProvider:
     def defers_smart_cancel(self):
         return False
 
+    def defers_smart_cancellation(self):
+        return False
+
     def supports_business_minimum(self):
         return False
 
@@ -344,6 +358,24 @@ class DummySpotExecutionProvider:
 
     def round_amount(self, sym, q):
         return round(float(q), 4)
+
+    def format_price(self, _sym, p):
+        return float(p)
+
+    def format_quantity(self, _sym, q):
+        return float(q)
+
+    def validate_order(self, _sym, _side, _px, _q):
+        return None
+
+    def min_notional(self, _sym):
+        return 5.0
+
+    def get_orders(self, _sym, _side, _since):
+        return []
+
+    def should_wait_for_short_trend(self, _sym, _side):
+        return self._wait_short_trend
 
     def free_balance(self, asset):
         return self._free_bal

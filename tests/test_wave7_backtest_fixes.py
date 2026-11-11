@@ -38,6 +38,7 @@ from strategies.mt_position_accounting import _summarize_orders
 from strategies.position_exit_manager import is_reentry_state_stale
 from strategies.replay_metrics import calculate_performance_metrics
 from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+from tests.conftest import DummyTrailingAdapter
 from trailing_core import TrailingCore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -221,24 +222,8 @@ def test_wave7b_mt_accounting_rtrade_trailing_and_regime():
     assert out.gross_pnl == pytest.approx(0.0)
 
     # TrailingCore._finish_pending preserves and merges prior rebuy qty on multi-step exits
-    class _TrailAdapter:
-        name = "TEST"
-        is_live = False
-
-        def assets(self):
-            return [("BTC", "BTC", "BTCUSD", 5.0)]
-
-        def free_qty(self, asset):
-            return 0.0
-
-        def total_qty(self, asset):
-            return 0.0
-
-        def trend(self, pair):
-            return 0.0
-
     eng = TrailingCore(
-        _TrailAdapter(),
+        DummyTrailingAdapter(),
         log=lambda _m: None,
         enabled=False,
         state_file="/tmp/unused_trail_state.json",
