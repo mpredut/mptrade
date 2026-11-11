@@ -30,17 +30,13 @@ from strategies import spot_replay as kraken_replay
 from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
-from offline.backtests.evaluation import evaluate_segment, load_layered_env_config
+from offline.backtests.evaluation import evaluate_segment
 from offline.backtests.execution import ExecutionModel
+from kraken.kraken_common import load_isolated_kraken_cfg
 
 # Load live configuration into an isolated dict without polluting os.environ
 KRAKEN_DIR = ROOT / "kraken"
-_KRAKEN_CFG = load_layered_env_config(
-    KRAKEN_DIR / "config.env",
-    KRAKEN_DIR / ".env",
-    override_prefixes=("KRAKEN_",),
-    fallback_prefixes=(),
-)
+_KRAKEN_CFG = load_isolated_kraken_cfg(KRAKEN_DIR)
 LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
 DATASET_CSV = ROOT / "offline" / "research" / "hype_dataset" / "HYPEUSDC_240m_hlspot.csv"

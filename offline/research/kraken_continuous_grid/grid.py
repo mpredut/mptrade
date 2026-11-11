@@ -36,14 +36,9 @@ from botcore import (
 from state_io import append_jsonl_record, read_jsonl_dicts
 from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
-from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
+from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 
-_KRAKEN_CFG = load_layered_env_config(
-    os.path.join(ROOT, "kraken", "config.env"),
-    os.path.join(ROOT, "kraken", ".env"),
-    override_prefixes=("KRAKEN_",),
-    fallback_prefixes=(),
-)
+_KRAKEN_CFG = load_isolated_kraken_cfg(os.path.join(ROOT, "kraken"))
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step

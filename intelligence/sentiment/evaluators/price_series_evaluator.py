@@ -19,11 +19,9 @@ from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
-    _SORTED_TS_PX_MEMO,
     _extract_sorted_ts_px,
     _parse_ts_px_row,
     _prices_diverged,
-    _row_memo_token,
     _series_memo_key,
     normalize_epoch_sec,
     safe_float,

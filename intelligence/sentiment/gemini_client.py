@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
 from botcore import (
-    _parse_bool_flag,
     fetch_json_post,
     is_cache_fresh,
     is_gemini_llm_disabled,

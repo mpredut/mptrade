@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.market_api import api as mkt
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
 
@@ -34,7 +34,6 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     extract_cfg_float,
     extract_cfg_int,
-    load_layered_env_config,
     parse_dataset_specs,
     parse_intervals,
 )

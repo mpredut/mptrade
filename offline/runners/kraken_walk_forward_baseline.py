@@ -38,11 +38,11 @@ from offline.backtests.evaluation import (  # noqa: E402
     assess_decision_evidence,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
-    load_layered_env_config,
     parse_dataset_specs,
     parse_intervals,
     resolve_window_sizes,
 )
+from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
@@ -91,11 +91,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.
     try:
-        cfg = load_layered_env_config(
-            args.config_file,
-            args.env_file,
-            override_prefixes=("KRAKEN_",),
-            fallback_prefixes=(),
+        cfg = load_isolated_kraken_cfg(
+            KRAKEN_DIR,
+            config_path=args.config_file,
+            env_path=args.env_file,
         )
         pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
         if not pair:

@@ -135,8 +135,6 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get, symbols_for
 from state_io import (
-    atomic_write_json,
-    discard_generation_file,
     read_json_dict_recovering as _default_read_json_dict_recovering,
     read_json_file,
     read_json_recovering as _default_read_json_recovering,

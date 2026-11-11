@@ -21,7 +21,6 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
-    _parse_bool_flag,
     bool_env,
     parse_dotenv,
     safe_float,

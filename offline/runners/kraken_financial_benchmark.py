@@ -16,7 +16,7 @@ KRAKEN_DIR = ROOT / "kraken"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
+from botcore import load_layered_env_config, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
@@ -27,7 +27,7 @@ from offline.backtests.datasets import (  # noqa: E402
     load_dataset,
     validate_dataset,
 )
-from offline.backtests.evaluation import evaluate_segment, iso_utc, load_layered_env_config  # noqa: E402
+from offline.backtests.evaluation import evaluate_segment, iso_utc  # noqa: E402
 from offline.backtests.financial_benchmark import (  # noqa: E402
     aggregate_financial_windows,
     default_scenarios,

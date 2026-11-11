@@ -17,7 +17,6 @@ from botcore import (
     load_env_stack,
     obj_attr,
     optional_env,
-    required_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,

@@ -14,7 +14,6 @@ from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     canonical_base_asset,
     is_equity_venue,
-    normalize_venue_name,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.macro.lexicon_ssot import (

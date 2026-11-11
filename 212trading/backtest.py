@@ -31,7 +31,6 @@ from botcore import (
     _parse_bool_flag,
     float_env,
     load_local_module,
-    parse_dotenv,
     required_env,
     required_float_env,
     safe_float,

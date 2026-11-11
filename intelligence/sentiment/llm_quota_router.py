@@ -9,7 +9,6 @@ import time
 from typing import Any, Dict, Optional
 
 from botcore import (
-    _parse_bool_flag,
     bool_env,
     fetch_json_post,
     float_env,

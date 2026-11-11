@@ -1,7 +1,6 @@
 """Specialized Multi-Source Feeds & Dynamic Crisis Lexicon Discovery (SSOT sub-module)."""
 from __future__ import annotations
 
-import configparser
 import logging
 import os
 import re
@@ -9,15 +8,10 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
-    load_ini_config,
     normalize_epoch_sec,
     obj_attr,
-    optional_env,
     resolve_now_ts,
-    resolve_patched_attr,
     safe_float,
-    safe_int,
-    safe_pos_float,
     split_csv,
 )
 from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath

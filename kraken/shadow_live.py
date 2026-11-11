@@ -50,7 +50,6 @@ if ROOT not in sys.path:
 from state_io import append_jsonl_record, atomic_write_json, atomic_write_text, read_json_file, read_text_file  # noqa: E402
 from botcore import (  # noqa: E402
     exact_pos_int,
-    load_layered_env_config,
     load_shadow_environment,
     prepare_shadow_runtime,
     required_env,
@@ -62,6 +61,7 @@ from botcore import (  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat, spot_replay as rp
 prepare_shadow_runtime(ROOT, HERE)
+from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
 from kraken.market_data import fetch_ohlc_candles  # noqa: E402
 
 DEFAULT_ENV = os.path.join(HERE, ".env")
@@ -78,14 +78,7 @@ def _load_runtime_config(env_path: str | None = None,
 
 def _load_isolated_strat_params() -> strat.StratParams:
     _load_runtime_config()
-    env_path = os.environ.get("ENV_FILE", DEFAULT_ENV)
-    config_path = os.path.join(os.path.dirname(env_path) or ".", "config.env")
-    cfg = load_layered_env_config(
-        config_path,
-        env_path,
-        override_prefixes=("KRAKEN_",),
-        fallback_prefixes=(),
-    )
+    cfg = load_isolated_kraken_cfg(HERE, env_path=os.environ.get("ENV_FILE", DEFAULT_ENV))
     return strat.StratParams.from_env(cfg)
 
 

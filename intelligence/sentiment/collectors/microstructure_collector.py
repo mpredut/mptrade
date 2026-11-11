@@ -27,7 +27,6 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     legacy_filenames_for,
-    normalize_venue_name,
     resolve_cache_dir_path,
     split_symbol_assets,
 )

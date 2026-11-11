@@ -30,11 +30,11 @@ from strategies.replay_metrics import (
 )
 from botcore import (
     exact_nonneg_int,
-    load_layered_env_config,
     safe_float,
     safe_pos_float,
 )
 from strategies import spot_replay as rp
+from kraken.kraken_common import load_isolated_kraken_cfg
 from kraken.market_data import fetch_ohlc_candles
 
 
@@ -47,13 +47,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     """
     if not isinstance(base, dict):
         raise ValueError("_bt_params requires a dict for base")
-    here_dir = os.path.dirname(os.path.abspath(__file__))
-    env = load_layered_env_config(
-        os.path.join(here_dir, "config.env"),
-        os.path.join(here_dir, ".env"),
-        override_prefixes=("KRAKEN_",),
-        fallback_prefixes=(),
-    )
+    env = load_isolated_kraken_cfg(_HERE)
     p = StratParams.from_env(env=env)
 
     def _pick(keys: tuple[str, ...], default):

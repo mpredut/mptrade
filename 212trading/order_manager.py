@@ -33,7 +33,7 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from cachepaths import canonical_base_asset
-from ipo_common import load_t212_market_data, notify, now_str  # noqa: E402
+from ipo_common import notify  # noqa: E402
 from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
