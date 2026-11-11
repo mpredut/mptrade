@@ -32,14 +32,8 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     pct_delta,
 )
 from instrument_registry import casefold_get
+from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
-
-_VENUE_DEFAULT_FEE_SPECS: Dict[str, tuple[str, float, float, float]] = {
-    "binance": ("VIP0", 10.0, 10.0, 5.0),
-    "kraken": ("PRO_TIER0", 16.0, 26.0, 1.0),
-    "hyperliquid": ("SPOT_TIER0", 4.0, 7.0, 10.0),
-    "t212": ("INVEST_RTH", 15.0, 15.0, 1.0),
-}
 
 
 def resolve_symbol_price(
@@ -103,16 +97,16 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         v_norm = normalize_venue_name(venue)
-        fee_tier, maker_bps, taker_bps, min_notional = _VENUE_DEFAULT_FEE_SPECS.get(v_norm, ("STANDARD", 15.0, 15.0, 5.0))
         px_f = safe_pos_float(price, default=0.0) or 0.0
-        if v_norm == "t212":
-            default_step, default_tick = 0.001, 0.01
-        elif v_norm == "hyperliquid":
-            default_step = 0.0001 if px_f >= 1000.0 else 0.01
-            default_tick = 0.01 if px_f >= 100.0 else (0.001 if px_f >= 1.0 else 0.0001)
-        else:
-            default_step = 0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01)
-            default_tick = 0.01 if px_f >= 10.0 else (0.001 if px_f >= 1.0 else 0.0001)
+        (
+            fee_tier,
+            maker_bps,
+            taker_bps,
+            min_notional,
+            default_step,
+            default_tick,
+            prefer_static_tick,
+        ) = MarketDataProvider.resolve_venue_default_fee_and_precision(v_norm, px_f)
 
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
         if params.get("fee_tier"):
@@ -126,8 +120,6 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
 
         cached_meta: Dict[str, Any] = {}
         if inst is not None:
-            from providers.base import MarketDataProvider
-
             cached_meta = MarketDataProvider.resolve_instrument_cached_fee_and_limits(
                 inst, v_norm, symbol, price=px_f
             )
@@ -137,7 +129,7 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
             min_notional = float(safe_pos_float(cached_meta.get("min_notional"), default=min_notional))
             min_qty = float(safe_pos_float(cached_meta.get("min_qty"), default=min_qty))
             step_size = float(safe_pos_float(cached_meta.get("step_size"), default=step_size))
-            if v_norm != "hyperliquid" or safe_pos_float(params.get("tick_size"), default=None) is None:
+            if not prefer_static_tick or safe_pos_float(params.get("tick_size"), default=None) is None:
                 tick_size = float(safe_pos_float(cached_meta.get("tick_size"), default=tick_size))
 
         out: Dict[str, Any] = {
@@ -260,12 +252,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         raw_vol_1h = v_cand
                         break
             vol_1h = max(0.35, raw_vol_1h or 1.1)
-            if v_norm == "t212":
-                dec = 2
-            elif v_norm == "hyperliquid":
-                dec = 2 if lim_px >= 100.0 else (3 if lim_px >= 1.0 else 4)
-            else:
-                dec = 2 if lim_px >= 10.0 else (3 if lim_px >= 1.0 else (4 if lim_px >= 0.1 else 6))
+            dec = MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px)
             queue_penalty = 1.0
             if isinstance(m_entry, dict) and side in ("SELL", "BUY"):
                 sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0) or 2.0

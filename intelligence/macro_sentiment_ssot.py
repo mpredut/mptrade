@@ -74,10 +74,10 @@ class MarketBreadthSnapshot:
     alt_vol_share_pct: Optional[float] = None
     rotation_regime: Optional[str] = None
 
+import botcore as _botcore
 from botcore import (
     _parse_bool_flag,
     clean_scale,
-    fetch_public_json,
     is_live_network_backfill_enabled,
     load_ini_config,
     normalize_epoch_sec,
@@ -90,6 +90,16 @@ from botcore import (
     safe_pos_float,
     split_csv,
 )
+
+
+def __getattr__(name: str) -> Any:
+    if name == "fetch_public_json":
+        return _botcore.fetch_public_json
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> List[str]:
+    return sorted({*globals(), "fetch_public_json"})
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,

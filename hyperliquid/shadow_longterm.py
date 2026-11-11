@@ -28,6 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (  # noqa: E402
+    load_local_module,
     load_shadow_environment,
     prepare_shadow_runtime,
     require_shadow_interval,
@@ -91,8 +92,7 @@ def _fetch_with_ts(_pair: str, interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm candles")
     hl_mod = sys.modules.get("hl_client")
     if hl_mod is None or not hasattr(hl_mod, "HLClient"):
-        from offline.backtests.evaluation import load_venue_module
-        hl_mod = load_venue_module("hyperliquid", "hl_client.py", "hl_client")
+        hl_mod = load_local_module(HERE, "hl_client", module_key="hl_client")
     HLClient = hl_mod.HLClient
 
     load_shadow_environment(os.path.join(HERE, ".env"))

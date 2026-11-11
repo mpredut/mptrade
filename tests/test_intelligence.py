@@ -5787,8 +5787,11 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
         [rth_close_ms - (24 - i) * 15 * 60 * 1000, round(1.35 - i * 0.00125, 4), 800.0]
         for i in range(25)
     ]
-    fake_md = types.SimpleNamespace(_chart=lambda sym, rng="5d", interval="5m": ({}, fake_5d_bars))
-    monkeypatch.setattr(mc_mod, "load_local_module", lambda *_a, **_kw: fake_md)
+    monkeypatch.setattr(
+        mc_mod.mkt,
+        "fetch_intraday_chart",
+        lambda sym, rng="5d", interval="5m", provider_name=None: ({}, fake_5d_bars),
+    )
 
     pt_map: dict = {}
     micro_map: dict = {}

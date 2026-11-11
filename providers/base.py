@@ -144,6 +144,8 @@ class MarketDataProvider(ABC):
     _INTENT_CLIENT_ID_FORMAT: Optional[str] = None
     _BUY_SLIPPAGE_FEE_BUFFER: Optional[float] = None
     _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
+    _DEFAULT_FEE_SPEC: tuple[str, float, float, float] = ("STANDARD", 15.0, 15.0, 5.0)
+    _PREFER_STATIC_TICK_SIZE: bool = False
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
@@ -454,6 +456,64 @@ class MarketDataProvider(ABC):
         return _resolve_venue_provider_class(
             venue, provider=provider, base_cls=cls, specs=cls._VENUE_PROVIDER_SPECS
         )
+
+    @classmethod
+    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
+        """Return default ``(step_size, tick_size)`` fallback for TCA/fee limit evaluation."""
+        px_f = safe_pos_float(price, default=0.0) or 0.0
+        step = 0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01)
+        tick = 0.01 if px_f >= 10.0 else (0.001 if px_f >= 1.0 else 0.0001)
+        return step, tick
+
+    @classmethod
+    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
+        """Return rounding precision decimals for limit-order queue TCA analysis."""
+        px_f = safe_pos_float(limit_price, default=0.0) or 0.0
+        return 2 if px_f >= 10.0 else (3 if px_f >= 1.0 else (4 if px_f >= 0.1 else 6))
+
+    @classmethod
+    def resolve_venue_default_fee_spec(
+        cls,
+        venue: Any,
+        *,
+        fallback_venue: Optional[str] = None,
+    ) -> tuple[str, float, float, float]:
+        """Return declarative ``(fee_tier, maker_bps, taker_bps, min_notional_usd)`` for ``venue``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        if prov_cls is None and fallback_venue:
+            prov_cls = cls.resolve_venue_provider_class(fallback_venue)
+        return getattr(prov_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC)
+
+    @classmethod
+    def resolve_venue_default_fee_and_precision(
+        cls,
+        venue: Any,
+        price: float = 0.0,
+    ) -> tuple[str, float, float, float, float, float, bool]:
+        """Return ``(fee_tier, maker_bps, taker_bps, min_notional, default_step, default_tick, prefer_static_tick)``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        target_cls = prov_cls if prov_cls is not None else cls
+        fee_tier, maker_bps, taker_bps, min_notional = getattr(
+            target_cls, "_DEFAULT_FEE_SPEC", cls._DEFAULT_FEE_SPEC
+        )
+        default_step, default_tick = target_cls.default_step_and_tick(price)
+        prefer_static_tick = bool(getattr(target_cls, "_PREFER_STATIC_TICK_SIZE", False))
+        return (
+            fee_tier,
+            maker_bps,
+            taker_bps,
+            min_notional,
+            default_step,
+            default_tick,
+            prefer_static_tick,
+        )
+
+    @classmethod
+    def resolve_venue_tca_price_decimals(cls, venue: Any, limit_price: float = 0.0) -> int:
+        """Return venue-specific TCA limit-price rounding decimals."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        target_cls = prov_cls if prov_cls is not None else cls
+        return int(target_cls.tca_price_decimals(limit_price))
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
@@ -1335,6 +1395,16 @@ class MarketDataProvider(ABC):
     ) -> List[dict]:
         """Return historical OHLC bar dictionaries ``{'timestamp', 'open', 'high', 'low', 'close'}``."""
         return []
+
+    def fetch_intraday_chart(
+        self,
+        symbol: str,
+        *,
+        rng: str = "5d",
+        interval: str = "5m",
+    ) -> tuple[Any, list]:
+        """Return ``(meta, bars)`` intraday chart series including extended-hours bars when supported."""
+        return None, []
 
     @classmethod
     def normalize_orderbook_payload(cls, raw_data: Any) -> Optional[dict]:

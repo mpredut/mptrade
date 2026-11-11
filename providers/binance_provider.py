@@ -118,6 +118,7 @@ class BinanceProvider(MarketDataProvider):
     """
 
     _USES_SSOT_MARKET_CACHE: bool = False
+    _DEFAULT_FEE_SPEC = ("VIP0", 10.0, 10.0, 5.0)
     _REQUIRES_CACHE_PERMIT: bool = True
     _DEFERS_SMART_CANCELLATION: bool = True
     _SUPPORTS_BUSINESS_MINIMUM: bool = True

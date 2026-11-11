@@ -28,7 +28,6 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
     scan_latest_long_trend_value,
 )
-from intelligence.sentiment.evaluators.tca_risk_evaluator import _VENUE_DEFAULT_FEE_SPECS
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
@@ -41,6 +40,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
+from providers.base import MarketDataProvider
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_evaluator")
 
@@ -601,14 +601,18 @@ def compute_liquidation_clusters(
 
 
 def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
-    """Infer canonical venue name, maker/taker fee bps, and half-spread bps from SSOT `_VENUE_DEFAULT_FEE_SPECS`."""
+    """Infer canonical venue name, maker/taker fee bps, and half-spread bps via ``MarketDataProvider``."""
     sym_u = str(sym or "").strip().upper()
     explicit_v = normalize_venue_name((m_dict or {}).get("venue")) if isinstance(m_dict, dict) else ""
     sym_parts = split_symbol_assets(sym_u) if sym_u and not has_equity_suffix(sym_u) else None
     sym_quote = sym_parts[1] if sym_parts is not None else ""
-    if explicit_v in _VENUE_DEFAULT_FEE_SPECS:
+    if explicit_v and MarketDataProvider.resolve_venue_provider_class(explicit_v) is not None:
         venue = explicit_v
-    elif ":" in sym_u and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0])) in _VENUE_DEFAULT_FEE_SPECS:
+    elif (
+        ":" in sym_u
+        and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0]))
+        and MarketDataProvider.resolve_venue_provider_class(pref_v) is not None
+    ):
         venue = pref_v
     elif has_equity_suffix(sym_u):
         venue = "t212"
@@ -620,7 +624,9 @@ def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[
         venue = "kraken"
     else:
         venue = "t212"
-    _, maker_bps, taker_bps, _ = _VENUE_DEFAULT_FEE_SPECS.get(venue, _VENUE_DEFAULT_FEE_SPECS["t212"])
+    _, maker_bps, taker_bps, _ = MarketDataProvider.resolve_venue_default_fee_spec(
+        venue, fallback_venue="t212"
+    )
     half_sp = 0.5 * (safe_nonneg_float((m_dict or {}).get("spread_bps"), default=0.0) or 0.0)
     return venue, maker_bps, taker_bps, half_sp
 

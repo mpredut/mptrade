@@ -1920,7 +1920,16 @@ def resolve_patched_attr(
     require_callable: bool = False,
 ) -> object:
     """Resolve ``attr_name`` across ``local_val`` and ``sys.modules[modules]`` when monkeypatched away from ``defaults``."""
-    unpatched = tuple(d for d in (defaults if defaults else (default_val,)) if d is not None)
+    raw_unpatched = list(defaults if defaults else (default_val,))
+    if any(
+        getattr(d, "__module__", None) == __name__ and getattr(d, "__name__", None) == attr_name
+        for d in raw_unpatched
+        if d is not None
+    ):
+        cur_botcore_fn = globals().get(attr_name)
+        if cur_botcore_fn is not None:
+            raw_unpatched.append(cur_botcore_fn)
+    unpatched = tuple(d for d in raw_unpatched if d is not None)
 
     def _is_valid(cand: object) -> bool:
         return False if (cand is _UNSET or cand is None) else (callable(cand) if require_callable else True)

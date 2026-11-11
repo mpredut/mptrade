@@ -172,6 +172,21 @@ class MarketApi:
             **kwargs,
         )
 
+    def fetch_intraday_chart(
+        self,
+        symbol: str,
+        *,
+        rng: str = "5d",
+        interval: str = "5m",
+        provider_name="t212",
+    ) -> tuple[Any, list]:
+        """Return ``(meta, bars)`` intraday chart data routed through the target venue provider."""
+        return self._provider_explicit_or_routed(symbol, provider_name).fetch_intraday_chart(
+            symbol,
+            rng=rng,
+            interval=interval,
+        )
+
     def fetch_historical_ohlc_points(
         self,
         symbol: str,

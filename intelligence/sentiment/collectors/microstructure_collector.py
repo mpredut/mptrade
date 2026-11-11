@@ -12,7 +12,6 @@ from botcore import (
     extract_current_price_item,
     is_live_network_backfill_enabled,
     load_dotenv,
-    load_local_module,
     safe_nonneg_float,
 )
 from cachepaths import (
@@ -140,6 +139,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     sort_ts_rows,
 )
 from instrument_registry import casefold_get, is_equity_symbol
+from providers.market_api import api as mkt
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
@@ -240,11 +240,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         if prov_key and prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
             _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
                 prov_key,
-                lambda pk=prov_key: getattr(
-                    __import__("providers.market_api", fromlist=["api"]).api.provider_by_name(pk),
-                    "ohlc_series",
-                    None,
-                ),
+                lambda pk=prov_key: getattr(mkt.provider_by_name(pk), "ohlc_series", None),
                 is_factory=True,
             )
         if prov_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(prov_key)):
@@ -975,17 +971,16 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
         if not allow_network and not (memo_chart_fresh and memo_chart is not None):
             return [], [], [], False, False, 0.0, 0
         eff_now = resolve_now_ts(now_ts)
-        ws_dir = workspace_dir
-        if not ws_dir and cachedb_dir:
-            ws_dir = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
-            if not os.path.exists(os.path.join(ws_dir, "212trading", "market_data.py")):
-                ws_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         raw_s24 = list(raw_series_24h or [])
         if memo_chart_fresh and memo_chart is not None:
             chart_res = memo_chart[1]
         else:
-            _chart = load_local_module(os.path.join(ws_dir, "212trading"), "market_data")._chart
-            chart_res = _chart(canonical_base_asset(symbol) or symbol, rng="5d", interval="5m")
+            chart_res = mkt.fetch_intraday_chart(
+                canonical_base_asset(symbol) or symbol,
+                rng="5d",
+                interval="5m",
+                provider_name="t212",
+            )
             if is_live_network_backfill_enabled():
                 _EQ_YAHOO_CHART_MEMO[symbol] = (eff_now, chart_res)
         res = normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)

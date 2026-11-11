@@ -147,6 +147,8 @@ class HyperliquidProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "HLClient"
     _DEFAULT_QUOTE_ASSET = "USDC"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _DEFAULT_FEE_SPEC = ("SPOT_TIER0", 4.0, 7.0, 10.0)
+    _PREFER_STATIC_TICK_SIZE = True
     _STRATEGY_HEARTBEAT_NAME = "HL-bot"
     _RUNTIME_ENV_RELPATH = ("hyperliquid", "config.env")
     _LIVE_ORDERS_ENV = _LIVE_ENV
@@ -184,6 +186,18 @@ class HyperliquidProvider(MarketDataProvider):
     @property
     def name(self) -> str:
         return "Hyperliquid"
+
+    @classmethod
+    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
+        px_f = safe_pos_float(price, default=0.0) or 0.0
+        step = 0.0001 if px_f >= 1000.0 else 0.01
+        tick = 0.01 if px_f >= 100.0 else (0.001 if px_f >= 1.0 else 0.0001)
+        return step, tick
+
+    @classmethod
+    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
+        px_f = safe_pos_float(limit_price, default=0.0) or 0.0
+        return 2 if px_f >= 100.0 else (3 if px_f >= 1.0 else 4)
 
     def _before_execution_enabled_check(self) -> None:
         if (

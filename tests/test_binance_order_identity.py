@@ -568,7 +568,7 @@ def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
 
 
 def test_production_runtime_zero_direct_venue_sdk_imports_ast():
-    """Lock DAG boundary: no module outside venue adapters & providers imports venue SDKs directly."""
+    """Lock DAG boundary: no module outside venue adapters & providers imports venue SDKs statically or dynamically."""
     import ast
     import pathlib
 
@@ -585,6 +585,7 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
         ".venv/",
         "myenv/",
     )
+    dynamic_loader_exempt_prefixes = exempt_prefixes + ("offline/",)
     # Single intentional cross-check script comparing legacy binance_api against MarketApi parity:
     exempt_files = frozenset({"verify_tools/verify_account_facade.py"})
     violations: list[str] = []
@@ -595,6 +596,7 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
         if rel.startswith(exempt_prefixes) or rel in exempt_files:
             continue
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
+        check_dynamic = not rel.startswith(dynamic_loader_exempt_prefixes)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -603,4 +605,63 @@ def test_production_runtime_zero_direct_venue_sdk_imports_ast():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 if node.module.split(".", 1)[0] in forbidden_roots:
                     violations.append(f"{rel}:{node.lineno}: from {node.module} import ...")
-    assert violations == [], f"Forbidden direct venue SDK imports outside venue adapters/providers: {violations}"
+            elif check_dynamic and isinstance(node, ast.Call):
+                fn_name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                )
+                if fn_name in ("load_local_module", "load_venue_module", "import_module"):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                            parts = set(sub.value.replace("/", ".").replace("\\", ".").split("."))
+                            if parts & forbidden_roots:
+                                violations.append(
+                                    f"{rel}:{node.lineno}: dynamic {fn_name}(... {sub.value!r} ...)"
+                                )
+    assert violations == [], f"Forbidden direct or dynamic venue SDK imports outside venue adapters/providers: {violations}"
+
+
+def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
+    """Verify MarketDataProvider declarative fee/precision specs, MarketApi.fetch_intraday_chart, and botcore reload-safe fetch_public_json."""
+    import importlib
+    from unittest.mock import patch
+
+    import botcore
+    import intelligence.macro_sentiment_ssot as mss
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+
+    assert MarketDataProvider.resolve_venue_default_fee_spec("binance") == ("VIP0", 10.0, 10.0, 5.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("kraken") == ("PRO_TIER0", 16.0, 26.0, 1.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("hyperliquid") == ("SPOT_TIER0", 4.0, 7.0, 10.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("t212") == ("INVEST_RTH", 15.0, 15.0, 1.0)
+
+    assert MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 150.0)[4:] == (0.001, 0.01, False)
+    assert MarketDataProvider.resolve_venue_default_fee_and_precision("hyperliquid", 25.0)[4:] == (0.01, 0.001, True)
+    assert MarketDataProvider.resolve_venue_tca_price_decimals("t212", 125.0) == 2
+    assert MarketDataProvider.resolve_venue_tca_price_decimals("hyperliquid", 25.0) == 3
+    assert MarketDataProvider.resolve_venue_tca_price_decimals("binance", 0.05) == 6
+
+    class _ChartProv(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "T212"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return False
+
+        def fetch_intraday_chart(self, symbol: str, *, rng: str = "5d", interval: str = "5m"):
+            return {"symbol": symbol, "rng": rng, "interval": interval}, [(1700000000, 10.5, 100.0)]
+
+    facade = MarketApi(providers=[_ChartProv()])
+    meta, bars = facade.fetch_intraday_chart("NVDA", rng="5d", interval="5m")
+    assert meta == {"symbol": "NVDA", "rng": "5d", "interval": "5m"}
+    assert bars == [(1700000000, 10.5, 100.0)]
+
+    importlib.reload(botcore)
+    assert mss.fetch_public_json is botcore.fetch_public_json
+    with patch.object(mss, "fetch_public_json", return_value={"ok": 1}):
+        assert mss.fetch_public_json("https://example.test") == {"ok": 1}
+    assert mss.fetch_public_json is botcore.fetch_public_json
+

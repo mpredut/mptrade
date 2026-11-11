@@ -100,6 +100,7 @@ class T212Provider(MarketDataProvider):
     _LIVE_ORDERS_DIR_ATTR = "_T212_DIR"
     _BUY_SLIPPAGE_FEE_BUFFER = 0.998
     _SELL_DUST_SPEC = (2, 6.0)
+    _DEFAULT_FEE_SPEC = ("INVEST_RTH", 15.0, 15.0, 1.0)
     _SUPPORTS_ORDER_VALIDITY = True
     _STRATEGY_HEARTBEAT_NAME = "T212-bot"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
@@ -120,6 +121,14 @@ class T212Provider(MarketDataProvider):
     @property
     def name(self) -> str:
         return "T212"
+
+    @classmethod
+    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
+        return 0.001, 0.01
+
+    @classmethod
+    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
+        return 2
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -862,6 +871,17 @@ class T212Provider(MarketDataProvider):
             )
             or []
         )
+
+    def fetch_intraday_chart(
+        self,
+        symbol: str,
+        *,
+        rng: str = "5d",
+        interval: str = "5m",
+    ) -> tuple[Any, list]:
+        md = load_local_module(_T212_DIR, "market_data")
+        sym_clean = canonical_base_asset(symbol) or str(symbol or "").strip()
+        return md._chart(sym_clean, rng=rng, interval=interval)
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         if not isinstance(symbol, str) or not symbol.strip():

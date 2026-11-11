@@ -144,6 +144,7 @@ def _normalize_kraken_fill(raw: dict) -> dict:
 class KrakenProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _DEFAULT_FEE_SPEC = ("PRO_TIER0", 16.0, 26.0, 1.0)
     _LIVE_ORDERS_ENV = "KRAKEN_LIVE_ORDERS"
     _LIVE_ORDERS_DIR_ATTR = "_KRAKEN_DIR"
     _CLIENT_ID_128BIT_SPEC = (
@@ -288,7 +289,6 @@ class KrakenProvider(MarketDataProvider):
     @classmethod
     def build_cache_client(cls):
         """Construct an isolated KrakenClient using the dedicated ``cache`` credential profile."""
-        KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
         values = env_values_map(
             _KRAKEN_DIR,
             (
@@ -299,7 +299,7 @@ class KrakenProvider(MarketDataProvider):
             ),
         )
         credentials = kraken_credentials("cache", values=values)
-        return KrakenClient(credentials.key, credentials.secret), credentials.profile
+        return cls.build_client(credentials.key, credentials.secret), credentials.profile
 
     def _order_query_fallback_client(self):
         """Return a KrakenClient using the BOT profile when the auto-created fleet/SPARE key lacks order-query permission."""
@@ -313,12 +313,11 @@ class KrakenProvider(MarketDataProvider):
             if fb is not None:
                 return fb
             try:
-                KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
                 values = env_values_map(_KRAKEN_DIR, ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"))
                 creds = kraken_credentials("bot", values=values)
                 primary_key = getattr(self._cli, "api_key", None)
                 if creds.key and creds.secret and creds.key != primary_key:
-                    fb = KrakenClient(creds.key, creds.secret)
+                    fb = self.build_client(creds.key, creds.secret)
                     self._bot_fallback_cli = fb
                     return fb
             except Exception:  # noqa: BLE001
