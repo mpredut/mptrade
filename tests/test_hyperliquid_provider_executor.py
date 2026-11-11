@@ -558,12 +558,8 @@ class HLExecutorContractTest(unittest.TestCase):
             self.assertEqual(calls["q"], 2)
 
     def test_hl_client_cancel_inspects_statuses_error(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "hl_client_under_test", os.path.join(ROOT, "hyperliquid", "hl_client.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        from botcore import load_local_module
+        mod = load_local_module(os.path.join(ROOT, "hyperliquid"), "hl_client", module_key="hl_client_under_test", reload=True)
         HLClient = mod.HLClient
         client = HLClient(secret_key="0x" + "1" * 64, account_address="0xABC")
         client.exchange = FakeSigner()
@@ -582,16 +578,8 @@ class HLExecutorContractTest(unittest.TestCase):
         self.assertTrue(client.cancel("HYPE", 123))
 
     def test_strategy_apply_close_cancels_resting_orders_on_cycle_end(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "hl_strategy_under_test", os.path.join(ROOT, "hyperliquid", "strategy.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["hl_strategy_under_test"] = mod
-        try:
-            spec.loader.exec_module(mod)
-        finally:
-            sys.modules.pop("hl_strategy_under_test", None)
+        from botcore import load_local_module
+        mod = load_local_module(os.path.join(ROOT, "hyperliquid"), "strategy", module_key="hl_strategy_under_test", register=False)
         Strategy, StratParams = mod.Strategy, mod.StratParams
         client = FakeSigner()
         params = StratParams(direction="long", entry_amount=50.0)
@@ -615,12 +603,8 @@ class HLExecutorContractTest(unittest.TestCase):
 class HLLauncherTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "repo_hl_bot", os.path.join(ROOT, "hyperliquid", "hl_bot.py"),
-        )
-        cls.module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.module)
+        from botcore import load_local_module
+        cls.module = load_local_module(os.path.join(ROOT, "hyperliquid"), "hl_bot", module_key="repo_hl_bot", reload=True)
 
     def setUp(self):
         import tempfile
@@ -660,12 +644,10 @@ class _TimeoutApi:
 class HyperliquidTimeoutTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "hl_client_timeout_under_test", os.path.join(ROOT, "hyperliquid", "hl_client.py"),
+        from botcore import load_local_module
+        cls.module = load_local_module(
+            os.path.join(ROOT, "hyperliquid"), "hl_client", module_key="hl_client_timeout_under_test", reload=True
         )
-        cls.module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.module)
 
     def test_timeouts_are_passed_before_sdk_constructors_run(self):
         info = _TimeoutApi(timeout=self.module.INFO_TIMEOUT_SECONDS)
@@ -745,15 +727,13 @@ class HyperliquidTimeoutTest(unittest.TestCase):
 class HyperliquidLongtermShadowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import importlib.util
+        from botcore import load_local_module
         for p in (os.path.join(ROOT, "hyperliquid"), os.path.join(ROOT, "kraken")):
             if p not in sys.path:
                 sys.path.insert(0, p)
-        spec = importlib.util.spec_from_file_location(
-            "hl_shadow_longterm_under_test", os.path.join(ROOT, "hyperliquid", "shadow_longterm.py"),
+        cls.module = load_local_module(
+            os.path.join(ROOT, "hyperliquid"), "shadow_longterm", module_key="hl_shadow_longterm_under_test", reload=True
         )
-        cls.module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.module)
 
     def test_variants_are_fixed_and_paper_only_parameters(self):
         variants = self.module._variants(240)
@@ -1334,32 +1314,11 @@ def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
 
 def test_hlclient_spot_order_place_limit_reject_non_bool_is_buy_and_iter92_s1(monkeypatch):
     """[ITER92 #1] HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals."""
-    import importlib
-    import importlib.util
     import os
-    import sys
     import pytest
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(root_dir, "hyperliquid")
-    def _load_hl_mod(mod_name: str, filename: str):
-        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
-        mod = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, mod_name, mod)
-        spec.loader.exec_module(mod)
-        return mod
-    saved_path = list(sys.path)
-    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
-    try:
-        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
-        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
-        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
-    finally:
-        sys.path[:] = saved_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_client_mod = load_local_module(hl_dir, "hl_client", module_key="_it92_hl_client", reload=True)
     # 1. HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals
     hl = object.__new__(hl_client_mod.HLClient)
     hl.exchange = object()
@@ -1375,32 +1334,11 @@ def test_hlclient_spot_order_place_limit_reject_non_bool_is_buy_and_iter92_s1(mo
 
 def test_hyperliquid_market_data_validation_iter92_s2(monkeypatch):
     """[ITER92 #2] hyperliquid.market_data validation."""
-    import importlib
-    import importlib.util
     import os
-    import sys
     import pytest
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(root_dir, "hyperliquid")
-    def _load_hl_mod(mod_name: str, filename: str):
-        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
-        mod = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, mod_name, mod)
-        spec.loader.exec_module(mod)
-        return mod
-    saved_path = list(sys.path)
-    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
-    try:
-        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
-        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
-        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
-    finally:
-        sys.path[:] = saved_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_md_mod = load_local_module(hl_dir, "market_data", module_key="_it92_hl_md", reload=True)
     # 2. hyperliquid.market_data validation
     assert hl_md_mod.normalize_closed_candles(None, now_ms=1000) == []
     with pytest.raises(ValueError, match="invalid coin"):
@@ -1412,32 +1350,11 @@ def test_hyperliquid_market_data_validation_iter92_s2(monkeypatch):
 
 def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_loss_avoids_iter92_s3(monkeypatch):
     """[ITER92 #3] hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure."""
-    import importlib
-    import importlib.util
     import os
-    import sys
     import pytest
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_dir = os.path.join(root_dir, "hyperliquid")
-    def _load_hl_mod(mod_name: str, filename: str):
-        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
-        mod = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, mod_name, mod)
-        spec.loader.exec_module(mod)
-        return mod
-    saved_path = list(sys.path)
-    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
-    try:
-        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
-        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
-        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
-    finally:
-        sys.path[:] = saved_path
-        for k, v in saved_mods.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+    from botcore import load_local_module
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_strat_mod = load_local_module(hl_dir, "strategy", module_key="_it92_hl_strat", reload=True)
     # 3. hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure
     with pytest.raises(ValueError, match="invalid numeric boolean"):
         hl_strat_mod.StratParams.from_dict({"enable_takeprofit": 2})
@@ -1472,24 +1389,12 @@ def test_hyperliquid_strategy_stratparams_from_dict_bool_validation__check_stop_
 
 def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_owned_iter93_s3(monkeypatch):
     """[ITER93 #3] hyperliquid.replay validation & 212trading.strategy ladder validation & owned parsing."""
-    import pytest
-    import importlib
-    import importlib.util
-    import sys
-    # 3. hyperliquid.replay validation
     import os
+    import pytest
+    from botcore import load_local_module
+    # 3. hyperliquid.replay validation
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    monkeypatch.setattr(sys, "path", list(sys.path))
-    if "strategy" in sys.modules:
-        monkeypatch.setitem(sys.modules, "strategy", sys.modules["strategy"])
-    else:
-        monkeypatch.delitem(sys.modules, "strategy", raising=False)
-    spec_hl_r = importlib.util.spec_from_file_location(
-        "hl_replay_iter93", os.path.join(root_dir, "hyperliquid", "replay.py")
-    )
-    hl_replay = importlib.util.module_from_spec(spec_hl_r)
-    monkeypatch.setitem(sys.modules, "hl_replay_iter93", hl_replay)
-    spec_hl_r.loader.exec_module(hl_replay)
+    hl_replay = load_local_module(os.path.join(root_dir, "hyperliquid"), "replay", module_key="hl_replay_iter93", reload=True)
     with pytest.raises(ValueError, match="Unsupported Hyperliquid replay engine"):
         hl_replay.make_hyperliquid_replay_adapter({}, engine="futures")
     with pytest.raises(ValueError, match="fee_pct"):
@@ -1497,12 +1402,7 @@ def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_own
 
 
     # 4. 212trading.strategy ladder validation & owned parsing
-    spec_t212 = importlib.util.spec_from_file_location(
-        "t212_strategy_iter93", os.path.join(root_dir, "212trading", "strategy.py")
-    )
-    t212_strat = importlib.util.module_from_spec(spec_t212)
-    monkeypatch.setitem(sys.modules, "t212_strategy_iter93", t212_strat)
-    spec_t212.loader.exec_module(t212_strat)
+    t212_strat = load_local_module(os.path.join(root_dir, "212trading"), "strategy", module_key="t212_strategy_iter93", reload=True)
 
     with pytest.raises(ValueError, match="generate_tp_ladder requires max_pct >= min_pct"):
         t212_strat.generate_tp_ladder(steps=3, min_pct=5.0, max_pct=2.0)
@@ -1517,10 +1417,8 @@ def test_hyperliquid_replay_validation_212trading_strategy_ladder_validation_own
 
 def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_hours_iter94_s4(monkeypatch):
     """[ITER94 #4] priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection."""
-    import importlib
-    import importlib.util
     import os
-    import sys
+    from botcore import load_local_module
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # 4. priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection
     import priceAnalysis as pa
@@ -1539,12 +1437,7 @@ def test_priceanalysis_hyperliquid_price_analysis_flat_window_and_invalid_step_h
     res2 = pa.detect_long_term_trend(ts_flat, px_up, window_hours=24, step_hours=8)
     assert res2 is not None and len(res2["blocks"]) >= 3
 
-    spec_hl_pa = importlib.util.spec_from_file_location(
-        "hl_pa_iter94", os.path.join(root_dir, "hyperliquid", "signals.py")
-    )
-    hl_pa = importlib.util.module_from_spec(spec_hl_pa)
-    monkeypatch.setitem(sys.modules, "hl_pa_iter94", hl_pa)
-    spec_hl_pa.loader.exec_module(hl_pa)
+    hl_pa = load_local_module(os.path.join(root_dir, "hyperliquid"), "signals", module_key="hl_pa_iter94", reload=True)
     assert hl_pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
 
 def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_iter95_s3():
@@ -2054,19 +1947,11 @@ def test_hyperliquidprovider_open_orders_skips_entries_with_missing_zero_sentine
 
 def test_hyperliquid_signals__file_signal_guards_directory_bool_empty_paths_iter147_s3(tmp_path):
     """[ITER147 #3] hyperliquid/signals._file_signal guards directory/bool/empty paths."""
-    import importlib.util
     import os
-    import sys
+    from botcore import load_local_module
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # 3. hyperliquid/signals._file_signal guards directory/bool/empty paths
-    hl_sig_spec = importlib.util.spec_from_file_location("hl_sig_t147", os.path.join(root, "hyperliquid", "signals.py"))
-    hl_sig_mod = importlib.util.module_from_spec(hl_sig_spec)
-    assert hl_sig_spec and hl_sig_spec.loader
-    sys.modules["hl_sig_t147"] = hl_sig_mod
-    try:
-        hl_sig_spec.loader.exec_module(hl_sig_mod)
-    finally:
-        sys.modules.pop("hl_sig_t147", None)
+    hl_sig_mod = load_local_module(os.path.join(root, "hyperliquid"), "signals", module_key="hl_sig_t147", register=False)
 
     assert hl_sig_mod._file_signal("")["source"] == "file(missing)"
     assert hl_sig_mod._file_signal(True)["source"] == "file(missing)"  # type: ignore[arg-type]

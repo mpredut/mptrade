@@ -426,14 +426,12 @@ class PercentageSizingReplayTest(unittest.TestCase):
             self.assertEqual(candles[0], (20.0, 22.0, 19.5, 21.0))
 
     def test_backtest_helpers_guard_zero_budget_and_invalid_windows(self):
-        import importlib.util
+        from botcore import load_local_module
         from kraken.backtest_trail import bh
 
-        hl_spec = importlib.util.spec_from_file_location(
-            "hl_backtest_under_test", os.path.join(ROOT, "hyperliquid", "backtest.py"),
+        hl_bt = load_local_module(
+            os.path.join(ROOT, "hyperliquid"), "backtest", module_key="hl_backtest_under_test", reload=True
         )
-        hl_bt = importlib.util.module_from_spec(hl_spec)
-        hl_spec.loader.exec_module(hl_bt)
 
         self.assertEqual(bh([]), 0.0)
         self.assertEqual(bh([(0.0, 0.0, 0.0, 0.0)]), 0.0)

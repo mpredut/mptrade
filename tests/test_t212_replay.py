@@ -1,6 +1,5 @@
 """Trading 212 replay runs the live engine and preserves partial accounting."""
 
-import importlib.util
 import copy
 import json
 import os
@@ -14,22 +13,11 @@ T212_DIR = os.path.join(ROOT, "212trading")
 sys.path.insert(0, T212_DIR)
 sys.path.insert(0, ROOT)
 
+from botcore import load_local_module  # noqa: E402
 from providers.execution_audit import ExecutionAudit  # noqa: E402
 
-_COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
-_PRELOADED = {name: sys.modules.pop(name) for name in _COLLIDING if name in sys.modules}
-try:
-    spec = importlib.util.spec_from_file_location(
-        "t212_replay_under_test", os.path.join(T212_DIR, "replay.py"),
-    )
-    replay = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = replay
-    spec.loader.exec_module(replay)
-    strategy = replay._strat
-finally:
-    for name in _COLLIDING:
-        sys.modules.pop(name, None)
-    sys.modules.update(_PRELOADED)
+replay = load_local_module(T212_DIR, "replay", module_key="t212_replay_under_test", reload=True)
+strategy = replay._strat
 
 
 def _params(**overrides):
@@ -786,9 +774,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertEqual(client.place_calls[-1][-1], "GOOD_TILL_CANCEL")
 
     def test_backtest_simulate_with_mhdsl_and_mdhtp(self):
-        bt_spec = importlib.util.spec_from_file_location("t212_backtest_module", os.path.join(T212_DIR, "backtest.py"))
-        bt_mod = importlib.util.module_from_spec(bt_spec)
-        bt_spec.loader.exec_module(bt_mod)
+        bt_mod = load_local_module(T212_DIR, "backtest", module_key="t212_backtest_module", reload=True)
         simulate = bt_mod.simulate
         bars = [
             (100.0, 100.5, 99.5, 100.0),
@@ -833,13 +819,7 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         import json
         import time
         from unittest.mock import MagicMock, patch
-        import importlib.util
-        _md_spec = importlib.util.spec_from_file_location(
-            "t212_md_test", os.path.join(T212_DIR, "market_data.py")
-        )
-        _md = importlib.util.module_from_spec(_md_spec)
-        sys.modules[_md_spec.name] = _md
-        _md_spec.loader.exec_module(_md)
+        _md = load_local_module(T212_DIR, "market_data", module_key="t212_md_test", reload=True)
 
         self.assertEqual(_md.parse_interval_minutes("5m"), 5)
         self.assertEqual(_md.parse_interval_minutes("1h"), 60)

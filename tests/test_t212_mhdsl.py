@@ -1,7 +1,6 @@
 """Unified tests for Trading 212 environment loading, MHDSL, MDHTP, and Hybrid Re-entry."""
 
 import importlib
-import importlib.util
 import json
 import os
 import sys
@@ -21,24 +20,10 @@ for _p in (str(T212_DIR), str(ROOT)):
 from botcore import float_env, load_local_module, parse_dotenv  # noqa: E402
 
 ipo_common = importlib.import_module("ipo_common")
-
-_COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
-_PRELOADED = {name: sys.modules.pop(name) for name in _COLLIDING if name in sys.modules}
-try:
-    spec = importlib.util.spec_from_file_location(
-        "t212_strategy_mhdsl_test", os.path.join(T212_DIR, "strategy.py"),
-    )
-    strategy = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = strategy
-    sys.modules["strategy"] = strategy
-    spec.loader.exec_module(strategy)
-    market_data = sys.modules.get("market_data") or importlib.import_module("market_data")
-    t212_bot = load_local_module(str(T212_DIR), "t212_bot", module_key="t212_bot_mhdsl_test")
-    listing_watcher = load_local_module(str(T212_DIR), "listing_watcher", module_key="t212_listing_watcher_mhdsl_test")
-finally:
-    for name in _COLLIDING:
-        sys.modules.pop(name, None)
-    sys.modules.update(_PRELOADED)
+strategy = load_local_module(str(T212_DIR), "strategy", module_key="t212_strategy_mhdsl_test", reload=True)
+market_data = load_local_module(str(T212_DIR), "market_data", module_key="t212_market_data_mhdsl_test")
+t212_bot = load_local_module(str(T212_DIR), "t212_bot", module_key="t212_bot_mhdsl_test")
+listing_watcher = load_local_module(str(T212_DIR), "listing_watcher", module_key="t212_listing_watcher_mhdsl_test")
 
 
 def _params(**overrides):

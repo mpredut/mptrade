@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
@@ -15,20 +14,9 @@ T212_DIR = os.path.join(ROOT, "212trading")
 sys.path.insert(0, T212_DIR)
 sys.path.insert(0, ROOT)
 
-_COLLIDING = ("ipo_common", "ipo_notify", "market_data", "t212_client")
-_PRELOADED = {name: sys.modules.pop(name) for name in _COLLIDING if name in sys.modules}
-try:
-    _SPEC = importlib.util.spec_from_file_location(
-        "t212_order_manager_under_test",
-        os.path.join(T212_DIR, "order_manager.py"),
-    )
-    order_manager = importlib.util.module_from_spec(_SPEC)
-    sys.modules[_SPEC.name] = order_manager
-    _SPEC.loader.exec_module(order_manager)
-finally:
-    for _name in _COLLIDING:
-        sys.modules.pop(_name, None)
-    sys.modules.update(_PRELOADED)
+from botcore import load_local_module  # noqa: E402
+
+order_manager = load_local_module(T212_DIR, "order_manager", module_key="t212_order_manager_under_test", reload=True)
 
 
 TICKER = "NVDA_US_EQ"

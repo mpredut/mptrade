@@ -252,30 +252,9 @@ class ReplayDeterminismTest(unittest.TestCase):
 
     def test_t212_strategy_replay_cache_immunity(self):
         """T212 strategy in replay mode must isolate from external volatility cache."""
-        import importlib.util
+        from botcore import load_local_module
         t212_dir = os.path.join(ROOT, "212trading")
-        colliding = ("strategy", "market_data", "notify", "ipo_notify", "replay")
-        preloaded = {name: sys.modules.pop(name) for name in colliding if name in sys.modules}
-        try:
-            if t212_dir in sys.path:
-                sys.path.remove(t212_dir)
-            sys.path.insert(0, t212_dir)
-            _md_spec = importlib.util.spec_from_file_location("t212_md_test", os.path.join(t212_dir, "market_data.py"))
-            _md = importlib.util.module_from_spec(_md_spec)
-            sys.modules["market_data"] = _md
-            _md_spec.loader.exec_module(_md)
-
-            spec = importlib.util.spec_from_file_location(
-                "t212_strat_test", os.path.join(t212_dir, "strategy.py")
-            )
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mod
-            sys.modules["strategy"] = mod
-            spec.loader.exec_module(mod)
-        finally:
-            for name in colliding:
-                sys.modules.pop(name, None)
-            sys.modules.update(preloaded)
+        mod = load_local_module(t212_dir, "strategy", module_key="t212_strat_test", reload=True)
 
         client = MagicMock()
         client.get_order.return_value = None

@@ -493,25 +493,16 @@ def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
     """Verify Hyperliquid Strategy does not drop tracked open/close orders or place duplicates when cancel fails."""
     import importlib.util
     import os
-    import sys
+    from botcore import load_local_module
 
     saved_env = dict(os.environ)
-    saved_path = list(sys.path)
     try:
-        hl_strat_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "hyperliquid",
-            "strategy.py",
-        )
-        spec = importlib.util.spec_from_file_location("hl_strategy_mod", hl_strat_path)
-        hl_mod = importlib.util.module_from_spec(spec)
-        sys.modules["hl_strategy_mod"] = hl_mod
-        spec.loader.exec_module(hl_mod)
+        hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+        hl_mod = load_local_module(hl_dir, "strategy", module_key="hl_strategy_mod", reload=True)
         StratParams, Strategy = hl_mod.StratParams, hl_mod.Strategy
     finally:
         os.environ.clear()
         os.environ.update(saved_env)
-        sys.path[:] = saved_path
 
     class FakeHLClient:
         def __init__(self):

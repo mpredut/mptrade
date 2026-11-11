@@ -1361,21 +1361,13 @@ def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_s
 
 def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_watch__load_state_iter146_s2(tmp_path, monkeypatch):
     """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive & 212trading/price_alert.py _parse_armed_flag."""
-    import importlib.util
     import json
     import os
+    from botcore import load_local_module
     from kraken import kraken_xstock_watch as xw
     # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
-    import sys
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_spec = importlib.util.spec_from_file_location("hl_strat_t146", os.path.join(root, "hyperliquid", "strategy.py"))
-    hl_mod = importlib.util.module_from_spec(hl_spec)
-    assert hl_spec and hl_spec.loader
-    sys.modules["hl_strat_t146"] = hl_mod
-    try:
-        hl_spec.loader.exec_module(hl_mod)
-    finally:
-        sys.modules.pop("hl_strat_t146", None)
+    hl_mod = load_local_module(os.path.join(root, "hyperliquid"), "strategy", module_key="hl_strat_t146", register=False)
 
     for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
         assert hl_mod.clean_order_id(bad_oid) is None
@@ -1430,10 +1422,7 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
 
 
     # 4. 212trading/price_alert.py _parse_armed_flag
-    pa_spec = importlib.util.spec_from_file_location("t212_pa_t146", os.path.join(root, "212trading", "price_alert.py"))
-    pa_mod = importlib.util.module_from_spec(pa_spec)
-    assert pa_spec and pa_spec.loader
-    pa_spec.loader.exec_module(pa_mod)
+    pa_mod = load_local_module(os.path.join(root, "212trading"), "price_alert", module_key="t212_pa_t146", reload=True)
     assert pa_mod._parse_armed_flag("0.0") is False
     assert pa_mod._parse_armed_flag("false") is False
     assert pa_mod._parse_armed_flag("null") is False

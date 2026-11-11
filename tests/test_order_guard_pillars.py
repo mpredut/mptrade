@@ -1708,18 +1708,16 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
 
 
 def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypatch):
-    import importlib.util
     import os
     from types import SimpleNamespace
+    from botcore import load_local_module
     import cachetrend as ct
     from kraken import shadow_live as kr_sl
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hl_sig_spec = importlib.util.spec_from_file_location(
-        "hl_signals_test", os.path.join(root_dir, "hyperliquid", "signals.py")
+    hl_signals = load_local_module(
+        os.path.join(root_dir, "hyperliquid"), "signals", module_key="hl_signals_test", reload=True
     )
-    hl_signals = importlib.util.module_from_spec(hl_sig_spec)
-    hl_sig_spec.loader.exec_module(hl_signals)
 
     # 1. CacheShortTrendManager.load_state resolves meta_file_path without NameError
     stm = ct.CacheShortTrendManager(

@@ -1516,19 +1516,14 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
 
 
 def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_ssot_monkeypatch(monkeypatch, tmp_path):
-    import importlib.util
     import os
+    from botcore import load_local_module
     import intelligence.macro.daemon_ssot as daemon_ssot
     import intelligence.macro_sentiment_ssot as ssot_mod
     import intelligence.sentiment.collectors.portfolio_collector as pc_mod
 
     root_dir = os.path.dirname(os.path.dirname(__file__))
-    hl_spec = importlib.util.spec_from_file_location(
-        "hl_client_iter51",
-        os.path.join(root_dir, "hyperliquid", "hl_client.py"),
-    )
-    hl_mod = importlib.util.module_from_spec(hl_spec)
-    hl_spec.loader.exec_module(hl_mod)
+    hl_mod = load_local_module(os.path.join(root_dir, "hyperliquid"), "hl_client", module_key="hl_client_iter51", reload=True)
     HLClient = hl_mod.HLClient
     HLError = hl_mod.HLError
 
@@ -1599,12 +1594,12 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
     assert len(saved_hb) == 1 and saved_hb[0][1] == {"ok": True}
 
     # 4. 212trading/market_data.py parse_interval_minutes rejects non-ASCII or signed prefixes
-    spec = importlib.util.spec_from_file_location(
-        "t212_market_data_iter51",
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "market_data.py"),
+    md_mod = load_local_module(
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading"),
+        "market_data",
+        module_key="t212_market_data_iter51",
+        reload=True,
     )
-    md_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(md_mod)
     assert md_mod.parse_interval_minutes("5m") == 5
     for bad_iv in ("+5m", "5 m", "٥m"):
         with pytest.raises(ValueError, match="invalid Yahoo interval"):
@@ -3648,17 +3643,13 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
     )
 
     # 5. 212trading _sanitize_t212_state normalizes ms timestamps on orders, pending_submit, and backoff/fail_until keys
-    import sys
-    t212_spec = importlib.util.spec_from_file_location(
-        "t212_strategy_iter70",
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "strategy.py"),
+    from botcore import load_local_module
+    t212_mod = load_local_module(
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading"),
+        "strategy",
+        module_key="t212_strategy_iter70",
+        register=False,
     )
-    t212_mod = importlib.util.module_from_spec(t212_spec)
-    sys.modules["t212_strategy_iter70"] = t212_mod
-    try:
-        t212_spec.loader.exec_module(t212_mod)
-    finally:
-        sys.modules.pop("t212_strategy_iter70", None)
     sanitized = t212_mod._sanitize_t212_state(
         {
             "buy_backoff_until": 1700000500000.0,

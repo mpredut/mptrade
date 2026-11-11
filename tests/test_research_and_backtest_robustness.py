@@ -127,15 +127,14 @@ def test_scheduled_pilot_run_one_delegates_to_run_symbol():
 
 def test_spot_replay_adapters_ssot():
     """All spot replay adapters delegate to strategies.spot_replay.make_spot_replay_adapter."""
-    import importlib.util
     from pathlib import Path
+    from botcore import load_local_module
     from strategies.spot_engine import StratParams
     from strategies.spot_replay import make_spot_replay_adapter
 
-    hl_path = Path(__file__).resolve().parents[1] / "hyperliquid" / "replay.py"
-    spec = importlib.util.spec_from_file_location("hl_replay_ssot_test", str(hl_path))
-    hl_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hl_mod)
+    hl_mod = load_local_module(
+        str(Path(__file__).resolve().parents[1] / "hyperliquid"), "replay", module_key="hl_replay_ssot_test", reload=True
+    )
 
     params = StratParams(
         currency="USDC",
@@ -227,17 +226,13 @@ def test_strat_params_from_dict_ignores_removed_fields():
 
 def test_t212_replay_adapter_historical_fx_alignment():
     """make_t212_replay_adapter aligns fx_records via offline.backtests.datasets without ModuleNotFoundError."""
-    import importlib.util
-    import sys
+    from botcore import load_local_module
     from offline.backtests.evaluation import evaluate_segment
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec = importlib.util.spec_from_file_location(
-        "t212_replay_fx_test", os.path.join(root_dir, "212trading", "replay.py")
+    mod = load_local_module(
+        os.path.join(root_dir, "212trading"), "replay", module_key="t212_replay_fx_test", reload=True
     )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
 
     params = mod._strat.StratParams(
         currency="RON",
@@ -277,14 +272,12 @@ def test_t212_replay_adapter_historical_fx_alignment():
 
 def test_hyperliquid_funding_at_seconds_to_ms_and_param_immutability():
     """funding_at normalises Unix seconds to milliseconds and run_replay does not mutate StratParams."""
-    import importlib.util
+    from botcore import load_local_module
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec = importlib.util.spec_from_file_location(
-        "hl_replay_unit_test", os.path.join(root_dir, "hyperliquid", "replay.py")
+    hl_replay = load_local_module(
+        os.path.join(root_dir, "hyperliquid"), "replay", module_key="hl_replay_unit_test", reload=True
     )
-    hl_replay = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hl_replay)
 
     fund = [(1700000000000, 0.0001), (1700003600000, 0.0005)]
     # Passing timestamp in seconds (1700003600) must match the second funding entry (0.0005)
@@ -949,50 +942,43 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     from pathlib import Path
     root_dir = Path(tob.__file__).resolve().parent.parent
 
-    with monkeypatch.context() as m:
-        m.setattr(sys, "path", list(sys.path))
-        spec_av = importlib.util.spec_from_file_location("t212_analyze_vol_test", root_dir / "212trading/analyze_volatility.py")
-        mod_av = importlib.util.module_from_spec(spec_av)
-        spec_av.loader.exec_module(mod_av)
-        assert mod_av.pullbacks([]) == []
-        assert mod_av.pullbacks([100.0, 80.0, 102.0]) == [20.0]
+    from botcore import load_local_module
+    mod_av = load_local_module(str(root_dir / "212trading"), "analyze_volatility", module_key="t212_analyze_vol_test", reload=True)
+    assert mod_av.pullbacks([]) == []
+    assert mod_av.pullbacks([100.0, 80.0, 102.0]) == [20.0]
 
-        spec_t212_bt = importlib.util.spec_from_file_location("t212_backtest_test", root_dir / "212trading/backtest.py")
-        mod_t212_bt = importlib.util.module_from_spec(spec_t212_bt)
-        spec_t212_bt.loader.exec_module(mod_t212_bt)
-        sim_res = mod_t212_bt.simulate(
-            [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)],
-            {
-                "budget": 1000.0,
-                "entry": 100.0,
-                "dca": 100.0,
-                "disc": 0.2,
-                "drop": 2.0,
-                "tp": 1.5,
-                "maxdca": 5,
-                "fee": 0.15,
-                "sl": 10.0,
-                "tp_ladder": None,
-                "reentry_drop": 1.0,
-                "reentry_tol": 0.05,
-                "sl_rebuy_bounce": 1.2,
-                "sl_mhdsl_enabled": True,
-            },
-        )
-        assert isinstance(sim_res, dict) and "total" in sim_res
+    mod_t212_bt = load_local_module(str(root_dir / "212trading"), "backtest", module_key="t212_backtest_test", reload=True)
+    sim_res = mod_t212_bt.simulate(
+        [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)],
+        {
+            "budget": 1000.0,
+            "entry": 100.0,
+            "dca": 100.0,
+            "disc": 0.2,
+            "drop": 2.0,
+            "tp": 1.5,
+            "maxdca": 5,
+            "fee": 0.15,
+            "sl": 10.0,
+            "tp_ladder": None,
+            "reentry_drop": 1.0,
+            "reentry_tol": 0.05,
+            "sl_rebuy_bounce": 1.2,
+            "sl_mhdsl_enabled": True,
+        },
+    )
+    assert isinstance(sim_res, dict) and "total" in sim_res
 
-        spec_hl_bt = importlib.util.spec_from_file_location("hl_backtest_test", root_dir / "hyperliquid/backtest.py")
-        mod_hl_bt = importlib.util.module_from_spec(spec_hl_bt)
-        spec_hl_bt.loader.exec_module(mod_hl_bt)
-        sig_out = mod_hl_bt.precompute_signal([100.0, 101.0, 102.0], [1000.0, 4600.0, 8200.0], "analysis", 2, 3, 0.01, 24, 8)
-        assert sig_out == ["neutral", "neutral", "neutral"]
+    mod_hl_bt = load_local_module(str(root_dir / "hyperliquid"), "backtest", module_key="hl_backtest_test", reload=True)
+    sig_out = mod_hl_bt.precompute_signal([100.0, 101.0, 102.0], [1000.0, 4600.0, 8200.0], "analysis", 2, 3, 0.01, 24, 8)
+    assert sig_out == ["neutral", "neutral", "neutral"]
 
 
 def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp_path, monkeypatch):
     """Verify inline comment/interpolation handling in scheduled_pilot, run_replay_backtest, trade_cooldown, and hl signals fallback."""
-    import importlib.util
     import sys
     from pathlib import Path
+    from botcore import load_local_module
 
     from offline.research.monitortrades_backtest import run_replay_backtest as rrb
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
@@ -1019,10 +1005,7 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
 
     root_dir = Path(sp.__file__).resolve().parents[3]
     with monkeypatch.context() as m:
-        m.setattr(sys, "path", [p for p in sys.path if "hyperliquid" not in p])
-        spec_sig = importlib.util.spec_from_file_location("hl_signals_test", root_dir / "hyperliquid/signals.py")
-        mod_sig = importlib.util.module_from_spec(spec_sig)
-        spec_sig.loader.exec_module(mod_sig)
+        mod_sig = load_local_module(str(root_dir / "hyperliquid"), "signals", module_key="hl_signals_test", reload=True)
         # Remove hyperliquid dir from sys.path after import so `from price_analysis import signal` fails
         m.setattr(sys, "path", [p for p in sys.path if "hyperliquid" not in p])
         m.syspath_prepend(str(tmp_path))
@@ -1040,10 +1023,9 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
 
 def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comment(tmp_path, monkeypatch):
     """Verify HL price_analysis non-numeric mid safety, HL Strategy.run exception resilience, backtest_ranges section comments, and chop_benchmark step validation."""
-    import importlib.util
-    import sys
     from pathlib import Path
     from unittest.mock import patch
+    from botcore import load_local_module
 
     from offline.research import backtest_ranges as br
     from offline.research import chop_weight_backtest as cwb
@@ -1077,10 +1059,7 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
     # 4. hyperliquid/signals.signal handles non-numeric client.mid() without ValueError
     root_dir = Path(br.__file__).resolve().parents[2]
     with monkeypatch.context() as m:
-        m.setattr(sys, "path", list(sys.path))
-        spec_pa = importlib.util.spec_from_file_location("hl_pa_mid_test", root_dir / "hyperliquid/signals.py")
-        mod_pa = importlib.util.module_from_spec(spec_pa)
-        spec_pa.loader.exec_module(mod_pa)
+        mod_pa = load_local_module(str(root_dir / "hyperliquid"), "signals", module_key="hl_pa_mid_test", reload=True)
         m.setattr(
             mod_pa,
             "analyze",
@@ -1102,10 +1081,7 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
         assert sig["source"] == "analysis"
 
         # 5. hyperliquid/strategy.py _check_stop_loss keeps uncancelled orders tracked & run() survives step error
-        spec_st = importlib.util.spec_from_file_location("hl_strat_run_test", root_dir / "hyperliquid/strategy.py")
-        mod_st = importlib.util.module_from_spec(spec_st)
-        m.setitem(sys.modules, spec_st.name, mod_st)
-        spec_st.loader.exec_module(mod_st)
+        mod_st = load_local_module(str(root_dir / "hyperliquid"), "strategy", module_key="hl_strat_run_test", reload=True)
 
         class _FailCancelClient:
             exchange = None
@@ -1663,23 +1639,10 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert checker._is_dynamic_symbol("BTC") is False
 
     # 8. T212 order_manager/strategy, Kraken cachemanager/trailing_stop, and Binance trailing_stop state resilience
-    import importlib.util
-    import sys
+    from botcore import load_local_module
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     t212_dir = os.path.join(repo_root, "212trading")
-    if t212_dir not in sys.path:
-        sys.path.insert(0, t212_dir)
-    t212_strat_spec = importlib.util.spec_from_file_location(
-        "t212_strategy_test_mod", os.path.join(t212_dir, "strategy.py")
-    )
-    t212_strat_mod = importlib.util.module_from_spec(t212_strat_spec)
-    sys.modules["t212_strategy_test_mod"] = t212_strat_mod
-    try:
-        t212_strat_spec.loader.exec_module(t212_strat_mod)
-    finally:
-        sys.modules.pop("t212_strategy_test_mod", None)
-        if t212_dir in sys.path:
-            sys.path.remove(t212_dir)
+    t212_strat_mod = load_local_module(t212_dir, "strategy", module_key="t212_strategy_test_mod", register=False)
     sanitized_t212 = t212_strat_mod._sanitize_t212_state({
         "qty": "2.5",
         "cost_usd": "250.0",
@@ -1807,29 +1770,14 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert _parse_tranches(None) == []
 
     # 11. Binance API & Hyperliquid helper guards (order_type normalization, _last_opposite_fill_price_api, HL cancel/market_data/signals)
-    import importlib.util
     from types import SimpleNamespace
     import time
     from binance_api import bapi, bapi_placeorder
 
-    def _load_hl_mod(mod_name: str, filename: str):
-        hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-        orig_path = list(sys.path)
-        try:
-            if hl_dir not in sys.path:
-                sys.path.insert(0, hl_dir)
-            spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[mod_name] = mod
-            spec.loader.exec_module(mod)
-            return mod
-        finally:
-            sys.modules.pop(mod_name, None)
-            sys.path[:] = orig_path
-
-    hl_client = _load_hl_mod("_test_hl_client", "hl_client.py")
-    hl_md = _load_hl_mod("_test_hl_md", "market_data.py")
-    hl_signals = _load_hl_mod("_test_hl_signals", "signals.py")
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_client = load_local_module(hl_dir, "hl_client", module_key="_test_hl_client", register=False)
+    hl_md = load_local_module(hl_dir, "market_data", module_key="_test_hl_md", register=False)
+    hl_signals = load_local_module(hl_dir, "signals", module_key="_test_hl_signals", register=False)
 
     with pytest.raises(ValueError):
         bapi.get_open_orders(True, "BTCUSDC")
@@ -1878,49 +1826,20 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert sig_res["source"] == "file"
 
     # 12. Hyperliquid replay/strategy and 212trading strategy/market_data guards
-    hl_strat = _load_hl_mod("_test_hl_strat_p", "strategy.py")
+    hl_strat = load_local_module(hl_dir, "strategy", module_key="_test_hl_strat_p", register=False)
     sp_hl = hl_strat.StratParams.from_dict({"enable_takeprofit": "false", "signal_gate": "0"})
     assert sp_hl.enable_takeprofit is False
     assert sp_hl.signal_gate is False
 
-    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
-    orig_path = list(sys.path)
-    try:
-        if hl_dir not in sys.path:
-            sys.path.insert(0, hl_dir)
-        sys.modules["strategy"] = hl_strat
-        spec_rp = importlib.util.spec_from_file_location("_test_hl_replay", os.path.join(hl_dir, "replay.py"))
-        hl_replay = importlib.util.module_from_spec(spec_rp)
-        sys.modules["_test_hl_replay"] = hl_replay
-        spec_rp.loader.exec_module(hl_replay)
-    finally:
-        sys.modules.pop("_test_hl_replay", None)
-        sys.modules.pop("strategy", None)
-        sys.path[:] = orig_path
+    hl_replay = load_local_module(hl_dir, "replay", module_key="_test_hl_replay", register=False)
 
     empty_rp = hl_replay.run_replay([], params={"budget": None})
     assert empty_rp["total"] == 0.0
     assert empty_rp["initial_capital"] == 500.0
 
     t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
-    orig_path = list(sys.path)
-    try:
-        if t212_dir not in sys.path:
-            sys.path.insert(0, t212_dir)
-        spec_t212_md = importlib.util.spec_from_file_location("_test_t212_md2", os.path.join(t212_dir, "market_data.py"))
-        t212_md2 = importlib.util.module_from_spec(spec_t212_md)
-        sys.modules["_test_t212_md2"] = t212_md2
-        spec_t212_md.loader.exec_module(t212_md2)
-        sys.modules["market_data"] = t212_md2
-        spec_t212_st = importlib.util.spec_from_file_location("_test_t212_st2", os.path.join(t212_dir, "strategy.py"))
-        t212_st2 = importlib.util.module_from_spec(spec_t212_st)
-        sys.modules["_test_t212_st2"] = t212_st2
-        spec_t212_st.loader.exec_module(t212_st2)
-    finally:
-        sys.modules.pop("_test_t212_md2", None)
-        sys.modules.pop("_test_t212_st2", None)
-        sys.modules.pop("market_data", None)
-        sys.path[:] = orig_path
+    t212_md2 = load_local_module(t212_dir, "market_data", module_key="_test_t212_md2", register=False)
+    t212_st2 = load_local_module(t212_dir, "strategy", module_key="_test_t212_st2", register=False)
 
     from offline.research.hybrid_reentry import run_equities
     base_t212_cfg = dict(run_equities.BASE_CONFIG, YAHOO_SYMBOL="NVDA")
@@ -1943,22 +1862,8 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     monkeypatch.setattr(kc, "_public", lambda method, params=None, fresh=False: {"last": 123, "HYPEUSD": {"pair_decimals": 3}})
     assert kc.pair_info("HYPEUSD") == {"pair_decimals": 3}
 
-    orig_path = list(sys.path)
-    try:
-        if t212_dir not in sys.path:
-            sys.path.insert(0, t212_dir)
-        spec_tc = importlib.util.spec_from_file_location("_test_t212_cli2", os.path.join(t212_dir, "t212_client.py"))
-        t212_cli_mod = importlib.util.module_from_spec(spec_tc)
-        sys.modules["_test_t212_cli2"] = t212_cli_mod
-        spec_tc.loader.exec_module(t212_cli_mod)
-        spec_tb = importlib.util.spec_from_file_location("_test_t212_bot2", os.path.join(t212_dir, "t212_bot.py"))
-        t212_bot_mod = importlib.util.module_from_spec(spec_tb)
-        sys.modules["_test_t212_bot2"] = t212_bot_mod
-        spec_tb.loader.exec_module(t212_bot_mod)
-    finally:
-        sys.modules.pop("_test_t212_cli2", None)
-        sys.modules.pop("_test_t212_bot2", None)
-        sys.path[:] = orig_path
+    t212_cli_mod = load_local_module(t212_dir, "t212_client", module_key="_test_t212_cli2", register=False)
+    t212_bot_mod = load_local_module(t212_dir, "t212_bot", module_key="_test_t212_bot2", register=False)
 
     tc = t212_cli_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
     monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'{"not": "a_list"}'))
@@ -2583,23 +2488,16 @@ def test_venue_market_data_and_client_hardening():
     import importlib
     import importlib.util
     import pytest
+    from botcore import load_local_module
     from binance_api import bapi
     from binance_api import market_data as b_md
     from kraken import market_data as k_md
     t212_md = importlib.import_module("212trading.market_data")
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec_hl_c = importlib.util.spec_from_file_location(
-        "hl_client_local", os.path.join(repo_root, "hyperliquid", "hl_client.py")
-    )
-    hl_client = importlib.util.module_from_spec(spec_hl_c)
-    spec_hl_c.loader.exec_module(hl_client)
-
-    spec_hl_md = importlib.util.spec_from_file_location(
-        "hl_market_data_local", os.path.join(repo_root, "hyperliquid", "market_data.py")
-    )
-    hl_md = importlib.util.module_from_spec(spec_hl_md)
-    spec_hl_md.loader.exec_module(hl_md)
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    hl_client = load_local_module(hl_dir, "hl_client", module_key="hl_client_local", reload=True)
+    hl_md = load_local_module(hl_dir, "market_data", module_key="hl_market_data_local", reload=True)
 
     # 1. Binance market_data: non-ASCII digits and invalid symbols
     with pytest.raises(ValueError, match="unsupported Binance interval"):
@@ -2671,19 +2569,13 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
     assert t212_ipo._cmd_find_ticker(None, "   ") == 1  # type: ignore[arg-type]
 
     # 5. kraken_bot._cmd_find_pair and hyperliquid/strategy.py state_path_for & reconcile hardening
-    import importlib.util
+    from botcore import load_local_module
     from kraken import kraken_bot
     assert kraken_bot._cmd_find_pair(None, "   ") == 1  # type: ignore[arg-type]
     assert kraken_bot._cmd_find_pair(None, True) == 1  # type: ignore[arg-type]
 
-    import sys
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec_hl_s = importlib.util.spec_from_file_location(
-        "hl_strategy_local", os.path.join(repo_root, "hyperliquid", "strategy.py")
-    )
-    hl_strat = importlib.util.module_from_spec(spec_hl_s)
-    sys.modules[spec_hl_s.name] = hl_strat
-    spec_hl_s.loader.exec_module(hl_strat)
+    hl_strat = load_local_module(os.path.join(repo_root, "hyperliquid"), "strategy", module_key="hl_strategy_local", reload=True)
     assert hl_strat.state_path_for(True, "---").endswith(".state_unknown_long.json")  # type: ignore[arg-type]
     hl_s_inst = hl_strat.Strategy(None, "HYPE", hl_strat.StratParams(), dry_run=True, replay_mode=True)
     assert hl_s_inst.reconcile(float("nan")) is False
@@ -2692,20 +2584,15 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
 
 
 def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
-    import importlib.util
     import json
     import os
-    import sys
+    from botcore import load_local_module
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(repo_root, "hyperliquid")
 
     # 1. hyperliquid/signals.py rejects fractional float block/point counts
-    spec_hl_pa = importlib.util.spec_from_file_location(
-        "hl_pa_local", os.path.join(repo_root, "hyperliquid", "signals.py")
-    )
-    hl_pa = importlib.util.module_from_spec(spec_hl_pa)
-    sys.modules[spec_hl_pa.name] = hl_pa
-    spec_hl_pa.loader.exec_module(hl_pa)
+    hl_pa = load_local_module(hl_dir, "signals", module_key="hl_pa_local", reload=True)
     ts = [i * 3600 for i in range(100)]
     px = [100.0 + i * 0.5 for i in range(100)]
     assert hl_pa.detect_long_term_trend(ts, px, min_consecutive_blocks=1.5) is None
@@ -2713,12 +2600,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert hl_pa.detect_long_term_trend(ts, px, min_points_per_window=2.5) is None
 
     # 2. hyperliquid/replay.py sanitizes currency on empty OHLC
-    spec_hl_rp = importlib.util.spec_from_file_location(
-        "hl_rp_local", os.path.join(repo_root, "hyperliquid", "replay.py")
-    )
-    hl_rp = importlib.util.module_from_spec(spec_hl_rp)
-    sys.modules[spec_hl_rp.name] = hl_rp
-    spec_hl_rp.loader.exec_module(hl_rp)
+    hl_rp = load_local_module(hl_dir, "replay", module_key="hl_rp_local", reload=True)
     assert hl_rp.run_replay([], [], [], [], {"currency": " usdc "})["account_currency"] == "USDC"
     assert hl_rp.run_replay([], [], [], [], {"currency": True})["account_currency"] == "USDC"
     assert hl_rp.run_replay([], [], [], [], {"currency": None})["account_currency"] == "USDC"
@@ -2763,12 +2645,7 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert bt_p.entry_amount > 0
 
     # 6. 212trading/price_alert.py push rejects blank/whitespace topic
-    spec_pa = importlib.util.spec_from_file_location(
-        "t212_pa_local", os.path.join(repo_root, "212trading", "price_alert.py")
-    )
-    t212_pa = importlib.util.module_from_spec(spec_pa)
-    sys.modules[spec_pa.name] = t212_pa
-    spec_pa.loader.exec_module(t212_pa)
+    t212_pa = load_local_module(os.path.join(repo_root, "212trading"), "price_alert", module_key="t212_pa_local", reload=True)
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
     # 7. cachepaths and kraken backtest_trail
@@ -2887,18 +2764,19 @@ def test_root_modules_batch4_hardening():
 
 
 def test_batch5_hardening():
-    import importlib.util
+    from pathlib import Path
     import numpy as np
+    from botcore import load_local_module
     from intelligence.internal.state import survival
     from notify_engine import server as notify_server
     import priceAnalysis
 
-    from pathlib import Path
-    hl_pa_path = Path(__file__).resolve().parent.parent / "hyperliquid" / "signals.py"
-    spec = importlib.util.spec_from_file_location("hl_price_analysis_local", hl_pa_path)
-    assert spec is not None and spec.loader is not None
-    hl_pa = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hl_pa)
+    hl_pa = load_local_module(
+        str(Path(__file__).resolve().parent.parent / "hyperliquid"),
+        "signals",
+        module_key="hl_price_analysis_local",
+        reload=True,
+    )
 
     # 1. survival.block_slopes, episodes, survival_report with bad inputs and duplicate timestamps
     bt, bs = survival.block_slopes("bad", "bad", 24, 8)
@@ -5497,11 +5375,9 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
         KrakenClient._clean_txid("+0.0")
 
     # 2. HLClient strips coin/pair/token whitespace and cancel accepts '12345.0'
-    spec_hl_c = importlib.util.spec_from_file_location(
-        "hl_client_b40", os.path.join(repo_root, "hyperliquid", "hl_client.py")
-    )
-    hl_c_mod = importlib.util.module_from_spec(spec_hl_c)
-    spec_hl_c.loader.exec_module(hl_c_mod)
+    from botcore import load_local_module
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    hl_c_mod = load_local_module(hl_dir, "hl_client", module_key="hl_client_b40", reload=True)
     hl_inst = object.__new__(hl_c_mod.HLClient)
     hl_inst._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
     hl_inst.address = "0x123"
@@ -5522,12 +5398,7 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     assert hl_inst.cancel(" HYPE ", "12345.0") is True  # type: ignore[arg-type]
 
     # 3. hyperliquid/strategy.py _sanitize_state normalizes order amount and ts
-    spec_hl_s = importlib.util.spec_from_file_location(
-        "hl_strat_b40", os.path.join(repo_root, "hyperliquid", "strategy.py")
-    )
-    hl_s_mod = importlib.util.module_from_spec(spec_hl_s)
-    sys.modules[spec_hl_s.name] = hl_s_mod
-    spec_hl_s.loader.exec_module(hl_s_mod)
+    hl_s_mod = load_local_module(hl_dir, "strategy", module_key="hl_strat_b40", reload=True)
     st_hl = hl_s_mod._sanitize_state({
         "orders": [{"oid": 10, "role": "open", "px": "20.0", "sz": "1.5", "amount": "-50", "ts": "1000.5"}]
     })
@@ -5549,12 +5420,7 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     assert st_t212["orders"][0]["amount"] == pytest.approx(100.0)
     assert st_t212["orders"][0]["ts"] == 0.0
 
-    spec_t212_rp = importlib.util.spec_from_file_location(
-        "t212_rp_b40", os.path.join(repo_root, "212trading", "replay.py")
-    )
-    t212_rp_mod = importlib.util.module_from_spec(spec_t212_rp)
-    sys.modules[spec_t212_rp.name] = t212_rp_mod
-    spec_t212_rp.loader.exec_module(t212_rp_mod)
+    t212_rp_mod = load_local_module(os.path.join(repo_root, "212trading"), "replay", module_key="t212_rp_b40", reload=True)
     p_t212 = t212_rp_mod._strat.StratParams(
         currency="USD",
         entry_amount=100.0,

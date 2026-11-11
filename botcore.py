@@ -1116,6 +1116,7 @@ def ensure_local_module_priority(directory: str, *module_names: str) -> None:
 
 _AMBIGUOUS_LOCAL_MODULES = (
     "strategy", "market_data", "replay", "common", "hl_client", "t212_client", "ipo_common",
+    "notify", "ipo_notify", "signals",
 )
 
 _LEGACY_ARCHIVE_DIR: str | None = None
@@ -1193,15 +1194,22 @@ def load_local_module(
             spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
             mod = importlib.util.module_from_spec(spec)
             setattr(mod, "__mptrade_exec_done__", False)
-            if register:
-                sys.modules[key] = mod
+            prev_key_mod = sys.modules.get(key)
+            sys.modules[key] = mod
             try:
                 spec.loader.exec_module(mod)
                 setattr(mod, "__mptrade_exec_done__", True)
             except Exception:
-                if register:
+                if prev_key_mod is None:
                     sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = prev_key_mod
                 raise
+            if not register:
+                if prev_key_mod is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = prev_key_mod
             succeeded = True
             return mod
         finally:

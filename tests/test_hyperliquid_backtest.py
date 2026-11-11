@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 
@@ -11,17 +10,14 @@ _HL_DIR = os.path.join(_ROOT, "hyperliquid")
 if _HL_DIR not in sys.path:
     sys.path.insert(0, _HL_DIR)
 
-spec = importlib.util.spec_from_file_location("hl_backtest_module", os.path.join(_HL_DIR, "backtest.py"))
-hl_backtest = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(hl_backtest)
+from botcore import load_local_module  # noqa: E402
 
-spec_replay = importlib.util.spec_from_file_location("hl_replay_module", os.path.join(_HL_DIR, "replay.py"))
-hl_replay = importlib.util.module_from_spec(spec_replay)
-spec_replay.loader.exec_module(hl_replay)
+hl_backtest = load_local_module(_HL_DIR, "backtest", module_key="hl_backtest_module", reload=True)
+hl_replay = load_local_module(_HL_DIR, "replay", module_key="hl_replay_module", reload=True)
 make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
-from kraken.backtest_trail import simulate_trail
+from kraken.backtest_trail import simulate_trail  # noqa: E402
 
 
 def test_hyperliquid_simulate_stop_loss_long():
@@ -330,15 +326,8 @@ def test_validate_replay_metrics_across_all_venues():
     from offline.backtests.metrics import validate_replay_metrics
     from strategies.spot_engine import StratParams as KrakenStratParams
     from strategies import spot_replay as kr_replay
-    import importlib.util
 
-    t212_spec = importlib.util.spec_from_file_location(
-        "t212_replay_validation_test",
-        os.path.join(_ROOT, "212trading", "replay.py"),
-    )
-    t212_mod = importlib.util.module_from_spec(t212_spec)
-    sys.modules[t212_spec.name] = t212_mod
-    t212_spec.loader.exec_module(t212_mod)
+    t212_mod = load_local_module(os.path.join(_ROOT, "212trading"), "replay", module_key="t212_replay_validation_test", reload=True)
 
     ohlc = [
         (100.0, 100.5, 99.5, 100.0),
@@ -407,9 +396,7 @@ def test_hyperliquid_market_data_fetchers():
     import json
     from unittest.mock import MagicMock, patch
 
-    _spec = importlib.util.spec_from_file_location("hl_md_test", os.path.join(_HL_DIR, "market_data.py"))
-    _hl_md = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_hl_md)
+    _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_test", reload=True)
     fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
     fetch_funding_history = _hl_md.fetch_funding_history
 
@@ -449,12 +436,9 @@ def test_hyperliquid_market_data_fetchers():
 def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
     import json
     from unittest.mock import patch
-    import importlib.util
-    _wf_spec = importlib.util.spec_from_file_location(
-        "hl_wf_baseline", os.path.join(_ROOT, "offline", "runners", "hyperliquid_walk_forward_baseline.py")
+    _wf_mod = load_local_module(
+        os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
-    _wf_mod = importlib.util.module_from_spec(_wf_spec)
-    _wf_spec.loader.exec_module(_wf_mod)
 
     fake_records = [
         {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
@@ -484,12 +468,9 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
 def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
     import json
     from unittest.mock import patch
-    import importlib.util
-    _wf_spec = importlib.util.spec_from_file_location(
-        "hl_wf_baseline", os.path.join(_ROOT, "offline", "runners", "hyperliquid_walk_forward_baseline.py")
+    _wf_mod = load_local_module(
+        os.path.join(_ROOT, "offline", "runners"), "hyperliquid_walk_forward_baseline", module_key="hl_wf_baseline", reload=True
     )
-    _wf_mod = importlib.util.module_from_spec(_wf_spec)
-    _wf_spec.loader.exec_module(_wf_mod)
 
     fake_records = [
         {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
@@ -692,9 +673,7 @@ def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
 
 
 def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
-    spec_sig = importlib.util.spec_from_file_location("hl_sig_module", os.path.join(_HL_DIR, "signals.py"))
-    signals = importlib.util.module_from_spec(spec_sig)
-    spec_sig.loader.exec_module(signals)
+    signals = load_local_module(_HL_DIR, "signals", module_key="hl_sig_module", reload=True)
     price_analysis = signals
 
     class FakeCandleClient:
@@ -736,9 +715,7 @@ def test_walk_forward_compare_preserves_zero_fee():
 
 def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
     import types
-    hl_client_spec = importlib.util.spec_from_file_location("hl_client_test_mod", os.path.join(_HL_DIR, "hl_client.py"))
-    hl_client_mod = importlib.util.module_from_spec(hl_client_spec)
-    hl_client_spec.loader.exec_module(hl_client_mod)
+    hl_client_mod = load_local_module(_HL_DIR, "hl_client", module_key="hl_client_test_mod", reload=True)
 
     dummy = object.__new__(hl_client_mod.HLClient)
     dummy._meta_cache = {}
@@ -837,9 +814,7 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     from unittest.mock import MagicMock, patch
     from providers.market_api import clean_order_id
 
-    _spec = importlib.util.spec_from_file_location("hl_md_case_test", os.path.join(_HL_DIR, "market_data.py"))
-    _hl_md = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_hl_md)
+    _hl_md = load_local_module(_HL_DIR, "market_data", module_key="hl_md_case_test", reload=True)
 
     fake_candles = [
         {"t": 1700000000000, "T": 1700003599999, "s": "HYPE", "i": "1h",

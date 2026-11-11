@@ -1397,14 +1397,11 @@ def test__sanitize_t212_state_parses_string_boolean_flags_false_false_and_iter14
 
 def test_212trading_analyze_volatility_py_pct_pullbacks_iter150_s2():
     """[ITER150 #2] 212trading/analyze_volatility.py pct & pullbacks."""
-    import importlib.util
     import os
+    from botcore import load_local_module
     # 2. 212trading/analyze_volatility.py pct & pullbacks
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    av_spec = importlib.util.spec_from_file_location("t212_av_t150", os.path.join(root, "212trading", "analyze_volatility.py"))
-    av_mod = importlib.util.module_from_spec(av_spec)
-    assert av_spec and av_spec.loader
-    av_spec.loader.exec_module(av_mod)
+    av_mod = load_local_module(os.path.join(root, "212trading"), "analyze_volatility", module_key="t212_av_t150", reload=True)
 
     assert av_mod.pct(True, 100.0) == 0.0
     assert av_mod.pct(100.0, float("nan")) == 0.0
