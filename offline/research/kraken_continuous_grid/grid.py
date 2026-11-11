@@ -259,15 +259,19 @@ def _row_matches_current_spec(r: dict, assets_set: set[str]) -> bool:
     if r.get("bars") != len(bars):
         return False
     start_ts, end_ts = _bar_ts_bounds(bars)
-    if "start_ts" in r and r.get("start_ts") != start_ts:
-        return False
-    if "end_ts" in r and r.get("end_ts") != end_ts:
+    if r.get("start_ts") != start_ts or r.get("end_ts") != end_ts:
         return False
     return _matches_known_spec(r, CONFIGS)
 
 
 if __name__ == "__main__":
+    if not os.path.isdir(DATA):
+        print(f"[grid] ERROR: data directory missing: {DATA}. Run fetch_data.py first.", file=sys.stderr, flush=True)
+        sys.exit(1)
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    if not assets:
+        print(f"[grid] ERROR: no *_240m.csv files found in {DATA}. Run fetch_data.py first.", file=sys.stderr, flush=True)
+        sys.exit(1)
     assets_set = set(assets)
     for a in assets:
         load_asset(a)
@@ -294,6 +298,7 @@ if __name__ == "__main__":
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
+    valid_new_rows = 0
     with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
             p, pk = CONFIGS[r["cfg"]]
@@ -302,6 +307,11 @@ if __name__ == "__main__":
                 done_count += 1
                 row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}
                 append_jsonl_record(OUT, row)
+                if "error" not in row:
+                    valid_new_rows += 1
                 tag = "ERROR" if "error" in row else f"full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f} ({row['secs']}s)"
                 print(f"[grid] {done_count}/{len(todo)} {row['asset']:<9} {row['cfg']:<20} {tag}  [{time.time()-t0:.0f}s]", flush=True)
+    if len(done) + valid_new_rows == 0:
+        print("[grid] ERROR: 0 valid grid rows produced across all assets/configs", file=sys.stderr, flush=True)
+        sys.exit(1)
     print("[grid] done", flush=True)

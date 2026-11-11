@@ -96,10 +96,12 @@ def _finalize_markdown_report(
     *,
     label_fn=None,
     limit: int = 20,
+    write_file: bool = True,
 ) -> list[str]:
-    """Append formatted error section, write markdown report to ``out_path``, and return ``lines``."""
+    """Append formatted error section, write markdown report to ``out_path`` when ``write_file``, and return ``lines``."""
     lines.extend(_format_errors_section(errors, label_fn=label_fn, limit=limit))
-    atomic_write_text(out_path, "\n".join(lines) + "\n")
+    if write_file:
+        atomic_write_text(out_path, "\n".join(lines) + "\n")
     return lines
 
 
@@ -345,11 +347,21 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             else:
                 L.append(f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | - | - |")
 
-    _finalize_markdown_report(L, errors, os.path.join(exp, "REPORT.md"))
-    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1)
+    report_path = os.path.join(exp, "REPORT.md")
+    summary_path = os.path.join(exp, "summary.json")
+    _finalize_markdown_report(
+        L,
+        errors,
+        report_path,
+        write_file=bool(rows) or not os.path.exists(report_path),
+    )
+    if bool(rows) or not os.path.exists(summary_path):
+        atomic_write_json(summary_path, summary, indent=1)
     return L
 
 
 if __name__ == "__main__":
     lines = generate_report()
     print("\n".join(lines[:60]))
+    if len(lines) > 1 and lines[1].startswith("0 runs,"):
+        sys.exit(1)

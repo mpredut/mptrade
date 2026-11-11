@@ -148,12 +148,14 @@ def generate_report(exp_dir=None):
         ):
             L.append(f"| {v} | {bl1}/{n} | {pos1}/{n} | {med:+.1f} | {dd1:.1f} | {bl2}/{n2} | {pos2}/{n2} | {med2:+.1f} | {dd2:.1f} |")
 
+    report_path = os.path.join(exp, "REPORT.md")
     _finalize_markdown_report(
         L,
         errors,
-        os.path.join(exp, "REPORT.md"),
+        report_path,
         limit=15,
         label_fn=lambda e: f"{e.get('profile')} {e.get('variant')} {e.get('asset')}",
+        write_file=bool(valid_rows) or not os.path.exists(report_path),
     )
     return "\n".join(L) + "\n"
 
@@ -161,3 +163,5 @@ def generate_report(exp_dir=None):
 if __name__ == "__main__":
     rep = generate_report()
     print(rep)
+    if "No results found at " in rep or "\n0 runs," in rep:
+        sys.exit(1)

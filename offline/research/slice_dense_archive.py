@@ -17,6 +17,7 @@ if ROOT not in sys.path:
 from botcore import normalize_epoch_sec, safe_pos_float
 from cachepaths import cache_365_price_filename, cache_path, cache_symbol_variants
 from state_io import atomic_write_jsonl, iter_jsonl_dicts
+from strategies.replay_metrics import validate_bt_cli_token
 
 
 def ts_of(r) -> float:
@@ -42,8 +43,9 @@ def main(argv: list[str] | None = None):
     if len(args) < 2:
         print("Usage: slice_dense_archive.py <symbol> <days> [out_path]", file=sys.stderr)
         sys.exit(1)
-    symbol = str(args[0] or "").strip().upper()
-    if not symbol or "/" in symbol or "\\" in symbol or ".." in symbol:
+    try:
+        symbol = validate_bt_cli_token(args[0], "symbol").upper()
+    except ValueError:
         print(f"[slice] invalid symbol={args[0]!r}", file=sys.stderr)
         sys.exit(1)
     days = safe_pos_float(args[1], default=None)

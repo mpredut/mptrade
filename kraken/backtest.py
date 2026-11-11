@@ -27,6 +27,7 @@ from strategies.replay_metrics import (
     create_backtest_cli_parser,
     parse_bt_cli_int,
     run_cli_single_or_sweep_backtest,
+    validate_bt_cli_token,
 )
 from botcore import (
     add_store_true_cli_args,
@@ -154,6 +155,10 @@ def main() -> int:
         ap, ("--fast", "deprecated; faithful live engine rp.run_replay is always used")
     ).parse_args()
 
+    try:
+        pair_tok = validate_bt_cli_token(args.pair, "--pair", allow_slash=True).upper()
+    except ValueError as exc:
+        print(f"! {exc}"); return 1
     if args.interval <= 0:
         print("! interval must be > 0"); return 1
     if args.budget <= 0:
@@ -164,21 +169,27 @@ def main() -> int:
         print("! maxdca must be >= 0"); return 1
     if args.fee < 0 or args.sl < 0 or args.disc < 0:
         print("! fee/sl/disc must be >= 0"); return 1
+    if args.fee >= 100.0 or args.sl >= 100.0 or args.disc >= 100.0:
+        print("! fee/sl/disc must be < 100"); return 1
     if args.tp <= 0 or args.drop <= 0:
         print("! tp and drop must be > 0"); return 1
-    try:
-        if fetch_candles is _DEFAULT_FETCH_CANDLES:
-            records = fetch_ohlc_candles(args.pair, args.interval, drop_incomplete=True)
-            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
-            timestamps = [r["timestamp"] for r in records]
-        else:
-            ohlc = fetch_candles(args.pair, args.interval)
-            timestamps = None
-    except Exception as e:  # noqa: BLE001
-        print(f"! data error: {e}"); return 1
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
                 sl=args.sl, interval=args.interval)
+    try:
+        _bt_params(base)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"! config error: {exc}"); return 1
+    try:
+        if fetch_candles is _DEFAULT_FETCH_CANDLES:
+            records = fetch_ohlc_candles(pair_tok, args.interval, drop_incomplete=True)
+            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+            timestamps = [r["timestamp"] for r in records]
+        else:
+            ohlc = fetch_candles(pair_tok, args.interval)
+            timestamps = None
+    except Exception as e:  # noqa: BLE001
+        print(f"! data error: {e}"); return 1
 
     engine = "live engine (faithful)"
     return run_cli_single_or_sweep_backtest(

@@ -25,7 +25,7 @@ OUT = os.path.join(EXP, "results.jsonl")
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
 from offline.research.kraken_continuous_grid.grid import resolve_grid_workers  # noqa: E402
-from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
+from state_io import atomic_write_jsonl  # noqa: E402
 from strategies.spot_replay import (  # noqa: E402
     post_exit_peak_step_scope,
     prepare_spot_interval_params,
@@ -240,16 +240,18 @@ if __name__ == "__main__":
     os.makedirs(EXP, exist_ok=True)
     assets = sorted({a for f in os.listdir(DATA) if (a := _extract_asset_name(f)) is not None})
     if not assets:
-        print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
-        sys.exit(0)
+        print(f"[t212grid] ERROR: no CSV data files found in {DATA}. Run fetch.py first.", file=sys.stderr, flush=True)
+        sys.exit(1)
+    assets_set = set(assets)
     for a in assets:
         load(a, "1h")
         load(a, "1d")
     todo = []
     for profile in PROFILES:
         home = HOME[profile]
-        for variant in VARIANTS:
-            todo.append((profile, variant, home))
+        if home in assets_set:
+            for variant in VARIANTS:
+                todo.append((profile, variant, home))
     for profile in PROFILES:            # generalisation: every profile on every asset
         for variant in VARIANTS:
             for asset in assets:
@@ -268,7 +270,8 @@ if __name__ == "__main__":
     print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    atomic_write_jsonl(OUT, ())
+    valid_count = 0
+    rows_out: list[dict] = []
     with Pool(workers) as pool:
         for r in pool.imap(task, canon_todo):
             p, pk = params_for(r["profile"], r["variant"])
@@ -278,8 +281,18 @@ if __name__ == "__main__":
                 row = r if idx == 0 and (al_prof, al_var) == (r["profile"], r["variant"]) else {
                     **r, "profile": al_prof, "variant": al_var, "secs": 0.0
                 }
-                append_jsonl_record(OUT, row)
+                rows_out.append(row)
+                if "error" not in row and ("1h" in row or "1d" in row):
+                    valid_count += 1
                 err_lines = str(row.get("error") or "").strip().splitlines()
                 tag = ("ERROR " + (err_lines[-1] if err_lines else "unknown")) if "error" in row else \
                     f"1h {row.get('1h', {}).get('ret')} 1d {row.get('1d', {}).get('ret')} ({row.get('secs')}s)"
                 print(f"[t212grid] {done_count}/{len(todo)} {row['profile']} {row['variant']:<16} {row['asset']:<6} {tag} [{time.time()-t0:.0f}s]", flush=True)
+    if valid_count == 0:
+        print(
+            "[t212grid] ERROR: 0 valid grid rows produced; refusing to overwrite results.jsonl",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(1)
+    atomic_write_jsonl(OUT, rows_out)

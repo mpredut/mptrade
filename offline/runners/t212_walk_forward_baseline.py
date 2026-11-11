@@ -36,6 +36,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     load_venue_replay_module,
     parse_cli_float,
     resolve_window_sizes,
+    validate_bt_cli_token,
 )
 
 t212_replay = load_venue_replay_module("t212", "t212_wf_replay")
@@ -50,12 +51,7 @@ def periods_per_year(interval_minutes: int) -> float:
 
 
 def _validate_safe_token(value: str, label: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{label} must be a non-empty string")
-    tok = value.strip()
-    if not tok or "/" in tok or "\\" in tok or ".." in tok:
-        raise ValueError(f"invalid {label}: {value!r}")
-    return tok
+    return validate_bt_cli_token(value, label)
 
 
 def fx_quote(currency: str) -> tuple[str, bool]:

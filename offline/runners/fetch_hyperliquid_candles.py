@@ -23,6 +23,7 @@ from offline.backtests.evaluation import (
     load_venue_module,
     parse_intervals,
     parse_optional_lookback_days,
+    validate_bt_cli_token,
 )
 
 _hl_md = load_venue_module("hyperliquid", "market_data.py", "local_hl_market_data")
@@ -119,8 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.lookback_days = parse_optional_lookback_days(parser, args.lookback_days)
     for label, tok in (("--token", args.token), ("--quote", args.quote)):
-        if not isinstance(tok, str) or not tok.strip() or "/" in tok or "\\" in tok or ".." in tok:
-            parser.error(f"invalid {label}: {tok!r}")
+        try:
+            validate_bt_cli_token(tok, label)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
     end_ms = safe_int(generated_at.timestamp() * 1000, 0)

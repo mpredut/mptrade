@@ -13,10 +13,10 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 export GRID_OUT="$OUT"
 cd "$ROOT"
-rm -f "$OUT/results.jsonl" "$OUT/results2.jsonl" "$OUT/results3.jsonl"
 export WORKERS="${WORKERS:-2}"
 
 "$PYTHON_BIN" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1
+rm -f "$OUT/results.jsonl" "$OUT/results2.jsonl" "$OUT/results3.jsonl"
 for sfx in "" 2 3; do
     "$PYTHON_BIN" "$HERE/grid${sfx}.py" > "$OUT/grid${sfx}.log" 2>&1
     "$PYTHON_BIN" "$HERE/report${sfx}.py" > "$OUT/report${sfx}.log" 2>&1

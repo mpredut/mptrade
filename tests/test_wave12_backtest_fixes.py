@@ -405,7 +405,12 @@ def test_run_backtest_cycle_invalid_mode_and_pilot_disabled(tmp_path: Path) -> N
     assert bad_proc.returncode == 2
     assert "invalid mode" in bad_proc.stderr
 
-    env = dict(**{"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "PILOT_DISABLED": "true"})
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "PILOT_DISABLED": "true",
+        "BACKTEST_CYCLE_LOCK": str(tmp_path / "cycle.lock"),
+    }
     disabled_proc = subprocess.run(
         ["bash", str(script), "local"],
         capture_output=True,

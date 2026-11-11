@@ -43,6 +43,7 @@ from offline.backtests.evaluation import (
     parse_dataset_specs,
     parse_intervals,
     parse_optional_lookback_days,
+    validate_bt_cli_token,
 )
 from offline.runners.fetch_hyperliquid_candles import _hl_md, resolve_spot_pair
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -109,15 +110,16 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_isolated_hl_cfg(
             HL_DIR, config_path=args.config_file, env_path=args.env_file,
         )
-        coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
-        if not coin or "/" in coin or "\\" in coin or ".." in coin:
-            parser.error(f"Invalid coin: {coin!r}")
+        coin = validate_bt_cli_token(args.coin or required_env("HL_COIN", env=cfg), "coin").upper()
         direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
         if direction not in ("long", "short"):
             parser.error(f"Invalid direction: {direction!r}")
         fee_pct = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
-        if safe_nonneg_float(fee_pct, default=None) is None:
+        fee_val = safe_nonneg_float(fee_pct, default=None)
+        if fee_val is None:
             parser.error("--fee cannot be negative")
+        if fee_val >= 100.0:
+            parser.error("--fee must be < 100")
 
         if args.engine == "spot":
             strat_params = SpotStratParams.from_env(env=cfg)

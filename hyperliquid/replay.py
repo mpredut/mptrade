@@ -47,6 +47,22 @@ from strategies.replay_execution import (  # noqa: E402
 from strategies.replay_metrics import round_metric  # noqa: E402
 
 
+def _to_funding_ms(t_raw: int | float | None) -> float | None:
+    t_val = safe_float(t_raw, default=None)
+    if t_val is None:
+        return None
+    if 0 < t_val < 10_000_000_000:
+        t_val *= 1000.0
+    return t_val
+
+
+def _lookup_sorted_funding_ms(fund_ts: list[float], fund_rates: list[float], t_ms_norm: float) -> float:
+    if not fund_ts:
+        return 0.0
+    idx = bisect.bisect_right(fund_ts, t_ms_norm) - 1
+    return fund_rates[idx] if idx >= 0 else 0.0
+
+
 def _normalize_funding_series(fund: list[tuple[int, float]] | None) -> tuple[list[float], list[float]]:
     if not fund:
         return [], []
@@ -54,11 +70,9 @@ def _normalize_funding_series(fund: list[tuple[int, float]] | None) -> tuple[lis
     for item in fund:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        ts_f = safe_float(item[0], default=None)
+        ts_f = _to_funding_ms(item[0])
         rate_f = safe_float(item[1], default=None)
         if ts_f is not None and rate_f is not None:
-            if 0 < ts_f < 10_000_000_000:
-                ts_f *= 1000.0
             clean_fund.append((ts_f, rate_f))
     if not clean_fund:
         return [], []
@@ -70,13 +84,10 @@ def _normalize_funding_series(fund: list[tuple[int, float]] | None) -> tuple[lis
 def _funding_rate_from_sorted(fund_ts: list[float], fund_rates: list[float], t_ms: int | float) -> float:
     if not fund_ts:
         return 0.0
-    t_val = safe_float(t_ms, default=None)
+    t_val = _to_funding_ms(t_ms)
     if t_val is None:
         return 0.0
-    if 0 < t_val < 10_000_000_000 and fund_ts[-1] >= 10_000_000_000:
-        t_val *= 1000.0
-    idx = bisect.bisect_right(fund_ts, t_val) - 1
-    return fund_rates[idx] if idx >= 0 else 0.0
+    return _lookup_sorted_funding_ms(fund_ts, fund_rates, t_val)
 
 
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
@@ -247,22 +258,20 @@ def _run_once(
     f_ts = fund_ts or []
     f_rates = fund_rates or []
 
-    def _bar_funding_rate_sum(t_ms_raw: int | float) -> float:
+    def _bar_funding_rate_sum(t_ms_raw: int | float | None) -> float:
         if not f_ts:
             return 0.0
-        t_val = safe_float(t_ms_raw, default=None)
+        t_val = _to_funding_ms(t_ms_raw)
         if t_val is None:
             return 0.0
-        if 0 < t_val < 10_000_000_000 and f_ts[-1] >= 10_000_000_000:
-            t_val *= 1000.0
-        if eff_bar_minutes <= 60.0 or t_val <= 0:
-            return _funding_rate_from_sorted(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
+        if eff_bar_minutes <= 60.0 or t_val < 0:
+            return _lookup_sorted_funding_ms(f_ts, f_rates, t_val) * (eff_bar_minutes / 60.0)
         rem_hours = eff_bar_minutes / 60.0
         acc = 0.0
         hour_idx = 0
         while rem_hours > 1e-9:
             weight = min(1.0, rem_hours)
-            acc += _funding_rate_from_sorted(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
+            acc += _lookup_sorted_funding_ms(f_ts, f_rates, t_val + hour_idx * 3_600_000.0) * weight
             rem_hours -= weight
             hour_idx += 1
         return acc
@@ -360,7 +369,7 @@ def _run_once(
         h = require_pos_float(ohlc[i][1], "high")
         l = require_pos_float(ohlc[i][2], "low")
         c = require_pos_float(ohlc[i][3], "close")
-        t_ms = ts[i] if ts and i < len(ts) else 0
+        t_ms = ts[i] if ts is not None and i < len(ts) else None
 
         if liquidated:
             equity_curve.append(0.0)
@@ -507,8 +516,11 @@ def _run_once(
         # 5. Strategy decisions at bar close
         signal_val = sig[i] if sig and i < len(sig) else (None if strategy.p.signal_gate else "__any__")
         cycle_before_step = strategy.s.get("cycles_completed", 0)
+        held_before_step = strategy.s["qty"]
         strategy.step(c, signal=signal_val)
         if strategy.s.get("cycles_completed", 0) > cycle_before_step:
+            if held_before_step > dust_eps:
+                turnover_notional += held_before_step * c
             _record_closed_cycle()
             fills += 1
 

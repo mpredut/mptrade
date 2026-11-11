@@ -23,7 +23,7 @@ from offline.backtests.datasets import dataset_metadata
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
-from strategies.replay_metrics import validate_replay_metrics
+from strategies.replay_metrics import validate_bt_cli_token, validate_replay_metrics
 from strategies.spot_replay import (
     make_spot_replay_adapter,
     prepare_spot_interval_params,
@@ -480,8 +480,12 @@ def build_execution_model_from_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> ExecutionModel:
     """Validate walk-forward window CLI flags and construct ExecutionModel."""
-    if hasattr(args, "fee") and args.fee is not None and safe_nonneg_float(args.fee, default=None) is None:
-        parser.error("--fee cannot be negative")
+    if hasattr(args, "fee") and args.fee is not None:
+        fee_val = safe_nonneg_float(args.fee, default=None)
+        if fee_val is None:
+            parser.error("--fee cannot be negative")
+        if fee_val >= 100.0:
+            parser.error("--fee must be < 100")
     explicit_windows = (args.train, args.validation, args.test)
     if any(isinstance(value, bool) for value in (*explicit_windows, args.step)):
         parser.error("the walk-forward sizes must be positive")
@@ -603,7 +607,8 @@ def build_and_save_interval_baseline_report(
         "aggregate_test": wf_result["aggregate_test"],
         "folds": wf_result["folds"],
     }
-    report_path = output_dir / f"{symbol_or_coin}_{interval}m_baseline.json"
+    safe_sym = validate_bt_cli_token(symbol_or_coin, "symbol_or_coin", allow_slash=True).replace("/", "_")
+    report_path = output_dir / f"{safe_sym}_{interval}m_baseline.json"
     atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
     print(
         f"[{symbol_or_coin} {interval}m] Verdict: {evidence['verdict']} | "

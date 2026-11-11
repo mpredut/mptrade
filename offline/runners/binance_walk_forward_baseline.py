@@ -32,6 +32,7 @@ from offline.backtests.evaluation import (
     parse_dataset_specs,
     parse_optional_lookback_days,
     parse_walk_forward_cli_args,
+    validate_bt_cli_token,
 )
 from providers.market_api import api as mkt
 from strategies.spot_replay import (
@@ -79,9 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
 
-    symbol = (args.symbol or cfg.get("SYMBOL") or cfg.get("BINANCE_PAIR") or "BTCUSDT").strip().upper()
-    if not symbol or "/" in symbol or "\\" in symbol or ".." in symbol:
-        parser.error(f"Invalid symbol: {symbol!r}")
+    try:
+        symbol = validate_bt_cli_token(
+            args.symbol or cfg.get("SYMBOL") or cfg.get("BINANCE_PAIR") or "BTCUSDT",
+            "symbol",
+        ).upper()
+    except ValueError as exc:
+        parser.error(str(exc))
 
     has_explicit_strat = any(k.startswith("STRAT_") for k in cfg)
     try:

@@ -40,6 +40,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     parse_dataset_specs,
     parse_walk_forward_cli_args,
     resolve_window_sizes,
+    validate_bt_cli_token,
 )
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
@@ -97,16 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
         if not pair:
             parser.error("missing pair: --pair or KRAKEN_PAIR")
-        if (
-            pair.startswith("-")
-            or ".." in pair
-            or "\\" in pair
-            or pair.startswith("/")
-            or pair.endswith("/")
-            or pair.count("/") > 1
-            or any(ch.isspace() for ch in pair)
-        ):
-            parser.error(f"invalid pair: {pair!r}")
+        pair = validate_bt_cli_token(pair, "pair", allow_slash=True).upper()
         params = StratParams.from_env(cfg)
         supplied = parse_dataset_specs(args.dataset)
     except (OSError, ValueError, KeyError) as exc:

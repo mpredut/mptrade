@@ -11,10 +11,11 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
-from botcore import bool_env, int_env, safe_float
+from botcore import bool_env, safe_float
 from offline.research.monitortrades_backtest.run_replay_backtest import (
     SYMBOLS,
     _TREND_TAPE_CACHE,
+    _resolve_replay_worker_cap,
     prewarm_trend_series,
     run_symbol,
 )
@@ -86,8 +87,7 @@ def main():
             prewarm_trend_series(sym, series)
             _WORKER_SERIES.clear()
             _WORKER_SERIES[sym] = series
-            raw_w = int_env("WORKERS")
-            max_w = raw_w if (raw_w is not None and raw_w > 0) else min(4, os.cpu_count() or 1)
+            max_w = _resolve_replay_worker_cap(use_365)
             n_workers = min(len(sym_tasks), max_w)
             try:
                 if n_workers > 1 and can_fork:
@@ -127,12 +127,14 @@ def main():
         print("\n\n" + "=" * 60)
         print("           BACKTEST COMPARISON SUMMARY")
         print("=" * 60)
+        compared_count = 0
         for sym in SYMBOLS._SECTIONS:
             prop = results[variants[0][0]].get(sym) or {}
             base = results[variants[1][0]].get(sym) or {}
             prop_net = safe_float(prop.get("net"), default=None) if isinstance(prop, dict) else None
             base_net = safe_float(base.get("net"), default=None) if isinstance(base, dict) else None
             if prop_net is not None and base_net is not None:
+                compared_count += 1
                 diff = prop_net - base_net
                 print(f"\n{sym}:")
                 print(f"  Proposed (Break ON) : {prop_net:.2f} USD ({prop.get('sells', 0)} sells)")
@@ -140,6 +142,9 @@ def main():
                 print(f"  Difference          : {'+' if diff >= 0 else ''}{diff:.2f} USD ({'OUTPERFORMS' if diff > 0 else 'UNDERPERFORMS' if diff < 0 else 'EQUAL'})")
             else:
                 print(f"\n{sym}: Incomplete data.")
+        if SYMBOLS._SECTIONS and compared_count == 0:
+            print("[compare_sl_variants] ERROR: no symbols produced valid baseline/proposed comparisons", file=sys.stderr)
+            sys.exit(1)
     finally:
         os.chdir(orig_cwd)
 

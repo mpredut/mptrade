@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch Yahoo 1h (last ~730 days) and 1d (10 years) regular-session bars for the grid."""
-import os, sys, time
+import argparse, os, sys, time
 from pathlib import Path
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -34,7 +34,11 @@ def fetch(sym, rng, itv):
 
 
 if __name__ == "__main__":
-    missing_only = "--missing-only" in sys.argv[1:]
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--missing-only", action="store_true", help="skip symbols with an existing >32-bar CSV")
+    ap.add_argument("--force", action="store_true", help="re-fetch all symbols regardless of existing CSVs")
+    cli_args = ap.parse_args()
+    missing_only = bool(cli_args.missing_only and not cli_args.force)
     os.makedirs(DATA, exist_ok=True)
     attempted = 0
     succeeded = 0
@@ -50,6 +54,12 @@ if __name__ == "__main__":
                     print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
                     continue
                 validated = validate_dataset(candles)
+                if len(validated) <= 32:
+                    print(
+                        f"[fetch] {sym} {itv}: insufficient bars ({len(validated)} <= 32) -- refusing overwrite",
+                        flush=True,
+                    )
+                    continue
                 save_dataset(validated, Path(csv_path))
                 succeeded += 1
                 print(f"[fetch] {sym} {itv}: {len(validated)} bars "

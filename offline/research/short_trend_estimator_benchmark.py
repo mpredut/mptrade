@@ -50,6 +50,7 @@ from botcore import (
 )
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 from state_io import atomic_write_bytes, read_jsonl_dicts
+from strategies.replay_metrics import validate_bt_cli_token
 
 D = get_cachedb_dir()
 N_WIN = 222
@@ -62,8 +63,35 @@ def _set_data_dir(path):
     D = path
 
 
+def _extract_valid_npz_arrays(z) -> tuple[np.ndarray, np.ndarray] | None:
+    raw_ts = z["ts"]
+    raw_px = z["px"]
+    if raw_ts.ndim != 1 or raw_px.ndim != 1 or len(raw_ts) != len(raw_px) or len(raw_ts) == 0:
+        return None
+    ts_arr = np.asarray(raw_ts, dtype=np.float64)
+    px_arr = np.asarray(raw_px, dtype=np.float64)
+    mask = np.isfinite(ts_arr) & (ts_arr >= 0.0) & np.isfinite(px_arr) & (px_arr > 0.0)
+    if not np.any(mask):
+        return None
+    if not np.all(mask):
+        ts_arr = ts_arr[mask]
+        px_arr = px_arr[mask]
+    if len(ts_arr) > 1 and np.any(np.diff(ts_arr) <= 0.0):
+        order = np.argsort(ts_arr, kind="stable")
+        ts_arr = ts_arr[order]
+        px_arr = px_arr[order]
+        keep = np.concatenate(([True], np.diff(ts_arr) > 0.0))
+        ts_arr = ts_arr[keep]
+        px_arr = px_arr[keep]
+    return ts_arr, px_arr
+
+
 def load_series(sym):
     """Return (ts_sec, px) from <D>/cache_365_price_<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
+    try:
+        sym = validate_bt_cli_token(sym, "symbol").upper()
+    except ValueError:
+        return np.empty(0), np.empty(0)
     npz_365 = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
     npz_sparse = str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.npz")))
     ts, px = [], []
@@ -84,7 +112,9 @@ def load_series(sym):
             if os.path.exists(existing_npz):
                 try:
                     with np.load(existing_npz) as z:
-                        return z["ts"], z["px"]
+                        valid = _extract_valid_npz_arrays(z)
+                        if valid is not None:
+                            return valid
                 except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
                     continue
         return np.empty(0), np.empty(0)
@@ -93,7 +123,9 @@ def load_series(sym):
         try:
             if os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path):
                 with np.load(npz_target) as z:
-                    return z["ts"], z["px"]
+                    valid = _extract_valid_npz_arrays(z)
+                    if valid is not None:
+                        return valid
         except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
             pass
 
@@ -269,6 +301,11 @@ def _safe_mean(arr) -> float:
     return safe_float(np.mean(arr).item(), default=math.nan) if len(arr) > 0 else math.nan
 
 
+def _safe_nanmean(vals) -> float:
+    finite = [fv for x in vals if (fv := safe_float(x, default=None)) is not None]
+    return safe_float(np.mean(finite).item(), default=math.nan) if finite else math.nan
+
+
 def evaluate(sym):
     sys.stderr.write(f"[bench] loading {sym}...\n")
     sys.stderr.flush()
@@ -391,9 +428,16 @@ def main():
     ap.add_argument("--data-dir", default=D, help="directory with cache_365_price_<SYM>.jsonl (default: cachedb/)")
     ap.add_argument("symbols", nargs="*", default=["BTCUSDC", "TAOUSDC", "ARBUSDC"])
     args = ap.parse_args()
+    syms: list[str] = []
+    for raw_sym in args.symbols:
+        try:
+            syms.append(validate_bt_cli_token(raw_sym, "symbol").upper())
+        except ValueError as exc:
+            ap.error(str(exc))
+    if not syms:
+        ap.error("at least one symbol is required")
     D = args.data_dir
     with temporary_environ(SHORT_TREND_BENCH_DATA_DIR=D):
-        syms = args.symbols
         n_workers = min(len(syms), max(1, int_env("BENCH_WORKERS") or 1))
         if n_workers <= 1:
             _set_data_dir(D)
@@ -416,6 +460,10 @@ def main():
                     if k == "raw":
                         continue
                     a.setdefault(k, []).append(v)
+    if not agg:
+        sys.stderr.write("[bench] ERROR: no symbols had sufficient tick history for evaluation\n")
+        sys.stderr.flush()
+        sys.exit(1)
     base = "LEGACY (sf+gr)/2"
     rng = np.random.default_rng(0)
     non_empty_res = [r[2] for r in results if r[2]]
@@ -460,7 +508,7 @@ def main():
     print(hdr); print("-" * len(hdr))
     rows = []
     for c, a in agg.items():
-        m = {s: {k: safe_float(np.nanmean(v).item(), default=math.nan) for k, v in a[s].items()} for s in a}
+        m = {s: {k: _safe_nanmean(v) for k, v in a[s].items()} for s in a}
         rows.append((m["OOS"]["edge"], c, m))
     row_sort_key = lambda r: (math.isnan(r[0]), -r[0] if not math.isnan(r[0]) else 0.0, r[1])
     sorted_rows = sorted(rows, key=row_sort_key)

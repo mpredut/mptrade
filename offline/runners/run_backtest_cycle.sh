@@ -39,15 +39,16 @@ if [ "$MODE" = "remote" ] || [ "$MODE" = "trigger" ]; then
 fi
 
 ONLY="${PILOT_ONLY:-}"
-exec 9>"/tmp/mptrade_backtest_cycle.lock"
-flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running -- skipping"; exit 75; }
-
 case "${PILOT_DISABLED:-0}" in
     1|true|TRUE|yes|YES|on|ON)
         echo "[cycle $(date '+%F %T')] PILOT_DISABLED=${PILOT_DISABLED} -- leaving cleanly without publishing"
         exit 0
         ;;
 esac
+
+CYCLE_LOCK="${BACKTEST_CYCLE_LOCK:-/tmp/mptrade_backtest_cycle.lock}"
+exec 9>"$CYCLE_LOCK"
+flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running -- skipping"; exit 75; }
 
 SRC_FILE="$REPO_ROOT/backtest_proposals.json"
 rm -f "$SRC_FILE"

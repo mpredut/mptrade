@@ -27,6 +27,7 @@ from strategies.replay_metrics import (
     create_backtest_cli_parser,
     parse_bt_cli_float,
     run_cli_single_or_sweep_backtest,
+    validate_bt_cli_token,
 )
 from strategies.spot_replay import scale_subbar_timeout_params
 from botcore import (
@@ -113,14 +114,20 @@ def simulate(ohlc, P):
     explicit_dca = _p_val(("dca", "dca_amount"), None)
     if explicit_dca is not None and safe_pos_float(explicit_dca, default=None) is None:
         raise ValueError("dca must be finite and positive")
+    raw_entry_pct = P.get("entry_pct")
+    if raw_entry_pct is not None and safe_pos_float(raw_entry_pct, default=None) is None:
+        raise ValueError("entry_pct must be finite and positive")
+    raw_dca_pct = P.get("dca_pct")
+    if raw_dca_pct is not None and safe_pos_float(raw_dca_pct, default=None) is None:
+        raise ValueError("dca_pct must be finite and positive")
     raw_entry = safe_pos_float(explicit_entry, default=None)
     raw_dca = safe_pos_float(explicit_dca, default=None)
     entry_pct = safe_float(
-        P.get("entry_pct"),
+        raw_entry_pct,
         default=((raw_entry / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0),
     )
     dca_pct = safe_float(
-        P.get("dca_pct"),
+        raw_dca_pct,
         default=((raw_dca / budget * 100.0) if budget > 0 and raw_dca is not None else 10.0),
     )
 
@@ -207,29 +214,38 @@ def main() -> int:
     ap.add_argument("--trail-min-profit", type=parse_bt_cli_float, default=None, help="min profit %% to arm trailing")
     args = ap.parse_args()
 
-    profile = args.profile.lower() if args.profile else "nvda"
+    try:
+        profile = validate_bt_cli_token(args.profile, "--profile").lower() if args.profile is not None else "nvda"
+        range_tok = validate_bt_cli_token(args.range, "--range")
+        interval_tok = validate_bt_cli_token(args.interval, "--interval")
+    except ValueError as exc:
+        print(f"! {exc}")
+        return 1
     cfg_file = os.path.join(T212_DIR, f"config.{profile}.env")
     if not os.path.exists(cfg_file):
         print(f"! profile config not found: {cfg_file}")
         return 1
-    cfg = _load_isolated_t212_cfg(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
-
-    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", cfg)
-    entry_pct = float_env("STRAT_ENTRY_PCT", cfg)
-    dca_pct = float_env("STRAT_DCA_PCT", cfg)
-    entry = args.entry if args.entry is not None else ((budget * entry_pct / 100.0) if entry_pct is not None else required_float_env("STRAT_ENTRY", cfg))
-    dca = args.dca if args.dca is not None else ((budget * dca_pct / 100.0) if dca_pct is not None else required_float_env("STRAT_DCA", cfg))
-    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", cfg)
-    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT", cfg)
-    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT", cfg)
-    sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", cfg)
-    fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT", cfg)
-    sym = args.sym if args.sym else (cfg.get("YAHOO_SYMBOL") or required_env("YAHOO_SYMBOL", cfg))
-
-    if args.maxdca is not None:
-        maxdca = args.maxdca
-    else:
-        maxdca, entry = parse_max_dca_buys_env(cfg, budget, entry, dca)
+    try:
+        cfg = _load_isolated_t212_cfg(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
+        budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", cfg)
+        entry_pct = float_env("STRAT_ENTRY_PCT", cfg)
+        dca_pct = float_env("STRAT_DCA_PCT", cfg)
+        entry = args.entry if args.entry is not None else ((budget * entry_pct / 100.0) if entry_pct is not None else required_float_env("STRAT_ENTRY", cfg))
+        dca = args.dca if args.dca is not None else ((budget * dca_pct / 100.0) if dca_pct is not None else required_float_env("STRAT_DCA", cfg))
+        disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", cfg)
+        drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT", cfg)
+        tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT", cfg)
+        sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", cfg)
+        fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT", cfg)
+        raw_sym = args.sym if args.sym is not None else (cfg.get("YAHOO_SYMBOL") or required_env("YAHOO_SYMBOL", cfg))
+        sym = validate_bt_cli_token(raw_sym, "--sym")
+        if args.maxdca is not None:
+            maxdca = args.maxdca
+        else:
+            maxdca, entry = parse_max_dca_buys_env(cfg, budget, entry, dca)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"! config error: {exc}")
+        return 1
 
     sl_mhdsl = args.mhdsl if args.mhdsl is not None else (
         _parse_bool_flag(cfg.get("STRAT_SL_MHDSL_ENABLED"), default=False)
@@ -240,9 +256,9 @@ def main() -> int:
     trail_pct = args.trail if args.trail is not None else (float_env("STRAT_TRAIL_PCT", cfg) or 0.0)
     trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else (float_env("STRAT_TRAIL_MIN_PROFIT_PCT", cfg) or 0.0)
 
-    bar_min = interval_minutes(args.interval)
+    bar_min = interval_minutes(interval_tok)
     if bar_min is None:
-        print(f"! unsupported interval: {args.interval}"); return 1
+        print(f"! unsupported interval: {interval_tok}"); return 1
     if budget <= 0:
         print("! budget must be > 0"); return 1
     if entry <= 0 or dca <= 0:
@@ -251,15 +267,20 @@ def main() -> int:
         print("! maxdca must be >= 0"); return 1
     if fee < 0 or sl < 0 or disc < 0 or trail_pct < 0 or trail_min_profit < 0:
         print("! fee/sl/disc/trail parameters must be >= 0"); return 1
+    if fee >= 100.0 or sl >= 100.0 or disc >= 100.0 or trail_pct >= 100.0:
+        print("! fee/sl/disc/trail parameters must be < 100"); return 1
     if tp <= 0 or drop <= 0:
         print("! tp and drop must be > 0"); return 1
-    if fetch_candles is _DEFAULT_FETCH_CANDLES:
-        records = _md_mod.fetch_yahoo_candles(sym, args.range, args.interval, drop_incomplete=True)
-        ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
-        timestamps = [r["timestamp"] for r in records]
-    else:
-        ohlc = fetch_candles(sym, args.range, args.interval)
-        timestamps = None
+    try:
+        if fetch_candles is _DEFAULT_FETCH_CANDLES:
+            records = _md_mod.fetch_yahoo_candles(sym, range_tok, interval_tok, drop_incomplete=True)
+            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+            timestamps = [r["timestamp"] for r in records]
+        else:
+            ohlc = fetch_candles(sym, range_tok, interval_tok)
+            timestamps = None
+    except Exception as exc:  # noqa: BLE001
+        print(f"! data error: {exc}"); return 1
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=bar_min,

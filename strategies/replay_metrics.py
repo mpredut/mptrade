@@ -492,6 +492,32 @@ def write_markdown_report(
     emit(f"{message_prefix} {md_path}")
 
 
+def validate_bt_cli_token(
+    value: Any,
+    label: str = "symbol",
+    *,
+    allow_slash: bool = False,
+) -> str:
+    """Validate a symbol/coin/profile/range/interval CLI token against path traversal and control chars."""
+    if not isinstance(value, str) or isinstance(value, bool):
+        raise ValueError(f"{label} must be a non-empty string")
+    tok = value.strip()
+    if (
+        not tok
+        or tok.startswith("-")
+        or ".." in tok
+        or "\\" in tok
+        or any(ch.isspace() or ord(ch) < 32 for ch in tok)
+    ):
+        raise ValueError(f"invalid {label}: {value!r}")
+    if allow_slash:
+        if tok.startswith("/") or tok.endswith("/") or tok.count("/") > 1:
+            raise ValueError(f"invalid {label}: {value!r}")
+    elif "/" in tok:
+        raise ValueError(f"invalid {label}: {value!r}")
+    return tok
+
+
 __all__ = [
     "add_common_backtest_cli_args",
     "buy_hold_pct",
@@ -505,6 +531,7 @@ __all__ = [
     "round_metric",
     "run_cli_single_or_sweep_backtest",
     "run_tp_drop_sl_sweep",
+    "validate_bt_cli_token",
     "validate_replay_metrics",
     "write_markdown_report",
 ]

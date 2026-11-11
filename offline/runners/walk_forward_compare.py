@@ -199,10 +199,21 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
+def _resolve_report_fee_pct(raw_fee: Any, default_fee: float) -> float:
+    if raw_fee is None or isinstance(raw_fee, bool):
+        return default_fee
+    fee_f = safe_float(raw_fee, default=None)
+    if fee_f is None:
+        return default_fee
+    if fee_f < 0.0 or fee_f >= 100.0:
+        raise ValueError(f"invalid fee_pct_per_leg: {raw_fee!r}")
+    return fee_f
+
+
 def _build_spot_venue_evaluator(norm_venue: str, source_report: dict, raw_params: dict, baseline_dir: Path | None):
     base_params = StratParams.from_dict(raw_params)
     raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
-    base_fee = safe_nonneg_float(raw_fee, default=_SPOT_DEFAULT_FEE_PCT[norm_venue])
+    base_fee = _resolve_report_fee_pct(raw_fee, _SPOT_DEFAULT_FEE_PCT[norm_venue])
     return base_params, base_fee, evaluate_spot_segment
 
 
@@ -216,7 +227,7 @@ def _build_hyperliquid_venue_evaluator(
     raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
     if raw_fee is None:
         raw_fee = raw_params.get("fee_pct")
-    base_fee = safe_nonneg_float(raw_fee, default=0.035)
+    base_fee = _resolve_report_fee_pct(raw_fee, 0.035)
 
     if engine == "spot":
         base_params = StratParams.from_dict(raw_params)
@@ -255,16 +266,26 @@ def _build_hyperliquid_venue_evaluator(
 def _build_t212_venue_evaluator(norm_venue: str, source_report: dict, raw_params: dict, baseline_dir: Path | None):
     t212_replay = load_venue_replay_module("t212", "t212_wf_replay")
     base_params = t212_replay._strat.StratParams.from_dict(raw_params)
-    exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
+    exec_meta = source_report.get("execution_model") if isinstance(source_report, dict) else {}
+    if not isinstance(exec_meta, dict):
+        exec_meta = {}
     raw_fee = source_report.get("fee_pct_per_leg")
     if raw_fee is None:
         raw_fee = raw_params.get("fx_fee_pct")
     if raw_fee is None:
         raw_fee = exec_meta.get("fx_fee_pct_per_leg")
-    base_fee = safe_nonneg_float(raw_fee, default=0.0)
-    fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
-    raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
-    fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
+    base_fee = _resolve_report_fee_pct(raw_fee, 0.0)
+    fx_model = source_report.get("fx_model") if isinstance(source_report, dict) and isinstance(source_report.get("fx_model"), dict) else {}
+    raw_usd_unit = fx_model.get("usd_per_unit")
+    if raw_usd_unit is not None:
+        parsed_fx_unit = safe_pos_float(raw_usd_unit, default=None)
+        if parsed_fx_unit is None or isinstance(raw_usd_unit, bool):
+            raise ValueError(f"invalid fx_model.usd_per_unit: {raw_usd_unit!r}")
+        fx_fixed = parsed_fx_unit
+    elif fx_model.get("mode") == "fixed_override":
+        raise ValueError("fixed_override fx_model requires positive usd_per_unit")
+    else:
+        fx_fixed = 1.0
     fx_invert = _parse_bool_flag(fx_model.get("invert", False), False)
     fx_records = None
     if fx_model.get("mode") == "historical_asof":
@@ -457,51 +478,65 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
 
+    fee_stress_str = (
+        DEFAULT_FEE_STRESS.get(venue, "0.16,0.26,0.35,0.50")
+        if args.fee_stress is None
+        else args.fee_stress
+    )
+    fee_tokens = split_csv(fee_stress_str)
+    if not fee_tokens:
+        parser.error("--fee-stress must specify at least one fee value in [0, 100)")
+    parsed_fees: list[float] = []
+    for fee_stripped in fee_tokens:
+        fee = safe_nonneg_float(fee_stripped, default=None)
+        if fee is None or fee >= 100.0:
+            parser.error(f"invalid fee value: {fee_stripped!r}")
+        parsed_fees.append(fee)
+
     results = {}
     candidates = hype_240_candidates() if args.candidate_set == "hype-240" else default_candidates()
     valid_param_fields = {f.name for f in dataclasses.fields(base_params.__class__)}
-    for candidate in candidates:
-        resolved = _resolve_candidate_overrides(candidate, base_params, valid_param_fields)
-        if resolved is None:
-            continue
-        resolved_overrides, resolved_desc = resolved
-        params = dataclasses.replace(base_params, **resolved_overrides)
-        windows = _candidate_windows(datasets, params, base_fee, execution, segment_fn)
-        results[candidate.name] = {
-            "description": resolved_desc,
-            "overrides": resolved_overrides,
-            "summary": summarize_test_windows(windows),
-            "by_interval": {
-                str(interval): summarize_test_windows([
-                    window for window in windows if window["interval"] == interval
-                ])
-                for interval in sorted(datasets)
-            },
-            "windows": windows,
-        }
+    try:
+        for candidate in candidates:
+            resolved = _resolve_candidate_overrides(candidate, base_params, valid_param_fields)
+            if resolved is None:
+                continue
+            resolved_overrides, resolved_desc = resolved
+            params = dataclasses.replace(base_params, **resolved_overrides)
+            windows = _candidate_windows(datasets, params, base_fee, execution, segment_fn)
+            results[candidate.name] = {
+                "description": resolved_desc,
+                "overrides": resolved_overrides,
+                "summary": summarize_test_windows(windows),
+                "by_interval": {
+                    str(interval): summarize_test_windows([
+                        window for window in windows if window["interval"] == interval
+                    ])
+                    for interval in sorted(datasets)
+                },
+                "windows": windows,
+            }
 
-    if "live" not in results:
-        parser.error("candidate evaluation produced no 'live' baseline reference")
-    live_windows = results["live"]["windows"]
-    for name, candidate in results.items():
-        candidate["relative_to_live"] = relative_to_baseline(candidate["windows"], live_windows)
-        candidate["dominates_live"] = (
-            name != "live"
-            and dominates(candidate["summary"], results["live"]["summary"])
-        )
+        if "live" not in results:
+            parser.error("candidate evaluation produced no 'live' baseline reference")
+        live_windows = results["live"]["windows"]
+        for name, candidate in results.items():
+            candidate["relative_to_live"] = relative_to_baseline(candidate["windows"], live_windows)
+            candidate["dominates_live"] = (
+                name != "live"
+                and dominates(candidate["summary"], results["live"]["summary"])
+            )
 
-    fee_stress_str = args.fee_stress or DEFAULT_FEE_STRESS.get(venue, "0.16,0.26,0.35,0.50")
-    fee_stress = {}
-    for fee_stripped in split_csv(fee_stress_str):
-        fee = safe_nonneg_float(fee_stripped, default=None)
-        if fee is None:
-            parser.error(f"invalid fee value: {fee_stripped!r}")
-        windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
-        fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
-        fee_stress[fee_key] = {
-            "summary": summarize_test_windows(windows),
-            "windows": windows,
-        }
+        fee_stress = {}
+        for fee in parsed_fees:
+            windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
+            fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
+            fee_stress[fee_key] = {
+                "summary": summarize_test_windows(windows),
+                "windows": windows,
+            }
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
     report = {
