@@ -18,12 +18,13 @@ from multiprocessing import Pool
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env, lru_dict_put, optional_env, parse_dotenv, safe_float, safe_pos_float  # noqa: E402
+from botcore import lru_dict_put, optional_env, parse_dotenv, safe_float, safe_pos_float  # noqa: E402
 EXP = optional_env("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
+from offline.research.kraken_continuous_grid.grid import resolve_grid_workers  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
 from strategies.spot_replay import (  # noqa: E402
     post_exit_peak_step_scope,
@@ -182,7 +183,13 @@ def task(args):
         cached = _TASK_CACHE.get(cache_key)
         if cached is not None:
             return {**cached, "profile": profile, "variant": variant, "secs": 0.0}
-        out = {"profile": profile, "variant": variant, "asset": asset}
+        out = {
+            "profile": profile,
+            "variant": variant,
+            "asset": asset,
+            "params_repr": repr(params),
+            "peak": bool(peak),
+        }
         t0 = time.time()
         for itv, minutes, bars in (("1h", 60, bars_1h), ("1d", 1440, bars_1d)):
             if bars:
@@ -257,7 +264,7 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((profile, variant, asset))
         canon_groups[k].append((profile, variant))
-    workers = int_env("WORKERS") or min(4, os.cpu_count() or 2)
+    workers = resolve_grid_workers()
     print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0

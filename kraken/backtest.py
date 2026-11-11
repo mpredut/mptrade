@@ -25,7 +25,7 @@ import dataclasses
 from strategies.spot_engine import StratParams
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
-    buy_hold_pct,
+    parse_bt_cli_int,
     run_cli_single_or_sweep_backtest,
 )
 from botcore import (
@@ -111,6 +111,9 @@ def fetch_candles(pair, interval):
     return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
+_DEFAULT_FETCH_CANDLES = fetch_candles
+
+
 def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):
     """Run the DCA, take-profit, and stop-loss simulation using the production engine.
 
@@ -121,13 +124,15 @@ def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):
     over = {}
     if sl_bounce_pct is not None:
         over["reentry_sl_bounce_pct"] = sl_bounce_pct
-    params = _bt_params(P, over if over else None)
+    bar_min = P.get("interval") if P.get("interval") is not None else 60
+    params = rp.scale_subbar_timeout_params(_bt_params(P, over if over else None), bar_min)
     res = rp.run_replay(
         ohlc,
         params,
         fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
-        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
+        bar_minutes=bar_min,
         reentry_series=reentry_arr,
+        timestamps=P.get("timestamps"),
     )
     res.setdefault("blocked_ticks", 0)
     return res
@@ -137,7 +142,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Backtester DCA+TP Kraken (OHLC).")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
     ap.add_argument("--pair", default="HYPEUSD")
-    ap.add_argument("--interval", type=int, default=60, help="minutes: 60=1h, 240=4h, 1440=1d")
+    ap.add_argument("--interval", type=parse_bt_cli_int, default=60, help="minutes: 60=1h, 240=4h, 1440=1d")
     add_common_backtest_cli_args(
         ap,
         defaults={
@@ -153,10 +158,22 @@ def main() -> int:
         print("! interval must be > 0"); return 1
     if args.budget <= 0:
         print("! budget must be > 0"); return 1
-    if args.fee < 0:
-        print("! fee must be >= 0"); return 1
+    if args.entry <= 0 or args.dca <= 0:
+        print("! entry and dca must be > 0"); return 1
+    if args.maxdca < 0:
+        print("! maxdca must be >= 0"); return 1
+    if args.fee < 0 or args.sl < 0 or args.disc < 0:
+        print("! fee/sl/disc must be >= 0"); return 1
+    if args.tp <= 0 or args.drop <= 0:
+        print("! tp and drop must be > 0"); return 1
     try:
-        ohlc = fetch_candles(args.pair, args.interval)
+        if fetch_candles is _DEFAULT_FETCH_CANDLES:
+            records = fetch_ohlc_candles(args.pair, args.interval, drop_incomplete=True)
+            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+            timestamps = [r["timestamp"] for r in records]
+        else:
+            ohlc = fetch_candles(args.pair, args.interval)
+            timestamps = None
     except Exception as e:  # noqa: BLE001
         print(f"! data error: {e}"); return 1
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
@@ -167,7 +184,13 @@ def main() -> int:
     return run_cli_single_or_sweep_backtest(
         args.mode,
         base,
-        lambda p: rp.run_replay(ohlc, _bt_params(p), fee_pct=args.fee, bar_minutes=args.interval),
+        lambda p: rp.run_replay(
+            ohlc,
+            rp.scale_subbar_timeout_params(_bt_params(p), args.interval),
+            fee_pct=args.fee,
+            bar_minutes=args.interval,
+            timestamps=timestamps,
+        ),
         budget=args.budget,
         ohlc=ohlc,
         single_header=f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bars) [{engine}] ===",

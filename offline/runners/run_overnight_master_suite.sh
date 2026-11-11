@@ -3,8 +3,8 @@
 set -uo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$RUNNER_DIR/load_dev_backtest_env.sh"
-cd "$ROOT"
+source "$RUNNER_DIR/load_dev_backtest_env.sh" || exit 1
+cd "$ROOT" || exit 1
 
 LOG_DIR="$ROOT/logs/overnight_runs"
 RESULTS_DIR="$ROOT/offline/results"
@@ -27,6 +27,11 @@ echo "  Host: $(hostname) | Cores: $(nproc) | Root: $ROOT | Commit: $(git rev-pa
 echo "================================================================================"
 
 START_SEC=$(date +%s); PASSED_STEPS=0; FAILED_STEPS=0; STEP_REPORT_LINES=""
+CURRENT_MARKER=""
+cleanup_suite_tmp() {
+    [ -n "${CURRENT_MARKER:-}" ] && rm -f "$CURRENT_MARKER" || true
+}
+trap cleanup_suite_tmp EXIT INT TERM
 
 run_step() {  # $1=id $2=name $3=cmd [$4=timeout_sec]
     local id="$1" name="$2" cmd="$3" step_tmo="${4:-${STEP_TIMEOUT_SEC:-3600}}" t0 rc=0 dt
@@ -47,10 +52,12 @@ run_wf_pair() {  # $1=base_id $2=comp_id $3=label $4=out_subdir $5=filename_glob
     local out="$RESULTS_DIR/$4" report="" prev_failed="$FAILED_STEPS" marker=""
     mkdir -p "$out"
     marker="$(mktemp)"
+    CURRENT_MARKER="$marker"
     touch -d "@$(( $(date +%s) - 2 ))" "$marker" 2>/dev/null || true
     run_step "$1" "$3 Walk-Forward Baseline" "$PYTHON_BIN offline/runners/walk_forward.py $6 --output-dir $out"
     if [ "$FAILED_STEPS" -gt "$prev_failed" ]; then
         rm -f "$marker"
+        CURRENT_MARKER=""
         FAILED_STEPS=$((FAILED_STEPS + 1))
         STEP_REPORT_LINES+="| \`$2\` | $3 Candidate Comparison | **FAIL (baseline failed)** | 0s |"$'\n'
         echo "[WARN] Skipping step $2 because baseline step $1 failed"
@@ -58,6 +65,7 @@ run_wf_pair() {  # $1=base_id $2=comp_id $3=label $4=out_subdir $5=filename_glob
     fi
     report="$(find "$out" -maxdepth 2 -name "$5" -newer "$marker" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)"
     rm -f "$marker"
+    CURRENT_MARKER=""
     run_step "$2" "$3 Candidate Comparison" "if [ -z \"$report\" ]; then echo 'Missing fresh baseline report matching $5 in $out' >&2; exit 1; fi; $PYTHON_BIN offline/runners/walk_forward.py --mode compare \"$report\" ${7:-}"
 }
 
@@ -83,7 +91,7 @@ run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" 
 run_step "4D" "MHDSL Reentry Replay Comparisons" "$PYTHON_BIN offline/research/compare_mhdsl_reentry_replay.py"
 run_step "7A" "Monitortrades Replay Backtest on Binance Historical Ticks" "$PYTHON_BIN offline/research/monitortrades_backtest/run_replay_backtest.py"
 run_step "7B" "Monitortrades MHDSL Structural Break Variant Comparison" "$PYTHON_BIN offline/research/monitortrades_backtest/compare_sl_variants.py"
-run_step "8"  "Scheduled Pilot Proposals Generation & Worktree Push" "bash offline/runners/run_backtest_cycle.sh local"
+run_step "8"  "Scheduled Pilot Proposals Generation & Worktree Push" "rc=0; bash offline/runners/run_backtest_cycle.sh local || rc=\$?; if [ \"\$rc\" -eq 75 ]; then echo '[run_backtest_cycle] Skipped cleanly due to active lock (rc=75)'; exit 0; fi; exit \"\$rc\""
 run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" "bash offline/research/kraken_continuous_grid/run_all.sh" 7200
 run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py" 5400
 run_step "10" "Full DEV Test Regression Suite (pytest tests/)" "SKIP_GIT_SYNC=1 bash offline/runners/run_dev_regression.sh run"

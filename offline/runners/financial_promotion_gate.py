@@ -64,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  ddW/T/L={dd['wins']}/{dd['ties']}/{dd['losses']}")
     if args.output:
-        atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=True)
+        try:
+            atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=True)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     return 0 if result["promote"] else 1
 
 

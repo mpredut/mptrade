@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
-from state_io import atomic_write_json, atomic_write_text, parse_json_payload, read_text_file  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, iter_jsonl_dicts  # noqa: E402
 from offline.backtests.comparison import format_number  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
@@ -39,33 +39,41 @@ def _norm_audit_venue(val: object) -> str:
     return normalize_venue_name(raw) or raw
 
 
+def _is_missing_audit_venue(val: object) -> bool:
+    return val is None or (isinstance(val, str) and not val.strip())
+
+
+def _clean_intent_id(val: object) -> str:
+    return val.strip() if isinstance(val, str) else ""
+
+
 def _load(paths: list[Path], venue: str | None) -> list[dict]:
     parsed_events: list[dict] = []
     norm_venue = _norm_audit_venue(venue)
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(f"execution audit file not found: {path}")
-        for line_number, raw in enumerate(read_text_file(path).splitlines(), start=1):
-            if not raw.strip():
-                continue
-            event = parse_json_payload(raw, default=None)
-            if not isinstance(event, dict):
-                raise ValueError(f"{path}:{line_number}: invalid JSON")
-            parsed_events.append(event)
+        try:
+            for event in iter_jsonl_dicts(str(path), strict=True):
+                parsed_events.append(event)
+        except ValueError as exc:
+            raise ValueError(f"{path}: invalid JSON: {exc}") from exc
     if not norm_venue:
         return parsed_events
     matched_intents = {
-        event.get("intent_id")
+        intent_id
         for event in parsed_events
-        if isinstance(event.get("intent_id"), str)
-        and event.get("intent_id")
+        if (intent_id := _clean_intent_id(event.get("intent_id")))
         and _norm_audit_venue(event.get("venue")) == norm_venue
     }
     return [
         event
         for event in parsed_events
         if _norm_audit_venue(event.get("venue")) == norm_venue
-        or (event.get("venue") is None and event.get("intent_id") in matched_intents)
+        or (
+            _is_missing_audit_venue(event.get("venue"))
+            and _clean_intent_id(event.get("intent_id")) in matched_intents
+        )
     ]
 
 
@@ -146,12 +154,15 @@ def main(argv: list[str] | None = None) -> int:
     report = calibrate_execution_events(events)
     report["source_files"] = [str(path) for path in paths]
     md_text = markdown_report(report, paths)
-    output = args.output.expanduser().resolve() if args.output else None
-    markdown = args.markdown.expanduser().resolve() if args.markdown else None
-    if output:
-        atomic_write_json(output, report, indent=2, ensure_ascii=True)
-    if markdown:
-        atomic_write_text(markdown, md_text)
+    try:
+        output = args.output.expanduser().resolve() if args.output else None
+        markdown = args.markdown.expanduser().resolve() if args.markdown else None
+        if output:
+            atomic_write_json(output, report, indent=2, ensure_ascii=True)
+        if markdown:
+            atomic_write_text(markdown, md_text)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     print(md_text)
     return 0
 

@@ -8,7 +8,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import optional_env, safe_float
+from botcore import load_local_module, optional_env, safe_float
 from offline.research.kraken_continuous_grid.report import (
     _fmt_num as _fmt_cell,
     _format_errors_section,
@@ -37,9 +37,29 @@ def generate_report(exp_dir=None):
     if not os.path.exists(results_path):
         return f"# Trading 212 grid\n\nNo results found at {results_path}.\n"
 
-    valid_rows, errors = load_grid_results_partitioned(
-        results_path, ("profile", "variant", "asset")
+    grid_mod = sys.modules.get("offline.research.t212_continuous_grid.grid") or load_local_module(
+        os.path.dirname(os.path.abspath(__file__)),
+        "grid",
+        module_key="offline.research.t212_continuous_grid.grid",
     )
+    profiles = getattr(grid_mod, "PROFILES", None)
+    variants_map = getattr(grid_mod, "VARIANTS", None)
+    params_fn = getattr(grid_mod, "params_for", None)
+    spec_map = (
+        {(p, v): params_fn(p, v) for p in profiles for v in variants_map}
+        if isinstance(profiles, dict) and isinstance(variants_map, dict) and callable(params_fn)
+        else None
+    )
+    valid_rows, errors = load_grid_results_partitioned(
+        results_path,
+        ("profile", "variant", "asset"),
+        spec_map=spec_map,
+        spec_key=("profile", "variant"),
+    )
+    valid_rows = [
+        r for r in valid_rows
+        if g(r, "1h", "ret") is not None or g(r, "1d", "ret") is not None
+    ]
 
     by = defaultdict(dict)  # (profile, variant) -> asset -> row
     for r in valid_rows:

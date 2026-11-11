@@ -92,10 +92,19 @@ def _is_error_row(r: dict) -> bool:
     return "error" in r or r.get("kind") == "error"
 
 
-def _matches_known_spec(r: dict, spec_map: dict | None) -> bool:
+def _matches_known_spec(
+    r: dict,
+    spec_map: dict | None,
+    *,
+    spec_key: str | tuple[str, ...] = "cfg",
+) -> bool:
     if not spec_map:
         return True
-    cfg_name = r.get("cfg")
+    cfg_name = (
+        tuple(r.get(k) for k in spec_key)
+        if isinstance(spec_key, tuple)
+        else r.get(spec_key)
+    )
     if cfg_name not in spec_map:
         return True
     params, peak = spec_map[cfg_name]
@@ -111,6 +120,7 @@ def load_grid_results_partitioned(
     required_str_keys: tuple[str, ...],
     *,
     spec_map: dict | None = None,
+    spec_key: str | tuple[str, ...] = "cfg",
 ) -> tuple[list[dict], list[dict]]:
     """Load JSONL grid rows and partition into ``(valid_rows, error_rows)``."""
     rows = read_jsonl_dicts(results_path)
@@ -120,7 +130,7 @@ def load_grid_results_partitioned(
         for r in rows
         if not _is_error_row(r)
         and all(isinstance(r.get(k), str) and r[k].strip() for k in required_str_keys)
-        and _matches_known_spec(r, spec_map)
+        and _matches_known_spec(r, spec_map, spec_key=spec_key)
     ]
     return valid_rows, errors
 

@@ -41,7 +41,7 @@ if __name__ == "__main__":
     for sym in ASSETS:
         for rng, itv in (("730d", "1h"), ("10y", "1d")):
             csv_path = os.path.join(DATA, f"{sym}_{itv}.csv")
-            if missing_only and os.path.exists(csv_path) and len(load_ohlc_tuples_csv(csv_path, strict=False)) >= 32:
+            if missing_only and os.path.exists(csv_path) and len(load_ohlc_tuples_csv(csv_path, strict=False)) > 32:
                 continue
             attempted += 1
             try:

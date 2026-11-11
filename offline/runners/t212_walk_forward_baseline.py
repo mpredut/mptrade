@@ -34,6 +34,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     build_execution_model_from_args,
     evaluate_walk_forward,
     load_venue_replay_module,
+    parse_cli_float,
     resolve_window_sizes,
 )
 
@@ -85,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         help="frozen unit history plus the new Yahoo window (intraday accumulation)",
     )
     parser.add_argument(
-        "--fx-to-usd", type=float,
+        "--fx-to-usd", type=parse_cli_float,
         help="fixed FX override; by default the historical series is downloaded for non-USD",
     )
     parser.add_argument("--fx-dataset", type=Path, help="a frozen FX OHLC CSV")
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         profile_tok = _validate_safe_token(args.profile, "--profile")
+        range_tok = _validate_safe_token(args.range, "--range")
         interval_tok = _validate_safe_token(args.interval, "--interval")
         interval_minutes = parse_interval_minutes(interval_tok)
         config_path = T212_DIR / f"config.{profile_tok}.env"
@@ -121,7 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.fx_to_usd is not None and safe_pos_float(args.fx_to_usd, default=None) is None:
             parser.error("--fx-to-usd must be positive")
         execution = build_execution_model_from_args(parser, args)
-        raw_warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup
+        needs_warmup = bool(
+            params.dca_trend_gate_pct > 0
+            or params.reentry_hybrid_enabled
+            or params.sl_mhdsl_enabled
+            or params.tp_mdhtp_enabled
+        )
+        raw_warmup = (12 if needs_warmup else 0) if args.warmup is None else args.warmup
         warmup = exact_nonneg_int(raw_warmup, default=None)
         if warmup is None:
             parser.error("--warmup cannot be negative")
@@ -132,11 +140,11 @@ def main(argv: list[str] | None = None) -> int:
             records = load_dataset(source)
             source_label = str(source)
         else:
-            fetched = fetch_yahoo_candles(symbol, args.range, interval_tok)
+            fetched = fetch_yahoo_candles(symbol, range_tok, interval_tok)
             records = merge_datasets(load_dataset(seed_source), fetched) if seed_source else fetched
             source_label = (
-                f"Yahoo chart {args.range}/{interval_tok} + seed {seed_source}"
-                if seed_source else f"Yahoo chart {args.range}/{interval_tok}"
+                f"Yahoo chart {range_tok}/{interval_tok} + seed {seed_source}"
+                if seed_source else f"Yahoo chart {range_tok}/{interval_tok}"
             )
         records = validate_dataset(records)
         output_dir = args.output_dir.expanduser().resolve() / profile_tok
@@ -165,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             fx_source = args.fx_dataset.expanduser().resolve() if args.fx_dataset else None
             fx_records = (
                 load_dataset(fx_source) if fx_source
-                else fetch_yahoo_candles(fx_symbol, args.range, interval_tok)
+                else fetch_yahoo_candles(fx_symbol, range_tok, interval_tok)
             )
             fx_records = validate_dataset(fx_records)
             fx_data = dataset_metadata(fx_records)
@@ -177,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             fx_metadata = {
                 "mode": "historical_asof", "currency": params.currency,
                 "quote_symbol": fx_symbol, "invert": fx_invert,
-                "source": str(fx_source) if fx_source else f"Yahoo chart {args.range}/{interval_tok}",
+                "source": str(fx_source) if fx_source else f"Yahoo chart {range_tok}/{interval_tok}",
                 "frozen_file": str(fx_frozen), **fx_data,
             }
         train, validation, test, step = resolve_window_sizes(args, len(records))

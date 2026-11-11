@@ -14,7 +14,7 @@ from collections.abc import Hashable
 import statistics
 from typing import Any, Mapping, Sequence
 
-from botcore import safe_float, safe_nonneg_float
+from botcore import safe_float, safe_nonneg_float, safe_nonneg_int
 
 
 def relative_to_baseline(
@@ -175,14 +175,19 @@ def format_comparison_markdown(
         item_dict = item if isinstance(item, Mapping) else {}
         summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}
         relative = item_dict.get("relative_to_live") if isinstance(item_dict.get("relative_to_live"), Mapping) else {}
+        pos_w = safe_nonneg_int(summary.get("positive_windows"), default=0)
+        win_cnt = safe_nonneg_int(summary.get("window_count"), default=0)
+        wins_l = safe_nonneg_int(relative.get("wins_vs_live"), default=0)
+        ties_l = safe_nonneg_int(relative.get("ties_vs_live"), default=0)
+        loss_l = safe_nonneg_int(relative.get("losses_vs_live"), default=0)
+        tot_cyc = safe_nonneg_int(summary.get("total_cycles"), default=0)
         lines.append(
             f"| `{name}` | {format_number(summary.get('mean_return_pct'), True)} | "
             f"{format_number(summary.get('median_return_pct'), True)} | "
             f"{format_number(summary.get('worst_return_pct'), True)} | "
             f"{format_number(summary.get('worst_max_drawdown_pct'))} | "
-            f"{summary.get('positive_windows', 0)}/{summary.get('window_count', 0)} | "
-            f"{relative.get('wins_vs_live', 0)}/{relative.get('ties_vs_live', 0)}/"
-            f"{relative.get('losses_vs_live', 0)} | {summary.get('total_cycles', 0)} |"
+            f"{pos_w}/{win_cnt} | "
+            f"{wins_l}/{ties_l}/{loss_l} | {tot_cyc} |"
         )
     pareto_raw = report.get("pareto_frontier")
     pareto = pareto_raw if isinstance(pareto_raw, (list, tuple)) else []
@@ -205,11 +210,13 @@ def format_comparison_markdown(
         for fee, item in fee_stress.items():
             item_dict = item if isinstance(item, Mapping) else {}
             summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}
+            pos_w = safe_nonneg_int(summary.get("positive_windows"), default=0)
+            win_cnt = safe_nonneg_int(summary.get("window_count"), default=0)
             lines.append(
                 f"| {fee} | {format_number(summary.get('mean_return_pct'), True)} | "
                 f"{format_number(summary.get('worst_return_pct'), True)} | "
                 f"{format_number(summary.get('worst_max_drawdown_pct'))} | "
-                f"{summary.get('positive_windows', 0)}/{summary.get('window_count', 0)} |"
+                f"{pos_w}/{win_cnt} |"
             )
         lines.append("")
     return "\n".join(lines)

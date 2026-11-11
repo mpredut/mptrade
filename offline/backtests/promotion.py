@@ -223,9 +223,9 @@ def evaluate_promotion(
         scenario_results[name] = {
             "passed": all(checks.values()),
             "checks": checks,
-            "mean_return_delta_pp": mean_delta,
-            "worst_return_delta_pp": worst_delta,
-            "worst_drawdown_delta_pp": drawdown_delta,
+            "mean_return_delta_pp": mean_delta if math.isfinite(mean_delta) else None,
+            "worst_return_delta_pp": worst_delta if math.isfinite(worst_delta) else None,
+            "worst_drawdown_delta_pp": drawdown_delta if math.isfinite(drawdown_delta) else None,
             "wins_ties_losses": {"wins": wins, "ties": ties, "losses": losses},
             "active_windows": active_windows,
             "active_window_rate_pct": (
@@ -354,9 +354,11 @@ def evaluate_risk_adjusted_promotion(
         scenario_results[name] = {
             "passed": all(checks.values()),
             "checks": checks,
-            "mean_return_delta_pp": mean_delta,
-            "worst_return_delta_pp": worst_return_delta,
-            "worst_drawdown_improvement_pp": worst_drawdown_improvement,
+            "mean_return_delta_pp": mean_delta if math.isfinite(mean_delta) else None,
+            "worst_return_delta_pp": worst_return_delta if math.isfinite(worst_return_delta) else None,
+            "worst_drawdown_improvement_pp": (
+                worst_drawdown_improvement if math.isfinite(worst_drawdown_improvement) else None
+            ),
             "worst_cvar_improvement_pp": cvar_improvement,
             "mean_exposure_delta_pp": exposure_delta,
             "median_calmar_improvement_ratio": calmar_improvement,

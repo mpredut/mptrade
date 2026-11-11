@@ -6,6 +6,7 @@ from mark-to-market equity curves rather than closed trades alone.
 
 from __future__ import annotations
 
+import argparse
 import math
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
@@ -232,6 +233,22 @@ def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
     return (c1 - c0) / c0 * 100.0
 
 
+def parse_bt_cli_float(raw: Any) -> float:
+    """Parse a finite CLI float argument, rejecting NaN/Inf/booleans."""
+    val = safe_float(raw, default=None)
+    if val is None:
+        raise argparse.ArgumentTypeError(f"invalid finite float value: {raw!r}")
+    return val
+
+
+def parse_bt_cli_int(raw: Any) -> int:
+    """Parse an exact CLI integer argument, rejecting floats/NaN/Inf/booleans."""
+    val = exact_int(raw, default=None)
+    if val is None:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {raw!r}")
+    return val
+
+
 def add_common_backtest_cli_args(
     ap: Any,
     *,
@@ -240,9 +257,9 @@ def add_common_backtest_cli_args(
     """Register the shared --entry/--dca/--disc/--drop/--tp/--maxdca/--budget/--fee/--sl CLI flags."""
     d = defaults or {}
     for flag in ("entry", "dca", "disc", "drop", "tp", "budget", "fee"):
-        ap.add_argument(f"--{flag}", type=float, default=d.get(flag))
-    ap.add_argument("--maxdca", type=int, default=d.get("maxdca"))
-    ap.add_argument("--sl", type=float, default=d.get("sl"), help="stop-loss %% (0=disabled)")
+        ap.add_argument(f"--{flag}", type=parse_bt_cli_float, default=d.get(flag))
+    ap.add_argument("--maxdca", type=parse_bt_cli_int, default=d.get("maxdca"))
+    ap.add_argument("--sl", type=parse_bt_cli_float, default=d.get("sl"), help="stop-loss %% (0=disabled)")
 
 
 def print_single_backtest_report(
@@ -373,7 +390,7 @@ def run_cli_single_or_sweep_backtest(
     if ohlc is not None and len(ohlc) < min_bars:
         emit(f"not enough bars ({len(ohlc)}); aborting")
         return 1
-    bh_val = float(bh) if bh is not None else (buy_hold_pct(ohlc) if ohlc is not None else 0.0)
+    bh_val = safe_float(bh, 0.0) if bh is not None else (buy_hold_pct(ohlc) if ohlc is not None else 0.0)
     if mode == "single":
         m = eval_fn(base)
         print_single_backtest_report(
@@ -442,6 +459,8 @@ __all__ = [
     "buy_hold_pct",
     "calculate_performance_metrics",
     "format_performance_summary",
+    "parse_bt_cli_float",
+    "parse_bt_cli_int",
     "print_single_backtest_report",
     "round_metric",
     "run_cli_single_or_sweep_backtest",

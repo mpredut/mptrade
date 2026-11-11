@@ -36,7 +36,7 @@ from botcore import (
 EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
-from state_io import append_jsonl_record, read_jsonl_dicts
+from state_io import append_jsonl_record, read_jsonl_dicts, read_text_file
 from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.research.kraken_continuous_grid.report import _matches_known_spec  # noqa: E402
@@ -165,7 +165,18 @@ def resolve_grid_workers() -> int:
     raw_w = int_env("WORKERS")
     if raw_w is not None and raw_w > 0:
         return raw_w
-    return min(4, os.cpu_count() or 2)
+    cpu_default = min(4, os.cpu_count() or 2)
+    meminfo = read_text_file("/proc/meminfo", default="")
+    if isinstance(meminfo, str):
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_kb = safe_nonneg_int(parts[1], default=0)
+                    if 0 < mem_kb <= 4608 * 1024:
+                        return min(2, cpu_default)
+                break
+    return cpu_default
 
 
 def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):

@@ -24,9 +24,10 @@ if ROOT not in sys.path:
 
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
-    buy_hold_pct,
+    parse_bt_cli_float,
     run_cli_single_or_sweep_backtest,
 )
+from strategies.spot_replay import scale_subbar_timeout_params
 from botcore import (
     _parse_bool_flag,
     float_env,
@@ -51,6 +52,9 @@ def fetch_candles(sym, rng, interval):
     """Fetch completed Yahoo candles as (open, high, low, close) tuples."""
     records = _md_mod.fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True)
     return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+
+
+_DEFAULT_FETCH_CANDLES = fetch_candles
 
 
 _SIMULATE_ENV_DEFAULTS = {
@@ -102,8 +106,14 @@ def simulate(ohlc, P):
     budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=None)
     if budget is None:
         raise ValueError("budget must be finite and positive")
-    raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None), default=None)
-    raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None), default=None)
+    explicit_entry = _p_val(("entry", "entry_amount"), None)
+    if explicit_entry is not None and safe_pos_float(explicit_entry, default=None) is None:
+        raise ValueError("entry must be finite and positive")
+    explicit_dca = _p_val(("dca", "dca_amount"), None)
+    if explicit_dca is not None and safe_pos_float(explicit_dca, default=None) is None:
+        raise ValueError("dca must be finite and positive")
+    raw_entry = safe_pos_float(explicit_entry, default=None)
+    raw_dca = safe_pos_float(explicit_dca, default=None)
     entry_pct = safe_float(
         P.get("entry_pct"),
         default=((raw_entry / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0),
@@ -162,8 +172,17 @@ def simulate(ohlc, P):
             env_overrides[env_key] = str(v).lower() if isinstance(v, bool) else str(v)
 
     params = StratParams.from_env(env_overrides)
+    if bar_min is not None:
+        params = scale_subbar_timeout_params(params, bar_min)
     fx_arg = P.get("fx_to_usd")
-    return run_replay(ohlc, params, bar_minutes=bar_min, fx_to_usd=1.0 if fx_arg is None else fx_arg)
+    ts_arg = P.get("timestamps")
+    return run_replay(
+        ohlc,
+        params,
+        bar_minutes=bar_min,
+        fx_to_usd=1.0 if fx_arg is None else fx_arg,
+        timestamps=ts_arg if ts_arg is not None else (),
+    )
 
 
 
@@ -184,8 +203,8 @@ def main() -> int:
     add_common_backtest_cli_args(ap)
     ap.add_argument("--mhdsl", action=argparse.BooleanOptionalAction, default=None, help="enable/disable MHDSL stop loss")
     ap.add_argument("--mdhtp", action=argparse.BooleanOptionalAction, default=None, help="enable/disable MDHTP take profit")
-    ap.add_argument("--trail", type=float, default=None, help="trailing percent")
-    ap.add_argument("--trail-min-profit", type=float, default=None, help="min profit %% to arm trailing")
+    ap.add_argument("--trail", type=parse_bt_cli_float, default=None, help="trailing percent")
+    ap.add_argument("--trail-min-profit", type=parse_bt_cli_float, default=None, help="min profit %% to arm trailing")
     args = ap.parse_args()
 
     profile = args.profile.lower() if args.profile else "nvda"
@@ -226,12 +245,27 @@ def main() -> int:
         print(f"! unsupported interval: {args.interval}"); return 1
     if budget <= 0:
         print("! budget must be > 0"); return 1
-    ohlc = fetch_candles(sym, args.range, args.interval)
+    if entry <= 0 or dca <= 0:
+        print("! entry and dca must be > 0"); return 1
+    if maxdca < 0:
+        print("! maxdca must be >= 0"); return 1
+    if fee < 0 or sl < 0 or disc < 0 or trail_pct < 0 or trail_min_profit < 0:
+        print("! fee/sl/disc/trail parameters must be >= 0"); return 1
+    if tp <= 0 or drop <= 0:
+        print("! tp and drop must be > 0"); return 1
+    if fetch_candles is _DEFAULT_FETCH_CANDLES:
+        records = _md_mod.fetch_yahoo_candles(sym, args.range, args.interval, drop_incomplete=True)
+        ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+        timestamps = [r["timestamp"] for r in records]
+    else:
+        ohlc = fetch_candles(sym, args.range, args.interval)
+        timestamps = None
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=bar_min,
                 sl_mhdsl_enabled=sl_mhdsl, tp_mdhtp_enabled=tp_mdhtp,
                 trail_pct=trail_pct, trail_min_profit=trail_min_profit,
+                timestamps=timestamps,
                 _base_env=cfg)
     if args.tp is not None or args.mode == "sweep":
         base["tp_ladder"] = ""

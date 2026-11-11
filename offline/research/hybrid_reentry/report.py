@@ -26,6 +26,8 @@ def _valid_ablation_row(row) -> bool:
         and "error" not in row
         and isinstance(row.get("asset"), str)
         and bool(row["asset"].strip())
+        and isinstance(row.get("test_id"), str)
+        and bool(row["test_id"].strip())
     )
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -161,6 +163,13 @@ def generate_markdown_report() -> str:
 
 
 def main():
+    if not os.path.isfile(CRYPTO_JSON):
+        print(f"ERROR: crypto ablation results not found at {CRYPTO_JSON}", file=sys.stderr)
+        sys.exit(1)
+    raw_crypto = read_json_file(CRYPTO_JSON, default=[])
+    if not isinstance(raw_crypto, list) or not any(_valid_ablation_row(r) for r in raw_crypto):
+        print(f"ERROR: no valid crypto ablation rows found in {CRYPTO_JSON}", file=sys.stderr)
+        sys.exit(1)
     report_md = generate_markdown_report()
     out_file = os.path.join(OUT_DIR, "HYBRID_REENTRY_ABLATION_REPORT.md")
     atomic_write_text(out_file, report_md)

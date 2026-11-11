@@ -50,23 +50,36 @@ def build_comparison(args) -> dict:
             if candidate.name == "live" or candidate.name in selected
         ]
 
-    results = {}
-    live_report = None
-    for candidate in candidates:
-        params = dataclasses.replace(base_params, **candidate.overrides)
-        report = benchmark.build_report(
-            args, params=params, candidate_name=candidate.name,
+    live_candidates = [c for c in candidates if c.name == "live"]
+    if not live_candidates:
+        raise ValueError("the candidate set must contain the live profile")
+
+    built_reports: dict[str, tuple[object, dict]] = {}
+    live_cand = live_candidates[0]
+    live_params = dataclasses.replace(base_params, **live_cand.overrides)
+    live_report = benchmark.build_report(
+        args, params=live_params, candidate_name=live_cand.name,
+    )
+    if (
+        getattr(args, "strict_baseline", False)
+        and benchmark._projection(live_report) != benchmark._projection(baseline_report)
+    ):
+        raise ValueError(
+            "the regenerated live profile differs from the versioned baseline"
         )
-        if candidate.name == "live":
-            if (
-                getattr(args, "strict_baseline", False)
-                and benchmark._projection(report) != benchmark._projection(baseline_report)
-            ):
-                raise ValueError(
-                    "the regenerated live profile differs from the versioned baseline"
-                )
-            live_report = report
-        gate = evaluate_dual_promotion(live_report or baseline_report, report)
+    built_reports["live"] = (live_params, live_report)
+
+    results = {}
+    for candidate in candidates:
+        if candidate.name in built_reports:
+            params, report = built_reports[candidate.name]
+        else:
+            params = dataclasses.replace(base_params, **candidate.overrides)
+            report = benchmark.build_report(
+                args, params=params, candidate_name=candidate.name,
+            )
+            built_reports[candidate.name] = (params, report)
+        gate = evaluate_dual_promotion(live_report, report)
         results[candidate.name] = {
             "description": candidate.description,
             "overrides": candidate.overrides,
@@ -74,9 +87,6 @@ def build_comparison(args) -> dict:
             "scenarios": {name: values["aggregate"] for name, values in report["scenarios"].items()},
             "promotion_gate": gate,
         }
-
-    if live_report is None:
-        raise ValueError("the candidate set must contain the live profile")
     return {
         "schema_version": 1,
         "benchmark": "HYPE financial candidate comparison",
