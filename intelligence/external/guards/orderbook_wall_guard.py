@@ -57,12 +57,13 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
-        side_norm, snapshot, early = self._prepare_external_guard_check(
+        return self._check_external_snapshot(
             symbol, side, snapshot, now=now, empty_reason="no_orderbook_snapshot"
         )
-        if early is not None:
-            return early
 
+    def _evaluate_external_snapshot(
+        self, side_norm: str, snapshot: OrderbookSnapshot
+    ) -> GuardDecision:
         imb = clean_scale(
             obj_attr_first(snapshot, "imbalance_ratio", "ob_imbalance"),
             default=0.5,

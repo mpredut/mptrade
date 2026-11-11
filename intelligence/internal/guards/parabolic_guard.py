@@ -10,7 +10,6 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorFactory,
     clean_guard_symbol_key,
 )
-from providers.base import normalize_side
 
 
 class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
@@ -50,9 +49,9 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
-        side_u = normalize_side(side)
-        if side_u not in ("BUY", "SELL"):
-            return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
+        side_u, early_side = self._require_buy_sell_side(side, unsupported_reason="unsupported_side_skipped")
+        if early_side is not None:
+            return early_side
 
         current_price_f = safe_pos_float(current_price, default=None)
         if current_price_f is None:

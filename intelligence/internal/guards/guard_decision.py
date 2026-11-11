@@ -190,6 +190,16 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
             return self.evaluate(*args, **kwargs)
         raise NotImplementedError(f"{type(self).__name__} must implement check() or evaluate()")
 
+    def _require_buy_sell_side(self, side: str) -> tuple[str, Optional[GuardDecision]]:
+        """Normalize ``side`` and return ``(side_norm, None)`` for BUY/SELL or an early ``allow`` decision."""
+        side_norm = normalize_side(side)
+        if side_norm not in ("BUY", "SELL"):
+            return "", GuardDecision.allow(
+                guard_name=self.cls_name,
+                reason="unsupported_side_allowed",
+            )
+        return side_norm, None
+
     def _prepare_external_guard_check(
         self,
         symbol: str,
@@ -200,12 +210,9 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
         empty_reason: str = "no_snapshot",
     ) -> tuple[str, Any, Optional[GuardDecision]]:
         """Validate ``side`` and resolve ``self.collector`` snapshot, returning ``(side_norm, snapshot, early_decision)``."""
-        side_norm = normalize_side(side)
-        if side_norm not in ("BUY", "SELL"):
-            return "", None, GuardDecision.allow(
-                guard_name=self.cls_name,
-                reason="unsupported_side_allowed",
-            )
+        side_norm, early = self._require_buy_sell_side(side)
+        if early is not None:
+            return "", None, early
         col = getattr(self, "collector", None)
         if snapshot is None and col is not None:
             if hasattr(self, "active_window_sec") and hasattr(col, "get_summary"):
@@ -222,6 +229,34 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
                 reason=empty_reason,
             )
         return side_norm, snapshot, None
+
+    def _evaluate_external_snapshot(
+        self,
+        symbol: str,
+        side_norm: str,
+        snapshot: Any,
+        *,
+        now: Optional[float] = None,
+    ) -> GuardDecision:
+        """Subclass hook evaluating a resolved non-None external snapshot for ``BUY``/``SELL``."""
+        raise NotImplementedError(f"{type(self).__name__} must implement _evaluate_external_snapshot()")
+
+    def _check_external_snapshot(
+        self,
+        symbol: str,
+        side: str,
+        snapshot: Any = None,
+        *,
+        now: Optional[float] = None,
+        empty_reason: str = "no_snapshot",
+    ) -> GuardDecision:
+        """Validate ``side``, resolve ``snapshot`` (or return early allow), and delegate to ``_evaluate_external_snapshot``."""
+        side_norm, resolved_snapshot, early = self._prepare_external_guard_check(
+            symbol, side, snapshot, now=now, empty_reason=empty_reason,
+        )
+        if early is not None:
+            return early
+        return self._evaluate_external_snapshot(symbol, side_norm, resolved_snapshot, now=now)
 
 
 class OrderGuardEvaluatorFactory:

@@ -49,6 +49,7 @@ from botcore import (
     required_int_env,
     resolve_now_ms,
     resolve_now_ts,
+    resolve_positive_max_age,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -1458,8 +1459,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         reader_fn: Any = None,
     ) -> Optional[float]:
         """Resolve a fresh current price for ``candidates`` from in-memory ``CacheCurrentPriceManager`` or ``price_path``."""
-        max_age = 12.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
-        if max_age is None:
+        if (max_age := resolve_positive_max_age(max_age_sec, 12.0)) is None:
             return None
         if use_memory_manager:
             cpm = (
@@ -1523,8 +1523,7 @@ def resolve_ssot_price_from_cache(
     """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
     if (sym_u := clean_upper_token(symbol)) is None or not (sym_clean := clean_symbol_key(sym_u)):
         return None
-    max_age = 60.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
-    if max_age is None:
+    if (max_age := resolve_positive_max_age(max_age_sec, 60.0)) is None:
         return None
     now_s = resolve_now_ts(now_ts)
     quotes = (

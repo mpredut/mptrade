@@ -10,7 +10,6 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
 )
-from providers.base import normalize_side
 
 
 def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float, float]:
@@ -86,9 +85,9 @@ class WeibullExhaustionGuard(OrderGuardEvaluatorBase):
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
 
-        side_u = normalize_side(side)
-        if side_u not in ("BUY", "SELL"):
-            return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
+        side_u, early_side = self._require_buy_sell_side(side, unsupported_reason="unsupported_side")
+        if early_side is not None:
+            return early_side
 
         if trend_direction is not None and not isinstance(trend_direction, bool):
             raw_dir = str(trend_direction).strip().lower()

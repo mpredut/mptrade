@@ -59,16 +59,17 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
         snapshot: Optional[DerivativesTelemetry] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm, telemetry, early = self._prepare_external_guard_check(
+        return self._check_external_snapshot(
             symbol,
             side,
             telemetry if telemetry is not None else snapshot,
             now=now,
             empty_reason="no_telemetry_data",
         )
-        if early is not None:
-            return early
 
+    def _evaluate_external_snapshot(
+        self, side_norm: str, telemetry: DerivativesTelemetry
+    ) -> GuardDecision:
         fr = safe_float(obj_attr(telemetry, "funding_rate"), default=0.0) or 0.0
 
         # 1. Entering BUY when market is hyper-crowded long

@@ -43,6 +43,7 @@ from botcore import (
     required_float_env,
     resolve_now_ts,
     resolve_patched_attr,
+    resolve_positive_max_age,
     resolve_sustained_sample_rate,
     safe_float,
     safe_nonneg_float,
@@ -1507,10 +1508,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         now_s: Optional[float] = None,
     ) -> Optional[dict]:
         """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
-        if not trend_path:
-            return None
-        max_age = 15.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
-        if max_age is None:
+        if not trend_path or (max_age := resolve_positive_max_age(max_age_sec, 15.0)) is None:
             return None
         try:
             data = read_json_dict_recovering(trend_path)

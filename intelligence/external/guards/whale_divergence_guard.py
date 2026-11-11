@@ -60,12 +60,13 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        side_norm, snapshot, early = self._prepare_external_guard_check(
+        return self._check_external_snapshot(
             symbol, side, snapshot, now=now, empty_reason="no_whale_snapshot_data"
         )
-        if early is not None:
-            return early
 
+    def _evaluate_external_snapshot(
+        self, side_norm: str, snapshot: WhalePositioningSnapshot
+    ) -> GuardDecision:
         regime = str(obj_attr_first(snapshot, "divergence_regime", "div_regime") or "neutral").strip().lower()
         oi_1h = safe_float(
             obj_attr_first(snapshot, "open_interest_1h_change_pct", "oi_1h_chg_pct"), default=0.0

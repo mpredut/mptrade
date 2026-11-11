@@ -119,9 +119,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
         ):
             self._thread.join(timeout=t_sec)
 
-    @property
-    def is_running(self) -> bool:
-        return is_worker_thread_alive(self)
+    is_running = property(is_worker_thread_alive)
 
     def _worker(self) -> None:
         try:

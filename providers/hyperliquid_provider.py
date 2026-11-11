@@ -162,6 +162,10 @@ class HyperliquidProvider(MarketDataProvider):
     )
     _INTENT_CLIENT_ID_FORMAT = "0x{token}"
     _BUY_SLIPPAGE_FEE_BUFFER = 0.95
+    _DEFAULT_STEP_LADDER = ((1000.0, 0.0001),)
+    _DEFAULT_TICK_LADDER = ((100.0, 0.01), (1.0, 0.001))
+    _TCA_DECIMALS_LADDER = ((100.0, 2), (1.0, 3))
+    _TCA_DECIMALS_FALLBACK = 4
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
     PUBLIC_WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -193,18 +197,6 @@ class HyperliquidProvider(MarketDataProvider):
     @property
     def name(self) -> str:
         return "Hyperliquid"
-
-    @classmethod
-    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
-        px_f = safe_pos_float(price, default=0.0) or 0.0
-        step = 0.0001 if px_f >= 1000.0 else 0.01
-        tick = 0.01 if px_f >= 100.0 else (0.001 if px_f >= 1.0 else 0.0001)
-        return step, tick
-
-    @classmethod
-    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
-        px_f = safe_pos_float(limit_price, default=0.0) or 0.0
-        return 2 if px_f >= 100.0 else (3 if px_f >= 1.0 else 4)
 
     def _before_execution_enabled_check(self) -> None:
         if (

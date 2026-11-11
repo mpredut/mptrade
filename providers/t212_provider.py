@@ -101,6 +101,12 @@ class T212Provider(MarketDataProvider):
     _BUY_SLIPPAGE_FEE_BUFFER = 0.998
     _SELL_DUST_SPEC = (2, 6.0)
     _DEFAULT_FEE_SPEC = ("INVEST_RTH", 15.0, 15.0, 1.0)
+    _DEFAULT_STEP_LADDER = ()
+    _DEFAULT_STEP_FALLBACK = 0.001
+    _DEFAULT_TICK_LADDER = ()
+    _DEFAULT_TICK_FALLBACK = 0.01
+    _TCA_DECIMALS_LADDER = ()
+    _TCA_DECIMALS_FALLBACK = 2
     _HISTORICAL_OHLC_PRIORITY = 1
     _EXACT_TELEMETRY_CACHE_SYMBOL = True
     _MERGES_AUDIT_TERMINAL_ORDERS = True
@@ -133,14 +139,6 @@ class T212Provider(MarketDataProvider):
     @property
     def name(self) -> str:
         return "T212"
-
-    @classmethod
-    def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
-        return 0.001, 0.01
-
-    @classmethod
-    def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
-        return 2
 
     def supports_symbol(self, symbol: str) -> bool:
         return False  # explicit-only

@@ -1723,6 +1723,11 @@ def coerce_finite_float(
     return safe_pos_float(raw, default=default) if positive else safe_float(raw, default=default)
 
 
+def resolve_positive_max_age(max_age_sec: object, default: float) -> float | None:
+    """Return ``default`` when ``max_age_sec is None``, else a strictly positive finite float or ``None``."""
+    return default if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
+
+
 def resolve_mem_bounded_worker_cap(
     max_workers: int = 4,
     *,

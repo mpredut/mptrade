@@ -159,6 +159,12 @@ class MarketDataProvider(ABC):
     _BUY_SLIPPAGE_FEE_BUFFER: Optional[float] = None
     _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
     _DEFAULT_FEE_SPEC: tuple[str, float, float, float] = ("STANDARD", 15.0, 15.0, 5.0)
+    _DEFAULT_STEP_LADDER: tuple[tuple[float, float], ...] = ((1000.0, 0.0001), (50.0, 0.001))
+    _DEFAULT_STEP_FALLBACK: float = 0.01
+    _DEFAULT_TICK_LADDER: tuple[tuple[float, float], ...] = ((10.0, 0.01), (1.0, 0.001))
+    _DEFAULT_TICK_FALLBACK: float = 0.0001
+    _TCA_DECIMALS_LADDER: tuple[tuple[float, int], ...] = ((10.0, 2), (1.0, 3), (0.1, 4))
+    _TCA_DECIMALS_FALLBACK: int = 6
     _PREFER_STATIC_TICK_SIZE: bool = False
     _USES_SHARED_REGISTRY_SYMBOLS: bool = False
     _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
@@ -484,19 +490,26 @@ class MarketDataProvider(ABC):
             venue, provider=provider, base_cls=cls, specs=cls._VENUE_PROVIDER_SPECS
         )
 
+    @staticmethod
+    def _lookup_price_ladder(px: float, ladder: tuple[tuple[float, Any], ...], fallback: Any) -> Any:
+        for threshold, val in ladder:
+            if px >= threshold:
+                return val
+        return fallback
+
     @classmethod
     def default_step_and_tick(cls, price: float = 0.0) -> tuple[float, float]:
         """Return default ``(step_size, tick_size)`` fallback for TCA/fee limit evaluation."""
         px_f = safe_pos_float(price, default=0.0) or 0.0
-        step = 0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01)
-        tick = 0.01 if px_f >= 10.0 else (0.001 if px_f >= 1.0 else 0.0001)
-        return step, tick
+        step = cls._lookup_price_ladder(px_f, cls._DEFAULT_STEP_LADDER, cls._DEFAULT_STEP_FALLBACK)
+        tick = cls._lookup_price_ladder(px_f, cls._DEFAULT_TICK_LADDER, cls._DEFAULT_TICK_FALLBACK)
+        return float(step), float(tick)
 
     @classmethod
     def tca_price_decimals(cls, limit_price: float = 0.0) -> int:
         """Return rounding precision decimals for limit-order queue TCA analysis."""
         px_f = safe_pos_float(limit_price, default=0.0) or 0.0
-        return 2 if px_f >= 10.0 else (3 if px_f >= 1.0 else (4 if px_f >= 0.1 else 6))
+        return int(cls._lookup_price_ladder(px_f, cls._TCA_DECIMALS_LADDER, cls._TCA_DECIMALS_FALLBACK))
 
     @classmethod
     def resolve_venue_default_fee_spec(
@@ -1813,8 +1826,7 @@ class AsyncReconnectStreamBase:
         _ws_logger.info("%s started", eff_name)
         return self
 
-    def request_stop(self) -> None:
-        set_stop_event(self)
+    request_stop = set_stop_event
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self.request_stop()
@@ -1837,9 +1849,7 @@ class AsyncReconnectStreamBase:
                 return False
         return True
 
-    @property
-    def is_running(self) -> bool:
-        return is_worker_thread_alive(self)
+    is_running = property(is_worker_thread_alive)
 
     def _thread_worker(self) -> None:
         try:
