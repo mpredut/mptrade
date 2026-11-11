@@ -57,12 +57,13 @@ def _compute_interval_drops(df, lag_bars: int) -> tuple[int, list[float]]:
 
 
 def analyze_drops(df):
-    total_intervals, drops = _compute_interval_drops(df, 20)
-    if total_intervals == 0:
+    _total_raw, drops = _compute_interval_drops(df, 20)
+    valid_intervals = len(drops)
+    if valid_intervals == 0:
         return 0, 0, 0.0
     count_drops = sum(1 for drop in drops if drop >= 5)
-    probability = count_drops / total_intervals * 100
-    return count_drops, total_intervals, probability
+    probability = count_drops / valid_intervals * 100
+    return count_drops, valid_intervals, probability
 
 
 if __name__ == "__main__":

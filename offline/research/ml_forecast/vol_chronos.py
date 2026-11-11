@@ -24,7 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
-from botcore import safe_nonneg_int, safe_pos_int  # noqa: E402
+from botcore import safe_float, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
 from offline.research.ml_forecast.forecast import _to_price_array  # noqa: E402
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
@@ -97,31 +97,45 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         forecast = pipe.predict(contexts, prediction_length=horizon)
         for k, i in enumerate(chunk):
             path = forecast[k].numpy()
-            point = float(np.median(path[..., -1])) if path.size else float("nan")
+            point = safe_float(np.median(path[..., -1]), default=np.nan) if path.size else float("nan")
             preds.append(point)
-            bases.append(float(rv[i]))
-            actuals.append(float(rv[i + horizon]))
+            bases.append(safe_float(rv[i], default=np.nan))
+            actuals.append(safe_float(rv[i + horizon], default=np.nan))
         done = b + len(chunk)
         print(f"    {done}/{len(idxs)} windows tested ({time.time()-t0:.0f}s)", end="\r")
     print()
-    preds, bases, actuals = map(np.array, (preds, bases, actuals))
-    mae_model = float(np.mean(np.abs(preds - actuals)))
-    mae_base = float(np.mean(np.abs(bases - actuals)))
-    dir_actual = (actuals - bases) > 0
-    dir_pred = (preds - bases) > 0
-    dir_acc = float(np.mean(dir_actual == dir_pred))
-    if len(preds) > 2 and float(np.std(preds)) > 0.0 and float(np.std(actuals)) > 0.0:
+    preds_arr, bases_arr, actuals_arr = map(np.asarray, (preds, bases, actuals))
+    valid = np.isfinite(preds_arr) & np.isfinite(bases_arr) & np.isfinite(actuals_arr)
+    preds_arr, bases_arr, actuals_arr = preds_arr[valid], bases_arr[valid], actuals_arr[valid]
+    if len(preds_arr) == 0:
+        return {
+            "n_test": 0,
+            "mae_model": 0.0,
+            "mae_baseline_persistence": 0.0,
+            "improvement_pct": None,
+            "direction_accuracy": 0.0,
+            "corr_model_vs_actual": float("nan"),
+        }
+    mae_model = safe_float(np.mean(np.abs(preds_arr - actuals_arr)), 0.0)
+    mae_base = safe_float(np.mean(np.abs(bases_arr - actuals_arr)), 0.0)
+    dir_actual = (actuals_arr - bases_arr) > 0
+    dir_pred = (preds_arr - bases_arr) > 0
+    dir_acc = safe_float(np.mean(dir_actual == dir_pred), 0.0)
+    std_pred = safe_pos_float(np.std(preds_arr), default=None)
+    std_actual = safe_pos_float(np.std(actuals_arr), default=None)
+    if len(preds_arr) > 2 and std_pred is not None and std_actual is not None:
         with np.errstate(divide="ignore", invalid="ignore"):
-            corr = float(np.corrcoef(preds, actuals)[0, 1])
+            corr = safe_float(np.corrcoef(preds_arr, actuals_arr)[0, 1], default=np.nan)
     else:
         corr = float("nan")
+    mae_base_pos = safe_pos_float(mae_base, default=None)
     return {
-        "n_test": len(preds),
+        "n_test": len(preds_arr),
         "mae_model": mae_model,
         "mae_baseline_persistence": mae_base,
-        "improvement_pct": round(100 * (1 - mae_model / mae_base), 1) if mae_base else None,
+        "improvement_pct": round(100 * (1 - mae_model / mae_base_pos), 1) if mae_base_pos is not None else None,
         "direction_accuracy": round(dir_acc, 3),
-        "corr_model_vs_actual": round(corr, 3),
+        "corr_model_vs_actual": round(corr, 3) if np.isfinite(corr) else float("nan"),
     }
 
 
@@ -135,16 +149,25 @@ def main() -> int:
     ap.add_argument("--eval", action="store_true")
     args = ap.parse_args()
 
-    ts, px = fetch_klines(args.symbol, args.days)
+    days = safe_pos_int(args.days, default=None)
+    win = safe_pos_int(args.win, default=None)
+    horizon = safe_pos_int(args.horizon, default=None)
+    stride = safe_pos_int(args.stride, default=None)
+    if None in (days, win, horizon, stride):
+        ap.error("--days, --win, --horizon, and --stride must be positive integers")
+
+    ts, px = fetch_klines(args.symbol, days)
     print(f"[{args.symbol}] {len(px)} 1h candles")
-    rv = realized_vol_series(px, args.win)
-    warmup = args.win + MAX_CONTEXT // 4
+    rv = realized_vol_series(px, win)
+    warmup = win + MAX_CONTEXT // 4
     if args.eval:
-        rep = walk_forward_vol(rv, args.horizon, warmup, args.stride)
-        print(f"  tested on {rep['n_test']} windows (stride={args.stride}h), "
-              f"horizon={args.horizon}h, vol_window={args.win}h")
+        rep = walk_forward_vol(rv, horizon, warmup, stride)
+        imp = rep["improvement_pct"]
+        imp_str = f"{imp}% {'better' if imp > 0 else 'worse'}" if imp is not None else "n/a"
+        print(f"  tested on {rep['n_test']} windows (stride={stride}h), "
+              f"horizon={horizon}h, vol_window={win}h")
         print(f"    MAE model={rep['mae_model']:.5f}  baseline(persistence)={rep['mae_baseline_persistence']:.5f}"
-              f"  -> {rep['improvement_pct']}% {'better' if (rep['improvement_pct'] or 0) > 0 else 'worse'}")
+              f"  -> {imp_str}")
         print(f"    direction accuracy (vol rises/falls): {rep['direction_accuracy']}")
         print(f"    correlation model vs actual: {rep['corr_model_vs_actual']}")
     return 0

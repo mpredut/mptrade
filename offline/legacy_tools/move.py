@@ -1,7 +1,14 @@
 """Historical cache move utility; operates on paths relative to CWD."""
 
 import os
-import shutil
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from state_io import durable_replace_file
+
 
 def backup_and_replace(converted_file: str, cache_file: str):
     """
@@ -16,11 +23,11 @@ def backup_and_replace(converted_file: str, cache_file: str):
     # If the cache file exists, move it into old/.
     if os.path.exists(cache_file):
         backup_path = os.path.join(old_folder, os.path.basename(cache_file))
-        shutil.move(cache_file, backup_path)
+        durable_replace_file(cache_file, backup_path)
         print(f"[INFO] The old file {cache_file} was moved into {backup_path}")
 
     # Move the converted file into the cache file's place.
-    shutil.move(converted_file, cache_file)
+    durable_replace_file(converted_file, cache_file)
     print(f"[INFO] The converted file {converted_file} was moved/renamed into {cache_file}")
 
 

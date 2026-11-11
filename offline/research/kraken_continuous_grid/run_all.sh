@@ -6,7 +6,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../../../orchestratorOS/lib/env_common.sh"
 
 OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
-mkdir -p "$OUT" && cd "$ROOT"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+export GRID_OUT="$OUT"
+cd "$ROOT"
 rm -f "$OUT/results.jsonl" "$OUT/results2.jsonl" "$OUT/results3.jsonl"
 export WORKERS="${WORKERS:-$(nproc 2>/dev/null || echo 4)}"
 

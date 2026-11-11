@@ -4,10 +4,10 @@ Migrates cache_price_<SYM>.json (old, full rewrite) -> cache_price_<SYM>.jsonl (
 
 During the refactor we moved from .json to .jsonl plus .meta, but the old data in .json
 was never migrated. This script:
-  • reads the points from the old .json and from the existing .jsonl (if there is one),
-  • merges them per symbol, deduplicates by timestamp, and sorts ascending,
-  • rewrites .jsonl atomically and regenerates .meta,
-  • renames the old .json -> .json.bak (you can delete the .bak after checking).
+  - reads the points from the old .json and from the existing .jsonl (if there is one),
+  - merges them per symbol, deduplicates by timestamp, and sorts ascending,
+  - rewrites .jsonl atomically and regenerates .meta,
+  - renames the old .json -> .json.bak (you can delete the .bak after checking).
 
 RUN IT ONLY with the writer processes (priceAnalysis and so on) STOPPED, so there is no
 concurrent write on the .jsonl. Idempotent (re-running does not duplicate).
@@ -29,7 +29,7 @@ CACHE_DIR = get_cachedb_dir()
 
 
 def _entry_ts(item):
-    # An item is [ts, price] (a list) or dict — delegate to extract_timestamp_ms SSOT.
+    # An item is [ts, price] (a list) or dict -- delegate to extract_timestamp_ms SSOT.
     return int(extract_timestamp_ms(item, default=0) or 0)
 
 
@@ -74,7 +74,7 @@ def migrate_file(json_path, dry_run=False):
             fetchtime[sym] = _entry_ts(items[-1])
 
     print(f"[{sym_from_name}] old={sum(len(v) for v in old.values())} "
-          f"jsonl={sum(len(v) for v in new.values())} → merged={sum(counts.values())} "
+          f"jsonl={sum(len(v) for v in new.values())} -> merged={sum(counts.values())} "
           f"(+{added_total} from the old one)")
 
     if dry_run:

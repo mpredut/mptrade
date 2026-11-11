@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import os
-import time  # noqa: F401 — resolved via BaseSpotMixin._mod_global("time")
+import time  # noqa: F401 -- resolved via BaseSpotMixin._mod_global("time")
 from collections import deque
 from dataclasses import dataclass, fields
 from typing import Callable
@@ -20,7 +20,7 @@ from botcore import (
     _parse_bool_flag, extract_timestamp_s, format_price_log, log, defined_env, normalize_epoch_sec,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
-    safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
+    safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import normalize_side
@@ -171,6 +171,13 @@ class StratParams(SpotParamsMixin):
         def integer(name: str, value) -> int:
             return require_int(require_finite_float(value, name), error_msg=f"{name} must be an integer")
 
+        self.entry_amount = finite("STRAT_ENTRY", self.entry_amount)
+        self.dca_amount = finite("STRAT_DCA", self.dca_amount)
+        self.max_budget = finite("STRAT_MAX_BUDGET", self.max_budget)
+        self.check_minutes = finite("STRAT_CHECK_MINUTES", self.check_minutes)
+        self.order_ttl_min = finite("STRAT_ORDER_TTL_MIN", self.order_ttl_min)
+        self.adopt_cost = finite("STRAT_ADOPT_COST", self.adopt_cost)
+        self.max_dca_buys = integer("STRAT_MAX_DCA_BUYS", self.max_dca_buys)
         self.trend_topup = finite("STRAT_TREND_TOPUP", self.trend_topup)
         self.entry_discount_pct = finite("STRAT_ENTRY_DISCOUNT_PCT", self.entry_discount_pct)
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
@@ -184,7 +191,36 @@ class StratParams(SpotParamsMixin):
             self.tp_tranches = _parse_tranches(self.tp_tranches)
         elif self.tp_tranches is None:
             self.tp_tranches = []
+        elif isinstance(self.tp_tranches, (list, tuple)):
+            norm_tranches: list[tuple[float, float]] = []
+            for item in self.tp_tranches:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
+                pct_f = safe_nonneg_float(item[0], default=None)
+                share_f = safe_pos_float(item[1], default=None)
+                if pct_f is None or share_f is None:
+                    raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
+                norm_tranches.append((pct_f, share_f))
+            if norm_tranches and abs(sum(s for _, s in norm_tranches) - 100.0) >= 1e-6:
+                raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
+            self.tp_tranches = norm_tranches
+        else:
+            raise ValueError(f"Invalid STRAT_TP_TRANCHES: {self.tp_tranches!r}")
 
+        if self.check_minutes <= 0:
+            raise ValueError("STRAT_CHECK_MINUTES must be > 0")
+        if self.order_ttl_min <= 0:
+            raise ValueError("STRAT_ORDER_TTL_MIN must be > 0")
+        if self.max_dca_buys < 0:
+            raise ValueError("STRAT_MAX_DCA_BUYS must be >= 0")
+        if self.entry_amount < 0:
+            raise ValueError("STRAT_ENTRY must be >= 0")
+        if self.dca_amount < 0:
+            raise ValueError("STRAT_DCA must be >= 0")
+        if self.max_budget < 0:
+            raise ValueError("STRAT_MAX_BUDGET must be >= 0")
+        if self.adopt_cost < 0:
+            raise ValueError("STRAT_ADOPT_COST must be >= 0")
         if self.trend_topup <= 0:
             raise ValueError("STRAT_TREND_TOPUP must be > 0")
         if not 0 <= self.entry_discount_pct < 100:
@@ -225,6 +261,13 @@ class StratParams(SpotParamsMixin):
         )
         self.total_budget, self.alloc_pct, self.entry_pct, self.dca_pct = values
         if not any(value != 0 for value in values):
+            if self.adopt_cost <= 0:
+                if self.entry_amount <= 0:
+                    raise ValueError("STRAT_ENTRY must be > 0 when fixed sizing is configured")
+                if self.max_budget <= 0:
+                    raise ValueError("STRAT_MAX_BUDGET must be > 0 when fixed sizing is configured")
+                if self.max_dca_buys > 0 and self.dca_amount <= 0:
+                    raise ValueError("STRAT_DCA must be > 0 when STRAT_MAX_DCA_BUYS > 0")
             return
         if self.total_budget <= 0:
             raise ValueError("STRAT_TOTAL_BUDGET must be > 0 when percentage sizing is configured")
@@ -291,7 +334,7 @@ def _new_state() -> dict:
         "cycle_fees": 0.0, "realized_gross": 0.0, "realized_net": 0.0, "fees_total": 0.0,
         "last_sell_price": None, "last_exit_kind": None, "sl_low": None,
         "post_sell_peak": None, "post_sell_trough": None, "last_sell_ts": None,
-        "trail_peak": None, "trail_stop": None,
+        "trail_peak": None, "trail_stop": None, "tp_sold_levels": [],
         "trend_mode": False, "trend_peak": None, "trend_confirm_count": 0,
         "orders": [], "pending_intent": None, "pending_exit": None,
         "placement_backoffs": {}, "ledger_reconcile_required": False,
@@ -342,7 +385,7 @@ class Strategy(BaseSpotMixin):
         self._paper_seq = 0
         self._shadow_prices = deque(maxlen=90)
         self._surge_replay_closes = (
-            deque(maxlen=max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0))) + 1)
+            deque(maxlen=max(1, round(self.p.surge_window_hours / (max(1.0, safe_pos_float(self.p.trend_interval, 1.0)) / 60.0))) + 1)
             if self.replay_mode and params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
             else None
         )
@@ -396,6 +439,14 @@ class Strategy(BaseSpotMixin):
         pe = state.get("pending_exit")
         if isinstance(pe, dict) and "soft_floor" in pe:
             pe["soft_floor"] = _parse_bool_flag(pe.get("soft_floor"), False)
+        raw_sold = state.get("tp_sold_levels")
+        clean_sold: list[int] = []
+        if isinstance(raw_sold, (list, tuple)):
+            for item in raw_sold:
+                idx_i = safe_nonneg_int(item, default=None)
+                if idx_i is not None and idx_i not in clean_sold:
+                    clean_sold.append(idx_i)
+        state["tp_sold_levels"] = clean_sold
         return state
 
     def _persist_pending_intent(self, pending: dict | None) -> None:
@@ -416,7 +467,11 @@ class Strategy(BaseSpotMixin):
         market_val = pending.get("market")
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
-        return {
+        tranche_raw = pending.get("tranche_idx")
+        if tranche_raw is None and isinstance(meta, dict):
+            tranche_raw = meta.get("tranche_idx")
+        tranche_idx = safe_nonneg_int(tranche_raw, default=None)
+        order_doc = {
             "txid": clean_order_id(pending.get("order_id")) or "",
             "side": str(pending["side"]).lower(),
             "vol": eff_vol,
@@ -427,6 +482,9 @@ class Strategy(BaseSpotMixin):
             "intent_id": clean_order_id(pending.get("intent_id")),
             "ts": safe_pos_float(pending.get("created_at"), self._now()),
         }
+        if tranche_idx is not None:
+            order_doc["tranche_idx"] = tranche_idx
+        return order_doc
 
     def _adopt_pending_order(self, pending: dict) -> None:
         order_id = clean_order_id(pending.get("order_id"))
@@ -473,10 +531,10 @@ class Strategy(BaseSpotMixin):
             self.s["placement_backoffs"] = records
         previous = records.get(key) if isinstance(records.get(key), dict) else {}
         attempts = safe_nonneg_int(previous.get("attempts"), default=0) + 1
-        delay = min(_PLACEMENT_BACKOFF_CAP_SEC, max(60.0, float(self.p.check_minutes) * 60.0) * (2 ** min(attempts - 1, 10)))
+        delay = min(_PLACEMENT_BACKOFF_CAP_SEC, max(60.0, safe_pos_float(self.p.check_minutes, 1.0) * 60.0) * (2 ** min(attempts - 1, 10)))
         records[key] = {"attempts": attempts, "until": self._now() + delay, "reason": str(error)}
         self._save()
-        log(f"  ! [STRAT] {side} {kind} insufficient funds — operational cooldown {delay:.0f}s (refusal {attempts})")
+        log(f"  ! [STRAT] {side} {kind} insufficient funds -- operational cooldown {delay:.0f}s (refusal {attempts})")
 
     def _clear_placement_backoff(self, side: str, kind: str) -> None:
         records = self.s.get("placement_backoffs")
@@ -487,21 +545,22 @@ class Strategy(BaseSpotMixin):
 
     # -- Placement & Cancellation ----------------------------------------------
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
-               market: bool = False) -> bool:
+               market: bool = False, tranche_idx: int | None = None) -> bool:
         market = _parse_bool_flag(market, False)
+        clean_tranche = safe_nonneg_int(tranche_idx, default=None) if tranche_idx is not None else None
         s_norm = normalize_side(side)
         if s_norm in ("BUY", "SELL"):
             side = s_norm.lower()
         vol_f, price_f = safe_pos_float(vol, default=None), safe_pos_float(price, default=None)
         if vol_f is None or price_f is None:
-            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
+            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} -- skipping")
             return False
         vol, price = round(vol_f, self.vol_dec), round(price_f, self.price_dec)
         if price <= 0:
-            log(f"  ! [STRAT] price {price} <= 0 — skipping")
+            log(f"  ! [STRAT] price {price} <= 0 -- skipping")
             return False
         if vol <= 0 or (self.ordermin and vol < self.ordermin):
-            log(f"  ! [STRAT] volume {vol} < minimum order {self.ordermin} — skipping")
+            log(f"  ! [STRAT] volume {vol} < minimum order {self.ordermin} -- skipping")
             return False
         if not market and str(side).lower() == "sell" and str(kind).upper() != "STOP":
             _avg = self._avg()
@@ -516,13 +575,16 @@ class Strategy(BaseSpotMixin):
         if self.dry_run:
             txid = self._next_paper_order_id()
             log(f"  [STRAT] [PAPER] {side.upper()} {kind}{' MKT' if market else ''} {vol} @ {price} {self.ccy}")
-            self.s["orders"].append({
+            paper_order = {
                 "txid": txid, "side": side, "vol": vol, "price": price,
                 "amount": amount, "kind": kind, "market": market, "ts": self._now(),
-            })
+            }
+            if clean_tranche is not None:
+                paper_order["tranche_idx"] = clean_tranche
+            self.s["orders"].append(paper_order)
             return True
         if self.s.get("pending_intent"):
-            log("  ! [STRAT] an unreconciled pre-submit intent exists — not duplicating")
+            log("  ! [STRAT] an unreconciled pre-submit intent exists -- not duplicating")
             return False
         try:
             preflight = getattr(type(self.client), "preflight_order", None)
@@ -535,10 +597,13 @@ class Strategy(BaseSpotMixin):
             client_order_id = intent_client_order_id(self.venue_label, intent_id)
             if not client_order_id:
                 raise ProviderError(f"{self.venue_label}: client_order_id unavailable for the lifecycle")
+            meta_doc: dict[str, object] = {"amount": amount, "market": market}
+            if clean_tranche is not None:
+                meta_doc["tranche_idx"] = clean_tranche
             intent = self._order_lifecycle.new_intent(
                 intent_id=intent_id, client_order_id=client_order_id, symbol=self.pair,
                 side=side, requested_qty=vol, requested_price=price, kind=kind,
-                metadata={"amount": amount, "market": market},
+                metadata=meta_doc,
             )
             submit_outcome = getattr(type(self.client), "submit_outcome_with_intent", None)
             submit_with_intent = getattr(type(self.client), "submit_order_with_intent", None)
@@ -624,7 +689,7 @@ class Strategy(BaseSpotMixin):
             and age > self.p.order_ttl_min
             and price > o["price"] * 1.003
         ):
-            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
+            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose -- cancelling and re-placing")
             self._cancel_order(o)
 
     def _has_pending_market_exit(self) -> bool:
@@ -679,7 +744,7 @@ class Strategy(BaseSpotMixin):
         placed = self._place("sell", self._dust_safe_qty(self.s["qty"]), reference, kind=kind, market=True)
         if placed and kind == "STOP":
             self._emit(
-                title=f"🛑 SL {self.pair}",
+                title=f"SL {self.pair}",
                 body="Protective MARKET exit accepted; waiting for confirmed execution.",
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
@@ -702,13 +767,13 @@ class Strategy(BaseSpotMixin):
                 try:
                     result = self._order_lifecycle.reconcile(pending, persist=self._persist_pending_intent)
                 except (ProviderError, RuntimeError, ValueError) as exc:
-                    log(f"  ! [STRAT] unreconciled pending intent ({exc}) — not resending")
+                    log(f"  ! [STRAT] unreconciled pending intent ({exc}) -- not resending")
                 else:
                     if result.order_known:
                         self._adopt_pending_order(result.intent)
                         log(f"  [STRAT] recovered intent {result.intent['side']} txid={result.intent['order_id']}")
                     elif result.outcome in {"absent", "retryable"}:
-                        log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
+                        log("  [STRAT] intent absence confirmed -- the strategy may re-evaluate it")
         if not self.s.get("pending_exit"):
             exit_order = next((o for o in self.s["orders"] if o["side"] == "sell" and o.get("market")), None)
             if exit_order:
@@ -742,7 +807,7 @@ class Strategy(BaseSpotMixin):
                     else:
                         status = self.client.order_status(self.pair, o["txid"])
                 except ProviderError as e:
-                    log(f"  ! [STRAT] status {o['txid']} failed: {e} — keeping the order")
+                    log(f"  ! [STRAT] status {o['txid']} failed: {e} -- keeping the order")
                     continue
                 st = status.status
                 terminal = st in ("closed", "canceled", "expired")
@@ -750,7 +815,7 @@ class Strategy(BaseSpotMixin):
                 total_fee = 0.0 if status.fee is None else safe_float(status.fee, default=None)
                 ord_px = safe_pos_float(o.get("price"), default=None)
                 if total_vol is None or total_fee is None or ord_px is None:
-                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
+                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
                     continue
                 if status.cost is None:
                     total_cost = total_vol * ord_px
@@ -758,11 +823,11 @@ class Strategy(BaseSpotMixin):
                     raw_cost = safe_nonneg_float(status.cost, default=None)
                     total_cost = (total_vol * ord_px) if raw_cost == 0.0 and total_vol > 0 else raw_cost
                 if total_cost is None:
-                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
+                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
                     continue
                 reported_price = safe_pos_float(total_cost / total_vol if total_vol > 0 else ord_px, default=None)
                 if reported_price is None:
-                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
+                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution -- keeping the order")
                     continue
 
                 applied_vol = safe_nonneg_float(o.get("applied_vol"), 0.0)
@@ -771,7 +836,7 @@ class Strategy(BaseSpotMixin):
                 ord_vol = safe_pos_float(o.get("vol"), default=0.0) or 0.0
                 eps = max(1e-12, ord_vol * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
-                    log(f"  ! [STRAT] status {o['txid']} regressed cumulatively (vol {total_vol}<{applied_vol}) — not reapplying")
+                    log(f"  ! [STRAT] status {o['txid']} regressed cumulatively (vol {total_vol}<{applied_vol}) -- not reapplying")
                     continue
 
                 delta_vol = max(0.0, total_vol - applied_vol)
@@ -801,6 +866,11 @@ class Strategy(BaseSpotMixin):
                     if o in self.s["orders"]:
                         self._remove(o)
                     if o["side"] == "sell":
+                        tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
+                        if st == "closed" and total_vol > eps and tr_i is not None:
+                            sold_lvls = self.s.setdefault("tp_sold_levels", [])
+                            if tr_i not in sold_lvls:
+                                sold_lvls.append(tr_i)
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
                 else:
@@ -815,6 +885,7 @@ class Strategy(BaseSpotMixin):
         px_str = format_price_log(price)
         if o["side"] == "buy":
             self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
+            self.s["tp_sold_levels"] = []
             if self.s.get("entry_ts") is None:
                 self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
             if o.get("kind") == "TREND_ENTRY":
@@ -842,11 +913,16 @@ class Strategy(BaseSpotMixin):
                 f"gross={gross:+.4f} cycle_fee={self.s['cycle_fees']:.4f} net={net:+.4f}")
             self._emit(
                 title=f"{tag}{self.pair} SELL {vol:.2f}@{px_str} N{net:+.2f}{self.ccy}",
-                body=(f"a{avg_str} · gr{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
+                body=(f"a{avg_str} | gr{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
                       f"Ntot{self.s['realized_net']:+.2f}{self.ccy}"),
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             if final:
+                tr_i = safe_nonneg_int(o.get("tranche_idx"), default=None)
+                if tr_i is not None:
+                    sold_lvls = self.s.setdefault("tp_sold_levels", [])
+                    if tr_i not in sold_lvls:
+                        sold_lvls.append(tr_i)
                 self._finalize_cycle_if_flat(o, price)
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
@@ -914,7 +990,7 @@ class Strategy(BaseSpotMixin):
             if sr.hit_stop(avg, price, self.p.stop_loss_pct):
                 if self._has_pending_market_exit():
                     return True
-                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
+                log(f"  [SL] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- SELLING EVERYTHING (cutting the loss)")
                 if not self._request_market_exit(price, "STOP"):
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
@@ -931,7 +1007,7 @@ class Strategy(BaseSpotMixin):
         if decision.action == ExitAction.SELL and decision.should_exit:
             if self._has_pending_market_exit():
                 return True
-            log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING")
+            log(f"  [SL] [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) -- SELLING EVERYTHING")
             if not self._request_market_exit(price, "STOP"):
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
@@ -941,7 +1017,7 @@ class Strategy(BaseSpotMixin):
 
     def _trail_profit_floor_price(self, avg: float) -> float | None:
         """Return the minimum soft-exit price, rounded up to venue precision."""
-        pct = float(self.p.tp_trail_profit_floor_pct or 0.0)
+        pct = safe_nonneg_float(self.p.tp_trail_profit_floor_pct, 0.0)
         if pct <= 0 or avg <= 0:
             return None
         scale = 10 ** self.price_dec
@@ -952,7 +1028,7 @@ class Strategy(BaseSpotMixin):
         if self.p.adopt_cost <= 0 or self.s.get("adopted"):
             return
         if self.s["qty"] > 1e-12 or self.s["orders"] or self.s["cycle"] != 1 or self.s["spent"] > 0:
-            log("  [STRAT] adopt: the state is not fresh — NOT adopting (cycle in progress)")
+            log("  [STRAT] adopt: the state is not fresh -- NOT adopting (cycle in progress)")
             return
         qty = safe_nonneg_float(self.p.adopt_qty) or 0.0
         if qty <= 0:
@@ -971,7 +1047,7 @@ class Strategy(BaseSpotMixin):
                     return
                 qty = clean_bal
         if qty <= 1e-12:
-            log("  [STRAT] adopt: balance 0 on the base asset — waiting for the allocation")
+            log("  [STRAT] adopt: balance 0 on the base asset -- waiting for the allocation")
             return
         if self.p.adopt_qty <= 0:
             qty = self._dust_safe_qty(qty)
@@ -983,9 +1059,9 @@ class Strategy(BaseSpotMixin):
         self.s["last_buy_price"] = self.p.adopt_cost
         self.s["adopted"] = True
         self._save()
-        log(f"  📥 [STRAT] POSITION ADOPTED: {qty} @ {self.p.adopt_cost} {self.ccy} — managing TP/DCA/SL")
+        log(f"  [ADOPT] [STRAT] POSITION ADOPTED: {qty} @ {self.p.adopt_cost} {self.ccy} -- managing TP/DCA/SL")
         self._emit(
-            title=f"📥 {self.pair} ADOPTED {qty:.2f}@{format_price_log(self.p.adopt_cost)}",
+            title=f"[ADOPT] {self.pair} ADOPTED {qty:.2f}@{format_price_log(self.p.adopt_cost)}",
             body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
             source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
         )
@@ -1016,7 +1092,7 @@ class Strategy(BaseSpotMixin):
             closes = self._surge_replay_closes if self._surge_replay_closes is not None else self._trend_closes()
         if not closes:
             return None
-        window_bars = max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0)))
+        window_bars = max(1, round(self.p.surge_window_hours / (max(1.0, safe_pos_float(self.p.trend_interval, 1.0)) / 60.0)))
         idx = -window_bars - (1 if self.replay_mode else 0)
         if abs(idx) > len(closes):
             return None
@@ -1049,7 +1125,7 @@ class Strategy(BaseSpotMixin):
         if not self.replay_mode:
             now = self._now()
             interval_sec = max(60, self.p.trend_interval * 60)
-            slot = int(now // interval_sec)
+            slot = safe_int(now // interval_sec, 0)
             refresh_epoch = slot * interval_sec + min(_REGIME_BAR_SETTLE_MAX_SEC, interval_sec / 4)
             cached = self._regime_bar_context
             if cached and cached[0] == slot:
@@ -1335,8 +1411,8 @@ class Strategy(BaseSpotMixin):
                 defaults = _new_state()
                 for k in (
                     "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
-                    "last_buy_price", "entry_ts", "trail_peak", "trail_stop", "trend_mode",
-                    "trend_peak", "trend_confirm_count", "pending_exit", "surge_active",
+                    "last_buy_price", "entry_ts", "trail_peak", "trail_stop", "tp_sold_levels",
+                    "trend_mode", "trend_peak", "trend_confirm_count", "pending_exit", "surge_active",
                     "surge_peak", "slow_grind_active", "slow_grind_peak", "sl_bounce_state",
                     "sl_episode_state", "tp_ride_state", "reentry_state",
                 ):
@@ -1429,13 +1505,13 @@ class Strategy(BaseSpotMixin):
         """Stage 1: Validate market price, sync venue ledger, record shadow ticks, and check adoption."""
         clean_price = safe_pos_float(price, None)
         if clean_price is None:
-            log("  ! [STRAT] invalid price — deferring step")
+            log("  ! [STRAT] invalid price -- deferring step")
             return None
         price = clean_price
         if high is not None:
             high = safe_pos_float(high, None)
         if self.s.get("pending_intent"):
-            log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
+            log("  [STRAT] pre-submit intent in reconciliation -- deferring new decisions")
             return None
         clean_ts = normalize_epoch_sec(timestamp, default=None, allow_zero=True)
         had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
@@ -1677,37 +1753,97 @@ class Strategy(BaseSpotMixin):
             self._cancel_orders("sell", exclude_market=True)
             return False
 
-        tranches = self.p.tp_tranches or [(eff_tp, 100.0)]
-        desired, rem = [], held
-        for i, (pct, share) in enumerate(tranches):
-            q = (
-                self._dust_safe_qty(rem)
-                if i == len(tranches) - 1
-                else min(rem, round(held * share / 100, self.vol_dec))
-            )
-            rem = round(rem - q, self.vol_dec)
-            if q > 0:
-                desired.append((round(sr.tp_price(avg, pct), self.price_dec), q))
-        if self.ordermin and any(q < self.ordermin for _, q in desired):
-            safe_held = self._dust_safe_qty(held)
-            desired = (
-                [(round(sr.tp_price(avg, tranches[0][0]), self.price_dec), safe_held)]
-                if safe_held >= self.ordermin else []
-            )
+        has_multi_tranches = bool(self.p.tp_tranches)
+        raw_tranches: list[tuple[int | None, float, float]] = (
+            [(idx, pct, share) for idx, (pct, share) in enumerate(self.p.tp_tranches)]
+            if has_multi_tranches
+            else [(None, eff_tp, 100.0)]
+        )
+        sold_tranches = set(self.s.get("tp_sold_levels") or ()) if has_multi_tranches else set()
+        unsold = [item for item in raw_tranches if item[0] is None or item[0] not in sold_tranches]
+        if not unsold:
+            unsold = [(None, raw_tranches[-1][1], 100.0)]
+
         sells = [o for o in self.s["orders"] if o["side"] == "sell"]
+        locked_by_slot: dict[int, tuple[float, float, int | None]] = {}
+        used_orders: set[int] = set()
+        reserved_vol = 0.0
+        for slot_i, (tr_idx, pct, _share) in enumerate(unsold):
+            target_px = round(sr.tp_price(avg, pct), self.price_dec)
+            if target_px <= 0:
+                continue
+            for o in sells:
+                if id(o) in used_orders or o.get("cancel_requested"):
+                    continue
+                in_progress = bool(o.get("_replay_had_fill")) or (safe_pos_float(o.get("applied_vol"), None) is not None)
+                if not in_progress:
+                    continue
+                o_tr = safe_nonneg_int(o.get("tranche_idx"), default=None)
+                if tr_idx is not None and o_tr is not None and o_tr != tr_idx:
+                    continue
+                if abs(o["price"] - target_px) / target_px <= 0.001 and 0 < o["vol"] <= held - reserved_vol + 1e-9:
+                    locked_by_slot[slot_i] = (o["price"], o["vol"], tr_idx)
+                    used_orders.add(id(o))
+                    reserved_vol += o["vol"]
+                    break
+
+        unstarted = [(slot_i, tr_idx, pct, share) for slot_i, (tr_idx, pct, share) in enumerate(unsold) if slot_i not in locked_by_slot]
+        rem_pool = max(0.0, round(held - reserved_vol, self.vol_dec))
+        share_sum = sum(share for _, _, _, share in unstarted)
+        sized_by_slot: dict[int, tuple[float, float, int | None]] = dict(locked_by_slot)
+        if unstarted and rem_pool > 0 and share_sum > 0:
+            rem = rem_pool
+            for u_pos, (slot_i, tr_idx, pct, share) in enumerate(unstarted):
+                q = (
+                    self._dust_safe_qty(rem)
+                    if u_pos == len(unstarted) - 1
+                    else min(rem, round(rem_pool * share / share_sum, self.vol_dec))
+                )
+                rem = round(rem - q, self.vol_dec)
+                if q > 0:
+                    sized_by_slot[slot_i] = (round(sr.tp_price(avg, pct), self.price_dec), q, tr_idx)
+
+        desired = [sized_by_slot[slot_i] for slot_i in sorted(sized_by_slot)]
+        if self.ordermin and any(
+            q < self.ordermin and slot_i not in locked_by_slot
+            for slot_i, (_p, q, _tr) in sorted(sized_by_slot.items())
+        ):
+            if not locked_by_slot:
+                safe_held = self._dust_safe_qty(held)
+                first_tr, first_pct, _ = unsold[0]
+                desired = (
+                    [(round(sr.tp_price(avg, first_pct), self.price_dec), safe_held, first_tr)]
+                    if safe_held >= self.ordermin else []
+                )
+            else:
+                desired = [
+                    val for slot_i, val in sorted(sized_by_slot.items())
+                    if slot_i in locked_by_slot or val[1] >= self.ordermin
+                ]
+
         ok = (
             len(sells) == len(desired)
             and all(not o.get("cancel_requested") for o in sells)
             and all(
                 abs(o["price"] - p) / p <= 0.001 and abs(o["vol"] - q) <= 1e-9
-                for o, (p, q) in zip(sorted(sells, key=lambda x: x["price"]), sorted(desired))
+                for o, (p, q, _tr) in zip(
+                    sorted(sells, key=lambda x: (x["price"], x["vol"])),
+                    sorted(desired, key=lambda x: (x[0], x[1])),
+                )
             )
         )
         if not ok:
-            self._cancel_orders("sell")
-            if not any(o["side"] == "sell" for o in self.s["orders"]):
-                for p_, q_ in desired:
-                    self._place("sell", q_, p_, kind="TP")
+            for o in list(sells):
+                if id(o) not in used_orders:
+                    self._cancel_order(o)
+            remaining_sells = [o for o in self.s["orders"] if o["side"] == "sell"]
+            if len(remaining_sells) == len(used_orders):
+                for slot_i, (p_, q_, tr_idx) in sorted(sized_by_slot.items()):
+                    if slot_i in locked_by_slot:
+                        continue
+                    if self.ordermin and q_ < self.ordermin:
+                        continue
+                    self._place("sell", q_, p_, kind="TP", tranche_idx=tr_idx)
         return False
 
     def _dispatch_dca_buy(
@@ -1752,12 +1888,12 @@ class Strategy(BaseSpotMixin):
             entry_px = round(entry_px, self.price_dec)
             qty = math.floor(spend / entry_px * 10 ** self.vol_dec) / 10 ** self.vol_dec if entry_px > 0 else 0.0
         if qty <= 0 or qty < self.ordermin:
-            log(f"  [STRAT] dip {price}: DCA skipped — available {spend:.2f} {self.ccy} too small for a fill")
+            log(f"  [STRAT] dip {price}: DCA skipped -- available {spend:.2f} {self.ccy} too small for a fill")
             return
         partial = " (resized to available funds/budget)" if spend < effective_dca_amount else ""
         log(
             f"  [STRAT] dip {price} <= {self.s['last_buy_price']}"
-            f"×(1-{effective_dca_drop}%) (tol {self.p.reentry_tolerance_pct}%) — DCA {spend:.0f}{partial}"
+            f"*(1-{effective_dca_drop}%) (tol {self.p.reentry_tolerance_pct}%) -- DCA {spend:.0f}{partial}"
         )
         self._place("buy", qty, entry_px, kind="DCA", amount=spend)
 
@@ -1810,14 +1946,14 @@ class Strategy(BaseSpotMixin):
     # -- Main Loop -------------------------------------------------------------
     def run(self) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — MONEY")
+        exec_banner = "[OBSERVE ONLY -- AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "[WARN] REAL -- MONEY")
         log(f"  === {self.venue_label.upper()} STRATEGY STARTED ===")
         log(f"      pair       : {self.pair}   {exec_banner}")
         log(f"      mode       : {mode}")
         log(f"      entry      : {self.p.effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.effective_dca_amount_base():.0f} {self.ccy} at -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
         if self.p.pct_sizing_on():
-            log(f"      SIZING %   : slice {self.p.alloc_pct}% × total {self.p.total_budget:.0f} "
+            log(f"      SIZING %   : slice {self.p.alloc_pct}% * total {self.p.total_budget:.0f} "
                 f"= {self.p.allocated_budget():.0f} {self.ccy} (entry {self.p.entry_pct}%, DCA {self.p.dca_pct}%)")
         if self.p.dca_spacing_growth_pct > 0:
             log(f"      DCA growth : +{self.p.dca_spacing_growth_pct}pp after each executed DCA")

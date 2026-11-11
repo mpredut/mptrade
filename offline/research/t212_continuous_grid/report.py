@@ -39,7 +39,13 @@ def generate_report(exp_dir=None):
     rows = read_jsonl_dicts(results_path)
 
     errors = [r for r in rows if "error" in r]
-    valid_rows = [r for r in rows if "error" not in r]
+    valid_rows = [
+        r for r in rows
+        if "error" not in r
+        and isinstance(r.get("profile"), str) and r["profile"].strip()
+        and isinstance(r.get("variant"), str) and r["variant"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
 
     by = defaultdict(dict)  # (profile, variant) -> asset -> row
     for r in valid_rows:
@@ -70,9 +76,15 @@ def generate_report(exp_dir=None):
             wm = st.fmean(w_rets) if w_rets else None
             wp = (100.0 * st.fmean(ret > 0 for ret in w_rets)) if w_rets else None
             ret_1h = g(r, "1h", "ret")
-            sort_key = ret_1h if ret_1h is not None else -1e9
+            ret_1d = g(r, "1d", "ret")
+            sort_key = (
+                ret_1h is None,
+                -(ret_1h if ret_1h is not None else 0.0),
+                ret_1d is None,
+                -(ret_1d if ret_1d is not None else 0.0),
+            )
             items.append((sort_key, v, r, wm, wp))
-        for _, v, r, wm, wp in sorted(items, key=lambda x: -x[0]):
+        for _, v, r, wm, wp in sorted(items, key=lambda x: x[0]):
             L.append(
                 f"| {v} | {_fmt_cell(g(r,'1h','ret'))} | {_fmt_cell(g(r,'1h','dd'))} | "
                 f"{_fmt_cell(g(r,'1h','expo'))} | {_fmt_cell(g(r,'1h','cyc'))} | "

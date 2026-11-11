@@ -18,7 +18,6 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import safe_float, safe_int, safe_pos_float
@@ -199,7 +198,7 @@ def compute_window_signals_from_bounds(
     gc_sw3 = np.where(np.abs(gc_sw3) <= tol_raw, 0.0, gc_sw3)
 
     sym_p = pw.step_wols_power_for_symbol(symbol)
-    gc_diff = gc_sw3 if sym_p >= 2.5 else gc_sw2
+    gc_diff = gc_sw3 if sym_p >= 2.5 else (gc_sw2 if sym_p >= 1.5 else gc_sw1)
 
     scale_inv = np.where(m_f > 10.0, np.sqrt(10.0 / m_f), 1.0)
 
@@ -263,9 +262,12 @@ def make_tape(
 def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, float]]:
     """Load dense 1s (.npz / .jsonl) or sparse 329d price series for `sym`."""
     npz_path = cache_path(f"cache_365_price_{sym}.npz")
+    jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
     if use_365 and os.path.exists(npz_path):
-        with np.load(npz_path) as z:
-            return list(zip(z["ts"].tolist(), z["px"].tolist()))
+        npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
+        if npz_fresh:
+            with np.load(npz_path) as z:
+                return list(zip(z["ts"].tolist(), z["px"].tolist()))
     path = rrb.resolve_archive_jsonl_path(sym, use_365=use_365)
     if not os.path.exists(path):
         return []
@@ -309,22 +311,27 @@ def evaluate_dataset(use_365: bool = False):
     print("\n" + hdr)
     print("-" * len(hdr))
 
+    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
     bh_Wait = {}
-    for m_name, tape_fn in models:
+    try:
+        for m_name, tape_fn in models:
+            rrb._TREND_TAPE_CACHE.clear()
+            cells = []
+            tot_net = 0.0
+            for sym in symbols:
+                series = series_map[sym]
+                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
+                rrb._TREND_TAPE_CACHE[key] = tuple(tape_fn(sig_map[sym]))
+                cfg = rrb.SYMBOLS[sym]
+                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+                net = safe_float(res.get("net"), 0.0)
+                bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
+                tot_net += net
+                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
+            print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+    finally:
         rrb._TREND_TAPE_CACHE.clear()
-        cells = []
-        tot_net = 0.0
-        for sym in symbols:
-            series = series_map[sym]
-            key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-            rrb._TREND_TAPE_CACHE[key] = tape_fn(sig_map[sym])
-            cfg = rrb.SYMBOLS[sym]
-            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-            net = safe_float(res.get("net"), 0.0)
-            bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
-            tot_net += net
-            cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
-        print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
 
     bh_tot = sum(bh_Wait.values())
     bh_cells = [f"{bh_Wait[sym]:>+14.2f}" for sym in symbols]
@@ -333,6 +340,7 @@ def evaluate_dataset(use_365: bool = False):
 
 
 if __name__ == "__main__":
+    os.chdir(ROOT)
     evaluate_dataset(use_365=False)
     if "--dense" in sys.argv:
         evaluate_dataset(use_365=True)

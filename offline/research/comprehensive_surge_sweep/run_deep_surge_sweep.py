@@ -18,6 +18,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
+import io
 import os
 import sys
 import time
@@ -32,9 +33,11 @@ if ROOT not in sys.path:
 from botcore import (
     parse_dotenv,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
 )
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_replay as _spot_replay
@@ -232,7 +235,7 @@ def evaluate_single_candidate(
     params = candidate["params"]
     ca = _new_acc_entry()
 
-    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+    with contextlib.redirect_stdout(io.StringIO()):
         for asset, ohlc in asset_data.items():
             if not ohlc or len(ohlc) < 60:
                 continue
@@ -285,7 +288,7 @@ def _win_move_at_ts(
     wh_f = safe_pos_float(w_hours, default=None)
     if ts_f is None or wh_f is None:
         return None
-    bar_idx = int(round(ts_f / (240.0 * 60.0)))
+    bar_idx = safe_int(round(ts_f / (240.0 * 60.0)), default=0)
     nb = max(1, round(wh_f / 4.0))
     idx = warmup_n + bar_idx
     if idx < nb or idx >= len(all_closes):
@@ -295,6 +298,10 @@ def _win_move_at_ts(
     if past_p is None or cur_p is None:
         return None
     return (cur_p - past_p) / past_p * 100.0
+
+
+def _exceeds_gain(move_val: float | None, threshold: float) -> bool:
+    return move_val is not None and move_val >= threshold
 
 
 def evaluate_candidate_group(
@@ -311,17 +318,17 @@ def evaluate_candidate_group(
     if not p0.surge_guard:
         return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
 
-    g = float(p0.surge_move_pct)
+    g = safe_float(p0.surge_move_pct, 0.0)
     fixed_cands = [c for c in group if not c["params"].surge_dynamic]
     dyn_cands = [c for c in group if c["params"].surge_dynamic]
-    c_w72 = next((c for c in fixed_cands if float(c["params"].surge_window_hours) == 72.0), None)
+    c_w72 = next((c for c in fixed_cands if safe_float(c["params"].surge_window_hours, 0.0) == 72.0), None)
     if c_w72 is None:
         return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
 
     # Per-candidate accumulators
     acc = {c["id"]: _new_acc_entry() for c in group}
 
-    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+    with contextlib.redirect_stdout(io.StringIO()):
         for asset, ohlc in asset_data.items():
             if not ohlc or len(ohlc) < 60:
                 continue
@@ -337,10 +344,10 @@ def evaluate_candidate_group(
                 for fc in fixed_cands:
                     if fc["id"] == c_w72["id"]:
                         continue
-                    w_h = float(fc["params"].surge_window_hours)
+                    w_h = safe_float(fc["params"].surge_window_hours, 0.0)
                     same_win = all(
-                        ((_win_move_at_ts(all_closes, wn, ts, w_h) or -1.0) >= g)
-                        == ((_win_move_at_ts(all_closes, wn, ts, 72.0) or -1.0) >= g)
+                        _exceeds_gain(_win_move_at_ts(all_closes, wn, ts, w_h), g)
+                        == _exceeds_gain(_win_move_at_ts(all_closes, wn, ts, 72.0), g)
                         for ts in win_ts_w72
                     )
                     if same_win:
@@ -354,18 +361,18 @@ def evaluate_candidate_group(
                 # Evaluate dynamic candidates grouped by vol_multiplier
                 by_mult: dict[float, list[dict[str, Any]]] = {}
                 for dc in dyn_cands:
-                    by_mult.setdefault(float(dc["params"].surge_vol_multiplier), []).append(dc)
+                    by_mult.setdefault(safe_float(dc["params"].surge_vol_multiplier, 0.0), []).append(dc)
 
                 for mult, m_cands in by_mult.items():
                     if max_vol_w72 * mult <= g:
                         for dc in m_cands:
                             slice_results[dc["id"]] = res_w72
                         continue
-                    m_cands.sort(key=lambda x: float(x["params"].surge_max_gain_pct), reverse=True)
+                    m_cands.sort(key=lambda x: safe_float(x["params"].surge_max_gain_pct, 0.0), reverse=True)
                     cached_res = None
                     cached_req = float("inf")
                     for dc in m_cands:
-                        mx = float(dc["params"].surge_max_gain_pct)
+                        mx = safe_float(dc["params"].surge_max_gain_pct, 0.0)
                         if cached_res is not None and mx >= cached_req:
                             slice_results[dc["id"]] = cached_res
                         else:
@@ -424,7 +431,7 @@ def main():
         parser.error("initial cash must be finite and positive")
     if safe_nonneg_float(args.fee_pct, default=None) is None:
         parser.error("fee percentage must be finite and non-negative")
-    if args.workers < 1:
+    if safe_pos_int(args.workers, default=None) is None:
         parser.error("workers must be positive")
     print("Research only: 4h OHLC cannot validate 5-minute guards; "
           "two-half comparison is not held-out walk-forward evidence.")
@@ -469,7 +476,12 @@ def main():
         if not p.surge_guard or c["category"] not in ("Fixed", "Dynamic"):
             gkey = ("single", c["id"])
         else:
-            gkey = ("group", float(p.surge_move_pct), float(p.surge_exit_pullback_pct), float(p.reentry_bear_bounce_pct))
+            gkey = (
+                "group",
+                safe_float(p.surge_move_pct, 0.0),
+                safe_float(p.surge_exit_pullback_pct, 0.0),
+                safe_float(p.reentry_bear_bounce_pct, 0.0),
+            )
         groups_by_key.setdefault(gkey, []).append(c)
 
     all_groups = list(groups_by_key.values())
@@ -538,8 +550,8 @@ def main():
         r["beats_baseline_both_halves"] = r["beats_baseline_h1"] and r["beats_baseline_h2"]
         r["edge_usd"] = round(r["total_profit_usd"] - base_pnl, 2)
 
-    # Sort candidates
-    results.sort(key=lambda x: (x["total_profit_usd"], x["pnl_per_drawdown_point"]), reverse=True)
+    # Sort candidates (tie-break by lower worst drawdown across both positive and negative PnL)
+    results.sort(key=lambda x: (x["total_profit_usd"], -x["worst_maxdd_pct"]), reverse=True)
 
     # Save JSON database
     atomic_write_json(
@@ -646,7 +658,7 @@ def main():
     if top_verified:
         top_cand = top_verified[0]
     else:
-        top_cand = top15[0] if top15 else None
+        top_cand = next((r for r in results if r["id"] != "BASELINE_SURGE_OFF"), None)
 
     if top_cand:
         lines.append(f"# Research Candidate: {top_cand['id']}")

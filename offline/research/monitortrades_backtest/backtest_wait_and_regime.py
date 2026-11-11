@@ -14,11 +14,12 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import safe_nonneg_float, safe_pos_int
 import pricewindow as pw
 from cachepaths import cache_path
+from offline.research.monitortrades_backtest.run_replay_backtest import resolve_archive_jsonl_path
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_signals_from_bounds,
     load_archive_series,
@@ -26,11 +27,20 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
 
 
 def _load_ts_px(sym: str) -> tuple[np.ndarray, np.ndarray, str]:
-    """Load (ts, px, src_label) for `sym`, preferring dense 1s .npz when available."""
+    """Load (ts, px, src_label) for `sym`, preferring fresh dense 1s .npz / 365d .jsonl when available."""
     npz_path = cache_path(f"cache_365_price_{sym}.npz")
+    jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
     if os.path.exists(npz_path):
-        with np.load(npz_path) as z:
-            return z["ts"].astype(np.float64), z["px"].astype(np.float64), "1s-dense"
+        npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
+        if npz_fresh:
+            with np.load(npz_path) as z:
+                return z["ts"].astype(np.float64), z["px"].astype(np.float64), "1s-dense"
+    if os.path.exists(jsonl_365):
+        series_365 = load_archive_series(sym, use_365=True)
+        if series_365:
+            ts = np.fromiter((t for t, _ in series_365), dtype=np.float64, count=len(series_365))
+            px = np.fromiter((p for _, p in series_365), dtype=np.float64, count=len(series_365))
+            return ts, px, "1s-dense"
     series = load_archive_series(sym, use_365=False)
     ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
     px = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
@@ -45,7 +55,7 @@ def compute_exact_time_window_signals(
 ):
     """Exact O(N) sliding two-pointer + chunked O(1) prefix-sum evaluation for dynamic window `win_sec`."""
     N = len(ts)
-    w_sec = max(0.0, float(win_sec))
+    w_sec = safe_nonneg_float(win_sec, default=0.0)
     # Two-pointer to find a[b] = first index with ts[a] >= ts[b] - win_sec
     a = np.searchsorted(ts, ts - w_sec, side="left")
     if N > 0:
@@ -71,7 +81,8 @@ def simulate_should_wait(
 ):
     """Evaluate average execution improvement (in bps) over sampled intent arrival points."""
     N = len(ts)
-    stride = max(1, int(stride))
+    stride = safe_pos_int(stride, default=1)
+    wait_cap = safe_nonneg_float(max_wait_sec, default=30.0)
     if N > 2000:
         sample_idx = np.arange(1000, N - 1000, stride, dtype=np.int64)
     else:
@@ -89,35 +100,51 @@ def simulate_should_wait(
     sell_bps = np.zeros(len(sample_idx), dtype=np.float64)
     buy_waited_s = np.zeros(len(sample_idx), dtype=np.float64)
     sell_waited_s = np.zeros(len(sample_idx), dtype=np.float64)
+    valid_mask = np.zeros(len(sample_idx), dtype=bool)
+    t_last = float(ts[-1]) if N > 0 else 0.0
 
     for k, idx in enumerate(sample_idx):
-        t0 = ts[idx]
-        p0 = px[idx]
-        if p0 <= 0:
+        t0 = float(ts[idx])
+        p0 = float(px[idx])
+        if not (np.isfinite(t0) and np.isfinite(p0) and p0 > 0.0):
             continue
-        deadline = t0 + max_wait_sec
+        valid_mask[k] = True
+        deadline = t0 + wait_cap
+        max_avail_wait = min(wait_cap, max(0.0, t_last - t0))
 
         # BUY: wait while wait_buy_mask[j] is True and next sample stays within deadline
         j = idx
         while j + 1 < N and ts[j + 1] <= deadline and wait_buy_mask[j]:
             j += 1
-        buy_bps[k] = ((p0 - px[j]) / p0) * 10000.0
-        buy_waited_s[k] = ts[j] - t0
+        pj_buy = float(px[j]) if np.isfinite(px[j]) and px[j] > 0.0 else p0
+        buy_bps[k] = ((p0 - pj_buy) / p0) * 10000.0
+        buy_waited_s[k] = max_avail_wait if bool(wait_buy_mask[j]) else max(0.0, float(ts[j] - t0))
 
         # SELL: wait while wait_sell_mask[j] is True and next sample stays within deadline
         j = idx
         while j + 1 < N and ts[j + 1] <= deadline and wait_sell_mask[j]:
             j += 1
-        sell_bps[k] = ((px[j] - p0) / p0) * 10000.0
-        sell_waited_s[k] = ts[j] - t0
+        pj_sell = float(px[j]) if np.isfinite(px[j]) and px[j] > 0.0 else p0
+        sell_bps[k] = ((pj_sell - p0) / p0) * 10000.0
+        sell_waited_s[k] = max_avail_wait if bool(wait_sell_mask[j]) else max(0.0, float(ts[j] - t0))
 
+    if not np.any(valid_mask):
+        return {
+            "buy_bps": 0.0,
+            "sell_bps": 0.0,
+            "roundtrip_bps": 0.0,
+            "buy_wait_pct": 0.0,
+            "sell_wait_pct": 0.0,
+            "avg_wait_s": 0.0,
+        }
+    v_idx = sample_idx[valid_mask]
     return {
-        "buy_bps": float(np.mean(buy_bps)),
-        "sell_bps": float(np.mean(sell_bps)),
-        "roundtrip_bps": float(np.mean(buy_bps) + np.mean(sell_bps)),
-        "buy_wait_pct": float(np.mean(wait_buy_mask[sample_idx]) * 100.0),
-        "sell_wait_pct": float(np.mean(wait_sell_mask[sample_idx]) * 100.0),
-        "avg_wait_s": float(0.5 * (np.mean(buy_waited_s) + np.mean(sell_waited_s))),
+        "buy_bps": float(np.mean(buy_bps[valid_mask])),
+        "sell_bps": float(np.mean(sell_bps[valid_mask])),
+        "roundtrip_bps": float(np.mean(buy_bps[valid_mask]) + np.mean(sell_bps[valid_mask])),
+        "buy_wait_pct": float(np.mean(wait_buy_mask[v_idx]) * 100.0),
+        "sell_wait_pct": float(np.mean(wait_sell_mask[v_idx]) * 100.0),
+        "avg_wait_s": float(0.5 * (np.mean(buy_waited_s[valid_mask]) + np.mean(sell_waited_s[valid_mask]))),
     }
 
 
@@ -130,7 +157,8 @@ def evaluate_regime_900s(
 ):
     """Evaluate 900s regime filter for rtrade: sideways % vs forward 15m adverse excursion & spread fill."""
     N = len(ts)
-    stride = max(1, int(stride))
+    stride = safe_pos_int(stride, default=1)
+    h_sec = safe_nonneg_float(horizon_sec, default=900.0)
     if N > 4000:
         sample_idx = np.arange(2000, N - 2000, stride, dtype=np.int64)
     else:
@@ -139,28 +167,43 @@ def evaluate_regime_900s(
         z = np.zeros(1, dtype=np.float64)
         return [], z, z
     # Forward 15m endpoint for each sample_idx
-    fwd_end = np.searchsorted(ts, ts[sample_idx] + horizon_sec, side="left")
+    fwd_end = np.searchsorted(ts, ts[sample_idx] + h_sec, side="left")
+    has_full_horizon = fwd_end < N
     fwd_end = np.minimum(N - 1, fwd_end)
+    if np.any(has_full_horizon):
+        sample_idx = sample_idx[has_full_horizon]
+        fwd_end = fwd_end[has_full_horizon]
 
     # Calculate forward 15m absolute move (%) and whether a symmetric +/-0.32% spread fills both sides
     fwd_abs_move_pct = np.zeros(len(sample_idx), dtype=np.float64)
     fwd_max_adverse_pct = np.zeros(len(sample_idx), dtype=np.float64)
     both_sides_filled = np.zeros(len(sample_idx), dtype=bool)
+    valid_mask = np.zeros(len(sample_idx), dtype=bool)
     half_spread = 0.0032  # 0.32% each side (RTRADE_DEFAULT_ADJUSTMENT_PCT = 0.64%)
 
     for k, (i0, i1) in enumerate(zip(sample_idx, fwd_end)):
         if i1 <= i0:
             continue
-        p0 = px[i0]
-        if p0 <= 0:
+        p0 = float(px[i0])
+        if not (np.isfinite(p0) and p0 > 0.0):
             continue
         window_px = px[i0 : i1 + 1]
-        p_min = float(np.min(window_px))
-        p_max = float(np.max(window_px))
-        p_end = float(px[i1])
+        finite_px = window_px[np.isfinite(window_px) & (window_px > 0.0)]
+        if len(finite_px) == 0:
+            continue
+        valid_mask[k] = True
+        p_min = float(np.min(finite_px))
+        p_max = float(np.max(finite_px))
+        p_end = float(finite_px[-1])
         fwd_abs_move_pct[k] = abs(p_end - p0) / p0 * 100.0
         fwd_max_adverse_pct[k] = max(abs(p_max - p0), abs(p0 - p_min)) / p0 * 100.0
         both_sides_filled[k] = (p_min <= p0 * (1.0 - half_spread)) and (p_max >= p0 * (1.0 + half_spread))
+
+    if np.any(valid_mask):
+        sample_idx = sample_idx[valid_mask]
+        fwd_abs_move_pct = fwd_abs_move_pct[valid_mask]
+        fwd_max_adverse_pct = fwd_max_adverse_pct[valid_mask]
+        both_sides_filled = both_sides_filled[valid_mask]
 
     gc = sig900["gc"][sample_idx]
     eps = sig900["eps"][sample_idx]
@@ -192,6 +235,7 @@ def evaluate_regime_900s(
 
 
 def main():
+    os.chdir(ROOT)
     symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
     print("=" * 110)
     print("  BACKTEST 2: OPPORTUNISTIC EXECUTION DELAY GATE (should_wait / GT_S) ON 222s PRIMARY WINDOW")

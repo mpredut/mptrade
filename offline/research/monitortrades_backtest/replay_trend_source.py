@@ -60,6 +60,7 @@ class ReplayTrendSource:
         self.window_seconds = w_sec
         is_default_w = math.isclose(w_sec, DEFAULT_WINDOW_SECONDS, rel_tol=0.0, abs_tol=1e-6)
         self._windows: Dict[str, pw.PriceWindow] = {}
+        self._raw_ticks: Dict[str, deque] = {}
         for s in symbols:
             sym_w = self.window_seconds
             if is_default_w:
@@ -67,6 +68,7 @@ class ReplayTrendSource:
                 if fast_w is not None and fast_w > 0.0:
                     sym_w = float(fast_w)
             self._windows[s] = pw.PriceWindow(s, window_size=200, window_seconds=sym_w)
+            self._raw_ticks[s] = deque()
         self._prev_ts: Dict[str, Optional[float]] = {s: None for s in symbols}
         self._cached_trend_up: Dict[str, Optional[bool]] = {s: None for s in symbols}
 
@@ -82,11 +84,35 @@ class ReplayTrendSource:
         if ts_f is None or px_f is None:
             return
         prev = self._prev_ts.get(symbol)
+        if prev is not None and ts_f < prev:
+            return
         if prev is not None and ts_f > prev:
             win.set_sample_rate(ts_f - prev)
         self._prev_ts[symbol] = ts_f
         win.process_price(px_f)
+        raw_q = self._raw_ticks.get(symbol)
+        if raw_q is not None:
+            raw_q.append((ts_f, px_f))
+            max_keep_sec = max(self.window_seconds, SMALL_TIMEOUT_RANGE_SEC[1], 21600.0)
+            cutoff = ts_f - max_keep_sec
+            while len(raw_q) > 200 and raw_q[0][0] < cutoff:
+                raw_q.popleft()
         self._cached_trend_up[symbol] = None
+
+    def _custom_window_trend(self, symbol: str, ws_f: float) -> Optional[Tuple[Tuple[int, float, float, float], float, int]]:
+        raw_q = self._raw_ticks.get(symbol)
+        if not raw_q or len(raw_q) < 2:
+            return None
+        cutoff = raw_q[-1][0] - ws_f
+        pts = [(t, p) for t, p in raw_q if t >= cutoff]
+        if len(pts) < 2:
+            return None
+        gaps = [pts[i + 1][0] - pts[i][0] for i in range(len(pts) - 1) if pts[i + 1][0] > pts[i][0]]
+        sr = float(np.median(gaps)) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
+        prices = [p for _, p in pts]
+        eps = pw.PriceWindow._std_of_gradient(prices) if len(prices) >= 3 else 0.0
+        tup = pw.instant_trend_from_prices(prices, sr, window_seconds=ws_f, symbol=symbol)
+        return tup, eps, len(prices)
 
     def is_trend_up(self, symbol: str, window_seconds: Optional[float] = None,
                     now: Optional[float] = None) -> bool:
@@ -95,16 +121,24 @@ class ReplayTrendSource:
         Without enough data yet -> False (the same "neutral" fallback as today:
         monitortrades.is_trend_up() returns False when it has no snapshot yet)."""
         win = self._windows.get(symbol)
-        use_cache = window_seconds is None
-        if not use_cache and win is not None:
-            ws_f = safe_float(window_seconds, default=None)
-            use_cache = ws_f is not None and math.isclose(
-                ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6
-            )
+        ws_f = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
+        use_cache = window_seconds is None or (
+            win is not None
+            and ws_f is not None
+            and math.isclose(ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6)
+        )
+        if window_seconds is not None and ws_f is None:
+            return False
         if use_cache:
             cached = self._cached_trend_up.get(symbol)
             if cached is not None:
                 return cached
+        elif win is not None and ws_f is not None:
+            custom = self._custom_window_trend(symbol, ws_f)
+            if custom is None:
+                return False
+            tup, eps, n_p = custom
+            return _is_trend_up_tuple(tup, eps=eps, n_samples=n_p)
         if win is None or len(win.prices) < 2:
             res = False
         else:
@@ -131,14 +165,27 @@ class ReplayTrendSource:
         if side_str not in ("BUY", "SELL"):
             return False
         win = self._windows.get(symbol)
-        if win is None or len(win.prices) < 2:
+        if win is None:
             return False
-        _ft, gc, _sf, gr = win.get_short_trend()
+        ws_f = safe_pos_float(window_seconds, default=None) if window_seconds is not None else None
+        if window_seconds is not None and ws_f is None:
+            return False
+        if ws_f is not None and not math.isclose(ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6):
+            custom = self._custom_window_trend(symbol, ws_f)
+            if custom is None:
+                return False
+            (_ft, gc, _sf, gr), base_eps, n_p = custom
+        else:
+            if len(win.prices) < 2:
+                return False
+            _ft, gc, _sf, gr = win.get_short_trend()
+            base_eps = win.get_noise_epsilon(k=1.0) if use_noise_gate else 0.0
+            n_p = len(win.prices)
         g = gr if fast else gc
         if use_noise_gate:
-            m_steps = float(len(win.prices) - 1)
+            m_steps = float(n_p - 1)
             scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
-            eps = scale * win.get_noise_epsilon(k=1.0)
+            eps = scale * base_eps
             if abs(g) <= eps:
                 return True
         if side_str == "BUY":
@@ -214,6 +261,8 @@ class DynamicReplayTrendSource:
         px_f = safe_pos_float(price, default=None)
         if ts_f is None or px_f is None:
             return
+        if buf and ts_f < buf[-1][0]:
+            return
         buf.append((ts_f, px_f))
         cutoff = ts_f - self.max_timeout_sec
         while buf and buf[0][0] < cutoff:
@@ -266,6 +315,13 @@ class DynamicReplayTrendSource:
         confirmed, so requiring |g| > eps kept execution waiting longer when the
         short-scale signal was marginal. Setting use_noise_gate=True retains the
         noise-gated variant for comparison."""
+        if symbol not in self._buf:
+            return False
+        side_str = normalize_side(side)
+        if side_str not in ("BUY", "SELL"):
+            return False
+        if safe_pos_float(timeout_sec, default=None) is None:
+            return False
         prices, _sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 3:
             return True   # Not enough data -> the safe behaviour: wait.
@@ -283,9 +339,6 @@ class DynamicReplayTrendSource:
             eps = float(ek * scale * pw.PriceWindow._std_of_gradient(prices))
             if abs(g) <= eps:
                 return True
-        side_str = normalize_side(side)
         if side_str == "BUY":
             return g < 0
-        if side_str == "SELL":
-            return g > 0
-        return False
+        return g > 0

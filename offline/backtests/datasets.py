@@ -14,7 +14,7 @@ import io
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from botcore import safe_pos_float
+from botcore import exact_pos_int, safe_pos_float
 from providers.order_ohlc_utils import (
     REQUIRED_FIELDS,
     align_previous_values,
@@ -42,7 +42,9 @@ def dataset_sha256(records: Iterable[Mapping]) -> str:
 
 
 def save_dataset(records: Iterable[Mapping], destination: Path) -> None:
-    atomic_write_bytes(destination, canonical_bytes(records))
+    rows = list(records)
+    validated = validate_dataset(rows) if rows else []
+    atomic_write_bytes(destination, canonical_bytes(validated))
 
 
 def load_dataset(source: str | Path) -> list[dict]:
@@ -66,16 +68,15 @@ def load_ohlc_tuples_csv(
     """Load valid (timestamp, open, high, low, close) tuples from a CSV file via state_io.read_csv_dicts."""
     if isinstance(path, (bool, int, float)):
         return []
-    rows: list[tuple[int, float, float, float, float]] = []
+    by_ts: dict[int, tuple[int, float, float, float, float]] = {}
     for r in read_csv_dicts(path, strict=strict):
-        ts_f = safe_pos_float(r.get("timestamp"), default=None)
+        ts_i = exact_pos_int(r.get("timestamp"), default=None)
         o = safe_pos_float(r.get("open"), default=None)
         h = safe_pos_float(r.get("high"), default=None)
         l = safe_pos_float(r.get("low"), default=None)
         c = safe_pos_float(r.get("close"), default=None)
         if (
-            ts_f is not None
-            and int(ts_f) > 0
+            ts_i is not None
             and o is not None
             and h is not None
             and l is not None
@@ -83,8 +84,8 @@ def load_ohlc_tuples_csv(
             and h >= max(o, l, c)
             and l <= min(o, h, c)
         ):
-            rows.append((int(ts_f), o, h, l, c))
-    return rows
+            by_ts[ts_i] = (ts_i, o, h, l, c)
+    return [by_ts[k] for k in sorted(by_ts)]
 
 
 def merge_datasets(*datasets: Iterable[Mapping]) -> list[dict]:

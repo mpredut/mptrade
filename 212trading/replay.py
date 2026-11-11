@@ -16,7 +16,13 @@ ROOT = os.path.dirname(_T212_DIR)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import load_local_module, safe_float, safe_pos_float
+from botcore import (
+    load_local_module,
+    require_pos_float,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 _md = load_local_module(_T212_DIR, "market_data", module_key="t212_market_data")
 _prev_md = sys.modules.get("market_data")
 sys.modules["market_data"] = _md
@@ -101,14 +107,21 @@ def run_replay(
         if initial_cash is None:
             raise ValueError("initial_cash must be a finite positive number")
     validate_ohlc_bars(ohlc, exact_len_4=True, check_envelope=True)
+    if warmup_ohlc:
+        validate_ohlc_bars(warmup_ohlc, exact_len_4=True, check_envelope=False)
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError("dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal")
     if timestamps:
         if len(timestamps) != len(ohlc):
             raise ValueError("timestamps must have the same length as ohlc")
+        prev_ts: float | None = None
         for idx, ts_val in enumerate(timestamps):
-            if safe_float(ts_val, default=None) is None:
-                raise ValueError(f"timestamp at index {idx} must be finite")
+            ts_f = safe_nonneg_float(ts_val, default=None)
+            if ts_f is None:
+                raise ValueError(f"timestamp at index {idx} must be a non-negative finite number")
+            if prev_ts is not None and ts_f <= prev_ts:
+                raise ValueError(f"timestamps must be strictly increasing at index {idx}")
+            prev_ts = ts_f
     rates = _fx_rates(fx_to_usd, len(ohlc))
     model = execution or ExecutionModel()
     return choose_intrabar_scenario(
@@ -148,7 +161,7 @@ def _run_once(
     trend_closes: deque[float] = deque(maxlen=12)
     warmup_rows = list(warmup_ohlc or ())
     warmup_step = bar_minutes * 60.0 if bar_minutes else 1.0
-    base_ts = float(timestamps[0]) if timestamps else 0.0
+    base_ts = safe_nonneg_float(timestamps[0], 0.0) if timestamps else 0.0
     warmup_shadow: list[tuple[float, float]] = []
     for w_idx, row in enumerate(warmup_rows, start=-len(warmup_rows)):
         if isinstance(row, (list, tuple)) and len(row) >= 4:
@@ -171,7 +184,7 @@ def _run_once(
         )
         engine._shadow_prices.extend(warmup_shadow)
         engine._save = lambda: None
-        cash = float(initial_cash) if initial_cash is not None else None
+        cash = require_pos_float(initial_cash, "initial_cash") if initial_cash is not None else None
         min_cash = cash
         cash_refusals = 0
         original_place_buy = engine._place_buy
@@ -201,7 +214,7 @@ def _run_once(
         if cash is not None:
             engine._place_buy = _guarded_place_buy
 
-        initial_capital = float(params.max_budget if cash is None else cash)
+        initial_capital = require_pos_float(params.max_budget if cash is None else cash, "initial_capital")
         equity_curve = [initial_capital]
         exposure = []
         trade_pnls = []
@@ -214,12 +227,16 @@ def _run_once(
         side_order = execution.side_order()
 
         for bar_index, row in enumerate(ohlc):
-            open_, high, low, close = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+            open_ = require_pos_float(row[0], "open")
+            high = require_pos_float(row[1], "high")
+            low = require_pos_float(row[2], "low")
+            close = require_pos_float(row[3], "close")
             rate = fx_rates[bar_index]
+            engine.fx_to_usd = rate
             clock.value = (
-                float(timestamps[bar_index]) if timestamps
-                else bar_index * bar_minutes * 60 if bar_minutes
-                else float(bar_index)
+                safe_nonneg_float(timestamps[bar_index], 0.0) if timestamps
+                else bar_index * bar_minutes * 60.0 if bar_minutes
+                else bar_index * 1.0
             )
 
             orders = engine.s["orders"]
@@ -228,12 +245,26 @@ def _run_once(
                     orders, execution, high=high, low=low, limit_key="limit",
                 )
                 if eligible_orders:
-                    ambiguous_bars += int(is_ambiguous)
+                    ambiguous_bars += 1 if is_ambiguous else 0
                     for side in side_order:
                         for order in eligible_orders:
                             if order not in engine.s["orders"] or order["side"].lower() != side:
                                 continue
                             market = bool(order.get("market"))
+                            cand_price = (
+                                execution.market_price(side, open_)
+                                if market
+                                else require_pos_float(order["limit"], "order_limit")
+                            )
+                            if side == "buy" and cash is not None:
+                                rem_qty = require_pos_float(order["qty"], "order_qty")
+                                orig_qty = safe_pos_float(order.get("_replay_original_qty"), default=None) or rem_qty
+                                cand_qty = rem_qty if market else min(rem_qty, orig_qty * execution.partial_fill_ratio)
+                                cand_cost = (cand_qty * cand_price / rate) * (1.0 + params.fx_fee_pct / 100.0)
+                                if cand_cost > cash + 1e-9:
+                                    cash_refusals += 1
+                                    engine._remove(order)
+                                    continue
                             fill_order, quantity, complete = split_order_fill(
                                 order,
                                 quantity_key="qty",
@@ -243,10 +274,11 @@ def _run_once(
                             )
                             if complete:
                                 engine._remove(order)
-                            price = execution.market_price(side, open_) if market else float(order["limit"])
+                            price = cand_price
                             if side == "buy":
                                 buy_notional_account = quantity * price / rate
                                 buy_fee_account = (params.fx_fee_pct / 100.0) * buy_notional_account
+                                fill_order["amount"] = buy_notional_account
                                 open_cost_account += buy_notional_account
                                 open_buy_fee_account += buy_fee_account
                                 if cash is not None:
@@ -282,13 +314,16 @@ def _run_once(
                             if side == "sell":
                                 if engine.s["qty"] <= 1e-9 and (open_cost_account > 0.0 or open_buy_fee_account > 0.0):
                                     dust_val_acc = dust_before * price / rate
+                                    dust_sell_fee = (params.fx_fee_pct / 100.0) * dust_val_acc
                                     if cash is not None and dust_val_acc > 0.0:
-                                        cash += dust_val_acc
+                                        cash += dust_val_acc - dust_sell_fee
                                         min_cash = min(min_cash, cash)
                                     dust_gross = dust_val_acc - open_cost_account
+                                    dust_fee_total = open_buy_fee_account + dust_sell_fee
                                     realized_gross_account += dust_gross
-                                    fees_account += open_buy_fee_account
-                                    realized_net_account += dust_gross - open_buy_fee_account
+                                    fees_account += dust_fee_total
+                                    realized_net_account += dust_gross - dust_fee_total
+                                    turnover_account += dust_val_acc
                                     open_cost_account = 0.0
                                     open_buy_fee_account = 0.0
                                 cur_cycle = engine.s.get("cycle", 1)
@@ -304,14 +339,13 @@ def _run_once(
 
                 if engine.s["orders"]:
                     for order in list(engine.s["orders"]):
-                        if engine._buy_is_stale(order, float(close)):
+                        if engine._buy_is_stale(order, close):
                             engine._remove(order)
-            trend_closes.append(float(close))
-            engine.fx_to_usd = rate
-            engine.step(float(close))
+            trend_closes.append(close)
+            engine.step(close)
 
             qty = engine.s["qty"]
-            unrealized_account = (qty * float(close) / rate - open_cost_account) if qty > 1e-9 else 0.0
+            unrealized_account = (qty * close / rate - open_cost_account) if qty > 1e-9 else 0.0
             cur_open_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
             equity_curve.append(initial_capital + realized_net_account + unrealized_account - cur_open_fee_account)
             exposure.append(qty > 1e-9)
@@ -320,7 +354,8 @@ def _run_once(
 
     qty = engine.s["qty"]
     final_rate = fx_rates[-1]
-    final_upnl_account = (qty * float(ohlc[-1][3]) / final_rate - open_cost_account) if qty > 1e-9 else 0.0
+    last_close = require_pos_float(ohlc[-1][3], "last_close")
+    final_upnl_account = (qty * last_close / final_rate - open_cost_account) if qty > 1e-9 else 0.0
     final_open_buy_fee_account = open_buy_fee_account if qty > 1e-9 else 0.0
     eff_periods_per_year = (
         periods_per_year

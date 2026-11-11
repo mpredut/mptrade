@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 from providers.order_ohlc_utils import validate_ohlc_bars
 
@@ -113,7 +113,8 @@ def select_eligible_intrabar_orders(
         o for o in orders
         if o.get("market") or execution.limit_touched(o["side"], high=high, low=low, limit=o[limit_key])
     ]
-    ambiguous = len(eligible) > 1 and {"buy", "sell"}.issubset({o["side"].lower() for o in eligible})
+    sides = {normalize_side(o.get("side")) for o in eligible}
+    ambiguous = len(eligible) > 1 and {"BUY", "SELL"}.issubset(sides)
     return eligible, ambiguous
 
 
@@ -162,7 +163,13 @@ def choose_intrabar_scenario(
         return run_once(model)
 
     scenarios = {policy: run_once(replace(model, intrabar_policy=policy)) for policy in ("buy_first", "sell_first")}
-    selected_policy, selected = min(scenarios.items(), key=lambda item: safe_float(item[1].get("return_pct"), 0.0))
+    selected_policy, selected = min(
+        scenarios.items(),
+        key=lambda item: (
+            require_finite_float(item[1].get("return_pct"), "return_pct"),
+            -safe_nonneg_float(item[1].get("max_drawdown_pct"), 0.0),
+        ),
+    )
     result = dict(selected)
     result["intrabar_policy_selected"] = selected_policy
     result["intrabar_scenarios"] = {

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# run_dev_regression.sh — Unified DEV CI Regression Controller:
-#   ./run_dev_regression.sh [run]            — Execute full pytest suite locally on DEV & record status JSON
-#   ./run_dev_regression.sh watch            — Cron watcher on DEV: poll origin/main & spawn regression on new commits
-#   ./run_dev_regression.sh trigger [--wait] — Trigger DEV regression remotely over SSH from PROD/WSL
-#   ./run_dev_regression.sh check            — Inspect DEV regression status from PROD/WSL/DEV
+# run_dev_regression.sh -- Unified DEV CI Regression Controller:
+#   ./run_dev_regression.sh [run]            -- Execute full pytest suite locally on DEV & record status JSON
+#   ./run_dev_regression.sh watch            -- Cron watcher on DEV: poll origin/main & spawn regression on new commits
+#   ./run_dev_regression.sh trigger [--wait] -- Trigger DEV regression remotely over SSH from PROD/WSL
+#   ./run_dev_regression.sh check            -- Inspect DEV regression status from PROD/WSL/DEV
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,7 +43,7 @@ do_trigger() {
     dev_remote_git_pull 2>&1 | sed 's/^/  [dev] /'
     if [ "${1:-}" = "--wait" ]; then
         echo "[trigger_dev_ci $(date '+%F %T')] Running regression on DEV (synchronous / waiting)..."
-        dev_ssh "cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh run" 2>&1 | sed 's/^/  [dev] /' || rc=${PIPESTATUS[0]}
+        dev_ssh "if [[ \"$DEV_PATH\" == /* ]]; then cd \"$DEV_PATH\"; else cd \"\$HOME/$DEV_PATH\"; fi && ./offline/runners/run_dev_regression.sh run" 2>&1 | sed 's/^/  [dev] /' || rc=${PIPESTATUS[0]}
         dev_sync_regression_status
         echo "[trigger_dev_ci $(date '+%F %T')] Completed (exit=$rc) and synced status to cachedb/system/dev_regression_status.json"
         exit "$rc"
@@ -70,18 +70,20 @@ do_check() {
         echo "[DEV CI] No regression status available yet."; exit 0
     fi
     STATUS_FILE="$status_file" IS_RUNNING="$is_running" "$PYTHON_BIN" - <<'EOF'
-import json, os, time
+import os, time
+from botcore import safe_int
+from state_io import read_json_dict
 try:
-    with open(os.environ["STATUS_FILE"], "r", encoding="utf-8") as f:
-        d = json.load(f)
+    d = read_json_dict(os.environ["STATUS_FILE"], default={})
     st = d.get("status", "UNKNOWN")
     cm = d.get("commit_short", "unknown")
     msg = d.get("commit_msg", "")
-    age = int(time.time() - d.get("ts", 0)) // 60 if d.get("ts") else 0
+    ts_val = safe_int(d.get("ts"), default=0)
+    age = int(time.time() - ts_val) // 60 if ts_val else 0
     if os.environ.get("IS_RUNNING") == "true":
-        print(f"[DEV CI] ⏳ RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age}m ago).")
+        print(f"[DEV CI] RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age}m ago).")
     else:
-        icon = "✅" if st == "PASSED" else "❌"
+        icon = "[PASS]" if st == "PASSED" else "[FAIL]"
         print(f"[DEV CI] {icon} {st} on [{cm}] (\"{msg}\") | Passed: {d.get('passed', 0)} | Failed: {d.get('failed', 0)} | Time: {d.get('duration_sec', 0)}s | Completed {age}m ago")
 except Exception as e:
     print(f"[DEV CI] Error reading status: {e}")
@@ -92,7 +94,7 @@ do_run() {
     exec 8>"$LOCK"
     local was_queued=false
     if ! flock -n 8; then
-        echo "[dev_regression $(date '+%F %T')] Another regression is already running — waiting for lock..."
+        echo "[dev_regression $(date '+%F %T')] Another regression is already running -- waiting for lock..."
         was_queued=true
         flock -w 600 8 || { echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2; exit 1; }
     fi
@@ -109,9 +111,9 @@ do_run() {
 
     if [ "$was_queued" = true ] && [ -f "$STATUS_JSON" ]; then
         local last_cm last_rc
-        read -r last_cm last_rc < <("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); rc=int(d.get("exit_code") or (0 if d.get("status")=="PASSED" else 1)); print(d.get("commit",""), rc)' "$STATUS_JSON" 2>/dev/null || echo "")
+        read -r last_cm last_rc < <("$PYTHON_BIN" -c 'import sys; from botcore import safe_int; from state_io import read_json_dict; d=read_json_dict(sys.argv[1], default={}); raw_rc=d.get("exit_code"); rc=safe_int(raw_rc, default=(0 if d.get("status")=="PASSED" else 1)); print(d.get("commit",""), rc)' "$STATUS_JSON" 2>/dev/null || echo "")
         if [ -n "${last_cm:-}" ] && [ "$last_cm" = "$commit_hash" ]; then
-            echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested while queued — skipping duplicate run (exit=${last_rc:-0})"
+            echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested while queued -- skipping duplicate run (exit=${last_rc:-0})"
             exit "${last_rc:-0}"
         fi
     fi
@@ -123,21 +125,38 @@ do_run() {
     ( exec 8>&-; timeout --kill-after=30 600 "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
     duration=$(($(date +%s) - start_ts))
     cat "$LOG_FILE.run" >> "$LOG_FILE"
-    prev_status="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
+    prev_status="$("$PYTHON_BIN" -c 'import sys; from state_io import read_json_dict; print(read_json_dict(sys.argv[1], default={}).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
 
     REG_LOG_PATH="$LOG_FILE.run" REG_RC="$rc" REG_DURATION="$duration" \
     REG_COMMIT_HASH="$commit_hash" REG_COMMIT_SHORT="$commit_short" REG_COMMIT_MSG="$commit_msg" \
     REG_START_ISO="$start_iso" REG_STATUS_JSON="$STATUS_JSON" \
     "$PYTHON_BIN" - <<'EOF' | tee -a "$LOG_FILE"
-import json, os, re, sys, time
-rc, duration, status_json_path = int(os.environ.get("REG_RC") or 0), int(os.environ.get("REG_DURATION") or 0), os.environ["REG_STATUS_JSON"]
+import os, re, sys, time
+from botcore import safe_int
+from state_io import atomic_write_json, read_text_file
+rc = safe_int(os.environ.get("REG_RC"), default=0)
+duration = safe_int(os.environ.get("REG_DURATION"), default=0)
+status_json_path = os.environ["REG_STATUS_JSON"]
 counts = {"passed": 0, "failed": 0, "errors": 0, "warnings": 0}
 try:
-    content = open(os.environ["REG_LOG_PATH"], "r", encoding="utf-8", errors="replace").read()
+    content = read_text_file(os.environ["REG_LOG_PATH"], default="")
+    summary_line = ""
+    summary_re = re.compile(r"(?:^|[=,\s])\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|deselected)(?:\b|$)")
+    for raw_line in reversed(content.splitlines()):
+        stripped = raw_line.strip()
+        if stripped and summary_re.search(stripped) and (" in " in stripped or stripped.startswith("=")):
+            summary_line = stripped
+            break
+    if not summary_line:
+        for raw_line in reversed(content.splitlines()):
+            stripped = raw_line.strip()
+            if stripped and summary_re.search(stripped):
+                summary_line = stripped
+                break
     for key, pat in [("passed", r"(\d+)\s+passed"), ("failed", r"(\d+)\s+failed"), ("errors", r"(\d+)\s+errors?"), ("warnings", r"(\d+)\s+warnings?")]:
-        m = re.search(pat, content)
+        m = re.search(pat, summary_line)
         if m:
-            counts[key] = int(m.group(1))
+            counts[key] = safe_int(m.group(1), default=0)
 except Exception as e:
     print(f"Warning parsing test output: {e}", file=sys.stderr)
 status = "PASSED" if rc == 0 and counts["failed"] == 0 and counts["errors"] == 0 else "FAILED"
@@ -146,7 +165,6 @@ status_data = {
     "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
     **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": int(time.time()),
 }
-from state_io import atomic_write_json
 atomic_write_json(status_json_path, status_data, indent=2)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")
 EOF

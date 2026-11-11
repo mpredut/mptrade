@@ -13,7 +13,6 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import safe_float, safe_int
@@ -43,11 +42,28 @@ def run_multiwindow_sweep(use_365: bool = False):
             continue
         symbols.append(sym)
         series_map[sym] = series
+        fast_w = pw.fast_trend_window_for_symbol(sym)
+        prod_w = float(fast_w) if (fast_w is not None and fast_w > 0.0) else 222.0
+        sig_60 = compute_all_signals(series, win_sec=60.0, symbol=sym, use_symbol_fast_window=False)
+        sig_90 = compute_all_signals(series, win_sec=90.0, symbol=sym, use_symbol_fast_window=False)
+        sig_222 = compute_all_signals(series, win_sec=222.0, symbol=sym, use_symbol_fast_window=False)
+        sig_900 = compute_all_signals(series, win_sec=900.0, symbol=sym, use_symbol_fast_window=False)
+        if np.isclose(prod_w, 60.0):
+            sig_prod = sig_60
+        elif np.isclose(prod_w, 90.0):
+            sig_prod = sig_90
+        elif np.isclose(prod_w, 222.0):
+            sig_prod = sig_222
+        elif np.isclose(prod_w, 900.0):
+            sig_prod = sig_900
+        else:
+            sig_prod = compute_all_signals(series, win_sec=prod_w, symbol=sym, use_symbol_fast_window=False)
         sigs[sym] = {
-            60:  compute_all_signals(series, win_sec=60.0, symbol=sym, use_symbol_fast_window=False),
-            90:  compute_all_signals(series, win_sec=90.0, symbol=sym, use_symbol_fast_window=False),
-            222: compute_all_signals(series, win_sec=222.0, symbol=sym, use_symbol_fast_window=False),
-            900: compute_all_signals(series, win_sec=900.0, symbol=sym, use_symbol_fast_window=False),
+            60: sig_60,
+            90: sig_90,
+            222: sig_222,
+            900: sig_900,
+            "prod": sig_prod,
         }
 
     def _up_arr(s_win):
@@ -76,30 +92,36 @@ def run_multiwindow_sweep(use_365: bool = False):
         ("8. 2-of-3 Majority (60s, 222s, 900s)",
          lambda d, sym="": ((_up_arr(d[60]).astype(int) + _up_arr(d[222]).astype(int) + _up_arr(d[900]).astype(int)) >= 2).tolist()),
         ("9. Per-Coin PROD (TAO 90s, others 222s)",
-         lambda d, sym="": _up_arr(d.get(int(pw.fast_trend_window_for_symbol(sym) or 222), d[222])).tolist()),
+         lambda d, sym="": _up_arr(d["prod"]).tolist()),
     ]
 
     hdr = f"{'Multi-Window Policy':<36} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
     print("\n" + hdr)
     print("-" * len(hdr))
 
-    for m_name, fn in models:
+    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
+    try:
+        for m_name, fn in models:
+            rrb._TREND_TAPE_CACHE.clear()
+            cells = []
+            tot_net = 0.0
+            for sym in symbols:
+                series = series_map[sym]
+                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
+                rrb._TREND_TAPE_CACHE[key] = tuple(fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym]))
+                cfg = rrb.SYMBOLS[sym]
+                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+                net = safe_float(res.get("net"), 0.0)
+                tot_net += net
+                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
+            print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+    finally:
         rrb._TREND_TAPE_CACHE.clear()
-        cells = []
-        tot_net = 0.0
-        for sym in symbols:
-            series = series_map[sym]
-            key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-            rrb._TREND_TAPE_CACHE[key] = fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym])
-            cfg = rrb.SYMBOLS[sym]
-            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-            net = safe_float(res.get("net"), 0.0)
-            tot_net += net
-            cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
-        print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
 
 
 if __name__ == "__main__":
+    os.chdir(ROOT)
     if "--dense" in sys.argv:
         run_multiwindow_sweep(use_365=True)
     else:

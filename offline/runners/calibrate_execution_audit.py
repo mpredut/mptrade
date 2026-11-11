@@ -23,6 +23,8 @@ def _paths(inputs: list[Path]) -> list[Path]:
     paths = []
     for path in inputs:
         resolved = path.expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"input path does not exist: {resolved}")
         if resolved.is_dir():
             paths.extend(sorted(resolved.glob("execution_audit_*.jsonl")))
         else:
@@ -38,19 +40,33 @@ def _norm_audit_venue(val: object) -> str:
 
 
 def _load(paths: list[Path], venue: str | None) -> list[dict]:
-    events = []
+    parsed_events: list[dict] = []
     norm_venue = _norm_audit_venue(venue)
     for path in paths:
+        if not path.is_file():
+            raise FileNotFoundError(f"execution audit file not found: {path}")
         for line_number, raw in enumerate(read_text_file(path).splitlines(), start=1):
             if not raw.strip():
                 continue
             event = parse_json_payload(raw, default=None)
             if not isinstance(event, dict):
                 raise ValueError(f"{path}:{line_number}: invalid JSON")
-            if norm_venue and _norm_audit_venue(event.get("venue")) != norm_venue:
-                continue
-            events.append(event)
-    return events
+            parsed_events.append(event)
+    if not norm_venue:
+        return parsed_events
+    matched_intents = {
+        event.get("intent_id")
+        for event in parsed_events
+        if isinstance(event.get("intent_id"), str)
+        and event.get("intent_id")
+        and _norm_audit_venue(event.get("venue")) == norm_venue
+    }
+    return [
+        event
+        for event in parsed_events
+        if _norm_audit_venue(event.get("venue")) == norm_venue
+        or (event.get("venue") is None and event.get("intent_id") in matched_intents)
+    ]
 
 
 def markdown_report(report: dict, paths: list[Path]) -> str:
@@ -110,7 +126,7 @@ def markdown_report(report: dict, paths: list[Path]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "inputs", nargs="+", type=Path,
@@ -119,24 +135,24 @@ def main() -> int:
     parser.add_argument("--venue")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
-    args = parser.parse_args()
-    paths = _paths(args.inputs)
-    if not paths:
-        parser.error("no execution_audit files found")
+    args = parser.parse_args(argv)
     try:
+        paths = _paths(args.inputs)
+        if not paths:
+            parser.error("no execution_audit files found")
         events = _load(paths, args.venue)
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         parser.error(str(error))
     report = calibrate_execution_events(events)
     report["source_files"] = [str(path) for path in paths]
+    md_text = markdown_report(report, paths)
     output = args.output.expanduser().resolve() if args.output else None
     markdown = args.markdown.expanduser().resolve() if args.markdown else None
-    if output or markdown:
-        if output:
-            atomic_write_json(output, report, indent=2, ensure_ascii=False)
-        if markdown:
-            atomic_write_text(markdown, markdown_report(report, paths))
-    print(markdown_report(report, paths))
+    if output:
+        atomic_write_json(output, report, indent=2, ensure_ascii=True)
+    if markdown:
+        atomic_write_text(markdown, md_text)
+    print(md_text)
     return 0
 
 

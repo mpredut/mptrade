@@ -11,6 +11,7 @@ from botcore import (
     are_close,
     normalize_epoch_sec,
     safe_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 
@@ -69,7 +70,7 @@ def progressive_dca_drop_pct(
     """Return the next DCA distance, increased gradually after every completed DCA."""
     base_f = safe_float(base_drop_pct, 0.0)
     growth = max(0.0, safe_float(growth_pct, 0.0))
-    completed = max(0, int(safe_float(completed_dca_buys, 0.0)))
+    completed = safe_nonneg_int(completed_dca_buys, default=0)
     return max(0.0, base_f) + growth * completed
 
 
@@ -147,16 +148,18 @@ def check_fast_profit_reversal(
     current_gain_pct = (px_f - avg_f) / avg_f * 100.0
     if not (current_gain_pct >= tp_f * mult_f):
         return False, current_gain_pct, 0.0
+    win_s = safe_pos_float(window_sec, default=None)
+    if win_s is None:
+        return False, current_gain_pct, 0.0
     valid_shadows = _iter_valid_shadow_prices(shadow_prices)
     if not valid_shadows:
         return False, current_gain_pct, 0.0
     now_f = normalize_epoch_sec(current_time, default=None, allow_zero=True)
     now = now_f if now_f is not None else valid_shadows[-1][0]
-    cutoff = now - max(0.0, safe_float(window_sec, 0.0))
+    cutoff = now - win_s
     recent = [p for t, p in valid_shadows if cutoff <= t <= now]
     if not recent:
-        past_or_now = [p for t, p in valid_shadows if t <= now]
-        recent = [past_or_now[-1]] if past_or_now else [valid_shadows[-1][1]]
+        return False, current_gain_pct, 0.0
     local_peak = max(max(recent), px_f)
     if local_peak <= 0:
         return False, current_gain_pct, 0.0

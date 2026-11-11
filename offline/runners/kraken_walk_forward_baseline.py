@@ -35,6 +35,7 @@ from offline.backtests.datasets import (  # noqa: E402
 )
 from offline.backtests.evaluation import (  # noqa: E402
     add_walk_forward_cli_args,
+    assess_decision_evidence,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
     load_layered_env_config,
@@ -89,18 +90,27 @@ def main(argv: list[str] | None = None) -> int:
     execution = build_execution_model_from_args(parser, args)
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.
-    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("KRAKEN_",))
-    pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
-    if not pair:
-        parser.error("missing pair: --pair or KRAKEN_PAIR")
-    params = StratParams.from_env(cfg)
-    supplied = parse_dataset_specs(args.dataset)
+    try:
+        cfg = load_layered_env_config(
+            args.config_file,
+            args.env_file,
+            override_prefixes=("KRAKEN_",),
+            fallback_prefixes=(),
+        )
+        pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
+        if not pair:
+            parser.error("missing pair: --pair or KRAKEN_PAIR")
+        params = StratParams.from_env(cfg)
+        supplied = parse_dataset_specs(args.dataset)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     output_dir = Path(args.output_dir).expanduser().resolve()
     dataset_dir = output_dir / "datasets"
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
 
     report = {
         "schema_version": 1,
+        "venue": "kraken",
         "generated_at_utc": generated_at.isoformat(),
         "purpose": "fixed-live-config walk-forward baseline; no parameter selection",
         "runtime": {
@@ -148,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             test_size=test_size, step_size=step_size, warmup_bars=args.warmup,
             execution=execution,
         )
+        evidence = assess_decision_evidence(records, result["aggregate_test"])
         report["intervals"][str(interval)] = {
             "dataset": {
                 "source": str(source) if source else "Kraken public OHLC",
@@ -158,12 +169,13 @@ def main(argv: list[str] | None = None) -> int:
                 "train": train_size, "validation": validation_size,
                 "test": test_size, "step": step_size,
             },
+            "evidence": evidence,
             **result,
         }
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     report_path = output_dir / f"baseline_{pair}_{stamp}.json"
-    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
 
     print(f"Baseline saved: {report_path}")
     for interval, value in report["intervals"].items():

@@ -56,6 +56,7 @@ from botcore import (  # noqa: E402
     required_env,
     safe_float,
     safe_int,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
@@ -79,7 +80,12 @@ def _load_isolated_strat_params() -> strat.StratParams:
     _load_runtime_config()
     env_path = os.environ.get("ENV_FILE", DEFAULT_ENV)
     config_path = os.path.join(os.path.dirname(env_path) or ".", "config.env")
-    cfg = load_layered_env_config(config_path, env_path, override_prefixes=("KRAKEN_",))
+    cfg = load_layered_env_config(
+        config_path,
+        env_path,
+        override_prefixes=("KRAKEN_",),
+        fallback_prefixes=(),
+    )
     return strat.StratParams.from_env(cfg)
 
 
@@ -128,7 +134,9 @@ def _variants(interval: int):
 
 def _replay_interval_error(interval: int) -> str | None:
     """Return why the live configuration cannot be replayed at this bar size, if it can't."""
-    required = rp.required_replay_intervals(_load_isolated_strat_params())
+    required: set[int] = set()
+    for params in _variants(interval).values():
+        required |= set(rp.required_replay_intervals(params))
     if required and required != {interval}:
         return (f"the live configuration needs {sorted(required)}-minute bars "
                 f"(regime gate / volatility trail); --interval {interval} is not replayable")
@@ -160,6 +168,10 @@ def _history_path(pair: str, interval: int) -> str:
     return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.ohlc.json")
 
 
+def _warmup_path(pair: str, interval: int) -> str:
+    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.warmup.json")
+
+
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
@@ -168,12 +180,12 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     if vi is not None:
         return vi
     anchor_val = int(safe_pos_float(default_ts, default=0.0))
-    atomic_write_text(path, f"{anchor_val}\n")
+    if anchor_val > 0:
+        atomic_write_text(path, f"{anchor_val}\n")
     return anchor_val
 
 
-def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, float, float]]:
-    rows = read_json_file(_history_path(pair, interval), default=[], recover_previous=True)
+def _parse_stored_bars(rows: object) -> list[tuple[int, float, float, float, float]]:
     if not isinstance(rows, list):
         return []
     out: list[tuple[int, float, float, float, float]] = []
@@ -193,6 +205,24 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
             continue
         out.append((bar["timestamp"], bar["open"], bar["high"], bar["low"], bar["close"]))
     return out
+
+
+def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, float, float]]:
+    rows = read_json_file(_history_path(pair, interval), default=[], recover_previous=True)
+    return _parse_stored_bars(rows)
+
+
+def _merge_warmup_history(pair: str, interval: int, first_fwd_ts: int, fetched, max_bars: int = 40) -> list[tuple[float, float, float, float]]:
+    """Persist and merge up to ``max_bars`` pre-anchor warmup bars so warmup survives API window rollover."""
+    w_path = _warmup_path(pair, interval)
+    cached_w = [bar for bar in _parse_stored_bars(read_json_file(w_path, default=[], recover_previous=True)) if bar[0] < first_fwd_ts]
+    fetched_w = [bar for bar in fetched if bar[0] < first_fwd_ts]
+    by_ts = {bar[0]: bar for bar in cached_w}
+    by_ts.update({bar[0]: bar for bar in fetched_w})
+    merged_w = [by_ts[ts] for ts in sorted(by_ts)][-max_bars:]
+    if merged_w and merged_w != cached_w:
+        atomic_write_json(w_path, merged_w, separators=(",", ":"))
+    return [(o, h, l, c) for (_t, o, h, l, c) in merged_w]
 
 
 def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
@@ -294,7 +324,7 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
     fwd_bars = _merge_forward_history(pair, interval, anchor, bars)
     fwd4 = [(o, h, l, c) for (_t, o, h, l, c) in fwd_bars]
     fwd_first_ts = fwd_bars[0][0] if fwd_bars else anchor
-    fwd_warmup = [(o, h, l, c) for (t, o, h, l, c) in bars if t < fwd_first_ts][-40:]
+    fwd_warmup = _merge_warmup_history(pair, interval, fwd_first_ts, bars, max_bars=40)
 
     def _bh(seg):
         return round((seg[-1][3] / seg[0][3] - 1.0) * 100.0, 4) if len(seg) >= 2 and seg[0][3] > 0 else None
@@ -345,7 +375,7 @@ def _print(snap: dict) -> None:
     _print_block("window (context, the complete window)", snap["window"])
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Live shadow test: current vs pre-registered candidates (read-only)."
     )
@@ -354,7 +384,12 @@ def main() -> int:
     ap.add_argument("--pair", default=None, help="KRAKEN_PAIR from .env/config.env by default")
     ap.add_argument("--loop", type=float, default=0.0, help="minutes between runs (0=single shot)")
     ap.add_argument("--quiet", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    if exact_pos_int(args.interval, default=None) is None:
+        ap.error("--interval must be a positive integer")
+    if safe_nonneg_float(args.fee, default=None) is None:
+        ap.error("--fee cannot be negative")
 
     _load_runtime_config()
     pair = args.pair or required_env("KRAKEN_PAIR")

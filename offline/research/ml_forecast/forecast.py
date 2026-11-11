@@ -25,7 +25,7 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
-from botcore import safe_float, safe_pos_float, safe_pos_int  # noqa: E402
+from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 HORIZON_H = 24
@@ -40,8 +40,8 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     r8 = logp[i] - logp[i - 8]
     r24 = logp[i] - logp[i - 24]
     r72 = logp[i] - logp[i - 72]
-    vol24 = float(np.std(np.diff(logp[i - 24:i + 1])))
-    vol72 = float(np.std(np.diff(logp[i - 72:i + 1])))
+    vol24 = safe_float(np.std(np.diff(logp[i - 24:i + 1])), default=np.nan)
+    vol72 = safe_float(np.std(np.diff(logp[i - 72:i + 1])), default=np.nan)
     _, mk_z_raw, _ = calculate_mann_kendall(px[i - 24:i + 1])
     mk_z = safe_float(mk_z_raw, 0.0)
     h_raw = calculate_hurst_exponent(px[i - WARMUP:i + 1])
@@ -103,7 +103,8 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
         }
     refit_every = safe_pos_int(refit_every, default=168)
     frac = min(max(safe_float(train_frac, default=0.7), 0.05), 0.95)
-    start = min(max(1, int(n * frac)), n)
+    min_start = (HORIZON_H + 1) if n > HORIZON_H else 1
+    start = min(max(min_start, safe_int(n * frac, default=min_start)), n)
     acc = {"lindy": [], "logit": [], "boost": []}
     mag_err, mag_base = [], []
     i = start
@@ -124,17 +125,17 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
             acc["logit"] += list(logit.predict(X[sl]) == y_dir[sl])
             acc["boost"] += list(clf.predict(X[sl]) == y_dir[sl])
         else:
-            const_pred = int(unique_classes[0]) if len(unique_classes) == 1 else 0
+            const_pred = safe_int(unique_classes[0], default=0) if len(unique_classes) == 1 else 0
             acc["logit"] += list(const_pred == y_dir[sl])
             acc["boost"] += list(const_pred == y_dir[sl])
         pm = reg.predict(X[sl])
         mag_err += list(np.abs(pm - y_mag[sl]))
         mag_base += list(np.abs(y_mag[sl]))
         i = j
-    return {m: (float(np.mean(v)) if v else 0.0) for m, v in acc.items()} | {
+    return {m: (safe_float(np.mean(v), 0.0) if v else 0.0) for m, v in acc.items()} | {
         "n_test": len(acc["boost"]),
-        "mae_move_pct": float(np.mean(mag_err) * 100) if mag_err else 0.0,
-        "mae_baseline_pct": float(np.mean(mag_base) * 100) if mag_base else 0.0,
+        "mae_move_pct": safe_float(np.mean(mag_err) * 100, 0.0) if mag_err else 0.0,
+        "mae_baseline_pct": safe_float(np.mean(mag_base) * 100, 0.0) if mag_base else 0.0,
     }
 
 
@@ -147,34 +148,38 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     boost_acc = safe_float(rep.get("boost"), default=None) if isinstance(rep, dict) else None
     logit_acc = safe_float(rep.get("logit"), default=None) if isinstance(rep, dict) else None
     lindy_acc = safe_float(rep.get("lindy"), default=None) if isinstance(rep, dict) else None
-    use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
+    use_boost = boost_acc is not None and (logit_acc is None or boost_acc >= logit_acc)
     px_arr = _to_price_array(px)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
-    raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)
+    has_valid_features = False
+    if len(px_arr) > WARMUP:
+        raw_row = _feat_row(len(px_arr) - 1, logp, px_arr)
+        has_valid_features = all(np.isfinite(v) for v in raw_row)
+    else:
+        raw_row = [0.0] * len(FEATURES)
     clean_row = [safe_float(v, 0.0) for v in raw_row]
     row = np.array([clean_row], dtype=float)
     unique_classes = np.unique(y_dir) if len(y_dir) > 0 else np.array([], dtype=int)
-    if len(X) > 0 and len(unique_classes) >= 2:
+    if has_valid_features and len(X) > 0 and len(unique_classes) >= 2:
         if use_boost:
             clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X, y_dir)
         else:
             clf = make_pipeline(StandardScaler(),
                                 LogisticRegression(max_iter=1000)).fit(X, y_dir)
-        proba_up = float(clf.predict_proba(row)[0][1])
+        proba_up = safe_float(clf.predict_proba(row)[0][1], 0.5)
     elif len(unique_classes) == 1:
-        proba_up = 1.0 if int(unique_classes[0]) == 1 else 0.0
+        proba_up = 1.0 if safe_int(unique_classes[0], 0) == 1 else 0.0
     else:
         proba_up = 0.5
-    if len(X) > 0:
+    if has_valid_features and len(X) > 0:
         reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X, y_mag)
-        move = float(reg.predict(row)[0])
+        move = safe_float(reg.predict(row)[0], 0.0)
     else:
         move = 0.0
-    if boost_acc is not None and logit_acc is not None:
-        best_acc = max(boost_acc, logit_acc)
-    else:
-        best_acc = boost_acc if boost_acc is not None else logit_acc
+    selected_acc = boost_acc if use_boost else logit_acc
+    if selected_acc is None:
+        selected_acc = boost_acc if boost_acc is not None else logit_acc
     return {
         "trend": "up" if proba_up >= 0.5 else "down",
         "confidence": round(abs(proba_up - 0.5) * 2, 2),
@@ -184,8 +189,8 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
         "proba_up": round(proba_up, 3),
         "expected_move_pct": round(move * 100, 2),
         "model": "boost" if use_boost else "logit",
-        "walkforward_accuracy": round(float(best_acc), 3) if best_acc is not None else None,
-        "baseline_accuracy": round(float(lindy_acc), 3) if lindy_acc is not None else None,
+        "walkforward_accuracy": round(selected_acc, 3) if selected_acc is not None else None,
+        "baseline_accuracy": round(lindy_acc, 3) if lindy_acc is not None else None,
     }
 
 
@@ -198,9 +203,12 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast.json"))
     ap.add_argument("--loop", type=float, default=0, help="minutes between forecasts (0 = once)")
     args = ap.parse_args()
+    days = safe_pos_int(args.days, default=None)
+    if days is None:
+        ap.error("--days must be positive")
 
     while True:
-        ts, px = fetch_klines(args.symbol, args.days)
+        ts, px = fetch_klines(args.symbol, days)
         if len(px) < WARMUP + HORIZON_H + 100:
             print(f"! insufficient history ({len(px)} candles)")
             return 1

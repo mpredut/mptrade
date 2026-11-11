@@ -32,16 +32,15 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("Each step ranks the candidate set by trailing return/max(DD,5) and runs the winner on the "
              "next 90 days. `sum` = sum of out-of-sample 90-day returns (% of budget); `beat live` = "
              "steps where the pick beat `live`.\n")
-    cands = (
-        list(sel[0]["steps"][0]["oos"])
-        if (
-            sel
-            and isinstance(sel[0].get("steps"), list)
-            and sel[0]["steps"]
-            and isinstance(sel[0]["steps"][0], dict)
-            and isinstance(sel[0]["steps"][0].get("oos"), dict)
+    cands = list(
+        dict.fromkeys(
+            c
+            for r in sel
+            for x in (r.get("steps") or [])
+            if isinstance(x, dict) and isinstance(x.get("oos"), dict)
+            for c in x["oos"]
+            if isinstance(c, str) and c.strip()
         )
-        else []
     )
     L.append("| asset | steps | selector sum | live sum | best static (sum) | selector rank | beat live | picks |")
     L.append("|---|---|---|---|---|---|---|---|")
@@ -84,14 +83,25 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             L.append(f"| {'SELECTOR' if c == '__selector__' else c} | {v:+.1f} |")
 
     # ---------------------------------------------------------------- fine grid + fee
-    views = [r for r in rows if r.get("kind") == "views" and "cfg" in r and "fee" in r and "asset" in r]
+    views = [
+        r for r in rows
+        if r.get("kind") == "views"
+        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
+        and isinstance(r.get("fee"), str) and r["fee"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
+    wave1_valid = [
+        r for r in wave1
+        if "error" not in r
+        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
     by = defaultdict(dict)
     for r in views:
         by[(r["cfg"], r["fee"])][r["asset"]] = r
-    for r in wave1:
-        if "error" not in r and "cfg" in r and "asset" in r:
-            by.setdefault((r["cfg"], "std"), {}).setdefault(r["asset"], r)
-    assets = sorted({r["asset"] for r in views})
+    for r in wave1_valid:
+        by.setdefault((r["cfg"], "std"), {}).setdefault(r["asset"], r)
+    assets = sorted({r["asset"] for r in views} or {r["asset"] for r in wave1_valid})
 
     def summ(key):
         d = by[key]
@@ -141,7 +151,20 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             )
 
     fine = [s for s in (summ(k) for k in by if k[1] == "std") if s]
-    table(sorted(fine, key=lambda s: -(safe_float(s.get("calmar"), default=float("-inf"))))[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")
+    table(
+        sorted(
+            fine,
+            key=lambda s: (
+                safe_float(s.get("full_med"), default=float("-inf")) >= 0.0,
+                safe_float(s.get("calmar"), default=float("-inf"))
+                if safe_float(s.get("full_med"), default=float("-inf")) >= 0.0
+                else safe_float(s.get("full_med"), default=float("-inf")),
+                -safe_float(s.get("dd_med"), default=float("inf")),
+            ),
+            reverse=True,
+        )[:40],
+        "Fine grid + wave-1 configs, top 40 by median return/DD",
+    )
     fee = []
     for k in by:
         if k[1] == "stress":

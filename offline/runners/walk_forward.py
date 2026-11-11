@@ -86,7 +86,7 @@ def dispatch(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
 
     # Pre-parse --venue and --mode while leaving all other flags intact
-    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre_parser.add_argument(
         "--venue",
         type=lambda s: str(s).strip().lower(),
@@ -106,12 +106,13 @@ def dispatch(argv: list[str] | None = None) -> int:
     if any(h in raw_args for h in ("-h", "--help")):
         # Check if user specifically passed --venue or --mode to see venue-specific help
         if known.venue is None and known.mode == "baseline":
+            venues_help = ",".join(SUPPORTED_VENUES)
             doc_help = (
-                "usage: walk_forward.py [--venue {kraken,binance,hyperliquid,t212}] "
+                f"usage: walk_forward.py [--venue {{{venues_help}}}] "
                 "[--mode {baseline,compare}] ...\n\n"
                 "Canonical unified walk-forward runner dispatcher across all venues.\n\n"
                 "options:\n"
-                "  --venue {kraken,binance,hyperliquid,trading212,t212}\n"
+                f"  --venue {{{venues_help}}}\n"
                 "                        target trading venue (required for baseline mode)\n"
                 "  --mode {baseline,compare}\n"
                 "                        execution mode (defaults to 'baseline')\n\n"

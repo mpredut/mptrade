@@ -928,26 +928,39 @@ def drop_incomplete_last_bar(
     uses the session start, so during the session we compare against the
     ``regular`` end provided in the response metadata.
     """
-    if isinstance(interval_minutes, bool) or interval_minutes <= 0:
+    interval_i = exact_pos_int(interval_minutes, default=None)
+    if interval_i is None:
         raise ValueError("interval_minutes must be positive")
-    if isinstance(now_timestamp, bool) or now_timestamp is None:
+    now_i = exact_int(now_timestamp, default=None)
+    if now_i is None:
         raise ValueError("now_timestamp must be an integer")
     if isinstance(regular_session_start, bool) or isinstance(regular_session_end, bool):
         raise ValueError("regular session bounds cannot be boolean")
+    sess_start_i = exact_int(regular_session_start, default=None) if regular_session_start is not None else None
+    sess_end_i = exact_int(regular_session_end, default=None) if regular_session_end is not None else None
+    if (regular_session_start is not None and sess_start_i is None) or (
+        regular_session_end is not None and sess_end_i is None
+    ):
+        raise ValueError("regular session bounds must be integers")
     rows = [normalize_record(record) for record in records]
     if not rows:
         return rows
-    if interval_minutes >= 1440:
-        last_timestamp = int(rows[-1]["timestamp"])
-        in_open_session = (
-            regular_session_start is not None
-            and regular_session_end is not None
-            and int(regular_session_start) <= last_timestamp < int(regular_session_end)
-            and int(now_timestamp) < int(regular_session_end)
-        )
-        return rows[:-1] if in_open_session else rows
-    interval_seconds = interval_minutes * 60
-    while rows and int(rows[-1]["timestamp"]) + interval_seconds > int(now_timestamp):
+    if interval_i >= 1440:
+        while rows:
+            last_timestamp = rows[-1]["timestamp"]
+            in_open_session = (
+                sess_start_i is not None
+                and sess_end_i is not None
+                and sess_start_i <= last_timestamp < sess_end_i
+                and now_i < sess_end_i
+            )
+            if last_timestamp > now_i or in_open_session:
+                rows.pop()
+            else:
+                break
+        return rows
+    interval_seconds = interval_i * 60
+    while rows and rows[-1]["timestamp"] + interval_seconds > now_i:
         rows.pop()
     return rows
 
@@ -993,11 +1006,10 @@ def align_previous_values(
         raw_val = record[value_field]
         if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
             raise ValueError("source_records cannot contain None or boolean timestamp/value")
-        ts_f = safe_float(raw_ts, default=None)
+        ts_i = exact_int(raw_ts, default=None)
         val_f = safe_float(raw_val, default=None)
-        if ts_f is None or val_f is None:
+        if ts_i is None or val_f is None:
             raise ValueError("invalid or non-finite timestamp or value in source_records")
-        ts_i = int(ts_f)
         by_ts[ts_i] = val_f
     source = sorted(by_ts.items(), key=lambda item: item[0])
     if not source:
@@ -1006,13 +1018,16 @@ def align_previous_values(
     result: List[float] = []
     source_index = 0
     current: Optional[float] = None
+    prev_target: Optional[int] = None
     for timestamp in target_timestamps:
         if isinstance(timestamp, bool) or timestamp is None:
             raise ValueError("target_timestamps cannot contain None or boolean")
-        tf = safe_float(timestamp, default=None)
-        if tf is None:
+        target = exact_int(timestamp, default=None)
+        if target is None:
             raise ValueError(f"invalid or non-finite target timestamp: {timestamp!r}")
-        target = int(tf)
+        if prev_target is not None and target < prev_target:
+            raise ValueError(f"target_timestamps must be sorted in non-decreasing order at {target}")
+        prev_target = target
         while source_index < len(source) and source[source_index][0] <= target:
             current = convert(source[source_index][1])
             source_index += 1

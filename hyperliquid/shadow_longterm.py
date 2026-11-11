@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import os
 import sys
+import time
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,11 +47,11 @@ LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
 
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
-    load_shadow_environment(os.path.join(HERE, ".env"))
     cfg = load_layered_env_config(
         os.path.join(HERE, "config.env"),
         os.path.join(HERE, ".env"),
         override_prefixes=("HL_",),
+        fallback_prefixes=(),
     )
 
     base = StratParams.from_env(cfg)
@@ -95,29 +96,63 @@ def _fetch_with_ts(_pair: str, interval: int):
         hl_mod = load_local_module(HERE, "hl_client", module_key="hl_client")
     HLClient = hl_mod.HLClient
 
+    cfg = load_layered_env_config(
+        os.path.join(HERE, "config.env"),
+        os.path.join(HERE, ".env"),
+        override_prefixes=("HL_",),
+        fallback_prefixes=(),
+    )
     load_shadow_environment(os.path.join(HERE, ".env"))
-    token = required_env("HL_SPOT_TOKEN")
+    token = (os.environ.get("HL_SPOT_TOKEN") or cfg.get("HL_SPOT_TOKEN") or "").strip()
+    if not token:
+        token = required_env("HL_SPOT_TOKEN")
+    spot_pair = (os.environ.get("HL_SPOT_PAIR") or cfg.get("HL_SPOT_PAIR") or "").strip()
     client = HLClient.public()  # the unsigned client cannot submit orders
-    candles = client.candles(token, "4h", lookback_hours=5000 * 4)
+    if not spot_pair and not token.startswith("@"):
+        resolve_fn = getattr(client, "resolve_spot_pair", None)
+        if callable(resolve_fn):
+            resolved = resolve_fn(token)
+            if isinstance(resolved, str) and resolved.strip():
+                spot_pair = resolved.strip()
+    candle_coin = spot_pair or token
+    candles = client.candles(candle_coin, "4h", lookback_hours=5000 * 4)
+    now_ms = int(time.time() * 1000)
+    has_close_ts = False
     parsed: list[tuple[int, float, float, float, float]] = []
     for item in candles or []:
         if not isinstance(item, dict):
             continue
-        bar = validate_ohlc_candle_bar(
-            item.get("t"),
-            item.get("o"),
-            item.get("h"),
-            item.get("l"),
-            item.get("c"),
-            drop_incomplete=False,
-            ts_in_ms=True,
-        )
+        raw_close_ts = item.get("T")
+        if raw_close_ts is not None:
+            has_close_ts = True
+            bar = validate_ohlc_candle_bar(
+                item.get("t"),
+                item.get("o"),
+                item.get("h"),
+                item.get("l"),
+                item.get("c"),
+                close_ts=raw_close_ts,
+                now_ms=now_ms,
+                drop_incomplete=True,
+                ts_in_ms=True,
+                close_inclusive=True,
+            )
+        else:
+            bar = validate_ohlc_candle_bar(
+                item.get("t"),
+                item.get("o"),
+                item.get("h"),
+                item.get("l"),
+                item.get("c"),
+                drop_incomplete=False,
+                ts_in_ms=True,
+            )
         if bar is not None:
             parsed.append((bar["timestamp"], bar["open"], bar["high"], bar["low"], bar["close"]))
     by_ts = {r[0]: r for r in parsed}
     rows = [by_ts[k] for k in sorted(by_ts)]
-    # The final candle may still be forming; remove it as the Kraken runner does.
-    return rows[:-1]
+    # When candle close timestamps ('T') are absent in mock/legacy payloads, drop the final bar.
+    return rows if has_close_ts else rows[:-1]
 
 
 def snapshot(*, quiet: bool = False):
@@ -135,10 +170,10 @@ def snapshot(*, quiet: bool = False):
         shadow._fetch_with_ts = prev_fetch
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quiet", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     load_shadow_environment(os.path.join(HERE, ".env"))
     try:
         snapshot(quiet=args.quiet)

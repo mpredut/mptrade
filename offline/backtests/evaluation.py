@@ -22,13 +22,17 @@ from strategies.replay_execution import ExecutionModel
 from strategies.replay_metrics import validate_replay_metrics
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 from botcore import (
+    exact_int,
     exact_pos_int,
     float_env,
     load_layered_env_config,
     load_local_module,
+    normalize_epoch_sec,
+    require_pos_float,
     safe_float,
     safe_int,
 )
+from providers.order_ohlc_utils import normalize_record
 
 
 Ohlc = list[tuple[float, float, float, float]]
@@ -58,13 +62,13 @@ def assess_decision_evidence(
     """
     if not records:
         raise ValueError("evaluating the evidence requires at least one bar")
-    raw_first_ts = records[0].get("timestamp") if isinstance(records[0], dict) else None
-    raw_last_ts = records[-1].get("timestamp") if isinstance(records[-1], dict) else None
-    first_ts_f = safe_float(raw_first_ts, default=None)
-    last_ts_f = safe_float(raw_last_ts, default=None)
+    raw_first_ts = records[0].get("timestamp") if isinstance(records[0], Mapping) else None
+    raw_last_ts = records[-1].get("timestamp") if isinstance(records[-1], Mapping) else None
+    first_ts_f = normalize_epoch_sec(raw_first_ts, default=None, allow_zero=True)
+    last_ts_f = normalize_epoch_sec(raw_last_ts, default=None, allow_zero=True)
     if first_ts_f is None or last_ts_f is None:
         raise ValueError("invalid record timestamps")
-    history_days = max(0.0, (int(last_ts_f) - int(first_ts_f)) / 86_400.0)
+    history_days = max(0.0, (last_ts_f - first_ts_f) / 86_400.0)
     agg = aggregate if isinstance(aggregate, dict) else {}
     fold_count = safe_int(agg.get("fold_count"), 0)
     cycles = safe_int(agg.get("total_cycles"), 0)
@@ -107,9 +111,9 @@ def automatic_window_sizes(sample_count: int) -> tuple[int, int, int, int]:
     """Approximate three folds: 45% train, 10% validation, 15% test."""
     if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count < 20:
         raise ValueError("at least 20 bars are required for automatic windows")
-    train = max(1, int(sample_count * 0.45))
-    validation = max(1, int(sample_count * 0.10))
-    test = max(1, int(sample_count * 0.15))
+    train = max(1, safe_int(sample_count * 0.45, 1))
+    validation = max(1, safe_int(sample_count * 0.10, 1))
+    test = max(1, safe_int(sample_count * 0.15, 1))
     return train, validation, test, test
 
 
@@ -117,33 +121,38 @@ def iso_utc(timestamp: int) -> str:
     return dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc).isoformat()
 
 
-def to_ohlc(records: Sequence[dict]) -> list[tuple[float, float, float, float]]:
+def _normalize_segment_row(row: Mapping) -> dict[str, Any]:
+    norm = normalize_record(row)
+    for field in ("open", "high", "low", "close"):
+        require_pos_float(norm[field], name=field)
+    return norm
+
+
+def to_ohlc(records: Sequence[Mapping]) -> list[tuple[float, float, float, float]]:
+    norm_rows = [_normalize_segment_row(row) for row in records]
     return [
-        (
-            safe_float(row["open"], 0.0),
-            safe_float(row["high"], 0.0),
-            safe_float(row["low"], 0.0),
-            safe_float(row["close"], 0.0),
-        )
-        for row in records
+        (row["open"], row["high"], row["low"], row["close"])
+        for row in norm_rows
     ]
 
 
 def evaluate_segment(
-    records: Sequence[dict],
+    records: Sequence[Mapping],
     replay: ReplayFunction,
     *,
-    warmup_records: Sequence[dict] = (),
+    warmup_records: Sequence[Mapping] = (),
     validate_contract: bool = False,
 ) -> dict:
     if not records:
         raise ValueError("evaluation segment cannot be empty")
+    norm_records = [_normalize_segment_row(row) for row in records]
+    norm_warmup = [_normalize_segment_row(row) for row in warmup_records]
     metrics = replay(
-        to_ohlc(records),
-        to_ohlc(warmup_records),
+        [(row["open"], row["high"], row["low"], row["close"]) for row in norm_records],
+        [(row["open"], row["high"], row["low"], row["close"]) for row in norm_warmup],
         ReplayContext(
-            timestamps=tuple(int(row["timestamp"]) for row in records),
-            warmup_timestamps=tuple(int(row["timestamp"]) for row in warmup_records),
+            timestamps=tuple(row["timestamp"] for row in norm_records),
+            warmup_timestamps=tuple(row["timestamp"] for row in norm_warmup),
         ),
     )
     if not isinstance(metrics, dict):
@@ -154,13 +163,13 @@ def evaluate_segment(
         raise ValueError(f"the replay adapter did not supply the metrics: {sorted(missing)}")
     if validate_contract:
         validate_replay_metrics(metrics)
-    first_close = safe_float(records[0]["close"], 0.0)
-    last_close = safe_float(records[-1]["close"], 0.0)
+    first_close = norm_records[0]["close"]
+    last_close = norm_records[-1]["close"]
     buy_hold_pct = (last_close / first_close - 1.0) * 100.0 if first_close > 0 else None
     return {
-        "start_utc": iso_utc(int(records[0]["timestamp"])),
-        "end_utc": iso_utc(int(records[-1]["timestamp"])),
-        "bars": len(records),
+        "start_utc": iso_utc(norm_records[0]["timestamp"]),
+        "end_utc": iso_utc(norm_records[-1]["timestamp"]),
+        "bars": len(norm_records),
         "buy_hold_return_pct": buy_hold_pct,
         "metrics": metrics,
     }
@@ -237,7 +246,7 @@ def evaluate_walk_forward(
     )
     compounded = 100.0
     for window in test_windows:
-        compounded *= 1.0 + safe_float(window.get("return_pct"), 0.0) / 100.0
+        compounded *= max(0.0, 1.0 + safe_float(window.get("return_pct"), 0.0) / 100.0)
     bh_values = [
         bh_f
         for window in test_windows
@@ -300,9 +309,16 @@ def extract_cfg_float(cfg: Any, key: str, default: float) -> float:
 
 
 def extract_cfg_int(cfg: Any, key: str, default: int) -> int:
-    """Extract an integer parameter from configuration mapping."""
-    val = extract_cfg_float(cfg, key, float(default))
-    return int(val)
+    """Extract an exact integer parameter from configuration mapping."""
+    if not isinstance(cfg, (dict, Mapping)):
+        return default
+    raw = cfg.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    val = exact_int(raw, default=None)
+    if val is None:
+        raise ValueError(f"Invalid integer config value for {key}: {raw!r}")
+    return val
 
 
 VENUE_REPLAY_DIRS: dict[str, str] = {
@@ -480,6 +496,7 @@ def build_and_save_interval_baseline_report(
     from state_io import atomic_write_json
 
     train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
+    warmup_bars = max(0, safe_int(getattr(args, "warmup", None), 0))
     wf_result = evaluate_walk_forward(
         records,
         adapter,
@@ -487,7 +504,7 @@ def build_and_save_interval_baseline_report(
         validation_size=val_size,
         test_size=test_size,
         step_size=step_size,
-        warmup_bars=args.warmup,
+        warmup_bars=warmup_bars,
         validate_contract=True,
     )
     evidence = assess_decision_evidence(records, wf_result["aggregate_test"])
@@ -511,14 +528,14 @@ def build_and_save_interval_baseline_report(
             "validation": val_size,
             "test": test_size,
             "step": step_size,
-            "signal_warmup_bars": args.warmup,
+            "signal_warmup_bars": warmup_bars,
         },
         "evidence": evidence,
         "aggregate_test": wf_result["aggregate_test"],
         "folds": wf_result["folds"],
     }
     report_path = output_dir / f"{symbol_or_coin}_{interval}m_baseline.json"
-    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
     print(
         f"[{symbol_or_coin} {interval}m] Verdict: {evidence['verdict']} | "
         f"Worst Return: {(wf_result['aggregate_test'].get('worst_return_pct') or 0.0):+.2f}% | "

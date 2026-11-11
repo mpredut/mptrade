@@ -809,22 +809,38 @@ class Strategy(BaseSpotMixin):
         remaining = [(lvl, frac) for (lvl, frac) in self.p.tp_ladder if lvl not in sold]
         if not remaining or held <= 1e-9:
             return
-        remaining = adapt_ladder_rungs(remaining, held, min_tranche_qty=0.01)
-        total = sum(f for _, f in remaining)
-        if total <= 0:
-            return
-        desired = {}
-        buf = (self.p.ladder_min_free / avg) if (self.p.ladder_min_free > 0 and avg > 0) else 0.0
-        remaining_sorted = sorted(remaining, key=lambda x: x[0])
-        acc = 0.0
-        for i, (lvl, frac) in enumerate(remaining_sorted):
-            last = (i == len(remaining_sorted) - 1)
-            q = round(held - acc - buf, 2) if last else round(held * frac / total, 2)
-            acc += q
-            lim_px = round(avg * (1 + lvl / 100.0), 2)
-            if q > 0 and lim_px > 0:
-                desired[lvl] = (q, lim_px)
         open_sells = {o.get("level"): o for o in self.s["orders"] if o["side"] == "SELL" and o.get("level") is not None}
+        locked_partial: dict[float, tuple[float, float]] = {}
+        reserved_partial_qty = 0.0
+        for lvl, _ in remaining:
+            o = open_sells.get(lvl)
+            lim_px = round(avg * (1 + lvl / 100.0), 2)
+            if (
+                o is not None
+                and o.get("_replay_had_fill")
+                and lim_px > 0
+                and abs(o["limit"] - lim_px) / lim_px <= 0.001
+                and 0 < o["qty"] <= held - reserved_partial_qty + 1e-6
+            ):
+                locked_partial[lvl] = (o["qty"], o["limit"])
+                reserved_partial_qty += o["qty"]
+        unstarted = [(lvl, frac) for (lvl, frac) in remaining if lvl not in locked_partial]
+        free_held = max(0.0, held - reserved_partial_qty)
+        desired = dict(locked_partial)
+        if unstarted and free_held > 1e-9:
+            unstarted = adapt_ladder_rungs(unstarted, free_held, min_tranche_qty=0.01)
+            total = sum(f for _, f in unstarted)
+            if total > 0:
+                buf = (self.p.ladder_min_free / avg) if (self.p.ladder_min_free > 0 and avg > 0) else 0.0
+                unstarted_sorted = sorted(unstarted, key=lambda x: x[0])
+                acc = 0.0
+                for i, (lvl, frac) in enumerate(unstarted_sorted):
+                    last = (i == len(unstarted_sorted) - 1)
+                    q = round(free_held - acc - buf, 2) if last else round(free_held * frac / total, 2)
+                    acc += q
+                    lim_px = round(avg * (1 + lvl / 100.0), 2)
+                    if q > 0 and lim_px > 0:
+                        desired[lvl] = (q, lim_px)
         cancelled_by_level = {}
         for lvl, o in list(open_sells.items()):
             d = desired.get(lvl)
@@ -1504,9 +1520,17 @@ class Strategy(BaseSpotMixin):
         if target > 0:
             sell_qty = self._sellable_qty(held, target)
             sell = self._find_open("SELL")
+            target_lim = round(target, 2)
             if sell is None:
                 self._place_sell(sell_qty, target)
-            elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
+            elif (
+                target_lim <= 0
+                or abs(sell["limit"] - target_lim) / target_lim > 0.001
+                or (
+                    not (sell.get("_replay_had_fill") and 0 < sell["qty"] <= held + 1e-6)
+                    and abs(sell["qty"] - sell_qty) > 1e-6
+                )
+            ):
                 old_sell = dict(sell)
                 if self._cancel_open("SELL") and sell not in self.s["orders"]:
                     if not self._place_sell(sell_qty, target) and not self.s.get("pending_submit"):

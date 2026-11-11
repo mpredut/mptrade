@@ -8,7 +8,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float
+from botcore import safe_float, safe_nonneg_int
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
 
@@ -18,6 +18,15 @@ def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False
         return "N/A"
     spec = f"{f:+0.{decimals}f}%" if signed else f"{f:0.{decimals}f}%"
     return f"**{spec}**" if bold else spec
+
+
+def _valid_ablation_row(row) -> bool:
+    return (
+        isinstance(row, dict)
+        and "error" not in row
+        and isinstance(row.get("asset"), str)
+        and bool(row["asset"].strip())
+    )
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 CRYPTO_JSON = os.path.join(OUT_DIR, "ablation_results.json")
@@ -30,14 +39,12 @@ def generate_markdown_report() -> str:
         return "No crypto ablation results found."
 
     raw_crypto = read_json_file(CRYPTO_JSON, default=[])
-    crypto_data = [r for r in raw_crypto if isinstance(r, dict) and r.get("asset")] if isinstance(raw_crypto, list) else []
+    crypto_data = [r for r in raw_crypto if _valid_ablation_row(r)] if isinstance(raw_crypto, list) else []
 
     summary = read_json_dict(SUMMARY_JSON, default={}) if os.path.isfile(SUMMARY_JSON) else {}
 
     raw_eq = read_json_file(EQUITIES_JSON, default=[]) if os.path.isfile(EQUITIES_JSON) else []
-    equities_data = [
-        eq for eq in raw_eq if isinstance(eq, dict) and "error" not in eq
-    ] if isinstance(raw_eq, list) else []
+    equities_data = [eq for eq in raw_eq if _valid_ablation_row(eq)] if isinstance(raw_eq, list) else []
 
     md = []
     md.append("# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report")
@@ -68,10 +75,14 @@ def generate_markdown_report() -> str:
             s = summary[var]
             md.append(
                 f"| **{var}** | {s.get('name', var)} | {s.get('positive_assets', '0/0')} | "
-                f"**{safe_float(s.get('median_return_pct'), 0.0):+.2f}%** | {safe_float(s.get('worst_return_pct'), 0.0):+.2f}% | "
-                f"{safe_float(s.get('best_return_pct'), 0.0):+.2f}% | {safe_float(s.get('median_drawdown_pct'), 0.0):.2f}% | "
-                f"{safe_float(s.get('max_drawdown_pct'), 0.0):.2f}% | {safe_float(s.get('mean_exposure_pct'), 0.0):.2f}% | "
-                f"{s.get('total_cycles') or 0} | {s.get('total_wins') or 0} |"
+                f"{_fmt_pct(s.get('median_return_pct'), decimals=2, signed=True, bold=True)} | "
+                f"{_fmt_pct(s.get('worst_return_pct'), decimals=2, signed=True)} | "
+                f"{_fmt_pct(s.get('best_return_pct'), decimals=2, signed=True)} | "
+                f"{_fmt_pct(s.get('median_drawdown_pct'), decimals=2)} | "
+                f"{_fmt_pct(s.get('max_drawdown_pct'), decimals=2)} | "
+                f"{_fmt_pct(s.get('mean_exposure_pct'), decimals=2)} | "
+                f"{safe_nonneg_int(s.get('total_cycles'), default=0)} | "
+                f"{safe_nonneg_int(s.get('total_wins'), default=0)} |"
             )
 
     md.append("\n---\n")
@@ -111,7 +122,8 @@ def generate_markdown_report() -> str:
             dd_str = _fmt_pct(eq.get("max_drawdown_pct"), decimals=2)
             exp_str = _fmt_pct(eq.get("exposure_pct"), decimals=2)
             win_str = _fmt_pct(eq.get("win_rate"), decimals=1)
-            md.append(f"| **{eq.get('asset')}** | {eq.get('test_id')} | {eq.get('variant')} | {r_str} | {dd_str} | {exp_str} | {eq.get('cycles', 0)} | {win_str} |")
+            cycles_int = safe_nonneg_int(eq.get("cycles"), default=0)
+            md.append(f"| **{eq.get('asset')}** | {eq.get('test_id')} | {eq.get('variant')} | {r_str} | {dd_str} | {exp_str} | {cycles_int} | {win_str} |")
 
     md.append("\n---\n")
     md.append("## 3. Key Mathematical Findings & Hypotheses Verification")

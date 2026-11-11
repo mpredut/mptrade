@@ -98,12 +98,21 @@ def main():
         cfg = dict(BASE_CONFIG)
         cfg.update(parse_dotenv(profile_path))
         cfg["YAHOO_SYMBOL"] = symbol
+        cfg["STRAT_CURRENCY"] = "USD"
+        cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"
         cfg["STRAT_MAX_BUDGET"] = "500"
         cfg["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
         cfg["STRAT_REENTRY_PEAK_RELATIVE"] = "false"
         cfg["STRAT_REENTRY_PULLBACK_ADAPTIVE"] = "false"
         cfg["STRAT_REENTRY_PULLBACK_PCT"] = "1.5"
         cfg["STRAT_REENTRY_TTL_HOURS"] = "0.0"
+        check_min = safe_pos_float(cfg.get("STRAT_CHECK_MINUTES"), default=5.0)
+        if check_min is not None and check_min < 1440.0:
+            bar_scale = 1440.0 / check_min
+            for timeout_key in ("STRAT_TP_STAGNATION_MAX_SEC", "STRAT_SL_TREND_DEFER_MAX_SEC"):
+                timeout_val = safe_pos_float(cfg.get(timeout_key), default=None)
+                if timeout_val is not None:
+                    cfg[timeout_key] = f"{timeout_val * bar_scale:.1f}"
         if safe_pos_float(cfg.get("STRAT_REENTRY_DROP_PCT"), default=None) is None:
             cfg["STRAT_REENTRY_DROP_PCT"] = "2.0"
         base_params = align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
@@ -130,6 +139,9 @@ def main():
                     f"| Cycles {row['cycles']}"
                 )
 
+    if not results or not any("error" not in r for r in results):
+        print("\nERROR: No valid equity ablation results produced; refusing to overwrite report JSON.", file=sys.stderr)
+        sys.exit(1)
     out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
     atomic_write_json(out_json, results, indent=2)
     print(f"\nEquities results saved to {out_json}")

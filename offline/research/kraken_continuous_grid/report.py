@@ -75,12 +75,26 @@ def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20
     return lines
 
 
+def _rank_key(s: dict) -> tuple[bool, float, float]:
+    full_med = safe_float(s.get("full_med"), default=float("-inf"))
+    calmar_med = safe_float(s.get("calmar_med"), default=float("-inf"))
+    dd_med = safe_float(s.get("dd_med"), default=float("inf"))
+    if full_med >= 0.0:
+        return (True, calmar_med, -dd_med)
+    return (False, full_med, -dd_med)
+
+
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results_path = os.path.join(exp, "results.jsonl")
     rows = read_jsonl_dicts(results_path)
     errors = [r for r in rows if "error" in r]
-    rows = [r for r in rows if "error" not in r and "cfg" in r and "asset" in r]
+    rows = [
+        r for r in rows
+        if "error" not in r
+        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
     by = defaultdict(dict)
     for r in rows:
         by[r["cfg"]][r["asset"]] = r
@@ -89,7 +103,13 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     summary = []
     for c in cfgs:
-        if not all(a in by[c] and isinstance(by[c][a].get("full"), dict) for a in assets):
+        if not assets or not all(
+            a in by[c]
+            and isinstance(by[c][a].get("full"), dict)
+            and safe_float(by[c][a]["full"].get("ret"), default=None) is not None
+            and safe_float(by[c][a]["full"].get("dd"), default=None) is not None
+            for a in assets
+        ):
             continue
         live = by.get("live", {})
         full = [safe_float(by[c][a]["full"].get("ret"), 0.0) for a in assets]
@@ -171,7 +191,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 f"{_fmt_num(s['yr_worst'], '+.1f')} | {_fmt_num(s['yr_med'], '+.1f')} |"
             )
 
-    table(sorted(summary, key=lambda s: -safe_float(s.get("calmar_med"), default=float("-inf"))), "All configs, ranked by median full-run return/drawdown")
+    table(sorted(summary, key=_rank_key, reverse=True), "All configs, ranked by median full-run return/drawdown")
     table([s for s in summary if s["cfg"] in ("live", "old_live_pre0923") or s["cfg"].startswith("abl_")],
           "23 Sep promotion: live vs pre-promotion vs one-change-reverted ablations")
 
@@ -181,13 +201,21 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("| asset | buy&hold % | " + " | ".join(key_cfgs) + " |")
     L.append("|" + "---|" * (len(key_cfgs) + 2))
     for a in assets:
-        live_full = by.get("live", {}).get(a, {}).get("full")
-        bh = safe_float(live_full.get("bh") if isinstance(live_full, dict) else 0.0, 0.0)
+        bh_val = None
+        for cfg_name in ("live", *cfgs):
+            cand_full = by.get(cfg_name, {}).get(a, {}).get("full")
+            if isinstance(cand_full, dict):
+                bh_val = safe_float(cand_full.get("bh"), default=None)
+                if bh_val is not None:
+                    break
+        bh = bh_val if bh_val is not None else 0.0
         cells = []
         for c in key_cfgs:
             full_d = by.get(c, {}).get(a, {}).get("full")
-            if isinstance(full_d, dict) and "ret" in full_d and "dd" in full_d:
-                cells.append(f"{safe_float(full_d.get('ret'), 0.0):+.1f} ({safe_float(full_d.get('dd'), 0.0):.0f})")
+            ret_v = safe_float(full_d.get("ret"), default=None) if isinstance(full_d, dict) else None
+            dd_v = safe_float(full_d.get("dd"), default=None) if isinstance(full_d, dict) else None
+            if ret_v is not None and dd_v is not None:
+                cells.append(f"{ret_v:+.1f} ({dd_v:.0f})")
             else:
                 cells.append("-")
         L.append(f"| {a} | {bh:+.0f} | " + " | ".join(cells) + " |")

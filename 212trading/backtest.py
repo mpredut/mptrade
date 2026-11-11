@@ -31,14 +31,14 @@ from botcore import (
     _parse_bool_flag,
     float_env,
     load_local_module,
+    parse_dotenv,
     required_env,
     required_float_env,
-    required_int_env,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
 )
-
-load_t212_environment = load_local_module(T212_DIR, "ipo_common", module_key="t212_ipo_common").load_t212_environment
+from strategies.base_spot_mixin import parse_max_dca_buys_env
 
 _replay_mod = load_local_module(T212_DIR, "replay", module_key="t212_backtest_replay")
 run_replay = _replay_mod.run_replay
@@ -86,6 +86,27 @@ _SIMULATE_ALIAS_MAP = (
 )
 
 
+def _load_isolated_t212_cfg(env_file: str, *, profile_file: str | None = None) -> dict[str, str]:
+    """Load T212 environment layers into an isolated dict without mutating os.environ."""
+    cfg: dict[str, str] = {}
+    layers = [
+        os.path.abspath(env_file),
+        os.path.join(ROOT, ".env"),
+    ]
+    if profile_file:
+        layers.append(os.path.abspath(profile_file))
+    layers.append(os.path.join(T212_DIR, "runtime.env"))
+    for path in layers:
+        if os.path.exists(path):
+            for k, v in parse_dotenv(path).items():
+                if k not in cfg:
+                    cfg[k] = v
+    for k, v in os.environ.items():
+        if k.startswith(("T212_", "YAHOO_")):
+            cfg[k] = v
+    return cfg
+
+
 def simulate(ohlc, P):
     """CLI compatibility wrapper over the same ``Strategy.step`` used live."""
     if not isinstance(P, dict):
@@ -97,6 +118,7 @@ def simulate(ohlc, P):
                 return P[k]
         return default
 
+    base_env = P.get("_base_env") if isinstance(P.get("_base_env"), dict) else {}
     budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=500.0)
     raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None), default=None)
     raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None), default=None)
@@ -110,34 +132,44 @@ def simulate(ohlc, P):
     )
 
     env_overrides = {
-        k: str(os.environ.get(k) or v) if k in ("STRAT_CHECK_MINUTES", "STRAT_ORDER_TTL_MIN") else str(os.environ.get(k, v))
+        k: str(base_env.get(k) or v) if k in ("STRAT_CHECK_MINUTES", "STRAT_ORDER_TTL_MIN") else str(base_env.get(k, v))
         for k, v in _SIMULATE_ENV_DEFAULTS.items()
     }
     env_overrides.update({
-        "STRATEGY_MODE": str(_p_val(("mode",), os.environ.get("STRATEGY_MODE") or "avg_tp")),
-        "STRAT_CURRENCY": str(_p_val(("currency",), os.environ.get("STRAT_CURRENCY") or "USD")),
-        "YAHOO_SYMBOL": str(_p_val(("sym", "yahoo_sym"), os.environ.get("YAHOO_SYMBOL") or "REPLAY")),
+        "STRATEGY_MODE": str(_p_val(("mode",), base_env.get("STRATEGY_MODE") or "avg_tp")),
+        "STRAT_CURRENCY": str(_p_val(("currency",), base_env.get("STRAT_CURRENCY") or "USD")),
+        "YAHOO_SYMBOL": str(_p_val(("sym", "yahoo_sym"), base_env.get("YAHOO_SYMBOL") or "REPLAY")),
         "STRAT_ENTRY_PCT": str(entry_pct),
         "STRAT_DCA_PCT": str(dca_pct),
         "STRAT_ENTRY_DISCOUNT_PCT": str(_p_val(("disc", "entry_discount_pct"), 0.3)),
         "STRAT_DCA_DROP_PCT": str(_p_val(("drop", "dca_drop_pct"), 2.0)),
         "STRAT_TAKEPROFIT_PCT": str(_p_val(("tp", "takeprofit_pct"), 1.5)),
         "STRAT_MAX_DCA_BUYS": str(
-            _p_val(("maxdca", "max_dca_buys"), os.environ.get("STRAT_MAX_DCA_BUYS") or "auto")
+            _p_val(("maxdca", "max_dca_buys"), base_env.get("STRAT_MAX_DCA_BUYS") or "auto")
         ),
         "STRAT_MAX_BUDGET": str(budget),
     })
+    bar_min = P.get("bar_minutes")
+    if bar_min is not None and safe_pos_float(bar_min, default=None) != 5.0 and "dca_trend_gate" not in P:
+        env_overrides["STRAT_DCA_TREND_GATE_PCT"] = "0"
     for alias, env_key in _SIMULATE_ALIAS_MAP:
         val = _p_val(alias, None)
         if val is not None:
             env_overrides[env_key] = str(val)
     for k, v in P.items():
+        if k == "_base_env":
+            continue
         if k == "tp_ladder":
             if v is None:
                 env_overrides["STRAT_TP_LADDER"] = ""
             elif isinstance(v, (list, tuple)):
+                all_fracs = (
+                    bool(v)
+                    and all(safe_nonneg_float(frac, 2.0) <= 1.0 + 1e-9 for _, frac in v)
+                    and sum(safe_nonneg_float(frac, 0.0) for _, frac in v) <= 1.0 + 1e-6
+                )
                 env_overrides["STRAT_TP_LADDER"] = ",".join(
-                    f"{lvl}:{frac * 100.0 if frac <= 1.0 else frac}" for lvl, frac in v
+                    f"{lvl}:{frac * 100.0 if all_fracs else frac}" for lvl, frac in v
                 )
             else:
                 env_overrides["STRAT_TP_LADDER"] = str(v)
@@ -148,7 +180,8 @@ def simulate(ohlc, P):
             env_overrides[env_key] = str(v).lower() if isinstance(v, bool) else str(v)
 
     params = StratParams.from_env(env_overrides)
-    return run_replay(ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=P.get("fx_to_usd", 1.0))
+    fx_arg = P.get("fx_to_usd")
+    return run_replay(ohlc, params, bar_minutes=bar_min, fx_to_usd=1.0 if fx_arg is None else fx_arg)
 
 
 
@@ -182,36 +215,33 @@ def main() -> int:
     if not os.path.exists(cfg_file):
         print(f"! profile config not found: {cfg_file}")
         return 1
-    load_t212_environment(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
+    cfg = _load_isolated_t212_cfg(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
 
-    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET")
-    entry_pct = float_env("STRAT_ENTRY_PCT")
-    dca_pct = float_env("STRAT_DCA_PCT")
-    entry = args.entry if args.entry is not None else ((budget * entry_pct / 100.0) if entry_pct is not None else required_float_env("STRAT_ENTRY"))
-    dca = args.dca if args.dca is not None else ((budget * dca_pct / 100.0) if dca_pct is not None else required_float_env("STRAT_DCA"))
-    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT")
-    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT")
-    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT")
-    sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT")
-    fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT")
-    sym = args.sym if (args.sym != "NVDA" or not os.environ.get("YAHOO_SYMBOL")) else required_env("YAHOO_SYMBOL")
+    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", cfg)
+    entry_pct = float_env("STRAT_ENTRY_PCT", cfg)
+    dca_pct = float_env("STRAT_DCA_PCT", cfg)
+    entry = args.entry if args.entry is not None else ((budget * entry_pct / 100.0) if entry_pct is not None else required_float_env("STRAT_ENTRY", cfg))
+    dca = args.dca if args.dca is not None else ((budget * dca_pct / 100.0) if dca_pct is not None else required_float_env("STRAT_DCA", cfg))
+    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", cfg)
+    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT", cfg)
+    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT", cfg)
+    sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", cfg)
+    fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT", cfg)
+    sym = args.sym if (args.sym != "NVDA" or not cfg.get("YAHOO_SYMBOL")) else required_env("YAHOO_SYMBOL", cfg)
 
-    mdb_raw = (os.environ.get("STRAT_MAX_DCA_BUYS") or "auto").strip().lower()
     if args.maxdca is not None:
         maxdca = args.maxdca
-    elif mdb_raw in ("auto", "budget"):
-        maxdca = max(0, int((budget - entry) // dca)) if dca > 0 else 0
     else:
-        maxdca = required_int_env("STRAT_MAX_DCA_BUYS")
+        maxdca, entry = parse_max_dca_buys_env(cfg, budget, entry, dca)
 
     sl_mhdsl = args.mhdsl if args.mhdsl is not None else (
-        _parse_bool_flag(os.environ.get("STRAT_SL_MHDSL_ENABLED"), default=False)
+        _parse_bool_flag(cfg.get("STRAT_SL_MHDSL_ENABLED"), default=False)
     )
     tp_mdhtp = args.mdhtp if args.mdhtp is not None else (
-        _parse_bool_flag(os.environ.get("STRAT_TP_MDHTP_ENABLED"), default=False)
+        _parse_bool_flag(cfg.get("STRAT_TP_MDHTP_ENABLED"), default=False)
     )
-    trail_pct = args.trail if args.trail is not None else (float_env("STRAT_TRAIL_PCT") or 0.0)
-    trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else (float_env("STRAT_TRAIL_MIN_PROFIT_PCT") or 0.0)
+    trail_pct = args.trail if args.trail is not None else (float_env("STRAT_TRAIL_PCT", cfg) or 0.0)
+    trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else (float_env("STRAT_TRAIL_MIN_PROFIT_PCT", cfg) or 0.0)
 
     ohlc = fetch_candles(sym, args.range, args.interval)
     if len(ohlc) < 20:
@@ -223,7 +253,8 @@ def main() -> int:
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=interval_minutes(args.interval),
                 sl_mhdsl_enabled=sl_mhdsl, tp_mdhtp_enabled=tp_mdhtp,
-                trail_pct=trail_pct, trail_min_profit=trail_min_profit)
+                trail_pct=trail_pct, trail_min_profit=trail_min_profit,
+                _base_env=cfg)
     if args.tp is not None or args.mode == "sweep":
         base["tp_ladder"] = ""
         if args.mdhtp is None:

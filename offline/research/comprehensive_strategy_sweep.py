@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import (
+    normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -38,6 +39,7 @@ _KRAKEN_CFG = load_layered_env_config(
     KRAKEN_DIR / "config.env",
     KRAKEN_DIR / ".env",
     override_prefixes=("KRAKEN_",),
+    fallback_prefixes=(),
 )
 LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
@@ -213,8 +215,10 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     net_pct = (safe_float(m_dict.get("net"), 0.0) / safe_budget) * 100.0
     total_pct = (safe_float(m_dict.get("total"), 0.0) / safe_budget) * 100.0
     max_dd = safe_float(m_dict.get("max_drawdown_pct"), 0.0)
-    raw_calmar = safe_float(m_dict.get("calmar"), default=None)
-    calmar = raw_calmar if raw_calmar is not None else ((total_pct / max_dd) if max_dd > 0 else 0.0)
+    if "calmar" in m_dict:
+        calmar = safe_float(m_dict.get("calmar"), 0.0)
+    else:
+        calmar = (total_pct / max_dd) if max_dd > 0 else 0.0
     raw_sharpe = m_dict.get("sharpe") if m_dict.get("sharpe") is not None else m_dict.get("sharpe_ratio")
     sharpe = safe_float(raw_sharpe, 0.0)
     return {
@@ -249,7 +253,11 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
             dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
         adapter = kraken_replay.make_spot_replay_adapter(
-            params, fee_pct=fee_pct, bar_minutes=interval, execution=ExecutionModel(),
+            params,
+            fee_pct=fee_pct,
+            bar_minutes=interval,
+            execution=ExecutionModel(),
+            initial_cash=params.allocated_budget(),
         )
         windows = []
         for fold in folds:
@@ -291,7 +299,10 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     # Compute pairwise W/T/L vs Live
     for name, data in results.items():
         if name == "00_LIVE_CURRENT":
-            data["vs_live_WTL"] = f"{len(folds)}/0/0 (Ref)"
+            data["vs_live_WTL"] = f"0/{len(folds)}/0 (Ref)"
+            continue
+        if not live_candidate_windows:
+            data["vs_live_WTL"] = "-"
             continue
         wins = sum(1 for cand, ref in zip(data["raw_windows"], live_candidate_windows) if cand > ref + 1e-6)
         ties = sum(1 for cand, ref in zip(data["raw_windows"], live_candidate_windows) if abs(cand - ref) <= 1e-6)
@@ -317,11 +328,13 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
         params = align_spot_interval_params(
             dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
+        budget = params.allocated_budget()
         m = kraken_replay.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
+            initial_cash=budget,
         )
-        s = _summarize_replay(m, params.allocated_budget())
+        s = _summarize_replay(m, budget)
         results[name] = {
             "cont_net_pct": s["net_pct"],
             "cont_total_pct": s["total_pct"],
@@ -353,13 +366,20 @@ def run_live_forward_shadow(
 
     # Load anchor ts
     anchor_path = SHADOW_OHLC_JSON.parent / "HYPEUSD_240m.anchor"
-    anchor_ts = safe_nonneg_int(read_text_file(anchor_path, default="").strip(), default=0) if anchor_path.exists() else 0
+    anchor_raw = (
+        normalize_epoch_sec(read_text_file(anchor_path, default="").strip(), default=None)
+        if anchor_path.exists()
+        else None
+    )
+    anchor_ts = safe_nonneg_int(round(anchor_raw), default=0) if anchor_raw is not None and anchor_raw >= 0.0 else 0
 
     valid_bars = []
     for b in full_bars:
         if not isinstance(b, (list, tuple)) or len(b) < 5:
             continue
-        ts_f = safe_nonneg_float(b[0], default=None)
+        ts_f = normalize_epoch_sec(b[0], default=None)
+        if ts_f is not None and ts_f < 0.0:
+            ts_f = None
         o_f = safe_pos_float(b[1], default=None)
         h_f = safe_pos_float(b[2], default=None)
         l_f = safe_pos_float(b[3], default=None)
@@ -381,11 +401,13 @@ def run_live_forward_shadow(
     # backfill pre-anchor context from historical records when provided so fwd_warmup and
     # the trailing 720-bar (~120d) window are distinct from fwd_bars.
     if not pre_bars and records:
-        first_fwd_ts = fwd_bars[0][0] if fwd_bars else float(anchor_ts)
+        first_fwd_ts = fwd_bars[0][0] if fwd_bars else safe_nonneg_float(anchor_ts, default=0.0)
         for r in records:
             if not isinstance(r, dict):
                 continue
-            r_ts = safe_nonneg_float(r.get("timestamp"), default=None)
+            r_ts = normalize_epoch_sec(r.get("timestamp"), default=None)
+            if r_ts is not None and r_ts < 0.0:
+                r_ts = None
             r_o = safe_pos_float(r.get("open"), default=None)
             r_h = safe_pos_float(r.get("high"), default=None)
             r_l = safe_pos_float(r.get("low"), default=None)
@@ -438,6 +460,7 @@ def run_live_forward_shadow(
             fwd_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             warmup_ohlc=fwd_warmup,
             execution=ExecutionModel(),
+            initial_cash=budget,
         )
         s_fwd = _summarize_replay(m_fwd, budget)
 
@@ -446,6 +469,7 @@ def run_live_forward_shadow(
             full_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             warmup_ohlc=full_warmup,
             execution=ExecutionModel(),
+            initial_cash=budget,
         )
         s_full = _summarize_replay(m_full, budget)
 
@@ -497,14 +521,15 @@ def main():
     full_days = round(full_bars_cnt * 4.0 / 24.0, 1)
 
     # Generate Markdown Summary Report
+    total_folds = next((safe_nonneg_int(r.get("wf_total_folds"), default=0) for r in master if r.get("wf_total_folds")), 0)
     md_path = out_dir / "SWEEP_REPORT.md"
     lines = [
         "# Strategy Sweep: High Profit & Low Drawdown (628 Days + Live Shadow)\n\n",
         "Evaluation across:\n",
-        f"1. **Walk-Forward (WF)**: 31 Out-of-Sample folds (~628 days, HYPE 240m)\n",
+        f"1. **Walk-Forward (WF)**: {total_folds} Out-of-Sample folds (~628 days, HYPE 240m)\n",
         f"2. **Continuous 628d**: Unbroken fixed-allocation replay across all {len(records):,} bars\n",
         f"3. **Kraken Shadow**: {fwd_bars_cnt} forward bars (~{fwd_days}d) & {full_bars_cnt}-bar window (~{full_days}d)\n\n",
-        "## 1. Walk-Forward Out-Of-Sample Performance (31 Folds)\n\n",
+        f"## 1. Walk-Forward Out-Of-Sample Performance ({total_folds} Folds)\n\n",
         "| Rank | Candidate | WF Mean % | WF Median % | WF Worst % | WF Worst DD % | Pos Folds | W/T/L vs Live |\n",
         "|---:|---|---:|---:|---:|---:|---:|---:|\n",
     ]
@@ -513,7 +538,7 @@ def main():
         lines.append(
             f"| {rank} | `{r['name']}` | {r.get('wf_mean_ret', 0):+.3f}% | {r.get('wf_median_ret', 0):+.3f}% | "
             f"{r.get('wf_worst_ret', 0):+.2f}% | {r.get('wf_worst_dd', 0):.2f}% | "
-            f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', 31)} | {r.get('vs_live_WTL', '-')} |\n"
+            f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', total_folds)} | {r.get('vs_live_WTL', '-')} |\n"
         )
 
     lines.append(f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n")

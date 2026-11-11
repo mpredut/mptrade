@@ -21,17 +21,31 @@ def _fmt_calmar_pct(calmar) -> str:
     return f"{cf * 100:+.1f}%" if cf is not None else "n/a"
 
 
-def main() -> int:
+def _fmt_pp(val) -> str:
+    vf = safe_float(val, default=None)
+    return f"{vf:+.3f}pp" if vf is not None else "n/a"
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("baseline", type=Path)
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-    baseline = read_json_file(args.baseline.expanduser().resolve())
-    candidate = read_json_file(args.candidate.expanduser().resolve())
-    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
-        raise ValueError("baseline and candidate reports must be JSON objects")
-    result = evaluate_dual_promotion(baseline, candidate)
+    args = parser.parse_args(argv)
+    try:
+        baseline_path = args.baseline.expanduser().resolve()
+        candidate_path = args.candidate.expanduser().resolve()
+        if not baseline_path.is_file():
+            raise FileNotFoundError(f"baseline report not found: {baseline_path}")
+        if not candidate_path.is_file():
+            raise FileNotFoundError(f"candidate report not found: {candidate_path}")
+        baseline = read_json_file(baseline_path)
+        candidate = read_json_file(candidate_path)
+        if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+            raise ValueError("baseline and candidate reports must be JSON objects")
+        result = evaluate_dual_promotion(baseline, candidate)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     paths = "/".join(result["promotion_paths"])
     print(f"PROMOTE {paths}" if paths else "DO NOT PROMOTE")
     for name, scenario in result["return_gate"]["scenarios"].items():
@@ -42,16 +56,16 @@ def main() -> int:
         print(
             f"{name}: return={'PASS' if scenario['passed'] else 'FAIL'} "
             f"defensive={'PASS' if risk['passed'] else 'FAIL'} "
-            f"mean_d={scenario['mean_return_delta_pp']:+.3f}pp "
-            f"worst_d={scenario['worst_return_delta_pp']:+.3f}pp "
-            f"dd_d={scenario['worst_drawdown_delta_pp']:+.3f}pp "
+            f"mean_d={_fmt_pp(scenario.get('mean_return_delta_pp'))} "
+            f"worst_d={_fmt_pp(scenario.get('worst_return_delta_pp'))} "
+            f"dd_d={_fmt_pp(scenario.get('worst_drawdown_delta_pp'))} "
             f"returnW/T/L={deltas['wins']}/{deltas['ties']}/{deltas['losses']} "
             f"calmar_d={calmar_text}"
         )
         print(f"  ddW/T/L={dd['wins']}/{dd['ties']}/{dd['losses']}")
     if args.output:
-        atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=False)
-    return 0 if result["promote"] else 2
+        atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=True)
+    return 0 if result["promote"] else 1
 
 
 if __name__ == "__main__":

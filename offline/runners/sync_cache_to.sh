@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync_cache_to.sh — Unified cache & state synchronization script.
+# sync_cache_to.sh -- Unified cache & state synchronization script.
 # Usage:
 #   ./offline/runners/sync_cache_to.sh dev                    # PROD -> DEV (git pull + rsync cachedb/)
 #   ./offline/runners/sync_cache_to.sh wsl [--unpack-backup]  # PROD/DEV -> WSL (optional backup unpack + rsync cachedb/)
@@ -15,7 +15,7 @@ shift || true
 sync_to_dev() {
     source "$RUNNER_DIR/load_dev_backtest_env.sh"
     exec 9>"/tmp/sync_cache_dev.lock"
-    flock -w 300 9 || { echo "[sync_cache_to:dev $(date '+%F %T')] another sync is running — skipping"; exit 0; }
+    flock -w 300 9 || { echo "[sync_cache_to:dev $(date '+%F %T')] another sync is running -- skipping"; exit 0; }
 
     echo "[sync_cache_to:dev $(date '+%F %T')] code: git pull --ff-only on dev"
     local pull_output
@@ -31,18 +31,26 @@ sync_to_dev() {
     echo "[sync_cache_to:dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
     rsync_cachedb "$ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" \
         --exclude 'dev_regression_status.json' -e "ssh -o BatchMode=yes -p $DEV_PORT" | sed 's/^/  /'
-    if [ -d "$ROOT/logs/shadow_live" ]; then
-        rsync -az "$ROOT/logs/shadow_live/"*.ohlc.json "$ROOT/logs/shadow_live/"*.anchor \
-            "$DEV_USER@$DEV_HOST:$DEV_PATH/logs/shadow_live/" -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
-    fi
+    local sub
+    for sub in shadow_live hyperliquid_shadow; do
+        if [ -d "$ROOT/logs/$sub" ]; then
+            rsync -az --prune-empty-dirs \
+                --rsync-path="mkdir -p $DEV_PATH/logs/$sub && rsync" \
+                --include='*.ohlc.json' --include='*.warmup.json' --include='*.anchor' --include='*.jsonl' --exclude='*' \
+                "$ROOT/logs/$sub/" "$DEV_USER@$DEV_HOST:$DEV_PATH/logs/$sub/" \
+                -e "ssh -o BatchMode=yes -p $DEV_PORT" 2>/dev/null || true
+        fi
+    done
     echo "[sync_cache_to:dev $(date '+%F %T')] done"
 }
 
 sync_to_wsl() {
     local backup_tar="${BACKUP_TAR:-$HOME/mptrade-secrets-backup.tar.gz}"
     local backup_dir="${BACKUP_DIR:-$HOME/mptrade-secrets-backup}"
+    local prod_src="${PROD_CACHEDB_SRC:-mptrade-prod:/home/predut/mptrade/cachedb/}"
+    local dev_src="${DEV_CACHEDB_SRC:-mptrade-dev:/home/predut/mptrade/cachedb/}"
     exec 9>"/tmp/sync_cache_wsl.lock"
-    flock -w 120 9 || { echo "[sync_cache_to:wsl $(date '+%F %T')] another sync is running — skipping"; exit 0; }
+    flock -w 120 9 || { echo "[sync_cache_to:wsl $(date '+%F %T')] another sync is running -- skipping"; exit 0; }
 
     if [[ "${1:-}" == "--unpack-backup" ]] && [ -f "$backup_tar" ]; then
         echo "[sync_cache_to:wsl $(date '+%F %T')] unpacking $backup_tar -> $backup_dir and $ROOT"
@@ -51,11 +59,12 @@ sync_to_wsl() {
         unpack_repo_payload "$backup_dir" "$ROOT" --exclude='logs' --exclude='lock'
     fi
 
-    echo "[sync_cache_to:wsl $(date '+%F %T')] rsync cachedb/ from mptrade-prod -> $ROOT/cachedb/"
-    rsync_cachedb "mptrade-prod:/home/predut/mptrade/cachedb/" "$ROOT/cachedb/" -e "$SSH_FAST" || true
+    echo "[sync_cache_to:wsl $(date '+%F %T')] rsync cachedb/ from $prod_src -> $ROOT/cachedb/"
+    rsync_cachedb "$prod_src" "$ROOT/cachedb/" -e "$SSH_FAST" || true
 
-    echo "[sync_cache_to:wsl $(date '+%F %T')] rsync *.npz and dev_regression_status.json from mptrade-dev -> $ROOT/cachedb/"
-    rsync_cachedb "mptrade-dev:/home/predut/mptrade/cachedb/" "$ROOT/cachedb/" -e "$SSH_FAST" \
+    echo "[sync_cache_to:wsl $(date '+%F %T')] rsync *.npz and dev_regression_status.json from $dev_src -> $ROOT/cachedb/"
+    rsync_cachedb "$dev_src" "$ROOT/cachedb/" -e "$SSH_FAST" \
+        --prune-empty-dirs \
         --include '*/' --include '*.npz' --include 'dev_regression_status.json' --exclude '*' || true
 
     (cd "$ROOT" && "$PYTHON_BIN" -c "from cachepaths import organize_cachedb_subdomains; organize_cachedb_subdomains()" 2>/dev/null || true)

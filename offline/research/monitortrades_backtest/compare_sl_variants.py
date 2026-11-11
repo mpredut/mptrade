@@ -7,7 +7,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
@@ -23,10 +22,17 @@ _MIN_DENSE_SPAN_SEC = 30.0 * 86400.0
 _WORKER_SERIES: dict[str, list[tuple[float, float]]] = {}
 
 
+def _init_worker(series_map: dict[str, list[tuple[float, float]]]) -> None:
+    _WORKER_SERIES.clear()
+    _WORKER_SERIES.update(series_map)
+
+
 def _series_span_sec(series: list[tuple[float, float]]) -> float:
     if len(series) < 2:
         return 0.0
-    return max(0.0, float(series[-1][0]) - float(series[0][0]))
+    t0 = safe_float(series[0][0], 0.0)
+    t1 = safe_float(series[-1][0], 0.0)
+    return max(0.0, t1 - t0)
 
 
 def _run_variant_symbol(task_args):
@@ -45,6 +51,7 @@ def _run_variant_symbol(task_args):
 
 
 def main():
+    os.chdir(ROOT)
     variants = [
         ("PROPOSED (structural break ON)", True),
         ("BASELINE (structural break OFF)", False),
@@ -73,7 +80,7 @@ def main():
     n_workers = min(len(tasks), 4, os.cpu_count() or 1)
     try:
         if n_workers > 1:
-            with Pool(processes=n_workers) as pool:
+            with Pool(processes=n_workers, initializer=_init_worker, initargs=(series_map,)) as pool:
                 task_outputs = pool.map(_run_variant_symbol, tasks)
         else:
             task_outputs = [_run_variant_symbol(t) for t in tasks]

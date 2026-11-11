@@ -14,8 +14,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_pos_float
-from cachepaths import cache_path, cache_symbol_variants
+from botcore import normalize_epoch_sec, safe_pos_float
+from cachepaths import cache_365_price_filename, cache_path, cache_symbol_variants
 from state_io import atomic_write_jsonl, read_jsonl_records
 
 
@@ -29,39 +29,50 @@ def ts_of(r) -> float:
     return safe_pos_float(raw, 0.0)
 
 
-def main():
-    if len(sys.argv) < 3:
+def _ts_sec(r) -> float:
+    raw_ts = ts_of(r)
+    if raw_ts <= 0.0:
+        return 0.0
+    sec = normalize_epoch_sec(raw_ts, default=0.0)
+    return sec if sec is not None and sec > 0.0 else 0.0
+
+
+def main(argv: list[str] | None = None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if len(args) < 2:
         print("Usage: slice_dense_archive.py <symbol> <days> [out_path]", file=sys.stderr)
         sys.exit(1)
-    symbol = sys.argv[1]
-    days = safe_pos_float(sys.argv[2], default=None)
-    if days is None:
-        print(f"[slice] invalid days={sys.argv[2]!r}", file=sys.stderr)
+    symbol = str(args[0] or "").strip().upper()
+    if not symbol or "/" in symbol or "\\" in symbol or ".." in symbol:
+        print(f"[slice] invalid symbol={args[0]!r}", file=sys.stderr)
         sys.exit(1)
-    out = sys.argv[3] if len(sys.argv) > 3 else cache_path(
+    days = safe_pos_float(args[1], default=None)
+    if days is None:
+        print(f"[slice] invalid days={args[1]!r}", file=sys.stderr)
+        sys.exit(1)
+    out = args[2] if len(args) > 2 else cache_path(
         f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
     src = next(
         (
             p
             for cand in cache_symbol_variants(symbol)
-            if os.path.isfile(p := cache_path(f"cache_365_price_{cand}.jsonl"))
+            if os.path.isfile(p := cache_path(cache_365_price_filename(cand)))
         ),
-        cache_path(f"cache_365_price_{symbol}.jsonl"),
+        cache_path(cache_365_price_filename(symbol)),
     )
     if not os.path.isfile(src):
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)
 
-    rows = [rec for rec in read_jsonl_records(src) if ts_of(rec) > 0]
+    rows = [rec for rec in read_jsonl_records(src) if _ts_sec(rec) > 0.0]
     if not rows:
         print(f"[slice] {src} empty/missing", file=sys.stderr)
         sys.exit(1)
 
-    rows.sort(key=ts_of)
-    last_ts = ts_of(rows[-1])
-    ts_scale = 1000.0 if last_ts > 1e11 else 1.0
-    cutoff = last_ts - days * 86400.0 * ts_scale
-    sliced = [r for r in rows if ts_of(r) >= cutoff]
+    rows.sort(key=_ts_sec)
+    last_ts = _ts_sec(rows[-1])
+    cutoff = last_ts - days * 86400.0
+    sliced = [r for r in rows if _ts_sec(r) >= cutoff]
 
     atomic_write_jsonl(out, sliced)
 

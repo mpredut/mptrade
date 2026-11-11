@@ -291,7 +291,7 @@ def _run_once(
         if cash is not None:
             client.buy_fee_pct = fee_model.rate_pct(market=False)
 
-        def traced_place(side, vol, price, kind, amount=0.0, market=False):
+        def traced_place(side, vol, price, kind, amount=0.0, market=False, **place_kw):
             nonlocal cash_refusals
             market = _strat._parse_bool_flag(market, False)
             side_norm = normalize_side(side)
@@ -305,7 +305,7 @@ def _run_once(
                 if required > free_balance_for_asset(params.currency) + 1e-9:
                     cash_refusals += 1
                     return False
-            accepted = original_place(side, vol, price, kind, amount=amount, market=market)
+            accepted = original_place(side, vol, price, kind, amount=amount, market=market, **place_kw)
             if accepted and include_decision_trace and px_f is not None and vol_f is not None:
                 decision_trace.append({
                     "bar": current_bar,

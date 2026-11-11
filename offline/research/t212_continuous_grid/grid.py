@@ -36,7 +36,7 @@ _orig_step = strat.Strategy.step
 
 def _step(self, price, *args, **kwargs):
     if FLAGS["peak"]:
-        ratchet_post_exit_peak_sell_price(self.s, price, qty_eps=1e-9, require_tp_kind=False)
+        ratchet_post_exit_peak_sell_price(self.s, price, qty_eps=1e-9, require_tp_kind=True)
     return _orig_step(self, price, *args, **kwargs)
 
 
@@ -78,7 +78,7 @@ for _tp in ("1.5", "3", "5", "8", "12", "20"):
             if _sl == "0":
                 _over["STRAT_STOP_LOSS_PCT"] = "0"
             VARIANTS[f"f_tp{_tp}_re{_re}_sl{_sl}"] = (_over, 1 if _re == "peak" else 0)
-WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per day
+WARM, W90_1H, STEP_1H = 20, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per day
 
 
 _LOAD_CACHE: dict = {}
@@ -86,8 +86,19 @@ _SPLIT_CACHE: dict = {}
 _TASK_CACHE: dict = {}
 
 
+def _extract_asset_name(filename: str) -> str | None:
+    if not isinstance(filename, str) or not filename.endswith(".csv"):
+        return None
+    for suffix in ("_1h.csv", "_1d.csv"):
+        if filename.endswith(suffix):
+            stem = filename[: -len(suffix)].strip()
+            return stem or None
+    stem = filename[:-4].strip()
+    return stem or None
+
+
 def load(asset, itv):
-    key = (asset, itv)
+    key = (DATA, asset, itv)
     if key in _LOAD_CACHE:
         return _LOAD_CACHE[key]
     path = os.path.join(DATA, f"{asset}_{itv}.csv")
@@ -96,7 +107,7 @@ def load(asset, itv):
         _SPLIT_CACHE[key] = (None, None)
         return None
     rows = load_ohlc_tuples_csv(path, strict=False)
-    res = rows if len(rows) > WARM + 20 else None
+    res = rows if len(rows) > WARM + 12 else None
     _LOAD_CACHE[key] = res
     if res is not None:
         ohlc_list = [b[1:] for b in res]
@@ -135,12 +146,18 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
         tot = safe_float(m.get("total"), 0.0)
         p0 = safe_pos_float(ohlc[WARM][3], 0.0)
         p1 = safe_float(ohlc[-1][3], 0.0)
+        fx_fee = max(0.0, safe_float(getattr(params, "fx_fee_pct", 0.0), 0.0) / 100.0)
+        bh_pct = (
+            ((p1 / p0) * (1.0 - fx_fee) / (1.0 + fx_fee) - 1.0) * 100.0
+            if p0 > 0 and (1.0 + fx_fee) > 0
+            else 0.0
+        )
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
                 "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
                 "cyc": safe_nonneg_int(m.get("cycles"), default=0),
                 "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
                 "fills": safe_nonneg_int(m.get("fills"), default=0),
-                "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0}
+                "bh": round(bh_pct, 2)}
     finally:
         FLAGS["peak"] = False
         strat.Strategy.step = _orig_step
@@ -152,10 +169,13 @@ def task(args):
         params, peak = params_for(profile, variant)
         bars_1h = load(asset, "1h")
         bars_1d = load(asset, "1d")
+        span_1h = (len(bars_1h), bars_1h[0][0], bars_1h[-1][0]) if bars_1h else (0, 0, 0)
+        span_1d = (len(bars_1d), bars_1d[0][0], bars_1d[-1][0]) if bars_1d else (0, 0, 0)
         cache_key = (
+            DATA,
             asset,
-            len(bars_1h) if bars_1h else 0,
-            len(bars_1d) if bars_1d else 0,
+            span_1h,
+            span_1d,
             repr(params),
             bool(peak),
         )
@@ -166,10 +186,10 @@ def task(args):
         t0 = time.time()
         for itv, minutes, bars in (("1h", 60, bars_1h), ("1d", 1440, bars_1d)):
             if bars:
-                ohlc, ts = _SPLIT_CACHE.get((asset, itv), (None, None))
+                ohlc, ts = _SPLIT_CACHE.get((DATA, asset, itv), (None, None))
                 out[itv] = run(bars, params, peak, minutes, ohlc=ohlc, ts=ts)
         if bars_1h:
-            ohlc, ts = _SPLIT_CACHE.get((asset, "1h"), (None, None))
+            ohlc, ts = _SPLIT_CACHE.get((DATA, asset, "1h"), (None, None))
             if ohlc is None:
                 ohlc = [b[1:] for b in bars_1h]
                 ts = [b[0] for b in bars_1h]
@@ -192,7 +212,7 @@ def task(args):
 if __name__ == "__main__":
     os.makedirs(DATA, exist_ok=True)
     os.makedirs(EXP, exist_ok=True)
-    assets = sorted({f.split("_")[0] for f in os.listdir(DATA) if f.endswith(".csv")})
+    assets = sorted({a for f in os.listdir(DATA) if (a := _extract_asset_name(f)) is not None})
     if not assets:
         print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
         sys.exit(0)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import inspect
 import os
 import sys
 from typing import Any
@@ -25,7 +26,7 @@ if ROOT not in sys.path:
 
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from strategies import spot_engine as strat
-from botcore import safe_float, safe_nonneg_int, safe_pos_float
+from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
 from state_io import read_text_lines
 
 
@@ -41,11 +42,16 @@ def load_ohlc_with_timestamps_csv(
         return rows, timestamps
     col_map = {col.strip().lower(): idx for idx, col in enumerate(first)}
     has_header = any(k in col_map for k in ("open", "high", "low", "close", "timestamp", "time", "date"))
-    ts_idx = col_map.get("timestamp", 0) if has_header else 0
-    o_idx = col_map.get("open", 1) if has_header else 1
-    h_idx = col_map.get("high", 2) if has_header else 2
-    l_idx = col_map.get("low", 3) if has_header else 3
-    c_idx = col_map.get("close", 4) if has_header else 4
+    if has_header:
+        ts_idx = next((col_map[k] for k in ("timestamp", "time", "date") if k in col_map), None)
+        o_idx = col_map.get("open", 1 if ts_idx is not None else 0)
+        h_idx = col_map.get("high", o_idx + 1)
+        l_idx = col_map.get("low", o_idx + 2)
+        c_idx = col_map.get("close", o_idx + 3)
+    elif len(first) >= 5:
+        ts_idx, o_idx, h_idx, l_idx, c_idx = 0, 1, 2, 3, 4
+    else:
+        ts_idx, o_idx, h_idx, l_idx, c_idx = None, 0, 1, 2, 3
     min_len = max(o_idx, h_idx, l_idx, c_idx) + 1
     iterable = reader if has_header else [first, *reader]
     for line in iterable:
@@ -61,9 +67,12 @@ def load_ohlc_with_timestamps_csv(
             and l <= min(o, h, c)
         ):
             rows.append((o, h, l, c))
-            ts_val = safe_pos_float(line[ts_idx], default=None) if ts_idx < len(line) else None
-            if ts_val is not None:
-                timestamps.append(int(ts_val))
+            if ts_idx is not None and ts_idx < len(line):
+                ts_sec = normalize_epoch_sec(line[ts_idx], default=None)
+                if ts_sec is not None and ts_sec >= 0.0:
+                    ts_int = safe_nonneg_int(round(ts_sec), default=None)
+                    if ts_int is not None:
+                        timestamps.append(ts_int)
     if len(timestamps) != len(rows):
         timestamps = []
     return rows, timestamps
@@ -192,6 +201,14 @@ def evaluate_asset(
         return []
 
     runner = replay_fn or run_replay
+    try:
+        sig = inspect.signature(runner)
+        accepts_timestamps = (
+            "timestamps" in sig.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        )
+    except (TypeError, ValueError):
+        accepts_timestamps = replay_fn is not None
     if replay_fn is None or hasattr(aligned_base, "surge_guard"):
         prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
     for test_id, (variant_name, params) in variants.items():
@@ -206,13 +223,24 @@ def evaluate_asset(
                 replay_kw["fee_pct"] = fee_pct
             if initial_cash is not None:
                 replay_kw["initial_cash"] = initial_cash
-            if run_timestamps is not None:
+            if run_timestamps is not None and accepts_timestamps:
                 replay_kw["timestamps"] = run_timestamps
             res = runner(**replay_kw)
+            res_cap = safe_pos_float(res.get("initial_capital"), default=None) if isinstance(res, dict) else None
+            alloc_fn = getattr(params, "allocated_budget", None)
+            alloc_cap = safe_pos_float(alloc_fn(), default=None) if callable(alloc_fn) else None
             capital = (
                 initial_cash
                 if initial_cash is not None
-                else safe_pos_float(getattr(params, "max_budget", None), default=500.0)
+                else (
+                    res_cap
+                    if res_cap is not None
+                    else (
+                        alloc_cap
+                        if alloc_cap is not None
+                        else safe_pos_float(getattr(params, "max_budget", None), default=0.0)
+                    )
+                )
             )
             results.append(format_ablation_result(asset_name, test_id, variant_name, res, capital))
         except Exception as exc:

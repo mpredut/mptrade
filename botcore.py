@@ -519,7 +519,7 @@ def load_layered_env_config(
     env_file: str | os.PathLike,
     *,
     override_prefixes: tuple[str, ...] | list[str] = (),
-    fallback_prefixes: tuple[str, ...] | list[str] = ("STRAT_",),
+    fallback_prefixes: tuple[str, ...] | list[str] = (),
 ) -> dict[str, str]:
     """Load ``config_file`` then ``env_file``, applying ``os.environ`` overrides and fallbacks."""
     cfg: dict[str, str] = {}

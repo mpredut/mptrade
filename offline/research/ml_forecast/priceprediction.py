@@ -81,6 +81,9 @@ class PricePrediction:
             return
         self.prices.append(val)
         if len(self.prices) >= self.window_size * 2:
+            self.trained = False
+            self._fallback_weights = None
+            self._reset_model()
             self.train_lstm_model()
 
     def process_prices(self, prices: list[float]) -> None:
@@ -161,7 +164,7 @@ class PricePrediction:
                 X_t = torch.tensor(last_seq_scaled, dtype=torch.float32)
                 pred_scaled = self.model(X_t).numpy()
         pred = self.scaler.inverse_transform(pred_scaled)
-        return safe_float(pred[0][0], default=None)
+        return safe_pos_float(pred[0][0], default=None)
 
 
 if __name__ == "__main__":
@@ -170,7 +173,7 @@ if __name__ == "__main__":
     # Feed synthetic rising prices
     base = 100.0
     for i in range(40):
-        base += 1.0 + float(np.sin(i / 3.0))
+        base += 1.0 + safe_float(np.sin(i / 3.0), 0.0)
         predictor.process_price(base)
 
     next_p = predictor.predict_next_price()

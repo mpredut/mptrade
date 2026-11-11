@@ -423,9 +423,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     baseline_path = args.baseline_report.expanduser().resolve()
-    source_report = _load_report(baseline_path)
-    venue = _detect_venue(source_report, args.venue)
-    datasets = _load_datasets(source_report, baseline_dir=baseline_path.parent)
+    try:
+        if not baseline_path.is_file():
+            raise FileNotFoundError(f"baseline report not found: {baseline_path}")
+        source_report = _load_report(baseline_path)
+        venue = _detect_venue(source_report, args.venue)
+        datasets = _load_datasets(source_report, baseline_dir=baseline_path.parent)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
 
@@ -463,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
             "windows": windows,
         }
 
+    if "live" not in results:
+        parser.error("candidate evaluation produced no 'live' baseline reference")
     live_windows = results["live"]["windows"]
     for name, candidate in results.items():
         candidate["relative_to_live"] = relative_to_baseline(candidate["windows"], live_windows)

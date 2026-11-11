@@ -30,7 +30,6 @@ from strategies.replay_metrics import (
 )
 from botcore import (
     exact_nonneg_int,
-    load_dotenv,
     load_layered_env_config,
     safe_float,
     safe_pos_float,
@@ -53,6 +52,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
         os.path.join(here_dir, "config.env"),
         os.path.join(here_dir, ".env"),
         override_prefixes=("KRAKEN_",),
+        fallback_prefixes=(),
     )
     p = StratParams.from_env(env=env)
 
@@ -81,11 +81,15 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
         tp_trail_pct=_pick(("trail",), p.tp_trail_pct),
         reentry_drop_pct=_pick(("reentry_fallback", "reentry_drop", "reentry"), p.reentry_drop_pct),
     )
+    if any(base.get(k) is not None for k in ("entry", "dca", "budget")):
+        fields.update(total_budget=0.0, alloc_pct=0.0, entry_pct=0.0, dca_pct=0.0)
+    if base.get("tp") is not None:
+        fields.update(tp_tranches=[], tp_dynamic_flat=False)
     raw_interval = base.get("interval") if base.get("interval") is not None else 60
     interval = safe_pos_float(raw_interval, default=None)
     if interval is None:
         raise ValueError(f"invalid interval: {raw_interval!r}")
-    if float(interval) != float(p.trend_interval):
+    if interval != safe_pos_float(p.trend_interval, interval):
         fields.update(
             trend_overlay=False,
             dca_trend_brake=False,
@@ -93,9 +97,9 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
             surge_guard=False,
             tp_dynamic_flat=False,
         )
-    if float(interval) != float(p.tp_trail_vol_interval):
+    if interval != safe_pos_float(p.tp_trail_vol_interval, interval):
         fields.update(tp_trail_adaptive=False, surge_dynamic=False)
-    if float(interval) != float(p.dca_vol_interval):
+    if interval != safe_pos_float(p.dca_vol_interval, interval):
         fields.update(dca_vol_scale_k=0.0)
     if over:
         fields.update(over)
@@ -143,10 +147,6 @@ def main() -> int:
     ap.add_argument("--fast", action="store_true",
                     help="deprecated; faithful live engine rp.run_replay is always used")
     args = ap.parse_args()
-
-    # Load live STRAT_* configuration so the faithful engine uses production
-    # re-entry, tranche, and tolerance values.
-    load_dotenv(os.path.join(_HERE, "config.env"))
 
     try:
         ohlc = fetch_candles(args.pair, args.interval)

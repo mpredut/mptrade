@@ -17,9 +17,31 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
-from offline.runners.walk_forward_compare import main
+from offline.runners.walk_forward_compare import (
+    DEFAULT_FEE_STRESS,
+    _build_venue_evaluator,
+    _candidate_windows,
+    _detect_venue,
+    _load_datasets,
+    _load_report,
+    _markdown,
+    _resolve_candidate_overrides,
+    _resolve_frozen_file,
+    main,
+)
 
-__all__ = ["main"]
+__all__ = [
+    "DEFAULT_FEE_STRESS",
+    "_build_venue_evaluator",
+    "_candidate_windows",
+    "_detect_venue",
+    "_load_datasets",
+    "_load_report",
+    "_markdown",
+    "_resolve_candidate_overrides",
+    "_resolve_frozen_file",
+    "main",
+]
 
 if __name__ == "__main__":
     raise SystemExit(main())
