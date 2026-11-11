@@ -418,7 +418,7 @@ def test_macro_analyzer_run_cycle_mocked(temp_cache_dir):
 
     with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=mock_geo), \
          patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
-         patch.object(analyzer, "prune_cli_threads", return_value=3):
+         patch("intelligence.macro_analyzer.prune_automated_cli_threads", return_value=3):
 
         res = analyzer.run_cycle(force=True)
 

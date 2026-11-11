@@ -1434,7 +1434,7 @@ def test_macro_analyzer_and_daemon_apply_retry_backoff_on_llm_failure(monkeypatc
     analyzer._last_advisor_ts = 0.0
 
     monkeypatch.setattr(analyzer, "write_heartbeat", lambda *a, **k: None)
-    monkeypatch.setattr(analyzer, "prune_cli_threads", lambda *a, **k: 0)
+    monkeypatch.setattr("intelligence.macro_analyzer.prune_automated_cli_threads", lambda *a, **k: 0)
     monkeypatch.setattr(analyzer, "assess_geopolitical_threat", lambda **kw: False)
     monkeypatch.setattr(analyzer, "assess_market_advisor", lambda **kw: False)
 

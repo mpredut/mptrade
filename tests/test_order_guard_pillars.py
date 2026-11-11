@@ -1919,7 +1919,7 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
 
     monkeypatch.setitem(sys.modules, "hl_client", types.SimpleNamespace(HLClient=FakeHLClient))
     monkeypatch.setenv("HL_SPOT_TOKEN", "@107")
-    monkeypatch.setattr(hl_sl, "_load_config", lambda: None)
+    monkeypatch.setattr(hl_sl, "load_shadow_environment", lambda *a, **k: None)
     rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
     assert called == ["public"]
     assert rows == [(1700000000, 10.0, 11.0, 9.0, 10.5)]

@@ -1346,37 +1346,6 @@ def harvest_macro_and_news_sensors(
     )
 
 
-def populate_market_and_portfolio_snapshot(
-    snapshot: Any,
-    *,
-    cache_dir: str,
-    workspace_dir: str,
-    logs_dirs: List[str],
-    intent_gateway: Any,
-    scope: str,
-    now_ts: float,
-    read_json_fn: Any = None,
-    log: Optional[Any] = None,
-    allow_network: bool = True,
-    persist: bool = True,
-) -> Any:
-    """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
-    return TelemetryCollectorFactory.create("macro_market_portfolio_snapshot", start_sync=allow_network).collect(
-        cache_dir,
-        "*",
-        snapshot=snapshot,
-        workspace_dir=workspace_dir,
-        logs_dirs=logs_dirs,
-        intent_gateway=intent_gateway,
-        scope=scope,
-        now_ts=now_ts,
-        read_json_fn=read_json_fn,
-        log=log,
-        allow_network=allow_network,
-        persist=persist,
-    )
-
-
 __all__ = [
     "InitialPricesAndTrendsCollector",
     "MACRO_BENCHMARK_SPECS",
@@ -1395,6 +1364,5 @@ __all__ = [
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_macro_benchmarks_summary_line",
     "harvest_macro_and_news_sensors",
-    "populate_market_and_portfolio_snapshot",
     "reconcile_live_venue_equity_summary",
 ]

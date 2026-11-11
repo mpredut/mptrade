@@ -893,8 +893,8 @@ def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_buck
     from types import SimpleNamespace
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
     from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        MarketAndPortfolioSnapshotOrchestrator,
         harvest_macro_and_news_sensors,
-        populate_market_and_portfolio_snapshot,
     )
     from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
     from providers.execution_audit import (
@@ -948,9 +948,10 @@ def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_buck
         portfolio_summary={},
     )
     gw_stub = SimpleNamespace(load_all_intents=lambda: intents_payload, max_notional_usd=2000.0)
-    populate_market_and_portfolio_snapshot(
-        snap_obj,
-        cache_dir=str(tmp_path),
+    MarketAndPortfolioSnapshotOrchestrator(start_sync=True).collect(
+        str(tmp_path),
+        "*",
+        snapshot=snap_obj,
         workspace_dir=str(tmp_path),
         logs_dirs=[str(tmp_path)],
         intent_gateway=gw_stub,

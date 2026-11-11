@@ -289,10 +289,6 @@ class MacroAnalyzer:
             logger.warning("Failed assessing market advisor: %s", e)
         return False
 
-    def prune_cli_threads(self) -> int:
-        """Periodic retention: prune automated CLI threads older than retention limit."""
-        return prune_automated_cli_threads(logger)
-
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose context-adaptive interval has elapsed."""
         force = _parse_bool_flag(force, False)
@@ -414,7 +410,7 @@ class MacroAnalyzer:
             self.write_heartbeat(results)
 
         if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
-            results["threads_pruned"] = self.prune_cli_threads()
+            results["threads_pruned"] = prune_automated_cli_threads(logger)
             self._last_thread_prune_ts = current_ts
 
         if is_interval_due(current_ts, self._last_stdout_hb_ts, 120.0, force=force):

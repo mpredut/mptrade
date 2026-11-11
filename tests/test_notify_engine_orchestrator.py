@@ -160,7 +160,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         from notify_engine import server
         with (
             mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}),
-            mock.patch.object(server, "_ensure_env_loaded", lambda: None),
+            mock.patch.object(server, "load_env_stack", lambda: None),
         ):
             with self.assertRaisesRegex(ValueError, "NTFY_TOPIC_SERVER"):
                 server.resolve_topic("SERVER")

@@ -108,17 +108,13 @@ def _prefix_delayed(val: Any, default: str = "Alert") -> str:
     return s if s.startswith("[DELAYED]") else f"[DELAYED] {s}"
 
 
-def _ensure_env_loaded() -> None:
-    load_env_stack()
-
-
 def resolve_topic(category: str) -> str:
     cat = _clean_str(category, strip=True).upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
         cat = "SERVER"
     key = f"NTFY_TOPIC_{cat}"
     if not os.environ.get(key, "").strip():
-        _ensure_env_loaded()
+        load_env_stack()
     return required_env(key)
 
 def _category_for_title_and_source(title: str, source: str) -> str:
@@ -182,7 +178,7 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
 
 class NotificationServer:
     def __init__(self):
-        _ensure_env_loaded()
+        load_env_stack()
         self.ntfy_token = self._load_ntfy_token()
         self.rules = self._load_rules()
         self.cooldowns: Dict[str, float] = {}
@@ -195,7 +191,7 @@ class NotificationServer:
     def _load_ntfy_token(self) -> str:
         tok = os.environ.get("NTFY_TOKEN", "").strip()
         if not tok:
-            _ensure_env_loaded()
+            load_env_stack()
             tok = os.environ.get("NTFY_TOKEN", "").strip()
         return tok
 

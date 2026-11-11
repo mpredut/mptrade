@@ -1272,7 +1272,7 @@ def test_macroanalyzer_string_shadow_notify_previous_fallback_recovery_clock_ske
 
     monkeypatch.setattr(analyzer.gemini_advisor, "review", _fake_review)
     monkeypatch.setattr(analyzer, "assess_geopolitical_threat", lambda force=False, now=None: True)
-    monkeypatch.setattr(analyzer, "prune_cli_threads", lambda: 0)
+    monkeypatch.setattr("intelligence.macro_analyzer.prune_automated_cli_threads", lambda *a, **k: 0)
 
     # Simulate future _last_advisor_ts / _last_macro_llm_ts (backward clock skew)
     analyzer._last_macro_llm_ts = 99999.0

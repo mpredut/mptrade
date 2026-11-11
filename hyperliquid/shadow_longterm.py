@@ -42,13 +42,9 @@ from kraken import shadow_live as shadow  # noqa: E402
 LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
 
 
-def _load_config() -> None:
-    load_shadow_environment(os.path.join(HERE, ".env"))
-
-
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
-    _load_config()
+    load_shadow_environment(os.path.join(HERE, ".env"))
 
     base = StratParams.from_env()
     variants = {
@@ -93,7 +89,7 @@ def _fetch_with_ts(_pair: str, interval: int):
         hl_mod = load_venue_module("hyperliquid", "hl_client.py", "hl_client")
     HLClient = hl_mod.HLClient
 
-    _load_config()
+    load_shadow_environment(os.path.join(HERE, ".env"))
     token = required_env("HL_SPOT_TOKEN")
     client = HLClient.public()  # the unsigned client cannot submit orders
     candles = client.candles(token, "4h", lookback_hours=5000 * 4)
@@ -129,7 +125,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-    _load_config()
+    load_shadow_environment(os.path.join(HERE, ".env"))
     try:
         snapshot(quiet=args.quiet)
     except Exception as exc:  # visible cron failure without live effects

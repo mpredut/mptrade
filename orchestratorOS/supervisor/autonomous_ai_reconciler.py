@@ -35,7 +35,7 @@ from botcore import (
 )
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
-    populate_market_and_portfolio_snapshot,
+    MarketAndPortfolioSnapshotOrchestrator,
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -191,9 +191,10 @@ class AutonomousAIReconciler:
             snapshot.age_sec = 0.0
             return snapshot
 
-        return populate_market_and_portfolio_snapshot(
-            snapshot,
-            cache_dir=self.cache_dir,
+        return MarketAndPortfolioSnapshotOrchestrator(start_sync=allow_network).collect(
+            self.cache_dir,
+            "*",
+            snapshot=snapshot,
             workspace_dir=self.workspace_dir,
             logs_dirs=self.logs_dirs,
             intent_gateway=self.intent_gateway,
