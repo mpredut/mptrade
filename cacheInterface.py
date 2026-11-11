@@ -22,6 +22,7 @@ from botcore import (
     _parse_bool_flag,
     extract_timestamp_ms,
     extract_timestamp_s,
+    is_worker_thread_alive,
     load_dotenv,
     normalize_timestamp_ms,
     required_float_env,
@@ -31,6 +32,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_int,
+    set_stop_event,
     timestampToTime,
 )
 import cacheintegrity as _cache_integrity
@@ -297,8 +299,12 @@ class CacheManagerInterface(ABC):
 
         self.load_state()
 
+    _DICT_SEC_FETCHTIMES: bool = False
+
     def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction."""
+        if self._DICT_SEC_FETCHTIMES:
+            return self._rebuild_dict_sec_fetchtimes()
         return None
 
     def _rebuild_symbol_entry_fetchtimes(
@@ -1200,12 +1206,11 @@ class CacheManagerInterface(ABC):
 
     def request_stop(self) -> None:
         """Signal the synchronization loop to stop without blocking."""
-        self._stop_event.set()
+        set_stop_event(self)
 
     def is_running(self) -> bool:
         """Return True if a background synchronization thread is active."""
-        thread = self.thread
-        return thread is not None and thread.is_alive()
+        return is_worker_thread_alive(self, "thread")
 
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""

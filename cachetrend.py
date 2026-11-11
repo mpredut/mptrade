@@ -207,8 +207,7 @@ class CacheLongTrendManager(CacheTrendManagerBase):
             data_sync_mode=data_sync_mode,
         )
 
-    def rebuild_fetchtimes(self):
-        return self._rebuild_dict_sec_fetchtimes()
+    _DICT_SEC_FETCHTIMES = True
 
     def get_remote_items(self, symbol, startTime):
         config_root = _cm_attr("_CONFIG_ROOT", os.path.dirname(os.path.abspath(__file__)))

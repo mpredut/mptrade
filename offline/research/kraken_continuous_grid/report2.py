@@ -13,6 +13,7 @@ from botcore import safe_float
 from state_io import read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
+    _append_markdown_table_header,
     _finalize_markdown_report,
     _fmt_num,
     _is_error_row,
@@ -161,9 +162,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 "w90pos": st.mean(w90pos_vals) if w90pos_vals else None}
 
     def table(items, title):
-        L.append(f"\n## {title}\n")
-        L.append("| config | fee | beat live (full) | full med % | full min % | DD med | DD max | calmar med | w90 mean | w90 pos% |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|")
+        _append_markdown_table_header(
+            L,
+            title,
+            "| config | fee | beat live (full) | full med % | full min % | DD med | DD max | calmar med | w90 mean | w90 pos% |",
+            10,
+        )
         for s in items:
             L.append(
                 f"| {s['cfg']} | {s['fee']} | {s['beat']}/{len(assets)} | "

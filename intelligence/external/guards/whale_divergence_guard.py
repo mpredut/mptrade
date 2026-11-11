@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import _parse_bool_flag, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, obj_attr, obj_attr_first, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -66,19 +66,16 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
         if early is not None:
             return early
 
-        raw_reg = obj_attr(snapshot, "divergence_regime")
-        if raw_reg is None:
-            raw_reg = obj_attr(snapshot, "div_regime")
-        regime = str(raw_reg or "neutral").strip().lower()
-        raw_oi_1h = obj_attr(snapshot, "open_interest_1h_change_pct")
-        if raw_oi_1h is None:
-            raw_oi_1h = obj_attr(snapshot, "oi_1h_chg_pct")
-        oi_1h = safe_float(raw_oi_1h, default=0.0)
+        regime = str(obj_attr_first(snapshot, "divergence_regime", "div_regime") or "neutral").strip().lower()
+        oi_1h = safe_float(
+            obj_attr_first(snapshot, "open_interest_1h_change_pct", "oi_1h_chg_pct"), default=0.0
+        )
         taker_ratio = safe_nonneg_float(obj_attr(snapshot, "taker_buy_sell_ratio"), default=1.0)
-        raw_long_pct = obj_attr(snapshot, "top_traders_long_pct")
-        if raw_long_pct is None:
-            raw_long_pct = obj_attr(snapshot, "whale_long_pct")
-        top_long_pct = clean_scale(raw_long_pct, default=0.5, allow_percent=True)
+        top_long_pct = clean_scale(
+            obj_attr_first(snapshot, "top_traders_long_pct", "whale_long_pct"),
+            default=0.5,
+            allow_percent=True,
+        )
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":

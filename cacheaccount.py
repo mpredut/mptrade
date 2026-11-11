@@ -2080,8 +2080,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         if changed:
             self._migrated_usdt_on_load = True
 
-    def rebuild_fetchtimes(self):
-        return self._rebuild_dict_sec_fetchtimes()
+    _DICT_SEC_FETCHTIMES = True
 
     def get_remote_items(self, symbol, startTime):
         try:

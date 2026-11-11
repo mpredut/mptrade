@@ -1217,6 +1217,35 @@ class BaseSpotMixin:
         eff_sign = -1 if sign == -1 else 1
         return avg_f, (-eff_sign * (px_f - avg_f) / avg_f * 100.0)
 
+    def _persist_pending_state_slot(
+        self,
+        key: str,
+        pending: dict | None,
+        *,
+        require_write: bool = False,
+        error_cls: type[Exception] = RuntimeError,
+    ) -> None:
+        """Store ``pending`` (or ``None``) in ``self.s[key]`` and persist strategy state."""
+        self.s[key] = None if pending is None else dict(pending)
+        self._save()
+        if require_write and getattr(self, "_state_write_failed", False):
+            raise error_cls("the intent state could not be persisted")
+
+    def _resolve_run_mode_and_banner(
+        self,
+        *,
+        real_banner: str = "[WARN] REAL -- MONEY",
+        ai_banner: str = "[OBSERVE ONLY -- AI MANAGED]",
+    ) -> tuple[str, str]:
+        """Return ``(mode_label, exec_banner)`` for strategy startup logging."""
+        mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
+        exec_banner = (
+            ai_banner
+            if getattr(self, "observe_only", False)
+            else ("[PAPER]" if self.dry_run else real_banner)
+        )
+        return mode, exec_banner
+
     def _run_strategy_loop(
         self,
         *,

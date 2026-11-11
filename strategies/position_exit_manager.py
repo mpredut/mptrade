@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, fields
-from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import (
+    StringEnum,
     _parse_bool_flag,
     are_close,
     normalize_epoch_sec,
@@ -95,14 +95,11 @@ def update_reentry_anchors(
     return state.get("trough", cur_trough), state.get("peak", cur_peak)
 
 
-class ExitAction(str, Enum):
+class ExitAction(StringEnum):
     """Action recommended by PositionExitManager."""
     HOLD = "HOLD"                  # Do not exit; position is healthy or deferred
     SELL = "SELL"                  # Execute complete position exit (market or limit)
     PARTIAL_SELL = "PARTIAL_SELL"  # Execute partial position exit (e.g. spike Hard-TP)
-
-    def __str__(self) -> str:
-        return str(self.value)
 
 
 @dataclass
@@ -250,13 +247,10 @@ class PositionSnapshot(PriceGeometrySnapshot):
         return self._ratio_reaches_threshold(self.gain_ratio, threshold, tol_pct)
 
 
-class ReentryAction(str, Enum):
+class ReentryAction(StringEnum):
     """Action recommended by PositionExitManager for market re-entry."""
     WAIT = "WAIT"    # Do not re-enter yet (blocked by drop, bounce, or trend gate)
     ENTER = "ENTER"  # Conditions met to execute re-entry buy
-
-    def __str__(self) -> str:
-        return str(self.value)
 
 
 @dataclass

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import obj_attr, safe_nonneg_float, safe_pos_float
+from botcore import obj_attr_first, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     OrderGuardEvaluatorBase,
@@ -63,29 +63,22 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
         if early is not None:
             return early
 
-        raw_imb = obj_attr(snapshot, "imbalance_ratio")
-        if raw_imb is None:
-            raw_imb = obj_attr(snapshot, "ob_imbalance")
-        imb = clean_scale(raw_imb, default=0.5, allow_percent=True)
-        raw_ask_usd = obj_attr(snapshot, "largest_ask_wall_usd")
+        imb = clean_scale(
+            obj_attr_first(snapshot, "imbalance_ratio", "ob_imbalance"),
+            default=0.5,
+            allow_percent=True,
+        )
         ask_wall_usd = safe_nonneg_float(
-            raw_ask_usd if raw_ask_usd is not None else obj_attr(snapshot, "ask_wall_usd"),
-            default=0.0,
+            obj_attr_first(snapshot, "largest_ask_wall_usd", "ask_wall_usd"), default=0.0
         )
-        raw_ask_px = obj_attr(snapshot, "largest_ask_wall_price")
         ask_wall_px = safe_nonneg_float(
-            raw_ask_px if raw_ask_px is not None else obj_attr(snapshot, "ask_wall_px"),
-            default=0.0,
+            obj_attr_first(snapshot, "largest_ask_wall_price", "ask_wall_px"), default=0.0
         )
-        raw_bid_usd = obj_attr(snapshot, "largest_bid_wall_usd")
         bid_wall_usd = safe_nonneg_float(
-            raw_bid_usd if raw_bid_usd is not None else obj_attr(snapshot, "bid_wall_usd"),
-            default=0.0,
+            obj_attr_first(snapshot, "largest_bid_wall_usd", "bid_wall_usd"), default=0.0
         )
-        raw_bid_px = obj_attr(snapshot, "largest_bid_wall_price")
         bid_wall_px = safe_nonneg_float(
-            raw_bid_px if raw_bid_px is not None else obj_attr(snapshot, "bid_wall_px"),
-            default=0.0,
+            obj_attr_first(snapshot, "largest_bid_wall_price", "bid_wall_px"), default=0.0
         )
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance

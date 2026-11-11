@@ -21,6 +21,7 @@ from botcore import (
     clean_upper_token,
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
+    is_worker_thread_alive,
     load_env_file_defaults,
     load_local_module,
     require_nonneg_float,
@@ -30,6 +31,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    set_stop_event,
 )
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
@@ -1812,7 +1814,7 @@ class AsyncReconnectStreamBase:
         return self
 
     def request_stop(self) -> None:
-        self._stop_event.set()
+        set_stop_event(self)
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self.request_stop()
@@ -1837,7 +1839,7 @@ class AsyncReconnectStreamBase:
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return is_worker_thread_alive(self)
 
     def _thread_worker(self) -> None:
         try:

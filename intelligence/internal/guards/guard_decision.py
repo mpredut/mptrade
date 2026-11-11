@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import clean_scale, normalize_side, safe_float
+from botcore import StringEnum, clean_scale, normalize_side, safe_float
 from cachepaths import canonical_symbol_key
 
 
@@ -76,14 +75,11 @@ def fetch_guard_snapshot(
             return collector.fetch(symbol)
 
 
-class BrakeAction(str, Enum):
+class BrakeAction(StringEnum):
     NONE = "NONE"                     # Green light: order can execute normally
     HARD_VETO = "HARD_VETO"           # Red light: completely block/refuse order
     DEFER_WAIT = "DEFER_WAIT"         # Yellow light: defer/retry later (wait for better conditions)
     DOWNSCALE_QTY = "DOWNSCALE_QTY"   # Yellow light: reduce quantity/weight (e.g. exhausted trend)
-
-    def __str__(self) -> str:
-        return str(self.value)
 
 
 @dataclass(frozen=True)

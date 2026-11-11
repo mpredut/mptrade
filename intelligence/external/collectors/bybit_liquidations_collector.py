@@ -18,6 +18,7 @@ import websockets
 
 from botcore import (
     async_interruptible_sleep,
+    is_worker_thread_alive,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -120,7 +121,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return is_worker_thread_alive(self)
 
     def _worker(self) -> None:
         try:

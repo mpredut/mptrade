@@ -48,6 +48,7 @@ from strategies.spot_replay import (
     align_spot_interval_params,
     run_replay,
     scale_subbar_timeout_params,
+    split_warmup_ohlc,
 )
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
@@ -166,8 +167,7 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
 
 
 def _asset_slices(ohlc: list[tuple[float, float, float, float]]):
-    warmup_n = min(42, len(ohlc) // 5)
-    warmup_ohlc, run_ohlc = ohlc[:warmup_n], ohlc[warmup_n:]
+    warmup_n, warmup_ohlc, run_ohlc = split_warmup_ohlc(ohlc, max_warmup=42)
     half_idx = len(run_ohlc) // 2
     ohlc_h1, ohlc_h2 = run_ohlc[:half_idx], run_ohlc[half_idx:]
     warmup_h2 = ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc

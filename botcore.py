@@ -32,6 +32,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timezone
+from enum import Enum
 from zoneinfo import ZoneInfo
 from cachepaths import (
     _coerce_int,
@@ -1699,6 +1700,22 @@ def safe_thresh(val: object, default: int) -> int:
     return int(round(f)) if 0.0 <= f <= 100.0 else default
 
 
+class StringEnum(str, Enum):
+    """String-backed ``Enum`` whose ``__str__`` returns the raw string ``value`` across Python versions."""
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+def obj_attr_first(obj: object, *names: str, default: object = None) -> object:
+    """Return the first non-``None`` attribute or mapping value among ``names`` on ``obj``."""
+    for name in names:
+        val = obj_attr(obj, name, None)
+        if val is not None:
+            return val
+    return default
+
+
 def coerce_finite_float(
     raw: object, *, positive: bool = False, default: float | None = None
 ) -> float | None:
@@ -2901,6 +2918,19 @@ class ClosedPriceSeries:
             timestamps,
             volumes,
         )
+
+
+def is_worker_thread_alive(instance: object, attr: str = "_thread") -> bool:
+    """Return True when the thread stored on ``getattr(instance, attr, None)`` is alive."""
+    thread = getattr(instance, attr, None)
+    return thread is not None and bool(getattr(thread, "is_alive", lambda: False)())
+
+
+def set_stop_event(instance: object, attr: str = "_stop_event") -> None:
+    """Signal the ``threading.Event`` stored on ``getattr(instance, attr, None)`` to stop."""
+    ev = getattr(instance, attr, None)
+    if ev is not None and hasattr(ev, "set"):
+        ev.set()
 
 
 def sleep_monitoring_interval(

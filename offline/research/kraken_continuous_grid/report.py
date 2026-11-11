@@ -79,6 +79,16 @@ def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20
     return lines
 
 
+def _append_markdown_table_header(
+    lines: list[str], title: str | None, header_row: str, num_cols: int
+) -> None:
+    """Append an optional markdown H2 title, a table header row, and its column separator row."""
+    if title:
+        lines.append(f"\n## {title}\n")
+    lines.append(header_row)
+    lines.append("|" + "---|" * max(1, int(num_cols)))
+
+
 def _finalize_markdown_report(
     lines: list[str],
     errors: list[dict],
@@ -255,11 +265,14 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("`beat_full`/`beat_w90` = on how many assets the config beats `live`.\n")
 
     def table(items, title):
-        L.append(f"\n## {title}\n")
-        L.append("| config | beat_full | beat_w90 | full med % | full min % | full DD med | DD max | "
-                 "expo med % | calmar med | w90 mean | w90 pos% | w90 p10 | w90 down | w30 mean | "
-                 "year pos% | worst year | year med |")
-        L.append("|" + "---|" * 17)
+        _append_markdown_table_header(
+            L,
+            title,
+            "| config | beat_full | beat_w90 | full med % | full min % | full DD med | DD max | "
+            "expo med % | calmar med | w90 mean | w90 pos% | w90 p10 | w90 down | w30 mean | "
+            "year pos% | worst year | year med |",
+            17,
+        )
         for s in items:
             L.append(
                 f"| {s['cfg']} | {s['beat_full']}/{len(assets)} | {s['beat_w90']}/{len(assets)} | "

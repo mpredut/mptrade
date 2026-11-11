@@ -739,3 +739,11 @@ def summarize_grid_replay_metrics(
     if _parse_bool_flag(include_fills, False):
         out["fills"] = safe_nonneg_int(m_dict.get("fills"), default=0)
     return out
+
+
+def split_warmup_ohlc(
+    ohlc: list, max_warmup: int = 30, divisor: int = 5
+) -> tuple[int, list, list]:
+    """Partition ``ohlc`` into ``(warmup_n, warmup_ohlc, run_ohlc)`` using ``min(max_warmup, len(ohlc) // divisor)``."""
+    warmup_n = min(max(0, safe_int(max_warmup, 30)), len(ohlc) // max(1, safe_int(divisor, 5)))
+    return warmup_n, ohlc[:warmup_n], ohlc[warmup_n:]

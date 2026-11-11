@@ -357,8 +357,7 @@ class Strategy(BaseSpotMixin):
         }
 
     def _persist_pending_submit(self, pending: dict | None) -> None:
-        self.s["pending_submit"] = None if pending is None else dict(pending)
-        self._save()
+        self._persist_pending_state_slot("pending_submit", pending)
 
     def _adopt_pending_submit(self, order_id: str) -> dict:
         pending = dict(self.s.get("pending_submit") or {})
@@ -1592,8 +1591,10 @@ class Strategy(BaseSpotMixin):
 
     # -- Main Loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
-        mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — REAL MONEY")
+        mode, exec_banner = self._resolve_run_mode_and_banner(
+            real_banner="⚠ REAL — REAL MONEY",
+            ai_banner="[OBSERVE ONLY — AI MANAGED]",
+        )
         log("  === STRATEGY STARTED ===")
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")
         log(f"      mode       : {mode}   {exec_banner}")

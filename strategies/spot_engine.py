@@ -446,10 +446,9 @@ class Strategy(BaseSpotMixin):
         return state
 
     def _persist_pending_intent(self, pending: dict | None) -> None:
-        self.s["pending_intent"] = None if pending is None else dict(pending)
-        self._save()
-        if self._state_write_failed:
-            raise ProviderError("the intent state could not be persisted")
+        self._persist_pending_state_slot(
+            "pending_intent", pending, require_write=True, error_cls=ProviderError
+        )
 
     def _order_from_pending(self, pending: dict) -> dict:
         req_qty = safe_pos_float(pending.get("requested_qty"), 0.0)
@@ -1942,8 +1941,7 @@ class Strategy(BaseSpotMixin):
 
     # -- Main Loop -------------------------------------------------------------
     def run(self) -> None:
-        mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        exec_banner = "[OBSERVE ONLY -- AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "[WARN] REAL -- MONEY")
+        mode, exec_banner = self._resolve_run_mode_and_banner()
         log(f"  === {self.venue_label.upper()} STRATEGY STARTED ===")
         log(f"      pair       : {self.pair}   {exec_banner}")
         log(f"      mode       : {mode}")

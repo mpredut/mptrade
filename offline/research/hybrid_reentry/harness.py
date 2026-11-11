@@ -29,6 +29,7 @@ from strategies.spot_replay import (
     prewarm_trend_series,
     run_replay,
     scale_subbar_timeout_params,
+    split_warmup_ohlc,
 )
 from strategies import spot_engine as strat
 from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
@@ -216,8 +217,7 @@ def evaluate_asset(
     variants = build_ablation_variants(aligned_base)
     results = []
     # Warmup first 30 bars if available to seed regime
-    warmup_n = min(30, len(ohlc) // 5)
-    warmup_ohlc, run_ohlc = ohlc[:warmup_n], ohlc[warmup_n:]
+    warmup_n, warmup_ohlc, run_ohlc = split_warmup_ohlc(ohlc, max_warmup=30)
     has_full_ts = bool(timestamps and len(timestamps) == len(ohlc))
     warmup_timestamps = timestamps[:warmup_n] if has_full_ts else None
     run_timestamps = timestamps[warmup_n:] if has_full_ts else None

@@ -2,31 +2,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 import time
 from typing import Any, Dict, Optional
 
 
-from botcore import normalize_epoch_sec, safe_pos_float
+from botcore import StringEnum, normalize_epoch_sec, safe_pos_float
 from providers.base import normalize_side
 
 
-class TriggerAction(str, Enum):
+class TriggerAction(StringEnum):
     ENTRY = "ENTRY"
     EXIT = "EXIT"
     NEUTRAL = "NEUTRAL"
 
-    def __str__(self) -> str:
-        return str(self.value)
 
-
-class TriggerSide(str, Enum):
+class TriggerSide(StringEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
-
-    def __str__(self) -> str:
-        return str(self.value)
 
 
 @dataclass(frozen=True)

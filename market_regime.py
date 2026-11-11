@@ -7,7 +7,6 @@ market/limit execution. This module imports neither venues nor cacheManager.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from enum import Enum
 import math
 import threading
 import time
@@ -16,6 +15,7 @@ from typing import Mapping, Optional
 
 from botcore import (
     ClosedPriceSeries,
+    StringEnum,
     _parse_bool_flag,
     exact_int,
     exact_pos_int,
@@ -403,14 +403,11 @@ class MarketRegimeEvaluator:
         )
 
 
-class MarketRegimeHorizon(str, Enum):
+class MarketRegimeHorizon(StringEnum):
     """Decision horizon; execution policy remains owned by each strategy."""
 
     SHORT = "short"
     LONG = "long"
-
-    def __str__(self) -> str:
-        return str(self.value)
 
     @classmethod
     def parse(cls, value) -> "MarketRegimeHorizon":
