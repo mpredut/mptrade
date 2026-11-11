@@ -1792,40 +1792,45 @@ def test_harvest_bot_runtime_states_excludes_executed_and_rejected_ai_intents(tm
     assert [x.get("symbol") for x in active_q] == ["TAOUSDC"]
 
 
+def _make_tao_inst_with_orders(*, free_fn, price: float, open_orders_fn, cancel_fn=None, params=None):
+    prov = SimpleNamespace(
+        free_balance=free_fn,
+        get_current_price=lambda _symbol: price,
+    )
+    return SimpleNamespace(
+        symbol="TAOUSDC",
+        base="TAO",
+        quote="USDC",
+        provider_name="binance",
+        params=params or {},
+        _provider=prov,
+        open_orders=open_orders_fn,
+        cancel_order=cancel_fn or (lambda _oid: False),
+    )
+
+
 def test_process_intent_replace_open_orders_unlocks_bot_order_when_free_remainder_clamped(temp_workspace, monkeypatch):
     ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
     locked_state = {"locked_shares": 1.0}
 
-    class _Provider:
-        def free_balance(self, asset):
-            if asset == "TAO":
-                return 1.24 - locked_state["locked_shares"]
-            return 500.0
+    def _cancel_order(oid):
+        if str(oid) == "bot_tp_1":
+            locked_state["locked_shares"] = 0.0
+            return True
+        return False
 
-        def get_current_price(self, symbol):
-            return 100.0
-
-    class _Inst:
-        symbol = "TAOUSDC"
-        base = "TAO"
-        quote = "USDC"
-        provider_name = "binance"
-        _provider = _Provider()
-
-        def open_orders(self):
-            if locked_state["locked_shares"] > 0:
-                return [{"orderId": "bot_tp_1", "symbol": "TAOUSDC", "side": "SELL", "price": 108.0, "origQty": 1.0, "executedQty": 0.0}]
-            return []
-
-        def cancel_order(self, oid):
-            if str(oid) == "bot_tp_1":
-                locked_state["locked_shares"] = 0.0
-                return True
-            return False
-
-    inst = _Inst()
+    inst = _make_tao_inst_with_orders(
+        free_fn=lambda asset: (1.24 - locked_state["locked_shares"]) if asset == "TAO" else 500.0,
+        price=100.0,
+        open_orders_fn=lambda: (
+            [{"orderId": "bot_tp_1", "symbol": "TAOUSDC", "side": "SELL", "price": 108.0, "origQty": 1.0, "executedQty": 0.0}]
+            if locked_state["locked_shares"] > 0
+            else []
+        ),
+        cancel_fn=_cancel_order,
+    )
     monkeypatch.setattr(gw, "resolve_instrument", lambda *_a, **_kw: inst)
 
     executed_calls = []
@@ -1861,40 +1866,27 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     bcache_file = tmp_path / "venue_balances_state.json"
     bcache_file.write_text("{}", encoding="utf-8")
 
-    class _Provider:
-        def free_balance(self, asset):
-            if str(asset).upper() == "TAO":
-                return 0.0
-            return 50.0
-
-        def get_current_price(self, symbol):
-            return 400.0
-
-    class _Inst:
-        symbol = "TAOUSDC"
-        base = "TAO"
-        quote = "USDC"
-        provider_name = "binance"
-        params = {"trailing.pct": 1.5}
-        _provider = _Provider()
-
-        def open_orders(self):
-            return [
-                {
-                    "orderId": "sell_lock_1",
-                    "symbol": "TAOUSDC",
-                    "side": "SELL",
-                    "price": 420.0,
-                    "origQty": 1.5,
-                    "executedQty": 0.0,
-                    "status": "NEW",
-                }
-            ]
+    inst = _make_tao_inst_with_orders(
+        free_fn=lambda asset: 0.0 if str(asset).upper() == "TAO" else 50.0,
+        price=400.0,
+        params={"trailing.pct": 1.5},
+        open_orders_fn=lambda: [
+            {
+                "orderId": "sell_lock_1",
+                "symbol": "TAOUSDC",
+                "side": "SELL",
+                "price": 420.0,
+                "origQty": 1.5,
+                "executedQty": 0.0,
+                "status": "NEW",
+            }
+        ],
+    )
 
     prices_and_trends = {"TAOUSDC": {"price": 400.0, "trend": 1, "growth_coefficient": 0.1}}
     trailing_by_venue = {"binance": {"TAOUSDC": {"peak": 440.0}}}
     positions, open_orders, cash_map, _ = harvest_tradable_positions_and_orders(
-        {"BINANCE_TAO": _Inst()},
+        {"BINANCE_TAO": inst},
         prices_and_trends,
         {},
         trailing_by_venue,

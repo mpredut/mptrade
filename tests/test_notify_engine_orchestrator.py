@@ -33,7 +33,7 @@ import numpy as np
 import pytest
 from orchestratorOS.lib import watchdog_common
 from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
-from tests.conftest import TempDirTestCase
+from tests.conftest import MockHttpResponse, TempDirTestCase
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _sub in (("orchestratorOS", "lib"), ("orchestratorOS", "livecheck")):
@@ -1889,13 +1889,8 @@ def test_stockyahoopriceplatform_splits_string_tickers_filters_non_strings_and_i
     assert yahoo_mixed.get_available_symbols() == {"NVDA"}
 
     seen_urls = []
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return {"chart": {"result": [{"indicators": {"quote": [{"close": [125.5]}]}}]}}
-
-    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda url, **_kw: (seen_urls.append(url), _FakeResp())[1])
+    resp = MockHttpResponse({"chart": {"result": [{"indicators": {"quote": [{"close": [125.5]}]}}]}})
+    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda url, **_kw: (seen_urls.append(url), resp)[1])
     assert yahoo.get_price("BRK/B_US_EQ") == 125.5
     assert "BRK%2FB" in seen_urls[0]
 

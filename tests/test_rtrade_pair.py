@@ -21,7 +21,7 @@ import os
 import tempfile
 from pathlib import Path
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
-from tests.conftest import TempDirTestCase
+from tests.conftest import TempDirTestCase, make_spot_test_params
 
 
 class FakeVenue:
@@ -1768,7 +1768,7 @@ def test_rtradepairstore_terminal_retention_float_string__clean_store_id_begin_q
 
 def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_run_replay_iter155_s2(tmp_path):
     """[ITER155 #2] Strategy._sanitize_state_dict & Strategy init boolean flags & spot_replay.run_replay with include_decision_trace='false' and intrabar_high='false' & rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation."""
-    from strategies.spot_engine import StratParams, Strategy
+    from strategies.spot_engine import Strategy
     from strategies.spot_replay import run_replay
     # 2. Strategy._sanitize_state_dict & Strategy init boolean flags
     sanitized = Strategy._sanitize_state_dict({
@@ -1782,29 +1782,13 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
     assert sanitized["placement_backoffs"] == {}
     assert sanitized["sl_bounce_state"] == {}
 
-    params = StratParams(
-        currency="USDC",
-        entry_amount=100.0,
-        entry_discount_pct=1.0,
-        dca_amount=100.0,
-        dca_drop_pct=2.0,
-        check_minutes=1.0,
-        takeprofit_pct=3.0,
-        max_budget=500.0,
-        max_dca_buys=2,
-        enable_takeprofit=True,
-        order_ttl_min=60.0,
+    params = make_spot_test_params(currency="USDC", max_dca_buys=2)
+    dummy_client = SimpleNamespace(
+        pair_precision=lambda pair: PairPrecision(2, 4, 0.001, "BTC"),
+        free_balance=lambda asset: 1000.0,
     )
-
-    class DummyClient:
-        def pair_precision(self, pair):
-            return PairPrecision(2, 4, 0.001, "BTC")
-
-        def free_balance(self, asset):
-            return 1000.0
-
     strat = Strategy(
-        DummyClient(),  # type: ignore[arg-type]
+        dummy_client,  # type: ignore[arg-type]
         "BTCUSDC",
         params,
         dry_run="false",  # type: ignore[arg-type]
@@ -1842,7 +1826,7 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
     policy = PairPolicy(adjustment_fraction=0.01)
     with pytest.raises(ValueError):
         PairCoordinator.from_state(
-            DummyClient(),
+            dummy_client,
             policy,
             {
                 "pair_id": "0",
@@ -1854,7 +1838,7 @@ def test_strategy__sanitize_state_dict_strategy_init_boolean_flags_spot_replay_r
         )
     with pytest.raises(ValueError):
         PairCoordinator.from_state(
-            DummyClient(),
+            dummy_client,
             policy,
             {
                 "pair_id": "valid-pair",

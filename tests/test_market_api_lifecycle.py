@@ -939,35 +939,29 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         assert "fetch_ohlc_candles" not in cls.__dict__
         assert isinstance(cls._OHLC_MARKET_DATA_SPEC, tuple) and len(cls._OHLC_MARKET_DATA_SPEC) == 3
 
-    class _CryptoPrimary(MarketDataProvider):
+    class _CryptoOhlcProvider(MarketDataProvider):
         _ASSET_SCOPE = "crypto"
-        _HISTORICAL_OHLC_PRIORITY = 1
+
+        def __init__(self, prov_name: str, priority: int, supports: bool, points):
+            self._prov_name = prov_name
+            self._HISTORICAL_OHLC_PRIORITY = priority
+            self._supports = supports
+            self._points = points
 
         @property
         def name(self) -> str:
-            return "PrimaryCrypto"
+            return self._prov_name
 
         def supports_symbol(self, symbol: str) -> bool:
-            return True
+            return self._supports
 
         def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
-            return [(1.0, 100.0)]
+            return self._points
 
-    class _CryptoSecondary(MarketDataProvider):
-        _ASSET_SCOPE = "crypto"
-        _HISTORICAL_OHLC_PRIORITY = 2
-
-        @property
-        def name(self) -> str:
-            return "SecondaryCrypto"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return False
-
-        def fetch_historical_ohlc_points(self, symbol: str, days: int, interval: str = "1h"):
-            return [(float(i), 100.0 + i) for i in range(60)]
-
-    facade = MarketApi([_CryptoPrimary(), _CryptoSecondary()])
+    facade = MarketApi([
+        _CryptoOhlcProvider("PrimaryCrypto", 1, True, [(1.0, 100.0)]),
+        _CryptoOhlcProvider("SecondaryCrypto", 2, False, [(float(i), 100.0 + i) for i in range(60)]),
+    ])
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: False)
     assert len(facade.fetch_historical_ohlc_points("BTCUSDC", 7, interval="1h")) == 1
     monkeypatch.setattr("botcore.is_live_network_backfill_enabled", lambda: True)

@@ -66,6 +66,12 @@ def _hard_stop_venue(root, store, *, preflight_error=None, submit_error=None):
 class _ReconcilingBinanceExecutor:
     name = "Binance"
 
+    def __init__(self, *, statuses=None, lookups=None):
+        self._statuses = statuses
+        self._lookups = lookups
+        self.status_calls = []
+        self.lookup_calls = []
+
     @staticmethod
     def free_balance(_asset):
         return 1000.0
@@ -79,26 +85,23 @@ class _ReconcilingBinanceExecutor:
             list_open_orders=True,
         )
 
-    @staticmethod
-    def order_status(_symbol, _order_id):
+    def order_by_client_id(self, symbol, client_order_id):
+        self.lookup_calls.append((symbol, client_order_id))
+        if isinstance(self._lookups, list):
+            return self._lookups.pop(0)
+        return dict(self._lookups or {}).get(client_order_id)
+
+    def order_status(self, symbol, order_id):
+        self.status_calls.append((symbol, str(order_id)))
+        if isinstance(self._statuses, dict):
+            return self._statuses[str(order_id)]
+        if isinstance(self._statuses, OrderStatus):
+            return self._statuses
         return OrderStatus("open", 0.0, 0.0, 0.0)
 
 
 def _restart_merge_venue(root, store, statuses, lookups=None):
-    class Executor(_ReconcilingBinanceExecutor):
-        def __init__(self):
-            self.status_calls = []
-            self.lookup_calls = []
-
-        def order_by_client_id(self, symbol, client_order_id):
-            self.lookup_calls.append((symbol, client_order_id))
-            return dict(lookups or {}).get(client_order_id)
-
-        def order_status(self, symbol, order_id):
-            self.status_calls.append((symbol, str(order_id)))
-            return statuses[str(order_id)]
-
-    executor = Executor()
+    executor = _ReconcilingBinanceExecutor(statuses=statuses, lookups=lookups)
     with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
          patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
          patch.object(rtrade.mkt, "provider_by_name", return_value=executor):
@@ -621,24 +624,16 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(canonical["lookup_misses"], 2)
 
     def test_live_pair_finds_late_fill_after_first_absence_without_resubmit(self):
-        class Executor(_ReconcilingBinanceExecutor):
-            def __init__(self):
-                self.lookup_results = [
-                    None,
-                    {
-                        "orderId": "89", "status": "FILLED",
-                        "price": "99.3", "origQty": "0.9",
-                    },
-                ]
-
-            def order_by_client_id(self, _symbol, _client_id):
-                return self.lookup_results.pop(0)
-
-            @staticmethod
-            def order_status(_symbol, _order_id):
-                return OrderStatus("closed", 0.9, 89.37, 0.01)
-
-        executor = Executor()
+        executor = _ReconcilingBinanceExecutor(
+            statuses=OrderStatus("closed", 0.9, 89.37, 0.01),
+            lookups=[
+                None,
+                {
+                    "orderId": "89", "status": "FILLED",
+                    "price": "99.3", "origQty": "0.9",
+                },
+            ],
+        )
         recovery_now = [100.0]
         with tempfile.TemporaryDirectory(prefix="rtrade-retry-") as root:
             store = RTradePairStore(os.path.join(root, "pairs.json"))

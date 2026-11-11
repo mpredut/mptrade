@@ -345,27 +345,39 @@ def test_decision_caching_and_notify_cooldown():
     clear_post_stop_reentry_cache()
 
 
+class _MinNotionalBinanceProvider:
+    name = "binance"
+
+    def __init__(self, *, policy_cap: float = 0.0, refuse_reason: str | None = "qty_zero_after_policy"):
+        self._policy_cap = policy_cap
+        self._refuse_reason = refuse_reason
+
+    def free_balance(self, asset):
+        return 20338.80
+
+    def quantity_decision(self, symbol, side, price, qty, **kwargs):
+        return QuantityDecision(
+            requested_qty=qty,
+            balance_cap=20338.80 / price,
+            policy_cap=self._policy_cap,
+            fee_cap=self._policy_cap,
+            final_qty=self._policy_cap,
+            refuse_reason=self._refuse_reason,
+            balance_asset="USDC",
+        )
+
+    def round_amount(self, symbol, qty):
+        return round(float(qty), 1)
+
+    def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
+        if float(price) * float(qty) < 50.0:
+            return "below_min_notional"
+        return None
+
+
 def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
     """Verify monitortrades does not invoke PostStopReentryGuard (or send APPROVED alerts)
     when the provider's 24h weight policy refuses the BUY with qty_zero_after_policy."""
-
-    class PolicyBlockedProvider:
-        name = "binance"
-
-        def free_balance(self, asset):
-            return 20338.80
-
-        def quantity_decision(self, symbol, side, price, qty, **kwargs):
-            return QuantityDecision(
-                requested_qty=qty,
-                balance_cap=20338.80 / price,
-                policy_cap=0.0,
-                fee_cap=0.0,
-                final_qty=0.0,
-                refuse_reason="qty_zero_after_policy",
-                balance_asset="USDC",
-            )
-
     fake_guard = MagicMock()
     mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
     mt._REENTRY_STATE["ARBUSDC"] = {
@@ -389,7 +401,7 @@ def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
             }]
         },
     )
-    inst._provider = PolicyBlockedProvider()
+    inst._provider = _MinNotionalBinanceProvider(policy_cap=0.0, refuse_reason="qty_zero_after_policy")
     exit_mgr = MagicMock()
     exit_mgr.evaluate_reentry.return_value = MagicMock(
         should_enter=True, reason="post_stop_bounce_confirmed"
@@ -408,38 +420,10 @@ def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
     assert "ARBUSDC" in mt._REENTRY_STATE
 
 
-class _MinNotionalBinanceProvider:
-    name = "binance"
-
-    def round_amount(self, symbol, qty):
-        return round(float(qty), 1)
-
-    def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
-        if float(price) * float(qty) < 50.0:
-            return "below_min_notional"
-        return None
-
-
 def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below_min_notional():
     """Verify monitortrades does not invoke PostStopReentryGuard (or send repeated APPROVED alerts)
     when the 24h weight-capped BUY quantity would be downscaled by intelligence/geopolitical
     guards below the business minimum notional ($50 USDC)."""
-
-    class DownscaleRefusedProvider(_MinNotionalBinanceProvider):
-        def free_balance(self, asset):
-            return 20338.80
-
-        def quantity_decision(self, symbol, side, price, qty, **kwargs):
-            return QuantityDecision(
-                requested_qty=qty,
-                balance_cap=20338.80 / price,
-                policy_cap=399.16,
-                fee_cap=399.16,
-                final_qty=399.16,
-                refuse_reason=None,
-                balance_asset="USDC",
-            )
-
     fake_guard = MagicMock()
     mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
     mt._REENTRY_STATE["ARBUSDC"] = {
@@ -463,7 +447,7 @@ def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below
             }]
         },
     )
-    inst._provider = DownscaleRefusedProvider()
+    inst._provider = _MinNotionalBinanceProvider(policy_cap=399.16, refuse_reason=None)
     exit_mgr = MagicMock()
     exit_mgr.evaluate_reentry.return_value = MagicMock(
         should_enter=True, reason="post_stop_bounce_confirmed"

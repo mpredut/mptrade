@@ -421,9 +421,10 @@ def make_transient_complete_claim(order_retry_mod):
 
 
 class MockHttpResponse:
-    """Reusable mock ``urllib.request.urlopen`` context-manager response supporting ``bytes``, ``str``, or JSON payloads."""
+    """Reusable mock HTTP response (``urllib.request.urlopen`` or ``requests``) supporting ``bytes``, ``str``, or JSON payloads."""
 
     def __init__(self, payload: bytes | str | dict | list = b"{}", *, status: int = 200, headers: dict | None = None):
+        self._raw_payload = payload
         if isinstance(payload, bytes):
             self._body = payload
         elif isinstance(payload, str):
@@ -435,6 +436,14 @@ class MockHttpResponse:
 
     def read(self, _max_bytes: int | None = None) -> bytes:
         return self._body
+
+    def json(self):
+        if isinstance(self._raw_payload, (dict, list)):
+            return self._raw_payload
+        return json.loads(self._body.decode("utf-8"))
+
+    def raise_for_status(self) -> None:
+        return None
 
     def getcode(self) -> int:
         return self.status

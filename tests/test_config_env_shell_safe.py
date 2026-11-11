@@ -26,7 +26,7 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 from market_monitor import pricefetcher as pf
 from market_monitor.pricechecker import PriceChecker
 from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy
-from tests.conftest import DummyTrailingAdapter
+from tests.conftest import DummyTrailingAdapter, make_spot_test_params
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -693,27 +693,12 @@ def test_spot_engine_trailing_core_and_pricewindow_hardening():
     from strategies import spot_engine as se
 
     # 1. spot_engine._qty_for, _dust_safe_qty, _place, and step reject NaN/bool/<=0 safely
-    class _DummyClient:
-        def pair_precision(self, _pair):
-            return PairPrecision(2, 4, 0.01, "BTC")
-
-        def free_balance(self, _asset):
-            return 1000.0
-
-    params = se.StratParams(
-        currency="EUR",
-        entry_amount=100.0,
-        entry_discount_pct=1.0,
-        dca_amount=100.0,
-        dca_drop_pct=2.0,
-        check_minutes=1.0,
-        takeprofit_pct=3.0,
-        max_budget=500.0,
-        max_dca_buys=3,
-        enable_takeprofit=True,
-        order_ttl_min=60.0,
+    dummy_client = SimpleNamespace(
+        pair_precision=lambda _pair: PairPrecision(2, 4, 0.01, "BTC"),
+        free_balance=lambda _asset: 1000.0,
     )
-    strat = se.Strategy(_DummyClient(), "BTCEUR", params, dry_run=True, initial_state=se._new_state(), replay_mode=True)
+    params = make_spot_test_params(currency="EUR")
+    strat = se.Strategy(dummy_client, "BTCEUR", params, dry_run=True, initial_state=se._new_state(), replay_mode=True)
     assert strat._qty_for(float("nan"), 100.0) == 0.0
     assert strat._qty_for(100.0, float("inf")) == 0.0
     assert strat._dust_safe_qty(float("nan")) == 0.0

@@ -57,7 +57,7 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams
-from tests.conftest import MockHttpResponse as _DummyBytesResp
+from tests.conftest import MockHttpResponse, MockHttpResponse as _DummyBytesResp
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import active_intents
@@ -1926,15 +1926,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert psg.check("BTCUSDC", " buy ", 100.0, price_history=[(True, 99.0)]).allowed is True
 
     yp = StockYahooPricePlatform(tickers=["NVDA_US_EQ"])
-
-    class _DummyYahooResp:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"chart": None}
-
-    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda *a, **k: _DummyYahooResp())
+    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda *a, **k: MockHttpResponse({"chart": None}))
     assert yp.get_price("NVDA_US_EQ") is None
 
     # 16. External/Sentiment/Macro collectors, triggers, and guards whitespace/bool/bounds hardening
@@ -3042,21 +3034,17 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
 def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_path):
 
     # 1. BinancePricePlatform._load_symbols ignores None/non-string symbol and baseAsset
-    class _FakeBinanceResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {
-                "symbols": [
-                    {"symbol": None, "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
-                    {"symbol": "   ", "baseAsset": "ETH", "quoteAsset": "USDC", "status": "TRADING"},
-                    {"symbol": " btcusdc ", "baseAsset": None, "quoteAsset": "usdc", "status": "trading"},
-                    {"symbol": "ETHUSDC", "baseAsset": " eth ", "quoteAsset": "USDC", "status": "TRADING"},
-                ]
-            }
-
-    monkeypatch.setattr(pf.requests, "get", lambda *a, **kw: _FakeBinanceResp())
+    binance_resp = MockHttpResponse(
+        {
+            "symbols": [
+                {"symbol": None, "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "   ", "baseAsset": "ETH", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": " btcusdc ", "baseAsset": None, "quoteAsset": "usdc", "status": "trading"},
+                {"symbol": "ETHUSDC", "baseAsset": " eth ", "quoteAsset": "USDC", "status": "TRADING"},
+            ]
+        }
+    )
+    monkeypatch.setattr(pf.requests, "get", lambda *a, **kw: binance_resp)
     bp = pf.BinancePricePlatform()
     assert None not in bp._supported_symbols
     assert "" not in bp._supported_symbols
