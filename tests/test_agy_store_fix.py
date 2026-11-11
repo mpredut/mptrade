@@ -1014,6 +1014,67 @@ def test_manage_agy_defers_stuck_tunnel_and_cron_update_restarts_when_chats_acti
     assert not (tmp_path / "agy_update_restart_pending").exists()
 
 
+def test_webchannel_reconnect_and_mid_turn_background_polls_do_not_mask_active_inference(store):
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1500)
+
+    log_dir = cli / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    daemon_log = log_dir / "cli-20261111_121811.log"
+    now = time.time()
+
+    # 1. Hourly WebChannel rotation + Read loop noise 4s after streamGenerateContent must NOT mask active inference
+    daemon_log.write_text(
+        "I1111 12:18:15.064759 172 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I1111 13:18:14.575390 31543 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n"
+        "W1111 13:18:18.763113 31664 remote_control_v2.go:2258] WebChannel: XMLHTTP Unknown SID (74885)\n"
+        "2026/11/11 13:18:18 Read loop (req 2128): err=context canceled\n"
+        "E1111 13:18:18.780000 98 client.go:98] Post \"https://play.googleapis.com/log\": net/http: request canceled\n"
+        "I1111 13:18:18.850833 172 remote_control_v2.go:2056] Connection status: Connected\n",
+        encoding="utf-8",
+    )
+    os.utime(daemon_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+    assert asf.mode_active_check(120) == asf.UI_SYNC_BUSY
+
+    # 2. Periodic 6m fetchAvailableModels + loadCodeAssist poll 5s into a deep-thinking streamGenerateContent keeps session busy
+    daemon_log.write_text(
+        "I1111 12:18:15.064759 172 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I1111 12:23:10.000000 500 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n"
+        "I1111 12:23:15.107213 695 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
+        "I1111 12:23:15.160892 696 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n",
+        encoding="utf-8",
+    )
+    os.utime(daemon_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # 3. Sonar prompt-prep lines and safety-monitor timeout lines also register as active turn markers
+    daemon_log.write_text(
+        "I1111 12:18:15.064759 172 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I1111 13:02:50.909737 5698 latency_breakdown.go:168] SEND_USER_CASCADE_MESSAGE_LATENCY\n"
+        "I1111 13:02:50.934735 5716 monitor_config_manager_external.go:53] externalMonitorConfigManager: initialized\n"
+        "I1111 13:02:50.935221 5716 monitoring.go:409] [Sonar] Resolved active tags\n"
+        "I1111 13:02:50.935297 5716 monitoring.go:409] [Sonar] Resolved active tags\n",
+        encoding="utf-8",
+    )
+    os.utime(daemon_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # 4. Once another 6m background poll arrives >= 120s after the last active marker, session is idle
+    daemon_log.write_text(
+        daemon_log.read_text(encoding="utf-8")
+        + "I1111 13:08:50.935297 6000 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
+        + "I1111 13:08:51.100000 6001 http_helpers.go:654] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n",
+        encoding="utf-8",
+    )
+    os.utime(daemon_log, (now, now))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+
 
 
 

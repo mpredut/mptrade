@@ -524,15 +524,23 @@ _DAEMON_LOG_NOISE_MARKERS = (
     "ensure trajectory",
     "Monitor sir_flash_lite SKIPPED",
     "Monitor severe_internal_risks_agy SKIPPED",
+    "remote_control_v2.go",
+    "Read loop (req",
+    "play.googleapis.com/log",
 )
 _DAEMON_ACTIVE_STREAM_MARKERS = (
     "SEND_USER_CASCADE_MESSAGE",
     "streamGenerateContent",
     "LLM Monitor",
     "Monitor agy_tool_safety",
+    "llm_monitor.go:",
+    "runner.go:",
+    "monitoring.go:",
+    "monitor_config_manager",
 )
 _RUNNING_SESSION_MAX_AGE_SEC = 900.0
-_ACTIVE_BG_TASK_MAX_AGE_SEC = 3600.0
+_IN_FLIGHT_STREAM_MAX_GAP_SEC = _RUNNING_SESSION_MAX_AGE_SEC / 7.5
+_ACTIVE_BG_TASK_MAX_AGE_SEC = _RUNNING_SESSION_MAX_AGE_SEC * 4.0
 _BENIGN_DAEMON_CMD_MARKERS = (
     "agy remote-control",
     "agy_store_fix.py",
@@ -764,26 +772,28 @@ def last_store_activity() -> float:
                 txt = read_text_file(candidate_log, default="", errors="ignore")
                 if not txt or ("Connection status:" not in txt and "summary store: reconciliation complete" not in txt):
                     continue
-                conn_idx = txt.rfind("Connection status: Connected")
+                conn_idx = txt.find("Connection status: Connected")
                 if conn_idx >= 0:
                     all_lines = txt[conn_idx:].splitlines()
                     meaningful = [ln for ln in all_lines if not any(n in ln for n in _DAEMON_LOG_NOISE_MARKERS)]
-                    recent_lines = meaningful[-2:]
+                    recent_set = set(meaningful[-2:])
                     matched_line = next(
-                        (ln for ln in reversed(recent_lines) if any(mk in ln for mk in _DAEMON_ACTIVE_STREAM_MARKERS)),
+                        (ln for ln in reversed(meaningful) if any(mk in ln for mk in _DAEMON_ACTIVE_STREAM_MARKERS)),
                         None,
                     )
                     if matched_line is not None:
                         log_mtime = os.stat(candidate_log).st_mtime
                         t_match = _glog_rel_ts(matched_line)
                         t_last = next((t for ln in reversed(all_lines) if (t := _glog_rel_ts(ln)) is not None), None)
+                        delta: float | None = None
                         if t_match is not None and t_last is not None:
                             delta = t_last - t_match
                             if delta < -86400 * 180:
                                 delta += 86400 * 366
                             if 0.0 <= delta <= 86400 * 30:
                                 log_mtime -= delta
-                        newest = max(newest, log_mtime)
+                        if matched_line in recent_set or (delta is not None and 0.0 <= delta < _IN_FLIGHT_STREAM_MAX_GAP_SEC):
+                            newest = max(newest, log_mtime)
                 break
         except OSError:
             pass
