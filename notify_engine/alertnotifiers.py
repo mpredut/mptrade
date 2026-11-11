@@ -13,8 +13,8 @@ from state_io import encode_json_payload, read_json_dict, save_json_state
 from typing import Any, Optional
 
 # Import your modules
-from lock import FileLock
 from botcore import (
+    FileLock,
     INVALID_SCALAR_STRINGS,
     _is_unmodified_root_key,
     _parse_bool_flag,

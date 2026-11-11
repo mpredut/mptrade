@@ -6,6 +6,7 @@ import threading
 import time
 
 from botcore import (
+    FileLock,
     _INVALID_OID_STRINGS,
     _parse_bool_flag,
     clean_order_id_str,
@@ -15,7 +16,6 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
-from lock import FileLock
 from state_io import atomic_write_json, encode_json_payload, parse_json_payload, read_json_file
 
 

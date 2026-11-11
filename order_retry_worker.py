@@ -18,6 +18,7 @@ if _ROOT not in sys.path:
 
 from notify_engine import alertnotifiers as alert
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     exact_nonneg_int,
     format_notify_qty,
@@ -33,7 +34,6 @@ from botcore import (
     touch_module_heartbeat,
 )
 from cachepaths import split_symbol_assets
-from lock import FileLock
 import order_retry as oq
 from providers.base import normalize_side
 from providers.execution_audit import ExecutionAudit

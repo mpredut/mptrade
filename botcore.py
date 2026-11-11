@@ -5,8 +5,10 @@ No external dependencies; standard library only.
 """
 from __future__ import annotations
 
+import base64
 import configparser
 import fcntl
+from functools import lru_cache
 import json
 import math
 import numbers
@@ -52,6 +54,43 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
     fd.write(str(os.getpid()))
     fd.flush()
     _LOCKS[name] = fd
+
+
+_HAVE_FCNTL = True
+
+
+class FileLock:
+    """Cross-process/thread lock using fcntl.flock(LOCK_EX) on an owned fd."""
+
+    def __init__(self, path):
+        from cachepaths import resolve_cachedb_filepath
+
+        self.path = resolve_cachedb_filepath(path)
+        self._fd = None
+
+    def __enter__(self):
+        parent = os.path.dirname(os.fspath(self.path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._fd = open(self.path, "a+")
+        if _HAVE_FCNTL:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            except BaseException:
+                self._fd.close()
+                self._fd = None
+                raise
+        return self
+
+    def __exit__(self, *exc):
+        if self._fd is None:
+            return
+        try:
+            if _HAVE_FCNTL:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+        finally:
+            self._fd.close()
+            self._fd = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1456,6 +1495,120 @@ def clamp_float(
     """Safely coerce ``val`` to a float and clamp it to ``[minimum, maximum]``."""
     v = safe_float(val, default=default)
     return max(minimum, min(maximum, default if v is None else v))
+
+
+def value_diff_to_percent(value1, value2) -> float:
+    v1 = safe_float(value1, default=None)
+    v2 = safe_float(value2, default=None)
+    if v1 is None or v2 is None or v1 == 0.0:
+        return 0.0
+    return safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
+
+
+def slope(val1, idx1, val2, idx2) -> float:
+    v1 = safe_float(val1, default=None)
+    i1 = safe_float(idx1, default=None)
+    v2 = safe_float(val2, default=None)
+    i2 = safe_float(idx2, default=None)
+    if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
+        return 0.0
+    return safe_float((v2 - v1) / (i2 - i1), default=0.0)
+
+
+def timestampToTime(timestamp_ms) -> str:
+    ts_ms = safe_nonneg_float(timestamp_ms, default=None)
+    if ts_ms is None:
+        return "N/A"
+    try:
+        return datetime.fromtimestamp(ts_ms / 1000.0).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
+
+
+@lru_cache(maxsize=256)
+def timeToHMS(timestamp_sec) -> str:
+    ts_f = normalize_epoch_sec(timestamp_sec, default=None, allow_zero=True)
+    if ts_f is None:
+        return "N/A"
+    try:
+        return datetime.fromtimestamp(ts_f).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
+
+
+def secondsToDays(max_age_seconds) -> float:
+    return safe_nonneg_float(max_age_seconds, default=0.0) / 86400.0
+
+
+def secondsToHours(max_age_seconds) -> float:
+    return safe_nonneg_float(max_age_seconds, default=0.0) / 3600.0
+
+
+def gaussian_weights_from_idx(T, idx: int):
+    """Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights."""
+    import numpy as np
+
+    t_f = safe_pos_float(T, default=None)
+    idx_f = safe_float(idx, default=None)
+    if t_f is None or idx_f is None:
+        return np.array([]), np.array([])
+    t_steps = min(100000, max(1, int(round(t_f))))
+    idx_int = max(0, int(idx_f))
+    if idx_int >= t_steps:
+        return np.array([]), np.array([])
+
+    t_full = np.linspace(0, t_steps - 1, t_steps)
+    mu = (t_steps - 1) / 2
+    sigma = t_steps / 4
+    w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
+    w_full = w_full / w_full.sum()
+    return t_full[idx_int:], w_full[idx_int:]
+
+
+def _load_ed25519_signing_key():
+    try:
+        import nacl.signing
+        from state_io import read_text_file
+
+        pem_data = read_text_file("keys/ed25519_private.pem")
+        b64match = re.search(r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----", pem_data, re.DOTALL)
+        if not b64match:
+            raise ValueError("Invalid PEM")
+        der_bytes = base64.b64decode(b64match.group(1).strip())
+        if len(der_bytes) < 32:
+            raise ValueError("DER too short")
+        return nacl.signing.SigningKey(der_bytes[-32:])
+    except Exception as e:
+        print(f"Error loading the Ed25519 key: {e}")
+        return None
+
+
+def _sign_ed25519(signing_key, payload: str) -> str:
+    if signing_key is None or payload is None or isinstance(payload, bool):
+        raise ValueError("signing_key and payload are required")
+    raw_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
+    return base64.b64encode(signing_key.sign(raw_bytes).signature).decode("ascii")
+
+
+def _cache_path_impl(name):
+    """Return the cache path under ``cachedb``, preserving paths that already carry a directory separator."""
+    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
+        return name
+    from cachepaths import cache_path as _cp_cache_path, resolve_cachedb_filepath
+
+    name_str = str(os.fspath(name))
+    if os.path.isabs(name_str) or os.sep in name_str or (os.altsep and os.altsep in name_str):
+        return str(resolve_cachedb_filepath(name_str))
+    return _cp_cache_path(name_str)
+
+
+def cache_path(name):
+    """Return the cache path under ``cachedb``, honoring test monkeypatches on ``utils.cache_path``."""
+    u_mod = sys.modules.get("utils")
+    u_cp = getattr(u_mod, "cache_path", None) if u_mod is not None else None
+    if callable(u_cp) and u_cp is not cache_path and u_cp is not _cache_path_impl:
+        return u_cp(name)
+    return _cache_path_impl(name)
 
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:

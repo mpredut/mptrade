@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from botcore import (
+    FileLock,
     exact_int,
     exact_nonneg_int,
     load_dotenv,
@@ -29,7 +30,6 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
-from lock import FileLock
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import extract_order_id, extract_orig_qty, resolve_order_actor
 from providers.strategy_executor import OrderStatus

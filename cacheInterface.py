@@ -18,6 +18,7 @@ from typing import Any, Optional
 import weakref
 
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     extract_timestamp_ms,
     load_dotenv,
@@ -30,13 +31,13 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_int,
 )
+import botcore as u
 import cacheintegrity as _cache_integrity
 from cachepaths import (
     EXACT_LEGACY_FILENAMES,
     clean_symbol_key,
     migrate_legacy_filename_if_needed,
 )
-from lock import FileLock
 from state_io import (
     append_jsonl_bucket_delta,
     atomic_gzip_file,
@@ -56,7 +57,6 @@ from state_io import (
     restore_previous_generation,
     truncate_file_bytes,
 )
-import utils as u
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()

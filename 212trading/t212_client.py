@@ -23,6 +23,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     clean_order_id,
     http_get,
@@ -38,7 +39,6 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
-from lock.cooldown import FileLock
 from providers.t212_provider import T212Provider
 from state_io import (
     atomic_write_json,

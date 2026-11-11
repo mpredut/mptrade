@@ -8,7 +8,7 @@ from notify_engine import alertnotifiers as alert  # noqa: F401 (re-export: test
 import cacheManager as cm
 from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
-import utils as u
+import botcore as u
 from instrument_registry import casefold_get, select_instruments, symbols_for
 import order_lifecycle
 from providers.base import extract_order_id, normalize_side

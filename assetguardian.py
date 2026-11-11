@@ -22,7 +22,6 @@ from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY
 from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
-from lock import FileLock
 import order_guard as _og
 import pricewindow as pw
 
@@ -32,6 +31,7 @@ from instrument_registry import casefold_get, symbols_for
 # Load tunable parameters from the versioned, secret-free config before reading
 # environment variables below. load_dotenv does not overwrite real environment.
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     clamp_float,
     exact_nonneg_int,

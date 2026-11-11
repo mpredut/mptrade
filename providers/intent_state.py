@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from botcore import (
+    FileLock,
     _parse_bool_flag,
     clean_json_value,
     clean_scale,
@@ -448,8 +449,6 @@ def parse_intent_gateway_config(
 @contextmanager
 def durable_intents_lock(intents_file: str):
     """Reentrant (per thread) cross-process lock serializing read-modify-write of the durable intents file."""
-    from lock.cooldown import FileLock
-
     key = generation_lock_path(str(resolve_cachedb_filepath(os.fspath(intents_file))))
     depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
     if depths is None:

@@ -39,7 +39,7 @@ from strategies.position_exit_manager import (
     is_stop_exit_kind,
     update_reentry_anchors,
 )
-import utils as u
+import botcore as u
 
 
 class _FifoTradeIdTracker:

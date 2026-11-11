@@ -114,7 +114,7 @@ from state_io import (
     save_json_state,
     write_meta_json,
 )
-import utils as u
+import botcore as u
 
 _NB_FETCH_DEADLINE_SEC = 8
 

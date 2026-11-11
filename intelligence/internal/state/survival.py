@@ -24,7 +24,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import utils as u
+import botcore as u
 from botcore import (
     _parse_bool_flag,
     is_live_network_backfill_enabled,
