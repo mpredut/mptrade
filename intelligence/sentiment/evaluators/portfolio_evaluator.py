@@ -13,7 +13,10 @@ from cachepaths import (
     ensure_equity_suffix,
     filter_asset_class_variants,
     has_equity_suffix,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
+    uses_cycle_state_files,
 )
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
 from botcore import safe_nonneg_float, safe_nonneg_int, safe_pos_int
@@ -34,6 +37,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
 )
 from instrument_registry import casefold_get
 from providers.base import (
+    MarketDataProvider,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
     extract_order_id,
@@ -104,8 +108,9 @@ def _populate_cycle_fallback_recent_order(
     cyc_sell_ts_map: Dict[tuple[str, str], int],
 ) -> Optional[Dict[str, Any]]:
     """Synthesize or enrich a fallback `recent_orders` entry from `.state_*.json` cycle anchors when trade cache is absent."""
-    if p_venue not in ("t212", "kraken", "hyperliquid"):
+    if not uses_cycle_state_files(p_venue):
         return ro
+    is_eq_v = is_equity_venue(p_venue)
     cyc_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=0.0) or 0.0
     cyc_lb = safe_pos_float(cyc.get("last_buy_price") or cyc.get("entry_price"), default=None)
     cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
@@ -115,7 +120,7 @@ def _populate_cycle_fallback_recent_order(
     existing_ro = recent_orders.get(p_sym) if isinstance(recent_orders, dict) else None
     existing_venue = normalize_venue_name(existing_ro.get("venue")) if isinstance(existing_ro, dict) else ""
     can_create_ro = (
-        p_venue == "t212"
+        is_eq_v
         or p_sym not in recent_orders
         or (existing_venue and existing_venue != p_venue and f"{p_venue}:{p_sym}" not in recent_orders)
     )
@@ -135,7 +140,7 @@ def _populate_cycle_fallback_recent_order(
             "recent_buys": [],
         }
         v_ro_map[p_sym] = ro
-        if p_sym not in recent_orders or p_venue == "t212":
+        if p_sym not in recent_orders or is_eq_v:
             recent_orders[p_sym] = ro
         else:
             recent_orders[f"{p_venue}:{p_sym}"] = ro
@@ -143,9 +148,9 @@ def _populate_cycle_fallback_recent_order(
     if isinstance(ro, dict):
         if created_ro:
             ro.setdefault("venue", p_venue)
-        if (p_venue == "t212" or created_ro) and cyc_avg > 0 and cyc_has_open_qty:
+        if (is_eq_v or created_ro) and cyc_avg > 0 and cyc_has_open_qty:
             if (
-                p_venue == "t212"
+                is_eq_v
                 and not created_ro
                 and ro.get("tactical_avg_buy_px") is None
                 and (prev_act_avg := safe_pos_float(ro.get("active_avg_buy_px"), default=None)) is not None
@@ -153,7 +158,7 @@ def _populate_cycle_fallback_recent_order(
             ):
                 ro["tactical_avg_buy_px"] = round(prev_act_avg, 6)
             ro["active_avg_buy_px"] = round(cyc_avg, 6)
-        if (p_venue == "t212" or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
+        if (is_eq_v or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
             lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
             if cyc_lb_ts is not None:
                 lb_d["ts_ms"] = cyc_lb_ts
@@ -911,7 +916,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     continue
                 entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
                 c_quotes = compatible_quote_suffixes(c_sym)
-                c_is_eq = c_venue == "t212" or has_equity_suffix(c_sym)
+                c_is_eq = is_equity_venue_or_suffix(c_sym, c_venue)
                 c_cands = filter_asset_class_variants(
                     c_sym,
                     (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes)),
@@ -934,7 +939,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     None,
                 )
                 cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
-                if isinstance(ro_c, dict) and c_venue == "t212" and cyc_qty_cur > 1e-8:
+                if isinstance(ro_c, dict) and is_equity_venue(c_venue) and cyc_qty_cur > 1e-8:
                     lb_ro = ro_c.get("last_buy") if isinstance(ro_c.get("last_buy"), dict) else {}
                     ls_ro = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
                     if ro_c.get("recent_buys") and (lb_px_ro := safe_pos_float(lb_ro.get("price"), default=None)) is not None:
@@ -1185,7 +1190,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
             p_venue = normalize_venue_name(pos.get("venue"))
-            p_is_eq = has_equity_suffix(p_sym) or p_venue == "t212"
+            p_is_eq = is_equity_venue_or_suffix(p_sym, p_venue)
             p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
             p_quote_variants = filter_asset_class_variants(
                 p_sym,
@@ -1200,7 +1205,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             p_lookup_sym = ensure_equity_suffix(p_sym, is_equity=p_is_eq)
             cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
             if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px, threshold=0.35 if p_is_eq else 0.10))):
-                pos_px_f = round(cand_px, 4 if p_venue == "t212" else 6)
+                pos_px_f = round(cand_px, MarketDataProvider.resolve_venue_position_price_decimals(p_venue))
                 pos["price"] = pos_px_f
                 if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
                     pos["value_usd"] = round(fb_val * cand_px, 2)
@@ -1319,7 +1324,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             safe_pos_float(cyc.get("avg_cost_px"), default=None)
                             or safe_pos_float(pos.get("active_avg_buy_px"), default=None)
                         )
-                        if p_venue == "t212"
+                        if is_equity_venue(p_venue)
                         else (
                             safe_pos_float(pos.get("active_avg_buy_px"), default=None)
                             or safe_pos_float(cyc.get("avg_cost_px"), default=None)
@@ -1367,7 +1372,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                     set_pos_anchor(
                         pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f,
-                        overwrite=(p_venue == "t212" and cyc.get("avg_cost_px") is not None),
+                        overwrite=(is_equity_venue(p_venue) and cyc.get("avg_cost_px") is not None),
                     )
                     ro = _populate_cycle_fallback_recent_order(
                         p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
@@ -1421,9 +1426,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
                 has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))
                 has_ro_sells = isinstance(ro, dict) and bool(ro.get("recent_sells"))
-                if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or p_venue in ("hyperliquid", "kraken") or has_ro_buys):
+                is_crypto_cyc_venue = uses_cycle_state_files(p_venue) and not is_equity_venue(p_venue)
+                if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or is_crypto_cyc_venue or has_ro_buys):
                     cyc["last_buy_price"] = pos["last_buy_px"]
-                if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or p_venue in ("hyperliquid", "kraken") or has_ro_sells):
+                if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or is_crypto_cyc_venue or has_ro_sells):
                     cyc["last_sell_price"] = pos["last_sell_px"]
             exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
             sym_spread = (
@@ -1487,7 +1493,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 c_quote_variants = filter_asset_class_variants(
                     c_sym_u,
                     cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes),
-                    is_equity=(c_venue == "t212" or has_equity_suffix(c_sym_u)),
+                    is_equity=is_equity_venue_or_suffix(c_sym_u, c_venue),
                 )
                 ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
                 if ro is None and isinstance(recent_orders, dict):
@@ -1507,7 +1513,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 c_rpnl_c = safe_float(cyc.get("realized_pnl_usd"), default=None)
                 if lp_ro_c is not None and c_rpnl_c is not None and c_rpnl_c < 0.0 and lp_ro_c > c_rpnl_c:
                     cyc["realized_pnl_usd"] = round(lp_ro_c, 2)
-                c_is_eq = c_venue == "t212" or has_equity_suffix(c_sym_u)
+                c_is_eq = is_equity_venue_or_suffix(c_sym_u, c_venue)
                 c_px = resolve_symbol_price(
                     ensure_equity_suffix(c_sym_u, is_equity=c_is_eq),
                     prices_and_trends,

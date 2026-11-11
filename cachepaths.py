@@ -527,6 +527,8 @@ _VENUE_ALIASES: dict[str, str] = {
     "trading212": "t212", "trading_212": "t212", "212trading": "t212", "212": "t212",
 }
 EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
+PRIMARY_STREAM_VENUES: frozenset[str] = frozenset({"binance"})
+CYCLE_STATE_VENUES: frozenset[str] = frozenset({"kraken", "hyperliquid", "t212"})
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 
 
@@ -689,6 +691,19 @@ def is_equity_venue(venue: object) -> bool:
 def is_equity_venue_or_suffix(symbol: object = None, venue: object = None) -> bool:
     """Return True if ``venue`` is an equities venue or ``symbol`` carries an equity suffix."""
     return is_equity_venue(venue) or has_equity_suffix(symbol)
+
+
+def is_primary_stream_venue(venue: object, *, default_primary: bool = False) -> bool:
+    """Return True if ``venue`` resolves to the primary shared-registry/multiplex venue (``binance``)."""
+    v_norm = normalize_venue_name(venue, default=None)
+    if not v_norm:
+        return bool(default_primary)
+    return v_norm in PRIMARY_STREAM_VENUES
+
+
+def uses_cycle_state_files(venue: object) -> bool:
+    """Return True if ``venue`` persists per-symbol ``.state_*.json`` DCA cycle state files."""
+    return normalize_venue_name(venue) in CYCLE_STATE_VENUES
 
 
 def canonical_base_asset(symbol: object) -> str:
@@ -886,7 +901,7 @@ def resolve_venue_runtime_dir(
     v_norm = normalize_venue_name(venue, default="binance") or "binance"
     c_dir = _clean_path_str(cache_dir)
     ws_dir = _clean_path_str(workspace_dir)
-    if v_norm == "binance":
+    if is_primary_stream_venue(v_norm):
         if c_dir:
             return c_dir
         if ws_dir:
@@ -910,7 +925,7 @@ def resolve_venue_trailing_state_path(
     fname = _clean_path_str(filename) or TRAILING_STATE_FILENAME
     rt_dir = resolve_venue_runtime_dir(v_norm, workspace_dir=workspace_dir, cache_dir=cache_dir)
     raw_path = os.path.join(rt_dir, fname)
-    if v_norm == "binance" and resolve_subdir:
+    if is_primary_stream_venue(v_norm) and resolve_subdir:
         return str(resolve_cachedb_filepath(raw_path))
     return raw_path
 

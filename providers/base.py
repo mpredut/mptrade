@@ -152,6 +152,10 @@ class MarketDataProvider(ABC):
     _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False
     _QUOTE_ISOLATED_TELEMETRY_VENUE: bool = True
     _HAS_NATIVE_L1_DERIVATIVES: bool = False
+    _MERGES_AUDIT_TERMINAL_ORDERS: bool = False
+    _USES_BARE_BASE_ORDER_SYMBOLS: bool = False
+    _USES_SHARED_TRAILING_MAP: bool = False
+    _POSITION_PRICE_DECIMALS: int = 6
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
@@ -556,6 +560,43 @@ class MarketDataProvider(ABC):
         """Return whether ``venue`` exposes native L1 perpetual funding/OI telemetry."""
         prov_cls = cls.resolve_venue_provider_class(venue)
         return bool(getattr(prov_cls, "_HAS_NATIVE_L1_DERIVATIVES", False))
+
+    @classmethod
+    def canonical_venues(cls) -> tuple[str, ...]:
+        """Return all registered canonical venue identifiers in deterministic order."""
+        return tuple(cls._VENUE_PROVIDER_SPECS.keys())
+
+    @classmethod
+    def merges_audit_terminal_orders(cls, venue: Any) -> bool:
+        """Return whether ``venue`` merges ``execution_audit`` terminal fills into order history."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        return bool(getattr(prov_cls, "_MERGES_AUDIT_TERMINAL_ORDERS", False))
+
+    @classmethod
+    def uses_bare_base_order_symbols(cls, venue: Any) -> bool:
+        """Return whether ``venue`` keys order/fill records by bare base asset (e.g. ``HYPE`` vs ``HYPEUSDC``)."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        return bool(getattr(prov_cls, "_USES_BARE_BASE_ORDER_SYMBOLS", False))
+
+    @classmethod
+    def uses_shared_trailing_map(cls, venue: Any) -> bool:
+        """Return whether ``venue`` falls back to the shared ``trailing_state.json`` peaks map."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        return bool(getattr(prov_cls, "_USES_SHARED_TRAILING_MAP", False))
+
+    @classmethod
+    def resolve_venue_default_quote(cls, venue: Any, fallback: str = "USD") -> str:
+        """Return the default quote currency for ``venue`` when unparsed from ``symbol``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        q = getattr(prov_cls, "_DEFAULT_QUOTE_ASSET", None) if prov_cls is not None else None
+        return str(q).strip().upper() if isinstance(q, str) and q.strip() else str(fallback or "USD").strip().upper()
+
+    @classmethod
+    def resolve_venue_position_price_decimals(cls, venue: Any) -> int:
+        """Return mark/position price rounding decimals for ``venue``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        target_cls = prov_cls if prov_cls is not None else cls
+        return int(getattr(target_cls, "_POSITION_PRICE_DECIMALS", 6))
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:

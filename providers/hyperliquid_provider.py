@@ -153,6 +153,8 @@ class HyperliquidProvider(MarketDataProvider):
     _ORDERBOOK_L2_INFO_BOOK = True
     _EXACT_TELEMETRY_CACHE_SYMBOL = True
     _HAS_NATIVE_L1_DERIVATIVES = True
+    _MERGES_AUDIT_TERMINAL_ORDERS = True
+    _USES_BARE_BASE_ORDER_SYMBOLS = True
     _STRATEGY_HEARTBEAT_NAME = "HL-bot"
     _RUNTIME_ENV_RELPATH = ("hyperliquid", "config.env")
     _LIVE_ORDERS_ENV = _LIVE_ENV

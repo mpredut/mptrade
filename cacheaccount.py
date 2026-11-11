@@ -72,6 +72,7 @@ from cachepaths import (
     cache_symbol_variants,
     cachedb_root_for_file,
     clean_symbol_key,
+    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
@@ -2875,7 +2876,7 @@ def get_trade_manager(
         if factory is not None:
             return factory.get(cache_name, symbols=symbols, data_sync_mode=data_sync_mode)
 
-    is_non_binance = v_norm != "binance"
+    is_non_binance = not is_primary_stream_venue(v_norm)
     resolved_mode, save_state_flag, start_periodic = CacheManagerInterface.resolve_data_sync_mode(
         data_sync_mode,
         config_read_only=is_non_binance,

@@ -77,6 +77,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
+    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cache_dir_path,
     resolve_cachedb_filepath,
@@ -2139,7 +2140,7 @@ def _start_nonbinance_trend_poller(
         if (
             not symbol
             or not bindings.get(symbol.upper())
-            or normalize_venue_name(bindings[symbol.upper()], default="") == "binance"
+            or is_primary_stream_venue(bindings[symbol.upper()])
         )
     ]
     if missing:

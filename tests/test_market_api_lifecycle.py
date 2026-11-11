@@ -778,13 +778,21 @@ def test_replay_execution_metrics_and_config_ssot_identity():
 
 
 def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
-    """Lock Open-Closed Principle: MarketDataProvider base, MarketApi facade, gateway, cache orchestrator, and external collectors contain zero venue name comparisons."""
+    """Lock Open-Closed Principle: core providers, MarketApi facade, gateway, cache domain hierarchy, instrument registry, external collectors, and sentiment collectors/evaluators contain zero venue name comparisons."""
     import ast
     from pathlib import Path
+    from cachepaths import is_primary_stream_venue, uses_cycle_state_files
 
     root = Path(__file__).resolve().parents[1]
     venue_tokens = {"binance", "kraken", "hyperliquid", "t212", "trading212"}
     guarded_files = [
+        "cachepaths.py",
+        "cacheInterface.py",
+        "cacheprice.py",
+        "cacheaccount.py",
+        "cachetrend.py",
+        "cacheManager.py",
+        "instrument_registry.py",
         "providers/base.py",
         "providers/market_api.py",
         "providers/execution_audit.py",
@@ -797,11 +805,14 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
         "order_guard.py",
         "order_lifecycle.py",
         "order_retry.py",
-        "cacheManager.py",
         "monitortrades.py",
         *[
             p.relative_to(root).as_posix()
             for p in sorted((root / "intelligence" / "external" / "collectors").glob("*.py"))
+        ],
+        *[
+            p.relative_to(root).as_posix()
+            for p in sorted((root / "intelligence" / "sentiment").rglob("*.py"))
         ],
     ]
     violations = []
@@ -819,6 +830,29 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
                                 violations.append(f"{rel}:{node.lineno}: {elt.value!r}")
     assert violations == [], f"Forbidden venue string branch in venue-agnostic core module: {violations}"
 
+    assert is_primary_stream_venue("binance") is True
+    assert is_primary_stream_venue("", default_primary=True) is True
+    assert is_primary_stream_venue("", default_primary=False) is False
+    assert is_primary_stream_venue("kraken") is False
+    assert uses_cycle_state_files("binance") is False
+    assert uses_cycle_state_files("kraken") is True
+    assert uses_cycle_state_files("hyperliquid") is True
+    assert uses_cycle_state_files("t212") is True
+    assert MarketDataProvider.canonical_venues() == ("binance", "hyperliquid", "kraken", "t212")
+    assert MarketDataProvider.merges_audit_terminal_orders("hyperliquid") is True
+    assert MarketDataProvider.merges_audit_terminal_orders("t212") is True
+    assert MarketDataProvider.merges_audit_terminal_orders("binance") is False
+    assert MarketDataProvider.merges_audit_terminal_orders("kraken") is False
+    assert MarketDataProvider.uses_bare_base_order_symbols("hyperliquid") is True
+    assert MarketDataProvider.uses_bare_base_order_symbols("binance") is False
+    assert MarketDataProvider.uses_shared_trailing_map("binance") is True
+    assert MarketDataProvider.uses_shared_trailing_map("kraken") is True
+    assert MarketDataProvider.uses_shared_trailing_map("hyperliquid") is False
+    assert MarketDataProvider.uses_shared_trailing_map("t212") is False
+    assert MarketDataProvider.resolve_venue_default_quote("hyperliquid") == "USDC"
+    assert MarketDataProvider.resolve_venue_default_quote("t212") == "USD"
+    assert MarketDataProvider.resolve_venue_position_price_decimals("t212") == 4
+    assert MarketDataProvider.resolve_venue_position_price_decimals("binance") == 6
     assert MarketDataProvider.uses_shared_registry_symbols("binance") is True
     assert MarketDataProvider.uses_shared_registry_symbols("") is True
     assert MarketDataProvider.uses_shared_registry_symbols("kraken") is False

@@ -22,6 +22,9 @@ from cachepaths import (
     ensure_equity_suffix,
     filter_asset_class_variants,
     has_equity_suffix,
+    is_equity_venue,
+    is_equity_venue_or_suffix,
+    is_primary_stream_venue,
     iter_venue_cycle_state_files,
     normalize_venue_name,
     resolve_venue_trailing_state_path,
@@ -64,6 +67,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_venue_fee_and_limits,
 )
 from providers.base import (
+    MarketDataProvider,
     extract_order_id,
     normalize_timestamp_ms,
 )
@@ -386,7 +390,7 @@ def _apply_open_orders_locked_balances(
                 if pv != oo_v:
                     continue
                 if (oo_canon and canonical_symbol_key(ps) == oo_canon) or (
-                    oo_v == "hyperliquid" and oo_base and canonical_base_asset(ps) == oo_base
+                    MarketDataProvider.uses_bare_base_order_symbols(oo_v) and oo_base and canonical_base_asset(ps) == oo_base
                 ):
                     matched_pos = p_obj
                     resolved_sym = ps
@@ -396,7 +400,7 @@ def _apply_open_orders_locked_balances(
         inst_q = str(getattr(inst_oo, "quote", "") or getattr(inst_oo, "quote_asset", "") or "").strip().upper() if inst_oo is not None else ""
         pos_q = str((matched_pos or {}).get("quote") or (matched_pos or {}).get("quote_asset") or "").strip().upper()
         _, parsed_q = resolve_assets(oo_sym, None, None)
-        eff_q = inst_q or pos_q or str(parsed_q or "").strip().upper() or ("USDC" if oo_v == "hyperliquid" else "USD")
+        eff_q = inst_q or pos_q or str(parsed_q or "").strip().upper() or MarketDataProvider.resolve_venue_default_quote(oo_v, fallback="USD")
         return resolved_sym, eff_q
 
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
@@ -415,7 +419,7 @@ def _apply_open_orders_locked_balances(
             oo_item["age_min"] = 0.0
             oo_item["age"] = "0.0m"
         if oo_px > 0.0 and oo_sym and oo_item.get("dist_from_spot_pct") is None:
-            oo_lookup_sym = ensure_equity_suffix(oo_sym, is_equity=(oo_v == "t212"))
+            oo_lookup_sym = ensure_equity_suffix(oo_sym, is_equity=is_equity_venue(oo_v))
             spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_lookup_sym, prices_and_trends)
             if spot_oo > 0.0:
                 oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
@@ -813,9 +817,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if (v_norm, sym) in seen_vs:
                     continue
                 seen_vs.add((v_norm, sym))
+                is_eq_v = is_equity_venue(v_norm)
+                pos_px_dec = MarketDataProvider.resolve_venue_position_price_decimals(v_norm)
                 res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
                 base, quote = res_b or sym, res_q or "USD"
-                if sym not in inst_by_sym or v_norm in ("binance", "kraken", "t212"):
+                if sym not in inst_by_sym or not MarketDataProvider.uses_bare_base_order_symbols(v_norm):
                     inst_by_sym[sym] = inst
                 inst_by_sym[f"{v_norm}:{sym}"] = inst
 
@@ -840,22 +846,22 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
                 prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
                 px_from_cached_pos = False
-                if allow_network and (px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and is_live_network_backfill_enabled())):
+                if allow_network and (px_f <= 0 or (is_eq_v and (base_free or 0.0) > 0 and is_live_network_backfill_enabled())):
                     try:
                         get_px_fn = getattr(inst._provider, "get_current_price", None)
                         if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
-                            px = px_f = round(live_px, 4) if v_norm == "t212" else live_px
+                            px = px_f = round(live_px, pos_px_dec) if is_eq_v else live_px
                     except Exception:
                         if px_f <= 0:
                             px, px_f = None, 0.0
-                lookup_sym_p = ensure_equity_suffix(sym, is_equity=(v_norm == "t212"))
-                if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if v_norm == "t212" else quote)) > 0:
+                lookup_sym_p = ensure_equity_suffix(sym, is_equity=is_eq_v)
+                if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if is_eq_v else quote)) > 0:
                     px = px_f
                 if px_f <= 0 and prev_pos_px > 0:
-                    px = px_f = round(prev_pos_px, 4) if v_norm == "t212" else prev_pos_px
+                    px = px_f = round(prev_pos_px, pos_px_dec) if is_eq_v else prev_pos_px
                     px_from_cached_pos = True
                 sym_entry = prices_and_trends.setdefault(sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
-                if px_f > 0 and ((safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0 or v_norm == "t212"):
+                if px_f > 0 and ((safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0 or is_eq_v):
                     sym_entry["price"] = px
                 quote_breakdown: Optional[Dict[str, float]] = None
                 bd_key = f"breakdown:{v_norm}:{quote.upper()}"
@@ -886,7 +892,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     cache_symbol_variants(sym, include_original=True, include_base="USD" in sym_quotes, quotes=sym_quotes),
                     default={},
                 )
-                if not t_state and v_norm == "binance" and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
+                if not t_state and is_primary_stream_venue(v_norm) and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
                     t_state = val_b
                 pos_entry: Dict[str, Any] = {
                     "venue": venue, "symbol": sym, "base": base, "quote": quote,
@@ -913,11 +919,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     if (
                         px_from_cached_pos
                         or (
-                            v_norm == "t212"
+                            is_eq_v
                             and prev_pos_ts is not None
                             and prev_pos_px > 0.0
                             and px_f > 0.0
-                            and abs(round(px_f, 4) - round(prev_pos_px, 4)) < 1e-4
+                            and abs(round(px_f, pos_px_dec) - round(prev_pos_px, pos_px_dec)) < 1e-4
                         )
                     )
                     else round(now_ts_oo, 3)
@@ -980,20 +986,21 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     p_sym = str(rec_pos.get("symbol") or "").strip().upper()
                     p_quote = str(rec_pos.get("quote") or "USD").strip().upper()
                     v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
+                    is_eq_rec = is_equity_venue(v_rec_norm)
                     fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
                     px_rec = 0.0
                     if p_sym:
                         exact_pt_px = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or 0.0
                         cached_pos_px = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
-                        p_lookup_rec = ensure_equity_suffix(p_sym, is_equity=(v_rec_norm == "t212"))
+                        p_lookup_rec = ensure_equity_suffix(p_sym, is_equity=is_eq_rec)
                         sib_pt_px = (
-                            resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if v_rec_norm == "t212" else p_quote)
+                            resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if is_eq_rec else p_quote)
                             if exact_pt_px <= 0.0
                             else exact_pt_px
                         )
                         if exact_pt_px > 0.0:
                             px_rec = exact_pt_px
-                        elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px, threshold=0.35 if v_rec_norm == "t212" else 0.10)):
+                        elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px, threshold=0.35 if is_eq_rec else 0.10)):
                             px_rec = cached_pos_px
                         else:
                             px_rec = sib_pt_px
@@ -1012,7 +1019,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         v_trail_map = trailing_by_venue.get(v_rec_norm, {}) if isinstance(trailing_by_venue, dict) else {}
                         t_cands = cache_symbol_variants(p_sym, include_original=True, include_base=True, quotes=compatible_quote_suffixes(p_sym))
                         t_dict = _first_variant_dict(v_trail_map, t_cands) or (
-                            _first_variant_dict(trailing_map, t_cands) if v_rec_norm in ("binance", "kraken") else None
+                            _first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
                         )
                         if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
                             rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
@@ -1124,13 +1131,14 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
         sym_quotes = compatible_quote_suffixes(sym_upper)
         base_upper = canonical_base_asset(sym_upper)
         for ord_file, cache_venue in _resolve_order_cache_files():
-            if (is_eq_sym and cache_venue != "t212") or (is_crypto_pair and cache_venue == "t212"):
+            is_eq_cache_v = is_equity_venue(cache_venue)
+            if (is_eq_sym and not is_eq_cache_v) or (is_crypto_pair and is_eq_cache_v):
                 continue
             ord_data = _rj(os.path.join(cachedb_dir, ord_file))
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
             matched_cand = next((cand for cand in scoped_variants if casefold_get(o_items, cand)), None)
             orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
-            if cache_venue in ("hyperliquid", "t212"):
+            if MarketDataProvider.merges_audit_terminal_orders(cache_venue):
                 audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
                 audit_cand = next((cand for cand in scoped_variants if casefold_get(audit_items, cand)), None)
                 if audit_cand:
@@ -1150,9 +1158,11 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                 symbol=symbol,
             ):
                 cand_u = str(matched_cand or "").strip().upper()
+                default_q_v = MarketDataProvider.resolve_venue_default_quote(cache_venue, fallback="USD")
+                is_bare_base_cand = MarketDataProvider.uses_bare_base_order_symbols(cache_venue) and cand_u == base_upper
                 cand_quotes = (
-                    compatible_quote_suffixes(f"{base_upper}USDC")
-                    if cache_venue == "hyperliquid" and cand_u == base_upper
+                    compatible_quote_suffixes(f"{base_upper}{default_q_v}")
+                    if is_bare_base_cand
                     else compatible_quote_suffixes(cand_u)
                 )
                 same_quote_fam = 1 if (not sym_quotes or cand_quotes == sym_quotes) else 0
@@ -1162,7 +1172,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                     1
                     if (
                         cand_clean == sym_clean
-                        or (cache_venue == "hyperliquid" and cand_u == base_upper and sym_clean == f"{base_upper}USDC")
+                        or (is_bare_base_cand and sym_clean == f"{base_upper}{default_q_v}")
                     )
                     else 0
                 )
@@ -1174,7 +1184,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                 if fills is None or cand_key > best_fill_key:
                     cand_fills.setdefault("venue", cache_venue)
                     fills, best_venue, best_fill_key = cand_fills, cache_venue, cand_key
-        if fills is None or fills.get("last_buy") is None or fills.get("last_sell") is None or best_venue == "t212":
+        if fills is None or fills.get("last_buy") is None or fills.get("last_sell") is None or is_equity_venue(best_venue):
             norm_cdir = os.path.normpath(os.path.abspath(cachedb_dir)) if cachedb_dir else ""
             ws_dir = os.path.dirname(norm_cdir) if os.path.basename(norm_cdir).lower() == "cachedb" else norm_cdir
             if ws_dir and os.path.isdir(ws_dir):
@@ -1182,7 +1192,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                 cyc_maps = [
                     vc
                     for vc in (("t212", t212_cycs), ("kraken", k_cycs), ("hyperliquid", hl_cycs))
-                    if not ((is_eq_sym and vc[0] != "t212") or (is_crypto_pair and vc[0] == "t212"))
+                    if not ((is_eq_sym and not is_equity_venue(vc[0])) or (is_crypto_pair and is_equity_venue(vc[0])))
                 ]
                 if best_venue:
                     cyc_maps.sort(key=lambda vc: 0 if vc[0] == best_venue else 1)
@@ -1231,7 +1241,7 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                             "recent_buys": [],
                         }
                     elif isinstance(fills, dict):
-                        if matched_cyc_venue == "t212" and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
+                        if is_equity_venue(matched_cyc_venue) and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
                             if (
                                 fills.get("tactical_avg_buy_px") is None
                                 and (prev_act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None
@@ -1336,7 +1346,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 known_ai_order_ids = collect_known_ai_order_ids(ai_intents or cached_intents)
         audit_origin_map = _load_recent_audit_origins(cache_dir)
         recent_orders: Dict[str, Any] = {}
-        venue_recent_orders: Dict[str, Dict[str, Any]] = {"binance": {}, "kraken": {}, "hyperliquid": {}, "t212": {}}
+        venue_recent_orders: Dict[str, Dict[str, Any]] = {v: {} for v in MarketDataProvider.canonical_venues()}
 
         def _venue_intents(v_name: str) -> Optional[List[Dict[str, Any]]]:
             return [it for it in ai_intents if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == v_name] if isinstance(ai_intents, list) else None
@@ -1344,7 +1354,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         def _record_venue_fills(c_venue: str, sym_k: str, fills_d: Dict[str, Any]) -> None:
             fills_d.setdefault("venue", c_venue)
             venue_recent_orders[c_venue][sym_k] = fills_d
-            if sym_k in recent_orders and c_venue != "binance":
+            if sym_k in recent_orders and not is_primary_stream_venue(c_venue):
                 recent_orders[f"{c_venue}:{sym_k}"] = fills_d
             else:
                 recent_orders.setdefault(sym_k, fills_d)
@@ -1366,18 +1376,20 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         for s_k in (t212_cycles or {}):
             active_t212_syms.update(_scoped_sym_variants(s_k, is_eq=True))
         for s_k, iv in (inst_by_sym or {}).items():
-            if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212":
+            if is_equity_venue(getattr(iv, "provider_name", None)):
                 raw_s = str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip().upper()
                 active_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
         for pos_it in (tradable_positions or ()):
-            if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
+            if isinstance(pos_it, dict) and is_equity_venue(pos_it.get("venue")):
                 raw_s = str(pos_it.get("symbol") or "").strip().upper()
                 active_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
         allowed_t212_syms = set(active_t212_syms)
         if allowed_t212_syms:
-            for it_t212 in (_venue_intents("t212") or ()):
-                raw_s = str(it_t212.get("symbol") or "").strip().upper()
-                allowed_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
+            for eq_v in MarketDataProvider.canonical_venues():
+                if is_equity_venue(eq_v):
+                    for it_t212 in (_venue_intents(eq_v) or ()):
+                        raw_s = str(it_t212.get("symbol") or "").strip().upper()
+                        allowed_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
 
         audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         for order_cache_name, cache_venue in _resolve_order_cache_files():
@@ -1386,12 +1398,12 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 v_ai_intents = _venue_intents(cache_venue)
                 v_audit_map = (
                     audit_cache_by_venue.setdefault(cache_venue, _load_audit_terminal_orders(cache_dir, cache_venue))
-                    if cache_dir and cache_venue in ("hyperliquid", "t212")
+                    if cache_dir and MarketDataProvider.merges_audit_terminal_orders(cache_venue)
                     else {}
                 )
                 for sym, o_list in orders_data["items"].items():
                     sym_u = str(sym or "").strip().upper()
-                    if cache_venue == "t212" and allowed_t212_syms and sym_u not in allowed_t212_syms:
+                    if is_equity_venue(cache_venue) and allowed_t212_syms and sym_u not in allowed_t212_syms:
                         continue
                     merged_o_list = (
                         _merge_audit_orders(o_list, v_audit_map.get(sym_u) or v_audit_map.get(str(sym)) or [])
@@ -1401,30 +1413,35 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                     if fills := extract_symbol_recent_fills(merged_o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=v_ai_intents, symbol=sym):
                         _record_venue_fills(cache_venue, sym, fills)
 
-        seen_hl_syms: set[str] = set()
-        hl_ai_intents = _venue_intents("hyperliquid")
+        seen_live_order_vs: set[tuple[str, str]] = set()
         if allow_network:
             for inst in inst_by_sym.values():
                 sym = str(getattr(inst, "symbol", "")).upper()
                 v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
-                if not sym or v_inst != "hyperliquid" or sym in seen_hl_syms or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym, include_base=True)) is not None:
+                if (
+                    not sym
+                    or not v_inst
+                    or not MarketDataProvider.uses_bare_base_order_symbols(v_inst)
+                    or (v_inst, sym) in seen_live_order_vs
+                    or _first_variant_dict(venue_recent_orders.get(v_inst, {}), cache_symbol_variants(sym, include_base=True)) is not None
+                ):
                     continue
-                seen_hl_syms.add(sym)
+                seen_live_order_vs.add((v_inst, sym))
                 try:
                     prov = getattr(inst, "_provider", None)
                     if prov is not None and hasattr(prov, "get_orders"):
-                        if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=hl_ai_intents, symbol=sym):
-                            _record_venue_fills("hyperliquid", sym, fills)
+                        if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=_venue_intents(v_inst), symbol=sym):
+                            _record_venue_fills(v_inst, sym, fills)
                 except Exception:
                     pass
-        for fallback_venue in ("binance", "kraken", "hyperliquid", "t212"):
+        for fallback_venue in MarketDataProvider.canonical_venues():
             fb_ai_intents = _venue_intents(fallback_venue)
             audit_by_sym = (
                 audit_cache_by_venue.get(fallback_venue)
                 if fallback_venue in audit_cache_by_venue
                 else (
                     _load_audit_terminal_orders(cache_dir, fallback_venue)
-                    if cache_dir and fallback_venue in ("hyperliquid", "t212")
+                    if cache_dir and MarketDataProvider.merges_audit_terminal_orders(fallback_venue)
                     else {}
                 )
             )
@@ -1448,7 +1465,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 lb = safe_pos_float(pos_item.get("locked_base_qty"), default=0.0) or 0.0
                 if pv and ps and (fb >= 0.0 or lb > 0.0):
                     held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
-                    for sv in _scoped_sym_variants(ps, is_eq=(pv == "t212" or has_equity_suffix(ps))):
+                    for sv in _scoped_sym_variants(ps, is_eq=is_equity_venue_or_suffix(ps, pv)):
                         sv_k = (pv, sv.upper())
                         if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
                             live_held_by_venue_sym[sv_k] = held_q
@@ -1461,7 +1478,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if not t_sym_u or (c_venue_ro, t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
                     continue
                 t_base_u = canonical_base_asset(t_sym_u)
-                ro_cands = _scoped_sym_variants(t_sym_u, is_eq=(c_venue_ro == "t212" or has_equity_suffix(t_sym_u)))
+                ro_cands = _scoped_sym_variants(t_sym_u, is_eq=is_equity_venue_or_suffix(t_sym_u, c_venue_ro))
                 c_pos = next(
                     (
                         v_pos
@@ -1486,7 +1503,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                     for sv_c in ro_cands:
                         live_held_by_venue_sym.setdefault((c_venue_ro, sv_c.upper()), held_c)
                     live_held_by_venue_sym[(c_venue_ro, t_sym_u)] = held_c
-                    if c_venue_ro == "t212" and held_c > 1e-8:
+                    if is_equity_venue(c_venue_ro) and held_c > 1e-8:
                         t_cyc["qty"] = round(held_c, 6)
                         t_px = resolve_symbol_price(
                             ensure_equity_suffix(t_sym_u),
@@ -1602,7 +1619,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
             dust_binance_syms = {
                 str(pos.get("symbol") or "").upper()
                 for pos in (tradable_positions or ())
-                if isinstance(pos, dict) and normalize_venue_name(pos.get("venue")) == "binance"
+                if isinstance(pos, dict) and is_primary_stream_venue(pos.get("venue"))
                 and (
                     (
                         0.0 <= safe_float(pos.get("value_usd"), -1.0)

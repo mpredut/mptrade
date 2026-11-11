@@ -12,6 +12,7 @@ from botcore import extract_current_price_item, fetch_public_json, is_live_netwo
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     canonical_base_asset,
+    is_equity_venue,
     normalize_venue_name,
 )
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
@@ -890,9 +891,9 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
             eff_ps["hyperliquid_cycles"] = hyperliquid_cycles
 
         has_active_t212 = any(
-            normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in eff_inst.values()
+            is_equity_venue(getattr(inst, "provider_name", "")) for inst in eff_inst.values()
         ) or any(
-            isinstance(p, dict) and normalize_venue_name(p.get("venue")) == "t212"
+            isinstance(p, dict) and is_equity_venue(p.get("venue"))
             for p in (eff_ps.get("tradable_positions") or ())
         )
         t212_cycles = all_t212_cycles

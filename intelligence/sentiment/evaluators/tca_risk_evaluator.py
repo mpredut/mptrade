@@ -12,6 +12,7 @@ from cachepaths import (
     ensure_equity_suffix,
     filter_asset_class_variants,
     has_equity_suffix,
+    is_equity_venue_or_suffix,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -197,7 +198,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             if not sym or lim_px is None or lim_px <= 0.0:
                 continue
             v_norm = normalize_venue_name(o.get("venue"))
-            is_eq_o = has_equity_suffix(sym) or v_norm == "t212"
+            is_eq_o = is_equity_venue_or_suffix(sym, v_norm)
             scoped_sym = ensure_equity_suffix(sym, is_equity=is_eq_o)
             p_entry = (
                 casefold_get(prices_and_trends, sym)
@@ -381,7 +382,7 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
             if val_u >= 1.0:
                 sym = str(p.get("symbol") or "").strip().upper()
                 base = canonical_base_asset(p.get("base") or sym)
-                is_eq = has_equity_suffix(sym) or v_name == "t212"
+                is_eq = is_equity_venue_or_suffix(sym, v_name)
                 p_info = (
                     casefold_get(prices_and_trends, sym)
                     if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq

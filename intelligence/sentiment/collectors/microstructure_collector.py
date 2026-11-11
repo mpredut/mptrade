@@ -24,6 +24,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
     has_equity_suffix,
+    is_equity_venue,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cache_dir_path,
@@ -1538,7 +1539,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 allow_network=allow_network,
             )
             pt_map[sym].pop("_partial_7d_span_ms", None)
-            is_t212_inst = sym in inst_map and normalize_venue_name(getattr(inst_map[sym], "provider_name", "")) == "t212"
+            is_t212_inst = sym in inst_map and is_equity_venue(getattr(inst_map[sym], "provider_name", ""))
             if allow_network:
                 _ensure_cacheprice_classes_bound()
                 p24_eq_path = (

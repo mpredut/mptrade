@@ -8,6 +8,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     has_equity_suffix,
+    is_equity_venue,
     normalize_venue_name,
 )
 from instrument_registry import casefold_get
@@ -719,7 +720,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
             return prices_and_trends, microstructure
         want_t212 = scope_norm == "equities"
         t212_sym_set = {str(s).upper() for s in t212_cycles} | {
-            str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
+            str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if is_equity_venue(getattr(iv, "provider_name", None))
         }
 
         def _set_or_pop(key: str, val: Any) -> None:
@@ -733,7 +734,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 return False
             v_n = normalize_venue_name(item.get("venue"))
             if v_n:
-                is_t212 = v_n == "t212"
+                is_t212 = is_equity_venue(v_n)
             else:
                 sym_u = str(item.get("symbol") or "").strip().upper()
                 is_t212 = has_equity_suffix(sym_u) or sym_u in t212_sym_set
@@ -752,7 +753,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 eq_venues = {
                     vk: vv
                     for vk, vv in portfolio_summary["venues_value_usd"].items()
-                    if normalize_venue_name(vk) == "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+                    if is_equity_venue(vk) and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
                 }
                 _set_or_pop("venues_value_usd", eq_venues)
                 _set_or_pop("portfolio_total_usd", round(sum(eq_venues.values()), 2) if eq_venues else None)
@@ -766,7 +767,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 crypto_venues = {
                     vk: vv
                     for vk, vv in portfolio_summary["venues_value_usd"].items()
-                    if normalize_venue_name(vk) != "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+                    if not is_equity_venue(vk) and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
                 }
                 _set_or_pop("venues_value_usd", crypto_venues)
                 _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
@@ -776,11 +777,8 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 {
                     ck: cv
                     for ck, cv in portfolio_summary["venue_quote_cash"].items()
-                    if (
-                        normalize_venue_name(
-                            cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
-                        )
-                        == "t212"
+                    if is_equity_venue(
+                        cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
                     )
                     == want_t212
                 },
@@ -788,17 +786,17 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
         if isinstance(portfolio_summary.get("recent_orders"), dict):
             allowed_eq_ro_syms = set(t212_sym_set)
             for pos_it in (portfolio_summary.get("tradable_positions") or ()):
-                if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
+                if isinstance(pos_it, dict) and is_equity_venue(pos_it.get("venue")):
                     if s_p := str(pos_it.get("symbol") or "").strip().upper():
                         allowed_eq_ro_syms.add(s_p)
             for it_ro in (portfolio_summary.get("recent_ai_intents") or ()):
-                if isinstance(it_ro, dict) and normalize_venue_name(it_ro.get("venue")) == "t212":
+                if isinstance(it_ro, dict) and is_equity_venue(it_ro.get("venue")):
                     if s_i := str(it_ro.get("symbol") or "").strip().upper():
                         allowed_eq_ro_syms.add(s_i)
 
             def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
                 if isinstance(rv, dict) and rv.get("venue"):
-                    is_eq = normalize_venue_name(rv.get("venue")) == "t212"
+                    is_eq = is_equity_venue(rv.get("venue"))
                 else:
                     rk_up = str(rk).upper()
                     if rk_up.startswith("T212:") or has_equity_suffix(rk_up):
@@ -852,7 +850,21 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
             portfolio_summary["portfolio_total_usd"] = round(sum(merged_vv.values()), 2)
         venue_pos_map = nav.get("venue_pos_usd") if isinstance(nav.get("venue_pos_usd"), dict) else {}
         venue_cash_map = nav.get("venue_cash_usd") if isinstance(nav.get("venue_cash_usd"), dict) else {}
-        for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
+        def _zero_readonly_spot(ro_d: Dict[str, Any], cash_sum: float) -> None:
+            if "qty" in ro_d or "value_usd" in ro_d:
+                ro_d["qty"] = 0.0
+                ro_d["value_usd"] = 0.0
+                ro_d["cash_usd"] = round(cash_sum, 2)
+            if isinstance(sp_list := ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
+                sp_list[0]["qty"] = 0.0
+                sp_list[0]["value_usd"] = 0.0
+                sp_list[0]["cash_usd"] = round(cash_sum, 2)
+                sp_list[0]["snapshot_age_min"] = 0.0
+
+        for v_target, eq_key, ro_key in (
+            ("binance", "live_binance_equity_usdc", None),
+            ("hyperliquid", None, "hyperliquid_readonly"),
+        ):
             tot_v = safe_pos_float(venues_usd.get(v_target), default=0.0) or 0.0
             v_pos_sum = safe_pos_float(venue_pos_map.get(v_target), default=0.0) or 0.0
             v_cash_sum = safe_pos_float(venue_cash_map.get(v_target), default=0.0) or 0.0
@@ -861,9 +873,9 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
                 if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
             ]
             if tot_v > 0.0:
-                if v_target == "binance":
+                if eq_key:
                     portfolio_summary[eq_key] = tot_v
-                elif isinstance(hl_ro_d := portfolio_summary.get("hyperliquid_readonly"), dict):
+                elif ro_key and isinstance(hl_ro_d := portfolio_summary.get(ro_key), dict):
                     hl_ro_d["live_reconciled_spot_usd"] = tot_v
                     hl_ro_d["total_equity_usd"] = round(
                         tot_v + (safe_pos_float(hl_ro_d.get("perp_equity_usd"), default=0.0) or 0.0), 2
@@ -922,25 +934,9 @@ class LiveVenueEquityReconciliationEvaluator(MacroTelemetryEvaluatorBase):
                                 sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
                                 sp_list[0]["snapshot_age_min"] = 0.0
                         else:
-                            if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                                hl_ro_d["qty"] = 0.0
-                                hl_ro_d["value_usd"] = 0.0
-                                hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                            if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
-                                sp_list[0]["qty"] = 0.0
-                                sp_list[0]["value_usd"] = 0.0
-                                sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                                sp_list[0]["snapshot_age_min"] = 0.0
+                            _zero_readonly_spot(hl_ro_d, v_cash_sum)
                     else:
-                        if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
-                            hl_ro_d["qty"] = 0.0
-                            hl_ro_d["value_usd"] = 0.0
-                            hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
-                        if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
-                            sp_list[0]["qty"] = 0.0
-                            sp_list[0]["value_usd"] = 0.0
-                            sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
-                            sp_list[0]["snapshot_age_min"] = 0.0
+                        _zero_readonly_spot(hl_ro_d, v_cash_sum)
         return portfolio_summary
 
 

@@ -35,6 +35,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
+    is_primary_stream_venue,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -205,7 +206,7 @@ def load_registry(path=None):
         if unknown:
             raise ValueError(f"instruments.conf [{name}]: unknown roles {sorted(unknown)}")
         spec = InstrumentSpec(name=name, params=params, **core)
-        if spec.provider == "binance" and (
+        if is_primary_stream_venue(spec.provider) and (
             not re.fullmatch(r"[A-Z0-9]{3,24}", spec.symbol) or spec.symbol != spec.base + spec.quote
         ):
             raise ValueError(f"instruments.conf [{name}]: Binance symbol must equal uppercase base + quote")
@@ -334,7 +335,7 @@ def is_symbol_market_open(symbol: object, now_ts: float | None = None, *, path=N
 def tracked_price_instruments(role=None, *, path=None):
     """Return ``(all_symbols, non_binance_symbols, non_binance_providers)`` from instruments.conf."""
     specs = list(select_instruments(role=role, path=path, only_enabled=True).values())
-    binance_syms = list(dict.fromkeys(spec.symbol.strip() for spec in specs if spec.provider == "binance"))
+    binance_syms = list(dict.fromkeys(spec.symbol.strip() for spec in specs if is_primary_stream_venue(spec.provider)))
     binance_keys = {s.upper() for s in binance_syms}
 
     nb_syms: list[str] = []
@@ -344,7 +345,7 @@ def tracked_price_instruments(role=None, *, path=None):
         symbol = spec.symbol.strip()
         if not provider_name or not symbol:
             raise RuntimeError("configured provider and symbol must be non-empty")
-        if provider_name == "binance":
+        if is_primary_stream_venue(provider_name):
             continue
         key = symbol.upper()
         if key in binance_keys:
@@ -508,6 +509,13 @@ def discover_tradable_specs(
             if pair not in existing_kraken_syms and _add_spec(inst_key, "kraken", pair, base, quote):
                 existing_kraken_syms.add(pair)
 
+        def _enable_live_spec_if_present(venue_key: str, *symbols: str) -> None:
+            targets = {str(s).upper() for s in symbols if s}
+            for k, item in list(active_map.items()):
+                if _candidate_venue(item) == venue_key and _candidate_symbol_u(item) in targets:
+                    if isinstance(item, InstrumentSpec):
+                        active_map[k] = item.with_execution_policy(live_enabled=True)
+
         existing_hl_syms = _existing_syms("hyperliquid")
         for pair, base, quote in discover_hyperliquid_spot(ws_dir):
             if (
@@ -517,10 +525,7 @@ def discover_tradable_specs(
             ):
                 existing_hl_syms.add(pair)
             else:
-                for k, item in list(active_map.items()):
-                    if _candidate_venue(item) == "hyperliquid" and _candidate_symbol_u(item) in (pair, base):
-                        if isinstance(item, InstrumentSpec):
-                            active_map[k] = item.with_execution_policy(live_enabled=True)
+                _enable_live_spec_if_present("hyperliquid", pair, base)
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
         discovered_t212 = discover_t212_equities(ws_dir)
