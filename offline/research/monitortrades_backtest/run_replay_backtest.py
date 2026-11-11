@@ -190,10 +190,7 @@ def prewarm_trend_series(
         if fast_w is not None:
             eff_win_sec = fast_w
     buf = pw.IncrementalTrendBuffer()
-    win_size = 200
-    sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
-    cur_len = 0
-    prev_ts = None
+    prev_ts, win_size, cur_len, sample_rate = None, 200, 0, pw.DEFAULT_SAMPLE_RATE_SEC
     up_k = resolve_upward_eps_k()
     sym_pwr = pw.step_wols_power_for_symbol(symbol)
     tape: list[bool] = []

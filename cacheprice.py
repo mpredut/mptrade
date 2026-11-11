@@ -1521,11 +1521,7 @@ def resolve_ssot_price_from_cache(
     now_ts: Optional[float] = None,
 ) -> Optional[float]:
     """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
-    sym_u = clean_upper_token(symbol)
-    if sym_u is None:
-        return None
-    sym_clean = clean_symbol_key(sym_u)
-    if not sym_clean:
+    if (sym_u := clean_upper_token(symbol)) is None or not (sym_clean := clean_symbol_key(sym_u)):
         return None
     max_age = 60.0 if max_age_sec is None else safe_pos_float(max_age_sec, default=None)
     if max_age is None:

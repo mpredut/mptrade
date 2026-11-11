@@ -101,6 +101,7 @@ def evaluate_high_stake_order_guard(
 
     if is_intelligence_master_off(margins):
         return True, "ok", 1.0
+
     skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or _high_stake_guard.is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
@@ -354,6 +355,19 @@ def check_geopolitical_order_guards(
     return True, "ok", 1.0
 
 
+def evaluate_and_merge_high_stake_guard(
+    effective_scale: float,
+    active_reason: str,
+    **kwargs: Any,
+) -> Tuple[bool, str, float]:
+    """Evaluate HighStakeGuard (GLLM1) and merge its scale into ``(effective_scale, active_reason)``."""
+    hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(**kwargs)
+    if not hs_ok:
+        return False, hs_reason, 0.0
+    eff_scale, act_reason = merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
+    return True, act_reason, eff_scale
+
+
 # ============================================================================
 # Unified LLM Order Guards Coordinator (GLLM1 + GLLM2 + GLLM3)
 # ============================================================================
@@ -402,7 +416,9 @@ def check_llm_order_guards(
         )
     )
     intel_cache_key = make_intel_cache_key(side, bypassed)
-    hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
+    hs_ok, active_reason, effective_scale = evaluate_and_merge_high_stake_guard(
+        effective_scale,
+        active_reason,
         symbol=symbol,
         side=side,
         price=price,
@@ -417,8 +433,7 @@ def check_llm_order_guards(
         notify_on_eval=True,
     )
     if not hs_ok:
-        return False, hs_reason, 0.0
-    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
+        return False, active_reason, 0.0
 
     # 2. GLLM3: Geopolitical & Energy Shock Guard
     skip_geo = GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed)

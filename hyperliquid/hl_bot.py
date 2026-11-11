@@ -25,13 +25,12 @@ if _ROOT not in sys.path:
 
 from botcore import (  # noqa: E402
     bool_env,
+    load_cli_env_stack,
     load_env_stack,
     load_local_module,
     log,
-    optional_env,
     required_bool_env,
     required_env,
-    resolve_cli_arg,
     single_instance,
 )
 
@@ -53,8 +52,7 @@ def state_dir_for(dry_run: bool) -> str:
 def main() -> int:
     # Load configuration before CLI defaults and PAPER/REAL calculation. `.env` wins
     # because load_dotenv does not override already defined variables.
-    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
-    load_env_stack(env_file)
+    env_file = load_cli_env_stack(__file__, load_fn=load_env_stack)
 
     ap = argparse.ArgumentParser(description="base v2 (spot_dca) on Hyperliquid HYPE.")
     ap.add_argument("--env-file", default=env_file)

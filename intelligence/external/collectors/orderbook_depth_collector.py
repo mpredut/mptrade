@@ -126,14 +126,16 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance or Kraken public API."""
-        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch_or_equity(
+            symbol,
+            allow_network,
+            now,
+            lambda s, n, _c: self._fetch_equity_orderbook(s, n),
+            "equity orderbook depth",
+            logger,
+        )
         if not should_fetch or symbol is None:
             return ready
-
-        if is_equity_symbol(symbol):
-            return self._fetch_equity_or_fallback(
-                symbol, now, cached, self._fetch_equity_orderbook, "equity orderbook depth", logger
-            )
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)

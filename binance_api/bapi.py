@@ -66,8 +66,7 @@ _normalize_side = sym._normalize_ordertype
 
 def update_price(symbol):
     """Refresh one REST quote without making an older value look fresh."""
-    symbol = clean_upper_token(symbol)
-    if symbol is None:
+    if (symbol := clean_upper_token(symbol)) is None:
         return None
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
@@ -86,8 +85,7 @@ def update_price(symbol):
 
 def get_current_price(symbol):
     """Return a bounded-age REST quote, failing closed after refresh failure."""
-    symbol = clean_upper_token(symbol)
-    if symbol is None:
+    if (symbol := clean_upper_token(symbol)) is None:
         return None
     now = time.time()
     cached_at_f = safe_float(cprice_time.get(symbol), default=None)

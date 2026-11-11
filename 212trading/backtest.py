@@ -227,9 +227,6 @@ def main() -> int:
     if budget <= 0:
         print("! budget must be > 0"); return 1
     ohlc = fetch_candles(sym, args.range, args.interval)
-    if len(ohlc) < 20:
-        print(f"! not enough data ({len(ohlc)})"); return 1
-    bh = buy_hold_pct(ohlc)
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=bar_min,
@@ -248,10 +245,10 @@ def main() -> int:
         base,
         lambda p: simulate(ohlc, p),
         budget=budget,
-        bh=bh,
+        ohlc=ohlc,
         single_header=f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bars){prof_info} ===",
         single_params_line=f"entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}",
-        sweep_header=f"=== SWEEP {sym} {args.range}/{args.interval}  (buy&hold {bh:+.1f}%) ===",
+        sweep_header=f"=== SWEEP {sym} {args.range}/{args.interval}  (buy&hold {{bh:+.1f}}%) ===",
         open_qty_decimals=4,
     )
 

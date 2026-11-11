@@ -563,6 +563,25 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             logger_inst.warning("Could not fetch %s for %s: %s", label, symbol, eq_exc)
         return self._fallback_stale(symbol, cached)
 
+    def _prepare_fetch_or_equity(
+        self,
+        symbol: Any,
+        allow_network: Any,
+        now: Optional[float],
+        equity_fetch_fn: Callable[[str, float, Any], Optional[Any]],
+        label: str,
+        logger_inst: logging.Logger,
+    ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
+        sym_clean, now_f, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        if not should_fetch or sym_clean is None:
+            return None, now_f, cached, ready, False
+        if is_equity_symbol(sym_clean):
+            eq_res = self._fetch_equity_or_fallback(
+                sym_clean, now_f, cached, lambda s, n: equity_fetch_fn(s, n, cached), label, logger_inst
+            )
+            return None, now_f, cached, eq_res, False
+        return sym_clean, now_f, cached, None, True
+
     @staticmethod
     def _extract_equity_options_oi(
         ctx: Dict[str, Any], mark_px: float

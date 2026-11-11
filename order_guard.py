@@ -1012,7 +1012,9 @@ def check_intelligence_guards(
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
 
-    hs_ok, hs_reason, hs_scale = _llm_order_guard.evaluate_high_stake_order_guard(
+    hs_ok, active_reason, effective_scale = _llm_order_guard.evaluate_and_merge_high_stake_guard(
+        effective_scale,
+        active_reason,
         symbol=symbol,
         side=side,
         price=price,
@@ -1029,8 +1031,7 @@ def check_intelligence_guards(
         notify_on_eval=True,
     )
     if not hs_ok:
-        return False, hs_reason, 0.0
-    effective_scale, active_reason = merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
+        return False, active_reason, 0.0
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:

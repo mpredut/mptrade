@@ -28,13 +28,13 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    load_cli_env_stack,
     load_env_stack,
     log,
     optional_env,
     required_bool_env,
     required_env,
     required_int_env,
-    resolve_cli_arg,
     safe_pos_float,
     single_instance,
 )
@@ -57,8 +57,7 @@ def _build_client() -> KrakenClient:
 
 
 def main() -> int:
-    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
-    load_env_stack(env_file)
+    env_file = load_cli_env_stack(__file__, load_fn=load_env_stack)
     poll_seconds = required_int_env("KRAKEN_BOT_POLL_SEC")
 
     ap = argparse.ArgumentParser(description="Kraken DCA and take-profit bot.")

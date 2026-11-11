@@ -151,14 +151,16 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures or Hyperliquid L1 endpoint."""
-        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch_or_equity(
+            symbol,
+            allow_network,
+            now,
+            lambda s, n, _c: self._fetch_equity_derivatives(s, n),
+            "equity derivatives telemetry",
+            logger,
+        )
         if not should_fetch or symbol is None:
             return ready
-
-        if is_equity_symbol(symbol):
-            return self._fetch_equity_or_fallback(
-                symbol, now, cached, self._fetch_equity_derivatives, "equity derivatives telemetry", logger
-            )
 
         is_hl_primary = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol))
         if is_hl_primary:

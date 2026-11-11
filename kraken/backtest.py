@@ -159,9 +159,6 @@ def main() -> int:
         ohlc = fetch_candles(args.pair, args.interval)
     except Exception as e:  # noqa: BLE001
         print(f"! data error: {e}"); return 1
-    if len(ohlc) < 20:
-        print(f"! not enough data ({len(ohlc)})"); return 1
-    bh = buy_hold_pct(ohlc)
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
                 sl=args.sl, interval=args.interval)
@@ -172,10 +169,10 @@ def main() -> int:
         base,
         lambda p: rp.run_replay(ohlc, _bt_params(p), fee_pct=args.fee, bar_minutes=args.interval),
         budget=args.budget,
-        bh=bh,
+        ohlc=ohlc,
         single_header=f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bars) [{engine}] ===",
         single_params_line=f"entry={args.entry} dca={args.dca} drop={args.drop}% tp={args.tp}% sl={args.sl}% fee={args.fee}%/leg",
-        sweep_header=f"=== SWEEP {args.pair} interval={args.interval}m  (buy&hold {bh:+.1f}%) [{engine}] ===",
+        sweep_header=f"=== SWEEP {args.pair} interval={args.interval}m  (buy&hold {{bh:+.1f}}%) [{engine}] ===",
         open_qty_decimals=6,
         pre_sweep_fn=(
             lambda: rp.prewarm_trend_series(ohlc, warmup=0, params=_bt_params(base), bar_minutes=args.interval)

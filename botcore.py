@@ -902,6 +902,21 @@ def temporary_environ(overrides: Mapping[str, str | None] | None = None, **kw_ov
                 os.environ[k] = prev
 
 
+def load_cli_env_stack(
+    script_file: str | os.PathLike,
+    argv: list[str] | tuple[str, ...] | None = None,
+    *,
+    env_flag: str = "--env-file",
+    env_var: str = "ENV_FILE",
+    load_fn: object = None,
+) -> str:
+    """Resolve ``--env-file`` / ``ENV_FILE`` relative to ``script_file`` and load its environment stack."""
+    default_env = optional_env(env_var, os.path.join(os.path.dirname(os.fspath(script_file)), ".env"))
+    env_file = resolve_cli_arg(sys.argv if argv is None else argv, env_flag, default_env) or default_env
+    eff_load = load_fn if callable(load_fn) else load_env_stack
+    eff_load(env_file)
+    return env_file
+
 
 # ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────
 

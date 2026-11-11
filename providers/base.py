@@ -880,8 +880,7 @@ class MarketDataProvider(ABC):
     ) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         self.validate_symbol(symbol)
-        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
-        if parsed is None:
+        if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
             return []
         _, start_ms = parsed
         return self._filter_remote_trade_rows(
@@ -957,8 +956,7 @@ class MarketDataProvider(ABC):
     @staticmethod
     def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
         """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""
-        sym_u = clean_upper_token(symbol)
-        if sym_u is None:
+        if (sym_u := clean_upper_token(symbol)) is None:
             return None
         sym_clean = clean_symbol_key(sym_u)
         sym_canon = canonical_symbol_key(sym_u)
@@ -980,8 +978,7 @@ class MarketDataProvider(ABC):
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = require_pos_float(since_s, "since_s")
-        sym_u = clean_upper_token(symbol)
-        if sym_u is None:
+        if (sym_u := clean_upper_token(symbol)) is None:
             return None
         fills_fn = getattr(self, "_fills_from_cache", None)
         rows = fills_fn(symbol) if callable(fills_fn) else None

@@ -359,6 +359,10 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         )
         return self._commit_snapshot(symbol, now, eq_snapshot)
 
+    def _resolve_effective_1h_change(self, symbol: str, price_1h_change_pct: float) -> float:
+        chg = safe_float(price_1h_change_pct, default=0.0)
+        return self._resolve_price_1h_change_pct(symbol) if abs(chg) < 1e-6 else chg
+
     def fetch(
         self,
         symbol: str,
@@ -367,23 +371,19 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
-        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch_or_equity(
+            symbol,
+            allow_network,
+            now,
+            lambda s, n, c: self._fetch_equity_whale(
+                s, n, self._resolve_effective_1h_change(s, price_1h_change_pct), c
+            ),
+            "equity whale positioning",
+            logger,
+        )
         if not should_fetch or symbol is None:
             return ready
-
-        price_1h_change_pct = safe_float(price_1h_change_pct, default=0.0)
-        if abs(price_1h_change_pct) < 1e-6:
-            price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
-
-        if is_equity_symbol(symbol):
-            return self._fetch_equity_or_fallback(
-                symbol,
-                now,
-                cached,
-                lambda s, n: self._fetch_equity_whale(s, n, price_1h_change_pct, cached),
-                "equity whale positioning",
-                logger,
-            )
+        price_1h_change_pct = self._resolve_effective_1h_change(symbol, price_1h_change_pct)
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         try:

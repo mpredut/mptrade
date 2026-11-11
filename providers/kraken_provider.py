@@ -882,8 +882,7 @@ class KrakenProvider(MarketDataProvider):
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch normalized Kraken fills for ``symbol`` via ``Ledgers`` (when ``client`` is provided) or ``TradesHistory``."""
-        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
-        if parsed is None:
+        if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
             return []
         sym_u, start_ms = parsed
         if client is not None and callable(getattr(client, "_private", None)):

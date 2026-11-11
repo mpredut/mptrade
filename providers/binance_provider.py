@@ -224,8 +224,7 @@ class BinanceProvider(MarketDataProvider):
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         since_s = require_pos_float(since_s, "since_s")
-        symbol = clean_upper_token(symbol)
-        if symbol is None:
+        if (symbol := clean_upper_token(symbol)) is None:
             return None
         sym_canon = canonical_symbol_key(symbol)
         spec = self.resolve_venue_instrument_spec(self.name, symbol)

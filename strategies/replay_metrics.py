@@ -355,7 +355,9 @@ def run_cli_single_or_sweep_backtest(
     eval_fn,
     *,
     budget: float,
-    bh: float,
+    bh: float | None = None,
+    ohlc: Sequence | None = None,
+    min_bars: int = 20,
     single_header: str,
     single_params_line: str,
     sweep_header: str,
@@ -368,6 +370,10 @@ def run_cli_single_or_sweep_backtest(
     emit=print,
 ) -> int:
     """Execute either a single CLI backtest report or a TPxDROP(xSL) parameter sweep."""
+    if ohlc is not None and len(ohlc) < min_bars:
+        emit(f"not enough bars ({len(ohlc)}); aborting")
+        return 1
+    bh_val = float(bh) if bh is not None else (buy_hold_pct(ohlc) if ohlc is not None else 0.0)
     if mode == "single":
         m = eval_fn(base)
         print_single_backtest_report(
@@ -375,13 +381,13 @@ def run_cli_single_or_sweep_backtest(
             single_params_line,
             m,
             budget=budget,
-            bh=bh,
+            bh=bh_val,
             include_funding=include_funding,
             open_qty_decimals=open_qty_decimals,
             emit=emit,
         )
         return 0
-    emit(sweep_header)
+    emit(sweep_header.format(bh=bh_val) if "{bh" in sweep_header else sweep_header)
     if callable(pre_sweep_fn):
         pre_sweep_fn()
     run_tp_drop_sl_sweep(

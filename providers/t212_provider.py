@@ -368,8 +368,7 @@ class T212Provider(MarketDataProvider):
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch normalized T212 fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
-        if parsed is None:
+        if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
             return []
         sym_u, start_ms = parsed
         cli = client if client is not None else self._client()
