@@ -534,30 +534,22 @@ def test_resolve_assets_strips_separators_while_preserving_unknown_suffixes_iter
 def test_decide_quantity_with_nan_bool_policy_cap_and_nan_suggested_scale_iter27_s4():
     """[ITER27 #4] decide_quantity with NaN/bool policy_cap and NaN suggested_scale."""
     # 4. decide_quantity with NaN/bool policy_cap and NaN suggested_scale
-    class DummyQtyProvider:
-        def spent_asset(self, side, base, quote):
-            return quote if side == "BUY" else base
-        def free_balance(self, asset):
-            return 1000.0
-        def balance_cap_quantity(self, side, price, free):
-            return free / price
-        def policy_cap_quantity(self, *a, **k):
-            return float("nan")
-        def fee_cap_quantity(self, *a, **k):
-            return 10.0
-        def round_amount(self, sym, qty):
-            return round(qty, 4)
+    def _make_qty_prov(policy_cap):
+        return SimpleNamespace(
+            spent_asset=lambda side, base, quote: quote if side == "BUY" else base,
+            free_balance=lambda asset: 1000.0,
+            balance_cap_quantity=lambda side, price, free: free / price,
+            policy_cap_quantity=lambda *a, **k: policy_cap,
+            fee_cap_quantity=lambda *a, **k: 10.0,
+            round_amount=lambda sym, qty: round(qty, 4),
+        )
 
-    q_nan = decide_quantity(DummyQtyProvider(), "TAOUSD", "BUY", 100.0, 2.0, apply_policy=True)
+    q_nan = decide_quantity(_make_qty_prov(float("nan")), "TAOUSD", "BUY", 100.0, 2.0, apply_policy=True)
     assert q_nan.refuse_reason == "policy_unavailable"
     assert q_nan.final_qty == 0.0
 
-    class DummyQtyProviderOk(DummyQtyProvider):
-        def policy_cap_quantity(self, *a, **k):
-            return 5.0
-
     q_scale_nan = decide_quantity(
-        DummyQtyProviderOk(),
+        _make_qty_prov(5.0),
         "TAOUSD",
         "BUY",
         100.0,
@@ -700,17 +692,11 @@ def test_replaymarketdataprovider_place_order_safely_returns_none_on_non_numeric
 def test_decide_quantity_must_never_downscale_sell_orders_even_when_iter85_s1():
     """[ITER85 #1] decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)."""
     # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
-    class _DummyProvider:
-        def free_balance(self, _asset):
-            return 10.0
-
-        def policy_cap_quantity(self, *_a, **_k):
-            return 10.0
-
-        def fee_cap_quantity(self, _sym, _side, _px, bal_cap):
-            return bal_cap
-
-    prov = _DummyProvider()
+    prov = SimpleNamespace(
+        free_balance=lambda _asset: 10.0,
+        policy_cap_quantity=lambda *_a, **_k: 10.0,
+        fee_cap_quantity=lambda _sym, _side, _px, bal_cap: bal_cap,
+    )
     sell_dec = decide_quantity(prov, "BTCUSDC", "SELL", 65000.0, 2.0, scale=0.5)
     assert sell_dec.final_qty == 2.0
     assert sell_dec.scale_applied is False
@@ -922,25 +908,17 @@ def test_providers_quantity_py_decide_quantity_string_boolean_parsing_iter154_s3
     """[ITER154 #3] providers/quantity.py: decide_quantity string boolean parsing."""
     # 3. providers/quantity.py: decide_quantity string boolean parsing
     captured = {}
-
-    class DummyProvider:
-        def free_balance(self, asset):
-            return 1000.0
-
-        def policy_cap_quantity(self, *args, **kwargs):
-            captured["policy_called"] = True
-            return 1.0
-
-        def fee_cap_quantity(self, symbol, side, price, balance_cap):
-            return balance_cap
-
-        def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
-            captured["market"] = market
-            captured["enforce_business_minimum"] = enforce_business_minimum
-            return None
+    prov = SimpleNamespace(
+        free_balance=lambda asset: 1000.0,
+        policy_cap_quantity=lambda *args, **kwargs: captured.update(policy_called=True) or 1.0,
+        fee_cap_quantity=lambda symbol, side, price, balance_cap: balance_cap,
+        order_filter_refusal=lambda symbol, side, price, qty, *, market=False, enforce_business_minimum=True: (
+            captured.update(market=market, enforce_business_minimum=enforce_business_minimum)
+        ),
+    )
 
     dec = decide_quantity(
-        DummyProvider(),
+        prov,
         "BTCUSDC",
         "BUY",
         100.0,

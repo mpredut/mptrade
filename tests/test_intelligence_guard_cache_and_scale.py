@@ -148,15 +148,15 @@ class TestIntelligenceGuardDynamicEvaluation:
 
 
         gemini_called = []
-
-        class MockGeminiGuard:
-            def __init__(self, **kw):
-                pass
-            def check(self, symbol, side, price, qty, notional_eur=None):
-                gemini_called.append((symbol, side, price, qty, notional_eur))
-                return GuardDecision.veto("HighStakeGuard", "gemini_risk_block")
-
-        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.HighStakeGuard", MockGeminiGuard)
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard",
+            lambda **kw: SimpleNamespace(
+                check=lambda symbol, side, price, qty, notional_eur=None: (
+                    gemini_called.append((symbol, side, price, qty, notional_eur))
+                    or GuardDecision.veto("HighStakeGuard", "gemini_risk_block")
+                )
+            ),
+        )
 
         # Call with small notional (100 EUR): Gemini guard should NOT be called
         ok1, reason1, _ = order_guard.check_intelligence_guards(
@@ -658,10 +658,7 @@ class TestArchitectureFixes4Cases:
         import monitortrades as mt
         mt.clear_position_stats_cache()
 
-        class MockApi:
-            name = "test_venue"
-
-        api = MockApi()
+        api = SimpleNamespace(name="test_venue")
         symbol = "BTCUSDC"
 
         # 1. First call with quantity 1.0
@@ -1246,9 +1243,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """llm_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 
-        class DummyAnalyzer:
-            def __init__(self):
-                self._cached_assessment = GeopoliticalThreatAssessment(
+        monkeypatch.setattr(
+            "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
+            lambda: SimpleNamespace(
+                _cached_assessment=GeopoliticalThreatAssessment(
                     threat_level="ELEVATED",
                     risk_score=0.65,
                     summary="Elevated energy risk",
@@ -1256,10 +1254,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
                     headlines_analyzed=5,
                     ts=time.time(),
                 )
-
-        monkeypatch.setattr(
-            "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
-            DummyAnalyzer,
+            ),
         )
         margins = _margins(
             geopolitical_guard_mode="enforce",

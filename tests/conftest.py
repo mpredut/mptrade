@@ -312,12 +312,13 @@ class DummySpotExecutionProvider:
 
     def __init__(
         self,
-        *,
         name: str | None = None,
+        *,
         symbol: str | None = None,
         order_id: str = "ord-1",
         free_bal: float = 10000.0,
         wait_short_trend: bool = False,
+        requires_permit: bool = False,
     ):
         if name is not None:
             self.name = name
@@ -325,6 +326,7 @@ class DummySpotExecutionProvider:
         self._order_id = order_id
         self._free_bal = free_bal
         self._wait_short_trend = wait_short_trend
+        self._requires_permit = requires_permit
 
     def supports_symbol(self, sym):
         return self._symbol is None or sym == self._symbol
@@ -336,7 +338,13 @@ class DummySpotExecutionProvider:
         return False
 
     def requires_cache_permit(self):
-        return False
+        return self._requires_permit
+
+    def adjust_order_price(self, _sym, _side, px, **_kw):
+        return float(px)
+
+    def prepare_order_state(self, *_a, **_kw):
+        return {}
 
     def defers_smart_cancel(self):
         return False

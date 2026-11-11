@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,19 +17,30 @@ from providers.strategy_executor import OrderReconciliationCapabilities, OrderSt
 from binance_api import bapi_placeorder as po
 from instrument import Instrument
 from providers.market_api import MarketApi
-from tests.conftest import TempDirTestCase
+from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
 
 
 class _BaseReconcilingMkt:
-    def __init__(self):
+    def __init__(self, *, place_fn=None, order_by_client_id_res=None):
         self.lookup_calls = []
+        self.calls = []
+        self.place_calls = []
+        self._place_fn = place_fn
+        self._order_by_client_id_res = order_by_client_id_res
 
     def get_current_price(self, symbol, provider_name=None):
         return 100.0
 
     def order_by_client_id(self, symbol, client_order_id, provider_name=None):
         self.lookup_calls.append(client_order_id)
-        return None
+        return self._order_by_client_id_res
+
+    def place(self, symbol, side, price, qty, **kwargs):
+        self.calls.append({"qty": qty, "kwargs": kwargs})
+        self.place_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty})
+        if self._place_fn is not None:
+            return self._place_fn(symbol, side, price, qty, **kwargs)
+        return {"orderId": 888}
 
     def reconciliation_capabilities(self, symbol, provider_name=None):
         return OrderReconciliationCapabilities(
@@ -55,19 +67,24 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
 
     def test_kraken_order_type_normalization(self):
         """Verify KrakenProvider respects market=True, force=True, and default limit."""
-        class FakeKrakenClient:
-            def __init__(self):
-                self.calls = []
-
-            def add_order(self, pair, side, volume, price=None, ordertype="limit", validate=False, cl_ord_id=None):
-                self.calls.append({
-                    "pair": pair, "side": side, "volume": volume,
-                    "price": price, "ordertype": ordertype, "validate": validate,
-                    "cl_ord_id": cl_ord_id,
-                })
-                return {"txid": ["TX-123"]}
-
-        client = FakeKrakenClient()
+        calls = []
+        client = SimpleNamespace(
+            calls=calls,
+            add_order=lambda pair, side, volume, price=None, ordertype="limit", validate=False, cl_ord_id=None: (
+                calls.append(
+                    {
+                        "pair": pair,
+                        "side": side,
+                        "volume": volume,
+                        "price": price,
+                        "ordertype": ordertype,
+                        "validate": validate,
+                        "cl_ord_id": cl_ord_id,
+                    }
+                )
+                or {"txid": ["TX-123"]}
+            ),
+        )
         provider = KrakenProvider(client=client)
 
         # 1. market=True without force=True
@@ -111,21 +128,8 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
     def test_instrument_normalizes_market_and_force(self):
         """Verify Instrument.place sets both market and force consistently in provider_kwargs."""
         received_kwargs = {}
-        from providers.base import MarketDataProvider
-        class MockProvider(MarketDataProvider):
-            name = "mock"
-            def validate_symbol(self, s): pass
-            def get_current_price(self, s): return 100.0
-            def free_balance(self, a): return 100.0
-            def supports_symbol(self, s): return True
-            def execution_enabled(self): return True
-            def guards_internally(self): return False
-            def get_orders(self, *args, **kwargs): return []
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                received_kwargs.update(kwargs)
-                return {"orderId": 1234}
-
-        provider = MockProvider()
+        provider = DummySpotExecutionProvider("mock", free_bal=100.0)
+        provider.place_order = lambda symbol, side, price, qty, **kwargs: received_kwargs.update(kwargs) or {"orderId": 1234}
         api = MarketApi([provider])
         inst = Instrument("TESTUSDC", symbol="TESTUSDC", provider="mock", api=api)
 
@@ -141,26 +145,20 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
             "BTCUSDC", "BUY", 4.0, {}, requested_price=100.0,
             failure_reason="profit_guard", now=1000.0)
 
-        class ScalingMkt(_BaseReconcilingMkt):
-            def __init__(self):
-                super().__init__()
-                self.calls = []
+        def _scaling_place(symbol, side, price, qty, **kwargs):
+            # Simulate Instrument scaling late intelligence:
+            # Update claim on disk with reduced quantity 1.0
+            retry_claim = kwargs.get("_retry_claim")
+            if retry_claim is not None:
+                oq.update_claimed_qty(retry_claim, 1.0)
+            outcome = kwargs.get("_outcome_context")
+            if outcome is not None:
+                outcome["accepted"] = True
+                outcome["submitted_qty"] = 1.0
+                outcome["submitted_price"] = price
+            return {"orderId": 777}
 
-            def place(self, symbol, side, price, qty, **kwargs):
-                self.calls.append({"qty": qty, "kwargs": kwargs})
-                # Simulate Instrument scaling late intelligence:
-                # Update claim on disk with reduced quantity 1.0
-                retry_claim = kwargs.get("_retry_claim")
-                if retry_claim is not None:
-                    oq.update_claimed_qty(retry_claim, 1.0)
-                outcome = kwargs.get("_outcome_context")
-                if outcome is not None:
-                    outcome["accepted"] = True
-                    outcome["submitted_qty"] = 1.0
-                    outcome["submitted_price"] = price
-                return {"orderId": 777}
-
-        mkt = ScalingMkt()
+        mkt = _BaseReconcilingMkt(place_fn=_scaling_place)
         stats = worker.process_once(mkt, now=1400.0)
 
         self.assertEqual(stats["attempted"], 1)
@@ -187,16 +185,7 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
             "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
             provider_name="Binance", now=1000.0, lease_sec=301.0)
 
-        class ReconcilingMkt(_BaseReconcilingMkt):
-            def __init__(self):
-                super().__init__()
-                self.place_calls = []
-
-            def place(self, symbol, side, price, qty, **kwargs):
-                self.place_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty})
-                return {"orderId": 888}
-
-        mkt = ReconcilingMkt()
+        mkt = _BaseReconcilingMkt()
         # 1. Unknown owner state: identity unverifiable -> must quarantine fail-closed to avoid duplicate orders
         with patch.object(oq, "producer_claim_owner_state", return_value="unknown"):
             stats_unknown = worker.process_once(mkt, now=1400.0)
@@ -234,17 +223,14 @@ class OrderTypeAndRetrySyncTest(TempDirTestCase):
         self.assertEqual(oq.get(record_id)["qty"], 4.0)
 
         # 2. Worker reconciles the order: venue returns origQty=1.00000000
-        class LostResponseMkt(_BaseReconcilingMkt):
-            def order_by_client_id(self, symbol, client_order_id, provider_name=None):
-                self.lookup_calls.append(client_order_id)
-                return {
-                    "orderId": "ORD_BINANCE_999",
-                    "origQty": "1.00000000",
-                    "executedQty": "0.00000000",
-                    "status": "NEW",
-                }
-
-        mkt = LostResponseMkt()
+        mkt = _BaseReconcilingMkt(
+            order_by_client_id_res={
+                "orderId": "ORD_BINANCE_999",
+                "origQty": "1.00000000",
+                "executedQty": "0.00000000",
+                "status": "NEW",
+            }
+        )
         stats = worker.process_once(mkt, now=1400.0)
         self.assertEqual(stats["reconciled"], 1)
         self.assertEqual(stats["succeeded"], 1)

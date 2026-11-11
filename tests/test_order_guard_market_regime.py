@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -240,18 +241,16 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(decision.gradient, 0.6)
 
     def test_provider_with_direct_market_regime_is_delegated(self):
-        class _DirectRegimeProvider:
-            def market_regime(self, symbol, allow_fallback=True):
-                return MarketRegimeDecision(
-                    regime="bear",
-                    gradient=-0.8,
-                    epsilon=0.1,
-                    strength=8.0,
-                    fresh=True,
-                    reason="custom_delegation",
-                )
-
-        provider = _DirectRegimeProvider()
+        provider = SimpleNamespace(
+            market_regime=lambda symbol, allow_fallback=True: MarketRegimeDecision(
+                regime="bear",
+                gradient=-0.8,
+                epsilon=0.1,
+                strength=8.0,
+                fresh=True,
+                reason="custom_delegation",
+            )
+        )
         decision = order_guard.symbol_regime("BTCUSDT", provider=provider)
         self.assertEqual(decision.regime, "bear")
         self.assertEqual(decision.reason, "custom_delegation")
@@ -326,15 +325,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 10.0,
         }
-
-        class _MockExecutionProvider:
-            def __init__(self, name="binance"):
-                self.name = name
-
-            def last_opposite_fill(self, symbol, order_type):
-                return 216.28
-
-        provider = _MockExecutionProvider()
+        provider = SimpleNamespace(name="binance", last_opposite_fill=lambda symbol, order_type: 216.28)
 
         margins = {
             **order_guard._load_margins(),

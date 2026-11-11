@@ -411,32 +411,30 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
+        from types import SimpleNamespace
 
         class _RecvWindowError(Exception):
             code = -1021
 
         calls = []
 
-        class _DummyClient:
-            def __init__(self):
-                self.session = MagicMock()
-                self.REQUEST_RECVWINDOW = None
-                self.timestamp_offset = 0
+        def _req_retry(method, uri, signed, force_params=False, **kwargs):
+            data = kwargs.get("data")
+            calls.append(dict(data) if isinstance(data, dict) else data)
+            if len(calls) == 1:
+                if isinstance(data, dict):
+                    data["timestamp"] = 111
+                    data["signature"] = "stale_sig"
+                raise _RecvWindowError("Timestamp outside recvWindow")
+            return {"ok": True, "data": data}
 
-            def get_server_time(self):
-                return {"serverTime": 1_700_000_005_000}
-
-            def _request(self, method, uri, signed, force_params=False, **kwargs):
-                data = kwargs.get("data")
-                calls.append(dict(data) if isinstance(data, dict) else data)
-                if len(calls) == 1:
-                    if isinstance(data, dict):
-                        data["timestamp"] = 111
-                        data["signature"] = "stale_sig"
-                    raise _RecvWindowError("Timestamp outside recvWindow")
-                return {"ok": True, "data": data}
-
-        dummy = _DummyClient()
+        dummy = SimpleNamespace(
+            session=MagicMock(),
+            REQUEST_RECVWINDOW=None,
+            timestamp_offset=0,
+            get_server_time=lambda: {"serverTime": 1_700_000_005_000},
+            _request=_req_retry,
+        )
         bapi_client._install_recvwindow_retry(dummy)
         with patch.object(bapi_client, "_client", dummy):
             res = dummy._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
@@ -453,14 +451,10 @@ class RuntimeImportSafetyTest(unittest.TestCase):
             def __str__(self):
                 return f"APIError(code={self.code}): {self.message}"
 
-        class _Failing500Client:
-            def __init__(self):
-                self.calls = 0
-            def _request(self, method, uri, signed, force_params=False, **kwargs):
-                self.calls += 1
-                raise _Html500Error()
-
-        fail500 = _Failing500Client()
+        fail500 = SimpleNamespace(calls=0)
+        fail500._request = lambda method, uri, signed, force_params=False, **kwargs: (
+            setattr(fail500, "calls", fail500.calls + 1) or (_ for _ in ()).throw(_Html500Error())
+        )
         bapi_client._install_recvwindow_retry(fail500)
         with self.assertRaises(_Html500Error) as ctx:
             fail500._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
@@ -469,28 +463,29 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertNotIn("\r", str(ctx.exception))
 
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
+        from types import SimpleNamespace
         import credentials
 
         init_kwargs = {}
         events = []
 
-        class _FakeSdkClient:
-            def __init__(self, api_key, api_secret, **kwargs):
-                init_kwargs.update(kwargs)
-                self.session = MagicMock()
-                self.REQUEST_RECVWINDOW = None
-                self.timestamp_offset = 0
-
-            def _request(self, method, uri, signed, force_params=False, **kwargs):
-                return {"ok": True}
-
-            def get_server_time(self):
-                events.append(("get_server_time", getattr(self, "_recvwindow_retry_installed", False)))
-                return {"serverTime": 1_700_000_005_000}
+        def _fake_sdk_client(api_key, api_secret, **kwargs):
+            init_kwargs.update(kwargs)
+            inst = SimpleNamespace(
+                session=MagicMock(),
+                REQUEST_RECVWINDOW=None,
+                timestamp_offset=0,
+                _request=lambda method, uri, signed, force_params=False, **kw: {"ok": True},
+            )
+            inst.get_server_time = lambda: (
+                events.append(("get_server_time", getattr(inst, "_recvwindow_retry_installed", False)))
+                or {"serverTime": 1_700_000_005_000}
+            )
+            return inst
 
         with (
             patch.object(bapi_client, "_client", None),
-            patch.object(bapi_client, "Client", _FakeSdkClient),
+            patch.object(bapi_client, "Client", _fake_sdk_client),
             patch.object(bapi_client, "_start_periodic_resync"),
             patch.object(credentials, "api_key", "k"),
             patch.object(credentials, "api_secret", "s"),

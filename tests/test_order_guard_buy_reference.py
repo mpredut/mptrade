@@ -13,26 +13,40 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard  # noqa: E402
 from instrument import Instrument
 from providers.market_api import MarketApi
+from tests.conftest import DummySpotExecutionProvider
 
 
 class _Provider:
-    def __init__(self, name, last_fill=216.28):
+    def __init__(self, name, last_fill=216.28, *, free_bal=10000.0):
         self.name = name
         self._last_fill = last_fill
+        self._free_bal = free_bal
 
     def last_opposite_fill(self, _symbol, _order_type):
         return self._last_fill
 
+    def free_balance(self, _asset):
+        return self._free_bal
+
+    def validate_symbol(self, _symbol):
+        pass
+
+    def guards_internally(self):
+        return False
+
 
 class _OrdersProvider(_Provider):
-    def __init__(self, orders=(), *, last_fill=None, side_filter=None, name="binance"):
+    def __init__(self, orders=(), *, last_fill=None, side_filter=None, name="binance", orders_by_side=None):
         if last_fill is None and orders:
             last_fill = orders[-1]["price"]
         super().__init__(name, last_fill=last_fill)
         self._orders = list(orders)
         self._side_filter = side_filter
+        self._orders_by_side = orders_by_side
 
     def get_orders(self, symbol, side, since_s):
+        if self._orders_by_side is not None:
+            return list(self._orders_by_side.get(side, []))
         if self._side_filter is not None and side != self._side_filter:
             return []
         return list(self._orders)
@@ -143,43 +157,14 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertFalse(order_guard.profit_guard(provider, "TAOUSDC", "SELL", 270.0, 1.15, window_ref=276.0))
 
     def test_instrument_pipeline_respects_buy_reference_switch(self):
-        from providers.market_api import MarketDataProvider
-
-        class _MockBinanceProvider(MarketDataProvider):
-            def __init__(self):
-                self._name = "binance"
-                self.placed = []
-
-            @property
-            def name(self):
-                return self._name
-
-            def guards_internally(self):
-                return False
-
-            def get_current_price(self, symbol):
-                return 293.0
-
-            def free_balance(self, asset):
-                return 10000.0
-
-            def get_orders(self, symbol, side, since_s):
-                return []
-
-            def profit_guard_window_ref(self, symbol, side, safeback_override=None):
-                return 216.28 if side == "BUY" else 276.0
-
-            def supports_symbol(self, symbol):
-                return True
-
-            def order_status(self, symbol, order_id):
-                return {"orderId": order_id, "status": "FILLED"}
-
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                self.placed.append({"side": side, "qty": qty, "price": price})
-                return {"orderId": "123", "status": "FILLED"}
-
-        p = _MockBinanceProvider()
+        p = DummySpotExecutionProvider("binance", free_bal=10000.0, requires_permit=True)
+        p.placed = []
+        p.get_current_price = lambda symbol: 293.0
+        p.profit_guard_window_ref = lambda symbol, side, safeback_override=None: 216.28 if side == "BUY" else 276.0
+        p.order_status = lambda symbol, order_id: {"orderId": order_id, "status": "FILLED"}
+        p.place_order = lambda symbol, side, price, qty, **kwargs: (
+            p.placed.append({"side": side, "qty": qty, "price": price}) or {"orderId": "123", "status": "FILLED"}
+        )
         inst = Instrument(name="TAO", symbol="TAOUSDC", provider="binance", base="TAO", quote="USDC", api=MarketApi([p]))
 
         # Exercise reference routing without live trend discovery on a cold cache.
@@ -320,18 +305,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_instrument_preflight_refuses_zero_balance(self):
         """Instrument.place must refuse BUY orders at Stage 0 if provider free balance is zero or empty."""
-
-        class _MockBalanceProvider(_Provider):
-            def free_balance(self, asset):
-                return 0.0
-
-            def validate_symbol(self, symbol):
-                pass
-
-            def guards_internally(self):
-                return False
-
-        provider = _MockBalanceProvider("binance", last_fill=300.0)
+        provider = _Provider("binance", last_fill=300.0, free_bal=0.0)
         api = MarketApi([provider])
         inst = Instrument("TAO", "TAOUSDC", provider="binance", quote="USDC", api=api)
         order = inst.place("BUY", 280.0, 1.0, caller_owns_retry=True)
@@ -340,23 +314,19 @@ class BuyReferenceSwitchTest(unittest.TestCase):
     def test_active_cycle_window_ref_ignores_closed_cycles(self):
         """Closed higher-price BUY cycles (including <=2% spot fee dust) must not poison
         the active cycle's SELL reference price."""
-        class _CycleProvider:
-            name = "kraken"
-
-            def get_orders(self, symbol, side, since_s):
-                if side == "BUY":
-                    return [
-                        {"price": 90.0, "qty": 10.0, "timestamp": 3000.0},
-                        {"price": 120.0, "qty": 10.0, "timestamp": 1000.0},
-                    ]
-                if side == "SELL":
+        provider = _OrdersProvider(
+            name="kraken",
+            orders_by_side={
+                "BUY": [
+                    {"price": 90.0, "qty": 10.0, "timestamp": 3000.0},
+                    {"price": 120.0, "qty": 10.0, "timestamp": 1000.0},
+                ],
+                "SELL": [
                     # Sold 99.9% of the 120.0 lot (0.1% spot fee dust remaining)
-                    return [
-                        {"price": 130.0, "qty": 9.99, "timestamp": 2000.0},
-                    ]
-                return []
-
-        provider = _CycleProvider()
+                    {"price": 130.0, "qty": 9.99, "timestamp": 2000.0},
+                ],
+            },
+        )
         ref = order_guard.window_reference(provider, "HYPEUSD", "SELL", 14 * 86400)
         self.assertEqual(ref, 90.0)
         with mock.patch.object(order_guard, "_MARGINS", _margins()):
@@ -423,14 +393,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
     def test_dynamic_window_recomputes_ref_from_recent_fills_ignoring_older_14d_anchor(self):
         """When caller passes a 14d static window_ref (e.g. 216.28) that is older than dyn_window_s,
         and a newer SELL at 300.0 exists inside dyn_window_s, dynamic mode must use min(recent_prices)=300.0."""
-        class _RecentSellProvider:
-            name = "binance"
-
-            def get_orders(self, symbol, side, since_s):
-                # Inside the 8h/24h dynamic window, only the 300.0 sell exists
-                return [{"price": 300.0, "qty": 1.0, "timestamp": 5000.0}]
-
-        provider = _RecentSellProvider()
+        # Inside the 8h/24h dynamic window, only the 300.0 sell exists
+        provider = _OrdersProvider([{"price": 300.0, "qty": 1.0, "timestamp": 5000.0}])
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
                 # Caller passes 14-day min sell window_ref=216.28, but inside dynamic window min sell is 300.0.

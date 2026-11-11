@@ -174,17 +174,15 @@ def test_extract_order_fee_canonical_across_venues():
 
 
 def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkeypatch):
-
     persisted = []
-
-    class DummyTradeCache:
-        _is_valid_item = staticmethod(cm.CacheTradeManager._is_valid_item)
-
-        def _persist_items(self, symbol, items):
-            persisted.extend(items)
-
-
-    monkeypatch.setattr(cm, "get_cache_manager", lambda name: DummyTradeCache())
+    monkeypatch.setattr(
+        cm,
+        "get_cache_manager",
+        lambda name: SimpleNamespace(
+            _is_valid_item=cm.CacheTradeManager._is_valid_item,
+            _persist_items=lambda symbol, items: persisted.extend(items),
+        ),
+    )
     bapi_ws_bridge.append_trade_from_execution_report({
         "x": "TRADE",
         "X": "FILLED",
@@ -305,14 +303,12 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
 
     # 4. monitortrades._restore_resting_tp_orders restores orders with origQty/executedQty (no 'qty' key)
     placed_calls = []
-
-    class DummyInst:
-        def place(self, side, price, qty, **kw):
-            placed_calls.append((side, price, qty, kw))
-            return {"orderId": "restored-1"}
+    dummy_inst = SimpleNamespace(
+        place=lambda side, price, qty, **kw: (placed_calls.append((side, price, qty, kw)) or {"orderId": "restored-1"})
+    )
 
     mt._restore_resting_tp_orders(
-        DummyInst(),
+        dummy_inst,
         "HYPEUSD",
         [{"orderId": "OB1", "side": "SELL", "price": 25.5, "origQty": 4.0, "executedQty": 1.5}],
         sellable_qty=2.5,

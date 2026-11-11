@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,11 +23,14 @@ from providers.hyperliquid_provider import HyperliquidProvider
 class FakeProvider(MarketDataProvider):
     """Minimal in-memory provider whose guards are handled by Instrument."""
 
-    def __init__(self, name="FakeVenue", price=100.0):
+    def __init__(self, name="FakeVenue", price=100.0, *, price_history=None, biz_min=False, observed_flags=None):
         self._name = name
         self._price = price
         self._orders = []
         self.placed = []
+        self._price_history = list(price_history or [])
+        self._biz_min = biz_min
+        self._observed_flags = observed_flags
 
     @property
     def name(self):
@@ -37,6 +41,21 @@ class FakeProvider(MarketDataProvider):
 
     def supports_symbol(self, symbol):
         return False
+
+    def supports_business_minimum(self) -> bool:
+        return self._biz_min
+
+    def get_price_history(self, symbol: str, lookback_sec: float):
+        return list(self._price_history)
+
+    def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
+        if self._observed_flags is not None:
+            self._observed_flags.append(("filter", enforce_business_minimum))
+        if self._biz_min and enforce_business_minimum and (price * qty) < 25.0:
+            return "filter_business_min_notional"
+        return super().order_filter_refusal(
+            symbol, side, price, qty, market=market, enforce_business_minimum=enforce_business_minimum
+        )
 
     def free_balance(self, asset):
         return 1_000_000.0
@@ -50,6 +69,8 @@ class FakeProvider(MarketDataProvider):
         return out
 
     def place_order(self, symbol, side, price, qty, **kwargs):
+        if self._observed_flags is not None:
+            self._observed_flags.append(("place", kwargs.get("enforce_business_minimum")))
         payload = {"orderId": len(self.placed) + 1, "symbol": symbol, "side": side, "price": price, "qty": qty}
         self.placed.append(payload)
         return payload
@@ -285,14 +306,7 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
     def test_market_api_get_orders_and_price_history_explicit_provider_routing(self):
         """MarketApi.get_orders and get_price_history must honor explicit provider_name
         even when the provider's supports_symbol() returns False (e.g. KrakenProvider)."""
-        class ExplicitOnlyProvider(FakeProvider):
-            def supports_symbol(self, symbol: str) -> bool:
-                return False
-
-            def get_price_history(self, symbol: str, lookback_sec: float):
-                return [(1000, 42.5)]
-
-        kraken_prov = ExplicitOnlyProvider(name="kraken")
+        kraken_prov = FakeProvider(name="kraken", price_history=[(1000, 42.5)])
         default_prov = FakeProvider(name="binance")
         kraken_prov.seed_trade("BUY", age_sec=10.0, symbol="HYPEUSD")
 
@@ -307,22 +321,7 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         enforce_business_minimum=False to quantity_decision and place_order even
         on BUY orders (e.g. AutonomousIntentGateway $15 orders below $25 business min)."""
         observed_flags = []
-
-        class BizMinProvider(FakeProvider):
-            def supports_business_minimum(self) -> bool:
-                return True
-
-            def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
-                observed_flags.append(("filter", enforce_business_minimum))
-                if enforce_business_minimum and (price * qty) < 25.0:
-                    return "filter_business_min_notional"
-                return None
-
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                observed_flags.append(("place", kwargs.get("enforce_business_minimum")))
-                return super().place_order(symbol, side, price, qty, **kwargs)
-
-        prov = BizMinProvider(name="kraken", price=15.0)
+        prov = FakeProvider(name="kraken", price=15.0, biz_min=True, observed_flags=observed_flags)
         api = MarketApi([prov])
         inst = Instrument(name="KRAKEN_TAO", symbol="TAOUSD", provider="kraken",
                           base="TAO", quote="USD", api=api)
@@ -351,46 +350,38 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         fall back to the non-HYPE token's fill_price if HYPE mid price is unavailable."""
         from providers.strategy_executor import ProviderError
 
-        class FakeHLInfo:
-            def query_order_by_oid(self, addr, oid):
-                return {
-                    "status": "order",
-                    "order": {
-                        "status": "filled",
-                        "order": {"origSz": "100.0", "sz": "0.0"},
-                    },
+        fake_hl_info = SimpleNamespace(
+            query_order_by_oid=lambda addr, oid: {
+                "status": "order",
+                "order": {
+                    "status": "filled",
+                    "order": {"origSz": "100.0", "sz": "0.0"},
+                },
+            },
+            user_fills=lambda addr: [
+                {
+                    "oid": 777,
+                    "sz": "100.0",
+                    "px": "0.10",
+                    "fee": "0.05",
+                    "feeToken": "HYPE",
                 }
-
-            def user_fills(self, addr):
-                return [
-                    {
-                        "oid": 777,
-                        "sz": "100.0",
-                        "px": "0.10",
-                        "fee": "0.05",
-                        "feeToken": "HYPE",
-                    }
-                ]
-
-        class FakeHLClient:
-            address = "0x123"
-            info = FakeHLInfo()
-
-            def resolve_spot_pair(self, token):
-                return None
-
-            def spot_mid(self, pair):
-                return None
-
-            def mid(self, token):
-                return None
+            ],
+        )
+        fake_hl_client = SimpleNamespace(
+            address="0x123",
+            info=fake_hl_info,
+            resolve_spot_pair=lambda token: None,
+            spot_mid=lambda pair: None,
+            mid=lambda token: None,
+        )
 
         hp = HyperliquidProvider.__new__(HyperliquidProvider)
         hp._lock = threading.Lock()
         hp._env_loaded = True
         hp._token = "PURR"
         hp._spot_pair = "@107"
-        hp._client = FakeHLClient()
+        hp._client = fake_hl_client
         hp._client_tried = True
 
         with patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0x123"}):

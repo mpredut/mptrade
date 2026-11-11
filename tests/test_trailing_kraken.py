@@ -30,34 +30,87 @@ from tests.conftest import TrailingTestBase
 
 
 class FakeK:
-    def __init__(self, price, total=25.0, held=0.0):
-        self.price = price; self.total = total; self.held = held; self.orders = []
+    def __init__(
+        self,
+        price=60.0,
+        total=25.0,
+        held=0.0,
+        *,
+        prices=None,
+        balances=None,
+        fail_balance=False,
+        open_orders_fn=None,
+        query_orders_fn=None,
+    ):
+        self.price = price
+        self.total = total
+        self.held = held
+        self.orders = []
+        self.prices = prices
+        self.balances = balances
+        self.fail_balance = fail_balance
+        self.balance_calls = 0
+        self.cancelled = []
+        self._open_orders_fn = open_orders_fn
+        self._query_orders_fn = query_orders_fn
+
     def _private(self, method, data=None):
         if method == "BalanceEx":
+            self.balance_calls += 1
+            if self.fail_balance:
+                return {}
+            if self.balances is not None:
+                return self.balances
             return {"HYPE": {"balance": str(self.total), "hold_trade": str(self.held)}}
         if method == "TradesHistory":
             return {"trades": {}}
         return {}
-    def last_price(self, pair): return self.price
-    def add_order(self, pair, side, volume, price=None, ordertype="limit", validate=False,
-                  cl_ord_id=None):
-        self.orders.append({"side": side, "volume": volume, "price": price,
-                            "ordertype": ordertype, "cl_ord_id": cl_ord_id})
+
+    def last_price(self, pair):
+        if self.prices is not None:
+            return self.prices.get(pair, 0.0)
+        return self.price
+
+    def add_order(self, pair, side, volume, price=None, ordertype="limit", validate=False, cl_ord_id=None):
+        self.orders.append(
+            {
+                "side": side,
+                "volume": volume,
+                "price": price,
+                "ordertype": ordertype,
+                "cl_ord_id": cl_ord_id,
+            }
+        )
         return {"txid": ["X"]}
+
     def query_orders(self, txids):
+        if self._query_orders_fn is not None:
+            return self._query_orders_fn(txids)
         order = self.orders[-1]
         px = order["price"] if order["price"] is not None else self.price
-        return {str(txids): {
-            "status": "closed", "vol_exec": str(order["volume"]),
-            "cost": str(order["volume"] * px), "fee": "0",
-        }}
+        return {
+            str(txids): {
+                "status": "closed",
+                "vol_exec": str(order["volume"]),
+                "cost": str(order["volume"] * px),
+                "fee": "0",
+            }
+        }
+
     def open_orders(self):
+        if self._open_orders_fn is not None:
+            return self._open_orders_fn(self)
         return {}
+
     def closed_orders(self):
         return {}
+
     def pair_info(self, pair):
         return {"pair_decimals": 2, "lot_decimals": 8, "ordermin": "0.01"}
+
     def cancel_order(self, txid):
+        self.cancelled.append(txid)
+        self.held = 0.0
         return {"count": 1}
 
 
@@ -262,20 +315,7 @@ class TestRebuyGuardsKraken(Base):
             "ADA": {"balance": "1000.0", "hold_trade": "0.0"},
         }
         prices = {"HYPEUSD": 50.0, "TAOUSD": 200.0, "ADAUSD": 0.50}
-
-        class FakeMultiK(FakeK):
-            def __init__(self):
-                super().__init__(price=50.0)
-                self.prices = prices
-                self.balances = balances
-            def _private(self, method, data=None):
-                if method == "BalanceEx":
-                    return self.balances
-                return {}
-            def last_price(self, pair):
-                return self.prices.get(pair, 0.0)
-
-        c = FakeMultiK()
+        c = FakeK(price=50.0, prices=prices, balances=balances)
         ts = self.ts(c)
         ts.check_once()  # tracks initial peaks: HYPE=50, TAO=200, ADA=0.50
 
@@ -290,26 +330,16 @@ class TestRebuyGuardsKraken(Base):
     def test_emergency_unlock_cancels_resting_sell_and_executes_stop(self):
         """When all balance is locked in a resting SELL order and price crashes past stop,
         total_qty + unlock_qty cancel the resting order (including slash pair aliases) and sell."""
-        class FakeUnlockK(FakeK):
-            def __init__(self):
-                super().__init__(price=60.0, total=20.0, held=0.0)
-                self.cancelled = []
-
-            def open_orders(self):
-                if self.held > 0:
-                    return {
-                        "OPEN-TP-1": {
-                            "descr": {"type": "sell", "pair": "HYPE/USD", "price": "75.0"},
-                        }
-                    }
-                return {}
-
-            def cancel_order(self, txid):
-                self.cancelled.append(txid)
-                self.held = 0.0
-                return {"count": 1}
-
-        c = FakeUnlockK()
+        c = FakeK(
+            price=60.0,
+            total=20.0,
+            held=0.0,
+            open_orders_fn=lambda cli: (
+                {"OPEN-TP-1": {"descr": {"type": "sell", "pair": "HYPE/USD", "price": "75.0"}}}
+                if cli.held > 0
+                else {}
+            ),
+        )
         ts = self.ts(c)
         ts.check_once()  # peak=60.0 while free=20.0
 
@@ -333,21 +363,21 @@ class TestRebuyGuardsKraken(Base):
     def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
         from cacheaccount import CacheTradeManager
 
-        class FakeLedgerClient:
-            def _private(self, method, data=None, fresh=False):
-                return {
-                    "ledger": {
-                        "L1": {"refid": "R1", "asset": "HYPE.F", "amount": "5.0", "type": "trade", "time": 1700000000.0},
-                        "L2": {"refid": "R1", "asset": "ZUSD", "amount": "-250.0", "type": "trade", "time": 1700000000.0},
-                    }
+        fake_ledger_cli = SimpleNamespace(
+            _private=lambda method, data=None, fresh=False: {
+                "ledger": {
+                    "L1": {"refid": "R1", "asset": "HYPE.F", "amount": "5.0", "type": "trade", "time": 1700000000.0},
+                    "L2": {"refid": "R1", "asset": "ZUSD", "amount": "-250.0", "type": "trade", "time": 1700000000.0},
                 }
+            }
+        )
 
         cfg = KrakenProvider.resolve_cache_daemon_config()
         pairs = ["HYPEUSD", "TAOUSD"]
         lookback_sec = cfg["lookback_sec"]
         cache = {"items": {"TAOUSD": [{"id": "OLD"}]}, "fetchtime": {}}
         by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-            FakeLedgerClient(), pairs=pairs, lookback_sec=lookback_sec
+            fake_ledger_cli, pairs=pairs, lookback_sec=lookback_sec
         )
         CacheTradeManager.merge_venue_fills_into_dict(cache, by_sym, is_snapshot=True)
         self.assertEqual(len(cache["items"]["HYPEUSD"]), 1)
@@ -364,7 +394,7 @@ class TestRebuyGuardsKraken(Base):
             "fetchtime": {},
         }
         ws_by_sym = KrakenProvider.fetch_ledger_fills_by_symbol(
-            FakeLedgerClient(), pairs=pairs, lookback_sec=lookback_sec
+            fake_ledger_cli, pairs=pairs, lookback_sec=lookback_sec
         )
         CacheTradeManager.merge_venue_fills_into_dict(ws_cache, ws_by_sym, is_snapshot=False)
         self.assertEqual([x["id"] for x in ws_cache["items"]["HYPEUSD"]], ["R1", "WS-1"])
@@ -375,21 +405,7 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
 
     def test_empty_or_failed_balance_ex_does_not_wipe_peak_and_caches_per_tick(self):
-
-        class CountingFakeK(FakeK):
-            def __init__(self):
-                super().__init__(price=65.0, total=25.0, held=0.0)
-                self.balance_calls = 0
-                self.fail_balance = False
-
-            def _private(self, method, data=None):
-                if method == "BalanceEx":
-                    self.balance_calls += 1
-                    if self.fail_balance:
-                        return {}
-                return super()._private(method, data)
-
-        c = CountingFakeK()
+        c = FakeK(price=65.0, total=25.0, held=0.0)
         ts = self.ts(c)
         ts.check_once()
         self.assertEqual(c.balance_calls, 1)
@@ -401,13 +417,19 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(json.load(open(self.sf))["HYPE"]["peak"], 65.0)
 
     def test_canceled_zero_fill_order_increments_retry_attempt_and_client_order_id(self):
-        class CanceledZeroFillK(FakeK):
-            def query_orders(self, txids):
-                return {str(txids): {
-                    "status": "canceled", "vol_exec": "0", "cost": "0", "fee": "0",
-                }}
-
-        c = CanceledZeroFillK(60.0, total=25.0, held=0.0)
+        c = FakeK(
+            60.0,
+            total=25.0,
+            held=0.0,
+            query_orders_fn=lambda txids: {
+                str(txids): {
+                    "status": "canceled",
+                    "vol_exec": "0",
+                    "cost": "0",
+                    "fee": "0",
+                }
+            },
+        )
         ts = self.ts(c)
         ts.check_once()  # peak=60.0
         c.price = 48.0   # -20% > 18% -> first SELL attempt

@@ -19,7 +19,27 @@ import cacheManager as cm
 import cacheprice
 import json
 import tempfile
+from types import SimpleNamespace
 from providers.hyperliquid_provider import HyperliquidProvider
+
+
+class _StubCpm:
+    def __init__(self, market_api, *, pushed=None):
+        self.market_api = market_api
+        self.bind_called = False
+        self.bindings = {}
+        self._pushed = pushed
+
+    def bind_providers(self, provider_names):
+        self.bind_called = True
+        self.bindings.update(provider_names or {})
+
+    def provider_name_for(self, symbol):
+        return self.bindings.get(symbol)
+
+    def push_price(self, s, p):
+        if self._pushed is not None:
+            self._pushed.append((s, p))
 
 
 class _FakeApi:
@@ -79,16 +99,6 @@ class TestFetchDeadline(unittest.TestCase):
 
     def test_poller_requires_a_provider_for_every_symbol(self):
         api = _FakeApi()
-
-        class _Cpm:
-            market_api = api
-
-            def __init__(self):
-                self.bind_called = False
-
-            def bind_providers(self, _provider_names):
-                self.bind_called = True
-
         invalid_bindings = (
             None,
             {"HYPEUSD": "Kraken"},
@@ -96,7 +106,7 @@ class TestFetchDeadline(unittest.TestCase):
         )
         for provider_names in invalid_bindings:
             with self.subTest(provider_names=provider_names):
-                cpm = _Cpm()
+                cpm = _StubCpm(api)
                 with self.assertRaisesRegex(
                     ValueError, "explicit provider bindings are required"
                 ):
@@ -113,23 +123,7 @@ class TestFetchDeadline(unittest.TestCase):
         freeze: after a hang, on a later cycle with a good fetch, it pushes the price."""
         pushed = []
         api = _FakeApi(hang=True)
-
-        class _Cpm:
-            market_api = api
-
-            def __init__(self):
-                self.bindings = {}
-
-            def bind_providers(self, provider_names):
-                self.bindings.update(provider_names or {})
-
-            def provider_name_for(self, symbol):
-                return self.bindings.get(symbol)
-
-            def push_price(self, s, p):
-                pushed.append((s, p))
-
-        cpm = _Cpm()
+        cpm = _StubCpm(api, pushed=pushed)
         # A small interval plus a short deadline, so we can observe the timeout and the recovery in the test.
         poller = cm._start_nonbinance_trend_poller(
             cpm, ["HYPEUSD"], interval_sec=0.3, fetch_deadline_sec=0.5,
@@ -356,10 +350,9 @@ class TestFetchDeadline(unittest.TestCase):
         )
 
         # 2. find_duplicate_ai_open_limit_order normalizes lowercase side and case-insensitive clientOrderId
-        class _DummyInst:
-            @staticmethod
-            def open_orders():
-                return [
+        dup_oid = find_duplicate_ai_open_limit_order(
+            SimpleNamespace(
+                open_orders=lambda: [
                     {
                         "orderId": "9001",
                         "side": "SELL",
@@ -370,9 +363,7 @@ class TestFetchDeadline(unittest.TestCase):
                         "clientOrderId": "AI_ABC123DEF",
                     }
                 ]
-
-        dup_oid = find_duplicate_ai_open_limit_order(
-            _DummyInst(),
+            ),
             side="sell",
             limit_price=50.0,
             notional_usd=100.0,

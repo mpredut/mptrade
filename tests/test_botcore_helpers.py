@@ -678,14 +678,8 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
     assert vwap_or_fallback("nan", 2.0, "bad") == pytest.approx(0.0)
 
     # 3. should_wait_short_trend evaluates short trend deferral
-    class DummyShortTM:
-        def __init__(self, wait_res):
-            self.wait_res = wait_res
-        def should_wait(self, side, symbol, **kw):
-            return self.wait_res
-
-    assert should_wait_short_trend(DummyShortTM(True), "SELL", "BTCUSDC") is True
-    assert should_wait_short_trend(DummyShortTM(False), "SELL", "BTCUSDC") is False
+    assert should_wait_short_trend(SimpleNamespace(should_wait=lambda side, symbol, **kw: True), "SELL", "BTCUSDC") is True
+    assert should_wait_short_trend(SimpleNamespace(should_wait=lambda side, symbol, **kw: False), "SELL", "BTCUSDC") is False
 
     # 4. load_local_module supports custom module_key and register=False, and ensure_local_module_priority evicts foreign modules
     from botcore import ensure_local_module_priority
@@ -763,14 +757,13 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
     assert max_stale_duration == pytest.approx(0.0)
     assert stale_file == ""
 
-    class DummyRunner:
-        last_step_ts = 0.0
-        calls = 0
-        def _step(self, x):
-            self.calls += x
-            return {"count": self.calls}
+    runner = SimpleNamespace(last_step_ts=0.0, calls=0)
 
-    runner = DummyRunner()
+    def _step(x):
+        runner.calls += x
+        return {"count": runner.calls}
+
+    runner._step = _step
     res = {}
     ran = run_scheduled_step(
         runner,
@@ -988,12 +981,8 @@ class HttpResilienceTest(unittest.TestCase):
         self.assertNotIn("POST", {str(m).upper() for m in allowed})
 
     def test_best_effort_returns_false_without_raising(self):
-
-        class _BadSession:
-            def mount(self, *_a, **_k):
-                raise RuntimeError("cannot mount")
-
-        self.assertFalse(mount_connect_retry(_BadSession()))
+        bad_sess = SimpleNamespace(mount=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cannot mount")))
+        self.assertFalse(mount_connect_retry(bad_sess))
 
 
 if __name__ == "__main__":
@@ -1222,12 +1211,7 @@ def test_providers_http_resilience_mount_connect_retry_with_string_numbers_and_r
     from providers import base as hr
     # 3. providers.http_resilience.mount_connect_retry with string numbers and raise_on_status="false"
     mounted = {}
-
-    class _DummySession:
-        def mount(self, prefix, adapter):
-            mounted[prefix] = adapter
-
-    sess = _DummySession()
+    sess = SimpleNamespace(mount=lambda prefix, adapter: mounted.__setitem__(prefix, adapter))
     assert hr.mount_connect_retry(
         sess,
         attempts="3",

@@ -156,13 +156,10 @@ class TestTrailing(Base):
 
     def test_refusals_and_execution_variations(self):
         with self.subTest(msg="typed_filter_refusal_does_not_enter_order_recovery"):
-            class RefusingPo(FakePo):
-                def place(self, symbol, side, price, qty, force=False, **kwargs):
-                    kwargs["_outcome_context"].update(
-                        state="refused", reason="below_min_notional")
-                    return None
-
-            self.po = RefusingPo()
+            self.po = FakePo()
+            self.po.place = lambda symbol, side, price, qty, force=False, **kwargs: (
+                kwargs["_outcome_context"].update(state="refused", reason="below_min_notional")
+            )
             ts = self.ts(FakeApi(190.0))
             persisted = []
             result = ts.execute_sell(
@@ -264,9 +261,7 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="core_rebuy_for_falls_back_to_global_without_adapter_method"):
             self.tearDown(); self.setUp()
-            class Bare:  # no rebuy_enabled_for attribute
-                pass
-            core = TrailingCore(Bare(), log=lambda *_: None, enabled=True, state_file=self.sf,
+            core = TrailingCore(SimpleNamespace(), log=lambda *_: None, enabled=True, state_file=self.sf,
                                 min_notional=11.0, rebuy_enabled=True, rebuy_bounce_pct=1.2,
                                 rebuy_skip_if_trend_down=True, sell_skip_if_trend_up=False,
                                 sell_fraction=1.0, item_isolation=True, min_profit_pct=0.0)
@@ -503,10 +498,8 @@ class TestMinProfit(Base):
 
         with self.subTest(msg="warmup_arms_from_real_cost_basis"):
             self.tearDown(); self.setUp()
-            class PoWithBasis(FakePo):
-                def position_cost_basis(self, symbol, held_qty, since_s, **kwargs):
-                    return 200.0 if held_qty == 5 else None
-            self.po = PoWithBasis()
+            self.po = FakePo()
+            self.po.position_cost_basis = lambda symbol, held_qty, since_s, **kwargs: 200.0 if held_qty == 5 else None
             api = FakeApi(250.0)
             ts = self.ts(api, min_profit_pct=5.0)
             ts.check_once()                    # is_new: cost_basis=200 -> warmup 210 < 250 -> ARMED, peak=250

@@ -434,74 +434,85 @@ def test_order_id_context__base36_parses_float_strings_and_resolve_order_owner_t
     assert rc.is_order_repriceable_by_monitororder("None") is True
 
 
+class _StubVenueProvider(MarketDataProvider):
+    def __init__(self, venue_name: str = "Kraken", *, supported_symbol: str = ""):
+        self._name = venue_name
+        self._supported_symbol = supported_symbol.strip().upper()
+        self.canceled = []
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def supports_symbol(self, symbol: str) -> bool:
+        return bool(self._supported_symbol) and str(symbol or "").strip().upper() == self._supported_symbol
+
+    def _fetch_current_price(self, symbol: str):
+        return 150.0
+
+    def free_balance(self, asset: str):
+        return 1000.0
+
+    def reconciliation_capabilities(self):
+        from providers.strategy_executor import OrderReconciliationCapabilities
+
+        return OrderReconciliationCapabilities(
+            lookup_by_client_order_id=True,
+            status_by_order_id=True,
+            cancel_by_order_id=True,
+            list_open_orders=True,
+        )
+
+    def open_orders(self, symbol: str):
+        now_ms = int(time.time() * 1000)
+        return [
+            {
+                "orderId": "K-101",
+                "clientOrderId": "TA_sol_1",
+                "side": "BUY",
+                "price": 148.5,
+                "origQty": 2.0,
+                "executedQty": 0.5,
+                "time": now_ms - 900_000,
+            },
+            {
+                "orderId": "K-102",
+                "clientOrderId": "RT_sol_2",
+                "side": "BUY",
+                "price": 147.0,
+                "origQty": 1.0,
+                "executedQty": 0.0,
+                "time": now_ms - 900_000,
+            },
+            {
+                "orderId": "K-103",
+                "clientOrderId": "TA_sol_3",
+                "side": "BUY",
+                "price": 149.0,
+                "origQty": 1.0,
+                "executedQty": 0.0,
+                "time": now_ms - 30_000,
+            },
+        ]
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        self.canceled.append((symbol, order_id))
+
+    def get_orders(self, symbol, side, since_s, **kwargs):
+        return [{"symbol": symbol, "side": side or "BUY", "price": 150.0, "qty": 1.0}]
+
+    def fetch_ohlc_candles(self, symbol: str, interval=60, *, drop_incomplete: bool = True, **kwargs):
+        self.calls.append((symbol, interval, drop_incomplete, kwargs))
+        return [{"timestamp": 1700000000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+
+    def fetch_intraday_chart(self, symbol: str, *, rng: str = "5d", interval: str = "5m"):
+        return {"symbol": symbol, "rng": rng, "interval": interval}, [(1700000000, 10.5, 100.0)]
+
+
 def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
     """Verify MarketApi.get_open_orders, cancel_open_orders, and cancel_expired_orders across venue shapes."""
-    from providers.strategy_executor import OrderReconciliationCapabilities
-
-    class _DummyProvider(MarketDataProvider):
-        def __init__(self):
-            self.canceled = []
-
-        @property
-        def name(self) -> str:
-            return "Kraken"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return str(symbol or "").strip().upper() == "SOL/USD"
-
-        def _fetch_current_price(self, symbol: str):
-            return 150.0
-
-        def free_balance(self, asset: str):
-            return 1000.0
-
-        def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
-            return OrderReconciliationCapabilities(
-                lookup_by_client_order_id=True,
-                status_by_order_id=True,
-                cancel_by_order_id=True,
-                list_open_orders=True,
-            )
-
-        def open_orders(self, symbol: str):
-            now_ms = int(time.time() * 1000)
-            return [
-                {
-                    "orderId": "K-101",
-                    "clientOrderId": "TA_sol_1",
-                    "side": "BUY",
-                    "price": 148.5,
-                    "origQty": 2.0,
-                    "executedQty": 0.5,
-                    "time": now_ms - 900_000,
-                },
-                {
-                    "orderId": "K-102",
-                    "clientOrderId": "RT_sol_2",
-                    "side": "BUY",
-                    "price": 147.0,
-                    "origQty": 1.0,
-                    "executedQty": 0.0,
-                    "time": now_ms - 900_000,
-                },
-                {
-                    "orderId": "K-103",
-                    "clientOrderId": "TA_sol_3",
-                    "side": "BUY",
-                    "price": 149.0,
-                    "origQty": 1.0,
-                    "executedQty": 0.0,
-                    "time": now_ms - 30_000,
-                },
-            ]
-
-        def cancel_order(self, symbol: str, order_id: str) -> None:
-            self.canceled.append((symbol, order_id))
-
-        def get_orders(self, symbol, side, since_s, **kwargs):
-            return [{"symbol": symbol, "side": side or "BUY", "price": 150.0, "qty": 1.0}]
-
-    prov = _DummyProvider()
+    prov = _StubVenueProvider("Kraken", supported_symbol="SOL/USD")
     facade = MarketApi([prov])
     ta_orders = facade.get_open_orders("BUY", "SOL/USD", allowed_owners={"tradeall"})
     assert set(ta_orders.keys()) == {"K-101", "K-103"}
@@ -523,27 +534,10 @@ def test_market_api_open_order_scoping_and_expired_cancel_across_venues():
 
 
 def test_market_api_polymorphic_fetch_ohlc_candles_routes_across_venues():
-
-    class _DummyOHLCProvider(MarketDataProvider):
-        def __init__(self, venue_name: str):
-            self._name = venue_name
-            self.calls = []
-
-        @property
-        def name(self) -> str:
-            return self._name
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return False
-
-        def fetch_ohlc_candles(self, symbol: str, interval=60, *, drop_incomplete: bool = True, **kwargs):
-            self.calls.append((symbol, interval, drop_incomplete, kwargs))
-            return [{"timestamp": 1700000000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
-
-    p_bn = _DummyOHLCProvider("Binance")
-    p_kr = _DummyOHLCProvider("Kraken")
-    p_hl = _DummyOHLCProvider("Hyperliquid")
-    p_t2 = _DummyOHLCProvider("T212")
+    p_bn = _StubVenueProvider("Binance")
+    p_kr = _StubVenueProvider("Kraken")
+    p_hl = _StubVenueProvider("Hyperliquid")
+    p_t2 = _StubVenueProvider("T212")
     facade = MarketApi(providers=[p_bn, p_kr, p_hl, p_t2])
 
     assert len(facade.fetch_ohlc_candles("BTCUSDC", 240, start_ms=100, provider_name="binance")) == 1
@@ -629,18 +623,7 @@ def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
     assert MarketDataProvider.resolve_venue_tca_price_decimals("hyperliquid", 25.0) == 3
     assert MarketDataProvider.resolve_venue_tca_price_decimals("binance", 0.05) == 6
 
-    class _ChartProv(MarketDataProvider):
-        @property
-        def name(self) -> str:
-            return "T212"
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return False
-
-        def fetch_intraday_chart(self, symbol: str, *, rng: str = "5d", interval: str = "5m"):
-            return {"symbol": symbol, "rng": rng, "interval": interval}, [(1700000000, 10.5, 100.0)]
-
-    facade = MarketApi(providers=[_ChartProv()])
+    facade = MarketApi(providers=[_StubVenueProvider("T212")])
     meta, bars = facade.fetch_intraday_chart("NVDA", rng="5d", interval="5m")
     assert meta == {"symbol": "NVDA", "rng": "5d", "interval": "5m"}
     assert bars == [(1700000000, 10.5, 100.0)]

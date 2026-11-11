@@ -1,5 +1,6 @@
 """Unit tests for Centralized PositionExitManager (MHDSL Stop-Loss & MDHTP Take-Profit Mirror)."""
 
+from types import SimpleNamespace
 import unittest
 
 from strategies.position_exit_manager import (
@@ -1175,13 +1176,16 @@ def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guar
         lambda inst, side, px, q, mq, **kw: (captured_bypasses.append(kw.get("bypass_guards")) or True),
     )
 
-    class _DummyInst:
-        symbol = "TAOUSDC"
-
-        def param(self, ns, key, default=None, cast=None):
-            return default
-
-    mt._execute_reentry_buy(_DummyInst(), "TAOUSDC", 200.0, 5.0, 0.01, 3600.0, "STOP", {"sell_time": 1000.0})
+    mt._execute_reentry_buy(
+        SimpleNamespace(symbol="TAOUSDC", param=lambda ns, key, default=None, cast=None: default),
+        "TAOUSDC",
+        200.0,
+        5.0,
+        0.01,
+        3600.0,
+        "STOP",
+        {"sell_time": 1000.0},
+    )
     assert captured_bypasses == [{"G_PROF"}]
 
 
@@ -1256,13 +1260,7 @@ def test_get_post_stop_reentry_guard_honors_llm_guard_mode_and_intelligence_guar
         encoding="utf-8",
     )
     gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow")
-
-    class _FakeInst:
-        symbol = "TAOUSD"
-        base = "TAO"
-        _provider = None
-
-    assert gw._get_live_price(_FakeInst()) == pytest.approx(245.5)
+    assert gw._get_live_price(SimpleNamespace(symbol="TAOUSD", base="TAO", _provider=None)) == pytest.approx(245.5)
 
 def test_positionexitmanager__evaluate_stop_loss_core_sets_sl_timer_expired_true_and_prioritizes_timeout_iter16_s2():
     """[ITER16 #2] PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break."""
@@ -1493,20 +1491,19 @@ def test_positionexitmanager_preserves_started_at_across_subsequent_ticks_withou
 
 def test_monitortrades__apply_post_stop_ai_guard_sanitizes_post_sell_trough_nan_iter33_s3(monkeypatch):
     """[ITER33 #3] monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN."""
-    from types import SimpleNamespace
     # 3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN
     captured_trough = []
-
-    class _DummyPSGuard:
-        mode = "enforce"
-
-        def check(self, **kwargs):
+    dummy_ps_guard = SimpleNamespace(
+        mode="enforce",
+        check=lambda **kwargs: (
             captured_trough.append(kwargs.get("trough"))
-            return SimpleNamespace(allowed=True, scale=1.0, reason="ok")
+            or SimpleNamespace(allowed=True, scale=1.0, reason="ok")
+        ),
+    )
 
     import intelligence.sentiment.guards.post_stop_reentry_guard as ps_mod
     import intelligence.sentiment.guards.high_stake_guard as hs_mod
-    monkeypatch.setattr(ps_mod, "get_post_stop_reentry_guard", lambda: _DummyPSGuard())
+    monkeypatch.setattr(ps_mod, "get_post_stop_reentry_guard", lambda: dummy_ps_guard)
     monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
     monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst: False)
 

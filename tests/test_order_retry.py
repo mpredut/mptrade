@@ -1506,21 +1506,14 @@ def test_extract_order_restore_params_normalizes_string_level_to_float_and_rejec
 def test_accepted_order_persistence__accepted_is_durable_normalizes_ids_rejects_sentinels_iter149_s2():
     """[ITER149 #2] accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels."""
     # 2. accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels
-    class DummyRetryMod:
-        def __init__(self, records):
-            self._records = records
-
-        def load_all(self):
-            return self._records
-
     claim = {"id": "1001.0", "place_kwargs": {"client_order_id": "CID-1"}}
-    mod_ok = DummyRetryMod(
-        [{"id": "1001", "lifecycle": "accepted", "order_id": "777", "place_kwargs": {"client_order_id": "CID-1"}}],
+    mod_ok = SimpleNamespace(
+        load_all=lambda: [{"id": "1001", "lifecycle": "accepted", "order_id": "777", "place_kwargs": {"client_order_id": "CID-1"}}]
     )
     assert ol._accepted_is_durable(mod_ok, claim, {"orderId": 777.0}) is True
 
-    mod_bad_sentinel = DummyRetryMod(
-        [{"id": "1001", "lifecycle": "accepted", "order_id": "0", "place_kwargs": {"client_order_id": "CID-1"}}],
+    mod_bad_sentinel = SimpleNamespace(
+        load_all=lambda: [{"id": "1001", "lifecycle": "accepted", "order_id": "0", "place_kwargs": {"client_order_id": "CID-1"}}]
     )
     assert ol._accepted_is_durable(mod_bad_sentinel, claim, {"orderId": "0"}) is False
 
@@ -1531,14 +1524,6 @@ def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context
     orig_dir = ol.ORDER_OUTCOMES_LOG_DIR
     ol.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
     try:
-        class DummyRegimeCtx:
-            regime = "UP"
-            strength = 0.75
-            source = "short"
-            fresh = None
-            fallback_used = None
-            reason = "ok"
-
         ol.log_order_outcome(
             "BTCUSDC",
             "BUY",
@@ -1548,7 +1533,14 @@ def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context
             ["bad"],
             "nan",
             caller=None,
-            regime_context=DummyRegimeCtx(),
+            regime_context=SimpleNamespace(
+                regime="UP",
+                strength=0.75,
+                source="short",
+                fresh=None,
+                fallback_used=None,
+                reason="ok",
+            ),
         )
         files = glob.glob(str(tmp_path / "outcomes" / "order_outcomes_*.log"))
         assert len(files) == 1
@@ -1706,14 +1698,6 @@ def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_pric
     assert ol._clean_numeric_field("not-a-number") == ""
     assert ol._clean_numeric_field("60000.5") == "60000.5"
 
-    class _RegCtx:
-        regime = "BULL|STRONG"
-        strength = 0.75
-        source = "None"
-        fresh = "false"
-        fallback_used = 1
-        reason = "nan"
-
     ol.log_order_outcome(
         "BTCUSDC",
         "BUY",
@@ -1723,7 +1707,14 @@ def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_pric
         "short_trend",
         "test",
         caller="unit",
-        regime_context=_RegCtx(),
+        regime_context=SimpleNamespace(
+            regime="BULL|STRONG",
+            strength=0.75,
+            source="None",
+            fresh="false",
+            fallback_used=1,
+            reason="nan",
+        ),
     )
     log_files = list(tmp_path.glob("order_outcomes_*.log"))
     assert len(log_files) == 1
@@ -1738,20 +1729,16 @@ def test_order_outcomes_log_sanitizes_regime_context_fields_and_non_numeric_pric
 def test_accepted_order_persistence_complete_claim_returning_false_is_not_treated_as_iter161_s2(monkeypatch):
     """[ITER161 #2] accepted_order_persistence: complete_claim returning 'false' is not treated as success."""
     # 2. accepted_order_persistence: complete_claim returning "false" is not treated as success
-    class _FakeRetry:
-        @staticmethod
-        def complete_claim(claim, status, **kw):
-            return "false"
-
-        @staticmethod
-        def load_all():
-            return None
+    fake_retry = SimpleNamespace(
+        complete_claim=lambda claim, status, **kw: "false",
+        load_all=lambda: None,
+    )
 
     monkeypatch.setattr(ol.time, "sleep", lambda _s: None)
     notified = []
     monkeypatch.setattr(ol.alert, "notify", lambda **kw: notified.append(kw))
     ok = ol.complete_accepted_claim(
-        _FakeRetry,
+        fake_retry,
         {"id": "c1", "qty": float("nan"), "requested_price": True, "place_kwargs": {"client_order_id": "cid-1"}},
         order={"orderId": 555},
         provider_name="Binance",
@@ -1805,34 +1792,15 @@ def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_contex
 def test_instrument__parse_bool_flag_side_aliases_bid_ask_decimal_free_balance_iter171_s2(monkeypatch):
     """[ITER171 #2] Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders='false', and GT_M dict/case."""
     from decimal import Decimal
-    from providers.base import MarketDataProvider
     from providers.market_api import MarketApi
     from providers.quantity import QuantityDecision
     # 2. Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders="false", and GT_M dict/case
     qd_calls = []
+    test_prov = DummySpotExecutionProvider("TestProv", free_bal=Decimal("500.0"))
+    test_prov.quantity_decision = lambda symbol, side, price, qty, **kw: qd_calls.append(kw) or QuantityDecision(1.0, 5.0, 1.0, 5.0, 1.0)
+    test_prov.place_order = lambda symbol, side, price, qty, force=False, **kw: {"orderId": "777", "side": side, "qty": qty}
 
-    class _TestProvider(MarketDataProvider):
-        @property
-        def name(self):
-            return "TestProv"
-
-        def get_current_price(self, symbol):
-            return 100.0
-
-        def supports_symbol(self, symbol):
-            return True
-
-        def free_balance(self, asset):
-            return Decimal("500.0")
-
-        def quantity_decision(self, symbol, side, price, qty, **kw):
-            qd_calls.append(kw)
-            return QuantityDecision(1.0, 5.0, 1.0, 5.0, 1.0)
-
-        def place_order(self, symbol, side, price, qty, force=False, **kw):
-            return {"orderId": "777", "side": side, "qty": qty}
-
-    test_api = MarketApi([_TestProvider()])
+    test_api = MarketApi([test_prov])
     inst = inst_mod.Instrument(
         name="BTCUSDC",
         symbol="BTCUSDC",
