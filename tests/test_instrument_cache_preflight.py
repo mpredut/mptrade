@@ -20,17 +20,7 @@ import order_retry_worker
 import priceAnalysis as pa
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
-from tests.conftest import TempDirTestCase
-
-
-class _Api:
-    def __init__(self, provider):
-        self.provider = provider
-
-    def provider_by_name(self, name):
-        if name.lower() == self.provider.name.lower():
-            return self.provider
-        return None
+from tests.conftest import SingleProviderApi as _Api, TempDirTestCase
 
 
 class _StaleCacheProvider(MarketDataProvider):

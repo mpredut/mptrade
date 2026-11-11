@@ -28,6 +28,7 @@ from providers.t212_provider import T212Provider
 from botcore import load_local_module
 from tests.conftest import load_venue_modules
 from types import SimpleNamespace
+from cacheaccount import CacheTradeManager
 
 
 class FakeT212Client:
@@ -671,7 +672,6 @@ class T212ClientTransportTest(unittest.TestCase):
 
             def _fake_refresh(*, max_age_sec=None):
                 refresh_calls.append(max_age_sec)
-                from cacheaccount import CacheTradeManager
                 CacheTradeManager.merge_venue_fills_snapshot(
                     trade_cache_file,
                     {

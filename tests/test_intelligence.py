@@ -162,6 +162,9 @@ from strategies.mt_position_accounting import _update_mt_reentry_state
 from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
 from trailing_core import TrailingCore
 from verify_tools import inspect_prod_fleet
+import credentials
+import instrument_registry
+import intelligence.macro.daemon_ssot as daemon_ssot
 
 
 class TestIntelligenceTriggers(unittest.TestCase):
@@ -1178,7 +1181,6 @@ def test_iter45_hl_spot_fallbacks_portfolio_per_symbol_fills_and_interval_plus_s
 
 
 def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_casefold(tmp_path, monkeypatch):
-    import intelligence.macro.daemon_ssot as daemon_ssot
     from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
     from providers.base import PairPrecision
     from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
@@ -1582,7 +1584,6 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
 
 
 def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_ssot_monkeypatch(monkeypatch, tmp_path):
-    import intelligence.macro.daemon_ssot as daemon_ssot
     import intelligence.sentiment.collectors.portfolio_collector as pc_mod
 
     root_dir = os.path.dirname(os.path.dirname(__file__))
@@ -4866,7 +4867,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     assert sym_mod.__name__ == "instrument_registry"
 
     # 2. credentials reload refreshes module attributes cleanly
-    import credentials
     reloaded_creds = importlib.reload(credentials)
     assert reloaded_creds is credentials
 
@@ -4972,7 +4972,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
 
 def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes(tmp_path, monkeypatch, capsys):
     import binance_api
-    import instrument_registry
 
     # 1. Reloading host modules refreshes Package E/H aliases in sys.modules and parent packages
     ir_reloaded = importlib.reload(instrument_registry)
@@ -5135,8 +5134,6 @@ def test_iter11_cited_taker_buying_ratio_and_first_person_plural_advice_column_e
 def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
     tmp_path, monkeypatch
 ):
-    import credentials
-    import instrument_registry
     import symbols
 
     # 1. symbols facade attributes (`forcesellsymbol`, `<base>symbol`), monkeypatch undo dynamic resolution,

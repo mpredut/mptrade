@@ -295,6 +295,18 @@ def load_venue_modules(venue_subdir: str, *module_names: str):
                 sys.modules[k] = v
 
 
+class SingleProviderApi:
+    """Minimal ``api`` test stub exposing ``provider_by_name`` for ``Instrument`` and registry tests."""
+
+    def __init__(self, provider):
+        self.provider = provider
+
+    def provider_by_name(self, name):
+        if str(name or "").casefold() == str(self.provider.name).casefold():
+            return self.provider
+        return None
+
+
 class _TempDirPath(str):
     """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
 

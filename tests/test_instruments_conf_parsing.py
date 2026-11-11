@@ -18,8 +18,9 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
-from tests.conftest import TempDirTestCase
+from tests.conftest import SingleProviderApi, TempDirTestCase
 from types import SimpleNamespace
+from providers.quantity import QuantityDecision
 
 
 NUMERIC_MT_KEYS = [
@@ -37,10 +38,8 @@ class _Provider:
             raise ValueError("empty symbol")
 
 
-class _Api:
-    @staticmethod
-    def provider_by_name(name):
-        return _Provider() if name.casefold() == "fake" else None
+def _Api():
+    return SingleProviderApi(_Provider())
 
 
 def section(name="BINANCE_TEST", **overrides):
@@ -765,7 +764,6 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
         def profit_guard_window_ref(self, *a, **k):
             return None
         def quantity_decision(self, symbol, side, price, qty, **kw):
-            from providers.quantity import QuantityDecision
             return QuantityDecision(
                 requested_qty=float(qty or 1.0),
                 balance_cap=100.0,

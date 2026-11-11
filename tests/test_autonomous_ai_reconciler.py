@@ -97,6 +97,7 @@ from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.agy.topics import topic_spec
 from providers.order_ohlc_utils import extract_executed_qty, extract_order_side, normalize_open_order
 from verify_tools import portfolio_snapshot, watch_trade_decisions
+from orchestratorOS.supervisor.prompt_formatters import _format_market_prices_section, _format_microstructure_section
 
 
 @pytest.fixture
@@ -4169,10 +4170,6 @@ def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(t
 
 
 def test_iteration19_sibling_diverged_micro_px_and_lazy_prompt_vp_liq_formatting():
-    from orchestratorOS.supervisor.prompt_formatters import (
-        _format_market_prices_section,
-        _format_microstructure_section,
-    )
 
     # 1. sync_sibling_symbol_telemetry does not copy USD ob_mid_price/walls onto a >10% diverged EUR sibling
     prices = {
@@ -4701,10 +4698,6 @@ def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_deri
 
 
 def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
-    from orchestratorOS.supervisor.prompt_formatters import (
-        _format_market_prices_section,
-        _format_microstructure_section,
-    )
 
     # 1. Section 3A groups USD siblings (BTCUSDC, XBTUSD) separately from EUR siblings (BTCEUR, XBTEUR)
     lines_3a = _format_market_prices_section(

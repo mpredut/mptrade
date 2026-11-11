@@ -29,6 +29,8 @@ import intelligence.macro_sentiment_ssot as mss
 from providers.binance_provider import BinanceProvider
 from providers.order_ohlc_utils import derive_venue_128bit_client_order_id, format_venue_intent_client_order_id, resolve_ohlc_time_window_ms
 from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
+from providers import order_id_context as oic
+import order_guard
 
 
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
@@ -941,7 +943,6 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
     import intelligence.macro.geopolitical_analyzer as geo_an_mod
     import intelligence.macro.geopolitical_guard as geo_gd_mod
     import llm_order_guard
-    import order_guard
     import order_retry
     import utils
     from market_regime import MarketRegimeHorizon, MarketRegimeService
@@ -1450,8 +1451,6 @@ def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
     from intelligence.sentiment.evaluators import microstructure_evaluator as me_mod
     from market_monitor.new_coins_discovery import NewCoinsFactory
     from market_monitor.pricefetcher import StockYahooPricePlatform
-    import order_guard
-    from providers import order_id_context as oic
     import visuals.tradeall_observe as tobs
 
     # 1. microstructure_evaluator.enrich_cross_venue_trends honors survival.estimate_T monkeypatches
@@ -1514,7 +1513,6 @@ def test_botcore_reexport_sync_t212_check_market_and_shadow_env_border_cases(
     from instrument import Instrument
     from kraken import shadow_live as kraken_shadow
     import offline.backtests.evaluation as ev
-    from providers import order_id_context as oic
     import state_io
     from verify_tools import monitor_night
 

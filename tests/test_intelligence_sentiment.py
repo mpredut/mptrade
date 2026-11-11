@@ -121,6 +121,7 @@ from intelligence.macro_sentiment_ssot import extract_high_severity_headlines_an
 from intelligence.sentiment.guards import high_stake_guard as hsg_mod
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 from market_regime import MarketRegimeContext, MarketRegimeDecision
+from intelligence.internal.guards.guard_decision import GuardDecision
 
 
 class TestFearGreedCollector:
@@ -9401,7 +9402,6 @@ def test_compositemarketintelligence_evaluate_guards_forwards_dur_sec_and_now_to
 
         def check(self, symbol, side, price, qty, **kwargs):
             captured_gemini_kwargs.update(kwargs)
-            from intelligence.internal.guards.guard_decision import GuardDecision
             return GuardDecision.allow("HighStakeGuard", "spy_ok")
 
     comp = CompositeMarketIntelligence(gemini_guard=_SpyGeminiGuard())

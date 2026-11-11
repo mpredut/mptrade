@@ -118,6 +118,10 @@ from strategies.rtrade_pair import PairCoordinator, PairPolicy
 from strategies.spot_replay import align_spot_interval_params
 from verify_tools import pnl_report, portfolio_snapshot
 from visuals import drawprices
+from market_monitor import pricefetcher as pf
+from offline.research.monitortrades_backtest import scheduled_pilot as sp
+import offline.research.kraken_continuous_grid.grid as kgrid
+import urllib.request
 
 
 def test_t212_report_empty_directory(tmp_path):
@@ -218,7 +222,6 @@ def test_execution_calibration_distribution_none_handling():
 
 def test_scheduled_pilot_run_one_delegates_to_run_symbol():
     """scheduled_pilot._run_one delegates directly to run_replay_backtest.run_symbol(..., series=...)."""
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     cfg = rb.SYMBOLS["BTCUSDC"]
     series = [(1_700_000_000.0 + i * 60.0, 50_000.0 + (i % 5) * 100.0) for i in range(30)]
@@ -501,7 +504,6 @@ def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
 def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
     """Backtest/replay modes strictly block real Gemini CLI/REST calls and external notifications."""
     import subprocess
-    import urllib.request
 
     # 1. GeminiClient must not invoke subprocess.run or urlopen when BACKTEST_MODE/REPLAY_MODE/DISABLE_GEMINI_LLM is set
     monkeypatch.setattr(
@@ -565,7 +567,6 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
 
 def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monkeypatch):
     """spot_replay exports prewarm_trend_series and kraken_continuous_grid.grid.load_asset succeeds over >WARM bars."""
-    import offline.research.kraken_continuous_grid.grid as kgrid
     from strategies import spot_replay as krp
 
     assert hasattr(krp, "prewarm_trend_series")
@@ -588,7 +589,6 @@ def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monke
 
 def test_research_scripts_do_not_monkeypatch_at_import_time():
     """Importing research grid scripts must not leave Strategy.step mutated."""
-    import offline.research.kraken_continuous_grid.grid as kgrid
 
     assert spot_engine.Strategy.step is kgrid._orig_step
 
@@ -715,7 +715,6 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
 def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     """Verify run_equities BASE_CONFIG, BacktestBroker unbacked SELL guard, and scheduled_pilot diag cache isolation."""
     from offline.backtests.tradeall import BacktestBroker
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 1. run_equities.BASE_CONFIG must satisfy 212trading StratParams.from_env
     strat_mod, _rp = run_equities._import_t212()
@@ -779,7 +778,6 @@ def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
     from offline.research import slice_dense_archive as sda
     from offline.research.hybrid_reentry import harness as hh
     from offline.research.ml_forecast import priceprediction as ml_pp
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 1. scheduled_pilot._last_change_for ignores non-dict JSON lines
     audit_path = tmp_path / "audit.jsonl"
@@ -1036,7 +1034,6 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
     """Verify inline comment/interpolation handling in scheduled_pilot, run_replay_backtest, trade_cooldown, and hl signals fallback."""
 
     from offline.research.monitortrades_backtest import run_replay_backtest as rrb
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     conf_file = tmp_path / "instruments.conf"
     conf_file.write_text(
@@ -3067,7 +3064,6 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
 
 
 def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_path):
-    from market_monitor import pricefetcher as pf
 
     # 1. BinancePricePlatform._load_symbols ignores None/non-string symbol and baseAsset
     class _FakeBinanceResp:
@@ -3973,7 +3969,6 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
 
 def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_hardening(tmp_path, monkeypatch):
     from offline.research.kraken_continuous_grid import report as k_rep1
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 3. kraken_continuous_grid report.py and report3.py handle malformed/null nested full/year/0.26 payloads
     exp_dir = tmp_path / "kgrid"
@@ -4023,7 +4018,6 @@ def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_harden
 
 
 def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(tmp_path, monkeypatch):
-    import urllib.request
     import verify_tools.check_cache_coherence as ccc
     import verify_tools.watch_trade_decisions as wtd
 
@@ -4223,8 +4217,6 @@ def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
 
 
 def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_path, monkeypatch):
-    import urllib.request
-    from market_monitor import pricefetcher as pf
     from kraken import trailing_stop as k_ts
     from kraken import kraken_xstock_watch as k_xw
     from notify_engine.alertnotifiers import AlertNotifier
@@ -5815,7 +5807,6 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
 def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monkeypatch, tmp_path):
     """Verify upward-trend epsilon k clamping, pilot rate-limit SSOT, and hybrid reentry interval alignment."""
     from offline.research.monitortrades_backtest.replay_trend_source import UPWARD_EPSILON_K, resolve_upward_eps_k
-    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
     # 1. Negative MPTRADE_UPWARD_EPSILON_K clamps to UPWARD_EPSILON_K (0.25) in both modules
     monkeypatch.setenv("MPTRADE_UPWARD_EPSILON_K", "-5.0")

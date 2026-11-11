@@ -37,6 +37,7 @@ from intelligence.external.collectors.whale_positioning_collector import WhalePo
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 from pathlib import Path
+import numpy as np
 
 
 _BASE_MARGINS = dict(order_guard._load_margins())
@@ -262,7 +263,6 @@ class TestCacheSafetyAndHotReload:
         def mock_get_trade_weight(**kw):
             nonlocal calc_called
             calc_called = True
-            import numpy as np
             return np.array([0]), np.array([0.77])
 
         monkeypatch.setattr(priceAnalysis, "get_trade_weight", mock_get_trade_weight)
