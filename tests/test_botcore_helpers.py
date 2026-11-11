@@ -1,36 +1,75 @@
+from collections import OrderedDict
+from decimal import Decimal
+import importlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
-import urllib.error
+import threading
+import types
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
+import urllib.error
 
 import pytest
+import requests
 
-from notify_engine import alertnotifiers
 import botcore
-from botcore import load_env_stack, normalize_scalar_order_id, parse_dotenv
+from botcore import (
+    clean_order_id_str,
+    ensure_local_module_priority,
+    extract_current_price_item,
+    is_interval_due,
+    is_us_rth_open,
+    load_env_stack,
+    load_local_module,
+    normalize_scalar_order_id,
+    parse_dotenv,
+    resolve_order_notional,
+    safe_float,
+)
+from cacheaccount import CacheTradeManager
 from cachepaths import (
     cache_path,
+    cachedb_root_for_file,
+    clean_symbol_key,
     get_cachedb_dir,
+    normalize_venue_name,
     organize_cachedb_subdomains,
     resolve_cache_subdomain,
     resolve_cachedb_filepath,
 )
+import credentials
 from credentials import (
     CredentialConfigurationError,
+    CredentialProfileMissingError,
     kraken_credentials,
+    resolve_credential_pair,
     t212_credentials,
 )
-import utils
+from intelligence.macro.daemon_ssot import run_scheduled_step
+import intelligence.macro_sentiment_ssot as mss
+from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
+import monitororder
+from notify_engine import alertnotifiers
+from notify_engine.alertnotifiers import strip_owner_tags
+from order_retry import exact_int
+from priceAnalysis import require_int
+from pricewindow import should_wait_short_trend
 from providers.base import mount_connect_retry
-from strategies.state_store import JsonStateStore
-import requests
-import sys
-from types import SimpleNamespace
+from providers.execution_audit import _json_safe_value, _parse_cache_max
+from providers.kraken_provider import KrakenProvider
+from providers.order_ohlc_utils import parse_ohlc_interval_minutes
+from state_io import exact_nonneg_int
+from strategies.state_store import JsonStateStore, StatePersistenceError
+from tests.conftest import DummyCachedHttpJsonCollector
+from trailing_core import vwap_or_fallback
+import utils
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,11 +237,8 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertIsNone(botcore.exact_int(5.5, None))
         self.assertIsNone(botcore.exact_pos_int(0, None))
         self.assertEqual(botcore.exact_nonneg_int(0, None), 0)
-        from cachepaths import normalize_venue_name
         self.assertEqual(normalize_venue_name(SimpleNamespace(name="Kraken_Spot")), "kraken")
         self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
-        from order_retry import exact_int
-        from state_io import exact_nonneg_int
         self.assertEqual(normalize_scalar_order_id(large_id), large_id)
         self.assertEqual(exact_int(large_id), large_id)
         self.assertEqual(exact_nonneg_int(large_id, default=None), large_id)
@@ -594,7 +630,6 @@ def test_t212_requires_both_halves():
 
 
 def test_monitororder_ttl_and_ordered_id_set():
-    import monitororder
     # Custom TTL parsing
     ttl = monitororder.resolve_effective_order_ttl("123", "client_456", custom_ttl_map={"123": "300"})
     assert ttl == 300.0
@@ -612,8 +647,6 @@ def test_monitororder_ttl_and_ordered_id_set():
 
 
 def test_kraken_cache_touch_ws_fetchtimes():
-    from cacheaccount import CacheTradeManager
-    from providers.kraken_provider import KrakenProvider
     pairs = KrakenProvider.resolve_cache_daemon_config()["pairs"]
     cache = {"items": {"TAOUSDC": []}, "fetchtime": {}}
     CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(cache, now_ms=1700000000, symbols=pairs, create_missing=True)
@@ -623,7 +656,6 @@ def test_kraken_cache_touch_ws_fetchtimes():
 
 
 def test_autonomous_intent_gateway_extract_price():
-    from botcore import extract_current_price_item
     assert extract_current_price_item(100.5) == 100.5
     assert extract_current_price_item({"price": "101.2"}) == 101.2
     assert extract_current_price_item({"c": 102.3}) == 102.3
@@ -635,7 +667,6 @@ def test_autonomous_intent_gateway_extract_price():
 
 
 def test_price_analysis_parse_strict_int():
-    from priceAnalysis import require_int
     assert require_int(5, error_msg="not integral") == 5
     assert require_int(5.0, error_msg="not integral") == 5
     assert require_int("5.0", error_msg="not integral") == 5
@@ -648,8 +679,6 @@ def test_price_analysis_parse_strict_int():
 
 
 def test_execution_audit_json_safe_value():
-    from decimal import Decimal
-    from providers.execution_audit import _json_safe_value, _parse_cache_max
     assert _json_safe_value(Decimal("123.45")) == 123.45
     assert _json_safe_value(Decimal("nan")) is None
     assert _json_safe_value(float("inf")) is None
@@ -658,11 +687,6 @@ def test_execution_audit_json_safe_value():
 
 
 def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_tags(tmp_path):
-    from botcore import load_local_module
-    from notify_engine.alertnotifiers import strip_owner_tags
-    from pricewindow import should_wait_short_trend
-    from trailing_core import vwap_or_fallback
-
     # 1. strip_owner_tags cleans bracketed and parenthesized bot attribution tags
     assert strip_owner_tags("[TRADEALL] BUY BTCUSDC") == " BUY BTCUSDC"
     assert strip_owner_tags("(MANUAL) SELL ETHUSDC") == " SELL ETHUSDC"
@@ -682,7 +706,6 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
     assert should_wait_short_trend(SimpleNamespace(should_wait=lambda side, symbol, **kw: False), "SELL", "BTCUSDC") is False
 
     # 4. load_local_module supports custom module_key and register=False, and ensure_local_module_priority evicts foreign modules
-    from botcore import ensure_local_module_priority
     mod_dir = tmp_path / "venue_mod"
     mod_dir.mkdir()
     (mod_dir / "sample_local.py").write_text("VALUE = 42\n", encoding="utf-8")
@@ -703,8 +726,6 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
 
 
 def test_shared_intelligence_and_agent_primitives_promoted_to_core():
-    from cachepaths import clean_symbol_key
-
     assert botcore.obj_float({"x": "12.5"}, "x") == pytest.approx(12.5)
     assert botcore.clean_json_value({"a": float("nan"), "b": [1.5, float("inf")]}) == {"a": None, "b": [1.5, None]}
     assert botcore.safe_thresh("75.4", 50) == 75
@@ -727,8 +748,6 @@ def test_shared_intelligence_and_agent_primitives_promoted_to_core():
 
 
 def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
-    from intelligence.macro.daemon_ssot import run_scheduled_step
-
     hb_path = tmp_path / "rtrade_BTCUSDC.heartbeat"
     ts = botcore.touch_heartbeat_file(
         str(hb_path),
@@ -790,8 +809,6 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
         result_key="step",
     ) is False
 
-    from tests.conftest import DummyCachedHttpJsonCollector
-    import intelligence.macro_sentiment_ssot as mss
     collector = DummyCachedHttpJsonCollector(
         60.0,
         60.0,
@@ -808,8 +825,6 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
 
 
 def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
-    import threading
-
     mod_path = tmp_path / "slow_venue_client.py"
     mod_path.write_text(
         "import time\n"
@@ -842,9 +857,6 @@ def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
 
 
 def test_canonical_package1_unified_primitives():
-    import types
-    from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
-
     # 1. strict_ascii_int
     assert botcore.strict_ascii_int(42, min_value=1) == 42
     assert botcore.strict_ascii_int(" 123 ", min_value=1) == 123
@@ -895,11 +907,6 @@ def test_canonical_package1_unified_primitives():
     ) == [[1000, 25.0]]
 
     # 5. Wave 2 primitives: require_*, clean_json_value, normalize_trend_direction, sanitizers, lru, order_id, cache root
-    from collections import OrderedDict
-    from botcore import clean_order_id_str
-    from cachepaths import cachedb_root_for_file
-    from providers.order_ohlc_utils import parse_ohlc_interval_minutes
-
     assert botcore.require_finite_float("3.5", "x") == 3.5
     assert botcore.require_pos_float("2.0", "x", min_value=1.5) == 2.0
     assert botcore.require_int("7", "n", min_value=1) == 7
@@ -938,7 +945,6 @@ def test_canonical_package1_unified_primitives():
     assert cachedb_root_for_file("/tmp/cachedb/trends/cache_trend.json") == "/tmp/cachedb"
     assert cachedb_root_for_file("/tmp/cachedb/system/heartbeat/hb.json") == "/tmp/cachedb"
 
-    import importlib
     saved_botcore_dict = dict(botcore.__dict__)
     try:
         pre_reload_resolve = botcore.resolve_patched_attr
@@ -998,7 +1004,6 @@ if __name__ == "__main__":
 
 def test_botcore_diff_percent_are_close_reject_bool_and_nan_iter47_s1():
     """[ITER47 #1] botcore: diff_percent, are_close reject bool and NaN."""
-    import math
     # 1. botcore: diff_percent, are_close reject bool and NaN
     assert math.isnan(botcore.diff_percent(1.0, True))
     assert math.isnan(botcore.diff_percent(float("nan"), 100.0))
@@ -1009,7 +1014,6 @@ def test_botcore_diff_percent_are_close_reject_bool_and_nan_iter47_s1():
 
 def test_credentials_resolve_credential_pair_rejects_boolean_values_instead_of_stringifying_iter63_s2():
     """[ITER63 #2] credentials.resolve_credential_pair rejects boolean values instead of stringifying True -> 'True'."""
-    from credentials import CredentialProfileMissingError, resolve_credential_pair
     # 2. credentials.resolve_credential_pair rejects boolean values instead of stringifying True -> "True"
     with pytest.raises(CredentialProfileMissingError):
         resolve_credential_pair(
@@ -1019,7 +1023,6 @@ def test_credentials_resolve_credential_pair_rejects_boolean_values_instead_of_s
 
 def test_safe_float_is_us_rth_open_handle_overflowerror_booleans_and_out_of_iter65_s2():
     """[ITER65 #2] safe_float & is_us_rth_open handle OverflowError, booleans, and out-of-range timestamps."""
-    from botcore import is_us_rth_open, safe_float
     # 2. safe_float & is_us_rth_open handle OverflowError, booleans, and out-of-range timestamps
     assert safe_float(10**400, 12.5) == 12.5
     assert isinstance(is_us_rth_open(True), bool)
@@ -1042,7 +1045,6 @@ def test_config__parse_bool_flag_handles_nan_inf_and_unrecognized_strings_iter81
 
 def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monkeypatch, tmp_path):
     """[ITER84 #2] JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs."""
-    from strategies.state_store import StatePersistenceError
     # 2. JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs
     monkeypatch.setattr("strategies.state_store.load_json_state", lambda *a, **k: [["cycle", 99]])
     store = JsonStateStore(
@@ -1057,13 +1059,12 @@ def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monke
 
 def test_http_resilience_mount_connect_retry_rejects_boolean_negative_and_non_finite_iter84_s4():
     """[ITER84 #4] http_resilience.mount_connect_retry rejects boolean, negative, and non-finite retry parameters."""
-    from providers import base as http_resilience
     # 4. http_resilience.mount_connect_retry rejects boolean, negative, and non-finite retry parameters
     sess = requests.Session()
-    assert http_resilience.mount_connect_retry(sess, attempts=False) is False
-    assert http_resilience.mount_connect_retry(sess, attempts=-1) is False
-    assert http_resilience.mount_connect_retry(sess, backoff=float("nan")) is False
-    assert http_resilience.mount_connect_retry(sess, attempts=2, backoff=0.2) is True
+    assert mount_connect_retry(sess, attempts=False) is False
+    assert mount_connect_retry(sess, attempts=-1) is False
+    assert mount_connect_retry(sess, backoff=float("nan")) is False
+    assert mount_connect_retry(sess, attempts=2, backoff=0.2) is True
 
 def test_botcore__dotenv_pairs_strips_trailing_inline_comments_after_quoted_iter89_s2(tmp_path):
     """[ITER89 #2] botcore._dotenv_pairs strips trailing inline comments after quoted values while preserving # inside quotes."""
@@ -1112,9 +1113,8 @@ def test_utils_timestamp_decay_helpers_iter99_s3():
 
 def test_providers_http_resilience_mount_connect_retry_rejects_boolean_status_forcelist_iter109_s2():
     """[ITER109 #2] providers.http_resilience: mount_connect_retry rejects boolean status_forcelist."""
-    from providers import base as hres
     # 2. providers.http_resilience: mount_connect_retry rejects boolean status_forcelist
-    assert hres.mount_connect_retry(SimpleNamespace(), status_forcelist=True) is False
+    assert mount_connect_retry(SimpleNamespace(), status_forcelist=True) is False
 
 def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
     """[ITER110 #3] utils: value_diff_to_percent, secondsTo*, cache_path."""
@@ -1193,7 +1193,6 @@ def test_config__parse_bool_flag_with_default_false_and__read_properties_file_wi
 
 def test_credentials_resolve_credential_pair_validation_for_non_mapping_values_and_iter165_s1():
     """[ITER165 #1] credentials.resolve_credential_pair validation for non-Mapping values and malformed profiles."""
-    import credentials
     # 1. credentials.resolve_credential_pair validation for non-Mapping values and malformed profiles
     with pytest.raises(credentials.CredentialConfigurationError):
         credentials.resolve_credential_pair([("Bot", "K", "S")], values=["not_a_mapping"])
@@ -1211,11 +1210,10 @@ def test_credentials_resolve_credential_pair_validation_for_non_mapping_values_a
 
 def test_providers_http_resilience_mount_connect_retry_with_string_numbers_and_raise_on_status_iter168_s3():
     """[ITER168 #3] providers.http_resilience.mount_connect_retry with string numbers and raise_on_status='false'."""
-    from providers import base as hr
     # 3. providers.http_resilience.mount_connect_retry with string numbers and raise_on_status="false"
     mounted = {}
     sess = SimpleNamespace(mount=lambda prefix, adapter: mounted.__setitem__(prefix, adapter))
-    assert hr.mount_connect_retry(
+    assert mount_connect_retry(
         sess,
         attempts="3",
         backoff="0.5",
@@ -1225,7 +1223,7 @@ def test_providers_http_resilience_mount_connect_retry_with_string_numbers_and_r
     ) is True
     assert "https://" in mounted
     assert mounted["https://"].max_retries.raise_on_status is False
-    assert hr.mount_connect_retry(sess, status_forcelist="500") is False
+    assert mount_connect_retry(sess, status_forcelist="500") is False
 
 def test_config_load_config_with_empty_trade_enabled_env_var_iter168_s4(tmp_path, monkeypatch):
     """[ITER168 #4] config.load_config with empty TRADE_ENABLED env var."""
@@ -1238,7 +1236,6 @@ def test_config_load_config_with_empty_trade_enabled_env_var_iter168_s4(tmp_path
 
 def test_is_interval_due_handles_elapsed_non_elapsed_future_clock_skew_iter182_s1():
     """[ITER182 #1] is_interval_due handles elapsed, non-elapsed, future clock skew, None/bool/NaN, and force."""
-    from botcore import is_interval_due
     # 1. is_interval_due handles elapsed, non-elapsed, future clock skew, None/bool/NaN, and force
     assert is_interval_due(1050.0, 1000.0, 60.0) is False
     assert is_interval_due(1060.0, 1000.0, 60.0) is True
@@ -1249,7 +1246,6 @@ def test_is_interval_due_handles_elapsed_non_elapsed_future_clock_skew_iter182_s
 
 def test_resolve_order_notional_handles_explicit_notional_price_qty_fallback_and_iter182_s2():
     """[ITER182 #2] resolve_order_notional handles explicit notional, price*qty fallback, and nonfinite behavior."""
-    from botcore import resolve_order_notional
     # 2. resolve_order_notional handles explicit notional, price*qty fallback, and nonfinite behavior
     assert resolve_order_notional(800.0, 100.0, 2.0) == pytest.approx(800.0)
     assert resolve_order_notional(None, 100.0, 2.5) == pytest.approx(250.0)

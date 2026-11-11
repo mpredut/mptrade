@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 from notify_engine import alertnotifiers as an
@@ -11,8 +13,11 @@ from notify_engine.alertnotifiers import (
     AlertNotifier,
     _alert_identity,
     _delivery_fingerprint,
+    _positive_int_env,
     format_ntfy_url,
+    pass_common_gate,
     pop_due_bulk_batch,
+    synthesize_bulk_notifications,
 )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,8 +25,16 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
 
 from gen_alert_thresholds import FLOOR, thresholds_from_prices  # noqa: E402
+from intelligence.internal.guards.guard_decision import GuardDecision  # noqa: E402
+from intelligence.sentiment.guards.post_stop_reentry_guard import (  # noqa: E402
+    PostStopReentryGuard,
+    clear_post_stop_reentry_cache,
+)
+import log as mp_log  # noqa: E402
+from market_monitor import pricefetcher  # noqa: E402
 from market_monitor.alerts_config import load_config, resolve  # noqa: E402
 from market_monitor.new_coins_discovery import (  # noqa: E402
+    DexScreenerSource,
     NewCoinsFactory,
     NewCoinsMonitor,
     is_trackable_symbol,
@@ -29,8 +42,12 @@ from market_monitor.new_coins_discovery import (  # noqa: E402
 from market_monitor.pricechecker import PriceAlert, PriceChecker  # noqa: E402
 from market_monitor.pricefetcher import (  # noqa: E402
     BinancePricePlatform,
+    CacheAllPriceFetcherManager,
     HyperliquidPricePlatform,
     PricePlatformFactory,
+)
+from orchestratorOS.lib.technical_repair_ssot import (  # noqa: E402
+    harvest_log_anomalies_from_dirs,
 )
 
 
@@ -176,9 +193,6 @@ class PriceCheckerTests(unittest.TestCase):
         self.assertEqual(dynamic_alerts, [])
 
     def test_price_checker_persists_cooldown_across_restarts_and_log_avoids_double_timestamp(self):
-        import io
-        import log as mp_log
-
         now_ms = int(time.time() * 1000)
         history = [
             {"timestamp": now_ms - 2 * 60 * 60 * 1000, "price": 141.7350, "timestamp_readable": "2026-11-03T06:00:00"},
@@ -424,7 +438,6 @@ class TestNewCoinsDiscovery(unittest.TestCase):
         factory.refresh_all.assert_called_once()
 
     def test_dexscreener_parses_list_response(self):
-        from market_monitor.new_coins_discovery import DexScreenerSource
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = [
@@ -454,7 +467,6 @@ class TestNewCoinsDiscovery(unittest.TestCase):
             self.assertEqual(factory.get_available_sources(), ["binance"])
 
     def test_cleanup_old_symbols_purges_inactive_symbol_added_time(self):
-        from market_monitor import pricefetcher
         pf_path = os.path.join(tempfile.mkdtemp(prefix="pf_clean_"), "cache_watcher_all_price.json")
         with patch.object(pricefetcher, "PricePlatformFactory"):
             mgr = pricefetcher.CacheAllPriceFetcherManager(60, ["BTC"], pf_path, read_only=True)
@@ -496,7 +508,6 @@ def test_alertnotifier_format_human_readable_time_and_pop_due_bulk_batch_handle_
 
 def test_synthesize_bulk_notifications_handles_float_string_negative_or_invalid_counts_iter66_s1():
     """[ITER66 #1] synthesize_bulk_notifications handles float-string, negative, or invalid counts safely."""
-    from notify_engine.alertnotifiers import synthesize_bulk_notifications
     # 1. synthesize_bulk_notifications handles float-string, negative, or invalid counts safely
     title, body, prio, topic = synthesize_bulk_notifications([
         {"title": "TestA", "body": "BodyA", "count": "2.0", "priority": "high", "topic": "t1"},
@@ -508,7 +519,6 @@ def test_synthesize_bulk_notifications_handles_float_string_negative_or_invalid_
 
 def test_pass_common_gate_and_pop_due_bulk_batch_tolerate_out_of_range_now_iter66_s2(tmp_path, monkeypatch):
     """[ITER66 #2] pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields."""
-    from notify_engine.alertnotifiers import pass_common_gate
     # 2. pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields
     state_file = tmp_path / "notif_state.json"
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
@@ -521,7 +531,6 @@ def test_pass_common_gate_and_pop_due_bulk_batch_tolerate_out_of_range_now_iter6
 
 def test_alertnotifier_format_batch_message_save_to_file_handle_non_numeric_prices_percent_change_iter66_s3(tmp_path):
     """[ITER66 #3] AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change."""
-    from types import SimpleNamespace
     # 3. AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change
     msg = AlertNotifier.format_batch_message([
         {
@@ -548,7 +557,6 @@ def test_alertnotifier_format_batch_message_save_to_file_handle_non_numeric_pric
 
 def test_alertnotifier_helpers_iter78_s2(monkeypatch):
     """[ITER78 #2] AlertNotifier helpers."""
-    from notify_engine.alertnotifiers import _positive_int_env
     # 2. AlertNotifier helpers
     assert AlertNotifier.email_subject([]) == "Alert"
     assert AlertNotifier.utf8_header(None) == ""
@@ -581,8 +589,6 @@ def test_notify_engine_alertnotifiers__positive_int_env__safe_pos_int_format_bot
 
 def test_poststopreentryguard__maybe_notify_deduplicates_across_symbol_formatting_variants_iter98_s5(monkeypatch):
     """[ITER98 #5] PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants."""
-    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
-    from intelligence.internal.guards.guard_decision import GuardDecision
     # 5. PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants
     clear_post_stop_reentry_cache()
     notified = []
@@ -608,9 +614,6 @@ def test_alertnotifiers__parse_bool_flag_default_preservation_iter163_s3():
 
 
 def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_type_error(tmp_path, monkeypatch):
-    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
-    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
-
     monkeypatch.setattr(
         "market_monitor.pricefetcher.PricePlatformFactory.check_symbol_support",
         lambda self, sym: {"Binance": True},

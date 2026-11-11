@@ -12,17 +12,50 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi, bapi_allorders, bapi_client, bapi_placeorder, bapi_trades, bapi_ws, bapi_ws_bridge as ws_bridge, bapi_ws_normalize, market_data as b_md, trailing_stop
-from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
-from providers.market_api import BinanceProvider
-from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
+from binance_api.bapi_ws import (
+    BinanceAccountStream,
+    BinancePriceStream,
+    WS_USERDATA_KEEPALIVE_SEC,
+    WS_USERDATA_LOSS_TIMEOUT_SEC,
+)
+from binance_api.bapi_ws_normalize import (
+    parse_order_execution_report,
+    parse_trade_execution_report,
+)
+from binance_api.trailing_stop import TrailingStop
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+import instrument_registry as sym_mod
+import monitortrades as mt_mod
+import order_guard
+from order_lifecycle import extract_order_restore_params
+import pricewindow as pw
+import providers.market_api as market_api_mod
+from providers.market_api import BinanceProvider, MarketApi
+from providers.quantity import (
+    BinanceFilterError,
+    BinanceOrderRules,
+    _decimal,
+    _parse_bool_flag,
+    balance_cap_quantity,
+    decimal_places,
+    resolve_assets,
+)
+from providers.order_ohlc_utils import (
+    extract_order_qty,
+    extract_order_side,
+    extract_remaining_qty,
+    normalize_order,
+)
+from providers.replay_provider import ReplayMarketDataProvider
 from types import SimpleNamespace
 import cacheManager as cm
 import json
 import pytest
 import threading
 from decimal import Decimal
-from providers.base import extract_order_price
-from providers.strategy_executor import ProviderError
+from providers.base import extract_order_price, extract_timestamp_ms, extract_timestamp_s
+from providers.strategy_executor import ProviderError, SubmissionRefused
 from tests.conftest import DummySpotExecutionProvider, MockHttpResponse
 
 SYMBOL = "BTCUSDC"
@@ -358,8 +391,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertIsNone(mgr.get_fresh_snapshot(SYMBOL))
 
     def test_pricewindow_edge_cases(self):
-        import pricewindow as pw
-
         w = pw.PriceWindow("BTCUSDC", 5, initial_prices=[100.0, 101.0, 102.0])
         self.assertEqual(len(w.prices), 3)
         w.sample_rate_sec = 0
@@ -368,13 +399,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(trend, 1)
 
     def test_canonical_order_normalization_and_bapi_trade_unification(self):
-        from providers.base import extract_timestamp_ms
-        from providers.order_ohlc_utils import (
-            extract_order_qty,
-            extract_order_side,
-            normalize_order,
-        )
-
         # 1. Canonical timestamp normalization (seconds vs ms, multiple field names)
         self.assertEqual(extract_timestamp_ms({"timestamp": 1_700_000_000}), 1_700_000_000_000)
         self.assertEqual(extract_timestamp_ms({"time": 1_700_000_000_500}), 1_700_000_000_500)
@@ -441,11 +465,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             mock_cancel.assert_called_once_with(SYMBOL, 1)
 
         # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
-        from providers.base import extract_timestamp_s
-        from providers.order_ohlc_utils import extract_remaining_qty
-        from order_lifecycle import extract_order_restore_params
-        import monitortrades as mt_mod
-
         self.assertEqual(extract_timestamp_s({"timestamp": 1_700_000_000_000}), 1_700_000_000.0)
         self.assertEqual(extract_timestamp_s({"updateTime": 1_700_000_000}), 1_700_000_000.0)
         self.assertEqual(extract_remaining_qty({"origQty": 2.5, "executedQty": 0.5, "price": 60.25}), 2.0)
@@ -464,7 +483,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(restore_params["side"], "SELL")
 
         # 8. order_guard.daily_limit_guard enforces symmetric 24h daily cap
-        import order_guard
         now_s = int(time.time())
         fake_provider = types.SimpleNamespace(
             name="binance",
@@ -542,7 +560,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             self.assertIsNone(bapi.get_free_balance("USDC"))
 
         # 14. compute_24h_price_metrics normalizes Unix-second timestamps
-        from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
         sec_base = 1_700_000_000.0
         sec_series = [
             [sec_base - 180 * 60, 100.0],
@@ -556,7 +573,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(m24.get("chg_1h_pct"), 4.76)
 
         # 15. BybitLiquidationCollector normalizes symbol case and rejects NaN/non-positive notionals
-        from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
         bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
         bybit_col._ingest(json.dumps({
             "topic": "allLiquidation.BTCUSDT",
@@ -571,7 +587,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(summ.short_liq_usd, 200.0)
 
         # 16. instrument_registry.validate_params rejects booleans, NaN, and inf; bapi.get_account_assets_balances rejects non-finite/negative/bool
-        import instrument_registry as sym_mod
         for bad_val in (True, False, float("nan"), float("inf"), float("-inf"), 0, -1):
             with self.assertRaises(ValueError):
                 sym_mod.validate_params("BUY", SYMBOL, price=bad_val, qty=1.0)
@@ -751,7 +766,6 @@ def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_
 
 def test_binance_filters__decimal_rejects_bool_and__parse_bool_flag_handles_string_iter39_s1():
     """[ITER39 #1] binance_filters._decimal rejects bool and _parse_bool_flag handles string 'false'."""
-    from providers.quantity import _decimal
     # 1. binance_filters._decimal rejects bool and _parse_bool_flag handles string "false"
     with pytest.raises(BinanceFilterError):
         _decimal(True, name="qty")
@@ -944,7 +958,6 @@ def test_binance_api_market_data_parse_interval_minutes_fetch_ohlc_candles_rejec
 
 def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_s1():
     """[ITER58 #1] Binance TrailingStop._sync_retry_count_from_state & _order_intent."""
-    from binance_api.trailing_stop import TrailingStop
     # 1. Binance TrailingStop._sync_retry_count_from_state & _order_intent
     ts = object.__new__(TrailingStop)
     ts._retry_counts = {}
@@ -1062,8 +1075,6 @@ def test_providers_binance_filters__parse_bool_flag_handles_nan_and_binanceorder
 
 def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_iter86_s2(monkeypatch):
     """[ITER86 #2] BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY & BinanceProvider.order_status normalizes lowercase/whitespace venue status."""
-    from providers.strategy_executor import SubmissionRefused
-    import providers.market_api as market_api_mod
     # 2. BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY
     bp = BinanceProvider()
     for bad_side in ("", None, "HOLD", "bad", True):
@@ -1092,9 +1103,6 @@ def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_i
 
 def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractional_decimals_in_iter96_s3():
     """[ITER96 #3] MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price & ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation & resolve_assets & balance_cap_quantity bool rejection & BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price."""
-    from providers.market_api import MarketApi
-    from providers.quantity import balance_cap_quantity, resolve_assets
-    from providers.replay_provider import ReplayMarketDataProvider
     # 3. MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price
     dp = DummySpotExecutionProvider("dummy")
     dp.get_orders = lambda symbol, side, since_s: [{"side": side or "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000}]
@@ -1196,11 +1204,10 @@ def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109
 
 def test_binanceprovider_open_orders_rejects_missing_bool_orderid_and_bool_iter112_s1(monkeypatch):
     """[ITER112 #1] BinanceProvider.open_orders rejects missing/bool orderId and bool status/side."""
-    import providers.market_api as ma
     # 1. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
-    b_prov = ma.BinanceProvider()
+    b_prov = BinanceProvider()
     monkeypatch.setattr(
-        ma,
+        market_api_mod,
         "_get_bapi",
         lambda: SimpleNamespace(
             client=SimpleNamespace(
@@ -1227,7 +1234,6 @@ def test_bapi_placeorder__normalize_side_and__last_opposite_fill_price_api_iter1
 
 def test_binancewsbase_stop_timeout_and_binanceaccountstream_keepalive_sec_loss_timeout_sec_iter117_s3():
     """[ITER117 #3] BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec."""
-    from binance_api.bapi_ws import WS_USERDATA_KEEPALIVE_SEC, WS_USERDATA_LOSS_TIMEOUT_SEC
     # 3. BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec
     ps = BinancePriceStream(["BTCUSDC"])
     ps.stop(timeout=float("nan"))
@@ -1242,7 +1248,6 @@ def test_binancewsbase_stop_timeout_and_binanceaccountstream_keepalive_sec_loss_
 
 def test_parse_order_execution_report_rejects_none_or_orderid_iter117_s4():
     """[ITER117 #4] parse_order_execution_report rejects None or <= 0 orderId."""
-    from binance_api.bapi_ws_normalize import parse_order_execution_report
     # 4. parse_order_execution_report rejects None or <= 0 orderId
     base_exec = {
         "e": "executionReport",
@@ -1278,7 +1283,6 @@ def test_bapi_allorders_paginate_my_trades_symbol_validation_and_limit_cap_at_it
 
 def test_parse_trade_execution_report_does_not_leak_invalid_event_i_into_iter120_s2():
     """[ITER120 #2] parse_trade_execution_report does not leak invalid event['i'] into trade_item['orderId']."""
-    from binance_api.bapi_ws_normalize import parse_trade_execution_report
     # 2. parse_trade_execution_report does not leak invalid event["i"] into trade_item["orderId"]
     res = parse_trade_execution_report(
         {
@@ -1477,21 +1481,20 @@ def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders
 
 def test_providers_market_api_binanceprovider_ohlc_series_with_marketapi_provider_by_name_with_iter164_s2(monkeypatch):
     """[ITER164 #2] providers.market_api: BinanceProvider.ohlc_series with '15.0', MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot='false')."""
-    from providers import market_api as mapi
     # 2. providers.market_api: BinanceProvider.ohlc_series with "15.0", MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot="false")
-    bp = mapi.BinanceProvider()
+    bp = BinanceProvider()
     fake_klines = [[0, "1", "2", "0.5", "100.0", "10", 1700000000000] for _ in range(25)]
     monkeypatch.setattr(
-        mapi,
+        market_api_mod,
         "_get_bapi",
         lambda: SimpleNamespace(client=SimpleNamespace(get_klines=lambda **kw: fake_klines)),
     )
     series = bp.ohlc_series("BTCUSDC", "15.0")
     assert series.interval_min == 15 and len(series.closes) == 24
-    assert mapi.api.provider_by_name(bp) is not None
+    assert market_api_mod.api.provider_by_name(bp) is not None
 
     snap_called = []
-    custom_api = mapi.MarketApi(
+    custom_api = MarketApi(
         [bp],
         regime_snapshot_resolver=lambda sym, now=None: (snap_called.append(sym), None)[1],
     )
@@ -1527,18 +1530,17 @@ def test_binancepricestream_with_scalar_string_symbols_and_slash_formatted_iter1
 
 def test_binance_filters_decimal_places_with_decimal_str_float_and_invalid_iter168_s1():
     """[ITER168 #1] binance_filters.decimal_places with Decimal, str, float, and invalid inputs."""
-    from providers import quantity as bf
     # 1. binance_filters.decimal_places with Decimal, str, float, and invalid inputs
-    assert bf.decimal_places(Decimal("0.001")) == 3
-    assert bf.decimal_places("0.0001") == 4
-    assert bf.decimal_places(0.01) == 2
-    assert bf._parse_bool_flag("", default=True) is True
-    assert bf._parse_bool_flag("y", default=False) is True
-    assert bf._parse_bool_flag("n", default=True) is False
-    with pytest.raises(bf.BinanceFilterError):
-        bf.decimal_places(True)
-    with pytest.raises(bf.BinanceFilterError):
-        bf.decimal_places(0)
+    assert decimal_places(Decimal("0.001")) == 3
+    assert decimal_places("0.0001") == 4
+    assert decimal_places(0.01) == 2
+    assert _parse_bool_flag("", default=True) is True
+    assert _parse_bool_flag("y", default=False) is True
+    assert _parse_bool_flag("n", default=True) is False
+    with pytest.raises(BinanceFilterError):
+        decimal_places(True)
+    with pytest.raises(BinanceFilterError):
+        decimal_places(0)
 
 def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock_and_iter185_s2():
     """[ITER185 #2] bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants."""
