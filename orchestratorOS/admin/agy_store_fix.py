@@ -673,6 +673,7 @@ def last_store_activity() -> float:
             oneshot_until = 0.0
             cron_active = False
             cron_max_iter = 0
+            latest_sched_ts = 0.0
             sched_task_id = ""
             sched_cond = "never"
             awaiting_sched_task_id = False
@@ -702,9 +703,10 @@ def last_store_activity() -> float:
                         oneshot_until = 0.0
                         cron_active = False
                         cron_max_iter = 0
+                        latest_sched_ts = 0.0
                         sched_task_id = ""
                         sched_calls = 0
-                    elif m_iter := re.search(r"\(iteration\s+(\d+)\)\s*$", content):
+                    elif m_iter := re.search(r"\(iteration\s+(\d+)\)", content):
                         cron_active = True
                         cron_max_iter = max(cron_max_iter, int(m_iter.group(1)))
                         m_sender = re.search(r"\bsender=(\S+)", content)
@@ -736,6 +738,7 @@ def last_store_activity() -> float:
                             oneshot_until = 0.0
                             cron_active = False
                             cron_max_iter = 0
+                            latest_sched_ts = 0.0
                             sched_task_id = ""
                             sched_calls = 0
                     elif name == "schedule":
@@ -747,6 +750,7 @@ def last_store_activity() -> float:
                                 sched_ts = datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp()
                             except Exception:
                                 sched_ts = st.st_mtime
+                        latest_sched_ts = max(latest_sched_ts, sched_ts)
                         dur_raw = str(args.get("DurationSeconds") or "").strip().strip('"')
                         cron_raw = str(args.get("CronExpression") or "").strip().strip('"')
                         cond_raw = str(args.get("TimerCondition") or "never").strip().strip('"').lower()
@@ -763,9 +767,10 @@ def last_store_activity() -> float:
                             awaiting_sched_task_id = True
             if cron_active or now_ts < oneshot_until:
                 is_repeating_loop = sched_calls >= 2 or cron_max_iter >= 2
+                is_stale_schedule = latest_sched_ts > 0.0 and (now_ts - latest_sched_ts) > 1800.0
                 is_stale_transcript = (now_ts - st.st_mtime) > 1800.0
                 is_stale_user_input = latest_user_input_ts > 0.0 and (now_ts - latest_user_input_ts) > 1800.0
-                if is_repeating_loop or is_stale_transcript or is_stale_user_input:
+                if is_repeating_loop or is_stale_schedule or is_stale_transcript or is_stale_user_input:
                     continue
                 return now_ts
     for root, dirs, files in os.walk(brain):

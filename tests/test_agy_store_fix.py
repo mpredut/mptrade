@@ -488,13 +488,13 @@ def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
             os.utime(os.path.join(root, f), (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
 
-    # Once a cron loop reaches iteration >= 2, it is treated as an autonomous repeating loop and must not starve periodic UI sync
+    # Once a cron loop reaches iteration >= 2 (even wrapped in XML <SYSTEM_MESSAGE> tags), it is treated as an autonomous repeating loop and must not starve periodic UI sync
     tp.write_text(
         json.dumps(
             {
                 "step_index": 201,
                 "type": "SYSTEM_MESSAGE",
-                "content": "[Message] timestamp=2026-11-10T12:37:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 8)",
+                "content": "The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-10T12:37:32Z sender=stale-cid/task-7417 priority=MESSAGE_PRIORITY_HIGH content=Run audit (iteration 8)\n</SYSTEM_MESSAGE>",
             }
         )
         + "\n"

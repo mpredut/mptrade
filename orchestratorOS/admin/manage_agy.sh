@@ -148,8 +148,11 @@ do_watchdog() {
         log "WARNING: Daemon is running but tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
         do_restart
         send_alert "Antigravity remote-control daemon tunnel was found stuck/broken and was automatically restarted as '${INSTANCE_NAME}'."
-    elif [ -t 1 ] || [ "${1:-}" = "--verbose" ] || { [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 5 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eiq "error:|warning:|failed"; }; then
-        log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
+    else
+        if [ -t 1 ] || [ "${1:-}" = "--verbose" ] || { [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 5 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eiq "error:|warning:|failed"; }; then
+            log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
+        fi
+        do_ui_sync
     fi
 }
 
