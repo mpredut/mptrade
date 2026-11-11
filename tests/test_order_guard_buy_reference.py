@@ -5,18 +5,23 @@ margin); after a rise that anchor blocked every automated Binance buy for two we
 Switching it off for a venue must leave the SELL reference untouched."""
 import os
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from external_order_guard import check_external_order_guards  # noqa: E402
+from instrument import Instrument  # noqa: E402
+from llm_order_guard import (  # noqa: E402
+    check_geopolitical_order_guards,
+    check_llm_order_guards,
+)
 import order_guard  # noqa: E402
-from instrument import Instrument
-from providers.market_api import MarketApi
-from tests.conftest import DummySpotExecutionProvider, make_test_margins
-
-
-from types import SimpleNamespace
+from providers import order_id_context as oic  # noqa: E402
+from providers.market_api import BinanceProvider, MarketApi  # noqa: E402
+from qlimit_order_guard import check_qlimit2_order_guards  # noqa: E402
+from tests.conftest import DummySpotExecutionProvider, make_test_margins  # noqa: E402
 
 
 def _Provider(name, last_fill=216.28, *, free_bal=10000.0):
@@ -105,7 +110,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_real_binance_provider_integration(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
-            from providers.market_api import BinanceProvider
             provider = BinanceProvider()
             self.assertEqual(order_guard.get_profit_guard_mode_cfg(provider.name, "BUY"), "dynamic")
             # Keep the real provider/config routing, but isolate its history I/O.
@@ -593,13 +597,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_validate_guard_mode_cfg_and_margins_validation_fail_fast(self):
         """Verify invalid Pillar 1-4 guard modes or discrete policies fail fast instead of silently passing."""
-        from qlimit_order_guard import check_qlimit2_order_guards
-        from external_order_guard import check_external_order_guards
-        from llm_order_guard import (
-            check_geopolitical_order_guards,
-            check_llm_order_guards,
-        )
-
         for valid_mode in ("off", "shadow", "enforce"):
             self.assertEqual(order_guard.validate_guard_mode_cfg(valid_mode, "llm_guard_mode"), valid_mode)
 
@@ -641,8 +638,6 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_resolve_caller_module_preserves_lineage_across_outbox_and_repricer(self):
         """Ensure outbox retries (TA_OR) and monitororder repricing (MO_TA_) retain module identity."""
-        from providers import order_id_context as oic
-
         with mock.patch.object(oic, "get_process_name", return_value="ORW"):
             self.assertIsNone(order_guard.resolve_caller_module(None))
             self.assertEqual(order_guard.resolve_caller_module(None, prefix="TA_OR"), "tradeall")

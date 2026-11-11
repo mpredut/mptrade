@@ -2,12 +2,31 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
+import subprocess
 
 import pytest
-from offline.backtests.evaluation import load_venue_module
-from offline.backtests.execution import ExecutionModel
+
+import kraken.backtest as k_bt
+from offline.backtests.datasets import align_previous_values, load_ohlc_tuples_csv, save_dataset
+from offline.backtests.evaluation import (
+    assess_decision_evidence,
+    evaluate_walk_forward,
+    extract_cfg_int,
+    load_layered_env_config,
+    load_venue_module,
+    to_ohlc,
+)
+from offline.backtests.execution import ExecutionModel, choose_intrabar_scenario
+from offline.research import slice_dense_archive as sda
+from offline.research.kraken_continuous_grid import report as k_rep
+from offline.research.t212_continuous_grid.grid import _extract_asset_name
+from offline.runners import financial_promotion_gate as fpg
+from providers.order_ohlc_utils import drop_incomplete_last_bar
+from state_io import atomic_write_json, atomic_write_jsonl
+from strategies.spot_engine import StratParams
+from strategies.spot_replay import run_replay as run_spot_replay
+from strategies.spot_rules import check_fast_profit_reversal
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,9 +105,6 @@ def test_wave6_ascii_and_shell_syntax_hygiene():
 
 
 def test_wave6a_spot_rules_fast_profit_window_and_params_validation():
-    from strategies.spot_engine import StratParams
-    from strategies.spot_rules import check_fast_profit_reversal
-
     # Stale 4h shadow ticks older than 5-minute window_sec=300 must NOT false-trigger
     triggered_stale, gain_stale, drop_stale = check_fast_profit_reversal(
         current_price=112.0,
@@ -164,13 +180,10 @@ def test_wave6a_spot_rules_fast_profit_window_and_params_validation():
 
 
 def test_wave6a_partial_fill_tp_tranches_and_t212_ladder_no_zeno_paradox():
-    from strategies.spot_engine import StratParams as SpotParams
-    from strategies.spot_replay import run_replay as run_spot_replay
-
     exec_half = ExecutionModel(partial_fill_ratio=0.5)
 
     # 1. Spot multi-tranche TP under partial_fill_ratio=0.5 completes in finite bars
-    spot_params = SpotParams(
+    spot_params = StratParams(
         currency="USD",
         entry_amount=100.0,
         entry_discount_pct=0.0,
@@ -229,9 +242,6 @@ def test_wave6a_partial_fill_tp_tranches_and_t212_ladder_no_zeno_paradox():
 
 
 def test_wave6a_t212_and_kraken_backtest_isolation_and_replay_guards(monkeypatch):
-    import kraken.backtest as k_bt
-    from offline.backtests.evaluation import load_layered_env_config
-
     t212_rp = load_venue_module("212trading", "replay.py", "test_w6_t212_rp2")
     t212_bt = load_venue_module("212trading", "backtest.py", "test_w6_t212_bt2")
 
@@ -291,16 +301,6 @@ def test_wave6a_t212_and_kraken_backtest_isolation_and_replay_guards(monkeypatch
 
 
 def test_wave6a_datasets_order_ohlc_evaluation_and_worst_case_tiebreak(tmp_path):
-    from offline.backtests.datasets import align_previous_values, load_ohlc_tuples_csv, save_dataset
-    from offline.backtests.evaluation import (
-        assess_decision_evidence,
-        evaluate_walk_forward,
-        extract_cfg_int,
-        to_ohlc,
-    )
-    from offline.backtests.execution import choose_intrabar_scenario
-    from providers.order_ohlc_utils import drop_incomplete_last_bar
-
     # 1. datasets: save_dataset validates OHLC invariants & ordering; load_ohlc_tuples_csv deduplicates/sorts
     with pytest.raises(ValueError):
         save_dataset([{"timestamp": 1700000000, "open": 100.0, "high": 95.0, "low": 98.0, "close": 99.0}], tmp_path / "bad.csv")
@@ -383,12 +383,6 @@ def test_wave6a_datasets_order_ohlc_evaluation_and_worst_case_tiebreak(tmp_path)
 
 
 def test_wave6bcd_monitortrades_grids_archive_and_promotion_gate(tmp_path):
-    from state_io import atomic_write_json, atomic_write_jsonl
-    from offline.research import slice_dense_archive as sda
-    from offline.research.kraken_continuous_grid import report as k_rep
-    from offline.research.t212_continuous_grid.grid import _extract_asset_name
-    from offline.runners import financial_promotion_gate as fpg
-
     # 1. t212_continuous_grid preserves multi-underscore asset stems
     assert _extract_asset_name("VUSA_EQ_1d.csv") == "VUSA_EQ"
     assert _extract_asset_name("NVDA_US_EQ_1h.csv") == "NVDA_US_EQ"

@@ -8,13 +8,32 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from offline.backtests.evaluation import load_venue_module
+import sklearn.ensemble as sk_ens
+
+from kraken import backtest as kr_bt, shadow_live as kr_sl
+from offline.backtests.datasets import load_dataset, normalize_record
+from offline.backtests.evaluation import evaluate_walk_forward, load_venue_module
+from offline.backtests.execution import validate_ohlc_bars
+from offline.research import comprehensive_strategy_sweep as css
+from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as dss
+from offline.research.hybrid_reentry import harness, report, run_equities
+from offline.research.kraken_continuous_grid import report as k_rep, report2 as k_rep2
+from offline.research.ml_forecast import forecast as fc, vol_chronos as vc
+from offline.research.ml_forecast.priceprediction import PricePrediction
+from offline.research.monitortrades_backtest import (
+    backtest_wait_and_regime as bwr,
+    compare_sl_variants as csl,
+    replay_trend_source as rts,
+    run_replay_backtest as rrb,
+    sweep_mt_models as smm,
+)
+from offline.research.t212_continuous_grid import report as t_rep
+import pricewindow as pw
+from providers.replay_provider import ReplayMarketDataProvider
 from tests.conftest import make_fake_chronos_pipeline
 
 
 def test_datasets_str_path_validation_and_finite_normalize(tmp_path):
-    from offline.backtests.datasets import load_dataset, normalize_record
-
     with pytest.raises(ValueError):
         normalize_record({"timestamp": 1700000000, "open": float("nan"), "high": 10.0, "low": 9.0, "close": 9.5})
 
@@ -41,8 +60,6 @@ def test_datasets_str_path_validation_and_finite_normalize(tmp_path):
 
 
 def test_walk_forward_overlapping_test_folds_null_compounded_return():
-    from offline.backtests.evaluation import evaluate_walk_forward
-
     records = [
         {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5}
         for i in range(30)
@@ -65,8 +82,6 @@ def test_walk_forward_overlapping_test_folds_null_compounded_return():
 
 
 def test_execution_validate_ohlc_bars_error_distinction():
-    from offline.backtests.execution import validate_ohlc_bars
-
     with pytest.raises(ValueError, match="non-numeric prices"):
         validate_ohlc_bars([("bad", 10.0, 9.0, 9.5)])
     with pytest.raises(ValueError, match="has non-finite or invalid prices"):
@@ -134,9 +149,6 @@ def test_t212_replay_initial_cash_and_backtest_param_unmasking(monkeypatch):
 
 
 def test_kraken_backtest_surge_dynamic_and_shadow_live_warmup_and_hl_restore(monkeypatch):
-    from kraken import backtest as kr_bt
-    from kraken import shadow_live as kr_sl
-
     p60 = kr_bt._bt_params({"interval": 60})
     if p60.tp_trail_vol_interval != 60:
         assert p60.surge_dynamic is False
@@ -172,9 +184,6 @@ def test_kraken_backtest_surge_dynamic_and_shadow_live_warmup_and_hl_restore(mon
 
 
 def test_comprehensive_strategy_and_surge_sweeps(tmp_path, monkeypatch):
-    from offline.research import comprehensive_strategy_sweep as css
-    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as dss
-
     grid = css.define_candidate_grid()
     assert "00_LIVE_CURRENT" in grid
     assert "25_COMBO_smart_flow" in grid
@@ -245,8 +254,6 @@ def test_comprehensive_strategy_and_surge_sweeps(tmp_path, monkeypatch):
 
 
 def test_hybrid_reentry_rgnt_profile_preservation_and_timestamps(tmp_path, monkeypatch):
-    from offline.research.hybrid_reentry import harness, report, run_equities
-
     csv_file = tmp_path / "RGNT_1d.csv"
     lines = ["timestamp,open,high,low,close"]
     for i in range(40):
@@ -299,15 +306,10 @@ def test_hybrid_reentry_rgnt_profile_preservation_and_timestamps(tmp_path, monke
 
 
 def test_ml_forecast_purge_chronos_tail_and_priceprediction_isolation(monkeypatch):
-    from offline.research.ml_forecast import forecast as fc
-    from offline.research.ml_forecast import vol_chronos as vc
-    from offline.research.ml_forecast.priceprediction import PricePrediction
-
     rng = np.random.default_rng(7)
     X = rng.normal(size=(80, len(fc.FEATURES)))
     y_mag = rng.normal(scale=0.02, size=80)
     fit_lengths = []
-    import sklearn.ensemble as sk_ens
 
     orig_fit = sk_ens.HistGradientBoostingRegressor.fit
 
@@ -337,16 +339,6 @@ def test_ml_forecast_purge_chronos_tail_and_priceprediction_isolation(monkeypatc
 
 
 def test_monitortrades_backtest_signals_wait_and_order_cache_immutability():
-    import pricewindow as pw
-    from providers.replay_provider import ReplayMarketDataProvider
-    from offline.research.monitortrades_backtest import (
-        backtest_wait_and_regime as bwr,
-        compare_sl_variants as csl,
-        replay_trend_source as rts,
-        run_replay_backtest as rrb,
-        sweep_mt_models as smm,
-    )
-
     series = [(1000.0 + i, 100.0 + np.sin(i * 0.2) + i * 0.01) for i in range(300)]
     s_default_tao = smm.compute_all_signals(series, win_sec=222.0, symbol="TAOUSDC", use_symbol_fast_window=True)
     s_explicit_222 = smm.compute_all_signals(series, win_sec=222.0, symbol="TAOUSDC", use_symbol_fast_window=False)
@@ -393,9 +385,6 @@ def test_monitortrades_backtest_signals_wait_and_order_cache_immutability():
 
 
 def test_grid_reports_missing_live_and_strict_json(tmp_path):
-    from offline.research.kraken_continuous_grid import report as k_rep, report2 as k_rep2
-    from offline.research.t212_continuous_grid import report as t_rep
-
     k_dir = tmp_path / "kgrid"
     k_dir.mkdir()
     (k_dir / "results.jsonl").write_text(

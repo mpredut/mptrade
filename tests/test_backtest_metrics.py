@@ -1,20 +1,43 @@
-import unittest
-
-from offline.backtests.metrics import calculate_performance_metrics
 import configparser
+import json
 import math
 import os
+from pathlib import Path
 import sys
 import tempfile
+import unittest
+
+import numpy as np
 import pytest
-from offline.research.backtest_ranges import scan_backtest_ranges
-from offline.research.kraken_continuous_grid import grid3, report, report2, report3
-import json
-from pathlib import Path
-from offline.backtests.comparison import dominates, format_comparison_markdown, format_number, pareto_frontier, relative_to_baseline
-from offline.backtests.datasets import align_previous_values, dataset_metadata, drop_incomplete_last_bar, load_dataset, merge_datasets, save_dataset, validate_dataset
+
+from offline.backtests.comparison import (
+    dominates,
+    format_comparison_markdown,
+    format_number,
+    pareto_frontier,
+    relative_to_baseline,
+)
+from offline.backtests.datasets import (
+    align_previous_values,
+    dataset_metadata,
+    drop_incomplete_last_bar,
+    load_dataset,
+    merge_datasets,
+    save_dataset,
+    validate_dataset,
+)
 from offline.backtests.execution import ExecutionModel, FeeModel, choose_intrabar_scenario, split_order_fill
 from offline.backtests.hype_candidates import financial_priority_candidates, hype_240_candidates
+from offline.backtests.metrics import (
+    calculate_performance_metrics,
+    format_performance_summary,
+    validate_replay_metrics,
+)
+from offline.research import chop_weight_backtest as cwb
+from offline.research.backtest_ranges import scan_backtest_ranges
+from offline.research.kraken_continuous_grid import grid as kgrid, grid3, report, report2, report3
+import offline.research.short_trend_estimator_benchmark as st_bench
+from offline.research.t212_continuous_grid import grid as tgrid
 from tests.conftest import TempDirTestCase
 
 
@@ -66,7 +89,6 @@ class PerformanceMetricsTest(unittest.TestCase):
             calculate_performance_metrics([101.0, 102.0], initial_capital=100.0)
 
     def test_format_performance_summary(self):
-        from offline.backtests.metrics import format_performance_summary
         m = {
             "max_drawdown_pct": 5.25,
             "sharpe": 1.5,
@@ -85,7 +107,6 @@ class PerformanceMetricsTest(unittest.TestCase):
         self.assertIn("EXECUTION: exposure 45.00%  turnover 120.00%  fills 12  profit-factor 1.80  expectancy $2.50", lines[1])
 
     def test_validate_replay_metrics(self):
-        from offline.backtests.metrics import validate_replay_metrics
         valid = {
             "return_pct": 10.5,
             "max_drawdown_pct": 2.1,
@@ -266,7 +287,6 @@ def test_reports_generate_empty_dir(tmp_path):
 
 
 def test_old_baseline_disables_post_0923_promotions():
-    from offline.research.kraken_continuous_grid import grid as kgrid
     assert kgrid.OLD.trend_overlay is False
     assert kgrid.OLD.dca_trend_brake is False
     assert kgrid.OLD.surge_guard is False
@@ -276,7 +296,6 @@ def test_old_baseline_disables_post_0923_promotions():
 
 
 def test_t212_grid_peak_reentry_fallback_for_zero_drop_profile():
-    from offline.research.t212_continuous_grid import grid as tgrid
     orig_nvda = dict(tgrid.PROFILES["nvda"])
     try:
         p_live, pk_live = tgrid.params_for("nvda", "live")
@@ -638,9 +657,6 @@ def test_backtest_ranges_accepts_empty_valued_key(tmp_path):
 
 
 def test_short_trend_benchmark_sparse_fallback_does_not_poison_365_npz(tmp_path, monkeypatch):
-    import numpy as np
-    import offline.research.short_trend_estimator_benchmark as st_bench
-
     sparse_file = tmp_path / "cache_sparse_price_SPARSECOIN.jsonl"
     sparse_file.write_text(
         '{"s": "SPARSECOIN", "i": [1700000000000, 100.0]}\n'
@@ -661,8 +677,6 @@ def test_short_trend_benchmark_sparse_fallback_does_not_poison_365_npz(tmp_path,
 
 
 def test_chop_weight_backtest_zero_trade_pf_and_asof_btc_lookup():
-    from offline.research import chop_weight_backtest as cwb
-
     empty_stats = cwb.run_single_simulation("TAOUSDC", [], None, "CHOP_0.03")
     assert empty_stats.profit_factor == 0.0
 

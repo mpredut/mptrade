@@ -5,16 +5,17 @@ switch. A fake cacheManager is injected into sys.modules (imported lazily in the
 import json
 import os
 import sys
+import time
 import types
 import unittest
 from unittest import mock
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import cacheManager as cm
 import rtrade
-import time
 from tests.conftest import TempDirTestCase
 
 
@@ -156,7 +157,6 @@ class MarketExitModeTest(unittest.TestCase):
     real loss >= the emergency threshold still forces a market exit."""
 
     def test_emergency_only_holds_until_emergency_even_when_regime_is_adverse(self):
-        from unittest.mock import patch
         fake = types.SimpleNamespace(symbol="TAOUSDC")
         adverse = types.SimpleNamespace(
             regime="bear", strength=5.0, reason="test", adverse_to=lambda side: True)

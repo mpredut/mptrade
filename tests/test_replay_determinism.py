@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -16,8 +17,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
+from botcore import load_local_module
 from instrument import Instrument
 import monitortrades as mt
+from offline.backtests import tradeall as tb
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
 from offline.backtests.metrics import validate_replay_metrics
 from providers.market_api import MarketApi
@@ -29,11 +32,7 @@ from strategies.position_exit_manager import (
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams, Strategy
-from strategies.spot_replay import (
-    StratParams as _ReplayStratParams,
-    make_spot_replay_adapter,
-    run_replay,
-)
+from strategies.spot_replay import make_spot_replay_adapter, run_replay
 from tests.conftest import make_spot_test_params
 
 
@@ -252,7 +251,6 @@ class ReplayDeterminismTest(unittest.TestCase):
 
     def test_t212_strategy_replay_cache_immunity(self):
         """T212 strategy in replay mode must isolate from external volatility cache."""
-        from botcore import load_local_module
         t212_dir = os.path.join(ROOT, "212trading")
         mod = load_local_module(t212_dir, "strategy", module_key="t212_strat_test", reload=True)
 
@@ -307,7 +305,7 @@ class ReplayDeterminismTest(unittest.TestCase):
 SYMBOL = "ZZZTESTUSDC"
 
 
-def _sample_params() -> _ReplayStratParams:
+def _sample_params() -> StratParams:
     return make_spot_test_params(
         currency="USDT",
         takeprofit_pct=1.0,
@@ -429,7 +427,7 @@ def _make_provider(prices, start_ts=1_000_000.0, step_s=60.0):
 class TestLoadPriceSeries(unittest.TestCase):
     def test_parses_real_cache_format(self):
         tmpdir = tempfile.mkdtemp(prefix="replay_series_")
-        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
         path = os.path.join(tmpdir, "price_series.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             f.write('{"s": "BTCUSDC", "i": [1756248610634, 111702.25]}\n')
@@ -521,10 +519,9 @@ class TestReplayMarketDataProvider(unittest.TestCase):
 
 class TestNowFnDefaultsToRealTime(unittest.TestCase):
     def test_get_relevant_trade_uses_real_time_by_default(self):
-        import time as real_time
-        trade_orders = [{"timestamp": int(real_time.time() * 1000) - 1000, "price": 42.0}]
+        trade_orders = [{"timestamp": int(time.time() * 1000) - 1000, "price": 42.0}]
         _, trade_time, _ = mt.get_relevant_trade(trade_orders, "BUY", symbol=SYMBOL)
-        self.assertAlmostEqual(trade_time, real_time.time(), delta=5)
+        self.assertAlmostEqual(trade_time, time.time(), delta=5)
 
 
 class TestMonitorPriceAndTradeIntegration(unittest.TestCase):
@@ -564,7 +561,6 @@ class TestSimClock(unittest.TestCase):
         self.assertEqual(clock(), 200.0)
 
     def test_tradeall_backtest_uses_shared_class(self):
-        from offline.backtests import tradeall as tb
         self.assertIs(tb.SimClock, SimClock)
 
 

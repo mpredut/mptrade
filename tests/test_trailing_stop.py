@@ -2,19 +2,22 @@
 """Tests for trailing_stop (no real API, no money)."""
 from __future__ import annotations
 
+import json
 import os
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from binance_api.trailing_stop import TrailingStop  # noqa: E402
-from trailing_core import TrailingCore, should_sell
 import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
+from binance_api.trailing_stop import TrailingStop  # noqa: E402
+from botcore import load_local_module  # noqa: E402
+import instrument_registry as ic  # noqa: E402
+from kraken.market_data import pair_precision  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 from tests.conftest import DummyTrailingAdapter, TrailingTestBase  # noqa: E402
-from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
-import json
+from trailing_core import TrailingCore, should_sell  # noqa: E402
 
 
 class FakeApi:
@@ -403,7 +406,6 @@ class TestPerCoin(_BinanceTrailingBase):
             self.assertEqual(restarted.core.load(), saved)
 
         with self.subTest(msg="per_coin_threshold"):
-            import instrument_registry as ic
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
             expected_trails = {
@@ -920,9 +922,6 @@ class TestMinProfit(_BinanceTrailingBase):
 
         with self.subTest(msg="corrupted_peak_or_warmup_and_market_data_hardening"):
             self.tearDown(); self.setUp()
-            from botcore import load_local_module
-            from kraken.market_data import pair_precision
-
             hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
             hl_md = load_local_module(hl_dir, "market_data", module_key="hl_md_test", reload=True)
 
@@ -987,7 +986,6 @@ if __name__ == "__main__":
 
 def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_does_iter44_s1(tmp_path):
     """[ITER44 #1] TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell."""
-    import trailing_core
     # 1. TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell
     sold_calls = []
     adapter = SimpleNamespace(
@@ -1001,7 +999,7 @@ def test_trailingcore__safe_trend_ignores_boolean_true_so_sell_skip_if_trend_up_
         log_hold=lambda *a: None,
         log_item_error=lambda *a: None,
     )
-    core = trailing_core.TrailingCore(
+    core = TrailingCore(
         adapter,
         log=lambda *a: None,
         enabled=False,
@@ -1071,9 +1069,8 @@ def test_trailingcore__reconcile_pending_cleans_up_corrupted_non_dict_pending_or
 
 def test_trailingcore__finish_pending_cleans_up_target_exit_qty_on_fill_terminal_iter91_s4():
     """[ITER91 #4] TrailingCore._finish_pending cleans up target_exit_qty on 0-fill terminal SELL."""
-    import trailing_core as tcore
     # 4. TrailingCore._finish_pending cleans up target_exit_qty on 0-fill terminal SELL
-    tc_obj = tcore.TrailingCore(
+    tc_obj = TrailingCore(
         adapter=type("A", (), {"assets": lambda self: []})(),
         log=lambda *a, **k: None,
         enabled=False,
@@ -1098,7 +1095,6 @@ def test_trailingcore__finish_pending_cleans_up_target_exit_qty_on_fill_terminal
 
 def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110_s1(tmp_path):
     """[ITER110 #1] trailing_core: string 'false' flags and malformed pending metadata in _finish_pending."""
-    import trailing_core as tc
     # 1. trailing_core: string 'false' flags and malformed pending metadata in _finish_pending
     adapter = SimpleNamespace(
         assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 20.0)],
@@ -1107,7 +1103,7 @@ def test_trailing_core_string_false_flags_and_malformed_pending_metadata_iter110
         rebuy_configured_for=lambda _p: False,
         rebuy_enabled_for=lambda _p: False,
     )
-    core = tc.TrailingCore(
+    core = TrailingCore(
         adapter,
         log=lambda _m: None,
         enabled="false",
