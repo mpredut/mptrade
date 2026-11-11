@@ -114,7 +114,6 @@ import order_guard
 import os
 import pytest
 import subprocess
-import time as _time
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_analyzer import MacroAnalyzer
@@ -6240,7 +6239,7 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
 
     # 1. Held positions with missing or un-warmed trailing_peak (equal to active_avg_buy_px) and age >= 12h
     #    reconcile trailing_peak and cycle pos_peak with high_24h and last_sell_px
-    now_ms = int(_time.time() * 1000)
+    now_ms = int(time.time() * 1000)
     old_buy_ts = now_ms - 48 * 3600 * 1000
     recent_sell_ts = now_ms - 13 * 3600 * 1000
     positions = [
@@ -6422,7 +6421,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     ) is False
 
     # 3. Bug 112: collect_pretrade_telemetry Recent Venue Fills includes Last BUY Age, Last SELL Age, and Recent BUY/SELL Tranches
-    now_ms = int(_time.time() * 1000)
+    now_ms = int(time.time() * 1000)
     (orders_dir / "cache_order_binance.json").write_text(
         json.dumps(
             {
@@ -6586,8 +6585,8 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
 
     ldir_rec = tmp_path / "logs_rec"
     ldir_rec.mkdir(parents=True, exist_ok=True)
-    clk_err = _time.strftime("%H:%M:%S", _time.localtime(_time.time() - 900))
-    clk_ok = _time.strftime("%H:%M:%S", _time.localtime(_time.time() - 60))
+    clk_err = time.strftime("%H:%M:%S", time.localtime(time.time() - 900))
+    clk_ok = time.strftime("%H:%M:%S", time.localtime(time.time() - 60))
     (ldir_rec / "assetguardian.log").write_text(
         "\n".join([
             f"{clk_err} get_free_balance: Error for TAO: APIError(code=-2015): Invalid API-key, IP, or permissions for action.",

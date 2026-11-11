@@ -17,11 +17,9 @@ import pytest
 import rtrade
 import time
 from types import SimpleNamespace
-import json as _json
 import os as _os
 import tempfile as _tempfile
 from pathlib import Path as _Path
-import rtrade as _rtrade
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 
 
@@ -1005,29 +1003,29 @@ _RTRADE_ROOT = _Path(__file__).resolve().parents[1]
 
 class RTradeHeartbeatTest(unittest.TestCase):
     def setUp(self):
-        self._last = _rtrade._rtrade_heartbeat_last
+        self._last = rtrade._rtrade_heartbeat_last
 
     def tearDown(self):
-        _rtrade._rtrade_heartbeat_last = self._last
+        rtrade._rtrade_heartbeat_last = self._last
 
     def test_heartbeat_is_written_and_throttled_by_loop_progress(self):
         with _tempfile.TemporaryDirectory() as tmp:
             path = _os.path.join(tmp, "rtrade.heartbeat")
             with (
-                _patch.object(_rtrade, "_RTRADE_HEARTBEAT_PATH", path),
-                _patch.object(_rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
-                _patch.object(_rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
+                _patch.object(rtrade, "_RTRADE_HEARTBEAT_PATH", path),
+                _patch.object(rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
+                _patch.object(rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
             ):
-                _rtrade._rtrade_heartbeat_last = float("-inf")
-                _rtrade._touch_rtrade_heartbeat()
+                rtrade._rtrade_heartbeat_last = float("-inf")
+                rtrade._touch_rtrade_heartbeat()
                 self.assertTrue(_os.path.exists(path))
-                self.assertEqual(_rtrade._rtrade_heartbeat_last, 100.0)
+                self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
 
-                _rtrade._touch_rtrade_heartbeat()
-                self.assertEqual(_rtrade._rtrade_heartbeat_last, 100.0)
+                rtrade._touch_rtrade_heartbeat()
+                self.assertEqual(rtrade._rtrade_heartbeat_last, 100.0)
 
-                _rtrade._touch_rtrade_heartbeat()
-                self.assertEqual(_rtrade._rtrade_heartbeat_last, 131.0)
+                rtrade._touch_rtrade_heartbeat()
+                self.assertEqual(rtrade._rtrade_heartbeat_last, 131.0)
 
     def test_process_manifest_uses_dedicated_heartbeat(self):
         line = next(
@@ -1044,16 +1042,16 @@ class RTradeHeartbeatTest(unittest.TestCase):
         self.assertEqual(parts[6], "fleet")
 
     def test_rtrade_imports_sys_and_defines_recovery_timeout(self):
-        self.assertTrue(hasattr(_rtrade, "sys"), "rtrade must import sys for sys.exit")
-        self.assertTrue(callable(_rtrade.sys.exit))
-        self.assertTrue(hasattr(_rtrade, "_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC"))
+        self.assertTrue(hasattr(rtrade, "sys"), "rtrade must import sys for sys.exit")
+        self.assertTrue(callable(rtrade.sys.exit))
+        self.assertTrue(hasattr(rtrade, "_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC"))
         self.assertLess(
-            _rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC, 180.0,
+            rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC, 180.0,
             "Startup recovery timeout must be strictly less than orchestrator 180s threshold"
         )
 
     def test_venue_pair_recovery_blocked_management(self):
-        venue = _rtrade._LivePairVenue.__new__(_rtrade._LivePairVenue)
+        venue = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
         venue._recovery_blocked_pairs = set()
         venue.recovery_blocked = False
         venue._set_pair_recovery_blocked("pair-1", True)
@@ -1064,7 +1062,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
         self.assertFalse(venue.pair_recovery_blocked("pair-1"))
 
     def test_coordinator_loop_exits_on_venue_recovery_blocked_timeout(self):
-        bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
+        bot = rtrade.TradingBot.__new__(rtrade.TradingBot)
         bot.symbol = "TAOUSDC"
         bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
         mock_venue = MagicMock()
@@ -1074,14 +1072,14 @@ class RTradeHeartbeatTest(unittest.TestCase):
         mock_pair_store.active.return_value = []
 
         start_time = 1000.0
-        timeout = _rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
+        timeout = rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
         monotonic_times = [start_time, start_time + 1.0, start_time + timeout + 5.0]
         with (
-            _patch.object(_rtrade, "_rtrade_monotonic_time", side_effect=monotonic_times),
-            _patch.object(_rtrade.time, "sleep", return_value=None),
-            _patch.object(_rtrade.sys, "exit") as mock_exit,
-            _patch.object(_rtrade, "_LivePairVenue", return_value=mock_venue),
-            _patch.object(_rtrade, "RTradePairStore", return_value=mock_pair_store),
+            _patch.object(rtrade, "_rtrade_monotonic_time", side_effect=monotonic_times),
+            _patch.object(rtrade.time, "sleep", return_value=None),
+            _patch.object(rtrade.sys, "exit") as mock_exit,
+            _patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            _patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
         ):
             mock_exit.side_effect = SystemExit(1)
             with self.assertRaises(SystemExit):
@@ -1089,7 +1087,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
             mock_exit.assert_called_once_with(1)
 
     def test_startup_recovery_terminal_record_clears_venue_blockage(self):
-        bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
+        bot = rtrade.TradingBot.__new__(rtrade.TradingBot)
         bot.symbol = "TAOUSDC"
         bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
         mock_venue = MagicMock()
@@ -1107,9 +1105,9 @@ class RTradeHeartbeatTest(unittest.TestCase):
         mock_venue.executor.open_orders.return_value = []
 
         with (
-            _patch.object(_rtrade, "_LivePairVenue", return_value=mock_venue),
-            _patch.object(_rtrade, "RTradePairStore", return_value=mock_pair_store),
-            _patch.object(_rtrade.time, "sleep", side_effect=StopIteration),
+            _patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            _patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
+            _patch.object(rtrade.time, "sleep", side_effect=StopIteration),
         ):
             try:
                 bot._run_coordinator_forever()
@@ -1151,7 +1149,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
                 self.assertEqual(ts1, 500.0)
                 hb_file = _Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
                 self.assertTrue(hb_file.exists())
-                data = _json.loads(hb_file.read_text(encoding="utf-8"))
+                data = json.loads(hb_file.read_text(encoding="utf-8"))
                 self.assertEqual(data["status"], "alive")
                 self.assertEqual(data["symbols"], ["BTCUSDC", "TAOUSDC"])
 
@@ -1162,7 +1160,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
                     "cacheManager", interval_sec=30.0, now=535.0, symbols=["BTCUSDC"],
                 )
                 self.assertEqual(ts3, 535.0)
-                data_after = _json.loads(hb_file.read_text(encoding="utf-8"))
+                data_after = json.loads(hb_file.read_text(encoding="utf-8"))
                 self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
                 self.assertEqual(data_after["status"], "alive")
 
@@ -1204,7 +1202,7 @@ class RTradePairStoreTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _assert_existing_invalid_store_is_preserved(self, payload):
-        original = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        original = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         with open(self.store.path, "wb") as handle:
             handle.write(original)
 
@@ -1269,7 +1267,7 @@ class RTradePairStoreTest(unittest.TestCase):
             },
         }
         with open(self.store.path, "w", encoding="utf-8", newline="\n") as handle:
-            _json.dump(legacy, handle, separators=(",", ":"))
+            json.dump(legacy, handle, separators=(",", ":"))
 
         loaded = self.store.active("TAOUSDC")
         self.assertEqual(loaded[0]["intents"]["limit:BUY"]["qty"], 1.0)
@@ -1344,7 +1342,7 @@ class RTradePairStoreTest(unittest.TestCase):
             store.intent(pair_id, "BUY", 100.0, 1.0, f"CID_{pair_id}", symbol="TAOUSDC", start_side="BUY")
             store.checkpoint(pair_id, {"phase": "complete"}, terminal=True)
         with open(store.path, encoding="utf-8") as handle:
-            pairs = _json.load(handle)["pairs"]
+            pairs = json.load(handle)["pairs"]
         self.assertEqual(len(pairs), 2)
 
     def test_default_in_memory_store_creates_no_disk_file(self):

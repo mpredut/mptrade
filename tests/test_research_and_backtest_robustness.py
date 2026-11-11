@@ -59,7 +59,6 @@ from unittest.mock import MagicMock, patch
 import active_intents
 import argparse
 import assetguardian
-import assetguardian as ag
 import asyncio
 import cacheManager as cm
 import cachepaths
@@ -110,7 +109,7 @@ from offline.research.ml_forecast.priceprediction import PricePrediction
 from offline.research.ml_forecast.vol_chronos import realized_vol_series
 from offline.research.monitortrades_backtest.replay_trend_source import _is_trend_up_tuple
 from offline.runners.fetch_hyperliquid_candles import _parse_intervals
-from orchestratorOS.admin import agy_store_fix, agy_store_fix as asf
+from orchestratorOS.admin import agy_store_fix
 from orchestratorOS.agy import paths as agy_paths, topics, ui_mirror
 from providers.base import aggregate_fills_by_order_id
 from providers.quantity import balance_cap_quantity
@@ -1306,8 +1305,8 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
         "language server process with pid 4242\nsummary store: reconciliation complete\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(asf, "LOGS", str(bracket_logs))
-    assert asf.newest_daemon_log_ready(0.0, pid="4242") is True
+    monkeypatch.setattr(agy_store_fix, "LOGS", str(bracket_logs))
+    assert agy_store_fix.newest_daemon_log_ready(0.0, pid="4242") is True
 
     # 3. kraken_pnl_backfill.env_value parses export lines and closes files
     env_dir = tmp_path / "kraken_cfg"
@@ -2303,11 +2302,11 @@ def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
 
     # 4. assetguardian._complete_campaign_tier ignores invalid threshold and evaluate_symbol normalizes symbol
     saved_calls = []
-    monkeypatch.setattr(ag, "_save_symbol_campaign", lambda s, k, st: saved_calls.append((s, k, st)))
-    ag._complete_campaign_tier("BTCUSDC", "buy", {}, True)
-    ag._complete_campaign_tier("BTCUSDC", "buy", {}, -5.0)
+    monkeypatch.setattr(assetguardian, "_save_symbol_campaign", lambda s, k, st: saved_calls.append((s, k, st)))
+    assetguardian._complete_campaign_tier("BTCUSDC", "buy", {}, True)
+    assetguardian._complete_campaign_tier("BTCUSDC", "buy", {}, -5.0)
     assert saved_calls == []
-    assert ag.evaluate_symbol(" unconfigured_sym ") is False
+    assert assetguardian.evaluate_symbol(" unconfigured_sym ") is False
 
 
 def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
@@ -3198,7 +3197,7 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     ana.write_heartbeat(None)  # type: ignore[arg-type]
     ma_hb = json.loads((tmp_path / "ma.hb").read_text(encoding="utf-8"))
     assert math.isfinite(ma_hb["ts"]) and ma_hb["ts"] > 0
-    assert asf._parse_bool_flag("false", True) is False
+    assert agy_store_fix._parse_bool_flag("false", True) is False
 
 
 def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(capsys, tmp_path):
@@ -5302,9 +5301,9 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
 
     # 5. assetguardian._resolve_blocking_sell_orders skips invalid/negative order IDs and normalizes '+555.0'
     canceled_ids = []
-    monkeypatch.setattr(ag.mkt, "cancel_order", lambda sym, oid, **_kw: canceled_ids.append((sym, oid)))
-    monkeypatch.setitem(ag._rtrade_sell_block_since, "BTCUSDC", 1.0)
-    rem = ag._resolve_blocking_sell_orders(
+    monkeypatch.setattr(assetguardian.mkt, "cancel_order", lambda sym, oid, **_kw: canceled_ids.append((sym, oid)))
+    monkeypatch.setitem(assetguardian._rtrade_sell_block_since, "BTCUSDC", 1.0)
+    rem = assetguardian._resolve_blocking_sell_orders(
         "BTCUSDC",
         [
             {"orderId": "-5", "clientOrderId": "RT_1"},

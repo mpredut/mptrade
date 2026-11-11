@@ -7,7 +7,6 @@ import unittest
 from unittest.mock import patch
 
 import account_cache_health as health
-import account_cache_health as bch
 
 
 class BinanceAccountCacheHealthTest(unittest.TestCase):
@@ -345,37 +344,37 @@ if __name__ == "__main__":
 def test_account_cache_health__clean_now_ms_ignores_bool_nan_iter38_s3():
     """[ITER38 #3] account_cache_health.resolve_now_ms ignores bool/NaN."""
     # 3. account_cache_health.resolve_now_ms ignores bool/NaN
-    ts_clean = bch.resolve_now_ms(True)
+    ts_clean = health.resolve_now_ms(True)
     assert ts_clean > 1_000_000_000_000
-    assert bch.resolve_now_ms(float("nan")) > 1_000_000_000_000
+    assert health.resolve_now_ms(float("nan")) > 1_000_000_000_000
 
 def test_account_cache_health_accountcachenotready_record_successful_sync_record_persisted_version_iter107_s1():
     """[ITER107 #1] account_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version."""
     # 1. account_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
-    err = bch.AccountCacheNotReady(True)
+    err = health.AccountCacheNotReady(True)
     assert err.reason == "account_cache_not_fresh"
-    assert bch.record_successful_sync("BinanceOrder", True) is False
-    assert bch.record_successful_sync(True, "v1") is False
-    assert bch.record_persisted_version("BinanceTrade", True) is False
-    assert bch.record_persisted_version(True, "v1") is False
+    assert health.record_successful_sync("BinanceOrder", True) is False
+    assert health.record_successful_sync(True, "v1") is False
+    assert health.record_persisted_version("BinanceTrade", True) is False
+    assert health.record_persisted_version(True, "v1") is False
 
 def test_account_cache_health__clean_version_str_rejects_sentinel_strings_iter151_s2():
     """[ITER151 #2] account_cache_health._clean_version_str rejects sentinel strings."""
     # 2. account_cache_health._clean_version_str rejects sentinel strings
     for bad_ver in ("", "   ", "nan", "null", "none", "inf", "-inf", "+inf", None, 123):
-        assert bch._clean_version_str(bad_ver) == ""
-    assert bch._clean_version_str(" v123 ") == "v123"
+        assert health._clean_version_str(bad_ver) == ""
+    assert health._clean_version_str(" v123 ") == "v123"
 
 def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rejects_iter160_s4():
     """[ITER160 #4] account_cache_health: require_int accepts integer strings/floats and rejects bool/negative."""
     import pytest
     # 4. account_cache_health: require_int accepts integer strings/floats and rejects bool/negative
-    assert bch.require_int("123.0", "pid", min_value=1) == 123
-    assert bch.require_int("0.0", "gen", min_value=0) == 0
+    assert health.require_int("123.0", "pid", min_value=1) == 123
+    assert health.require_int("0.0", "gen", min_value=0) == 0
     with pytest.raises(ValueError):
-        bch.require_int("123.5", "pid", min_value=1)
+        health.require_int("123.5", "pid", min_value=1)
     with pytest.raises(ValueError):
-        bch.require_int(True, "pid", min_value=1)
+        health.require_int(True, "pid", min_value=1)
 
 
 def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():

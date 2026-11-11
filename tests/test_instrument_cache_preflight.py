@@ -19,7 +19,6 @@ import order_guard
 import order_lifecycle as order_outcomes_log
 import order_retry
 import order_retry_worker
-import order_lifecycle as accepted_order_persistence
 import priceAnalysis as pa
 from providers.base import MarketDataProvider
 from providers.strategy_executor import SubmissionRefused
@@ -562,9 +561,9 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 order_retry, "complete_claim",
                 side_effect=transient_complete),
             patch.object(
-                accepted_order_persistence.time, "sleep") as retry_sleep,
+                order_outcomes_log.time, "sleep") as retry_sleep,
             patch.object(
-                accepted_order_persistence.alert, "notify") as critical_alert,
+                order_outcomes_log.alert, "notify") as critical_alert,
         ):
             result = instrument.place(
                 "BUY", 100.0, 2.0, smart=False, wait_for_trend=False)
@@ -572,7 +571,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         self.assertEqual(result["orderId"], "accepted")
         self.assertEqual(len(attempts), 2)
         retry_sleep.assert_called_once_with(
-            accepted_order_persistence.
+            order_outcomes_log.
             ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
         critical_alert.assert_not_called()
         tracked = order_retry.load_all()
@@ -591,9 +590,9 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 order_retry, "complete_claim", return_value=False) as complete,
-            patch.object(accepted_order_persistence.time, "sleep"),
+            patch.object(order_outcomes_log.time, "sleep"),
             patch.object(
-                accepted_order_persistence.alert, "notify") as critical_alert,
+                order_outcomes_log.alert, "notify") as critical_alert,
         ):
             result = instrument.place(
                 "BUY", 100.0, 2.0, smart=False, wait_for_trend=False)
@@ -601,7 +600,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
         self.assertEqual(result["orderId"], "accepted")
         self.assertEqual(
             complete.call_count,
-            accepted_order_persistence.ACCEPTED_TRACKING_PERSIST_ATTEMPTS)
+            order_outcomes_log.ACCEPTED_TRACKING_PERSIST_ATTEMPTS)
         critical_alert.assert_called_once()
         self.assertTrue(critical_alert.call_args.kwargs["email"])
         retained = order_retry.load_all()

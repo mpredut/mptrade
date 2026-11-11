@@ -29,7 +29,6 @@ from instrument import Instrument
 import order_guard
 import order_lifecycle as outcomes_log
 import instrument as _inst_mod
-import order_retry as _oq
 import order_retry as oq
 import order_retry_worker as worker
 import pytest
@@ -107,15 +106,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # The re-placement queue: isolated — Instrument.place() enqueues on failure, and
         # these tests trigger many expected failures (cooldown/daily-limit) -> they must NOT
         # pollute the real cachedb/order_retry_queue.jsonl.
-        _oq.QUEUE_FILE = os.path.join(self._tmp, "order_retry_queue.jsonl")
-        _oq.LOCK_FILE = os.path.join(self._tmp, "order_retry_queue.lock")
+        oq.QUEUE_FILE = os.path.join(self._tmp, "order_retry_queue.jsonl")
+        oq.LOCK_FILE = os.path.join(self._tmp, "order_retry_queue.lock")
         # Explicit pin — the tests must not depend on the kill switch in the live config
-        _oq.RETRY_ENABLED = True
-        _oq.RETRY_DEDUP = True
+        oq.RETRY_ENABLED = True
+        oq.RETRY_DEDUP = True
         self._clear_state()
 
     def _clear_state(self):
-        open(_oq.QUEUE_FILE, 'w').close()
+        open(oq.QUEUE_FILE, 'w').close()
         for f in glob.glob(os.path.join(self._log_tmp, "order_outcomes_*.log")):
             os.remove(f)
 
@@ -556,7 +555,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0)
             self.assertIsNone(order)
-            q = _oq.load_all()
+            q = oq.load_all()
             self.assertEqual(len(q), 1)
             self.assertEqual(q[0]["symbol"], SYMBOL)
             self.assertEqual(q[0]["side"], "BUY")
@@ -568,7 +567,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0, caller_owns_retry=True)
             self.assertIsNone(order)
-            self.assertEqual(_oq.load_all(), [])
+            self.assertEqual(oq.load_all(), [])
 
         with self.subTest("success_remains_tracked_until_terminal"):
             self._clear_state()
@@ -576,7 +575,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0)
             self.assertIsNotNone(order)
-            tracked = _oq.load_all()
+            tracked = oq.load_all()
             self.assertEqual(len(tracked), 1)
             self.assertEqual(tracked[0]["lifecycle"], "accepted")
             self.assertEqual(tracked[0]["order_id"], "1")
@@ -584,15 +583,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("success_does_not_remove_independent_same_side_intent"):
             self._clear_state()
-            _oq.RETRY_DEDUP = False
-            _oq.enqueue(SYMBOL, "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-            _oq.enqueue(SYMBOL, "SELL", 1.0, {}, requested_price=101.0, now=1001.0)
+            oq.RETRY_DEDUP = False
+            oq.enqueue(SYMBOL, "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
+            oq.enqueue(SYMBOL, "SELL", 1.0, {}, requested_price=101.0, now=1001.0)
 
             p = _FakeProvider()
             order = self._inst(p).place("BUY", 100.0, 1.0)
 
             self.assertIsNotNone(order)
-            remaining = _oq.load_all()
+            remaining = oq.load_all()
             self.assertEqual(len(remaining), 3)
             buys = [row for row in remaining if row["side"] == "BUY"]
             sells = [row for row in remaining if row["side"] == "SELL"]

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from providers import order_id_context as rc
-from binance_api import bapi, bapi as api
+from binance_api import bapi
 import monitororder
 from providers.base import MarketDataProvider
 from providers.market_api import MarketApi
@@ -95,20 +95,20 @@ class TestBapiOrderIdentityFiltering(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.get_open_orders.return_value = raw_venue_orders
 
-        with patch.object(api, "client", mock_client):
+        with patch.object(bapi, "client", mock_client):
             # 1. No owner filter -> all BUY returned, clientOrderId populated
-            all_orders = api.get_open_orders("BUY", "BTCUSDC")
+            all_orders = bapi.get_open_orders("BUY", "BTCUSDC")
             self.assertEqual(len(all_orders), 3)
             self.assertEqual(all_orders[101]["clientOrderId"], "TA_buy_1")
             self.assertEqual(all_orders[102]["clientOrderId"], "RT_grid_1")
             self.assertEqual(all_orders[103]["clientOrderId"], "web_manual_1")
 
             # 2. Filter allowed_owners={"tradeall"} -> only TA order returned
-            ta_orders = api.get_open_orders("BUY", "BTCUSDC", allowed_owners={"tradeall"})
+            ta_orders = bapi.get_open_orders("BUY", "BTCUSDC", allowed_owners={"tradeall"})
             self.assertEqual(list(ta_orders.keys()), [101])
 
             # 3. Filter allowed_owners={"rtrade"} -> only RT order returned
-            rt_orders = api.get_open_orders("BUY", "BTCUSDC", allowed_owners={"rtrade"})
+            rt_orders = bapi.get_open_orders("BUY", "BTCUSDC", allowed_owners={"rtrade"})
             self.assertEqual(list(rt_orders.keys()), [102])
 
     def test_cancel_expired_orders_respects_allowed_owners(self):
@@ -117,13 +117,13 @@ class TestBapiOrderIdentityFiltering(unittest.TestCase):
             201: {"price": 100.0, "timestamp": now - 3600, "clientOrderId": "TA_order_1"},
             202: {"price": 95.0, "timestamp": now - 3600, "clientOrderId": "RT_order_2"},
         }
-        with patch.object(api, "get_open_orders", side_effect=lambda side, sym, allowed_owners=None: {
+        with patch.object(bapi, "get_open_orders", side_effect=lambda side, sym, allowed_owners=None: {
             oid: data for oid, data in open_orders.items()
             if allowed_owners is None or rc.order_matches_owner(data["clientOrderId"], allowed_owners)
-        }), patch.object(api, "cancel_order", return_value=True) as mock_cancel, \
+        }), patch.object(bapi, "cancel_order", return_value=True) as mock_cancel, \
              patch("time.time", return_value=now):
             # Calling cancel_expired_orders scoped to tradeall
-            api.cancel_expired_orders("BUY", "BTCUSDC", expire_time=600, allowed_owners={"tradeall"})
+            bapi.cancel_expired_orders("BUY", "BTCUSDC", expire_time=600, allowed_owners={"tradeall"})
             mock_cancel.assert_called_once_with("BTCUSDC", 201)
 
 

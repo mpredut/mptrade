@@ -21,7 +21,6 @@ make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
 run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail  # noqa: E402
-import json as _json
 import time as _time
 import unittest as _unittest
 
@@ -1133,7 +1132,7 @@ class TestInfrastructure(_DNBase):
         self.opened(d)
         d._save()
         with open(d.state_file) as f:
-            st = _json.load(f)
+            st = json.load(f)
         self.assertEqual(st["status"], "open")
         self.assertFalse(os.path.exists(d.state_file + ".tmp"))
 

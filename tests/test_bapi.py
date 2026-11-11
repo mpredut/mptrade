@@ -11,21 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from binance_api import (
-    bapi,
-    bapi_allorders,
-    bapi_allorders as ao,
-    bapi_client,
-    bapi_placeorder,
-    bapi_placeorder as bp,
-    bapi_placeorder as po,
-    bapi_trades,
-    bapi_ws,
-    bapi_ws_bridge as ws_bridge,
-    bapi_ws_normalize,
-    market_data as b_md,
-    trailing_stop,
-)
+from binance_api import bapi, bapi_allorders, bapi_allorders as ao, bapi_client, bapi_placeorder, bapi_placeorder as po, bapi_trades, bapi_ws, bapi_ws_bridge as ws_bridge, bapi_ws_normalize, market_data as b_md, trailing_stop
 from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
 from providers.market_api import BinanceProvider
 from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag
@@ -243,7 +229,7 @@ class TestPaginateMyTrades(unittest.TestCase):
     def test_single_page_one_call(self):
         client = MagicMock()
         client.get_my_trades.return_value = [{"id": i, "time": 1} for i in range(10)]
-        out = ao.paginate_my_trades(client, SYMBOL, 0, limit=1000)
+        out = bapi_allorders.paginate_my_trades(client, SYMBOL, 0, limit=1000)
         self.assertEqual(len(out), 10)
         self.assertEqual(client.get_my_trades.call_count, 1)
         _, kw = client.get_my_trades.call_args_list[0]
@@ -255,7 +241,7 @@ class TestPaginateMyTrades(unittest.TestCase):
         page1 = [{"id": i, "time": 1} for i in range(1000)]
         page2 = [{"id": 1000 + i, "time": 1} for i in range(500)]
         client.get_my_trades.side_effect = [page1, page2]
-        out = ao.paginate_my_trades(client, SYMBOL, 0, limit=1000)
+        out = bapi_allorders.paginate_my_trades(client, SYMBOL, 0, limit=1000)
         self.assertEqual(len(out), 1500)
         self.assertEqual(client.get_my_trades.call_count, 2)
         _, kw2 = client.get_my_trades.call_args_list[1]
@@ -265,33 +251,33 @@ class TestPaginateMyTrades(unittest.TestCase):
     def test_empty(self):
         client = MagicMock()
         client.get_my_trades.return_value = []
-        self.assertEqual(ao.paginate_my_trades(client, "X", 0), [])
+        self.assertEqual(bapi_allorders.paginate_my_trades(client, "X", 0), [])
 
     def test_exact_multiple_of_limit_stops_on_empty(self):
         client = MagicMock()
         page1 = [{"id": i, "time": 1} for i in range(2)]
         client.get_my_trades.side_effect = [page1, []]
-        out = ao.paginate_my_trades(client, "X", 0, limit=2)
+        out = bapi_allorders.paginate_my_trades(client, "X", 0, limit=2)
         self.assertEqual(len(out), 2)
         self.assertEqual(client.get_my_trades.call_count, 2)
 
     def test_none_response_remains_empty_for_legacy_readers(self):
         client = MagicMock()
         client.get_my_trades.return_value = None
-        self.assertEqual(ao.paginate_my_trades(client, "X", 0), [])
+        self.assertEqual(bapi_allorders.paginate_my_trades(client, "X", 0), [])
 
     def test_none_response_fails_a_strict_reconciliation(self):
         client = MagicMock()
         client.get_my_trades.return_value = None
         with self.assertRaisesRegex(RuntimeError, "Binance returned no trade page"):
-            ao.paginate_my_trades(client, "X", 0, strict=True)
+            bapi_allorders.paginate_my_trades(client, "X", 0, strict=True)
 
 
 class TestCachedOrders(unittest.TestCase):
     def test_reader_does_not_start_a_duplicate_polling_loop(self):
         manager = MagicMock(cache={SYMBOL: []})
         with patch("cacheManager.get_cache_manager", return_value=manager) as get_manager:
-            self.assertEqual(ao.get_trade_orders("BUY", SYMBOL, 60), [])
+            self.assertEqual(bapi_allorders.get_trade_orders("BUY", SYMBOL, 60), [])
         get_manager.assert_called_once_with("BinanceOrder")
 
     def test_reader_copies_mutable_order_rows_under_manager_lock(self):
@@ -309,7 +295,7 @@ class TestCachedOrders(unittest.TestCase):
 
         manager.lock = MutatingLock()
         with patch("cacheManager.get_cache_manager", return_value=manager):
-            result = ao.get_trade_orders("BUY", SYMBOL, 60)
+            result = bapi_allorders.get_trade_orders("BUY", SYMBOL, 60)
 
         self.assertEqual(result[0]["price"], 100.0)
         self.assertEqual(manager.cache[SYMBOL][0]["price"], 999.0)
@@ -325,7 +311,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         })
         order_mgr.lock = threading.Lock()
         with patch("cacheManager.get_cache_manager", return_value=order_mgr):
-            res_ao = ao.get_trade_orders("buy", SYMBOL, 60)
+            res_ao = bapi_allorders.get_trade_orders("buy", SYMBOL, 60)
         self.assertEqual(len(res_ao), 1)
         self.assertEqual(res_ao[0]["side"], "BUY")
 
@@ -616,13 +602,13 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "-1.0", "locked": "0.0"}]}
             self.assertEqual(bapi_mod.get_account_assets_balances(), [])
 
-        with mock.patch.object(po.api, "get_current_price", return_value=float("inf")):
+        with mock.patch.object(bapi_placeorder.api, "get_current_price", return_value=float("inf")):
             self.assertEqual(
-                po.adjust_price_and_cancel_opposite("SELL", SYMBOL, 100.0, cancel_opposite=False),
+                bapi_placeorder.adjust_price_and_cancel_opposite("SELL", SYMBOL, 100.0, cancel_opposite=False),
                 100.0,
             )
             self.assertEqual(
-                po.order_candidate_price("BUY", 100.0, True),
+                bapi_placeorder.order_candidate_price("BUY", 100.0, True),
                 100.0,
             )
 
@@ -733,18 +719,18 @@ def test_bapi_cancel_expired_orders_and_bapi_cancel_recent_orders_with_nan_bool_
 def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_price_iter37_s2():
     """[ITER37 #2] bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price."""
     # 2. bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price
-    with pytest.raises(bp.SubmissionRefused):
-        bp.apply_weight_limit("BTCUSDC", "BUY", True, 1.0, 1.0)
-    with pytest.raises(bp.SubmissionRefused):
-        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, True, 1.0)
-    with pytest.raises(bp.SubmissionRefused):
-        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, 1.0, True)
-    with pytest.raises(bp.SubmissionRefused):
-        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", True, price=60000.0)
-    with pytest.raises(bp.SubmissionRefused):
-        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", 1.0, price=True)
-    with pytest.raises(bp.SubmissionRefused):
-        bp._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.apply_weight_limit("BTCUSDC", "BUY", True, 1.0, 1.0)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.apply_weight_limit("BTCUSDC", "BUY", 60000.0, True, 1.0)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.apply_weight_limit("BTCUSDC", "BUY", 60000.0, 1.0, True)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.issue_account_cache_submit_permit("BTCUSDC", "BUY", True, price=60000.0)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.issue_account_cache_submit_permit("BTCUSDC", "BUY", 1.0, price=True)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
 
 def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_ages_iter38_s1():
     """[ITER38 #1] _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages."""
@@ -755,29 +741,29 @@ def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_a
         SimpleNamespace(order_age_sec=True, trade_age_sec=0.5),
         SimpleNamespace(order_age_sec=-1.0, trade_age_sec=0.5),
     ):
-        with pytest.raises(bp.SubmissionRefused):
-            bp._require_submit_permit_headroom(bad_status)
+        with pytest.raises(bapi_placeorder.SubmissionRefused):
+            bapi_placeorder._require_submit_permit_headroom(bad_status)
 
 def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_iter38_s2(monkeypatch):
     """[ITER38 #2] cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price."""
     # 2. cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price
-    with pytest.raises(bp.SubmissionRefused):
-        bp.cancel_opposite_orders("BUY", "BTCUSDC", True)
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder.cancel_opposite_orders("BUY", "BTCUSDC", True)
 
     canceled_ids = []
     monkeypatch.setattr(
-        bp.api,
+        bapi_placeorder.api,
         "get_open_orders",
         lambda side, sym, **kw: {
             "oid_zero": {"price": "0.00000000"},
             "oid_adverse": {"price": "59000.0" if side == "SELL" else "61000.0"},
         },
     )
-    monkeypatch.setattr(bp.api, "cancel_order", lambda sym, oid: canceled_ids.append(oid) or True)
-    bp.cancel_opposite_orders("BUY", "BTCUSDC", 60000.0)
+    monkeypatch.setattr(bapi_placeorder.api, "cancel_order", lambda sym, oid: canceled_ids.append(oid) or True)
+    bapi_placeorder.cancel_opposite_orders("BUY", "BTCUSDC", 60000.0)
     assert canceled_ids == ["oid_adverse"]
     canceled_ids.clear()
-    bp.cancel_opposite_orders("SELL", "BTCUSDC", 60000.0)
+    bapi_placeorder.cancel_opposite_orders("SELL", "BTCUSDC", 60000.0)
     assert canceled_ids == ["oid_adverse"]
 
 def test_binance_filters__decimal_rejects_bool_and__parse_bool_flag_handles_string_iter39_s1():
@@ -1630,7 +1616,7 @@ def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock
             self.sync_called = True
 
     mgr = DummyCacheManager()
-    rows = ao.snapshot_cache_symbol_rows(mgr, "BTC/USDC")
+    rows = bapi_allorders.snapshot_cache_symbol_rows(mgr, "BTC/USDC")
     assert mgr.sync_called is True
     assert rows == [{"orderId": 100, "status": "FILLED"}]
     # Ensure rows are defensive copies (mutating snapshot does not mutate cache)

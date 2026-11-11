@@ -32,10 +32,8 @@ from types import SimpleNamespace
 import external_order_guard as eog
 import json
 import numpy as np
-import order_guard as og
 import pytest
 import qlimit_order_guard
-import qlimit_order_guard as qog
 import subprocess
 from intelligence.daemon import IntelligenceTelemetryDaemon
 from offline.backtests.evaluation import load_venue_module
@@ -2033,17 +2031,17 @@ def test_check_external_order_guards_with_nan_now_iter32_s1():
 def test_resolve_high_stake_min_notional_usd_iter34_s1():
     """[ITER34 #1] resolve_high_stake_min_notional_usd."""
     # 1. resolve_high_stake_min_notional_usd
-    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": float("nan")}) == 700.0
-    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": True}) == 700.0
-    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": -50.0}) == 700.0
-    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": 850.0}) == 850.0
+    assert order_guard.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": float("nan")}) == 700.0
+    assert order_guard.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": True}) == 700.0
+    assert order_guard.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": -50.0}) == 700.0
+    assert order_guard.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": 850.0}) == 850.0
 
 def test_select_extreme_reference__aggregate_reference_prices_with_nan_bool_iter34_s2():
     """[ITER34 #2] select_extreme_reference & _aggregate_reference_prices with NaN/bool."""
     # 2. select_extreme_reference & _aggregate_reference_prices with NaN/bool
-    assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "BUY", strict=True) == 95.0
-    assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "SELL", strict=True) == 100.0
-    ref_last = og._aggregate_reference_prices(
+    assert order_guard.select_extreme_reference([float("nan"), True, 100.0, 95.0], "BUY", strict=True) == 95.0
+    assert order_guard.select_extreme_reference([float("nan"), True, 100.0, 95.0], "SELL", strict=True) == 100.0
+    ref_last = order_guard._aggregate_reference_prices(
         active_lots=[(float("nan"), 100.0), (2.0, 105.0)],
         valid_opp=[(float("nan"), 1.0, 100.0), (1700000000.0, 2.0, 105.0)],
         side="BUY",
@@ -2055,13 +2053,13 @@ def test_check_math_profit_reference_rejects_nan_bool_price_or_profit_percentage
     """[ITER34 #3] check_math_profit_reference rejects NaN/bool price or profit_percentage."""
     # 3. check_math_profit_reference rejects NaN/bool price or profit_percentage
     dummy_prov = SimpleNamespace(name="binance", last_opposite_fill=lambda s, o: 100.0)
-    assert og.check_math_profit_reference(
+    assert order_guard.check_math_profit_reference(
         dummy_prov, "BTCUSDC", "SELL", float("nan"), 1.0, reference_mode="strict"
     ) is False
-    assert og.check_math_profit_reference(
+    assert order_guard.check_math_profit_reference(
         dummy_prov, "BTCUSDC", "SELL", True, 1.0, reference_mode="strict"
     ) is False
-    assert og.check_math_profit_reference(
+    assert order_guard.check_math_profit_reference(
         dummy_prov, "BTCUSDC", "SELL", 105.0, float("nan"), reference_mode="strict"
     ) is False
 
@@ -2069,9 +2067,9 @@ def test_compute_weight_capped_qty_with_nan_bool_iter34_s4():
     """[ITER34 #4] compute_weight_capped_qty with NaN/bool."""
     import math
     # 4. compute_weight_capped_qty with NaN/bool
-    assert og.compute_weight_capped_qty(0.1, 100.0, float("nan"), 10.0, 0.0) == 0.0
-    assert og.compute_weight_capped_qty(0.1, True, 5.0, 10.0, 0.0) == 0.0
-    capped = og.compute_weight_capped_qty(0.2, 100.0, 5.0, 10.0, float("nan"))
+    assert order_guard.compute_weight_capped_qty(0.1, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert order_guard.compute_weight_capped_qty(0.1, True, 5.0, 10.0, 0.0) == 0.0
+    capped = order_guard.compute_weight_capped_qty(0.2, 100.0, 5.0, 10.0, float("nan"))
     assert math.isclose(capped, 2.0)
 
 def test_daily_limit_guard_ignores_bool_nan_max_daily_trades_and_inf_timestamps_iter36_s1():
@@ -2085,9 +2083,9 @@ def test_daily_limit_guard_ignores_bool_nan_max_daily_trades_and_inf_timestamps_
             "malformed_entry",
         ],
     )
-    ok_bool, r_bool = og.daily_limit_guard(prov_dl, "BTCUSDC", "BUY", max_daily_trades=True)
+    ok_bool, r_bool = order_guard.daily_limit_guard(prov_dl, "BTCUSDC", "BUY", max_daily_trades=True)
     assert ok_bool is True and r_bool is None
-    ok_nan, r_nan = og.daily_limit_guard(prov_dl, "BTCUSDC", "SELL", max_daily_trades=float("nan"))
+    ok_nan, r_nan = order_guard.daily_limit_guard(prov_dl, "BTCUSDC", "SELL", max_daily_trades=float("nan"))
     assert ok_nan is True and r_nan is None
 
 def test_guard_hierarchy_is_bypassed_normalize_bypassed_guards_with_bool_str_and_category_iter100_s1():
@@ -2160,16 +2158,16 @@ def test_order_guard_weight_limit_preserves_float_inf_for_auto_quantity_iter101_
 def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
 
     fake_kraken = type("KrakenProv", (), {"name": " kraken "})()
-    assert og.get_margin_cfg(fake_kraken) == og.get_margin_cfg("kraken")
-    assert og._venue_cfg(fake_kraken, "_weight_proxy") == og._venue_cfg("kraken", "_weight_proxy")
-    assert og.get_chop_weight_cfg(fake_kraken) == og.get_chop_weight_cfg("kraken")
-    assert og._venue_cfg(fake_kraken, "_max_daily_trades") == og._venue_cfg("kraken", "_max_daily_trades")
-    assert og._venue_cfg(fake_kraken, "_safeback_sec") == og._venue_cfg("kraken", "_safeback_sec")
-    assert og.get_margin_cfg(True) == og.get_margin_cfg("default")
+    assert order_guard.get_margin_cfg(fake_kraken) == order_guard.get_margin_cfg("kraken")
+    assert order_guard._venue_cfg(fake_kraken, "_weight_proxy") == order_guard._venue_cfg("kraken", "_weight_proxy")
+    assert order_guard.get_chop_weight_cfg(fake_kraken) == order_guard.get_chop_weight_cfg("kraken")
+    assert order_guard._venue_cfg(fake_kraken, "_max_daily_trades") == order_guard._venue_cfg("kraken", "_max_daily_trades")
+    assert order_guard._venue_cfg(fake_kraken, "_safeback_sec") == order_guard._venue_cfg("kraken", "_safeback_sec")
+    assert order_guard.get_margin_cfg(True) == order_guard.get_margin_cfg("default")
 
-    assert og.compute_weight_capped_qty(0.5, 100.0, float("inf"), 10.0, 0.0) == 5.0
-    assert og.compute_weight_capped_qty(0.5, 100.0, float("-inf"), 10.0, 0.0) == 0.0
-    assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert order_guard.compute_weight_capped_qty(0.5, 100.0, float("inf"), 10.0, 0.0) == 5.0
+    assert order_guard.compute_weight_capped_qty(0.5, 100.0, float("-inf"), 10.0, 0.0) == 0.0
+    assert order_guard.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
 
 def test_guard_hierarchy_baseguard_instances_semicolon_strings_and_falsy_tokens_iter171_s1():
     """[ITER171 #1] guard_hierarchy BaseGuard instances, semicolon strings, and falsy tokens."""
@@ -2187,33 +2185,33 @@ def test_guard_hierarchy_baseguard_instances_semicolon_strings_and_falsy_tokens_
 def test_order_guard_normalize_side_opposite_side_iter172_s1():
     """[ITER172 #1] order_guard.normalize_side & opposite_side."""
     # 1. order_guard.normalize_side & opposite_side
-    assert og.normalize_side(" bid ") == "BUY"
-    assert og.normalize_side("long") == "BUY"
-    assert og.normalize_side(" ask ") == "SELL"
-    assert og.normalize_side("A") == "SELL"
-    assert og.normalize_side("short") == "SELL"
-    assert og.opposite_side("BID") == "SELL"
-    assert og.opposite_side("ASK") == "BUY"
+    assert order_guard.normalize_side(" bid ") == "BUY"
+    assert order_guard.normalize_side("long") == "BUY"
+    assert order_guard.normalize_side(" ask ") == "SELL"
+    assert order_guard.normalize_side("A") == "SELL"
+    assert order_guard.normalize_side("short") == "SELL"
+    assert order_guard.opposite_side("BID") == "SELL"
+    assert order_guard.opposite_side("ASK") == "BUY"
 
 def test_select_extreme_reference_strict_boolean_string_parsing_iter172_s2():
     """[ITER172 #2] select_extreme_reference(strict=...) boolean string parsing."""
     # 2. select_extreme_reference(strict=...) boolean string parsing
-    assert og.select_extreme_reference([100.0, 110.0], "BID", strict="false") == pytest.approx(110.0)
-    assert og.select_extreme_reference([100.0, 110.0], "BID", strict="true") == pytest.approx(100.0)
-    assert og.select_extreme_reference([100.0, 110.0], "ASK", strict="false") == pytest.approx(100.0)
-    assert og.select_extreme_reference([100.0, 110.0], "ASK", strict="true") == pytest.approx(110.0)
+    assert order_guard.select_extreme_reference([100.0, 110.0], "BID", strict="false") == pytest.approx(110.0)
+    assert order_guard.select_extreme_reference([100.0, 110.0], "BID", strict="true") == pytest.approx(100.0)
+    assert order_guard.select_extreme_reference([100.0, 110.0], "ASK", strict="false") == pytest.approx(100.0)
+    assert order_guard.select_extreme_reference([100.0, 110.0], "ASK", strict="true") == pytest.approx(110.0)
 
 def test_compute_weight_capped_qty_clamps_weight_to_never_exceeds_available_qty_iter172_s3():
     """[ITER172 #3] compute_weight_capped_qty clamps weight > 1.0 to 1.0 (never exceeds available_qty)."""
     # 3. compute_weight_capped_qty clamps weight > 1.0 to 1.0 (never exceeds available_qty)
-    qty_cap = og.compute_weight_capped_qty(2.5, 100.0, 20.0, 10.0, 500.0)
+    qty_cap = order_guard.compute_weight_capped_qty(2.5, 100.0, 20.0, 10.0, 500.0)
     assert qty_cap == pytest.approx(10.0)
 
 def test_qlimit_order_guard_external_order_guard_llm_order_guard_side_aliases_iter172_s4():
     """[ITER172 #4] qlimit_order_guard, external_order_guard, llm_order_guard side aliases."""
     import llm_order_guard as llog
     # 4. qlimit_order_guard, external_order_guard, llm_order_guard side aliases
-    allowed_q, reason_q, scale_q = qog.check_qlimit2_order_guards("BTCUSDC", "BID", 100.0, margins={"intelligence_guards_mode": "off"})
+    allowed_q, reason_q, scale_q = qlimit_order_guard.check_qlimit2_order_guards("BTCUSDC", "BID", 100.0, margins={"intelligence_guards_mode": "off"})
     assert allowed_q is True and reason_q == "intelligence_guards_off"
     allowed_e, reason_e, scale_e = eog.check_external_order_guards("BTCUSDC", "ASK", 100.0, margins={"intelligence_guards_mode": "off"})
     assert allowed_e is True and reason_e == "intelligence_guards_off"
@@ -2226,13 +2224,13 @@ def test_qlimit_order_guard_external_order_guard_llm_order_guard_side_aliases_it
 def test__resolve_trend_direction_supports_dict_regime_context_and_uptrend_bearish_aliases_iter174_s1():
     """[ITER174 #1] _resolve_trend_direction supports dict regime_context and uptrend/bearish aliases."""
     # 1. _resolve_trend_direction supports dict regime_context and uptrend/bearish aliases
-    assert og._resolve_trend_direction("BTCUSDC", {"resolved_trend": "uptrend"}) == "bull"
-    assert og._resolve_trend_direction("BTCUSDC", {"regime": "bearish"}) == "bear"
+    assert order_guard._resolve_trend_direction("BTCUSDC", {"resolved_trend": "uptrend"}) == "bull"
+    assert order_guard._resolve_trend_direction("BTCUSDC", {"regime": "bearish"}) == "bear"
 
 def test_check_qlimit2_order_guards_respects_dict_regime_context_trend_duration_seconds_resolved_trend_iter174_s4():
     """[ITER174 #4] check_qlimit2_order_guards respects dict regime_context trend_duration_seconds & resolved_trend."""
     # 4. check_qlimit2_order_guards respects dict regime_context trend_duration_seconds & resolved_trend
-    q2_ok, q2_reason, q2_scale = qog.check_qlimit2_order_guards(
+    q2_ok, q2_reason, q2_scale = qlimit_order_guard.check_qlimit2_order_guards(
         "BTCUSDC",
         "BID",
         100.0,

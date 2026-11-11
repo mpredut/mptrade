@@ -28,7 +28,6 @@ from credentials import (
 import utils
 from providers.base import mount_connect_retry
 from strategies.state_store import JsonStateStore
-import botcore as bc
 import requests
 import sys
 from types import SimpleNamespace
@@ -1139,14 +1138,14 @@ def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
 def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter114_s2():
     """[ITER114 #2] botcore._dotenv_pairs, required_env, defined_env, required_bool_env."""
     # 2. botcore._dotenv_pairs, required_env, defined_env, required_bool_env
-    assert bc._dotenv_pairs(None) == ([], False)
-    assert bc._dotenv_pairs(True) == ([], False)
+    assert botcore._dotenv_pairs(None) == ([], False)
+    assert botcore._dotenv_pairs(True) == ([], False)
     with pytest.raises(ValueError):
-        bc.required_env("API_KEY", {"API_KEY": True})
+        botcore.required_env("API_KEY", {"API_KEY": True})
     with pytest.raises(ValueError):
-        bc.defined_env("API_KEY", {"API_KEY": False})
-    assert bc.required_bool_env("FLAG", {"FLAG": True}) is True
-    assert bc.required_bool_env("FLAG", {"FLAG": False}) is False
+        botcore.defined_env("API_KEY", {"API_KEY": False})
+    assert botcore.required_bool_env("FLAG", {"FLAG": True}) is True
+    assert botcore.required_bool_env("FLAG", {"FLAG": False}) is False
 
 def test_jsonstatestore_normalizes_string_fail_closed_false_iter127_s4(tmp_path):
     """[ITER127 #4] JsonStateStore normalizes string fail_closed='false'."""
@@ -1171,13 +1170,13 @@ def test_jsonstatestore_fail_closed_boolean_parsing_iter155_s1(tmp_path):
 def test_botcore_rejects_none_pair_id_and_cleans_order_id_metadata_iter160_s2():
     """[ITER160 #2] botcore: rejects 'None'/'0' pair_id and cleans '.0'/'0' order_id metadata."""
     # 2. botcore: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
-    assert bc.clean_order_id("None") is None
-    assert bc.clean_order_id("0") is None
-    assert bc.clean_order_id("0.0") is None
-    assert bc.clean_order_id(float("nan")) is None
-    assert bc.normalize_scalar_order_id("999.0") == "999"
-    assert bc.normalize_scalar_order_id("0") is None
-    assert bc.normalize_scalar_order_id("None") is None
+    assert botcore.clean_order_id("None") is None
+    assert botcore.clean_order_id("0") is None
+    assert botcore.clean_order_id("0.0") is None
+    assert botcore.clean_order_id(float("nan")) is None
+    assert botcore.normalize_scalar_order_id("999.0") == "999"
+    assert botcore.normalize_scalar_order_id("0") is None
+    assert botcore.normalize_scalar_order_id("None") is None
 
 def test_botcore_load_dotenv_override_false_does_not_overwrite_existing_iter162_s1(tmp_path, monkeypatch):
     """[ITER162 #1] botcore: load_dotenv(override='false') does not overwrite existing os.environ."""

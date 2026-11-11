@@ -18,7 +18,6 @@ from providers.strategy_executor import (
 from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
-import order_retry_worker as orw
 import pytest
 
 
@@ -1675,34 +1674,34 @@ def test_order_retry_worker_awaiting_cancel_with_nan_filled_qty_must_not_resolve
             terminal=True,
         ),
     )
-    orw.process_once(fake_mkt, now=2000.0)
+    worker.process_once(fake_mkt, now=2000.0)
     rec_after = oq.get(rid)
     assert rec_after is not None
     assert rec_after["lifecycle"] == "awaiting_cancel"
     assert rec_after.get("status_error") == "cancel_activation_failed"
-    assert orw._format_ts(True) == "N/A"
+    assert worker._format_ts(True) == "N/A"
     with pytest.raises(ValueError):
-        orw.IncidentDigest(tmp_path / "dig.json", True)
+        worker.IncidentDigest(tmp_path / "dig.json", True)
 
 def test_order_retry_worker__normalize_bypass_set_and_incidentdigest_boolean_missing_key_rejection_iter89_s1(tmp_path):
     """[ITER89 #1] order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection."""
     # 1. order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection
-    assert orw._normalize_bypass_set(True) == set()
-    assert orw._normalize_bypass_set([" G_PROF ", None, False, ""]) == {"G_PROF"}
-    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    assert worker._normalize_bypass_set(True) == set()
+    assert worker._normalize_bypass_set([" G_PROF ", None, False, ""]) == {"G_PROF"}
+    digest = worker.IncidentDigest(tmp_path / "digest.json", 60.0)
     with pytest.raises(ValueError, match="invalid notification digest event"):
         digest.collect([{"labels": {"a": "b"}, "quantity": True, "sample_id": "1"}], now=1000.0)
 
 def test_order_retry_worker__format_record_context_incidentdigest_collect_validation_iter97_s3(tmp_path):
     """[ITER97 #3] order_retry_worker._format_record_context & IncidentDigest.collect validation."""
     # 3. order_retry_worker._format_record_context & IncidentDigest.collect validation
-    ctx_str = orw._format_record_context(
+    ctx_str = worker._format_record_context(
         {"side": "BUY", "symbol": "BTCUSDC", "qty": True, "requested_price": True, "attempts": True}
     )
     assert "@ market" in ctx_str
     assert "(0 attempts" in ctx_str
 
-    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    digest = worker.IncidentDigest(tmp_path / "digest.json", 60.0)
     with pytest.raises(ValueError, match="invalid notification digest event"):
         digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0}], now=1000.0)
     with pytest.raises(ValueError, match="invalid notification digest event"):
@@ -1721,18 +1720,18 @@ def test_order_retry_order_retry_worker_non_dict_bool_safety_iter104_s4():
     # 4. order_retry & order_retry_worker non-dict / bool safety
     assert oq.complete_claim(None, "release") is False
     assert oq.activate_claimed_replacement(None, 1.0) is None
-    ctx = orw._format_record_context({"side": True, "symbol": True, "provider_name": True, "last_failure_reason": True})
+    ctx = worker._format_record_context({"side": True, "symbol": True, "provider_name": True, "last_failure_reason": True})
     assert "Order: ? 0 ? (? · ROUTED)" in ctx
     assert "reason=none" in ctx
 
 def test_order_retry_worker__provider_name_and_incidentdigest_iter114_s1(tmp_path):
     """[ITER114 #1] order_retry_worker._provider_name and IncidentDigest."""
     # 1. order_retry_worker._provider_name and IncidentDigest
-    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: None), {"symbol": "BTCUSDC", "provider_name": True}) is None
-    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: "Binance"), {"symbol": "BTCUSDC", "provider_name": "   "}) == "Binance"
+    assert worker._provider_name(SimpleNamespace(provider_name_for=lambda _s: None), {"symbol": "BTCUSDC", "provider_name": True}) is None
+    assert worker._provider_name(SimpleNamespace(provider_name_for=lambda _s: "Binance"), {"symbol": "BTCUSDC", "provider_name": "   "}) == "Binance"
     with pytest.raises(ValueError):
-        orw.IncidentDigest(tmp_path / "digest.json", None)
-    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+        worker.IncidentDigest(tmp_path / "digest.json", None)
+    digest = worker.IncidentDigest(tmp_path / "digest.json", 60.0)
     with pytest.raises(ValueError):
         digest.collect([], now=None)
     with pytest.raises(ValueError):

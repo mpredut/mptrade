@@ -55,7 +55,7 @@ from offline.research.intelligence_backtest import BacktestStats, run_intelligen
 from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
 from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
-from intelligence.internal.state import survival, survival as surv_mod, volatility as vol_mod
+from intelligence.internal.state import survival, volatility as vol_mod
 from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
@@ -140,8 +140,6 @@ import order_retry
 import subprocess
 import sys
 import threading
-import time as _t_mod
-import time as _time
 import types
 from botcore import load_local_module
 from cachetrend import CacheShortTrendManager
@@ -961,7 +959,7 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     orders_cache = {
         "items": {
             "BTCUSDC": [
-                {"orderId": 101, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": 75000.0, "executedQty": 0.1, "time": int(_time.time() * 1000)},
+                {"orderId": 101, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": 75000.0, "executedQty": 0.1, "time": int(time.time() * 1000)},
             ]
         }
     }
@@ -1764,7 +1762,7 @@ def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_
     from state_io import read_json_recovering
 
     # 1. harvest_bot_runtime_states supports 2nd-positional callable read_json_fn even when order_retry_queue.jsonl exists
-    now = _time.time()
+    now = time.time()
     retry_q = tmp_path / "order_retry_queue.jsonl"
     retry_q.write_text(
         json.dumps(
@@ -2052,7 +2050,7 @@ def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_
     assert p2.metadata["notional_eur"] == pytest.approx(750.0)
 
     # 4. NewsFeedCollector._load_history unwraps dict-shaped {"items": [...]} payloads
-    recent_ts = _time.time() - 60.0
+    recent_ts = time.time() - 60.0
     hist_file = tmp_path / "news_feed_collect.json"
     hist_file.write_text(
         json.dumps(
@@ -2354,14 +2352,14 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
         json.dumps({"NEWCOINUSDC": {"T": 14, "n": 0, "w": 0.0, "median_d": None, "p90_d": None, "ts": fixed_now}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(surv_mod, "T_CACHE_FILE", str(t_cache_file))
-    surv_mod._T_CACHE_FILE_MEMO.clear()
-    m_zero_n = surv_mod.get_trend_survival_metrics("NEWCOINUSDC", trend_duration_seconds=86400.0)
+    monkeypatch.setattr(survival, "T_CACHE_FILE", str(t_cache_file))
+    survival._T_CACHE_FILE_MEMO.clear()
+    m_zero_n = survival.get_trend_survival_metrics("NEWCOINUSDC", trend_duration_seconds=86400.0)
     assert m_zero_n["gaussian_horizon_days"] is None
     assert m_zero_n["T"] == pytest.approx(8.0)
 
-    monkeypatch.setattr(surv_mod, "estimate_T", lambda sym: {"T": 9.5, "n": 12, "median_d": 3.5, "p90_d": 8.0})
-    m_net = surv_mod.get_trend_survival_metrics("UNLISTEDCOIN", trend_duration_seconds=86400.0, allow_network=True)
+    monkeypatch.setattr(survival, "estimate_T", lambda sym: {"T": 9.5, "n": 12, "median_d": 3.5, "p90_d": 8.0})
+    m_net = survival.get_trend_survival_metrics("UNLISTEDCOIN", trend_duration_seconds=86400.0, allow_network=True)
     assert m_net["T"] == pytest.approx(9.5)
     assert m_net["gaussian_horizon_days"] == pytest.approx(round(9.5 * 1.4, 4))
 
@@ -2455,7 +2453,7 @@ def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_
         json.dumps({"BTCUSDC": {"T": 14, "n": 5, "median_d": 2.0, "p90_d": 5.0}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(surv_mod, "estimate_T", lambda sym: {"T": 19, "n": 33, "median_d": 4.0, "p90_d": 11.0, "T_emp": 20.0})
+    monkeypatch.setattr(survival, "estimate_T", lambda sym: {"T": 19, "n": 33, "median_d": 4.0, "p90_d": 11.0, "T_emp": 20.0})
     rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
     assert rep["pillar1_internal"]["trend_survival"]["T"] == 19
     assert rep["pillar1_internal"]["trend_survival"]["samples"] == 33
@@ -6795,7 +6793,7 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     ms_dir = tmp_path / "ms_ref_scale"
     ms_dir.mkdir(parents=True, exist_ok=True)
 
-    now_s = _t_mod.time()
+    now_s = time.time()
     (ms_dir / "orderbook_depth_HYPEUSDC.json").write_text(
         json.dumps(
             {
@@ -6916,7 +6914,7 @@ def test_iter96_known_t_b_bases_fdusd_venue_fees_retry_queue_venue_and_crypto_sc
 
     # 3. harvest_bot_runtime_states normalizes retry_queue venue when provider_name is absent
 
-    now_s = _t_mod.time()
+    now_s = time.time()
     rq_dir = tmp_path / "rq_test"
     rq_dir.mkdir(parents=True, exist_ok=True)
     (rq_dir / "order_retry_queue.jsonl").write_text(
@@ -6987,7 +6985,7 @@ def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretr
 
     from orchestratorOS.lib.technical_repair_ssot import _is_decision_in_scope
 
-    now_s = _t_mod.time()
+    now_s = time.time()
 
     # 1. _format_market_prices_section merges BTCUSDC into btc_entry even when partial BTCUSD precedes it,
     #    and emits 24h horizons / 24h_range even when chg_15m_pct is absent
@@ -7299,7 +7297,7 @@ def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
     assert cyc_st["dd_from_peak_pct"] == 0.0
 
     # 4. enrich_positions_with_orders_and_cycles reconciles unwarmed trailing_peak using high_24h from quote variant (HYPE -> HYPEUSDC)
-    now_ms = int(_time.time() * 1000)
+    now_ms = int(time.time() * 1000)
     entry_24h_ago_ms = now_ms - 24 * 3600 * 1000
     t_pos = [
         {
@@ -7349,7 +7347,7 @@ def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_mic
     # 1. reconcile_venue_cycles_with_recent_orders preserves _entry_ts_ms in cyc_sell_ts_map
     #    so _populate_cycle_fallback_recent_order and enrich_positions_with_orders_and_cycles
     #    can reconcile unwarmed pos_peak / trailing_peak from high_24h even when trade cache is absent.
-    now_ms = int(_time.time() * 1000)
+    now_ms = int(time.time() * 1000)
     entry_24h_ago_ms = now_ms - 24 * 3600 * 1000
     hl_cycles = {
         "HYPE": {
@@ -9166,9 +9164,9 @@ def test_get_trend_survival_metrics_does_not_call_estimate_t_when_allow_network_
     """[ITER126 #4] get_trend_survival_metrics does not call estimate_T when allow_network='false'."""
     # 4. get_trend_survival_metrics does not call estimate_T when allow_network="false"
     called_est = []
-    monkeypatch.setattr(surv_mod, "_lookup_t_cache_entry", lambda d, s: None)
-    monkeypatch.setattr(surv_mod, "estimate_T", lambda s: called_est.append(s) or {})
-    res_surv = surv_mod.get_trend_survival_metrics("BTCUSDC", 3600.0, allow_network="false")
+    monkeypatch.setattr(survival, "_lookup_t_cache_entry", lambda d, s: None)
+    monkeypatch.setattr(survival, "estimate_T", lambda s: called_est.append(s) or {})
+    res_surv = survival.get_trend_survival_metrics("BTCUSDC", 3600.0, allow_network="false")
     assert called_est == []
     assert res_surv["symbol"] == "BTCUSDC"
 

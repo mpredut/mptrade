@@ -12,7 +12,7 @@ import kraken.market_data as kmd
 import pytest
 from botcore import load_local_module
 from cacheaccount import CacheTradeManager
-from kraken import kraken_client as kc, kraken_xstock_watch as kxw, kraken_xstock_watch as xw
+from kraken import kraken_client as kc, kraken_xstock_watch as kxw
 from kraken.kraken_client import KrakenClient, KrakenError
 from providers.hyperliquid_provider import HyperliquidProvider
 
@@ -870,7 +870,7 @@ def test_kraken_xstock_watch__load_state_merges_partial_json_onto_default_keys_i
     state_file = tmp_path / "xstock_partial.json"
     state_file.write_text(json.dumps({"known_assets": "corrupt"}), encoding="utf-8")
     monkeypatch.setenv("XSTOCK_STATE_FILE", str(state_file))
-    loaded = xw._load_state()
+    loaded = kxw._load_state()
     assert loaded["known_assets"] == {}
     assert loaded["alerted_pair"] is False
     assert loaded["alerted_tp"] is False
@@ -1298,7 +1298,7 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
         encoding="utf-8",
     )
     monkeypatch.setenv("XSTOCK_STATE_FILE", str(st_file))
-    loaded_xw = xw._load_state()
+    loaded_xw = kxw._load_state()
     assert loaded_xw["known_assets"] == {"SPCX": 10.5}
     assert loaded_xw["allocated"] is None
     assert loaded_xw["pair"] is None
@@ -1307,10 +1307,10 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
     assert loaded_xw["alerted_tp2"] is False
     assert loaded_xw["alerted_sl"] is False
     assert loaded_xw["alerted_need_price"] is False
-    assert xw._parse_bool_flag(float("nan")) is False
-    assert xw._bot_alive("1234.5") is False
-    assert xw._bot_alive(float("nan")) is False
-    assert xw._bot_alive(["1234"]) is False
+    assert kxw._parse_bool_flag(float("nan")) is False
+    assert kxw._bot_alive("1234.5") is False
+    assert kxw._bot_alive(float("nan")) is False
+    assert kxw._bot_alive(["1234"]) is False
 
 
     # 4. 212trading/price_alert.py _parse_armed_flag

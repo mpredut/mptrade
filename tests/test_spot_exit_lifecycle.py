@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import strategies.spot_engine as se
-from strategies import spot_engine as strat, spot_rules, spot_rules as sr
+from strategies import spot_rules
 from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
 from strategies.spot_engine import StratParams, Strategy
 
@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 @pytest.fixture(autouse=True)
 def silence_notifications(monkeypatch):
-    monkeypatch.setattr(strat, "notify", lambda **kwargs: None)
+    monkeypatch.setattr(se, "notify", lambda **kwargs: None)
 
 
 def order(order_id, side, *, qty=1.0, price=100.0, kind="DCA", market=False):
@@ -64,10 +64,10 @@ def _make_guard_strategy(**overrides):
         reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
     )
     defaults.update(overrides)
-    params = strat.StratParams(**defaults)
-    s = strat.Strategy(
+    params = se.StratParams(**defaults)
+    s = se.Strategy(
         client, "TESTPAIR_GUARD", params, dry_run=True,
-        initial_state=strat._new_state(),
+        initial_state=se._new_state(),
     )
     s.s["cost"] = 1000.0
     s.s["qty"] = 10.0
@@ -239,14 +239,14 @@ def test_late_buy_never_cancels_an_already_accepted_market_exit():
 def test_exit_request_round_trips_through_real_state_store(tmp_path):
     engine, executor = positioned()
     engine.state_file = str(tmp_path / "state.json")
-    engine._save = strat.Strategy._save.__get__(engine)
+    engine._save = se.Strategy._save.__get__(engine)
     engine.s["orders"] = [order("DCA-1", "buy", price=95.0)]
     engine.step(80.0)
     saved = json.loads((tmp_path / "state.json").read_text())
     assert saved["pending_exit"]["kind"] == "STOP"
     assert saved["orders"][0]["cancel_requested"]
-    with patch.object(strat, "state_path_for", return_value=engine.state_file):
-        restarted = strat.Strategy(executor, engine.pair, engine.p, dry_run=False)
+    with patch.object(se, "state_path_for", return_value=engine.state_file):
+        restarted = se.Strategy(executor, engine.pair, engine.p, dry_run=False)
     executor.next_status = OrderStatus("canceled", 0, 0, 0)
     restarted.reconcile(100.0)
     restarted.step(100.0)
@@ -277,7 +277,7 @@ def test_surge_exit_rechecks_profit_after_cancel_and_survives_restart(tmp_path):
         engine, executor = surge_position(overlay)
         state_file = str(tmp_path / f"state_{overlay}.json")
         engine.state_file = state_file
-        engine._save = strat.Strategy._save.__get__(engine)
+        engine._save = se.Strategy._save.__get__(engine)
         engine.s["orders"] = [order("DCA-1", "buy", price=95.0)]
         engine.step(115.8)
         assert submits(executor) == []
@@ -286,8 +286,8 @@ def test_surge_exit_rechecks_profit_after_cancel_and_survives_restart(tmp_path):
         assert saved["orders"][0]["cancel_requested"]
 
         engine.p.surge_gain_pct = 1.0
-        with patch.object(strat, "state_path_for", return_value=engine.state_file):
-            restarted = strat.Strategy(executor, engine.pair, engine.p, dry_run=False)
+        with patch.object(se, "state_path_for", return_value=engine.state_file):
+            restarted = se.Strategy(executor, engine.pair, engine.p, dry_run=False)
         executor.next_status = OrderStatus("canceled", 0, 0, 0)
         restarted.reconcile(96.5)
         restarted.step(96.5)
@@ -510,7 +510,7 @@ def test_mdhtp_trend_ride_initiation_and_hold():
     assert engine.exit_manager is not None
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(105.5)
 
     assert not any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
@@ -522,11 +522,11 @@ def test_mdhtp_peak_pullback_exit():
     engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0)
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(110.0)
     assert not any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
-    with patch.object(strat.time, "time", return_value=now + 60.0):
+    with patch.object(se.time, "time", return_value=now + 60.0):
         engine.step(106.15)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
     assert engine.pair not in engine.exit_manager.tp_ride_state
@@ -536,9 +536,9 @@ def test_mdhtp_profit_floor_breach_exit():
     engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0, tp_trail_profit_floor_pct=1.0)
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(105.5)
-    with patch.object(strat.time, "time", return_value=now + 30.0):
+    with patch.object(se.time, "time", return_value=now + 30.0):
         engine.step(100.5)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
@@ -547,15 +547,15 @@ def test_mdhtp_stagnation_timeout_exit():
     engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0, tp_stagnation_max_sec=1080.0)
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(106.0)
     assert not any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
-    with patch.object(strat.time, "time", return_value=now + 1070.0):
+    with patch.object(se.time, "time", return_value=now + 1070.0):
         engine.step(105.9)
     assert not any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
-    with patch.object(strat.time, "time", return_value=now + 1085.0):
+    with patch.object(se.time, "time", return_value=now + 1085.0):
         engine.step(105.9)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
@@ -564,12 +564,12 @@ def test_mdhtp_trend_reversal_exit():
     engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0)
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(107.0)
     assert not any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
     engine.s["trend_mode"] = False
-    with patch.object(strat.time, "time", return_value=now + 60.0):
+    with patch.object(se.time, "time", return_value=now + 60.0):
         engine.step(106.8)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
@@ -591,7 +591,7 @@ def test_mdhtp_intrabar_high_arms_and_exits_on_same_bar_pullback():
     engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0, tp_trail_pct=3.0)
     engine.s["trend_mode"] = True
     now = 1000.0
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         # Intrabar high=106.0 (+6% >= 5% TP) arms MDHTP at peak 106.0,
         # and close=102.0 (-3.77% pullback from 106.0 >= 3% trail) triggers exit in the same bar.
         engine.step(102.0, high=106.0)
@@ -827,21 +827,21 @@ def test_mdhtp_soft_floor_block_does_not_deadlock_subsequent_profit_floor_breach
     engine.s["trend_mode"] = True
     now = 1000.0
     # Tick 1 at 101.55 (+1.55% >= 1.2% TP): arms MDHTP ride at peak 101.55
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(101.55)
     assert not submits(executor)
 
     # Tick 2 at 101.04: pullback from 101.55 is 0.502% >= 0.5% trail, gain +1.04% >= 1.0% floor,
     # but exit_px = round(101.04 * 0.999, 2) = 100.94 < profit_floor (101.00).
     # Soft trailing is blocked without locking pending_exit or losing tp_ride_state.
-    with patch.object(strat.time, "time", return_value=now + 10.0):
+    with patch.object(se.time, "time", return_value=now + 10.0):
         engine.step(101.04)
     assert not submits(executor)
     assert engine.s.get("pending_exit") is None
     assert engine.pair in engine.exit_manager.tp_ride_state
 
     # Tick 3 at 100.50 (+0.50% < 1.0% floor): mdhtp_profit_floor_breached must execute immediately!
-    with patch.object(strat.time, "time", return_value=now + 20.0):
+    with patch.object(se.time, "time", return_value=now + 20.0):
         engine.step(100.50)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
@@ -856,7 +856,7 @@ def test_mdhtp_hold_evaluates_advanced_profit_guards():
     now = 1000.0
     # At 120.0 (+20% >= 5% TP), MDHTP pullback from 120.0 is 0% (< 10% trail -> HOLD),
     # but Surge Guard pullback from surge_peak 125.0 is 4.0% (>= 2.0% -> SELL)!
-    with patch.object(strat.time, "time", return_value=now):
+    with patch.object(se.time, "time", return_value=now):
         engine.step(120.0)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
@@ -933,19 +933,19 @@ def test_spot_engine_reentry_gate_resolves_bear_regime_and_restores_state_on_blo
 
 
 def test_spot_rules_non_positive_drop_thresholds_do_not_false_trigger():
-    trig, _, _ = sr.check_fast_profit_reversal(
+    trig, _, _ = spot_rules.check_fast_profit_reversal(
         current_price=120.0, avg_cost=100.0, base_tp_pct=5.0, mult=2.0,
         shadow_prices=[(990.0, 120.0)], window_sec=300.0, drop_pct=0.0, current_time=1000.0,
     )
     assert trig is False
 
-    s_trig, _ = sr.check_parabolic_surge_exhaustion(
+    s_trig, _ = spot_rules.check_parabolic_surge_exhaustion(
         current_price=125.0, avg_cost=100.0, surge_peak=125.0,
         surge_gain_pct=18.0, exit_pullback_pct=0.0, surge_active=True,
     )
     assert s_trig is False
 
-    g_trig, _ = sr.check_slow_grind_exhaustion(
+    g_trig, _ = spot_rules.check_slow_grind_exhaustion(
         current_price=120.0, avg_cost=100.0, entry_ts=0.0, current_ts=10 * 86400.0,
         min_days=7.0, min_gain_pct=15.0, recent_peak=120.0,
         shadow_prices=[(10 * 86400.0 - 60.0, 120.0)], flash_window_sec=900.0,
@@ -1225,27 +1225,27 @@ def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
 def test_spot_rules_hit_stop_and_dca_price_hit_reject_false_true_nan_iter45_s1():
     """[ITER45 #1] spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices."""
     # 1. spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices
-    assert sr.hit_stop(100.0, 0.0, 5.0) is False
-    assert sr.hit_stop(100.0, False, 5.0) is False
-    assert sr.hit_stop(100.0, True, 5.0) is False
-    assert sr.hit_stop(100.0, float("nan"), 5.0) is False
-    assert sr.hit_stop(100.0, 94.0, 5.0) is True
+    assert spot_rules.hit_stop(100.0, 0.0, 5.0) is False
+    assert spot_rules.hit_stop(100.0, False, 5.0) is False
+    assert spot_rules.hit_stop(100.0, True, 5.0) is False
+    assert spot_rules.hit_stop(100.0, float("nan"), 5.0) is False
+    assert spot_rules.hit_stop(100.0, 94.0, 5.0) is True
 
-    assert sr.dca_price_hit(0.0, 100.0, 5.0, 0.05) is False
-    assert sr.dca_price_hit(False, 100.0, 5.0, 0.05) is False
-    assert sr.dca_price_hit(True, 100.0, 5.0, 0.05) is False
-    assert sr.dca_price_hit(float("nan"), 100.0, 5.0, 0.05) is False
-    assert sr.dca_price_hit(95.0, 100.0, 5.0, 0.05) is True
+    assert spot_rules.dca_price_hit(0.0, 100.0, 5.0, 0.05) is False
+    assert spot_rules.dca_price_hit(False, 100.0, 5.0, 0.05) is False
+    assert spot_rules.dca_price_hit(True, 100.0, 5.0, 0.05) is False
+    assert spot_rules.dca_price_hit(float("nan"), 100.0, 5.0, 0.05) is False
+    assert spot_rules.dca_price_hit(95.0, 100.0, 5.0, 0.05) is True
 
-    assert sr.are_close(1.0, True, 0.05) is False
-    assert sr.are_close(100.0, 100.0, float("nan")) is False
-    assert sr.progressive_dca_drop_pct(float("nan"), True, float("nan")) == 0.0
-    assert sr.parabolic_surge_profit_floor_pct(float("nan"), True, float("nan")) == pytest.approx(20.2)
+    assert spot_rules.are_close(1.0, True, 0.05) is False
+    assert spot_rules.are_close(100.0, 100.0, float("nan")) is False
+    assert spot_rules.progressive_dca_drop_pct(float("nan"), True, float("nan")) == 0.0
+    assert spot_rules.parabolic_surge_profit_floor_pct(float("nan"), True, float("nan")) == pytest.approx(20.2)
 
 def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_iter64_s3():
     """[ITER64 #3] spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion."""
     # 3. spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion
-    trig, gain, drop = sr.check_fast_profit_reversal(
+    trig, gain, drop = spot_rules.check_fast_profit_reversal(
         current_price=110.0,
         avg_cost=100.0,
         base_tp_pct=4.0,
@@ -1256,7 +1256,7 @@ def test_spot_rules_handles_malformed_shadow_prices_entries_and_string_numbers_i
         current_time=1010.0,
     )
     assert trig is True and gain == pytest.approx(10.0)
-    surge_trig, _ = sr.check_parabolic_surge_exhaustion(
+    surge_trig, _ = spot_rules.check_parabolic_surge_exhaustion(
         current_price="125.0",
         avg_cost="100.0",
         surge_peak="135.0",
@@ -1354,7 +1354,7 @@ def test_strategies_spot_engine__parse_tranches_rejects_booleans_iter93_s2():
 def test_spot_rules_string_false_boolean_flag_handling_iter112_s5():
     """[ITER112 #5] spot_rules string 'false' boolean flag handling."""
     # 5. spot_rules string 'false' boolean flag handling
-    assert sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
+    assert spot_rules.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
 
 def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_run_replay_iter112_s6():
     """[ITER112 #6] spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash."""
@@ -1385,11 +1385,11 @@ def test_spot_engine__apply_fill_handles_order_with_amount_none_by_iter119_s2():
 def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
     """[ITER144 #1] spot_rules._parse_bool_flag rejects NaN and containers."""
     # 1. spot_rules._parse_bool_flag rejects NaN and containers
-    assert sr._parse_bool_flag(float("nan")) is False
-    assert sr._parse_bool_flag(["true"]) is False
-    assert sr._parse_bool_flag("0") is False
-    assert sr._parse_bool_flag("true") is True
-    assert sr._parse_bool_flag(1) is True
+    assert spot_rules._parse_bool_flag(float("nan")) is False
+    assert spot_rules._parse_bool_flag(["true"]) is False
+    assert spot_rules._parse_bool_flag("0") is False
+    assert spot_rules._parse_bool_flag("true") is True
+    assert spot_rules._parse_bool_flag(1) is True
 
 def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_iter144_s2():
     """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict."""

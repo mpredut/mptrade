@@ -14,7 +14,6 @@ import ast
 import providers.market_api as ma
 import pytest
 from pathlib import Path
-from providers import market_api as mapi
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.t212_provider import T212Provider
@@ -337,19 +336,19 @@ def test_market_api__parse_bool_flag_and_require_int_order_id_iter170_s1():
     """[ITER170 #1] market_api._parse_bool_flag and require_int_order_id."""
     from providers import strategy_executor as sexec
     # 1. market_api._parse_bool_flag and require_int_order_id
-    assert mapi._parse_bool_flag("y", False) is True
-    assert mapi._parse_bool_flag("n", True) is False
-    assert mapi._parse_bool_flag(2, False) is True
-    assert mapi.require_int_order_id("+12345.0", "ctx") == 12345
+    assert ma._parse_bool_flag("y", False) is True
+    assert ma._parse_bool_flag("n", True) is False
+    assert ma._parse_bool_flag(2, False) is True
+    assert ma.require_int_order_id("+12345.0", "ctx") == 12345
     with pytest.raises(sexec.ProviderError):
-        mapi.require_int_order_id(frozenset({1}), "ctx")
+        ma.require_int_order_id(frozenset({1}), "ctx")
 
 def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_s2():
     """[ITER170 #2] MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force."""
     # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
     captured = {}
 
-    class _DummyProvider(mapi.MarketDataProvider):
+    class _DummyProvider(ma.MarketDataProvider):
         @property
         def name(self):
             return "Dummy"
@@ -367,7 +366,7 @@ def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_
             captured["force"] = force
             return {"orderId": "111", "force": force}
 
-    facade = mapi.MarketApi([_DummyProvider()])
+    facade = ma.MarketApi([_DummyProvider()])
     assert facade.latest_fill_price("BTCUSDC", "BID", 3600) == pytest.approx(105.0)
     res = facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, True)
     assert res["force"] is True and captured["force"] is True
@@ -748,6 +747,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
 def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path):
     """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
     import importlib
+    import botcore
     import offline.backtests.datasets as ds
     import offline.backtests.evaluation as ev
     import offline.backtests.execution as ex

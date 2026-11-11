@@ -16,7 +16,6 @@ Coverage:
 import os, sys, json, time, tempfile, threading, unittest
 from unittest.mock import MagicMock, patch
 import order_retry
-import pricewindow as pw
 import pricewindow as pw_mod
 import pytest
 from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
@@ -1387,18 +1386,18 @@ def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clea
 def test_pricetrendanalyzer_linear_regression_trend_and_instant_trend_from_prices_edge_cases_iter166_s1():
     """[ITER166 #1] PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases."""
     # 1. PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases
-    empty_pta = pw.PriceTrendAnalyzer([])
+    empty_pta = pw_mod.PriceTrendAnalyzer([])
     assert empty_pta.linear_regression_trend() == (None, None, None)
-    pta = pw.PriceTrendAnalyzer([100.0, 101.0, 103.0])
+    pta = pw_mod.PriceTrendAnalyzer([100.0, 101.0, 103.0])
     trend_line, slp, rv = pta.linear_regression_trend()
     assert len(trend_line) == 3 and slp > 0
-    assert pw.instant_trend_from_prices([100.0, None], 0.8) == (0, 0.0, 0.0, 0.0)
-    assert pw.instant_trend_from_prices((x for x in [100.0, 102.0, 104.0]), 0.8)[0] == 1
+    assert pw_mod.instant_trend_from_prices([100.0, None], 0.8) == (0, 0.0, 0.0, 0.0)
+    assert pw_mod.instant_trend_from_prices((x for x in [100.0, 102.0, 104.0]), 0.8)[0] == 1
 
 def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_log_return_std_iter166_s2():
     """[ITER166 #2] IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check."""
     # 2. IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check
-    buf = pw.IncrementalTrendBuffer()
+    buf = pw_mod.IncrementalTrendBuffer()
     for idx in range(25):
         buf.append(100.0 + idx, 1700000000000 + idx * 1000)
     buf.trim_front(True)
@@ -1417,8 +1416,8 @@ def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_
         get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],
         subscribe_price=lambda sub: None,
     )
-    win = pw.PriceWindow.from_cache24("BTCUSDC", "60.0", fake_c24)
+    win = pw_mod.PriceWindow.from_cache24("BTCUSDC", "60.0", fake_c24)
     assert win.window_seconds == pytest.approx(60.0)
-    wa = pw.WindowAnalyzer(win)
+    wa = pw_mod.WindowAnalyzer(win)
     slope, pos = wa.check_price_change("1.0")
     assert slope != 0 and pos == 0

@@ -19,7 +19,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
-import instrument_registry as ic  # noqa: E402
 from types import SimpleNamespace
 
 
@@ -148,7 +147,7 @@ class TestCurrentRegistry(unittest.TestCase):
 
 class TestInstrumentsSingleSource(unittest.TestCase):
     def test_binance_symbols_match_pre_refactor(self):
-        self.assertEqual(ic.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(registry.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
 
     def test_trail_pct_map_matches_pre_refactor(self):
         expected = {
@@ -158,21 +157,21 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(set(expected), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
-        self.assertEqual(set(ic.symbols_for("binance", "tradeall_fire")), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
+        self.assertEqual(set(registry.symbols_for("binance", "tradeall_fire")), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
 
     def test_arb_is_trend_tracked_and_traded(self):
-        self.assertIn("ARBUSDC", ic.binance_symbols())
-        self.assertIn("ARBUSDC", set(ic.symbols_for("binance", "trailing")))
-        self.assertIn("ARBUSDC", set(ic.symbols_for("binance", "tradeall_fire")))
+        self.assertIn("ARBUSDC", registry.binance_symbols())
+        self.assertIn("ARBUSDC", set(registry.symbols_for("binance", "trailing")))
+        self.assertIn("ARBUSDC", set(registry.symbols_for("binance", "tradeall_fire")))
 
     def test_trail_and_trade_are_subsets_of_symbols(self):
-        syms = set(ic.binance_symbols())
-        self.assertLessEqual(set(ic.symbols_for("binance", "trailing")), syms)
-        self.assertLessEqual(set(ic.symbols_for("binance", "tradeall_fire")), syms)
+        syms = set(registry.binance_symbols())
+        self.assertLessEqual(set(registry.symbols_for("binance", "trailing")), syms)
+        self.assertLessEqual(set(registry.symbols_for("binance", "tradeall_fire")), syms)
 
     def test_missing_registry_fails_loud(self):
         with self.assertRaises(FileNotFoundError):
-            ic.binance_symbols(path="/nonexistent/instruments.conf")
+            registry.binance_symbols(path="/nonexistent/instruments.conf")
 
     def test_registry_import_is_light(self):
         code = (
@@ -421,29 +420,29 @@ def test_resolve_tradable_instrument_filtering_and_variants():
     }
 
     # Rejects junk test symbols and empty/bool
-    assert ic.resolve_instrument_spec("", instruments_map=inst_map) is None
-    assert ic.resolve_instrument_spec(None, instruments_map=inst_map) is None
-    assert ic.resolve_instrument_spec(False, instruments_map=inst_map) is None
-    assert ic.resolve_instrument_spec("BTCUSDC", venue=True, instruments_map=inst_map) is None
-    assert ic.resolve_instrument_spec("BTCX.T", instruments_map=inst_map) is None
-    assert ic.resolve_instrument_spec("BTC.T", instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("", instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec(None, instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec(False, instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("BTCUSDC", venue=True, instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("BTCX.T", instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("BTC.T", instruments_map=inst_map) is None
 
     # Disabled instrument not returned
-    assert ic.resolve_instrument_spec("ETHUSDC", instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("ETHUSDC", instruments_map=inst_map) is None
 
     # Exact symbol and variant matching
-    assert ic.resolve_instrument_spec("BTC/USD", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_instrument_spec("BTCUSD", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_instrument_spec("BTCUSDT", venue="kraken", instruments_map=inst_map) is btc_usd
-    assert ic.resolve_instrument_spec("BTC", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert registry.resolve_instrument_spec("BTC/USD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert registry.resolve_instrument_spec("BTCUSD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert registry.resolve_instrument_spec("BTCUSDT", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert registry.resolve_instrument_spec("BTC", venue="kraken", instruments_map=inst_map) is btc_usd
 
     # Quote isolation: BTC/EUR should resolve to btc_eur, not btc_usd
-    assert ic.resolve_instrument_spec("BTC/EUR", venue="kraken", instruments_map=inst_map) is btc_eur
-    assert ic.resolve_instrument_spec("BTCEUR", venue="kraken", instruments_map=inst_map) is btc_eur
+    assert registry.resolve_instrument_spec("BTC/EUR", venue="kraken", instruments_map=inst_map) is btc_eur
+    assert registry.resolve_instrument_spec("BTCEUR", venue="kraken", instruments_map=inst_map) is btc_eur
 
     # Venue filtering
-    assert ic.resolve_instrument_spec("HYPEUSDC", venue="hyperliquid", instruments_map=inst_map) is hype_usdc
-    assert ic.resolve_instrument_spec("HYPEUSDC", venue="kraken", instruments_map=inst_map) is None
+    assert registry.resolve_instrument_spec("HYPEUSDC", venue="hyperliquid", instruments_map=inst_map) is hype_usdc
+    assert registry.resolve_instrument_spec("HYPEUSDC", venue="kraken", instruments_map=inst_map) is None
 
 
 def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
@@ -452,7 +451,7 @@ def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
         lambda ws: [("BTC/USD", "BTC", "USD"), ("BTC/EUR", "BTC", "EUR")]
     )
     monkeypatch.setattr("instrument_registry.load_registry", lambda path: {})
-    specs = ic.discover_tradable_specs(str(tmp_path), asset_scope="crypto")
+    specs = registry.discover_tradable_specs(str(tmp_path), asset_scope="crypto")
     assert "KRAKEN_BTC" in specs
     assert "KRAKEN_BTC/EUR" in specs
     res = load_tradable_instruments(str(tmp_path), asset_scope="crypto")

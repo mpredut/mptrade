@@ -31,7 +31,7 @@ from instrument_registry import (
 )
 import pricewindow as pw
 from providers.base import MarketDataProvider, extract_order_id
-from providers.order_id_context import KNOWN_BOT_PROCESS_CODES, get_process_name
+from providers import order_id_context
 from providers.order_ohlc_utils import resolve_market_flag
 from botcore import (
     _parse_bool_flag,
@@ -234,8 +234,8 @@ class Instrument:
             target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
         elif "prefix" not in target_kwargs:
             try:
-                pname = get_process_name()
-                if pname and pname in KNOWN_BOT_PROCESS_CODES:
+                pname = order_id_context.get_process_name()
+                if pname and pname in order_id_context.KNOWN_BOT_PROCESS_CODES:
                     target_kwargs["prefix"] = f"{pname}_OR"
             except Exception:
                 pass

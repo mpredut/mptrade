@@ -5,7 +5,7 @@ filter refusal, and available-balance order placement across all providers.
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, patch as _patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -28,7 +28,7 @@ from providers.t212_provider import T212Provider
 import botcore
 import math
 import pytest
-from types import SimpleNamespace, SimpleNamespace as _SimpleNamespace
+from types import SimpleNamespace
 import order_guard as _order_guard
 from providers import base as pbase, order_ohlc_utils as oou
 
@@ -481,9 +481,9 @@ class QuantityDecisionTest(unittest.TestCase):
     def test_weight_limit_uses_precomputed_balance_without_refetch(self):
         provider = _QtyDecisionFakeProvider({"USDC": 500})
         provider.free_balance = lambda _asset: self.fail("the balance must not be re-read")
-        fake_pa = _SimpleNamespace(
+        fake_pa = SimpleNamespace(
             get_weight_for_cash_permission_at_quant_time=lambda *_: 0.5)
-        with _patch.dict("sys.modules", {"priceAnalysis": fake_pa}):
+        with patch.dict("sys.modules", {"priceAnalysis": fake_pa}):
             qty = _order_guard.weight_limit(
                 provider, "TAOUSDC", "BUY", 100.0, 5.0,
                 available_qty=5.0)

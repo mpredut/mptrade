@@ -15,7 +15,6 @@ from tests.conftest import TrailingTestBase  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 import json
-import binance_api.trailing_stop as m
 
 
 class FakeApi:
@@ -286,23 +285,23 @@ class TestPerCoinRebuy(Base):
     def test_auto_mode_and_trend(self):
         with self.subTest(msg="auto_mode_delegates_to_the_long_term_trend"):
             api = FakeApi(250.0); ts = self.ts(api)
-            saved = dict(m.REBUY_MODE_BY_SYMBOL)
-            m.REBUY_MODE_BY_SYMBOL["TAOUSDC"] = "auto"
+            saved = dict(binance_ts_mod.REBUY_MODE_BY_SYMBOL)
+            binance_ts_mod.REBUY_MODE_BY_SYMBOL["TAOUSDC"] = "auto"
             try:
                 ts._long_trend_up = lambda s: True
                 self.assertTrue(ts.rebuy_enabled_for("TAOUSDC"))
                 ts._long_trend_up = lambda s: False
                 self.assertFalse(ts.rebuy_enabled_for("TAOUSDC"))
             finally:
-                m.REBUY_MODE_BY_SYMBOL.clear(); m.REBUY_MODE_BY_SYMBOL.update(saved)
+                binance_ts_mod.REBUY_MODE_BY_SYMBOL.clear(); binance_ts_mod.REBUY_MODE_BY_SYMBOL.update(saved)
 
         with self.subTest(msg="long_trend_up_uses_the_configured_sma_and_fails_closed"):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0); ts = self.ts(api)
-            day = int(m.time.time() // 86400)
+            day = int(binance_ts_mod.time.time() // 86400)
             kl = lambda n: [[d * 86400000, 0, 0, 0, "100.0", 0,
                              (d + 1) * 86400000 - 1] for d in range(day - n + 1, day + 1)]
-            ts.api.client = SimpleNamespace(get_klines=lambda **kw: kl(m.REBUY_TREND_DAYS + 1))
+            ts.api.client = SimpleNamespace(get_klines=lambda **kw: kl(binance_ts_mod.REBUY_TREND_DAYS + 1))
             self.assertTrue(ts._long_trend_up("TAOUSDC"))          # price 250 > SMA 100 -> up
             api.price = 90.0  # The cached average must not freeze yesterday's verdict.
             self.assertFalse(ts._long_trend_up("TAOUSDC"))         # price 90 < SMA 100 -> down
@@ -314,7 +313,7 @@ class TestPerCoinRebuy(Base):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0); ts = self.ts(api)
             ts.core.sell_skip_if_trend_up = False
-            with patch.dict(m.REBUY_MODE_BY_SYMBOL, TAOUSDC="auto"):
+            with patch.dict(binance_ts_mod.REBUY_MODE_BY_SYMBOL, TAOUSDC="auto"):
                 ts._long_trend_up = lambda symbol: False
                 ts.trend = lambda pair: 1.0
                 state = self._sell_then_confirm(ts, api)
@@ -336,7 +335,7 @@ class TestPerCoinRebuy(Base):
                         [good[0], good[0], good[2], good[3]]]
             bad_close = [row[:] for row in good]; bad_close[1][4] = "nan"
             bad_sets.append(bad_close)
-            with patch.object(m, "REBUY_TREND_DAYS", 3), patch.object(m.time, "time", return_value=day * 86400 + 60):
+            with patch.object(binance_ts_mod, "REBUY_TREND_DAYS", 3), patch.object(binance_ts_mod.time, "time", return_value=day * 86400 + 60):
                 for candles in bad_sets:
                     ts = self.ts(FakeApi(250.0))
                     ts.api.client = SimpleNamespace(get_klines=lambda **kw: candles)
@@ -347,7 +346,7 @@ class TestPerCoinRebuy(Base):
                 self.assertFalse(ts._long_trend_up("TAOUSDC"))
                 ts.api.price = 250.0
                 ts.api.client = SimpleNamespace(get_klines=lambda **kw: good[:-1])
-                with patch.object(m.time, "time", return_value=(day + 1) * 86400 + 60):
+                with patch.object(binance_ts_mod.time, "time", return_value=(day + 1) * 86400 + 60):
                     self.assertFalse(ts._long_trend_up("TAOUSDC"))
 
     def test_rebuy_execution(self):
