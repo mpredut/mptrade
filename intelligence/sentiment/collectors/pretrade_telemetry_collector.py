@@ -161,6 +161,23 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         """Return a shallow dict copy of the formatted telemetry lines."""
         return dict(self.data)
 
+    @staticmethod
+    def _resolve_symbol_and_scope(symbol: Any) -> Tuple[str, str, str]:
+        sym_raw = str(symbol or "").strip()
+        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
+        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
+        return sym_raw, canon_sym, scope
+
+    @staticmethod
+    def _resolve_now_and_max_age(
+        now_ts: Optional[float], max_age_sec: Optional[float]
+    ) -> Tuple[float, float]:
+        return (
+            resolve_now_ts(now_ts),
+            safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC)
+            or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC,
+        )
+
     @classmethod
     def unavailable(
         cls,
@@ -171,11 +188,8 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         source: str = "unavailable",
         max_age_sec: Optional[float] = None,
     ) -> "PretradeTelemetrySnapshot":
-        eff_now = resolve_now_ts(now_ts)
-        sym_raw = str(symbol or "").strip()
-        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
-        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
-        eff_max_age = safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC) or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
+        eff_now, eff_max_age = cls._resolve_now_and_max_age(now_ts, max_age_sec)
+        sym_raw, canon_sym, scope = cls._resolve_symbol_and_scope(symbol)
         return cls(
             symbol=sym_raw,
             canonical_symbol=canon_sym,
@@ -205,8 +219,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         unavailable_reason: Optional[str] = None,
         enforce_freshness: bool = False,
     ) -> "PretradeTelemetrySnapshot":
-        eff_now = resolve_now_ts(now_ts)
-        eff_max_age = safe_pos_float(max_age_sec, DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC) or DEFAULT_MAX_PRETRADE_TELEMETRY_AGE_SEC
+        eff_now, eff_max_age = cls._resolve_now_and_max_age(now_ts, max_age_sec)
         if isinstance(raw, cls):
             if (
                 max_age_sec is None
@@ -238,9 +251,7 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 unavailable_reason=eff_unavail,
                 enforce_freshness=eff_enforce,
             )
-        sym_raw = str(symbol or "").strip()
-        canon_sym = clean_symbol_key(sym_raw) or sym_raw.upper()
-        scope = "EQUITY" if is_equity_symbol(sym_raw) else "CRYPTO"
+        sym_raw, canon_sym, scope = cls._resolve_symbol_and_scope(symbol)
         if not isinstance(raw, Mapping):
             return cls.unavailable(
                 sym_raw,

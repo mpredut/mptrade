@@ -694,10 +694,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             print(f"[Pricefetcher][Warn] {symbol}: {e}")
             return []
     
+    @staticmethod
+    def _clean_symbol_str(symbol: object) -> Optional[str]:
+        return symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
+
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
-        if not isinstance(symbol, str) or not symbol.strip():
+        symbol = self._clean_symbol_str(symbol)
+        if not symbol:
             return False
-        symbol = symbol.strip()
         with self.lock:
             base_symbol = get_base_symbol(symbol)
             if symbol in self.active_symbols:
@@ -730,9 +734,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return True
     
     def remove_symbol(self, symbol: str, reason: str = ""):
-        if not isinstance(symbol, str) or not symbol.strip():
+        symbol = self._clean_symbol_str(symbol)
+        if not symbol:
             return False
-        symbol = symbol.strip()
         sym_up = symbol.upper()
         with self.lock:
             pref_map = getattr(self, "symbol_preferred_source", {})

@@ -692,6 +692,14 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
     return _positive_int_env("NOTIFICATION_DEDUP_SECONDS", 15 * 60)
 
 
+def _resolve_gate_context(
+    now: Optional[float] = None, *, flag: Any = False
+) -> tuple[float, bool, str, Path]:
+    now_ts = _resolve_gate_now(now)
+    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
+    return now_ts, _parse_bool_flag(flag, False), today, _delivery_state_path()
+
+
 def pass_common_gate(
     channel: str,
     title: str,
@@ -711,10 +719,7 @@ def pass_common_gate(
     3. Routes every outgoing single or bulk message through the central single-gate dispatcher
        (NOTIFICATION_GATE_SECONDS, default 10m).
     """
-    now_ts = _resolve_gate_now(now)
-    urgent = _parse_bool_flag(urgent, False)
-    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
-    path = _delivery_state_path()
+    now_ts, urgent, today, path = _resolve_gate_context(now, flag=urgent)
     path.parent.mkdir(parents=True, exist_ok=True)
     alerts_list = alerts if alerts else [make_bot_event_alert(title, body, "common_gate")]
     t_key = _canonical_topic_key(topic)
@@ -857,10 +862,7 @@ def pop_due_bulk_batch(
     force: bool = False,
 ) -> Optional[tuple[str, str, str, str]]:
     """Consumer: pop and synthesize the next due per-topic batch once the central single-gate opens."""
-    now_ts = _resolve_gate_now(now)
-    force = _parse_bool_flag(force, False)
-    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
-    path = _delivery_state_path()
+    now_ts, force, today, path = _resolve_gate_context(now, flag=force)
     if not path.exists() and not path.with_name(path.name + ".previous").exists():
         return None
     gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
@@ -1103,38 +1105,34 @@ class AlertNotifier:
             return False
 
     @staticmethod
-    def _format_price_alerts_batch_title(alerts: list) -> str:
-        count = len(alerts)
-        items = []
-        symbols = []
+    def _collect_batch_symbols_and_items(alerts: list) -> tuple[list[str], list[str]]:
+        symbols: list[str] = []
+        items: list[str] = []
         for a in alerts:
             sym = obj_attr(a, "symbol", "N/A")
-            atype = obj_attr(a, "alert_type", "")
-            dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
             if sym and sym != "N/A":
                 if sym not in symbols:
                     symbols.append(sym)
+                atype = obj_attr(a, "alert_type", "")
+                dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
                 items.append(f"{sym} {dir_str}".strip())
+        return symbols, items
 
-        items_str = ", ".join(items)
-        syms_str = ", ".join(symbols)
-
+    @staticmethod
+    def _format_price_alerts_batch_title(alerts: list) -> str:
+        count = len(alerts)
+        symbols, items = AlertNotifier._collect_batch_symbols_and_items(alerts)
         if len(symbols) == 1:
             return f"{symbols[0]} ({count} alerts)"
-        if items_str and len(items_str) <= 50:
-            return f"Price Alerts ({count}): {items_str}"
-        if syms_str and len(syms_str) <= 50:
-            return f"Price Alerts ({count}): {syms_str}"
+        for candidate in (", ".join(items), ", ".join(symbols)):
+            if candidate and len(candidate) <= 50:
+                return f"Price Alerts ({count}): {candidate}"
         return f"Price Alerts ({count} coins)"
 
     @staticmethod
     def _format_new_coins_batch_title(alerts: list) -> str:
         count = len(alerts)
-        symbols = []
-        for a in alerts:
-            sym = obj_attr(a, "symbol", "N/A")
-            if sym and sym != "N/A" and sym not in symbols:
-                symbols.append(sym)
+        symbols, _ = AlertNotifier._collect_batch_symbols_and_items(alerts)
         syms_str = ", ".join(symbols)
         if syms_str and len(syms_str) <= 50:
             return f"New Coins ({count}): {syms_str}"

@@ -1059,6 +1059,15 @@ def _campaign_pending_persistor(symbol, kind, state):
     return box, persist
 
 
+def _set_tier_attempt(state: dict, key: str, attempt: int) -> dict:
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
+    attempts[key] = attempt
+    out = dict(state)
+    out["attempts_by_tier"] = attempts
+    return out
+
+
 def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     """Release one unverified submit without consuming its deterministic ID.
 
@@ -1071,12 +1080,7 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     if threshold is None or attempt <= 0:
         print(f"[{symbol}] Cannot reuse corrupt {kind.upper()} attempt; preserve counters.")
         return state
-    key = _tier_key(threshold)
-    raw_attempts = state.get("attempts_by_tier")
-    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
-    attempts[key] = max(0, attempt - 1)
-    state = dict(state)
-    state["attempts_by_tier"] = attempts
+    state = _set_tier_attempt(state, _tier_key(threshold), max(0, attempt - 1))
     refusal_reason = pending.get("refusal_reason")
     if isinstance(refusal_reason, str) and refusal_reason.strip() and pending.get("intent_id"):
         state["last_refusal"] = {
@@ -1345,13 +1349,9 @@ def _submit_campaign_tier(
     intent_kind = f"ASSET_GUARDIAN_{side_label}_TIER"
     refusal_reason = f"{kind}_not_accepted"
     key = _tier_key(threshold)
-    raw_attempts = state.get("attempts_by_tier")
-    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
-    attempt = _safe_tier_attempt(attempts, key)
-    attempts[key] = attempt
+    attempt = _safe_tier_attempt(state.get("attempts_by_tier"), key)
     client_order_id = _ag_client_order_id(kind, symbol, state, threshold, attempt)
-    state = dict(state)
-    state["attempts_by_tier"] = attempts
+    state = _set_tier_attempt(state, key, attempt)
     last_ref = state.get("last_refusal")
     if isinstance(last_ref, dict) and last_ref.get("intent_id") == client_order_id and last_ref.get("reason"):
         ref_map = getattr(ORDER_LIFECYCLE, "_last_refusal_by_intent", None)

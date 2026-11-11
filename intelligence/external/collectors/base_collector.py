@@ -437,9 +437,12 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             return cache_symbol_variants(symbol, quotes=quotes)
         return cache_symbol_variants(symbol)
 
-    def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
+    def _resolve_lookup_candidates(self, symbol: str, *, exact_only: bool = False) -> Tuple[str, List[Any]]:
         sym_clean = symbol.strip().upper()
-        cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
+        return sym_clean, ([sym_clean] if exact_only else self._candidate_variants(symbol))
+
+    def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
+        sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
         first_cached = None
         for c in cands:
             if c not in self._cache:
@@ -465,8 +468,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False, exact_only: bool = False) -> Optional[Any]:
         ignore_ttl_b = _parse_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-        sym_clean = symbol.strip().upper()
-        cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
+        sym_clean, cands = self._resolve_lookup_candidates(symbol, exact_only=exact_only)
         for cand in cands:
             p = telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, cand)
             if not p:

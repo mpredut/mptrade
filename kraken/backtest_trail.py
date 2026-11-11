@@ -83,6 +83,25 @@ def fetch_with_time(pair, interval):
     return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
+def _run_isolated_replay(ohlc, P, caller: str, overrides: dict, *, warmup_ohlc=()):
+    if not isinstance(P, dict):
+        raise ValueError(f"{caller} requires a dict P")
+    fee_f, iv_f = _validated_fee_and_interval(P)
+    over = {
+        **_ISOLATED_COMPARISON_OVERRIDES,
+        **overrides,
+        "reentry_drop_pct": _resolve_reentry_drop(P),
+    }
+    return rp.run_replay(
+        ohlc,
+        _bt_params(P, over),
+        fee_pct=fee_f,
+        bar_minutes=iv_f,
+        warmup_ohlc=warmup_ohlc,
+        intrabar_high=True,
+    )
+
+
 def simulate_trail(ohlc, P, *, warmup_ohlc=()):
     """Match ``backtest.simulate`` except for trailing exit behavior.
 
@@ -96,43 +115,23 @@ def simulate_trail(ohlc, P, *, warmup_ohlc=()):
     trail_val = require_pos_float(raw_trail, "trail")
     if trail_val >= 100.0:
         raise ValueError(f"trail must be < 100, got {raw_trail!r}")
-    fee_f, iv_f = _validated_fee_and_interval(P)
-    over = {
-        **_ISOLATED_COMPARISON_OVERRIDES,
-        "tp_trend_hold": True,
-        "tp_trail_adaptive": False,
-        "tp_trail_pct": trail_val,
-        "reentry_drop_pct": _resolve_reentry_drop(P),
-    }
-    params = _bt_params(P, over)
-    return rp.run_replay(
+    return _run_isolated_replay(
         ohlc,
-        params,
-        fee_pct=fee_f,
-        bar_minutes=iv_f,
+        P,
+        "simulate_trail",
+        {"tp_trend_hold": True, "tp_trail_adaptive": False, "tp_trail_pct": trail_val},
         warmup_ohlc=warmup_ohlc,
-        intrabar_high=True,
     )
 
 
 def simulate_fixed_tp(ohlc, P, *, warmup_ohlc=()):
     """Run fixed-TP replay with trailing, MDHTP, and dynamic flat TP disabled."""
-    if not isinstance(P, dict):
-        raise ValueError("simulate_fixed_tp requires a dict P")
-    fee_f, iv_f = _validated_fee_and_interval(P)
-    over = {
-        **_ISOLATED_COMPARISON_OVERRIDES,
-        "tp_trend_hold": False,
-        "reentry_drop_pct": _resolve_reentry_drop(P),
-    }
-    params = _bt_params(P, over)
-    return rp.run_replay(
+    return _run_isolated_replay(
         ohlc,
-        params,
-        fee_pct=fee_f,
-        bar_minutes=iv_f,
+        P,
+        "simulate_fixed_tp",
+        {"tp_trend_hold": False},
         warmup_ohlc=warmup_ohlc,
-        intrabar_high=True,
     )
 
 

@@ -415,15 +415,37 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] free_balance({asset}) failed: {e}")
             return None
 
-    def _fills_from_api(self, symbol: str) -> List[dict]:
-        """Authoritatively fetch Hyperliquid user_fills for this spot pair."""
+    def _require_hl_client_and_pair(
+        self,
+        ctx: str,
+        *,
+        require_addr: bool = False,
+        pass_client_to_addr: bool = False,
+    ) -> tuple[Any, str, Optional[str]]:
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
-            raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
-        addr = self._env_account_address(c)
-        if not addr:
-            raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
+            raise ProviderError(f"{ctx}: Hyperliquid client or pair unavailable")
+        addr = None
+        if require_addr:
+            addr = (
+                self._env_account_address(c)
+                if pass_client_to_addr
+                else self._env_account_address()
+            )
+            if not addr:
+                raise ProviderError(f"{ctx}: HL_ACCOUNT_ADDRESS missing")
+        return c, pair, addr
+
+    def _validate_symbol_and_oid(self, symbol: str, order_id: str, caller: str) -> int:
+        self.validate_symbol(symbol)
+        return require_int_order_id(order_id, f"{caller}({order_id})")
+
+    def _fills_from_api(self, symbol: str) -> List[dict]:
+        """Authoritatively fetch Hyperliquid user_fills for this spot pair."""
+        c, pair, addr = self._require_hl_client_and_pair(
+            f"get_orders({symbol})", require_addr=True, pass_client_to_addr=True
+        )
         fills = _call_hl_info_read(c.info.user_fills, addr)
         if fills is None:
             raise ProviderError(f"get_orders({symbol}): user_fills returned None")
@@ -596,10 +618,7 @@ class HyperliquidProvider(MarketDataProvider):
     def open_orders(self, symbol: str) -> List[dict]:
         """Return normalized resting spot orders for the resolved pair."""
         self.validate_symbol(symbol)
-        c = self._hl()
-        pair = self._pair()
-        if c is None or pair is None:
-            raise ProviderError(f"open_orders({symbol}): Hyperliquid client or pair unavailable")
+        c, pair, _ = self._require_hl_client_and_pair(f"open_orders({symbol})")
         try:
             out = []
             if "open_orders_strict" in type(c).__dict__ and "open_orders" not in getattr(c, "__dict__", {}):
@@ -936,11 +955,7 @@ class HyperliquidProvider(MarketDataProvider):
         interval = exact_pos_int(interval_min, default=None)
         if interval is None:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-        client = self._hl()
-        pair = self._pair()
-        if client is None or pair is None:
-            raise ProviderError(
-                f"ohlc_series({symbol}): client/pair unavailable")
+        client, pair, _ = self._require_hl_client_and_pair(f"ohlc_series({symbol})")
         lookback_h = max(1, (90 * interval) // 60)
         try:
             raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
@@ -1082,16 +1097,10 @@ class HyperliquidProvider(MarketDataProvider):
                 f"order_by_client_id({symbol},{client_order_id}): {e}") from e
 
     def order_status(self, symbol: str, order_id: str):
-        self.validate_symbol(symbol)
-        oid = require_int_order_id(order_id, f"order_status({order_id})")
-        c = self._hl()
-        pair = self._pair()
-        if c is None or pair is None:
-            raise ProviderError(
-                f"order_status({order_id}): client/pair unavailable")
-        addr = self._env_account_address()
-        if not addr:
-            raise ProviderError("order_status: HL_ACCOUNT_ADDRESS missing")
+        oid = self._validate_symbol_and_oid(symbol, order_id, "order_status")
+        c, _pair, addr = self._require_hl_client_and_pair(
+            f"order_status({order_id})", require_addr=True
+        )
         try:
             query = getattr(c.info, "query_order_by_oid", None)
             if not callable(query):
@@ -1220,8 +1229,7 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"order_status({order_id}): {e}") from e
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        self.validate_symbol(symbol)
-        oid = require_int_order_id(order_id, f"cancel_order({order_id})")
+        oid = self._validate_symbol_and_oid(symbol, order_id, "cancel_order")
         pair = self._pair()
         if pair is None:
             raise ProviderError(

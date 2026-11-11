@@ -128,29 +128,27 @@ def resolve_caller_module(
         return None
 
 
-def opposite_side(order_type: str) -> str:
-    """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
+def _require_buy_sell_side(order_type: str) -> str:
     side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
-    return "SELL" if side == "BUY" else "BUY"
+    return side
+
+
+def opposite_side(order_type: str) -> str:
+    """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
+    return "SELL" if _require_buy_sell_side(order_type) == "BUY" else "BUY"
 
 
 def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
-    side = normalize_side(order_type)
-    if side == "BUY":
-        return value_diff_to_percent(ref_price, price)
-    if side == "SELL":
-        return value_diff_to_percent(price, ref_price)
-    raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side = _require_buy_sell_side(order_type)
+    return value_diff_to_percent(ref_price, price) if side == "BUY" else value_diff_to_percent(price, ref_price)
 
 
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
     """Select the directional extreme reference symmetrically for BUY and SELL."""
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side = _require_buy_sell_side(order_type)
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None
     try:
@@ -716,9 +714,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     provider.get_orders supplies 24-hour traded value. The shared quantity decision must
     supply the side-aware balance, which this guard does not re-read. Return the smaller
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side = _require_buy_sell_side(order_type)
     provider_name = normalize_venue_name(provider, default="")
     weight = resolve_trade_weight(symbol, side, provider_name)
     recent = provider.get_orders(symbol, side, 86400)

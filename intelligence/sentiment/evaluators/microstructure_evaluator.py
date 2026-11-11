@@ -146,17 +146,25 @@ def _compute_synthetic_spot_cvd_15m(
     return round(max(-max_spot_cvd, min(max_spot_cvd, base_ob_cvd + vel_adj)), 0)
 
 
+def _extract_bbo_and_mid(minfo: Dict[str, Any]) -> tuple[float, float, float]:
+    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
+    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
+    ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
+    if b_bid > 0.0 and b_ask >= b_bid and ob_mid <= 0.0:
+        ob_mid = (b_bid + b_ask) / 2.0
+    return b_bid, b_ask, ob_mid
+
+
 def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, Any]] = None) -> None:
     """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime`, and cross-venue spot vs perp flow regime on `minfo`."""
     if not isinstance(minfo, dict):
         return
-    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
-    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
+    b_bid, b_ask, ob_mid = _extract_bbo_and_mid(minfo)
     if b_bid > 0.0 and b_ask >= b_bid:
         if not safe_pos_float(minfo.get("ob_mid_price"), default=None):
-            minfo["ob_mid_price"] = round((b_bid + b_ask) / 2.0, 6)
+            ob_mid = minfo["ob_mid_price"] = round(ob_mid, 6)
         if minfo.get("spread_bps") is None and (
-            sp_bps := round_spread_bps(None, best_bid=b_bid, best_ask=b_ask, mid_price=safe_pos_float(minfo.get("ob_mid_price"), default=None))
+            sp_bps := round_spread_bps(None, best_bid=b_bid, best_ask=b_ask, mid_price=ob_mid if ob_mid > 0.0 else None)
         ) is not None:
             minfo["spread_bps"] = sp_bps
     for d1_k, d_k in (("depth_1pct_bid_usd", "bid_depth_usd"), ("depth_1pct_ask_usd", "ask_depth_usd")):
@@ -170,11 +178,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             sp_half = (safe_nonneg_float(minfo.get("spread_bps"), default=2.0) or 2.0) * 0.5
             minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
     p_dict = pinfo if isinstance(pinfo, dict) else {}
-    m_px = (
-        safe_pos_float(p_dict.get("price"), default=None)
-        or safe_pos_float(minfo.get("ob_mid_price"), default=None)
-        or ((b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else None)
-    )
+    m_px = safe_pos_float(p_dict.get("price"), default=None) or (ob_mid if ob_mid > 0.0 else None)
     funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
     if minfo.get("perp_spot_basis_bps") is None and m_px and m_px > 0.0:
         mark_p = safe_pos_float(minfo.get("mark_price"), default=None)
@@ -359,9 +363,7 @@ def compute_liquidation_clusters(
         return {}
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     cur_px = safe_pos_float(p_dict.get("price"), default=0.0) or 0.0
-    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
-    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
-    ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or ((b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else 0.0)
+    _, _, ob_mid = _extract_bbo_and_mid(minfo)
     if ob_mid > 0.0 and (cur_px <= 0.0 or _prices_diverged(cur_px, ob_mid)):
         cur_px = ob_mid
     if cur_px <= 0.0:

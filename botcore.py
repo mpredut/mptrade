@@ -1167,22 +1167,26 @@ def _urlopen_json(req: urllib.request.Request, timeout: float) -> object:
     return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
 
 
+def _build_public_get_request(
+    url: str, *, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
+) -> urllib.request.Request:
+    clean_url = _validate_http_url(url)
+    req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
+    return urllib.request.Request(clean_url, headers=req_headers)
+
+
 def fetch_public_bytes(
     url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> bytes:
     """Fetch raw bytes from a public HTTP GET endpoint."""
-    clean_url = _validate_http_url(url)
-    req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
-    return _urlopen_bytes(urllib.request.Request(clean_url, headers=req_headers), timeout)
+    return _urlopen_bytes(_build_public_get_request(url, user_agent=user_agent, headers=headers), timeout)
 
 
 def fetch_public_json(
     url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> object:
     """Fetch and decode a JSON payload from a public HTTP GET endpoint."""
-    clean_url = _validate_http_url(url)
-    req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
-    return _urlopen_json(urllib.request.Request(clean_url, headers=req_headers), timeout)
+    return _urlopen_json(_build_public_get_request(url, user_agent=user_agent, headers=headers), timeout)
 
 
 def fetch_json_post(

@@ -210,6 +210,13 @@ def _kalman_gate_blocks(symbol, action, reason=None):
     return trend != wanted, mode, trend  # strict
 
 
+def _normalize_action_and_symbol(action, symbol) -> tuple[str, str]:
+    return (
+        normalize_side(action) or str(action or "").upper(),
+        _resolve_tradeall_symbol(symbol),
+    )
+
+
 def _fire_order(symbol, action, price, reason, **kwargs):
     """Submit an order through the single guarded proxy.
 
@@ -220,8 +227,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     ``qty=None`` uses the QuantityDecision maximum under Binance policy, clamped
     to the real balance.
     """
-    action = normalize_side(action) or str(action or "").upper()
-    symbol = _resolve_tradeall_symbol(symbol)
+    action, symbol = _normalize_action_and_symbol(action, symbol)
     price_f = safe_pos_float(price, default=None)
     if price_f is None:
         print(f"[TRADEALL] order refused: price invalid {price!r}")
@@ -266,8 +272,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     cancels expired orders on the venue, applies side-specific strategic pricing,
     and records newly placed order IDs.
     """
-    action = normalize_side(action) or str(action or "").upper()
-    symbol = _resolve_tradeall_symbol(symbol)
+    action, symbol = _normalize_action_and_symbol(action, symbol)
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:

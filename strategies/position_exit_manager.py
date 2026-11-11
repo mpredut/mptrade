@@ -600,18 +600,27 @@ class PositionExitManager:
             snapshot, self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
         )
 
+    def _prepare_exit_core_inputs(
+        self, snapshot: PositionSnapshot, custom_threshold: Optional[float], default_threshold: float,
+    ) -> Optional[tuple[str, float, float, float, float]]:
+        if not snapshot.is_valid_price:
+            return None
+        return (
+            _clean_symbol_str(snapshot.symbol),
+            resolve_now_ts(snapshot.current_time_s, allow_zero=True),
+            _resolve_positive_threshold(custom_threshold, default_threshold),
+            safe_pos_float(snapshot.current_price, default=0.0) or 0.0,
+            safe_pos_float(snapshot.avg_buy_price, default=0.0) or 0.0,
+        )
+
     def _evaluate_stop_loss_core(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
         """Evaluate Stop-Loss with strict hierarchical priorities (Disaster Floor -> Bounce -> Smart SL)."""
-        symbol = _clean_symbol_str(snapshot.symbol)
-        now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
-        lost_threshold = _resolve_positive_threshold(custom_threshold, self.config.lost_threshold)
-
-        if not snapshot.is_valid_price:
+        core_in = self._prepare_exit_core_inputs(snapshot, custom_threshold, self.config.lost_threshold)
+        if core_in is None:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price = safe_pos_float(snapshot.current_price, default=0.0) or 0.0
-        buy_price = safe_pos_float(snapshot.avg_buy_price, default=0.0) or 0.0
+        symbol, now, lost_threshold, current_price, buy_price = core_in
         price_decrease = snapshot.loss_ratio
 
         _sanitize_position_state(self.sl_bounce_state, symbol, buy_price)
@@ -833,14 +842,10 @@ class PositionExitManager:
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
         """Evaluate Take-Profit with trend-riding mirror symmetry."""
-        symbol = _clean_symbol_str(snapshot.symbol)
-        now = resolve_now_ts(snapshot.current_time_s, allow_zero=True)
-        gain_threshold = _resolve_positive_threshold(custom_threshold, self.config.gain_threshold)
-
-        if not snapshot.is_valid_price:
+        core_in = self._prepare_exit_core_inputs(snapshot, custom_threshold, self.config.gain_threshold)
+        if core_in is None:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price = safe_pos_float(snapshot.current_price, default=0.0) or 0.0
-        buy_price = safe_pos_float(snapshot.avg_buy_price, default=0.0) or 0.0
+        symbol, now, gain_threshold, current_price, buy_price = core_in
         price_increase = snapshot.gain_ratio
 
         # PRIORITY 0: Hard TP Spike Exit

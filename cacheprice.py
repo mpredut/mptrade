@@ -1729,9 +1729,17 @@ class _VenuePriceStreamBase(PublicPriceStreamBase, ABC):
             for v_key, (ws_name, builder) in cls._VENUE_STREAM_SPECS.items()
         )
 
-    def __init__(self, symbols=None, *, ws_url: str):
+    _VENUE_NAME: str = ""
+
+    def __init__(self, symbols=None, *, ws_url: Optional[str] = None):
+        prov_cls = (
+            MarketDataProvider.resolve_venue_provider_class(self._VENUE_NAME)
+            if self._VENUE_NAME
+            else None
+        )
         super().__init__(symbols=symbols)
-        self.ws_url = ws_url
+        self._prov_cls = prov_cls
+        self.ws_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
         self._last_emit_ts_ms: dict[str, int] = {}
         self._last_emit_price: dict[str, float] = {}
         self._extra_subscribe_builders: list[Callable[[], tuple[str, ...]]] = []
@@ -1858,6 +1866,8 @@ class _VenuePriceStreamBase(PublicPriceStreamBase, ABC):
 class HyperliquidPriceStream(_VenuePriceStreamBase):
     """Real-time Hyperliquid WebSocket price stream delegating protocol logic to ``HyperliquidProvider``."""
 
+    _VENUE_NAME = "hyperliquid"
+
     def __init__(
         self,
         symbols=None,
@@ -1866,10 +1876,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         ws_url: Optional[str] = None,
         **extension_kwargs,
     ):
-        prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
-        resolved_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
-        super().__init__(symbols=symbols, ws_url=resolved_url)
-        self._prov_cls = prov_cls
+        super().__init__(symbols=symbols, ws_url=ws_url)
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
         for hook in getattr(self, "_stream_init_hooks", ()):
@@ -1936,11 +1943,10 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
 class KrakenPriceStream(_VenuePriceStreamBase):
     """Real-time Kraken public WebSocket stream delegating protocol logic to ``KrakenProvider``."""
 
+    _VENUE_NAME = "kraken"
+
     def __init__(self, symbols=None, *, ws_url: Optional[str] = None):
-        prov_cls = MarketDataProvider.resolve_venue_provider_class("kraken")
-        resolved_url = ws_url or getattr(prov_cls, "PUBLIC_WS_URL", "")
-        super().__init__(symbols=symbols, ws_url=resolved_url)
-        self._prov_cls = prov_cls
+        super().__init__(symbols=symbols, ws_url=ws_url)
         self._ws_pairs: list[str] = []
         self._pair_to_symbol: dict[str, str] = {}
         for s_sym in self._symbols:

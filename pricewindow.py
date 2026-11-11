@@ -311,6 +311,11 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     return found if found is not None else float(STEP_WOLS_POWER)
 
 
+def _resolve_step_wols_power(power, symbol: str | None = None) -> float:
+    pwr = safe_nonneg_float(power, default=None)
+    return pwr if pwr is not None else float(step_wols_power_for_symbol(symbol))
+
+
 def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:
     """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) directly on raw prices.
 
@@ -322,9 +327,7 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
     """
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return 0.0
-    pwr = safe_nonneg_float(power, default=None)
-    if pwr is None:
-        pwr = float(step_wols_power_for_symbol(symbol))
+    pwr = _resolve_step_wols_power(power, symbol)
     try:
         arr = np.asarray(prices, dtype=np.float64)
     except (TypeError, ValueError):
@@ -559,9 +562,7 @@ class IncrementalTrendBuffer:
         if m < 1:
             return 0.0
         p = self.prices
-        pwr = safe_nonneg_float(power, default=None)
-        if pwr is None:
-            pwr = float(step_wols_power_for_symbol(symbol))
+        pwr = _resolve_step_wols_power(power, symbol)
         ref_last = float(p[b])
 
         if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (1.0, 2.0, 3.0):
