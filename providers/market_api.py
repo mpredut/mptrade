@@ -15,9 +15,9 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
+import botcore
 from botcore import (
     _parse_bool_flag,
-    is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_scalar_order_id,
     require_finite_float,
@@ -225,7 +225,7 @@ class MarketApi:
         if not candidates:
             return []
         pts = candidates[0].fetch_historical_ohlc_points(query_sym, days, interval=interval)
-        if not is_eq and len(pts) < 50 and len(candidates) > 1 and is_live_network_backfill_enabled():
+        if not is_eq and len(pts) < 50 and len(candidates) > 1 and botcore.is_live_network_backfill_enabled():
             for fallback_prov in candidates[1:]:
                 try:
                     fb_pts = fallback_prov.fetch_historical_ohlc_points(query_sym, days, interval=interval)
