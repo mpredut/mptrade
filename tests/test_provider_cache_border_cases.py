@@ -1324,7 +1324,90 @@ def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
     assert ag._price_row([1_700_000_000, 0.0]) is None
 
 
+def test_mt_conf_fail_fast_ohlc_and_cycle_history_border_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify fail-fast config/OHLC bounds, commonpath cycle-history gating, and microstructure delta hardening."""
+    import intelligence.macro_sentiment_ssot as mss
+    from intelligence.macro.lexicon_ssot import _tracked_equity_base_tickers
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        evaluate_microstructure_cycle_deltas,
+    )
+    import monitortrades as mt
+    from providers.order_ohlc_utils import drop_incomplete_last_bar, validate_dataset
 
+    # 1. monitortrades._load_mt_conf rejects NaN, Inf, and negative config values fail-fast
+    repo_conf_text = Path(mt.__file__).with_name("monitortrades.conf").read_text(encoding="utf-8")
+    try:
+        for bad_override in (
+            "hard_tp_pct = inf",
+            "hard_tp_pct = nan",
+            "hard_tp_cooldown_h = -1",
+            "sl_trend_defer_max_s = nan",
+            "sl_bounce_ratchet_k = -0.1",
+            "sl_disaster_vol_multiplier = inf",
+            "tp_ratchet_k = nan",
+            "tp_stagnation_max_s = -5",
+            "reentry_post_stop_cooldown_s = -1",
+        ):
+            bad_conf = tmp_path / "bad_monitortrades.conf"
+            bad_conf.write_text(f"{repo_conf_text}\n{bad_override}\n", encoding="utf-8")
+            with pytest.raises(ValueError):
+                mt._load_mt_conf(str(bad_conf))
+    finally:
+        mt._load_mt_conf()
 
+    # 2. validate_dataset & drop_incomplete_last_bar reject NaN/Inf/bool/fractional interval & timestamps
+    valid_row = {"timestamp": 3600, "open": 100.0, "high": 105.0, "low": 99.0, "close": 102.0}
+    for bad_iv in (0, -60, True, 1.5, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="interval_minutes"):
+            validate_dataset([valid_row], interval_minutes=bad_iv)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="interval_minutes"):
+            drop_incomplete_last_bar([valid_row], interval_minutes=bad_iv, now_timestamp=7200)  # type: ignore[arg-type]
+    for bad_now in (None, True, 7200.5, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="now_timestamp"):
+            drop_incomplete_last_bar([valid_row], interval_minutes=60, now_timestamp=bad_now)  # type: ignore[arg-type]
+    for bad_bound in (True, 10.5, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="regular session bounds"):
+            drop_incomplete_last_bar(
+                [valid_row],
+                interval_minutes=1440,
+                now_timestamp=4000,
+                regular_session_start=bad_bound,  # type: ignore[arg-type]
+                regular_session_end=8000,
+            )
+
+    # 3. load/save_microstructure_cycle_history uses commonpath (does not confuse cachedb_alt prefix with repo cachedb)
+    monkeypatch.setattr(mss, "is_live_network_backfill_enabled", lambda: False)
+    alt_dir = tmp_path / "cachedb_isolated"
+    alt_dir.mkdir()
+    assert mss.save_microstructure_cycle_history(str(alt_dir), {"BTCUSDC": [{"ts": 1700000000.0, "oi_usd": 1000.0}]}) is True
+    loaded_hist = mss.load_microstructure_cycle_history(str(alt_dir))
+    assert "BTCUSDC" in loaded_hist
+    assert mss.save_microstructure_cycle_history(str(mss._REPO_CACHEDB_DIR), {"BTCUSDC": []}) is False
+    assert mss.load_microstructure_cycle_history(str(mss._REPO_CACHEDB_DIR)) == {}
+
+    # 4. evaluate_microstructure_cycle_deltas safely evaluates rolling window and ignores malformed history entries
+    micro = {"BTCUSDC": {"ob_imbalance": 0.25, "cvd_15m_usd": 5000.0, "oi_usd": 1_200_000.0}}
+    hist = {
+        "BTCUSDC": [
+            "corrupt_entry",
+            {"ts": "bad_ts", "ob_imbalance": 0.1},
+            {"ts": 1700000000.0, "ob_imbalance": 0.10, "cvd_15m_usd": 2000.0, "oi_usd": 1_000_000.0},
+        ]
+    }
+    out_micro, out_hist, dirty = evaluate_microstructure_cycle_deltas(micro, hist, now_ts=1700000400.0)
+    assert dirty is True
+    cd = out_micro["BTCUSDC"]["cycle_delta"]
+    assert cd["ob_imbalance_delta"] == pytest.approx(0.15)
+    assert cd["cvd_15m_delta_usd"] == pytest.approx(3000.0)
+    assert cd["oi_delta_pct"] == pytest.approx(20.0)
+    assert len(out_hist["BTCUSDC"]) == 2
+
+    # 5. _tracked_equity_base_tickers returns deduplicated uppercase equity bases
+    eq_bases = _tracked_equity_base_tickers()
+    assert isinstance(eq_bases, list)
+    assert len(eq_bases) == len(set(eq_bases))
 
 

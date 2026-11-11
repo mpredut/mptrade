@@ -1972,15 +1972,13 @@ class CacheOrderManager(CacheAccountManagerBase):
                     self._normalize_fill_id(existing_fill_id)
                     for existing_fill_id in existing.get("_fillIds", [])
                 ]
-                legacy_cutoff = existing.get("_legacyCoveredThrough")
+                legacy_cutoff = safe_nonneg_int(existing.get("_legacyCoveredThrough"), default=None)
                 if legacy_cutoff is None and "_fillIds" not in existing:
                     legacy_cutoff = int(existing["timestamp"])
                 known_fill_ids = {*known_fill_id_list}
                 if fill_id and fill_id in known_fill_ids:
                     continue
-                if legacy_cutoff is not None and int(incoming["timestamp"]) <= int(
-                    legacy_cutoff
-                ):
+                if legacy_cutoff is not None and int(incoming["timestamp"]) <= legacy_cutoff:
                     continue
                 if (
                     str(existing.get("side", "")).upper()

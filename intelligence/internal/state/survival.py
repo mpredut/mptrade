@@ -58,7 +58,7 @@ from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_la
 from providers.base import normalize_side
 from state_io import read_json_dict_cached, save_json_state
 
-_DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", CACHE_T_TREND_FILENAME)
+_DEFAULT_T_CACHE_FILE = cache_path(CACHE_T_TREND_FILENAME)
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
 _ON_DEMAND_T_MISS_TS: dict[str, float] = {}
 _ON_DEMAND_T_MISS_TTL_SEC = 600.0

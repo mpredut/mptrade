@@ -22,15 +22,18 @@ from intelligence.external.collectors.orderbook_depth_collector import round_spr
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    load_microstructure_cycle_history,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
     safe_pos_float,
+    save_microstructure_cycle_history,
     scan_latest_long_trend_value,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     TelemetryEvaluatorFactory,
     TelemetryEvaluatorInterface,
+    _LAST_7D_SPAN_MS_BY_SYM,
     _auto_px_decimals,
     _parse_ts_px_row,
     _prices_diverged,
@@ -735,6 +738,9 @@ def evaluate_microstructure_cycle_deltas(
     orig_mhist: Dict[str, Any] = dict(mhist)
     mhist_dirty = False
 
+    def _snap_ts(snap: Any) -> float:
+        return safe_pos_float(snap.get("ts"), default=0.0) or 0.0 if isinstance(snap, dict) else 0.0
+
     def _clean_hist_list(raw_seq: Any) -> List[Dict[str, Any]]:
         if not isinstance(raw_seq, list):
             return []
@@ -746,8 +752,22 @@ def evaluate_microstructure_cycle_deltas(
             if ts_s is None:
                 continue
             items.append({**x, "ts": ts_s} if ts_s != x.get("ts") else x)
-        items.sort(key=lambda d: float(d["ts"]))
+        items.sort(key=_snap_ts)
         return items
+
+    def _latest_snap_in_age_window(
+        seq: List[Dict[str, Any]],
+        min_age_s: float,
+        max_age_s: float = 7200.0,
+        *,
+        exclude_zero_oi_whale: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        for s in reversed(seq):
+            if exclude_zero_oi_whale and _is_unnormalized_zero_oi_whale_snap(s):
+                continue
+            if min_age_s <= (eff_now - _snap_ts(s)) <= max_age_s:
+                return s
+        return None
 
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
@@ -770,17 +790,14 @@ def evaluate_microstructure_cycle_deltas(
                 if h_list := _clean_hist_list(casefold_get(orig_mhist, ck)):
                     used_variant_hist = True
                     break
-        ref_snap: Optional[Dict[str, Any]] = next(
-            (s for s in reversed(h_list) if 330.0 <= (eff_now - float(s["ts"])) <= 7200.0),
-            None,
-        ) or next(
-            (s for s in reversed(h_list) if 180.0 <= (eff_now - float(s["ts"])) <= 7200.0),
-            None,
+        ref_snap: Optional[Dict[str, Any]] = (
+            _latest_snap_in_age_window(h_list, 330.0)
+            or _latest_snap_in_age_window(h_list, 180.0)
         )
-        if ref_snap is None and h_list and 20.0 <= (eff_now - float(h_list[0]["ts"])) <= 7200.0:
+        if ref_snap is None and h_list and 20.0 <= (eff_now - _snap_ts(h_list[0])) <= 7200.0:
             ref_snap = h_list[0]
         if isinstance(ref_snap, dict):
-            delta_d: Dict[str, Any] = {"dt_min": round((eff_now - float(ref_snap["ts"])) / 60.0, 1)}
+            delta_d: Dict[str, Any] = {"dt_min": round((eff_now - _snap_ts(ref_snap)) / 60.0, 1)}
             if (
                 not used_variant_hist
                 and cur_ob is not None
@@ -799,22 +816,8 @@ def evaluate_microstructure_cycle_deltas(
                 ref_snap
                 if not _is_unnormalized_zero_oi_whale_snap(ref_snap)
                 else (
-                    next(
-                        (
-                            s
-                            for s in reversed(h_list)
-                            if 180.0 <= (eff_now - float(s["ts"])) <= 7200.0 and not _is_unnormalized_zero_oi_whale_snap(s)
-                        ),
-                        None,
-                    )
-                    or next(
-                        (
-                            s
-                            for s in reversed(h_list)
-                            if 20.0 <= (eff_now - float(s["ts"])) <= 7200.0 and not _is_unnormalized_zero_oi_whale_snap(s)
-                        ),
-                        None,
-                    )
+                    _latest_snap_in_age_window(h_list, 180.0, exclude_zero_oi_whale=True)
+                    or _latest_snap_in_age_window(h_list, 20.0, exclude_zero_oi_whale=True)
                 )
             )
             p_wl = _resolve_non_static_prev_metric(
@@ -857,7 +860,7 @@ def evaluate_microstructure_cycle_deltas(
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
             if len(delta_d) > 1:
                 minfo["cycle_delta"] = delta_d
-        if not own_h_list or (eff_now - float(own_h_list[-1]["ts"])) >= 60.0:
+        if not own_h_list or (eff_now - _snap_ts(own_h_list[-1])) >= 60.0:
             new_rec: Dict[str, Any] = {"ts": round(eff_now, 2)}
             cur_l1_oi = safe_pos_float(minfo.get("native_l1_oi_usd"), default=None)
             for k_rec, v_rec, dec_r in (
@@ -870,7 +873,7 @@ def evaluate_microstructure_cycle_deltas(
             ):
                 if v_rec is not None:
                     new_rec[k_rec] = round(v_rec, dec_r)
-            mhist[msym] = [x for x in own_h_list if eff_now - float(x["ts"]) <= 14400.0][-11:] + [new_rec]
+            mhist[msym] = [x for x in own_h_list if eff_now - _snap_ts(x) <= 14400.0][-11:] + [new_rec]
             mhist_dirty = True
     usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
@@ -918,15 +921,11 @@ def update_microstructure_cycle_deltas(
     if isinstance(history, dict):
         mhist = history
     elif cache_dir:
-        from intelligence.macro_sentiment_ssot import load_microstructure_cycle_history
-
         mhist = load_microstructure_cycle_history(cache_dir)
     else:
         return {}
     _, mhist, mhist_dirty = evaluate_microstructure_cycle_deltas(microstructure, mhist, now_ts=now_ts)
     if persist and mhist_dirty and cache_dir:
-        from intelligence.macro_sentiment_ssot import save_microstructure_cycle_history
-
         save_microstructure_cycle_history(cache_dir, mhist)
     return mhist
 
@@ -1160,8 +1159,6 @@ def enrich_cross_venue_trends(
                     or entry.get("_partial_7d_span_ms") is None
                     or w_span_ms <= safe_float(entry.get("_partial_7d_span_ms"), 0.0)
                 ):
-                    from intelligence.sentiment.evaluators.price_series_evaluator import _LAST_7D_SPAN_MS_BY_SYM
-
                     if (
                         not is_eq_w7
                         and w_span_ms >= 5 * 86400 * 1000

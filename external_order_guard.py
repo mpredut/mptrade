@@ -48,6 +48,7 @@ from intelligence.internal.guards.guard_decision import (
     OrderGuardEvaluatorBase,
     OrderGuardEvaluatorFactory,
     fetch_guard_snapshot,
+    normalize_guard_mode,
 )
 
 _whale_collector = _READONLY_COLLECTOR_SINGLETONS.get("_whale_collector")
@@ -227,7 +228,6 @@ def check_external_order_guards(
 def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
     try:
-        from intelligence.internal.guards.guard_decision import normalize_guard_mode
         m = _load_margins()
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
             if normalize_guard_mode(m.get(mode_key, "enforce"), default="enforce") != "enforce":

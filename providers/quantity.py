@@ -142,11 +142,12 @@ def compute_fills_cost_basis(
         })
 
     def _trade_sort_key(item: dict) -> tuple[int, int, str]:
+        ts_val = safe_int(item.get("timestamp"), default=0)
         raw_id = item.get("id")
         id_int = safe_int(raw_id, default=None)
         if id_int is not None:
-            return (int(item["timestamp"]), 0, f"{id_int:020d}")
-        return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
+            return (ts_val, 0, f"{id_int:020d}")
+        return (ts_val, 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
 
     normalized.sort(key=_trade_sort_key)
     return remaining_average_cost(normalized, held_qty)

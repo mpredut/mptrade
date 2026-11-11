@@ -27,6 +27,7 @@ from botcore import (
     normalize_timestamp_ms,
     obj_attr,
     require_finite_float,
+    require_int,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -889,10 +890,18 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
     rows = [normalize_record(record) for record in records]
     if not rows:
         raise ValueError("OHLC dataset cannot be empty")
-    if interval_minutes is not None and (isinstance(interval_minutes, bool) or interval_minutes <= 0):
-        raise ValueError("interval_minutes must be positive")
+    interval_min = (
+        require_int(
+            interval_minutes,
+            name="interval_minutes",
+            min_value=1,
+            error_msg="interval_minutes must be positive",
+        )
+        if interval_minutes is not None
+        else None
+    )
 
-    expected_delta = interval_minutes * 60 if interval_minutes is not None else None
+    expected_delta = interval_min * 60 if interval_min is not None else None
     previous_timestamp = None
     for index, row in enumerate(rows, start=2):
         timestamp = row["timestamp"]
@@ -928,20 +937,37 @@ def drop_incomplete_last_bar(
     uses the session start, so during the session we compare against the
     ``regular`` end provided in the response metadata.
     """
-    interval_i = exact_pos_int(interval_minutes, default=None)
-    if interval_i is None:
-        raise ValueError("interval_minutes must be positive")
-    now_i = exact_int(now_timestamp, default=None)
-    if now_i is None:
-        raise ValueError("now_timestamp must be an integer")
+    interval_i = require_int(
+        interval_minutes,
+        name="interval_minutes",
+        min_value=1,
+        error_msg="interval_minutes must be positive",
+    )
+    now_i = require_int(
+        now_timestamp,
+        name="now_timestamp",
+        error_msg="now_timestamp must be an integer",
+    )
     if isinstance(regular_session_start, bool) or isinstance(regular_session_end, bool):
         raise ValueError("regular session bounds cannot be boolean")
-    sess_start_i = exact_int(regular_session_start, default=None) if regular_session_start is not None else None
-    sess_end_i = exact_int(regular_session_end, default=None) if regular_session_end is not None else None
-    if (regular_session_start is not None and sess_start_i is None) or (
-        regular_session_end is not None and sess_end_i is None
-    ):
-        raise ValueError("regular session bounds must be integers")
+    sess_start_i = (
+        require_int(
+            regular_session_start,
+            name="regular_session_start",
+            error_msg="regular session bounds must be integers",
+        )
+        if regular_session_start is not None
+        else None
+    )
+    sess_end_i = (
+        require_int(
+            regular_session_end,
+            name="regular_session_end",
+            error_msg="regular session bounds must be integers",
+        )
+        if regular_session_end is not None
+        else None
+    )
     rows = [normalize_record(record) for record in records]
     if not rows:
         return rows

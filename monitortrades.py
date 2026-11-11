@@ -13,6 +13,8 @@ from botcore import (
     normalize_epoch_sec,
     parse_dotenv,
     parse_ratio_or_pct,
+    require_nonneg_float,
+    require_pos_float,
     required_bool_env,
     required_float_env,
     resolve_now_ts,
@@ -574,34 +576,34 @@ def _load_mt_conf(path=None):
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
 
     HARD_TP_ENABLED = _parse_mt_bool("hard_tp_enabled", parsed["hard_tp_enabled"])
-    HARD_TP_PCT = float(parsed["hard_tp_pct"]) / 100.0
-    HARD_TP_FRACTION = float(parsed["hard_tp_fraction"])
-    HARD_TP_COOLDOWN_S = float(parsed["hard_tp_cooldown_h"]) * 3600.0
+    HARD_TP_PCT = require_pos_float(parsed["hard_tp_pct"], name="hard_tp_pct") / 100.0
+    HARD_TP_FRACTION = require_pos_float(parsed["hard_tp_fraction"], name="hard_tp_fraction")
+    HARD_TP_COOLDOWN_S = require_nonneg_float(parsed["hard_tp_cooldown_h"], name="hard_tp_cooldown_h") * 3600.0
     TP_REFERENCE = parsed["tp_reference"].strip().lower()
     if TP_REFERENCE not in ("last", "average"):
         raise ValueError(f"monitortrades.conf: invalid tp_reference={parsed['tp_reference']!r}")
 
-    MT_SL_TREND_DEFER_MAX_SEC = float(parsed["sl_trend_defer_max_s"])
+    MT_SL_TREND_DEFER_MAX_SEC = require_nonneg_float(parsed["sl_trend_defer_max_s"], name="sl_trend_defer_max_s")
     MT_SL_BOUNCE_MIN_RECOVERY_PCT = parse_ratio_or_pct(parsed["sl_bounce_min_recovery_pct"])
     MT_SL_BOUNCE_PULLBACK_PCT = parse_ratio_or_pct(parsed["sl_bounce_pullback_pct"])
     MT_SL_BOUNCE_RATCHET_ENABLED = _parse_mt_bool("sl_bounce_ratchet_enabled", parsed["sl_bounce_ratchet_enabled"])
-    MT_SL_BOUNCE_RATCHET_K = float(parsed["sl_bounce_ratchet_k"])
+    MT_SL_BOUNCE_RATCHET_K = require_nonneg_float(parsed["sl_bounce_ratchet_k"], name="sl_bounce_ratchet_k")
     MT_SL_BOUNCE_MIN_PULLBACK_PCT = parse_ratio_or_pct(parsed["sl_bounce_min_pullback_pct"])
     MT_SL_STRUCTURAL_BREAK_ENABLED = _parse_mt_bool("sl_structural_break_enabled", parsed["sl_structural_break_enabled"])
     MT_SL_DISASTER_BUFFER_RATIO = parse_ratio_or_pct(parsed["sl_disaster_buffer_ratio"], pct_cutoff=0.999999999)
-    MT_SL_DISASTER_VOL_MULTIPLIER = float(parsed["sl_disaster_vol_multiplier"])
+    MT_SL_DISASTER_VOL_MULTIPLIER = require_nonneg_float(parsed["sl_disaster_vol_multiplier"], name="sl_disaster_vol_multiplier")
     MT_SL_DISASTER_BUFFER_MIN_PCT = parse_ratio_or_pct(parsed["sl_disaster_buffer_min_pct"])
 
     MT_TP_TREND_RIDE_ENABLED = _parse_mt_bool("tp_trend_ride_enabled", parsed["tp_trend_ride_enabled"])
     MT_TP_PULLBACK_PCT = parse_ratio_or_pct(parsed["tp_pullback_pct"])
     MT_TP_RATCHET_ENABLED = _parse_mt_bool("tp_ratchet_enabled", parsed["tp_ratchet_enabled"])
-    MT_TP_RATCHET_K = float(parsed["tp_ratchet_k"])
+    MT_TP_RATCHET_K = require_nonneg_float(parsed["tp_ratchet_k"], name="tp_ratchet_k")
     MT_TP_RATCHET_MIN_PULLBACK_PCT = parse_ratio_or_pct(parsed["tp_ratchet_min_pullback_pct"])
     MT_TP_PROFIT_FLOOR_RATIO = parse_ratio_or_pct(parsed["tp_profit_floor_ratio"], pct_cutoff=0.999999999)
     MT_TP_PROFIT_FLOOR_MIN_PCT = parse_ratio_or_pct(parsed["tp_profit_floor_min_pct"])
-    MT_TP_STAGNATION_MAX_SEC = float(parsed["tp_stagnation_max_s"])
+    MT_TP_STAGNATION_MAX_SEC = require_nonneg_float(parsed["tp_stagnation_max_s"], name="tp_stagnation_max_s")
     MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
-    MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(parsed["reentry_post_stop_cooldown_s"])
+    MT_REENTRY_POST_STOP_COOLDOWN_SEC = require_nonneg_float(parsed["reentry_post_stop_cooldown_s"], name="reentry_post_stop_cooldown_s")
 
     if not (0.0 < HARD_TP_FRACTION <= 1.0) or HARD_TP_PCT <= 0.0:
         raise ValueError(f"monitortrades.conf: invalid hard_tp bounds (pct={HARD_TP_PCT}, fraction={HARD_TP_FRACTION})")
@@ -1382,7 +1384,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"No available balance snapshot for {symbol} — skip")
         return
     isolation = inst.isolation
-    owned_qty = max(float(position["net_qty"]), 0.0)
+    owned_qty = safe_nonneg_float(position.get("net_qty"), default=0.0) or 0.0
     sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
 
     exit_mgr: Optional[PositionExitManager] = None

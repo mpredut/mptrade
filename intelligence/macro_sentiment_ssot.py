@@ -140,6 +140,7 @@ read_json_cached = _default_read_json_dict_recovering
 logger = logging.getLogger(__name__)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_CACHEDB_DIR = os.path.abspath(os.path.join(_ROOT_DIR, "cachedb"))
 DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
 _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
 
@@ -1062,18 +1063,28 @@ def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
     return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
 
 
+def _resolve_microstructure_cycle_history_path(cache_dir: Optional[str]) -> Optional[str]:
+    if not cache_dir:
+        return None
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    abs_mhist = os.path.abspath(mhist_path)
+    try:
+        is_repo_cachedb = os.path.commonpath([abs_mhist, _REPO_CACHEDB_DIR]) == _REPO_CACHEDB_DIR
+    except ValueError:
+        is_repo_cachedb = False
+    if is_repo_cachedb and not is_live_network_backfill_enabled():
+        return None
+    return mhist_path
+
+
 def load_microstructure_cycle_history(
     cache_dir: Optional[str],
     *,
     read_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """Load rolling microstructure cycle history from `microstructure_cycle_history.json`."""
-    if not cache_dir:
-        return {}
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
-    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "cachedb"))
-    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
-    if not (os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)):
+    mhist_path = _resolve_microstructure_cycle_history_path(cache_dir)
+    if not mhist_path or not os.path.exists(mhist_path):
         return {}
     rj = read_json_fn if callable(read_json_fn) else read_json_file
     try:
@@ -1088,12 +1099,10 @@ def save_microstructure_cycle_history(
     history: Dict[str, Any],
 ) -> bool:
     """Persist rolling microstructure cycle history to `microstructure_cycle_history.json`."""
-    if not cache_dir or not isinstance(history, dict):
+    if not isinstance(history, dict):
         return False
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
-    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "cachedb"))
-    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
-    if not (is_live_network_backfill_enabled() or not is_repo_cachedb):
+    mhist_path = _resolve_microstructure_cycle_history_path(cache_dir)
+    if not mhist_path:
         return False
     try:
         os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)

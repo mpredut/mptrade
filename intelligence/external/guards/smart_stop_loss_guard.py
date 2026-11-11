@@ -52,7 +52,7 @@ load_dotenv()
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
-_DEFAULT_SMART_SL_STATE_FILE = os.path.join("cachedb", "smart_stop_loss_state.json")
+_DEFAULT_SMART_SL_STATE_FILE = cache_path("smart_stop_loss_state.json")
 _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 
 

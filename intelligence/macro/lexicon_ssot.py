@@ -19,7 +19,7 @@ from botcore import (
     safe_pos_float,
     split_csv,
 )
-from cachepaths import cache_path, resolve_cachedb_filepath
+from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath
 from state_io import read_json_dict_cached, save_json_state
 
 logger = logging.getLogger(__name__)
@@ -1114,24 +1114,27 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
     return template.format(query=query_str) if "{query}" in template else template
 
 
+def _tracked_equity_base_tickers() -> List[str]:
+    """Return deduplicated canonical base tickers for all tracked equity instruments."""
+    try:
+        from instrument_registry import is_equity_symbol, tracked_price_instruments
+
+        tickers = [
+            base
+            for sym in tracked_price_instruments()[0]
+            if is_equity_symbol(sym) and (base := canonical_base_asset(sym))
+        ]
+    except Exception:
+        return []
+    return list(dict.fromkeys(tickers))
+
+
 def build_equity_tickers_rss_url() -> str:
     """Build the Yahoo Finance RSS headline feed URL for all active tracked equity tickers."""
     template = _cfg_str("feeds", "equity_tickers_rss_template")
     if not template:
         return ""
-    try:
-        from cachepaths import canonical_base_asset
-        from instrument_registry import is_equity_symbol, tracked_price_instruments
-
-        all_syms = tracked_price_instruments()[0]
-        tickers = [
-            base
-            for sym in all_syms
-            if is_equity_symbol(sym) and (base := canonical_base_asset(sym))
-        ]
-    except Exception:
-        tickers = []
-    dedup_tickers = list(dict.fromkeys(tickers))
+    dedup_tickers = _tracked_equity_base_tickers()
     if not dedup_tickers:
         return ""
     return template.format(tickers=",".join(dedup_tickers)) if "{tickers}" in template else template
@@ -1145,17 +1148,7 @@ def has_tracked_equity_entity(title: Any) -> bool:
     if not words:
         return False
     cfg_kws = set(split_csv(_cfg_str("feeds", "equity_entity_keywords"), lower=True))
-    try:
-        from cachepaths import canonical_base_asset
-        from instrument_registry import is_equity_symbol, tracked_price_instruments
-
-        for sym in tracked_price_instruments()[0]:
-            if is_equity_symbol(sym):
-                base = canonical_base_asset(sym).lower()
-                if base:
-                    cfg_kws.add(base)
-    except Exception:
-        pass
+    cfg_kws.update(base.lower() for base in _tracked_equity_base_tickers())
     return bool(words & {k for k in cfg_kws if k})
 
 

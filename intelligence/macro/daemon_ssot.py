@@ -24,13 +24,20 @@ from botcore import (
     safe_float,
     safe_nonneg_ts,
     safe_pos_float,
+    split_csv,
 )
 from cachepaths import (
     cache_path,
+    cachedb_root_for_file,
     canonical_base_asset,
     resolve_cachedb_filepath,
 )
-from instrument_registry import is_equity_symbol
+from instrument_registry import (
+    binance_symbols,
+    discover_hyperliquid_spot,
+    is_equity_symbol,
+    tracked_price_instruments,
+)
 from state_io import (
     atomic_write_json as _default_atomic_write_json,
     discard_generation_file as _default_discard_generation_file,
@@ -89,21 +96,18 @@ def detect_active_binance_symbols(
 
     if include_kraken_cache:
         try:
-            from instrument_registry import tracked_price_instruments
             all_syms, _, _ = tracked_price_instruments()
             for s in all_syms:
                 _add_sym(s, skip_eq=False)
         except Exception:
             pass
         try:
-            from instrument_registry import discover_hyperliquid_spot
             for hl_sym, _, _ in discover_hyperliquid_spot(_ROOT_DIR):
                 _add_sym(hl_sym, skip_eq=True)
         except Exception:
             pass
     if not out:
         try:
-            from instrument_registry import binance_symbols
             for s in binance_symbols() or []:
                 _add_sym(s)
         except Exception:
@@ -114,8 +118,7 @@ def detect_active_binance_symbols(
             if os.path.exists(krk_cfg):
                 env_map = parse_dotenv(krk_cfg)
                 for cfg_k in ("KRAKEN_TRADABLE_PAIRS", "KRAKEN_CACHE_PAIRS"):
-                    val = env_map.get(cfg_k, "")
-                    for item in (val.split(",") if val else ()):
+                    for item in split_csv(env_map.get(cfg_k, ""), upper=True):
                         _add_sym(item, skip_eq=True, unique_base=False)
         except Exception:
             pass
@@ -667,8 +670,6 @@ class CachedTopicAssessmentAgent:
         return str(raw_f)
 
     def _effective_cache_dir(self) -> str:
-        from cachepaths import cachedb_root_for_file
-
         return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
 
     def _load_from_disk(self) -> None:

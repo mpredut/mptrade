@@ -953,6 +953,8 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
                 ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
                 r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
+                entry_ts_f = safe_pos_float(entry_ts_ms, default=None)
+                sell_ts_f = safe_pos_float(sell_ts_ms, default=None)
                 buys_after = [
                     b for b in r_buys_c
                     if isinstance(b, dict)
@@ -960,12 +962,13 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
                     and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
                 ]
+                buys_after_qty = sum(safe_pos_float(b.get("qty"), default=0.0) or 0.0 for b in buys_after)
                 post_sell_new_cycle = bool(
-                    entry_ts_ms
+                    entry_ts_f is not None
                     and ls_ts_ms > 0.0
-                    and float(entry_ts_ms) > ls_ts_ms + 5000.0
+                    and entry_ts_f > ls_ts_ms + 5000.0
                     and buys_after
-                    and cyc_qty_cur <= sum(float(b["qty"]) for b in buys_after) * 1.05
+                    and cyc_qty_cur <= buys_after_qty * 1.05
                 )
                 buys_before = (
                     []
@@ -978,19 +981,19 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     ]
                 )
                 reconciled_external_buy = bool(
-                    entry_ts_ms
+                    entry_ts_f is not None
                     and not cyc.get("resting_orders")
                     and buys_after
                     and cyc_qty_cur > 1e-8
-                    and float(entry_ts_ms) > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
-                    and abs(sum(float(b["qty"]) for b in buys_after) - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
+                    and entry_ts_f > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
+                    and abs(buys_after_qty - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
                 )
                 rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
                 live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
                 if post_sell_new_cycle and (
                     live_held is None
                     or live_held <= 1e-6
-                    or abs(sum(float(b["qty"]) for b in buys_after) - live_held) <= max(1e-4, live_held * 0.02)
+                    or abs(buys_after_qty - live_held) <= max(1e-4, live_held * 0.02)
                 ):
                     ro_c["lifo_realized_pnl_usd"] = 0.0
                     ro_c["recent_buys"] = buys_after[-4:]
@@ -999,7 +1002,6 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             lt for lt in ro_c["open_lots"]
                             if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
                         ]
-                buys_after_qty = sum(float(b["qty"]) for b in buys_after)
                 has_pre_sell_rem = (
                     buys_after_qty > 0.0
                     and (cyc_qty_cur - buys_after_qty) > 1e-6
@@ -1011,7 +1013,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     and (not buys_after or ls_qty < cyc_qty_cur * 0.95 or has_pre_sell_rem)
                     and cyc_qty_cur > 1e-8
                     and (
-                        (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0 and (live_held is None or live_held > 1e-6))
+                        (sell_ts_f is not None and sell_ts_f >= ls_ts_ms - 5000.0 and (live_held is None or live_held > 1e-6))
                         or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
                         or (live_held is not None and live_held > 1e-8 and abs(live_held - cyc_qty_cur) <= max(1e-4, max(live_held, cyc_qty_cur) * 0.05))
                     )
@@ -1038,9 +1040,9 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             and rem_q > 1e-6
                             and ls_ts_ms > 0.0
                             and (
-                                sell_ts_ms is None
-                                or float(sell_ts_ms) < ls_ts_ms - 5000.0
-                                or (already_deducted_partial and float(sell_ts_ms) <= ls_ts_ms + 60000.0)
+                                sell_ts_f is None
+                                or sell_ts_f < ls_ts_ms - 5000.0
+                                or (already_deducted_partial and sell_ts_f <= ls_ts_ms + 60000.0)
                             )
                         )
                         replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
@@ -1062,14 +1064,14 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
                         cyc["dca_buys"] = len(buys_after) - 1
                     continue
-                if not entry_ts_ms or cyc.get("resting_orders"):
+                if entry_ts_f is None or cyc.get("resting_orders"):
                     continue
                 if (
                     not buys_after
-                    and ls_ts_ms > float(entry_ts_ms)
+                    and ls_ts_ms > entry_ts_f
                     and cyc_qty_cur > 1e-8
                     and 0.0 < ls_qty < cyc_qty_cur - 1e-8
-                    and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                    and (sell_ts_f is None or sell_ts_f < ls_ts_ms - 5000.0)
                     and (
                         (live_held is not None and abs(live_held - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(live_held, cyc_qty_cur - ls_qty) * 0.05))
                         or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(rem_q_ro, cyc_qty_cur - ls_qty) * 0.05))
@@ -1085,7 +1087,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     if ls_px > 0:
                         cyc["last_sell_price"] = round(ls_px, avg_dec)
                         _sync_exit_kind(cyc, ls_px, rem_after_sell)
-                elif (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
+                elif (ls_ts_ms > entry_ts_f and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
                     px_c = resolve_symbol_price(
                         ensure_equity_suffix(c_sym, is_equity=c_is_eq),
                         prices_and_trends,
@@ -1097,8 +1099,14 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     )
                     has_non_dust_wallet = eff_rem_wallet > 1e-6 and (px_c <= 0.0 or eff_rem_wallet * px_c >= 5.0)
                     if buys_after:
-                        new_qty = sum(float(b["qty"]) for b in buys_after)
-                        new_cost = sum(float(b["qty"]) * float(b["price"]) for b in buys_after)
+                        new_qty = buys_after_qty
+                        new_cost = sum(
+                            (safe_pos_float(b.get("qty"), default=0.0) or 0.0)
+                            * (safe_pos_float(b.get("price"), default=0.0) or 0.0)
+                            for b in buys_after
+                        )
+                        first_buy_px = safe_pos_float(buys_after[0].get("price"), default=0.0) or 0.0
+                        last_buy_px = safe_pos_float(buys_after[-1].get("price"), default=0.0) or 0.0
                         _sync_cycle_wallet_qty_and_avg(
                             cyc,
                             qty=new_qty,
@@ -1107,8 +1115,8 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                             avg_dec=avg_dec,
                             extra_fields={
                                 "cost_usd": round(new_cost, 2),
-                                "entry_price": round(float(buys_after[0]["price"]), avg_dec),
-                                "last_buy_price": round(float(buys_after[-1]["price"]), avg_dec),
+                                "entry_price": round(first_buy_px, avg_dec),
+                                "last_buy_price": round(last_buy_px, avg_dec),
                                 "dca_buys": max(0, len(buys_after) - 1),
                             },
                         )
