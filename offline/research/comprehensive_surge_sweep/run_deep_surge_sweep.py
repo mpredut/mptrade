@@ -61,10 +61,7 @@ DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
-    return scale_subbar_timeout_params(
-        align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240),
-        240,
-    )
+    return align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
 
 R = dataclasses.replace
 
@@ -264,7 +261,7 @@ def _run_slice_replay(
 ) -> tuple[tuple[float, float, int], float, tuple[float, ...]]:
     res = run_replay(
         ohlc=run_ohlc,
-        params=params,
+        params=scale_subbar_timeout_params(params, 240.0),
         fee_pct=fee_pct,
         bar_minutes=240.0,
         warmup_ohlc=warmup_ohlc,
