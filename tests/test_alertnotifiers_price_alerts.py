@@ -642,6 +642,13 @@ def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_typ
         "18:00:02 [__init__.py:1163] [STDERR] 2026-11-10 18:00:02,969 [INFO] Starting Autonomous AI Supervisor cycle (mode=enforce, topic=auto_cryptotrade_executor)...\n",
         encoding="utf-8",
     )
+    res_log = tmp_path / "os_resources_watchdog.log"
+    res_log.write_text(
+        "Traceback (most recent call last):\n"
+        "ImportError: cannot import name 'require_nonneg_float' from 'botcore'\n"
+        "[resources] OK — sampled 177 processes\n",
+        encoding="utf-8",
+    )
     anom = harvest_log_anomalies_from_dirs([str(tmp_path)], lookback_hours=24.0)
     assert anom.error_count == 0
 
