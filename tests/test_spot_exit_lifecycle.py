@@ -12,16 +12,38 @@ from unittest.mock import MagicMock, patch
 import pytest
 import strategies.spot_engine as se
 from strategies import spot_rules
-from strategies.position_exit_manager import PositionExitConfig, PositionExitManager
-from strategies.spot_engine import StratParams, Strategy
+from strategies.position_exit_manager import (
+    ExitAction,
+    PositionExitConfig,
+    PositionExitManager,
+    PositionSnapshot,
+    ReentryAction,
+    ReentrySnapshot,
+)
+from strategies.spot_engine import (
+    StratParams,
+    Strategy,
+    _PLACEMENT_BACKOFF_CAP_SEC,
+    _parse_bool_flag,
+    _parse_tranches,
+    clean_order_id,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import binance_api.bapi as bapi_mod
+import order_retry as oq
+import strategies.spot_replay as srep
 from market_regime import MarketRegimeDecision
+from offline.backtests.execution import ExecutionModel
+from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
+from providers.order_ohlc_utils import extract_remaining_qty
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError
+from providers.t212_provider import T212Provider
+from strategies.spot_replay import run_replay
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
 from types import SimpleNamespace
 
@@ -862,7 +884,6 @@ def test_mdhtp_hold_evaluates_advanced_profit_guards():
 
 
 def test_post_stop_reentry_tracks_peak_bounce_during_cooldown_and_blocks_rollover():
-    from strategies.position_exit_manager import ReentryAction, ReentrySnapshot
     mgr = PositionExitManager(
         config=PositionExitConfig(
             reentry_enabled=True,
@@ -955,7 +976,6 @@ def test_spot_rules_non_positive_drop_thresholds_do_not_false_trigger():
 
 
 def test_position_exit_manager_resets_tp_and_sl_state_when_buy_price_changes():
-    from strategies.position_exit_manager import ExitAction, PositionSnapshot
     mgr = PositionExitManager(config=PositionExitConfig(gain_threshold=0.03, lost_threshold=0.05))
     # Initiate TP trend ride at avg_buy_price=100.0, current_price=104.0
     d1 = mgr.evaluate_take_profit(PositionSnapshot(
@@ -1009,8 +1029,6 @@ def test_spot_engine_pending_stop_exit_does_not_reinitiate_mhdsl_bounce_watch():
 
 
 def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_latest_buy_fill():
-    from providers.order_ohlc_utils import extract_remaining_qty
-
     assert extract_remaining_qty({"origQty": 1.0, "executedQty": 0.4}) == pytest.approx(0.6)
     assert extract_remaining_qty({"remaining_qty": 0.35, "origQty": 1.0}) == pytest.approx(0.35)
 
@@ -1045,11 +1063,6 @@ def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_late
 
 
 def test_ledger_reconcile_exit_kind_and_partial_fill_audit_notional(tmp_path, monkeypatch):
-    from providers.execution_audit import _resolve_intent_execution_details, cancel_existing_ai_open_orders
-    from providers.t212_provider import T212Provider
-    import order_retry as oq
-    import binance_api.bapi as bapi_mod
-
     # 1) B10: _reconcile_venue_ledger infers "SL" when external close is below avg_cost, "TP" otherwise
     eng_loss, exec_loss = positioned()
     eng_loss.s.update(qty=1.0, cost=100.0, spent=100.0, ledger_reconcile_required=True)
@@ -1205,7 +1218,6 @@ def test_spot_rules_nan_hardening_iter26_s1():
 
 def test_strategy__placement_backoff_remaining_clamping_nan_safety_iter26_s2():
     """[ITER26 #2] Strategy._placement_backoff_remaining clamping & NaN safety."""
-    from strategies.spot_engine import _PLACEMENT_BACKOFF_CAP_SEC
     # 2. Strategy._placement_backoff_remaining clamping & NaN safety
     dummy_strat = SimpleNamespace(
         s={
@@ -1302,9 +1314,6 @@ def test_spot_rules_entry_price_tp_price_check_parabolic_surge_exhaustion_and_ch
 def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_series_iter93_s1():
     """[ITER93 #1] strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used."""
     # 1. strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used
-    from offline.backtests.execution import ExecutionModel
-    from strategies.spot_replay import run_replay
-
     orig_params = StratParams(
         currency="USD",
         entry_amount=100.0,
@@ -1345,8 +1354,6 @@ def test_strategies_spot_replay_ohlc_validation_params_isolation_when_dca_drop_s
 def test_strategies_spot_engine__parse_tranches_rejects_booleans_iter93_s2():
     """[ITER93 #2] strategies.spot_engine._parse_tranches rejects booleans."""
     # 2. strategies.spot_engine._parse_tranches rejects booleans
-    from strategies.spot_engine import _parse_tranches
-
     with pytest.raises(ValueError, match="Invalid STRAT_TP_TRANCHES"):
         _parse_tranches(True)
 
@@ -1357,7 +1364,6 @@ def test_spot_rules_string_false_boolean_flag_handling_iter112_s5():
 
 def test_spot_replay_align_spot_interval_params_with_sub_minute_bar_minutes_and_run_replay_iter112_s6():
     """[ITER112 #6] spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash."""
-    import strategies.spot_replay as srep
     # 6. spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash
     dummy_params = SimpleNamespace(trend_interval=60, tp_trail_vol_interval=60, dca_vol_interval=60, regime_min_samples=20)
     assert srep.align_spot_interval_params(dummy_params, 0.5) is dummy_params
@@ -1392,7 +1398,6 @@ def test_spot_rules__parse_bool_flag_rejects_nan_and_containers_iter144_s1():
 
 def test_spot_engine__parse_bool_flag_clean_order_id_and__sanitize_state_dict_iter144_s2():
     """[ITER144 #2] spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict."""
-    from strategies.spot_engine import clean_order_id, _parse_bool_flag
     # 2. spot_engine._parse_bool_flag, clean_order_id, and _sanitize_state_dict
     assert _parse_bool_flag("false") is False
     assert _parse_bool_flag("0") is False

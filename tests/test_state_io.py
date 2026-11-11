@@ -1,9 +1,17 @@
+import csv
+import datetime as dt
 import gzip
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+import order_guard
+import state_io
+from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+from providers.kraken_provider import KrakenProvider
 from state_io import (
     StateReadError,
     atomic_file_path,
@@ -12,18 +20,32 @@ from state_io import (
     atomic_text_writer,
     atomic_write_bytes,
     atomic_write_json,
+    atomic_write_jsonl,
+    atomic_write_text,
     commit_file_and_meta,
+    discard_generation_file,
     load_json_state,
     meta_file_path,
     previous_generation_path,
+    read_bytes_file,
+    read_csv_dicts,
     read_json_dict,
+    read_json_dict_cached,
+    read_json_dict_recovering,
+    read_json_file,
+    read_jsonl_dicts,
     read_jsonl_records,
     read_recovering_previous,
+    read_tail_jsonl_dicts,
+    read_tail_jsonl_records,
+    read_tail_lines,
+    read_text_file,
+    read_text_lines,
     save_json_state,
     stage_previous_generation,
     write_meta_json,
 )
-import state_io
+from strategies.state_store import JsonStateStore, StatePersistenceError
 
 
 def test_atomic_write_json_replaces_complete_document(tmp_path):
@@ -37,7 +59,7 @@ def test_atomic_write_json_replaces_complete_document(tmp_path):
 def test_atomic_writer_fsyncs_directory_after_replace(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
     events = []
-    real_replace = __import__("os").replace
+    real_replace = os.replace
 
     def observed_replace(source, destination):
         real_replace(source, destination)
@@ -244,11 +266,6 @@ def test_save_json_state_restores_previous_on_write_failure(tmp_path, monkeypatc
 
 
 def test_audit46_transactional_recovery_and_cross_venue_fallbacks(tmp_path, monkeypatch):
-    import time
-    import order_guard
-    from providers.kraken_provider import KrakenProvider
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
-
     now_s = time.time()
     now_ms = int(now_s * 1000)
 
@@ -338,7 +355,6 @@ def test_atomic_write_json_allow_nan(tmp_path):
 
 
 def test_atomic_text_writer_newline(tmp_path):
-    import csv
     p = tmp_path / "test.csv"
     with atomic_text_writer(p, newline="") as fh:
         writer = csv.writer(fh)
@@ -350,7 +366,6 @@ def test_atomic_text_writer_newline(tmp_path):
 
 
 def test_atomic_write_json_default(tmp_path):
-    import datetime as dt
     p = tmp_path / "test_default.json"
     data = {"path": Path("/some/path"), "time": dt.datetime(2026, 1, 1, 12, 0, 0)}
     atomic_write_json(p, data, default=str)
@@ -361,7 +376,6 @@ def test_atomic_write_json_default(tmp_path):
 
 
 def test_read_json_dict(tmp_path):
-    from state_io import atomic_write_jsonl, read_json_file, read_jsonl_dicts
     p_ok = tmp_path / "ok.json"
     atomic_write_json(p_ok, {"k": "v"})
     assert read_json_dict(str(p_ok)) == {"k": "v"}
@@ -397,8 +411,6 @@ def test_read_json_dict(tmp_path):
 
 
 def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
-    from state_io import atomic_write_text, read_bytes_file, read_csv_dicts, read_tail_jsonl_dicts, read_tail_jsonl_records, read_text_file, read_text_lines
-
     p_txt = tmp_path / "sample.txt"
     atomic_write_text(str(p_txt), " first \n\nsecond\n")
     assert read_text_file(str(p_txt)) == " first \n\nsecond\n"
@@ -430,7 +442,6 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     tail_recs = read_tail_jsonl_records(str(p_tail), limit=3, max_bytes=300)
     assert [r["idx"] for r in tail_recs] == [7, 8, 9]
 
-    from state_io import discard_generation_file, read_json_dict_cached
     assert read_recovering_previous(None, default={"ok": 1}) == {"ok": 1}
     assert read_json_dict(None, default={"ok": 2}, recover_previous=True) == {"ok": 2}
     assert read_json_dict(123, default={"ok": 3}, recover_previous=True) == {"ok": 3}
@@ -450,9 +461,6 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
 
 
 def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypatch):
-    import os
-    from state_io import read_json_dict_recovering
-
     data_path = str(tmp_path / "cache_current_price.json")
     atomic_write_json(data_path, {"items": {"BTCUSDC": 70000.0}})
 
@@ -502,9 +510,7 @@ def test_state_io_read_tail_lines_truncate_file_bytes_and_prune_rotated_archives
 
 def test_jsonstatestore_save_rejects_non_dict_state_and_state_io_iter64_s2(tmp_path):
     """[ITER64 #2] JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit."""
-    from state_io import read_tail_lines
     # 2. JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit
-    from strategies.state_store import JsonStateStore, StatePersistenceError
     store = JsonStateStore(
         str(tmp_path / "strat_state.json"),
         default_factory=lambda: {"cycle": 0, "qty": 0.0},

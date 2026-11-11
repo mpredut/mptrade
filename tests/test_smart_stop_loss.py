@@ -12,21 +12,70 @@ Verifies:
 
 from __future__ import annotations
 
+import contextlib
+import json
+import math
+import os
 import time
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import external_order_guard
+import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.whale_positioning_collector import (
+    WhalePositioningCollector,
+    WhalePositioningSnapshot,
+)
+from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.smart_stop_loss_guard import (
     SmartStopLossGuard,
     _GRACE_TRACKER,
+    _LAST_DEFER_ALERT_TS,
     _LAST_RECOVERY_ALERT_TS,
+    _LAST_TIMEOUT_ALERT_TS,
     _PENDING_RECOVERIES,
+    _format_price_part,
+    _is_buy_price_changed,
+    _is_simulated_provider,
+    flush_smart_stop_loss_alerts,
 )
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
-import json
-import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+from intelligence.sentiment.guards.post_stop_reentry_guard import (
+    PostStopReentryGuard,
+    clear_post_stop_reentry_cache,
+)
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+
+
+def _clear_all_trackers():
+    for tracker in (
+        _GRACE_TRACKER,
+        _PENDING_RECOVERIES,
+        _LAST_RECOVERY_ALERT_TS,
+        _LAST_DEFER_ALERT_TS,
+        _LAST_TIMEOUT_ALERT_TS,
+    ):
+        tracker.clear()
+
+
+@contextlib.contextmanager
+def _capture_ntfy_alerts():
+    alerts = []
+    with patch(
+        "intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert",
+        side_effect=lambda title, body, symbol: alerts.append(
+            {"title": title, "body": body, "symbol": symbol}
+        ),
+    ):
+        yield alerts
 
 
 @pytest.fixture(autouse=True)
@@ -34,18 +83,9 @@ def clean_grace_tracker(tmp_path, monkeypatch):
     """Ensure in-memory grace tracker and state file are isolated for each test."""
     test_state_file = str(tmp_path / "smart_stop_loss_state.json")
     monkeypatch.setattr("intelligence.external.guards.smart_stop_loss_guard._SMART_SL_STATE_FILE", test_state_file)
-    from intelligence.external.guards.smart_stop_loss_guard import _LAST_DEFER_ALERT_TS, _LAST_TIMEOUT_ALERT_TS
-    _GRACE_TRACKER.clear()
-    _PENDING_RECOVERIES.clear()
-    _LAST_RECOVERY_ALERT_TS.clear()
-    _LAST_DEFER_ALERT_TS.clear()
-    _LAST_TIMEOUT_ALERT_TS.clear()
+    _clear_all_trackers()
     yield
-    _GRACE_TRACKER.clear()
-    _PENDING_RECOVERIES.clear()
-    _LAST_RECOVERY_ALERT_TS.clear()
-    _LAST_DEFER_ALERT_TS.clear()
-    _LAST_TIMEOUT_ALERT_TS.clear()
+    _clear_all_trackers()
 
 
 def _mock_whale(top_long=0.62, taker_ratio=1.05, regime="neutral"):
@@ -204,16 +244,11 @@ def test_smart_sl_shadow_mode():
 
 
 def test_smart_sl_notifications_detail_and_debounce():
-    ssl_guard._GRACE_TRACKER.clear()
-    ssl_guard._LAST_RECOVERY_ALERT_TS.clear()
-    ssl_guard._PENDING_RECOVERIES.clear()
-
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
     ob = _mock_ob()
 
-    alerts_sent = []
-    with patch("intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert", side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol})):
+    with _capture_ntfy_alerts() as alerts_sent:
         t0 = 5000.0
         # 1. Grace period entered for BTCUSDC on Binance
         should_exec, _, _ = guard.evaluate(
@@ -282,16 +317,11 @@ def test_smart_sl_notifications_detail_and_debounce():
 
 
 def test_smart_sl_batch_unification_multiple_coins():
-    from intelligence.external.guards.smart_stop_loss_guard import flush_smart_stop_loss_alerts
-    _LAST_RECOVERY_ALERT_TS.clear()
-    _PENDING_RECOVERIES.clear()
-
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
     ob = _mock_ob()
 
-    alerts_sent = []
-    with patch("intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert", side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol})):
+    with _capture_ntfy_alerts() as alerts_sent:
         t0 = 10000.0
         # Both BTCUSDC and TAOUSDC enter grace on Binance
         guard.evaluate("BTCUSDC", 0.0293, 0.02925, now=t0, provider="binance", current_price=64200.0, whale_snapshot=whale, orderbook_snapshot=ob)
@@ -325,23 +355,14 @@ def test_smart_sl_batch_unification_multiple_coins():
 
 
 def test_smart_sl_replay_provider_never_emits_notifications(tmp_path):
-    import os
-
     test_state_file = str(tmp_path / "smart_stop_loss_state_replay.json")
     ssl_guard._SMART_SL_STATE_FILE = test_state_file
-    ssl_guard._GRACE_TRACKER.clear()
-    ssl_guard._LAST_RECOVERY_ALERT_TS.clear()
-    ssl_guard._PENDING_RECOVERIES.clear()
 
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
     ob = _mock_ob()
 
-    alerts_sent = []
-    with patch(
-        "intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert",
-        side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol}),
-    ):
+    with _capture_ntfy_alerts() as alerts_sent:
         t0 = 20000.0
         # 1. Grace period entered for BTCUSDC on replay provider
         should_exec, reason, meta = guard.evaluate(
@@ -419,16 +440,11 @@ def test_smart_sl_buy_price_change_resets_stale_grace_and_updates_current_price(
 
 
 def test_smart_sl_on_recovered_ignores_stale_grace_when_buy_price_changed():
-
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
     ob = _mock_ob()
 
-    alerts_sent = []
-    with patch(
-        "intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert",
-        side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol}),
-    ):
+    with _capture_ntfy_alerts() as alerts_sent:
         t0 = 40000.0
         guard.evaluate(
             "BTCUSDC", 0.0295, 0.02925, now=t0,
@@ -490,8 +506,6 @@ def test_smart_sl_save_grace_state_filters_simulated_entries_and_uses_exact_memo
 
 def test_smartstoplossguard_now_propagation_clock_skewed_grace_reset_iter19_s2(tmp_path, monkeypatch):
     """[ITER19 #2] SmartStopLossGuard `now` propagation & clock-skewed grace reset."""
-    import external_order_guard
-    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
     # 2. SmartStopLossGuard `now` propagation & clock-skewed grace reset
     w_col = WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
     w_col.record_snapshot(
@@ -535,18 +549,6 @@ def test_smartstoplossguard_now_propagation_clock_skewed_grace_reset_iter19_s2(t
 
 def test_smartstoplossguard__load_grace_state_symbol_normalization_none_snapshot_attributes_poststopreentryguard_iter25_s1(tmp_path, monkeypatch):
     """[ITER25 #1] SmartStopLossGuard._load_grace_state & symbol normalization & None snapshot attributes & PostStopReentryGuard.check handles NaN last_sell_time_s and matches TAO/USD with TAOUSD in cache & Internal, Sentiment, and Cascade guards tolerate None / bool / NaN / Inf inputs & GeopoliticalThreatAnalyzer & SentimentAdvisor _load_from_disk tolerate null JSON fields."""
-    from unittest.mock import MagicMock
-    from types import SimpleNamespace
-    import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
-    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, clear_post_stop_reentry_cache
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
     # 1. SmartStopLossGuard._load_grace_state & symbol normalization & None snapshot attributes
     ssl_file = tmp_path / "smart_stop_loss_state.json"
     now_curr = time.time()
@@ -558,16 +560,16 @@ def test_smartstoplossguard__load_grace_state_symbol_normalization_none_snapshot
         }),
         encoding="utf-8",
     )
-    monkeypatch.setattr(ssl_mod, "_SMART_SL_STATE_FILE", str(ssl_file))
-    ssl_mod._GRACE_TRACKER.clear()
-    ssl_mod._LOADED_STATE_FILE_KEY = None
-    tracker = ssl_mod._load_grace_state(is_sim=False)
+    monkeypatch.setattr(ssl_guard, "_SMART_SL_STATE_FILE", str(ssl_file))
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._LOADED_STATE_FILE_KEY = None
+    tracker = ssl_guard._load_grace_state(is_sim=False)
     assert "BAD_NULL" not in tracker
     assert "FUTURE_SKEW" not in tracker
     assert "TAOUSD" in tracker
 
-    ssl_guard = ssl_mod.SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
-    should_exec, reason, meta = ssl_guard.evaluate(
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    should_exec, reason, meta = guard.evaluate(
         "TAO/USD",
         0.032,
         0.030,
@@ -717,7 +719,6 @@ def test_smartstoplossguard__load_grace_state_symbol_normalization_none_snapshot
 
 def test_smartstoplossguard_preserves_hard_disaster_floor_when_disaster_buffer_pct_nan_iter31_s5():
     """[ITER31 #5] SmartStopLossGuard preserves Hard Disaster Floor when disaster_buffer_pct=NaN."""
-    import math
     # 5. SmartStopLossGuard preserves Hard Disaster Floor when disaster_buffer_pct=NaN
     ssl = SmartStopLossGuard(mode="enforce", max_threshold_pct=6.0, disaster_buffer_pct=0.85)
     should_exec, reason, meta = ssl.evaluate(
@@ -758,7 +759,6 @@ def test_smartstoplossguard_mode_false_handling_iter101_s3():
 
 def test_smartstoplossguard__is_simulated_provider_handles_uppercase_replay_mode_backtest_mode_and_mode_iter125_s2(monkeypatch):
     """[ITER125 #2] SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode='true'."""
-    from intelligence.external.guards.smart_stop_loss_guard import _is_simulated_provider
     # 2. SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode="true"
     monkeypatch.setenv("REPLAY_MODE", "TRUE")
     assert _is_simulated_provider("binance") is True
@@ -768,7 +768,6 @@ def test_smartstoplossguard__is_simulated_provider_handles_uppercase_replay_mode
 
 def test_smartstoplossguard_helper_deduplications_iter182_s4():
     """[ITER182 #4] SmartStopLossGuard helper deduplications."""
-    from intelligence.external.guards.smart_stop_loss_guard import _format_price_part, _is_buy_price_changed
     # 4. SmartStopLossGuard helper deduplications
     assert _format_price_part(105.0, 100.0) == " | $105.00 (Last Buy Price: $100.00)"
     assert _format_price_part(105.0, None) == " @ $105.00"
