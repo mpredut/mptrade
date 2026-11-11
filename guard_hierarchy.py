@@ -655,26 +655,40 @@ def preflight_intelligence_guard_entry(
     margins: Optional[Dict[str, Any]] = None,
     load_margins_fn: Any = None,
     bypass_guards: Any = None,
+    pre_normalized_bypassed: Optional[set[str]] = None,
     guard_code: Optional[str] = None,
     guard_bypass_reason: str = "stop_loss_exempt",
     allowed_sides: Tuple[str, ...] = ("BUY", "SELL"),
     unsupported_side_reason: str = "not_supported_side",
     require_master_key: bool = False,
+    check_master_before_side: bool = False,
 ) -> Tuple[Optional[Tuple[bool, str, float]], str, Dict[str, Any], set[str]]:
     """Run shared preflight for intelligence guard entrypoints.
 
     Returns ``(early_result, order_side, margins_dict, bypassed_set)`` where ``early_result``
     is ``(True, reason, 1.0)`` when bypassed, side-exempt, or master-disabled, else ``None``.
     """
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
+    bypassed = (
+        pre_normalized_bypassed
+        if pre_normalized_bypassed is not None
+        else (normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set())
+    )
     if is_master_bypass(bypassed):
         return (True, "stop_loss_exempt", 1.0), "", {}, bypassed
     if guard_code and GUARD_REGISTRY[guard_code].is_bypassed(bypassed):
         return (True, guard_bypass_reason, 1.0), "", {}, bypassed
+    loader = load_margins_fn if callable(load_margins_fn) else _load_margins
+    if check_master_before_side:
+        m = loader() if margins is None else margins
+        if is_intelligence_master_off(m, require_key=require_master_key):
+            return (True, "intelligence_guards_off", 1.0), "", m, bypassed
+        order_side = normalize_side(side)
+        if order_side not in allowed_sides:
+            return (True, unsupported_side_reason, 1.0), order_side, m, bypassed
+        return None, order_side, m, bypassed
     order_side = normalize_side(side)
     if order_side not in allowed_sides:
         return (True, unsupported_side_reason, 1.0), order_side, {}, bypassed
-    loader = load_margins_fn if callable(load_margins_fn) else _load_margins
     m = loader() if margins is None else margins
     if is_intelligence_master_off(m, require_key=require_master_key):
         return (True, "intelligence_guards_off", 1.0), order_side, m, bypassed

@@ -304,8 +304,10 @@ class Strategy(BaseSpotMixin):
         self._clock = clock or time.time
         self._trend_slope_provider = trend_slope_provider or trend_slope_pct
         self.execution_audit = execution_audit or ExecutionAudit()
+        dry_run_b = _parse_bool_flag(dry_run, True)
+        replay_b = _parse_bool_flag(replay_mode, False) or (clock is not None)
         self.executor = AuditedStrategyExecutor(
-            T212Provider(client=client, live_enabled=not dry_run, order_validity=params.validity),
+            T212Provider(client=client, live_enabled=not dry_run_b, order_validity=params.validity),
             audit=self.execution_audit, venue="T212",
         )
         self.fx_to_usd = (
@@ -315,14 +317,12 @@ class Strategy(BaseSpotMixin):
             params,
             state_file=state_path_for(ticker),
             initial_state=initial_state,
-            dry_run=dry_run,
+            dry_run=dry_run_b,
             desktop=desktop,
-            replay_mode=replay_mode or (clock is not None),
+            replay_mode=replay_b,
             observe_only=observe_only,
             require_dict_initial_state=False,
         )
-        self.desktop = desktop
-        self.replay_mode = replay_mode or (clock is not None)
 
     # -- Currency & Helpers ----------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:

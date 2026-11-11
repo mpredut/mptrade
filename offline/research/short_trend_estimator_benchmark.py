@@ -38,7 +38,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import int_env, normalize_epoch_sec, optional_env, safe_float, safe_int, safe_pos_float, split_csv
+from botcore import (
+    int_env,
+    normalize_epoch_sec,
+    optional_env,
+    safe_float,
+    safe_int,
+    safe_pos_float,
+    split_csv,
+    temporary_environ,
+)
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 from state_io import atomic_write_bytes, read_jsonl_dicts
 
@@ -383,9 +392,7 @@ def main():
     ap.add_argument("symbols", nargs="*", default=["BTCUSDC", "TAOUSDC", "ARBUSDC"])
     args = ap.parse_args()
     D = args.data_dir
-    prev_env_d = os.environ.get("SHORT_TREND_BENCH_DATA_DIR")
-    os.environ["SHORT_TREND_BENCH_DATA_DIR"] = D
-    try:
+    with temporary_environ(SHORT_TREND_BENCH_DATA_DIR=D):
         syms = args.symbols
         n_workers = min(len(syms), max(1, int_env("BENCH_WORKERS") or 1))
         if n_workers <= 1:
@@ -394,11 +401,6 @@ def main():
         else:
             with Pool(n_workers, initializer=_set_data_dir, initargs=(D,)) as pool:
                 results = pool.map(evaluate, syms)
-    finally:
-        if prev_env_d is None:
-            os.environ.pop("SHORT_TREND_BENCH_DATA_DIR", None)
-        else:
-            os.environ["SHORT_TREND_BENCH_DATA_DIR"] = prev_env_d
     agg = {}
     for sym, N, res in results:
         if not res:

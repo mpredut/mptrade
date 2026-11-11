@@ -541,16 +541,15 @@ class BaseSpotMixin:
         replay_mode: bool = False,
         observe_only: bool = False,
         require_dict_initial_state: bool = True,
-        coerce_flags: bool = True,
         init_exit_manager: bool = True,
         init_shadow_prices: bool = True,
     ) -> None:
         self.p = params
         self.ccy = params.currency
-        self.dry_run = _parse_bool_flag(dry_run, True) if coerce_flags else dry_run
+        self.dry_run = _parse_bool_flag(dry_run, True)
         self.observe_only = _parse_bool_flag(observe_only, False)
-        self.replay_mode = _parse_bool_flag(replay_mode, False) if coerce_flags else replay_mode
-        self.desktop = _parse_bool_flag(desktop, False) if coerce_flags else desktop
+        self.replay_mode = _parse_bool_flag(replay_mode, False)
+        self.desktop = _parse_bool_flag(desktop, False)
         self.state_file = state_file
         self._state_write_failed = False
         self._state_file_mtime: float = 0.0

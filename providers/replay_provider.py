@@ -29,6 +29,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
+    temporary_environ,
 )
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from state_io import iter_jsonl_dicts
@@ -61,17 +62,10 @@ def backtest_isolation_context(quiet: bool = False):
     prev_print = builtins.print
     if quiet_b:
         builtins.print = _noop_print
-    orig_env = {k: os.environ.get(k) for k in _BT_ENV_KEYS}
-    for k in _BT_ENV_KEYS:
-        os.environ[k] = "1"
     try:
-        yield
+        with temporary_environ(dict.fromkeys(_BT_ENV_KEYS, "1")):
+            yield
     finally:
-        for k, v in orig_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         if quiet_b:
             builtins.print = prev_print
 
@@ -362,9 +356,21 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if not orders:
             return None
         cutoff_ms = (self._last_ts.get(sym, 0.0) - since_val) * 1000.0
-        if orders[-1]["timestamp"] < cutoff_ms:
-            return None
-        return sym, orders, cutoff_ms
+        last_ord = orders[-1]
+        last_ts_ms = safe_float(
+            last_ord.get("timestamp") if isinstance(last_ord, dict) else None,
+            default=None,
+        )
+        if last_ts_ms is not None:
+            return None if last_ts_ms < cutoff_ms else (sym, orders, cutoff_ms)
+        for ord_item in reversed(orders):
+            ts_ms = safe_float(
+                ord_item.get("timestamp") if isinstance(ord_item, dict) else None,
+                default=None,
+            )
+            if ts_ms is not None:
+                return None if ts_ms < cutoff_ms else (sym, orders, cutoff_ms)
+        return None
 
     def has_orders_since(self, symbol: str, since_s: float) -> bool:
         """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
@@ -397,11 +403,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
         out = _OrderList()
         low_ms = -1e18
         for o in reversed(orders):
-            if side_u is not None and o["side"] != side_u:
+            if not isinstance(o, dict):
                 continue
-            ts = o["timestamp"]
+            if side_u is not None and o.get("side") != side_u:
+                continue
+            ts = safe_float(o.get("timestamp"), default=None)
+            if ts is None:
+                continue
             if ts < cutoff_ms:
-                low_ms = safe_float(ts, default=-1e18)
+                low_ms = ts
                 break
             out.append(o)
         out.reverse()

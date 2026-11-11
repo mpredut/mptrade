@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import importlib
+import inspect
 import logging
 import os
 import signal as _signal
@@ -11,11 +12,13 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
+    _parse_bool_flag,
     build_heartbeat_payload,
     exact_pos_int,
     fetch_public_json as _fetch_public_json,
     is_cache_fresh,
     is_interval_due,
+    normalize_epoch_sec,
     obj_attr,
     obj_float,
     parse_dotenv,
@@ -405,7 +408,7 @@ def configure_daemon_cli_logging(
 ) -> None:
     """Configure standard CLI logging format and verbosity for intelligence daemons."""
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
+        level=logging.DEBUG if _parse_bool_flag(verbose, default=False) else logging.INFO,
         format=fmt,
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -438,9 +441,9 @@ def run_daemon_cli_once_or_start(
 ) -> None:
     """Execute a single daemon cycle when ``--once`` is set, otherwise start the daemon loop."""
     log = logger_inst or logger
-    if once:
+    if _parse_bool_flag(once, default=False):
         log.info(once_msg)
-        instance.run_cycle(force=force)
+        instance.run_cycle(force=_parse_bool_flag(force, default=True))
         log.info("Cycle completed.")
     else:
         instance.start()
@@ -522,12 +525,21 @@ class ExternalTelemetryMixin:
     def _call_collector_fetch(
         collector: Any, *, force_refresh: bool, now_ts: Optional[float] = None
     ) -> Any:
-        if now_ts is not None:
+        force_b = _parse_bool_flag(force_refresh, default=False)
+        eff_now = normalize_epoch_sec(now_ts, default=None)
+        fetch_fn = collector.fetch
+        if eff_now is not None:
+            accepts_now_ts = False
             try:
-                return collector.fetch(force_refresh=force_refresh, now_ts=now_ts)
-            except TypeError:
-                pass
-        return collector.fetch(force_refresh=force_refresh)
+                params = inspect.signature(fetch_fn).parameters
+                accepts_now_ts = "now_ts" in params or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+            except (TypeError, ValueError):
+                accepts_now_ts = False
+            if accepts_now_ts:
+                return fetch_fn(force_refresh=force_b, now_ts=eff_now)
+        return fetch_fn(force_refresh=force_b)
 
     def _new_external_cycle_results(
         self, current_ts: float, **extra_fields: Any

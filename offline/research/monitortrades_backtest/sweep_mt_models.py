@@ -43,20 +43,15 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
     prev_ts = None
     for i in range(N):
         t = safe_float(ts[i].item() if hasattr(ts[i], "item") else ts[i], 0.0)
-        if prev_ts is not None and t > prev_ts:
-            rate = safe_pos_float(t - prev_ts, default=None)
-            if rate is not None:
-                sample_rate = rate
-                new_size = min(100000, max(10, safe_int(w_sec / rate, 10)))
-                if new_size != win_size:
-                    win_size = new_size
-                    if cur_len > new_size:
-                        cur_len = new_size
-        prev_ts = t
-        if cur_len >= win_size:
-            cur_len = win_size
-        else:
-            cur_len += 1
+        prev_ts, win_size, cur_len, sample_rate = rrb.step_adaptive_trend_window(
+            t,
+            prev_ts,
+            win_size,
+            cur_len,
+            sample_rate,
+            w_sec,
+            default_win_size=10,
+        )
         a_arr[i] = i - cur_len + 1
         sr_arr[i] = sample_rate
     return a_arr, sr_arr

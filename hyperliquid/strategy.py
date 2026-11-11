@@ -320,13 +320,12 @@ class Strategy(BaseSpotMixin):
             desktop=desktop,
             replay_mode=replay_mode,
             require_dict_initial_state=False,
-            coerce_flags=False,
             init_exit_manager=False,
             init_shadow_prices=False,
         )
-        if replay_mode:
+        if self.replay_mode:
             self._save = lambda: None
-        default_sz_dec = 4 if replay_mode else 2
+        default_sz_dec = 4 if self.replay_mode else 2
         dec_i = safe_int(getattr(params, "sz_decimals", default_sz_dec), default=None)
         self.sz_dec = max(0, min(18, dec_i)) if dec_i is not None else default_sz_dec
         if client is not None:

@@ -22,9 +22,8 @@ from botcore import (
 from providers import order_id_context as rc
 from providers.base import MarketDataProvider
 
-from . import bapi as api
+from . import bapi as api, bapi_allorders as apiorders
 from .bapi import _normalize_side
-from . import bapi_allorders as apiorders
 from .bapi_client import client
 from providers.order_ohlc_utils import (
     extract_order_id,

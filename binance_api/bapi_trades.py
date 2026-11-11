@@ -3,9 +3,8 @@ import time
 # Repository imports.
 import instrument_registry as sym
 from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_int
-from . import bapi as api
+from . import bapi as api, bapi_allorders as apiorders
 from .bapi import _normalize_side
-from . import bapi_allorders as apiorders
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
     extract_client_order_id,

@@ -567,11 +567,13 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
     def _extract_equity_options_oi(
         ctx: Dict[str, Any], mark_px: float
     ) -> Tuple[float, float, float, float, float]:
-        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
-        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
+        ctx_d = ctx if isinstance(ctx, dict) else {}
+        px = safe_pos_float(mark_px, default=0.0) or 0.0
+        call_oi = safe_nonneg_float(ctx_d.get("call_oi"), default=0.0) or 0.0
+        put_oi = safe_nonneg_float(ctx_d.get("put_oi"), default=0.0) or 0.0
         total_opt = call_oi + put_oi
         oi_shares = total_opt * 100.0
-        oi_usd = round(oi_shares * mark_px, 2)
+        oi_usd = round(oi_shares * px, 2)
         return call_oi, put_oi, total_opt, oi_shares, oi_usd
 
     def record_snapshot(self, item: Any, save_to_disk: bool = False) -> None:

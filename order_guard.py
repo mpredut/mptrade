@@ -50,6 +50,7 @@ from guard_hierarchy import (
     merge_guard_scale,
     normalize_bypassed_guards,
     normalize_intel_bypass_with_qlimit2_subs,
+    preflight_intelligence_guard_entry,
     resolve_effective_bypass_guards,
     resolve_high_stake_min_notional_usd,
     validate_guard_mode_cfg,
@@ -862,15 +863,14 @@ def _preflight_intelligence_guards_with_qlimit2(
     bypass_guards: Any = None,
 ) -> tuple[Optional[tuple[bool, str, float]], str, dict[str, Any], set[str], bool, bool]:
     bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
-    if is_master_bypass(bypassed):
-        return (True, "stop_loss_exempt", 1.0), "", {}, bypassed, parabolic_only_bypass, weibull_only_bypass
-    m = _load_margins()
-    if is_intelligence_master_off(m, require_key=True):
-        return (True, "intelligence_guards_off", 1.0), "", m, bypassed, parabolic_only_bypass, weibull_only_bypass
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        return (True, "not_supported_side", 1.0), side, m, bypassed, parabolic_only_bypass, weibull_only_bypass
-    return None, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass
+    early, side, m, bypassed = preflight_intelligence_guard_entry(
+        order_type,
+        load_margins_fn=_load_margins,
+        pre_normalized_bypassed=bypassed,
+        require_master_key=True,
+        check_master_before_side=True,
+    )
+    return early, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass
 
 
 def check_intelligence_guards(

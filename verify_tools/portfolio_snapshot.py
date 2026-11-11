@@ -38,7 +38,7 @@ _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 
 
 def _policy_float(key: str) -> float:
-    value = os.environ.get(key, _ROOT_CONFIG.get(key))
+    value = optional_env(key) or _ROOT_CONFIG.get(key)
     return required_float_env(key, {key: value})
 
 # Monitored Kraken pairs (pair -> label, is_paper).

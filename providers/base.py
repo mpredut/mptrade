@@ -872,9 +872,12 @@ class MarketDataProvider(ABC):
         req_attr = getattr(cls, "_REMOTE_TRADES_CLIENT_ATTR", None)
         if not req_attr or client is None or not callable(getattr(client, req_attr, None)):
             return None
-        return cls(client=client).fetch_remote_trades(symbol, start_time_ms, client=client)
+        start_ms = safe_nonneg_int(start_time_ms, default=0)
+        return cls(client=client).fetch_remote_trades(symbol, start_ms, client=client)
 
-    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
+    def fetch_remote_trades(
+        self, symbol: str, start_time_ms: int = 0, *, client=None
+    ) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         self.validate_symbol(symbol)
         parsed = self._parse_remote_trades_query(symbol, start_time_ms)

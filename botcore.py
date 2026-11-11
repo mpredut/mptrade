@@ -9,6 +9,7 @@ import asyncio
 import atexit
 import base64
 import configparser
+import contextlib
 import fcntl
 from functools import lru_cache
 import importlib
@@ -28,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
@@ -871,6 +873,34 @@ def resolve_cli_arg(
                     result = arg[len(prefix):]
                     break
     return result
+
+
+@contextlib.contextmanager
+def temporary_environ(overrides: Mapping[str, str | None] | None = None, **kw_overrides: str | None):
+    """Temporarily set or unset ``os.environ`` keys and restore exact prior values on exit."""
+    merged: dict[str, str | None] = {}
+    if isinstance(overrides, Mapping):
+        for k, v in overrides.items():
+            if isinstance(k, str) and k:
+                merged[k] = v
+    for k, v in kw_overrides.items():
+        if isinstance(k, str) and k:
+            merged[k] = v
+    saved = {k: os.environ.get(k) for k in merged}
+    for k, v in merged.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = str(v)
+    try:
+        yield
+    finally:
+        for k, prev in saved.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
+
 
 
 # ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────

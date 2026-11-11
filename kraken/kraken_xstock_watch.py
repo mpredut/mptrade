@@ -47,6 +47,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     single_instance,
+    temporary_environ,
     touch_module_heartbeat,
 )
 from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
@@ -383,89 +384,83 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
     global notify
     asset = required_env("XSTOCK_TRIAL_ASSET")
     quote = required_env("XSTOCK_QUOTE")
-    saved_env = {
-        k: os.environ.get(k)
-        for k in ("XSTOCK_BOT_PAPER", "XSTOCK_AUTOSTART", "XSTOCK_STATE_FILE")
+    trial_env = {
+        "XSTOCK_BOT_PAPER": "true",                      # guaranteed zero-money mode
+        "XSTOCK_AUTOSTART": "true",
+        "XSTOCK_STATE_FILE": os.path.join(_HERE, "xstock_state_trial.json"),
     }
-    os.environ["XSTOCK_BOT_PAPER"] = "true"                      # guaranteed zero-money mode
-    os.environ["XSTOCK_AUTOSTART"] = "true"
-    os.environ["XSTOCK_STATE_FILE"] = os.path.join(_HERE, "xstock_state_trial.json")
-    if os.path.exists(_state_file()):
-        os.remove(_state_file())
-    orig_notify = notify
-    notify = lambda **kw: orig_notify(**{**kw, "title": "[TRIAL] " + kw.get("title", "")})
     verdict = {}
-    bot_pid = None
-    trial_pair = None
-    try:
-        log("=== END-TO-END TRIAL (PAPER bot, isolated state, real account) ===")
-        try:
-            bal = client.balance()
-        except KrakenError as e:
-            log(f"  ! cannot read the balance: {e}")
-            return 1
-        if not isinstance(bal, dict):
-            return 1
-        asset_bal = safe_pos_float(casefold_get(bal, asset, 0), 0.0)
-        if asset_bal <= 0:
-            log(f"  ! no {asset} in account — choose another asset: XSTOCK_TRIAL_ASSET=...")
-            return 1
-        st = _load_state()
-        asset_cf = str(asset).strip().casefold()
-        st["known_assets"] = {
-            a: qf
-            for a, q in bal.items()
-            if str(a).strip().casefold() != asset_cf and (qf := safe_pos_float(q, None)) is not None
-        }
-        log(f"  [trial] guinea pig: {asset} — removing it from the snapshot so it 'arrives' now")
-        check_balance(client, st, asset, desktop)                # 1. allocation detection
-        verdict["allocation detected"] = bool(st["allocated"])
-        check_pairs(client, st, asset, desktop, quote)           # 2. listed pair
-        verdict["pair found"] = bool(st["pair"])
-        trial_pair = st["pair"]
-        alloc = client.last_price(st["pair"]) if st["pair"] else None
-        if not alloc:
-            log("  ! no price for the pair — probe failed")
-            return 1
-        log(f"  [trial] simulated allocation price: {alloc} (the current price)")
-        maybe_start_bot(st, alloc, desktop)                      # 3. bot started in paper mode
-        bot_pid = st.get("bot_pid")
-        verdict["bot started (PAPER)"] = _bot_alive(bot_pid)
-        _save_state(st)
-        log("  [trial] waiting 12s for it to adopt the position and place the paper TP...")
-        time.sleep(12)
-        if (clean_pid := _clean_pid(bot_pid)) is not None:
-            os.kill(clean_pid, 15)                            # 4. watchdog
-        time.sleep(1.0)
-        verdict["bot death detected"] = not _bot_alive(bot_pid)
-        maybe_start_bot(st, alloc, desktop)
-        bot_pid = st.get("bot_pid")
-        verdict["bot restarted by watchdog"] = _bot_alive(bot_pid)
-        tail = [ln.rstrip() for ln in read_text_lines(BOT_LOG)[-14:]]
-        if tail:
-            log("  [drill] the bot's log (what it did with the 'allocation'):")
-            for ln in tail:
-                print("      " + ln)
-    finally:
-        notify = orig_notify
-        if (clean_pid := _clean_pid(bot_pid)) is not None:
-            try:
-                os.kill(clean_pid, 15)
-                time.sleep(0.5)
-                _bot_alive(clean_pid)                            # reap the zombie process
-            except (OSError, TypeError, ValueError):
-                pass
-        if trial_pair:                                           # remove the bot's paper state
-            sp = state_path_for(trial_pair)
-            if os.path.exists(sp):
-                os.remove(sp)
+    with temporary_environ(trial_env):
         if os.path.exists(_state_file()):
             os.remove(_state_file())
-        for env_k, env_v in saved_env.items():
-            if env_v is None:
-                os.environ.pop(env_k, None)
-            else:
-                os.environ[env_k] = env_v
+        orig_notify = notify
+        notify = lambda **kw: orig_notify(**{**kw, "title": "[TRIAL] " + kw.get("title", "")})
+        bot_pid = None
+        trial_pair = None
+        try:
+            log("=== END-TO-END TRIAL (PAPER bot, isolated state, real account) ===")
+            try:
+                bal = client.balance()
+            except KrakenError as e:
+                log(f"  ! cannot read the balance: {e}")
+                return 1
+            if not isinstance(bal, dict):
+                return 1
+            asset_bal = safe_pos_float(casefold_get(bal, asset, 0), 0.0)
+            if asset_bal <= 0:
+                log(f"  ! no {asset} in account -- choose another asset: XSTOCK_TRIAL_ASSET=...")
+                return 1
+            st = _load_state()
+            asset_cf = str(asset).strip().casefold()
+            st["known_assets"] = {
+                a: qf
+                for a, q in bal.items()
+                if str(a).strip().casefold() != asset_cf and (qf := safe_pos_float(q, None)) is not None
+            }
+            log(f"  [trial] guinea pig: {asset} -- removing it from the snapshot so it 'arrives' now")
+            check_balance(client, st, asset, desktop)                # 1. allocation detection
+            verdict["allocation detected"] = bool(st["allocated"])
+            check_pairs(client, st, asset, desktop, quote)           # 2. listed pair
+            verdict["pair found"] = bool(st["pair"])
+            trial_pair = st["pair"]
+            alloc = client.last_price(st["pair"]) if st["pair"] else None
+            if not alloc:
+                log("  ! no price for the pair -- probe failed")
+                return 1
+            log(f"  [trial] simulated allocation price: {alloc} (the current price)")
+            maybe_start_bot(st, alloc, desktop)                      # 3. bot started in paper mode
+            bot_pid = st.get("bot_pid")
+            verdict["bot started (PAPER)"] = _bot_alive(bot_pid)
+            _save_state(st)
+            log("  [trial] waiting 12s for it to adopt the position and place the paper TP...")
+            time.sleep(12)
+            if (clean_pid := _clean_pid(bot_pid)) is not None:
+                os.kill(clean_pid, 15)                            # 4. watchdog
+            time.sleep(1.0)
+            verdict["bot death detected"] = not _bot_alive(bot_pid)
+            maybe_start_bot(st, alloc, desktop)
+            bot_pid = st.get("bot_pid")
+            verdict["bot restarted by watchdog"] = _bot_alive(bot_pid)
+            tail = [ln.rstrip() for ln in read_text_lines(BOT_LOG)[-14:]]
+            if tail:
+                log("  [drill] the bot's log (what it did with the 'allocation'):")
+                for ln in tail:
+                    print("      " + ln)
+        finally:
+            notify = orig_notify
+            if (clean_pid := _clean_pid(bot_pid)) is not None:
+                try:
+                    os.kill(clean_pid, 15)
+                    time.sleep(0.5)
+                    _bot_alive(clean_pid)                            # reap the zombie process
+                except (OSError, TypeError, ValueError):
+                    pass
+            if trial_pair:                                           # remove the bot's paper state
+                sp = state_path_for(trial_pair)
+                if os.path.exists(sp):
+                    os.remove(sp)
+            if os.path.exists(_state_file()):
+                os.remove(_state_file())
     ok = all(verdict.values()) and len(verdict) == 5
     log("=== TRIAL VERDICT ===")
     for k, v in verdict.items():

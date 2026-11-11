@@ -1866,6 +1866,147 @@ def test_stop_loss_avg_archive_seed_replay_summary_fg_and_guard_preflight_border
     assert intents_empty == [] and oids_empty == set() and read_calls == []
 
 
+def test_temporary_environ_daemon_fetch_equity_oi_remote_trades_and_guard_preflight_border_cases(
+    tmp_path, monkeypatch
+):
+    """Regression suite for temporary_environ, daemon_ssot single-call fetch, equity OI bounds, remote trade LSP, and strategy/guard preflight."""
+    import os
+    import numpy as np
+    import order_guard
+    import pricewindow as pw
+    from botcore import temporary_environ
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
+    from intelligence.macro.daemon_ssot import ExternalTelemetryMixin, run_daemon_cli_once_or_start
+    from offline.research.monitortrades_backtest.run_replay_backtest import step_adaptive_trend_window
+    from offline.research.monitortrades_backtest.sweep_mt_models import compute_window_bounds
+    from providers.base import MarketDataProvider
+    from providers.replay_provider import ReplayMarketDataProvider
+    from strategies.base_spot_mixin import BaseSpotMixin
+    from verify_tools import portfolio_snapshot
+
+    # 1. temporary_environ sets/unsets and restores exact environment even on exceptions
+    monkeypatch.setenv("_TEST_TEMP_ENV_KEEP", "orig")
+    monkeypatch.delenv("_TEST_TEMP_ENV_NEW", raising=False)
+    with pytest.raises(RuntimeError, match="boom"):
+        with temporary_environ({"_TEST_TEMP_ENV_KEEP": None}, _TEST_TEMP_ENV_NEW="42"):
+            assert "_TEST_TEMP_ENV_KEEP" not in os.environ
+            assert os.environ["_TEST_TEMP_ENV_NEW"] == "42"
+            raise RuntimeError("boom")
+    assert os.environ["_TEST_TEMP_ENV_KEEP"] == "orig"
+    assert "_TEST_TEMP_ENV_NEW" not in os.environ
+
+    # 2. portfolio_snapshot._policy_float falls back to _ROOT_CONFIG when env var is empty/whitespace
+    monkeypatch.setitem(portfolio_snapshot._ROOT_CONFIG, "_TEST_POLICY_KEY", "12.5")
+    monkeypatch.setenv("_TEST_POLICY_KEY", "   ")
+    assert portfolio_snapshot._policy_float("_TEST_POLICY_KEY") == pytest.approx(12.5)
+
+    # 3. ExternalTelemetryMixin._call_collector_fetch never double-invokes on internal TypeError & sanitizes flags
+    calls: list[tuple] = []
+
+    class _CollectorWithNow:
+        def fetch(self, *, force_refresh: bool = False, now_ts=None):
+            calls.append((force_refresh, now_ts))
+            raise TypeError("internal collector bug")
+
+    with pytest.raises(TypeError, match="internal collector bug"):
+        ExternalTelemetryMixin._call_collector_fetch(
+            _CollectorWithNow(), force_refresh="false", now_ts=1700000000.0  # type: ignore[arg-type]
+        )
+    assert calls == [(False, 1700000000.0)]
+
+    class _CollectorLegacy:
+        def fetch(self, *, force_refresh: bool = False):
+            calls.append((force_refresh, None))
+            return {"ok": True}
+
+    calls.clear()
+    assert ExternalTelemetryMixin._call_collector_fetch(
+        _CollectorLegacy(), force_refresh="true", now_ts=1700000000.0  # type: ignore[arg-type]
+    ) == {"ok": True}
+    assert calls == [(True, None)]
+
+    daemon_actions: list[tuple] = []
+    fake_daemon = SimpleNamespace(
+        run_cycle=lambda force=True: daemon_actions.append(("once", force)),
+        start=lambda: daemon_actions.append(("start", None)),
+    )
+    run_daemon_cli_once_or_start(fake_daemon, once="false", force="false")  # type: ignore[arg-type]
+    run_daemon_cli_once_or_start(fake_daemon, once="true", force="false")  # type: ignore[arg-type]
+    assert daemon_actions == [("start", None), ("once", False)]
+
+    # 4. _DiskBackedSymbolCollector._extract_equity_options_oi handles None ctx and NaN/negative/bool mark_px
+    assert _DiskBackedSymbolCollector._extract_equity_options_oi(None, float("nan")) == (  # type: ignore[arg-type]
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    assert _DiskBackedSymbolCollector._extract_equity_options_oi(
+        {"call_oi": 10, "put_oi": 5}, -20.0
+    ) == (10.0, 5.0, 15.0, 1500.0, 0.0)
+    assert _DiskBackedSymbolCollector._extract_equity_options_oi(
+        {"call_oi": 10, "put_oi": 5}, True  # type: ignore[arg-type]
+    ) == (10.0, 5.0, 15.0, 1500.0, 0.0)
+
+    # 5. MarketDataProvider.fetch_remote_trades_with_client LSP + ReplayMarketDataProvider malformed order timestamp
+    class _DummyRemoteProvider(_TestMarketProvider):
+        _REMOTE_TRADES_CLIENT_ATTR = "fetch_fills"
+
+        def __init__(self, client=None):
+            super().__init__("dummy_remote", fills_fn=lambda sym, publish_cache=False: client.fetch_fills(sym), cli=client)
+
+    fake_cli = SimpleNamespace(
+        fetch_fills=lambda sym: [
+            {"symbol": sym, "time": 1700000005000, "price": 100.0, "qty": 1.0},
+            {"symbol": sym, "time": 1699999990000, "price": 99.0, "qty": 1.0},
+        ]
+    )
+    assert _DummyRemoteProvider.fetch_remote_trades_with_client("BTCUSDC", True, client=fake_cli) == [  # type: ignore[arg-type]
+        {"symbol": "BTCUSDC", "time": 1700000005000, "price": 100.0, "qty": 1.0},
+        {"symbol": "BTCUSDC", "time": 1699999990000, "price": 99.0, "qty": 1.0},
+    ]
+
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (1010.0, 50100.0)]})
+    rp.advance("BTCUSDC", 1)
+    rp._orders["BTCUSDC"] = [{"orderId": "1", "side": "BUY", "timestamp": None}]
+    assert rp.has_orders_since("BTCUSDC", 5.0) is False
+    assert rp.get_orders("BTCUSDC", "BUY", 5.0) == []
+
+    # 6. step_adaptive_trend_window & compute_window_bounds preserve monotonic prev_ts on out-of-order ticks
+    prev_t, w_sz, c_len, sr = step_adaptive_trend_window(100.0, 120.0, 200, 5, 1.0, 222.0)
+    assert prev_t == 120.0 and c_len == 6 and sr == 1.0
+    a_bounds, sr_bounds = compute_window_bounds(np.array([100.0, 102.0, 101.0, 104.0]), win_sec=200.0)
+    assert sr_bounds.tolist() == pytest.approx([pw.DEFAULT_SAMPLE_RATE_SEC, 2.0, 2.0, 2.0])
+    assert a_bounds.tolist() == [0, 0, 0, 0]
+
+    # 7. order_guard._preflight_intelligence_guards_with_qlimit2 & BaseSpotMixin._init_common_spot_runtime_state flags
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: {"intelligence_guards_mode": "off"})
+    early_og, side_og, _, _, p_only, w_only = order_guard._preflight_intelligence_guards_with_qlimit2(
+        "INVALID_SIDE", {"parabolic_surge"}
+    )
+    assert early_og == (True, "intelligence_guards_off", 1.0) and side_og == "" and p_only is True and w_only is False
+
+    spot_dummy = object.__new__(BaseSpotMixin)
+    spot_dummy._sanitize_state_dict = lambda d: dict(d)  # type: ignore[attr-defined]
+    spot_dummy._init_common_spot_runtime_state(
+        SimpleNamespace(currency="USD", sl_mhdsl_enabled=False, tp_mdhtp_enabled=False),
+        state_file=str(tmp_path / "st.json"),
+        initial_state={"cycle": 1},
+        dry_run="false",  # type: ignore[arg-type]
+        desktop="false",  # type: ignore[arg-type]
+        replay_mode="false",  # type: ignore[arg-type]
+        observe_only="true",  # type: ignore[arg-type]
+    )
+    assert (
+        spot_dummy.dry_run is False
+        and spot_dummy.desktop is False
+        and spot_dummy.replay_mode is False
+        and spot_dummy.observe_only is True
+    )
+
+
+
 
 
 

@@ -146,6 +146,31 @@ _LAST_HARD_TP_TOUCHED: dict[tuple, bool] = {}
 _LAST_RUN_DIAGNOSTICS: dict[tuple, dict] = {}
 
 
+def step_adaptive_trend_window(
+    ts_f: float,
+    prev_ts: float | None,
+    win_size: int,
+    cur_len: int,
+    sample_rate: float,
+    eff_win_sec: float,
+    *,
+    default_win_size: int = 200,
+) -> tuple[float, int, int, float]:
+    """Advance adaptive short-trend window state for a single timestamp ``ts_f``."""
+    if prev_ts is not None and ts_f > prev_ts:
+        rate = safe_pos_float(ts_f - prev_ts, default=None)
+        if rate is not None:
+            sample_rate = rate
+            new_size = min(100000, max(10, safe_int(eff_win_sec / rate, default=default_win_size)))
+            if new_size != win_size:
+                win_size = new_size
+                if cur_len > new_size:
+                    cur_len = new_size
+    next_prev_ts = ts_f if (prev_ts is None or ts_f >= prev_ts) else prev_ts
+    cur_len = win_size if cur_len >= win_size else cur_len + 1
+    return next_prev_ts, win_size, cur_len, sample_rate
+
+
 def prewarm_trend_series(
     symbol: str,
     series: list,
@@ -178,21 +203,15 @@ def prewarm_trend_series(
         if ts_f is None or px_f is None:
             tape.append(False)
             continue
-        if prev_ts is not None and ts_f > prev_ts:
-            rate = safe_pos_float(ts_f - prev_ts, default=None)
-            if rate is not None:
-                sample_rate = rate
-                new_size = min(100000, max(10, safe_int(eff_win_sec / rate, default=200)))
-                if new_size != win_size:
-                    win_size = new_size
-                    if cur_len > new_size:
-                        cur_len = new_size
-        if prev_ts is None or ts_f >= prev_ts:
-            prev_ts = ts_f
-        if cur_len >= win_size:
-            cur_len = win_size
-        else:
-            cur_len += 1
+        prev_ts, win_size, cur_len, sample_rate = step_adaptive_trend_window(
+            ts_f,
+            prev_ts,
+            win_size,
+            cur_len,
+            sample_rate,
+            eff_win_sec,
+            default_win_size=200,
+        )
         buf.append(px_f)
         blen = len(buf.prices)
         if blen - cur_len >= max(512, win_size):
@@ -635,7 +654,7 @@ if __name__ == "__main__":
         (sym, SYMBOLS[sym]["params"], SYMBOLS[sym]["base"], args.trend_window_sec)
         for sym in targets
     ]
-    use_365_cli = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+    use_365_cli = bool_env("MPTRADE_REPLAY_USE_365", default=False)
     worker_cap = int_env("WORKERS") or min(2 if use_365_cli else 4, os.cpu_count() or 1)
     n_workers = min(len(cli_tasks), max(1, worker_cap))
     if n_workers > 1:
