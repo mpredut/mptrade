@@ -22,7 +22,11 @@ class PriceWindow:
         mi = exact_pos_int(max_index, default=None)
         if mi is None:
             raise ValueError("max_index must be a positive integer")
-        eps = safe_nonneg_float(epsilon, default=None) if isinstance(epsilon, (int, float)) else None
+        eps = (
+            safe_nonneg_float(epsilon, default=None)
+            if isinstance(epsilon, (int, float)) and not isinstance(epsilon, bool)
+            else None
+        )
         if eps is None:
             raise ValueError("epsilon must be a non-negative finite number")
         self.window_size = ws
@@ -79,10 +83,9 @@ class PriceWindow:
         """Handling of the current low in the window."""
         self._evict_expired(self.min_deque)
 
-        # Remove trailing elements that are strictly larger beyond epsilon, while still
-        # appending near-equal lows behind earlier lows so expiry of the old low promotes
-        # the newer in-window low instead of losing it.
-        while self.min_deque and self.min_deque[-1][1] > price + self.epsilon:
+        # Pop strictly larger trailing values to maintain a monotonically non-decreasing deque,
+        # while appending equal lows behind earlier lows so expiry of the old low promotes the newer one.
+        while self.min_deque and self.min_deque[-1][1] > price:
             self.min_deque.pop()
 
         self.min_deque.append((self.current_index, price))

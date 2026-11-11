@@ -31,7 +31,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # 23 Jul: SimClock extracted into providers/replay_clock.py (shared with
 # monitortrades -- see UNIFIED_BACKTEST_PLAN.md sec. 7/8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5).
-from botcore import safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
+from botcore import resolve_now_ts, safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
 from state_io import append_text_line, atomic_write_json, read_json_dict, read_jsonl_dicts
@@ -157,11 +157,22 @@ class BacktestBroker:
                 and self.trend_gate.should_wait(symbol, order_type, self.trend_gate_timeout_sec)):
             oid = self._alloc_order_id()
             self.pending.append({
-                "side": order_type, "symbol": symbol, "qty_arg": qty,
+                "order_id": oid, "side": order_type, "symbol": symbol, "qty_arg": qty,
                 "motivation": motivation, "deadline": self.clock() + self.trend_gate_max_wait_sec})
             self.n_waited += 1
             return {"orderId": oid, "backtest": True, "pending": True}
         return self._execute(order_type, symbol, price, qty, motivation)
+
+    def cancel_order(self, symbol, order_id=None, *args, **kwargs) -> bool:
+        """Cancel a pending delayed order in the simulated broker."""
+        if order_id is None:
+            self.pending = [o for o in self.pending if o.get("symbol") != symbol]
+        else:
+            self.pending = [
+                o for o in self.pending
+                if not (o.get("symbol") == symbol and str(o.get("order_id")) == str(order_id))
+            ]
+        return True
 
     def process_pending(self, symbol, ts, price):
         """Execute the delayed orders that became favourable OR expired
@@ -348,19 +359,26 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     os.makedirs(out_dir, exist_ok=True)
     price_path = os.path.join(out_dir, "tradeall_price_samples.log")
 
-    trend_gate = DynamicReplayTrendSource([symbol]) if trend_gate_timeout_sec is not None else None
+    timeout_f = safe_pos_float(trend_gate_timeout_sec, default=None) if trend_gate_timeout_sec is not None else None
+    trend_gate = (
+        DynamicReplayTrendSource([symbol], max_timeout_sec=max(660.0, timeout_f))
+        if timeout_f is not None
+        else None
+    )
     clock = SimClock()
     broker = BacktestBroker(out_dir, clock, trend_gate=trend_gate,
-                            trend_gate_timeout_sec=trend_gate_timeout_sec,
+                            trend_gate_timeout_sec=timeout_f,
                             trend_gate_max_wait_sec=trend_gate_max_wait_sec)
-    orig_mkt_place = getattr(ta.mkt, "place", None)
-    orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
-    orig_mkt_tick_size = getattr(ta.mkt, "get_symbol_tick_size", None)
-    orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", None)
-    orig_log_decision = getattr(ta, "log_decision", None)
-    orig_kalman_ref = getattr(ta, "_kalman_ref", None)
-    orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
-    orig_fire_symbols = getattr(ta, "TRADEALL_FIRE_SYMBOLS", None)
+    _MISSING = object()
+    orig_mkt_place = getattr(ta.mkt, "place", _MISSING)
+    orig_mkt_cancel = getattr(ta.mkt, "cancel_order", _MISSING)
+    orig_mkt_tick_size = getattr(ta.mkt, "get_symbol_tick_size", _MISSING)
+    orig_mkt_price_tick_size = getattr(ta.mkt, "price_tick_size", _MISSING)
+    orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", _MISSING)
+    orig_log_decision = getattr(ta, "log_decision", _MISSING)
+    orig_kalman_ref = getattr(ta, "_kalman_ref", _MISSING)
+    orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", _MISSING)
+    orig_fire_symbols = getattr(ta, "TRADEALL_FIRE_SYMBOLS", _MISSING)
     orig_symbol_oids = (
         {k: list(v) for k, v in ta._symbol_order_ids.items()}
         if isinstance(getattr(ta, "_symbol_order_ids", None), dict)
@@ -371,25 +389,34 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         if isinstance(getattr(ta, "_SYMBOL_TICK_SIZE_CACHE", None), dict)
         else None
     )
+    import order_lifecycle as _ol_mod
+    orig_ol_tick_cache = (
+        dict(_ol_mod._SYMBOL_TICK_SIZE_CACHE)
+        if isinstance(getattr(_ol_mod, "_SYMBOL_TICK_SIZE_CACHE", None), dict)
+        else None
+    )
     order_retry_mod = getattr(ta, "order_retry", None)
-    orig_retry_get_ids = getattr(order_retry_mod, "get_accepted_order_ids_for_owner", None) if order_retry_mod is not None else None
-    orig_retry_resolve = getattr(order_retry_mod, "resolve_accepted_order", None) if order_retry_mod is not None else None
+    orig_retry_get_ids = getattr(order_retry_mod, "get_accepted_order_ids_for_owner", _MISSING) if order_retry_mod is not None else _MISSING
+    orig_retry_resolve = getattr(order_retry_mod, "resolve_accepted_order", _MISSING) if order_retry_mod is not None else _MISSING
 
     with backtest_isolation_context(quiet=quiet):
         try:
-            ta.mkt.cancel_order = lambda *a, **kw: True
+            ta.mkt.cancel_order = broker.cancel_order
             ta.mkt.get_symbol_tick_size = lambda *a, **kw: None
+            ta.mkt.price_tick_size = lambda *a, **kw: 0.0
             if hasattr(ta, "api"):
                 ta.api.cancel_expired_orders = lambda *a, **kw: None
             if order_retry_mod is not None:
-                if orig_retry_get_ids is not None:
+                if orig_retry_get_ids is not _MISSING:
                     order_retry_mod.get_accepted_order_ids_for_owner = lambda *a, **kw: set()
-                if orig_retry_resolve is not None:
+                if orig_retry_resolve is not _MISSING:
                     order_retry_mod.resolve_accepted_order = lambda *a, **kw: None
             if orig_symbol_oids is not None:
                 ta._symbol_order_ids.clear()
             if orig_tick_cache is not None:
                 ta._SYMBOL_TICK_SIZE_CACHE.clear()
+            if orig_ol_tick_cache is not None:
+                _ol_mod._SYMBOL_TICK_SIZE_CACHE.clear()
             if isinstance(orig_fire_symbols, (set, frozenset)):
                 ta.TRADEALL_FIRE_SYMBOLS = set(orig_fire_symbols) | {symbol}
             elif isinstance(orig_fire_symbols, (list, tuple)):
@@ -517,6 +544,10 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         ktrend = shadow_fields.get("kalman_trend", prev_ktrend)
                         if ktrend != prev_ktrend:
                             if ktrend == 1:
+                                broker.pending = [
+                                    o for o in broker.pending
+                                    if not (o.get("symbol") == symbol and o.get("side") == "SELL")
+                                ]
                                 broker.place_order_smart("BUY", symbol, price, BACKTEST_NOTIONAL_USD / price,
                                                           motivation="kalman_up")
                             elif ktrend == -1:
@@ -574,32 +605,37 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             sys.stderr.write(f"[tradeall_backtest] view: "
                               f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
         finally:
-            if orig_mkt_place is not None:
-                ta.mkt.place = orig_mkt_place
-            if orig_mkt_cancel is not None:
-                ta.mkt.cancel_order = orig_mkt_cancel
-            if orig_mkt_tick_size is not None:
-                ta.mkt.get_symbol_tick_size = orig_mkt_tick_size
-            if orig_api_cancel_expired is not None and hasattr(ta, "api"):
-                ta.api.cancel_expired_orders = orig_api_cancel_expired
+            def _restore_attr(obj, attr_name, orig_val):
+                if orig_val is _MISSING:
+                    try:
+                        delattr(obj, attr_name)
+                    except AttributeError:
+                        pass
+                else:
+                    setattr(obj, attr_name, orig_val)
+
+            _restore_attr(ta.mkt, "place", orig_mkt_place)
+            _restore_attr(ta.mkt, "cancel_order", orig_mkt_cancel)
+            _restore_attr(ta.mkt, "get_symbol_tick_size", orig_mkt_tick_size)
+            _restore_attr(ta.mkt, "price_tick_size", orig_mkt_price_tick_size)
+            if hasattr(ta, "api"):
+                _restore_attr(ta.api, "cancel_expired_orders", orig_api_cancel_expired)
             if order_retry_mod is not None:
-                if orig_retry_get_ids is not None:
-                    order_retry_mod.get_accepted_order_ids_for_owner = orig_retry_get_ids
-                if orig_retry_resolve is not None:
-                    order_retry_mod.resolve_accepted_order = orig_retry_resolve
+                _restore_attr(order_retry_mod, "get_accepted_order_ids_for_owner", orig_retry_get_ids)
+                _restore_attr(order_retry_mod, "resolve_accepted_order", orig_retry_resolve)
             if orig_symbol_oids is not None:
                 ta._symbol_order_ids.clear()
                 ta._symbol_order_ids.update(orig_symbol_oids)
             if orig_tick_cache is not None:
                 ta._SYMBOL_TICK_SIZE_CACHE.clear()
                 ta._SYMBOL_TICK_SIZE_CACHE.update(orig_tick_cache)
-            if orig_fire_symbols is not None:
-                ta.TRADEALL_FIRE_SYMBOLS = orig_fire_symbols
-            if orig_log_decision is not None:
-                ta.log_decision = orig_log_decision
-            ta._kalman_ref = orig_kalman_ref
-            if orig_gate_log is not None:
-                ta.GATE_OUTCOME_LOG = orig_gate_log
+            if orig_ol_tick_cache is not None:
+                _ol_mod._SYMBOL_TICK_SIZE_CACHE.clear()
+                _ol_mod._SYMBOL_TICK_SIZE_CACHE.update(orig_ol_tick_cache)
+            _restore_attr(ta, "TRADEALL_FIRE_SYMBOLS", orig_fire_symbols)
+            _restore_attr(ta, "log_decision", orig_log_decision)
+            _restore_attr(ta, "_kalman_ref", orig_kalman_ref)
+            _restore_attr(ta, "GATE_OUTCOME_LOG", orig_gate_log)
 
 
 def main():
@@ -632,9 +668,19 @@ def main():
                         "(default 3600 = the live value).")
     args = p.parse_args()
 
-    start_ts = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
-    end_ts = (datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() + 86399.999) if args.end else None
-    run_id = args.run_id or f"{args.symbol}_{args.start}_{safe_int(time.time(), 0)}"
+    try:
+        start_ts = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        p.error(f"Invalid --start date (expected YYYY-MM-DD): {args.start!r}")
+    end_ts = None
+    if args.end:
+        try:
+            end_ts = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() + 86399.999
+        except ValueError:
+            p.error(f"Invalid --end date (expected YYYY-MM-DD): {args.end!r}")
+        if end_ts < start_ts:
+            p.error("--end date cannot be earlier than --start date")
+    run_id = args.run_id or f"{args.symbol}_{args.start}_{safe_int(resolve_now_ts(), 0)}"
 
     run_backtest(args.symbol, start_ts, end_ts, args.speed, run_id, args.source, args.cache24_file,
                  args.quiet, kalman_primary=args.kalman_primary,

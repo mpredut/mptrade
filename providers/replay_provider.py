@@ -14,17 +14,20 @@ fidelity, and its results must be treated as a simplified backtest.
 """
 from __future__ import annotations
 
+import builtins
 import contextlib
 import os
 import time
 from typing import Dict, List, Optional, Tuple
 
 from botcore import (
+    _parse_bool_flag,
     exact_pos_int,
     normalize_side,
     require_finite_float,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset, legacy_filenames_for
@@ -50,7 +53,9 @@ _BT_ENV_KEYS = (
 @contextlib.contextmanager
 def backtest_isolation_context(quiet: bool = False):
     """Temporarily set backtest/replay isolation env flags and optional print suppression."""
-    if quiet:
+    quiet_b = _parse_bool_flag(quiet, default=False)
+    prev_print = builtins.print
+    if quiet_b:
         with contextlib.suppress(Exception):
             import log
             log.disable_print()
@@ -65,10 +70,8 @@ def backtest_isolation_context(quiet: bool = False):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        if quiet:
-            with contextlib.suppress(Exception):
-                import log
-                log.enable_print()
+        if quiet_b:
+            builtins.print = prev_print
 
 
 class SimClock:
@@ -130,6 +133,55 @@ class _OrderList(list):
         self._sorted_desc = len(self) <= 1
         self._summary = None
 
+    def _invalidate(self) -> None:
+        self._sorted_desc = len(self) <= 1
+        self._summary = None
+
+    def sort(self, *, key=None, reverse: bool = False) -> None:
+        super().sort(key=key, reverse=reverse)
+        self._sorted_desc = True if len(self) <= 1 else bool(reverse)
+        self._summary = None
+
+    def reverse(self) -> None:
+        was_desc = self._sorted_desc
+        super().reverse()
+        self._sorted_desc = True if len(self) <= 1 else (not was_desc)
+        self._summary = None
+
+    def append(self, item) -> None:
+        super().append(item)
+        self._invalidate()
+
+    def extend(self, iterable) -> None:
+        super().extend(iterable)
+        self._invalidate()
+
+    def insert(self, index, item) -> None:
+        super().insert(index, item)
+        self._invalidate()
+
+    def pop(self, index: int = -1):
+        val = super().pop(index)
+        self._invalidate()
+        return val
+
+    def remove(self, value) -> None:
+        super().remove(value)
+        self._invalidate()
+
+    def clear(self) -> None:
+        super().clear()
+        self._sorted_desc = True
+        self._summary = None
+
+    def __setitem__(self, index, value) -> None:
+        super().__setitem__(index, value)
+        self._invalidate()
+
+    def __delitem__(self, index) -> None:
+        super().__delitem__(index)
+        self._invalidate()
+
 
 class ReplayMarketDataProvider(MarketDataProvider):
     """Serve market data and a simulated account for one or more symbols.
@@ -141,7 +193,19 @@ class ReplayMarketDataProvider(MarketDataProvider):
     _USES_SSOT_MARKET_CACHE: bool = False
 
     def __init__(self, price_series: Dict[str, List[Tuple[float, float]]], fee_pct: float = 0.1):
-        self._series = dict(price_series) if isinstance(price_series, dict) else {}
+        self._series: Dict[str, List[Tuple[float, float]]] = {}
+        if isinstance(price_series, dict):
+            for sym_k, pts in price_series.items():
+                if not isinstance(sym_k, str):
+                    continue
+                pts_list = list(pts) if pts else []
+                if len(pts_list) > 1 and all(
+                    isinstance(item, (list, tuple)) and len(item) >= 2 and safe_float(item[0], default=None) is not None
+                    for item in pts_list
+                ):
+                    if any(pts_list[i][0] > pts_list[i + 1][0] for i in range(len(pts_list) - 1)):
+                        pts_list.sort(key=lambda item: item[0])
+                self._series[sym_k] = pts_list
         self._cursor: Dict[str, int] = {s: 0 for s in self._series if isinstance(s, str)}
         self._last_ts: Dict[str, float] = {}
         self._fee_pct = safe_nonneg_float(fee_pct, default=0.1)
@@ -195,7 +259,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
             self._asset_to_symbol.setdefault(base, sym)
         return prec
 
-    # ── Clock advancement: called by the backtest driver, not bot code ───────
+    # -- Clock advancement: called by the backtest driver, not bot code -------
     def advance(self, symbol: str, steps: int = 1) -> Optional[float]:
         """Advance a symbol cursor by ``steps`` and return its new current price."""
         steps_int = exact_pos_int(steps, default=None)
@@ -213,14 +277,17 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if new_idx == 0:
             return None
         ts, price = series[new_idx - 1]
-        self._last_ts[sym] = ts
+        ts_f = safe_float(ts, default=None)
+        if ts_f is not None:
+            self._last_ts[sym] = ts_f
         return price
 
     def now(self, symbol: Optional[str] = None) -> float:
         """Return the timestamp of the most recently read replay price."""
         if symbol is not None:
-            return self._last_ts.get(self._resolve_symbol(symbol), 0.0)
-        return max(self._last_ts.values(), default=0.0)
+            return safe_float(self._last_ts.get(self._resolve_symbol(symbol), 0.0), default=0.0) or 0.0
+        finite_vals = [vf for v in self._last_ts.values() if (vf := safe_float(v, default=None)) is not None]
+        return max(finite_vals, default=0.0)
 
     def _active_series_idx(self, symbol: str) -> Tuple[Optional[List[Tuple[float, float]]], int]:
         sym = self._resolve_symbol(symbol)
@@ -228,7 +295,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         idx = self._cursor.get(sym, 0)
         return (series, idx) if (series and idx > 0) else (None, 0)
 
-    # ── Market data ─────────────────────────────────────────────────────────
+    # -- Market data ----------------------------------------------------------
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         series, idx = self._active_series_idx(symbol)
         return series[idx - 1][1] if series else None
@@ -240,8 +307,17 @@ class ReplayMarketDataProvider(MarketDataProvider):
         lb_val = safe_nonneg_float(lookback_h, default=None)
         if lb_val is None:
             return []
-        cutoff = series[idx - 1][0] - lb_val * 3600
-        return [{"timestamp": int(ts * 1000), "price": p} for ts, p in series[:idx] if ts >= cutoff]
+        cur_ts = safe_float(series[idx - 1][0], default=None)
+        if cur_ts is None:
+            return []
+        cutoff = cur_ts - lb_val * 3600.0
+        out = []
+        for ts, p in series[:idx]:
+            ts_f = safe_float(ts, default=None)
+            px_f = safe_pos_float(p, default=None)
+            if ts_f is not None and px_f is not None and ts_f >= cutoff:
+                out.append({"timestamp": safe_nonneg_int(round(ts_f * 1000.0), default=0), "price": px_f})
+        return out
 
     def get_current_price(self, symbol: str) -> Optional[float]:
         return self._fetch_current_price(symbol)
@@ -249,7 +325,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         return self._fetch_price_history(symbol, lookback_h)
 
-    # ── Simulated offline broker account ────────────────────────────────────
+    # -- Simulated offline broker account -------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         # Find the symbol whose position uses this asset as its base (BTCUSDC -> BTC).
         if not asset or isinstance(asset, bool):
@@ -351,7 +427,11 @@ class ReplayMarketDataProvider(MarketDataProvider):
         qty = safe_pos_float(self.round_quantity(sym, qty_f), default=None)
         if qty is None:
             return None
-        ts_ms = int(self.now(sym) * 1000)
+        now_s = safe_float(self.now(sym), default=0.0) or 0.0
+        ts_ms = safe_nonneg_int(round(now_s * 1000.0), default=0)
+        orders_list = self._orders.setdefault(sym, [])
+        if orders_list and ts_ms < orders_list[-1]["timestamp"]:
+            ts_ms = orders_list[-1]["timestamp"]
         pos_qty, pos_cost = self._positions.get(sym, (0.0, 0.0))
         cur_px = safe_pos_float(self.get_current_price(sym), default=None)
         if side == "BUY":
@@ -365,14 +445,21 @@ class ReplayMarketDataProvider(MarketDataProvider):
             if executed_qty <= 0:
                 return None
             if pos_qty > 1e-12:
-                pos_cost -= (pos_cost / pos_qty) * executed_qty
+                pos_cost = max(0.0, pos_cost - (pos_cost / pos_qty) * executed_qty)
             pos_qty -= executed_qty
             if pos_qty <= 1e-9:
                 pos_qty = 0.0
                 pos_cost = 0.0
-        self._orders.setdefault(sym, []).append(
-            {"side": side, "price": fill_px, "qty": executed_qty,
-             "timestamp": ts_ms})
+        rec = {
+            "side": side,
+            "price": fill_px,
+            "qty": executed_qty,
+            "timestamp": ts_ms,
+        }
+        raw_kind = kwargs.get("kind")
+        if isinstance(raw_kind, str) and raw_kind.strip():
+            rec["kind"] = raw_kind.strip()
+        orders_list.append(rec)
         self._orders_version += 1
         self._positions[sym] = (pos_qty, pos_cost)
         return {"orderId": -1, "backtest": True}
@@ -392,8 +479,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
         s_norm = normalize_side(side)
         if s_norm not in {"BUY", "SELL"}:
             raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
-        eff_price = price if (price is not None and not market) else self.get_current_price(symbol)
-        res = self.place_order(symbol, s_norm, eff_price or 0.0, qty, market=market, kind=kind, client_order_id=client_order_id, **kwargs)
+        is_mkt = _parse_bool_flag(market, default=False)
+        eff_price = price if (price is not None and not is_mkt) else self.get_current_price(symbol)
+        res = self.place_order(symbol, s_norm, eff_price or 0.0, qty, market=is_mkt, kind=kind, client_order_id=client_order_id, **kwargs)
         if res is None:
             raise ProviderError(f"submit_order({symbol}): simulated replay fill rejected")
         return f"replay-{self._orders_version}"

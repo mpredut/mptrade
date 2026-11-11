@@ -39,19 +39,28 @@ _BACKTEST_RE = re.compile(r'^\s*#\s*BACKTEST:\s*(.+?)\s*$')
 _KEY_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=\s*(.*?)\s*$')
 
 
-def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
+def _coerce_path_str(path_obj: object) -> Optional[str]:
+    if path_obj is None or isinstance(path_obj, (bool, int, float)) or not isinstance(path_obj, (str, bytes, os.PathLike)):
+        return None
+    raw = os.fspath(path_obj)
+    s = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    return s if s else None
+
+
+def scan_backtest_ranges(path: str | os.PathLike | bytes) -> Dict[str, List[str]]:
     """Returns {key: [values_as_strings]} for every "# BACKTEST: ..." line
     found immediately above a key=value line, in `path`. Keys from
     files with [NAME] sections (instruments.conf) are prefixed with the section
     ("BINANCE_BTC.mt.gain"). [] if the file is missing or has no
     annotation of this kind."""
     out: Dict[str, List[str]] = {}
-    if not path or isinstance(path, (bool, int, float)) or not os.path.isfile(path):
+    p_str = _coerce_path_str(path)
+    if not p_str or not os.path.isfile(p_str):
         return out
 
     section: Optional[str] = None
     pending: Optional[List[str]] = None
-    for line in read_text_lines(path):
+    for line in read_text_lines(p_str):
         sm = _SECTION_RE.match(line)
         if sm:
             section = sm.group(1).strip() or None
@@ -81,17 +90,17 @@ def scan_all(paths: List[str]) -> Dict[str, Dict[str, List[str]]]:
     """{path: {key: [values]}} for a list of config files."""
     if paths is None or isinstance(paths, (bool, int, float, dict)):
         return {}
-    if isinstance(paths, (str, bytes, os.PathLike)):
-        p_str = os.fspath(paths).decode("utf-8", errors="replace") if isinstance(paths, bytes) else str(os.fspath(paths))
-        return {p_str: scan_backtest_ranges(p_str)}
+    single = _coerce_path_str(paths)
+    if single is not None:
+        return {single: scan_backtest_ranges(single)}
     try:
         items = list(paths)
     except TypeError:
         return {}
     out: Dict[str, Dict[str, List[str]]] = {}
     for p in items:
-        if not isinstance(p, (str, bytes, os.PathLike)):
+        p_str = _coerce_path_str(p)
+        if p_str is None:
             continue
-        p_str = os.fspath(p).decode("utf-8", errors="replace") if isinstance(p, bytes) else str(os.fspath(p))
         out[p_str] = scan_backtest_ranges(p_str)
     return out

@@ -57,10 +57,19 @@ _VIEWS_CACHE: dict = {}
 replay = grid.replay
 
 
+def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -> float:
+    """Monotone risk-adjusted return score: penalises larger drawdowns even when return < 0."""
+    r = safe_float(ret_pct, 0.0)
+    d = max(safe_float(dd_pct, 0.0), dd_floor)
+    if r >= 0.0:
+        return r / d
+    return (r * d) / (dd_floor * dd_floor)
+
+
 def views(asset, cfg, fee_key):
     bars, ohlc, _ = grid.load_asset(asset)
     params, peak = ALL[cfg]
-    cache_key = (asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+    cache_key = (os.path.abspath(grid.DATA), asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
                  repr(params), bool(peak), fee_key)
     cached = _VIEWS_CACHE.get(cache_key)
     if cached is not None:
@@ -79,6 +88,7 @@ def views(asset, cfg, fee_key):
 def select(asset):
     bars, ohlc, _ = grid.load_asset(asset)
     steps = []
+    fee_r = 0.26 / 100.0
     for t in range(WARM + TRAIN, len(bars) - TEST + 1, TEST):
         train_slice = ohlc[t - TRAIN:t]
         train_warm = ohlc[t - TRAIN - WARM:t - TRAIN]
@@ -90,7 +100,7 @@ def select(asset):
             if k not in train_cache:
                 train_cache[k] = replay(train_slice, train_warm, p, pk, 0.26)
             train[c] = train_cache[k]
-        score = {c: r["ret"] / max(r["dd"], 5.0) for c, r in train.items()}
+        score = {c: _risk_adjusted_score(r["ret"], r["dd"], dd_floor=5.0) for c, r in train.items()}
         best = max(score, key=score.get)
         oos_slice = ohlc[t:t + TEST]
         oos_warm = ohlc[t - WARM:t]
@@ -104,8 +114,9 @@ def select(asset):
             oos[c] = oos_cache[k]
         p0 = safe_pos_float(ohlc[t][3], 0.0)
         p1 = safe_float(ohlc[t + TEST - 1][3], 0.0)
+        bh_pct = (((p1 * (1.0 - fee_r)) / (p0 * (1.0 + fee_r))) - 1.0) * 100.0 if p0 > 0 else 0.0
         steps.append({"t": bars[t][0], "pick": best, "pick_ret": oos[best], "oos": oos,
-                      "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0})
+                      "bh": round(bh_pct, 2)})
     return {"kind": "select", "asset": asset, "steps": steps}
 
 
@@ -130,13 +141,16 @@ if __name__ == "__main__":
             p, pk = ALL[r["cfg"]]
             if (
                 len(bars) == r.get("bars")
+                and isinstance(r.get("full"), dict)
+                and isinstance(r.get("w30"), list)
+                and isinstance(r.get("w90"), list)
                 and ("start_ts" not in r or r.get("start_ts") == start_ts)
                 and ("end_ts" not in r or r.get("end_ts") == end_ts)
                 and ("params_repr" not in r or r.get("params_repr") == repr(p))
                 and ("peak" not in r or bool(r.get("peak")) == bool(pk))
             ):
                 ck = (
-                    r["asset"], len(bars), start_ts, end_ts,
+                    os.path.abspath(grid.DATA), r["asset"], len(bars), start_ts, end_ts,
                     repr(p), bool(pk), "std",
                 )
                 _VIEWS_CACHE[ck] = {

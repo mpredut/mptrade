@@ -21,6 +21,8 @@ Run with the virtual environment:
 from __future__ import annotations
 
 import argparse
+import bisect
+import math
 import os
 import sys
 
@@ -34,6 +36,8 @@ from botcore import (
     load_layered_env_config,
     load_local_module,
     log,
+    normalize_epoch_sec,
+    optional_env,
     required_env,
     required_float_env,
     required_int_env,
@@ -75,11 +79,17 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     signals_mod = load_local_module(_HERE, "signals")
     detect_fn = signals_mod.detect_long_term_trend if src == "analysis" else None
     classify_fn = signals_mod.classify_fast_slow_closes
-    max_lookback = max(256, safe_int(win_f * 4.0, default=256))
+    ts_sec_norm = [normalize_epoch_sec(t, default=(idx * 3600) * 1.0) or 0.0 for idx, t in enumerate(ts)]
+    horizon_sec = max((win_f + step_f * 14.0) * 3600.0, 256.0 * 3600.0)
+    max_lookback = max(256, safe_int(math.ceil(win_f + step_f * 14.0) + 16, default=256))
     for i in range(len(closes)):
         if src == "analysis":
-            lo_idx = max(0, i + 1 - max_lookback)
-            res = detect_fn(ts[lo_idx:i+1], closes[lo_idx:i+1], win_f, step_f)
+            if ts_sec_norm and ts_sec_norm[i] > 0:
+                cutoff = ts_sec_norm[i] - horizon_sec
+                lo_idx = max(0, bisect.bisect_left(ts_sec_norm, cutoff, 0, i + 1))
+            else:
+                lo_idx = max(0, i + 1 - max_lookback)
+            res = detect_fn(ts[lo_idx:i + 1], closes[lo_idx:i + 1], win_f, step_f)
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
             if fast_i > 0 and slow_i > 0 and i + 1 >= max(fast_i, slow_i):
@@ -110,10 +120,12 @@ def main() -> int:
     ap.add_argument("--tp", type=float, default=None); ap.add_argument("--maxdca", type=int, default=None)
     ap.add_argument("--budget", type=float, default=None); ap.add_argument("--fee", type=float, default=None)
     ap.add_argument("--sl", type=float, default=None, help="stop-loss %% (0=disabled)")
-    ap.add_argument("--fast", type=int, default=12); ap.add_argument("--slow", type=int, default=48)
-    ap.add_argument("--band", type=float, default=0.3); ap.add_argument("--win", type=int, default=24)
-    ap.add_argument("--step", type=int, default=8)
+    ap.add_argument("--fast", type=int, default=None); ap.add_argument("--slow", type=int, default=None)
+    ap.add_argument("--band", type=float, default=None); ap.add_argument("--win", type=int, default=None)
+    ap.add_argument("--step", type=int, default=None)
     args = ap.parse_args()
+    if args.days <= 0:
+        ap.error("--days must be > 0")
 
     cfg = load_layered_env_config(
         os.path.join(_HERE, "config.env"),
@@ -133,8 +145,18 @@ def main() -> int:
     budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", env=cfg)
     fee = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
     sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", env=cfg)
+    fast_h = args.fast if args.fast is not None else (safe_int(optional_env("SIGNAL_FAST_H", env=cfg), 12) or 12)
+    slow_h = args.slow if args.slow is not None else (safe_int(optional_env("SIGNAL_SLOW_H", env=cfg), 48) or 48)
+    band_pct = args.band if args.band is not None else (safe_float(optional_env("SIGNAL_BAND_PCT", env=cfg), 0.3) or 0.3)
+    win_h = args.win if args.win is not None else (safe_int(optional_env("ANALYSIS_WINDOW_H", env=cfg), 24) or 24)
+    step_h = args.step if args.step is not None else (safe_int(optional_env("ANALYSIS_STEP_H", env=cfg), 8) or 8)
+    ttl_min = safe_float(optional_env("STRAT_ORDER_TTL_MIN", env=cfg), 60.0)
+    reentry_tol = safe_float(optional_env("STRAT_REENTRY_TOLERANCE_PCT", env=cfg), 0.0)
+    currency = optional_env("STRAT_CURRENCY", "USDC", env=cfg).strip().upper() or "USDC"
+    strat_mode = optional_env("STRATEGY_MODE", "avg_tp", env=cfg).strip().lower()
+    enable_tp = strat_mode != "dca_only"
 
-    warmup_h = max(args.slow, args.win * 2, 48) if args.signal != "off" else 5
+    warmup_h = max(slow_h + 6, math.ceil(win_h + step_h * 14), 48) if args.signal != "off" else 5
     records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + warmup_h, drop_incomplete=True)
     if len(records) < 50:
         log("! too few candles"); return 1
@@ -142,7 +164,7 @@ def main() -> int:
         log("! budget must be > 0"); return 1
     all_closes = [r["close"] for r in records]
     all_ts_sec = [r["timestamp"] for r in records]
-    all_sig = precompute_signal(all_closes, all_ts_sec, args.signal, args.fast, args.slow, args.band / 100.0, args.win, args.step)
+    all_sig = precompute_signal(all_closes, all_ts_sec, args.signal, fast_h, slow_h, band_pct / 100.0, win_h, step_h)
     eval_start = max(0, len(records) - args.days * 24) if len(records) > args.days * 24 else 0
     eval_records = records[eval_start:]
     ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in eval_records]
@@ -152,8 +174,21 @@ def main() -> int:
     fund = fetch_funding_history(coin, ts[0])
     bh = buy_hold_pct(closes)
 
-    base = dict(entry=entry, dca=dca, disc=disc, drop=drop, tp=tp,
-                maxdca=maxdca, budget=budget, fee=fee, sl=sl)
+    base = dict(
+        currency=currency,
+        entry=entry,
+        dca=dca,
+        disc=disc,
+        drop=drop,
+        tp=tp,
+        maxdca=maxdca,
+        budget=budget,
+        fee=fee,
+        sl=sl,
+        order_ttl_min=ttl_min if ttl_min is not None else 60.0,
+        reentry_tolerance_pct=reentry_tol if reentry_tol is not None else 0.0,
+        enable_takeprofit=enable_tp,
+    )
 
     if args.mode == "single":
         _total, m, _wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)

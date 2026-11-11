@@ -16,7 +16,14 @@ KRAKEN_DIR = ROOT / "kraken"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import load_layered_env_config, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
+from botcore import (  # noqa: E402
+    exact_nonneg_int,
+    exact_pos_int,
+    load_layered_env_config,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
@@ -83,14 +90,14 @@ def strat_params_from_dict(values: dict) -> StratParams:
 
 
 def _load_params(args) -> StratParams:
+    if args.params_report:
+        payload = read_json_file(args.params_report)
+        values = payload.get("strategy_params", payload) if isinstance(payload, dict) else None
+        if not isinstance(values, dict):
+            raise ValueError("--params-report must contain strategy_params or an object")
+        return strat_params_from_dict(values)
     cfg = load_layered_env_config(args.config_file, args.env_file, fallback_prefixes=())
-    if not args.params_report:
-        return StratParams.from_env(cfg)
-    payload = read_json_file(args.params_report)
-    values = payload.get("strategy_params", payload) if isinstance(payload, dict) else None
-    if not isinstance(values, dict):
-        raise ValueError("--params-report must contain strategy_params or an object")
-    return strat_params_from_dict(values)
+    return StratParams.from_env(cfg)
 
 
 def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
@@ -264,14 +271,22 @@ def markdown_report(report: dict) -> str:
     first_scen = next(iter((report.get("scenarios") or {}).values()), None)
     raw_tb = ((first_scen or {}).get("aggregate") or {}).get("total_test_bars") if isinstance(first_scen, dict) and isinstance(first_scen.get("aggregate"), dict) else 0
     total_bars = safe_int(raw_tb, default=0)
-    raw_wfi = (report.get("walk_forward") or {}).get("interval_minutes") if isinstance(report.get("walk_forward"), dict) else 240.0
+    wf_dict = report.get("walk_forward") if isinstance(report.get("walk_forward"), dict) else {}
+    raw_wfi = wf_dict.get("interval_minutes", 240.0)
     wf_interval = safe_pos_float(raw_wfi, default=240.0) or 240.0
+    wf_step = safe_int(wf_dict.get("step"), default=0)
+    wf_test = safe_int(wf_dict.get("test"), default=0)
+    overlap_note = (
+        "with overlapping windows"
+        if (wf_step > 0 and wf_test > 0 and wf_step < wf_test)
+        else "without overlap"
+    )
     lines.extend([
         "## Interpretation", "",
         "- `Mean USD/fold` uses the same initial budget in every TEST window.",
         "- `Sum reset USD` adds up the folds; it is not compounded equity and does not carry the position across windows.",
         f"- The {total_bars} TEST bars mean "
-        f"{total_bars * wf_interval / 1440:.0f} days without overlap.",
+        f"{total_bars * wf_interval / 1440:.0f} days {overlap_note}.",
         "- Final calibration requires real Kraken distributions for spread, slippage and fee tier.",
         "",
     ])
@@ -314,13 +329,16 @@ def _projection(report: dict) -> dict:
 
 def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     for name in ("train", "validation", "test", "step"):
-        if getattr(args, name) <= 0:
+        if exact_pos_int(getattr(args, name), default=None) is None:
             parser.error(f"--{name} must be positive")
-    if args.warmup < 0 or safe_nonneg_float(args.regime_threshold, default=None) is None:
+    if (
+        exact_nonneg_int(args.warmup, default=None) is None
+        or safe_nonneg_float(args.regime_threshold, default=None) is None
+    ):
         parser.error("warmup and regime-threshold cannot be negative")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=KRAKEN_DIR / ".env")
     parser.add_argument("--config-file", type=Path, default=KRAKEN_DIR / "config.env")
@@ -338,9 +356,11 @@ def main() -> int:
     parser.add_argument("--verify", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     validate_financial_benchmark_args(parser, args)
+    if not isinstance(args.name, str) or not args.name.strip() or "/" in args.name or "\\" in args.name or ".." in args.name:
+        parser.error(f"invalid --name: {args.name!r}")
     args.dataset = args.dataset.expanduser().resolve()
     args.manifest = args.manifest.expanduser().resolve()
     if args.params_report:
@@ -348,36 +368,39 @@ def main() -> int:
     if args.compare_to:
         args.compare_to = args.compare_to.expanduser().resolve()
 
-    report = build_report(args)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output = (
-        args.output.expanduser().resolve() if args.output
-        else ROOT / "offline" / "results" / "hype_financial" / f"{args.name}_{stamp}.json"
-    )
-    markdown = (
-        args.markdown.expanduser().resolve() if args.markdown
-        else output.with_suffix(".md")
-    )
-    atomic_write_json(output, report, indent=2, ensure_ascii=True)
-    atomic_write_text(markdown, markdown_report(report))
-
-    print(f"Financial benchmark JSON: {output}")
-    print(f"Financial benchmark Markdown: {markdown}")
-    for name, scenario in report["scenarios"].items():
-        aggregate = scenario["aggregate"]
-        print(
-            f"{name}: mean={format_number(aggregate.get('mean_return_pct'), signed=True)}% "
-            f"meanUSD={format_number(aggregate.get('mean_net_pnl_usd_per_window'), signed=True)} "
-            f"worst={format_number(aggregate.get('worst_return_pct'), signed=True)}% "
-            f"worstDD={format_number(aggregate.get('worst_max_drawdown_pct'))}%"
+    try:
+        report = build_report(args)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        output = (
+            args.output.expanduser().resolve() if args.output
+            else ROOT / "offline" / "results" / "hype_financial" / f"{args.name.strip()}_{stamp}.json"
         )
+        markdown = (
+            args.markdown.expanduser().resolve() if args.markdown
+            else output.with_suffix(".md")
+        )
+        atomic_write_json(output, report, indent=2, ensure_ascii=True)
+        atomic_write_text(markdown, markdown_report(report))
 
-    if args.verify:
-        expected = read_json_file(args.verify.expanduser().resolve())
-        if _projection(expected) != _projection(report):
-            print("VERIFY FAILED: the benchmark differs from the versioned artefact", file=sys.stderr)
-            return 1
-        print("VERIFY OK: reproducible benchmark")
+        print(f"Financial benchmark JSON: {output}")
+        print(f"Financial benchmark Markdown: {markdown}")
+        for name, scenario in report["scenarios"].items():
+            aggregate = scenario["aggregate"]
+            print(
+                f"{name}: mean={format_number(aggregate.get('mean_return_pct'), signed=True)}% "
+                f"meanUSD={format_number(aggregate.get('mean_net_pnl_usd_per_window'), signed=True)} "
+                f"worst={format_number(aggregate.get('worst_return_pct'), signed=True)}% "
+                f"worstDD={format_number(aggregate.get('worst_max_drawdown_pct'))}%"
+            )
+
+        if args.verify:
+            expected = read_json_file(args.verify.expanduser().resolve())
+            if _projection(expected) != _projection(report):
+                print("VERIFY FAILED: the benchmark differs from the versioned artefact", file=sys.stderr)
+                return 1
+            print("VERIFY OK: reproducible benchmark")
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     if "promotion_gate" in report:
         print(f"Promotion: {'PASS' if report['promotion_gate']['promote'] else 'FAIL'}")
     return 0

@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 
 from botcore import parse_dotenv_line, safe_pos_float
-from state_io import atomic_write_json, encode_json_payload, read_bytes_file, read_json_file
+from state_io import atomic_write_json, encode_json_payload, read_bytes_file, read_json_file, read_text_file
 from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
@@ -28,17 +28,53 @@ from offline.backtests.walk_forward import walk_forward_splits
 from offline.runners.kraken_financial_benchmark import DEFAULT_DATASET, DEFAULT_MANIFEST, ROOT
 
 
+_HISTORICAL_FEATURE_DEFAULTS = {
+    "STRAT_TP_MDHTP_ENABLED": "false",
+    "STRAT_SL_MHDSL_ENABLED": "false",
+    "STRAT_REENTRY_ENABLED": "false",
+    "STRAT_HYBRID_REENTRY_ENABLED": "false",
+    "STRAT_TREND_OVERLAY": "false",
+    "STRAT_CONFIRM_ENTRY": "false",
+    "STRAT_CONFIRM_DCA": "false",
+    "STRAT_TP_TREND_HOLD": "false",
+    "STRAT_TP_TRAIL_ADAPTIVE": "false",
+    "STRAT_ENTRY_POST_ONLY": "false",
+}
+
+
+def _git_head_or_unknown() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def revision_params(spec: str) -> StratParams:
     if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith("-"):
         raise ValueError(f"Invalid git revision spec: {spec!r}")
-    text = subprocess.run(["git", "show", spec.strip()], check=True, capture_output=True,
-                          text=True, cwd=ROOT).stdout
+    clean_spec = spec.strip()
+    local_candidate = Path(clean_spec)
+    if local_candidate.is_file():
+        text = read_text_file(local_candidate)
+    else:
+        try:
+            text = subprocess.run(
+                ["git", "show", clean_spec], check=True, capture_output=True, text=True, cwd=ROOT,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"Unable to load revision spec {clean_spec!r}: {exc}") from exc
     env = dict(
         parsed
         for line in text.splitlines()
         if (parsed := parse_dotenv_line(line)) is not None
     )
-    return StratParams.from_env(env)
+    try:
+        return StratParams.from_env(env)
+    except ValueError:
+        if not any(k in env for k in ("STRAT_ENTRY", "STRAT_ENTRY_PCT", "STRAT_MAX_BUDGET")):
+            raise
+        merged = {**_HISTORICAL_FEATURE_DEFAULTS, **env}
+        return StratParams.from_env(merged)
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
@@ -54,10 +90,17 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
     if digest != expected_sha:
         raise ValueError("dataset does not match the frozen manifest")
     before, after = revision_params(baseline), revision_params(candidate)
+    overlay_topup = after.effective_entry_amount()
+    if overlay_topup <= 0:
+        overlay_topup = (
+            after.entry_amount
+            if after.entry_amount > 0
+            else max(round(cash * (after.entry_pct / 100.0), 4), 1.0)
+        )
     profiles = {"previous": before, "current": after,
                 "current_with_previous_stop": replace(after, stop_loss_pct=before.stop_loss_pct),
                 "current_with_overlay": replace(after, trend_overlay=True,
-                                                trend_topup=after.effective_entry_amount())}
+                                                trend_topup=overlay_topup)}
     central, stress = default_scenarios()
     scenarios = (central, stress, BenchmarkScenario(
         "published_spot_fee_sensitivity", "Published base spot fees; fills remain uncalibrated",
@@ -69,7 +112,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
     reports = {}
     for name, params in profiles.items():
         aligned_params = align_spot_interval_params(params, 240)
-        report = {"strategy_params": asdict(params), "initial_capital_usd": cash,
+        report = {"strategy_params": asdict(aligned_params), "initial_capital_usd": cash,
                   "dataset": {"sha256": digest, "bars": len(records)},
                   "walk_forward": {"interval_minutes": 240, "train": 720,
                                    "validation": 180, "test": 90, "step": 90, "warmup": 40},
@@ -102,7 +145,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
             }
         reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,
-            "code": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip(),
+            "code": _git_head_or_unknown(),
             "source_sha256": {name: hashlib.sha256(read_bytes_file(ROOT / name)).hexdigest()
                               for name in ("strategies/spot_engine.py", "strategies/spot_replay.py", "offline/runners/spot_profile_review.py")},
             "cash_scenario": cash, "profiles": reports,
@@ -119,15 +162,18 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
             ]}
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--cash", type=float, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    result = review(args.baseline, args.candidate, args.cash)
-    atomic_write_json(args.output, result, indent=2)
+    args = parser.parse_args(argv)
+    try:
+        result = review(args.baseline, args.candidate, args.cash)
+        atomic_write_json(args.output, result, indent=2)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     for name, profile in result["profiles"].items():
         for scenario, values in profile["scenarios"].items():
             agg, continuous = values["aggregate"], values["continuous"]

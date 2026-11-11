@@ -8,10 +8,12 @@ Reusable for any new asset.
 """
 from __future__ import annotations
 
+import argparse
 import math
 import os
 import statistics
 import sys
+import time
 import urllib.error
 import urllib.parse
 
@@ -21,11 +23,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    exact_pos_int,
     fetch_public_json,
     float_env,
-    load_layered_env_config,
+    load_local_module,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -35,6 +37,9 @@ from providers.order_ohlc_utils import (
     extract_yahoo_chart_result_and_quote as _extract_yahoo_result_and_quote,
     parse_ohlc_interval_minutes,
 )
+
+_ipo_common_mod = load_local_module(_HERE, "ipo_common", module_key="t212_ipo_common")
+_load_isolated_t212_cfg = _ipo_common_mod.load_isolated_t212_cfg
 
 
 def _quantile_sorted(sorted_vals: list[float], q: float) -> float:
@@ -49,8 +54,17 @@ def _quantile_sorted(sorted_vals: list[float], q: float) -> float:
     return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
 
 
-def fetch_ohlc(sym: str, rng: str, interval: str, *, drop_incomplete: bool = True):
-    raw_sym = str(sym or "").strip()
+def fetch_ohlc(
+    sym: str,
+    rng: str,
+    interval: str,
+    *,
+    drop_incomplete: bool = True,
+    now_timestamp: int | None = None,
+):
+    if isinstance(sym, bool) or not isinstance(sym, str) or not sym.strip():
+        return [], {}
+    raw_sym = sym.strip()
     norm_sym = strip_equity_suffix(raw_sym) if has_equity_suffix(raw_sym) else raw_sym
     q_sym = urllib.parse.quote(norm_sym, safe="")
     q_rng = urllib.parse.quote(str(rng or "").strip(), safe="")
@@ -65,22 +79,25 @@ def fetch_ohlc(sym: str, rng: str, interval: str, *, drop_incomplete: bool = Tru
         return [], {}
     o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
     n_ohlc = min(len(o), len(h), len(l), len(c))
-    records = []
+    by_ts: dict[int, dict] = {}
     for i, t in enumerate(ts):
         if i < n_ohlc and None not in (t, o[i], h[i], l[i], c[i]):
-            tf = safe_pos_float(t, default=None)
+            ts_i = exact_pos_int(t, default=None)
             of = safe_pos_float(o[i], default=None)
             hf = safe_pos_float(h[i], default=None)
             lf = safe_pos_float(l[i], default=None)
             cf = safe_pos_float(c[i], default=None)
-            if tf is None or of is None or hf is None or lf is None or cf is None:
+            if ts_i is None or of is None or hf is None or lf is None or cf is None:
                 continue
             if not (hf >= max(of, cf, lf) and lf <= min(of, cf, hf)):
                 continue
             raw_v = v[i] if i < len(v) else 0.0
             vf = safe_nonneg_float(raw_v, default=0.0)
-            ts_out = safe_int(tf, default=0) if isinstance(t, int) else tf
-            records.append({"timestamp": ts_out, "open": of, "high": hf, "low": lf, "close": cf, "volume": vf})
+            by_ts[ts_i] = {"timestamp": ts_i, "open": of, "high": hf, "low": lf, "close": cf, "volume": vf}
+    records = [by_ts[k] for k in sorted(by_ts)]
+    vol_by_ts = {r["timestamp"]: r["volume"] for r in records}
+    meta = res.get("meta")
+    meta_d = meta if isinstance(meta, dict) else {}
     if drop_incomplete and records:
         try:
             iv_min = parse_ohlc_interval_minutes(
@@ -90,12 +107,24 @@ def fetch_ohlc(sym: str, rng: str, interval: str, *, drop_incomplete: bool = Tru
                 require_unit_suffix=True,
                 venue_label="Yahoo",
             )
-            records = drop_incomplete_last_bar(records, iv_min)
+            regular = ((meta_d.get("currentTradingPeriod") or {}).get("regular")) or {}
+            eff_now = exact_pos_int(now_timestamp, default=None)
+            if eff_now is None:
+                eff_now = exact_pos_int(math.floor(time.time()), default=1) or 1
+            records = drop_incomplete_last_bar(
+                records,
+                interval_minutes=iv_min,
+                now_timestamp=eff_now,
+                regular_session_start=exact_pos_int(regular.get("start"), default=None),
+                regular_session_end=exact_pos_int(regular.get("end"), default=None),
+            )
         except ValueError:
             pass
-    out = [(r["timestamp"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in records]
-    meta = res.get("meta")
-    return out, meta if isinstance(meta, dict) else {}
+    out = [
+        (r["timestamp"], r["open"], r["high"], r["low"], r["close"], vol_by_ts.get(r["timestamp"], 0.0))
+        for r in records
+    ]
+    return out, meta_d
 
 
 def pct(a, b):
@@ -129,14 +158,33 @@ def pullbacks(closes, *, include_ongoing: bool = False):
     return dips
 
 
-def main() -> int:
-    cfg = load_layered_env_config(
-        os.path.join(_HERE, "config.env"),
+def _load_t212_cfg(profile: str | None = None) -> dict[str, str]:
+    prof_name = profile if profile else "nvda"
+    prof_path = os.path.join(_HERE, f"config.{prof_name}.env")
+    if not os.path.exists(prof_path):
+        prof_path = os.path.join(_HERE, "config.env")
+    return _load_isolated_t212_cfg(
         os.path.join(_HERE, ".env"),
-        override_prefixes=("T212_",),
-        fallback_prefixes=(),
+        profile_file=prof_path if os.path.exists(prof_path) else None,
     )
-    sym = sys.argv[1] if len(sys.argv) > 1 else str(cfg.get("STRAT_YAHOO_SYM") or cfg.get("T212_TICKER") or "NVDA").strip()
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Analyze Yahoo OHLC volatility to calibrate t212_bot parameters.")
+    ap.add_argument("symbol", nargs="?", default=None, help="Yahoo Finance ticker symbol (e.g. NVDA, RGNT)")
+    ap.add_argument("--profile", default=None, help="Optional T212 config.<profile>.env name")
+    args = ap.parse_args(argv)
+    if args.profile and (not args.profile.replace("-", "").replace("_", "").isalnum()):
+        ap.error(f"invalid profile name: {args.profile!r}")
+
+    cfg = _load_t212_cfg(args.profile)
+    sym = (
+        args.symbol
+        or cfg.get("YAHOO_SYMBOL")
+        or cfg.get("STRAT_YAHOO_SYM")
+        or cfg.get("T212_TICKER")
+        or "NVDA"
+    ).strip()
     intra, meta = fetch_ohlc(sym, "1d", "5m")
     daily, _ = fetch_ohlc(sym, "1mo", "1d")
     if not intra:
@@ -169,9 +217,11 @@ def main() -> int:
         print(f"  mean range/day {statistics.fmean(dr):.1f}%  | mean close-open move {statistics.fmean(dchg):.1f}%  | max day {max(dr):.1f}%")
 
     # --- PARAMETER SUGGESTION using transparent heuristics ---
-    fx_fee = float_env("T212_FX_FEE_PCT", cfg)
+    fx_fee = float_env("STRAT_FX_FEE_PCT", cfg)
+    if fx_fee is None:
+        fx_fee = float_env("T212_FX_FEE_PCT", cfg)
     fee = round(2.0 * (fx_fee if fx_fee is not None else 0.15), 4)
-    budget_ref = float_env("STRAT_MAX_BUDGET", cfg) or 3000.0
+    budget_ref = float_env("STRAT_MAX_BUDGET", cfg) or float_env("STRAT_TOTAL_BUDGET", cfg) or 3000.0
     med_dip = statistics.median(dips) if dips else statistics.fmean(abs_rets) * 2
     atr5 = statistics.fmean(bar_rng)
     tp = max(round(med_dip * 1.3, 1), round(fee + 2 * atr5, 1))   # clear fees/noise and capture a real swing

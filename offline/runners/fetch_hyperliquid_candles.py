@@ -33,22 +33,33 @@ def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
         raise ValueError("spot_meta must be a dict")
     if isinstance(token, bool) or isinstance(quote, bool) or not token or not quote:
         raise ValueError(f"spot token not found: {token}/{quote}")
+    norm_token = str(token).strip().upper()
+    norm_quote = str(quote).strip().upper()
     raw_tokens = spot_meta.get("tokens")
-    token_indices = {
-        str(item.get("name", "")).strip().upper(): item.get("index")
-        for item in (raw_tokens if isinstance(raw_tokens, list) else [])
-        if isinstance(item, dict) and not isinstance(item.get("name"), bool) and not isinstance(item.get("index"), bool)
-    }
-    base_index = token_indices.get(str(token).strip().upper())
-    quote_index = token_indices.get(str(quote).strip().upper())
-    if base_index is None or quote_index is None:
+    token_candidates: dict[str, list[tuple[bool, object]]] = {}
+    for item in (raw_tokens if isinstance(raw_tokens, list) else []):
+        if not isinstance(item, dict) or isinstance(item.get("name"), bool) or isinstance(item.get("index"), bool):
+            continue
+        t_name = str(item.get("name", "")).strip().upper()
+        t_idx = item.get("index")
+        if t_name and t_idx is not None:
+            is_canon = bool(item.get("isCanonical") is True)
+            token_candidates.setdefault(t_name, []).append((is_canon, t_idx))
+    base_list = sorted(token_candidates.get(norm_token, ()), key=lambda pair: (not pair[0],))
+    quote_list = sorted(token_candidates.get(norm_quote, ()), key=lambda pair: (not pair[0],))
+    if not base_list or not quote_list:
         raise ValueError(f"spot token not found: {token}/{quote}")
+
     raw_universe = spot_meta.get("universe")
-    for market in (raw_universe if isinstance(raw_universe, list) else []):
-        if isinstance(market, dict) and market.get("tokens") == [base_index, quote_index]:
-            name = market.get("name")
-            if name and not isinstance(name, bool):
-                return str(name).strip()
+    universe_items = [m for m in (raw_universe if isinstance(raw_universe, list) else []) if isinstance(m, dict)]
+    universe_items.sort(key=lambda m: (m.get("isCanonical") is not True,))
+    for _, b_idx in base_list:
+        for _, q_idx in quote_list:
+            for market in universe_items:
+                if market.get("tokens") == [b_idx, q_idx]:
+                    name = market.get("name")
+                    if name and not isinstance(name, bool):
+                        return str(name).strip()
     raise ValueError(f"spot pair not found: {token}/{quote}")
 
 
@@ -88,7 +99,7 @@ def _parse_intervals(value: str) -> list[int]:
     return intervals
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--token", default="HYPE")
     parser.add_argument("--quote", default="USDC")
@@ -99,69 +110,75 @@ def main() -> int:
     )
     parser.add_argument(
         "--output-dir", type=Path,
-        default=Path("offline/results/hyperliquid_proxy/datasets"),
+        default=ROOT / "offline/results/hyperliquid_proxy/datasets",
     )
-    args = parser.parse_args()
-    if args.lookback_days is not None and args.lookback_days <= 0:
+    args = parser.parse_args(argv)
+    if args.lookback_days is not None and exact_pos_int(args.lookback_days, default=None) is None:
         parser.error("--lookback-days must be positive")
+    for label, tok in (("--token", args.token), ("--quote", args.quote)):
+        if not isinstance(tok, str) or not tok.strip() or "/" in tok or "\\" in tok or ".." in tok:
+            parser.error(f"invalid {label}: {tok!r}")
 
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
     end_ms = safe_int(generated_at.timestamp() * 1000, 0)
     start_ms = (
-        end_ms - args.lookback_days * 24 * 60 * 60 * 1000
+        max(0, end_ms - args.lookback_days * 24 * 60 * 60 * 1000)
         if args.lookback_days is not None else 0
     )
-    spot_meta = _hl_md._post_info({"type": "spotMeta"})
-    if not isinstance(spot_meta, dict):
-        raise RuntimeError("invalid spotMeta response")
-    coin = resolve_spot_pair(args.token, args.quote, spot_meta)
-    output_dir = args.output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        spot_meta = _hl_md._post_info({"type": "spotMeta"})
+        if not isinstance(spot_meta, dict):
+            raise RuntimeError("invalid spotMeta response")
+        coin = resolve_spot_pair(args.token, args.quote, spot_meta)
+        output_dir = args.output_dir.expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = {
-        "schema_version": 1,
-        "generated_at_utc": generated_at.isoformat(),
-        "source": {
-            "venue": "Hyperliquid",
-            "market": f"{args.token.upper()}/{args.quote.upper()} spot",
-            "api_coin": coin,
-            "endpoint": API_URL,
-            "documentation": (
-                "https://hyperliquid.gitbook.io/hyperliquid-docs/"
-                "for-developers/api/info-endpoint"
-            ),
-        },
-        "purpose": "cross-venue robustness proxy for Kraken strategy replay",
-        "limitations": [
-            "not Kraken market or execution data",
-            "does not reproduce Kraken spread, queue position, latency, or fills",
-            "Hyperliquid exposes at most the most recent 5000 candles per market",
-        ],
-        "requested_lookback_days": args.lookback_days,
-        "datasets": {},
-    }
-    stem = f"{args.token.upper()}{args.quote.upper()}"
-    for interval in args.intervals:
-        records = fetch_ohlc_candles(
-            coin, interval, start_ms=start_ms, end_ms=end_ms, drop_incomplete=True,
-        )
-        if not records:
-            raise RuntimeError(f"an empty dataset for {coin} {interval}m")
-        validate_continuity(records, interval)
-        raw = canonical_bytes(records)
-        meta = dataset_metadata(records, interval_minutes=interval)
-        digest = meta["sha256"]
-        path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
-        atomic_write_bytes(path, raw)
-        manifest["datasets"][str(interval)] = {
-            "file": str(path),
-            **meta,
+        manifest = {
+            "schema_version": 1,
+            "generated_at_utc": generated_at.isoformat(),
+            "source": {
+                "venue": "Hyperliquid",
+                "market": f"{args.token.strip().upper()}/{args.quote.strip().upper()} spot",
+                "api_coin": coin,
+                "endpoint": API_URL,
+                "documentation": (
+                    "https://hyperliquid.gitbook.io/hyperliquid-docs/"
+                    "for-developers/api/info-endpoint"
+                ),
+            },
+            "purpose": "cross-venue robustness proxy for Kraken strategy replay",
+            "limitations": [
+                "not Kraken market or execution data",
+                "does not reproduce Kraken spread, queue position, latency, or fills",
+                "Hyperliquid exposes at most the most recent 5000 candles per market",
+            ],
+            "requested_lookback_days": args.lookback_days,
+            "datasets": {},
         }
-        print(f"{interval}m: {len(records)} bars -> {path}")
+        stem = f"{args.token.strip().upper()}{args.quote.strip().upper()}"
+        for interval in args.intervals:
+            records = fetch_ohlc_candles(
+                coin, interval, start_ms=start_ms, end_ms=end_ms, drop_incomplete=True,
+            )
+            if not records:
+                raise RuntimeError(f"an empty dataset for {coin} {interval}m")
+            validate_continuity(records, interval)
+            raw = canonical_bytes(records)
+            meta = dataset_metadata(records, interval_minutes=interval)
+            digest = meta["sha256"]
+            path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
+            atomic_write_bytes(path, raw)
+            manifest["datasets"][str(interval)] = {
+                "file": str(path),
+                **meta,
+            }
+            print(f"{interval}m: {len(records)} bars -> {path}")
 
-    stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
-    manifest_path = output_dir.parent / f"manifest_{stamp}.json"
-    atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=True)
+        stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+        manifest_path = output_dir.parent / f"manifest_{stamp}.json"
+        atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=True)
+    except (ValueError, OSError, RuntimeError) as exc:
+        parser.error(str(exc))
     print(f"Manifest: {manifest_path}")
     return 0
 

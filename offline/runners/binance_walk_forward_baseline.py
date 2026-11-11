@@ -16,14 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float, safe_pos_int
-from providers.market_api import api as mkt
-from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
-
-
-def fetch_ohlc_candles(symbol: str, *, interval: int = 60, **kwargs) -> list[dict]:
-    return mkt.fetch_ohlc_candles(symbol, interval=interval, provider_name="binance", **kwargs)
+from cachepaths import split_symbol_assets
 from offline.backtests.datasets import (
-    dataset_metadata,
     load_dataset,
     save_dataset,
     validate_dataset,
@@ -37,6 +31,12 @@ from offline.backtests.evaluation import (
     parse_dataset_specs,
     parse_intervals,
 )
+from providers.market_api import api as mkt
+from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
+
+
+def fetch_ohlc_candles(symbol: str, *, interval: int = 60, **kwargs) -> list[dict]:
+    return mkt.fetch_ohlc_candles(symbol, interval=interval, provider_name="binance", **kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,85 +65,101 @@ def main(argv: list[str] | None = None) -> int:
     if lookback_days <= 0:
         parser.error("--lookback-days must be positive")
 
-    cfg = load_layered_env_config(
-        args.config_file, args.env_file, override_prefixes=("BINANCE_",), fallback_prefixes=(),
-    )
+    try:
+        cfg = load_layered_env_config(
+            args.config_file, args.env_file, override_prefixes=("BINANCE_",), fallback_prefixes=(),
+        )
+    except FileNotFoundError:
+        raise
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
     symbol = (args.symbol or cfg.get("SYMBOL") or cfg.get("BINANCE_PAIR") or "BTCUSDT").strip().upper()
+    if not symbol or "/" in symbol or "\\" in symbol or ".." in symbol:
+        parser.error(f"Invalid symbol: {symbol!r}")
 
+    has_explicit_strat = any(k.startswith("STRAT_") for k in cfg)
     try:
-        strat_params = StratParams.from_env(cfg)
-    except Exception:
-        # If .env does not specify every parameter, fall back to safe default test parameters
-        strat_params = StratParams.from_dict({
-            "currency": "USDT",
-            "entry_amount": extract_cfg_float(cfg, "STRAT_ENTRY", 100.0),
-            "entry_discount_pct": extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2),
-            "dca_amount": extract_cfg_float(cfg, "STRAT_DCA", 50.0),
-            "dca_drop_pct": extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0),
-            "takeprofit_pct": extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 2.0),
-            "max_budget": extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 500.0),
-            "max_dca_buys": max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 5)),
-            "stop_loss_pct": extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0),
-            "check_minutes": 1.0,
-            "enable_takeprofit": True,
-            "order_ttl_min": 60.0,
-        })
-
-    execution = build_execution_model_from_args(parser, args)
-    supplied_datasets = parse_dataset_specs(args.dataset)
-    output_dir = args.output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    dataset_dir = output_dir / "datasets"
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-
-    summary_by_interval = {}
-
-    for interval in args.intervals:
-        frozen_path = supplied_datasets.get(interval)
-        source_label = "frozen_csv"
-        if frozen_path is not None:
-            records = load_dataset(frozen_path)
-            if len(records) < 20:
-                print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
-                continue
-            records = validate_dataset(records, interval_minutes=interval)
+        if has_explicit_strat:
+            strat_params = StratParams.from_env(cfg)
         else:
-            source_label = "binance_public_klines"
-            raw_records = fetch_ohlc_candles(
-                symbol,
-                interval=interval,
-                lookback_days=lookback_days,
-                drop_incomplete=True,
+            try:
+                strat_params = StratParams.from_env(cfg)
+            except ValueError:
+                quote_ccy = split_symbol_assets(symbol)[1] or "USDT"
+                strat_params = StratParams.from_dict({
+                    "currency": quote_ccy,
+                    "entry_amount": extract_cfg_float(cfg, "STRAT_ENTRY", 100.0),
+                    "entry_discount_pct": extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2),
+                    "dca_amount": extract_cfg_float(cfg, "STRAT_DCA", 50.0),
+                    "dca_drop_pct": extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0),
+                    "takeprofit_pct": extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 2.0),
+                    "max_budget": extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 500.0),
+                    "max_dca_buys": max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 5)),
+                    "stop_loss_pct": extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0),
+                    "check_minutes": 1.0,
+                    "enable_takeprofit": True,
+                    "order_ttl_min": 60.0,
+                })
+        execution = build_execution_model_from_args(parser, args)
+        supplied_datasets = parse_dataset_specs(args.dataset)
+        output_dir = args.output_dir.expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        dataset_dir = output_dir / "datasets"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        summary_by_interval = {}
+
+        for interval in args.intervals:
+            frozen_path = supplied_datasets.get(interval)
+            source_label = "frozen_csv"
+            if frozen_path is not None:
+                records = load_dataset(frozen_path)
+                if len(records) < 20:
+                    print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
+                    continue
+                records = validate_dataset(records, interval_minutes=interval)
+            else:
+                source_label = "binance_public_klines"
+                raw_records = fetch_ohlc_candles(
+                    symbol,
+                    interval=interval,
+                    lookback_days=lookback_days,
+                    drop_incomplete=True,
+                )
+                if not raw_records or len(raw_records) < 20:
+                    print(f"[!] Insufficient bars for {symbol} {interval}m ({len(raw_records or ())} < 20); skipping.")
+                    continue
+                records = validate_dataset(raw_records, interval_minutes=interval)
+                meta = dataset_metadata(records, interval_minutes=interval)
+                frozen_path = dataset_dir / f"{symbol}_{interval}m_{meta['sha256'][:12]}.csv"
+                save_dataset(records, frozen_path)
+            aligned_params = align_spot_interval_params(strat_params, interval)
+            adapter = make_spot_replay_adapter(
+                params=aligned_params,
+                fee_pct=args.fee,
+                bar_minutes=safe_pos_float(interval, default=60.0),
+                execution=execution,
             )
-            if not raw_records or len(raw_records) < 20:
-                print(f"[!] Insufficient bars for {symbol} {interval}m ({len(raw_records or ())} < 20); skipping.")
-                continue
-            records = validate_dataset(raw_records, interval_minutes=interval)
-            meta = dataset_metadata(records, interval_minutes=interval)
-            frozen_path = dataset_dir / f"{symbol}_{interval}m_{meta['sha256'][:12]}.csv"
-            save_dataset(records, frozen_path)
-        adapter = make_spot_replay_adapter(
-            params=align_spot_interval_params(strat_params, interval),
-            fee_pct=args.fee,
-            bar_minutes=safe_pos_float(interval, default=60.0),
-            execution=execution,
-        )
-        summary_by_interval[interval] = build_and_save_interval_baseline_report(
-            records,
-            adapter,
-            args=args,
-            interval=interval,
-            symbol_or_coin=symbol,
-            purpose="Binance live-engine fixed-config walk-forward baseline",
-            runtime={"symbol": symbol, "interval_minutes": interval},
-            strategy_params=dataclasses.asdict(strat_params),
-            fee_pct=args.fee,
-            execution=execution,
-            source_label=source_label,
-            frozen_path=frozen_path,
-            output_dir=output_dir,
-        )
+            summary_by_interval[interval] = build_and_save_interval_baseline_report(
+                records,
+                adapter,
+                args=args,
+                interval=interval,
+                symbol_or_coin=symbol,
+                purpose="Binance live-engine fixed-config walk-forward baseline",
+                runtime={"symbol": symbol, "interval_minutes": interval},
+                strategy_params=dataclasses.asdict(aligned_params),
+                fee_pct=args.fee,
+                execution=execution,
+                source_label=source_label,
+                frozen_path=frozen_path,
+                output_dir=output_dir,
+            )
+    except FileNotFoundError:
+        raise
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
     return 0
 

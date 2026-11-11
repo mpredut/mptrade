@@ -475,8 +475,8 @@ class PairCoordinator:
         suffix = kind[len(marker):]
         if not suffix.isascii() or not suffix.isdigit():
             return None
-        revision = int(suffix)
-        return revision if 0 < revision <= _MAX_LIMIT_REVISION else None
+        revision = exact_nonneg_int(suffix, default=None)
+        return revision if revision is not None and 0 < revision <= _MAX_LIMIT_REVISION else None
 
     def _recover_persisted_intents(self) -> bool:
         """Adopt venue-confirmed intents without issuing another submit."""
@@ -534,7 +534,11 @@ class PairCoordinator:
 
     def _refresh(self) -> None:
         for ticket in self.tickets:
-            snap = self.venue.order_status(ticket.order_id)
+            try:
+                snap = self.venue.order_status(ticket.order_id)
+            except Exception:  # noqa: BLE001 - Preserve fail-closed active tracking on transient status failure.
+                ticket.active = True
+                continue
             self.snapshots[ticket.order_id] = snap
             ticket.active = snap.status == "open"
         latest_limit_ticket = {}
@@ -673,6 +677,13 @@ class PairCoordinator:
                     self.phase = "failed"
                 return self.outcome()
             self.phase = "exposed"
+
+        if self.phase == "exposed" and _is_recovery_pending(self.reason):
+            if not self._recover_persisted_intents():
+                return self.outcome()
+            self.reason = None
+            bq, bc, _bf, sq, sc, _sf = self._totals()
+            net = bq - sq
 
         if self.phase == "hard_stop_recovery":
             if self.reason == "hard_stop_retry_failed":
@@ -842,19 +853,32 @@ class PairCoordinator:
                 if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
                     self.reason = "exit_status_unconfirmed"
                     return self.outcome()
-                current_revision = max(self.limit_revisions[exit_side], int(latest_exit.revision))
+                latest_rev = exact_nonneg_int(latest_exit.revision, default=0) or 0
+                current_revision = max(self.limit_revisions[exit_side], latest_rev)
                 self.limit_revisions[exit_side] = current_revision
-                if int(latest_exit.revision) == current_revision:
+                if latest_rev == current_revision:
                     if current_revision >= _MAX_LIMIT_REVISION:
                         self.reason = "exit_revision_exhausted"
                         return self.outcome()
                     self.limit_revisions[exit_side] = current_revision + 1
-            replacement = self.venue.place_limit(
-                exit_side, target, replacement_qty, self.pair_id,
-                cache_permit=cache_permit, revision=self.limit_revisions[exit_side]
-            )
+            try:
+                replacement = self.venue.place_limit(
+                    exit_side, target, replacement_qty, self.pair_id,
+                    cache_permit=cache_permit, revision=self.limit_revisions[exit_side]
+                )
+                exit_exception = False
+            except Exception as exc:  # noqa: BLE001 - Keep exposed exit order recoverable.
+                print(f"[rtrade_pair] replacement {exit_side} leg raised for {self.pair_id}: {exc}")
+                replacement, exit_exception = None, True
             if replacement is None:
-                self.reason = "exit_place_failed"
+                placement_reason = _place_failure_reason(self.venue, exit_side)
+                if self._is_venue_recovery_pending(placement_reason, exit_exception):
+                    self.reason = (
+                        placement_reason if _is_recovery_pending(placement_reason)
+                        else f"{exit_side.lower()}_recovery_pending"
+                    )
+                else:
+                    self.reason = "exit_place_failed"
                 return self.outcome()
             self._append_unique_ticket(replacement)
             return self.outcome()
@@ -863,8 +887,7 @@ class PairCoordinator:
             for ticket in self.tickets:
                 if ticket.active:
                     try:
-                        if self.venue.cancel(ticket.order_id):
-                            ticket.active = False
+                        self.venue.cancel(ticket.order_id)
                     except Exception:
                         pass
             self._refresh()
@@ -886,6 +909,8 @@ class PairCoordinator:
 
     def outcome(self) -> PairOutcome:
         bq, bc, bf, sq, sc, sf = self._totals()
+        matched_q = min(bq, sq)
+        realized_gross_pnl = matched_q * ((sc / sq) - (bc / bq)) if (matched_q > 0 and bq > 0 and sq > 0) else 0.0
         return PairOutcome(
             phase=self.phase,
             pair_id=self.pair_id,
@@ -898,7 +923,7 @@ class PairCoordinator:
             sell_qty=sq,
             buy_avg=bc / bq if bq > 0 else None,
             sell_avg=sc / sq if sq > 0 else None,
-            gross_pnl=sc - bc,
+            gross_pnl=realized_gross_pnl,
             fees=bf + sf,
             reason=self.reason,
         )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-trailing_stop.py (Kraken) — crash circuit breaker for manual Kraken holdings.
+trailing_stop.py (Kraken) -- crash circuit breaker for manual Kraken holdings.
 
 Protects manually purchased HYPE (~$1.7k) against a sustained collapse without
 capping upside (wide threshold) or causing tight-stop whipsaw (15%, not 7%). It
@@ -42,6 +42,7 @@ from botcore import (  # noqa: E402
     load_dotenv,
     load_env_stack,
     log,
+    require_pos_float,
     required_bool_env,
     required_env,
     required_float_env,
@@ -125,21 +126,37 @@ MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 # Optional environment overrides (e.g. ad-hoc tests or KRAKEN_TRAILING_<ASSET>_PAIR/PCT)
-for _env_k, _env_v in os.environ.items():
-    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR"):
-        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
-        if _asset and str(_env_v or "").strip():
-            PAIR_FOR[_asset] = required_env(_env_k)
-            if f"KRAKEN_TRAILING_{_asset}_PCT" in os.environ:
-                TRAIL_PCT[_asset] = required_float_env(f"KRAKEN_TRAILING_{_asset}_PCT")
-    elif _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PCT") and _env_k not in {
+def _apply_trailing_env_overrides(
+    pair_for: dict[str, str],
+    trail_pct: dict[str, float],
+    env: dict[str, str] | os._Environ[str] | None = None,
+    *,
+    default_trail_pct: float = DEFAULT_TRAIL_PCT,
+) -> None:
+    src = os.environ if env is None else env
+    reserved_pct_keys = {
         "KRAKEN_TRAILING_DEFAULT_PCT",
         "KRAKEN_TRAILING_REBUY_BOUNCE_PCT",
         "KRAKEN_TRAILING_MIN_PROFIT_PCT",
-    }:
-        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
-        if _asset and _asset in PAIR_FOR:
-            TRAIL_PCT[_asset] = required_float_env(_env_k)
+    }
+    for env_k, env_v in src.items():
+        if env_k.startswith("KRAKEN_TRAILING_") and env_k.endswith("_PAIR"):
+            asset = env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
+            if asset and str(env_v or "").strip():
+                pair_for[asset] = required_env(env_k, src)
+                trail_pct.setdefault(asset, default_trail_pct)
+    for env_k in src:
+        if (
+            env_k.startswith("KRAKEN_TRAILING_")
+            and env_k.endswith("_PCT")
+            and env_k not in reserved_pct_keys
+        ):
+            asset = env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
+            if asset and asset in pair_for:
+                trail_pct[asset] = required_float_env(env_k, src)
+
+
+_apply_trailing_env_overrides(PAIR_FOR, TRAIL_PCT)
 
 
 class KrakenTrailing(TrailingAdapterBase):
@@ -179,7 +196,10 @@ class KrakenTrailing(TrailingAdapterBase):
             sell_trend_defer_max_sec=SELL_TREND_DEFER_MAX_SEC,
             sell_fraction=1.0,
             item_isolation=False,
-            min_profit_pct=safe_nonneg_float(min_profit_pct, default=float(MIN_PROFIT_PCT)),
+            min_profit_pct=safe_nonneg_float(
+                min_profit_pct,
+                default=safe_nonneg_float(MIN_PROFIT_PCT, default=0.0),
+            ),
         )
         self.executor = AuditedStrategyExecutor(
             KrakenProvider(client=client), venue="Kraken")
@@ -202,14 +222,23 @@ class KrakenTrailing(TrailingAdapterBase):
             return None
         return bx_map
 
-    def _balance_ex_entry(self, asset: str) -> dict | None:
+    def _balance_ex_entries(self, asset: str) -> list[object]:
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
-            return None
+            return []
         bx_map = self._balance_ex_map()
         if not isinstance(bx_map, dict):
-            return None
-        for key in _kraken_balance_asset_candidates(asset):
-            entry = casefold_get(bx_map, key)
+            return []
+        cand_folded = {c.casefold() for c in _kraken_balance_asset_candidates(asset) if isinstance(c, str) and c}
+        if not cand_folded:
+            return []
+        matched: list[object] = []
+        for k, val in bx_map.items():
+            if isinstance(k, str) and k.strip().casefold() in cand_folded:
+                matched.append(val)
+        return matched
+
+    def _balance_ex_entry(self, asset: str) -> dict | None:
+        for entry in self._balance_ex_entries(asset):
             if isinstance(entry, dict):
                 return entry
         return None
@@ -225,30 +254,43 @@ class KrakenTrailing(TrailingAdapterBase):
         self._tick_balances = None
         bx_map = self._balance_ex_map()
         if bx_map is None:
-            self.log("  ! [TRAIL-K] empty or invalid BalanceEx snapshot — skipping the tick")
+            self.log("  ! [TRAIL-K] empty or invalid BalanceEx snapshot -- skipping the tick")
             return False
         self._tick_balances = bx_map
         return True
 
     def free_qty(self, asset: str) -> float:
         """Return FREE balance (total minus order holds), excluding the bot position."""
-        bx = self._balance_ex_entry(asset)
-        if not bx:
+        entries = self._balance_ex_entries(asset)
+        if not entries:
             return 0.0
-        bal_f = safe_nonneg_float(bx.get("balance"), default=None)
-        hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
-        if bal_f is None or hold_f is None:
-            return 0.0
-        return safe_nonneg_float(bal_f - hold_f, default=0.0)
+        total_free = 0.0
+        for bx in entries:
+            if not isinstance(bx, dict):
+                return 0.0
+            bal_f = safe_nonneg_float(bx.get("balance"), default=None)
+            hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
+            if bal_f is None or hold_f is None:
+                return 0.0
+            total_free += safe_nonneg_float(bal_f - hold_f, default=0.0)
+        return total_free
 
     def total_qty(self, asset: str) -> float | None:
         bx_map = self._balance_ex_map()
         if bx_map is None:
             return None
-        bx = self._balance_ex_entry(asset)
-        if not bx:
+        entries = self._balance_ex_entries(asset)
+        if not entries:
             return 0.0
-        return safe_nonneg_float(bx.get("balance", 0), default=0.0)
+        total_bal = 0.0
+        for bx in entries:
+            if not isinstance(bx, dict):
+                return None
+            bal_f = safe_nonneg_float(bx.get("balance", 0), default=None)
+            if bal_f is None:
+                return None
+            total_bal += bal_f
+        return total_bal
 
     def cost_basis(self, pair: str):
         """Use reconciled BUY/SELL inventory for new-position warm-up when fresh SSOT fills are available."""
@@ -265,7 +307,7 @@ class KrakenTrailing(TrailingAdapterBase):
                 return None
             return self.executor.position_cost_basis(pair_norm or pair, held, COST_BASIS_LOOKBACK_S)
         except Exception as e:  # noqa: BLE001
-            self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
+            self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) -- warm-up from current price")
             return None
 
     def unlock_qty(self, pair: str) -> bool:
@@ -329,7 +371,7 @@ class KrakenTrailing(TrailingAdapterBase):
                 )
                 avg_str = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
                 notify(
-                    title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
+                    title=f"{'[SELL]' if notify_action == 'SELL' else '[BUY]'} TRAILING "
                           f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg_str}",
                     body=f"status={result.status.status} fee={result.status.fee}",
                     source="kraken-trail", price=avg, desktop=False,
@@ -363,28 +405,40 @@ class KrakenTrailing(TrailingAdapterBase):
                 intent["refusal_reason"] = reason
                 persist(None)
                 return TrackedOrderResult(outcome="refused", intent=intent, status=None)
-            scale_f = safe_pos_float(suggested_scale, default=None)
-            if side.upper() == "BUY" and scale_f is not None and scale_f < 1.0:
-                scaled_qty = float(qty) * scale_f
-                round_fn = getattr(self.executor, "round_quantity", None)
-                if callable(round_fn):
-                    try:
-                        rq = safe_float(round_fn(pair, scaled_qty), default=None)
-                        if rq is not None:
-                            scaled_qty = rq
-                    except Exception:
-                        pass
-                min_qty_fn = getattr(self.executor, "min_order_qty", None)
-                raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
-                min_q = safe_nonneg_float(raw_min_q, default=0.0)
-                sq_pos = safe_pos_float(scaled_qty, default=None)
-                if sq_pos is None or (min_q > 0 and sq_pos < min_q):
-                    intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
+            if side.upper() == "BUY" and suggested_scale is not None:
+                scale_f = safe_float(suggested_scale, default=None)
+                if scale_f is None or scale_f <= 0.0:
+                    intent["refusal_reason"] = f"downscaled_to_zero:{reason}"
                     persist(None)
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
-                qty = sq_pos
-                intent["requested_qty"] = qty
-                intent["submitted_qty"] = qty
+                if scale_f < 1.0:
+                    qty_f = require_pos_float(qty, "qty")
+                    scaled_qty = qty_f * scale_f
+                    round_fn = getattr(self.executor, "round_quantity", None)
+                    if callable(round_fn):
+                        try:
+                            rq = safe_float(round_fn(pair, scaled_qty), default=None)
+                            if rq is not None:
+                                scaled_qty = rq
+                        except Exception:
+                            pass
+                    min_qty_fn = getattr(self.executor, "min_order_qty", None)
+                    raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
+                    min_q = safe_nonneg_float(raw_min_q, default=0.0)
+                    sq_pos = safe_pos_float(scaled_qty, default=None)
+                    if sq_pos is None or (min_q > 0 and sq_pos < min_q):
+                        intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
+                        persist(None)
+                        return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                    price_f = safe_pos_float(price, default=0.0)
+                    min_notional = safe_nonneg_float(getattr(self.core, "min_notional", 0.0), default=0.0)
+                    if min_notional > 0.0 and price_f > 0.0 and sq_pos * price_f < min_notional:
+                        intent["refusal_reason"] = f"downscaled_below_min_notional:{reason}"
+                        persist(None)
+                        return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                    qty = sq_pos
+                    intent["requested_qty"] = qty
+                    intent["submitted_qty"] = qty
 
         return self._submit_and_clear_if_refused(
             intent,
@@ -399,7 +453,7 @@ class KrakenTrailing(TrailingAdapterBase):
         price_f = safe_float(price, 0.0)
         peak_f = safe_float(peak, 0.0)
         self.log(
-            f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
+            f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
             f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
         )
 
@@ -414,7 +468,7 @@ class KrakenTrailing(TrailingAdapterBase):
         )
 
     def log_tick_error(self, e) -> None:
-        self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) — retrying")
+        self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) -- retrying")
 
     def _log_sell_result(
         self,
@@ -436,7 +490,7 @@ class KrakenTrailing(TrailingAdapterBase):
             if result.outcome == "refused"
             else f"orderId={result.intent.get('order_id')}"
         )
-        self.log(f"  🛑 {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
+        self.log(f"  [SELL] {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
 
     def _log_rebuy_result(
         self,
@@ -450,12 +504,12 @@ class KrakenTrailing(TrailingAdapterBase):
     ) -> None:
         if result.outcome == "refused":
             self.log(
-                f"  🟢 {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
+                f"  [REBUY] {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
                 f"({result.intent.get('refusal_reason')}) (not catching the knife)"
             )
         else:
             self.log(
-                f"  🟢 {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
+                f"  [REBUY] {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
                 f"(orderId={result.intent.get('order_id')})"
             )
 
@@ -492,11 +546,11 @@ class KrakenTrailing(TrailingAdapterBase):
         self.log("  [TRAIL-K] heartbeat")
 
     def run(self):
-        mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
+        mode = "[ACTIVE] (it really sells)" if self.enabled else "DRY RUN (it only logs)"
         self._run_trailing_loop(
             CHECK_SECONDS,
             [
-                "=== TRAILING STOP KRAKEN started — " + mode + " ===",
+                "=== TRAILING STOP KRAKEN started -- " + mode + " ===",
                 "    protecting: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items())
                 + "  (FREE balance only, not the bot position)",
                 f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (bounce +{REBUY_BOUNCE_PCT}% from trough)",

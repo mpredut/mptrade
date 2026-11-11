@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-strategy.py — Hyperliquid perpetual DCA and take-profit engine for LONG or SHORT positions.
+strategy.py -- Hyperliquid perpetual DCA and take-profit engine for LONG or SHORT positions.
 
 Generalized by direction (HL_DIRECTION = long | short):
   * LONG: enter by buying below market, DCA as price FALLS, and take profit as price RISES.
@@ -31,10 +31,15 @@ from botcore import (  # noqa: E402
     _parse_bool_flag,
     are_close,
     ensure_local_module_priority,
+    exact_int,
+    exact_nonneg_int,
     format_price_log,
-    load_env_stack,
+    load_layered_env_config,
     log,
     normalize_scalar_order_id,
+    require_finite_float,
+    require_nonneg_float,
+    require_pos_float,
     required_bool_env,
     required_env,
     required_float_env,
@@ -55,8 +60,18 @@ from hl_client import HLClient
 from market_data import get_price
 from signals import _normalize_signal_trend, get_signal
 
-load_env_stack(os.path.join(_HERE, ".env"))
-HL_FEE_PCT = required_float_env("HL_FEE_PCT")
+
+def _hl_default_env() -> dict[str, str]:
+    base = load_layered_env_config(
+        os.path.join(_HERE, "config.env"),
+        os.path.join(_HERE, ".env"),
+        fallback_prefixes=(),
+    )
+    base.update(os.environ)
+    return base
+
+
+HL_FEE_PCT = required_float_env("HL_FEE_PCT", _hl_default_env())
 
 
 def state_path_for(coin: str, direction: str) -> str:
@@ -86,32 +101,84 @@ class StratParams:
     fee_pct: float = 0.045
     sz_decimals: int = 4
 
+    def _validate_numeric_bounds(self, dir_norm: str) -> None:
+        require_pos_float(self.entry_amount, "entry_amount")
+        max_dca_i = exact_nonneg_int(self.max_dca_buys, default=None)
+        if max_dca_i is None:
+            raise ValueError(f"max_dca_buys must be a non-negative integer, got {self.max_dca_buys!r}")
+        self.max_dca_buys = max_dca_i
+        if max_dca_i > 0:
+            require_pos_float(self.dca_amount, "dca_amount")
+            drop_f = require_pos_float(self.dca_drop_pct, "dca_drop_pct")
+            if dir_norm == "long" and drop_f >= 100.0:
+                raise ValueError(f"dca_drop_pct must be < 100 for long, got {self.dca_drop_pct!r}")
+        else:
+            require_nonneg_float(self.dca_amount, "dca_amount")
+            require_nonneg_float(self.dca_drop_pct, "dca_drop_pct")
+        require_pos_float(self.max_budget, "max_budget")
+        disc_f = require_finite_float(self.entry_discount_pct, "entry_discount_pct")
+        if dir_norm == "long" and disc_f >= 100.0:
+            raise ValueError(f"entry_discount_pct must be < 100 for long, got {self.entry_discount_pct!r}")
+        if dir_norm == "short" and disc_f <= -100.0:
+            raise ValueError(f"entry_discount_pct must be > -100 for short, got {self.entry_discount_pct!r}")
+        if isinstance(self.enable_takeprofit, bool):
+            en_tp = self.enable_takeprofit
+        else:
+            parsed_tp = _parse_bool_flag(self.enable_takeprofit, default=None)
+            if parsed_tp is None:
+                raise ValueError(f"invalid enable_takeprofit: {self.enable_takeprofit!r}")
+            en_tp = parsed_tp
+            self.enable_takeprofit = en_tp
+        tp_f = require_finite_float(self.takeprofit_pct, "takeprofit_pct")
+        if en_tp:
+            if tp_f <= 0.0:
+                raise ValueError(f"takeprofit_pct must be > 0 when enabled, got {self.takeprofit_pct!r}")
+            if dir_norm == "short" and tp_f >= 100.0:
+                raise ValueError(f"takeprofit_pct must be < 100 for short, got {self.takeprofit_pct!r}")
+        sl_f = require_nonneg_float(self.stop_loss_pct, "stop_loss_pct")
+        if dir_norm == "long" and sl_f >= 100.0:
+            raise ValueError(f"stop_loss_pct must be < 100 for long, got {self.stop_loss_pct!r}")
+        fee_f = require_nonneg_float(self.fee_pct, "fee_pct")
+        if fee_f >= 100.0:
+            raise ValueError(f"fee_pct must be < 100, got {self.fee_pct!r}")
+        require_pos_float(self.check_minutes, "check_minutes")
+        require_nonneg_float(self.order_ttl_min, "order_ttl_min")
+        require_nonneg_float(self.reentry_tolerance_pct, "reentry_tolerance_pct")
+
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
-        core_cfg = load_common_core_strat_env(env, include_entry_dca=True)
-        direction = required_env("HL_DIRECTION", env).strip().lower()
+        eff_env = _hl_default_env() if env is None else env
+        core_cfg = load_common_core_strat_env(eff_env, include_entry_dca=True)
+        direction = required_env("HL_DIRECTION", eff_env).strip().lower()
         if direction not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {direction!r}")
-        return cls(
+        inst = cls(
             **core_cfg,
             direction   = direction,
-            signal_gate = required_bool_env("HL_SIGNAL_GATE", env),
-            fee_pct     = required_float_env("HL_FEE_PCT", env),
+            signal_gate = required_bool_env("HL_SIGNAL_GATE", eff_env),
+            fee_pct     = required_float_env("HL_FEE_PCT", eff_env),
         )
+        inst._validate_numeric_bounds(direction)
+        return inst
 
     @classmethod
     def from_dict(cls, d: dict, direction: str | None = None) -> "StratParams":
         if not isinstance(d, dict):
             raise ValueError("StratParams.from_dict requires a dict")
-        raw_dir = direction if direction is not None else d.get("direction", "long")
-        if isinstance(raw_dir, bool):
+        if direction is not None:
+            raw_dir = direction
+        elif "direction" in d:
+            raw_dir = d["direction"]
+        else:
+            raw_dir = "long"
+        if isinstance(raw_dir, bool) or raw_dir is None:
             raise ValueError(f"Invalid HL_DIRECTION: {raw_dir!r}")
-        dir_val = str(raw_dir or "long").strip().lower()
+        dir_val = str(raw_dir).strip().lower()
         if dir_val not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {dir_val!r}")
 
         def _f(keys: tuple[str, ...], default: float) -> float:
-            raw = default
+            raw: object = default
             for k in keys:
                 if k in d and d[k] is not None:
                     raw = d[k]
@@ -122,10 +189,15 @@ class StratParams:
             return val
 
         def _i(keys: tuple[str, ...], default: int) -> int:
-            val_f = _f(keys, float(default))
-            if not val_f.is_integer():
-                raise ValueError(f"non-integer value for {keys[0]}: {val_f!r}")
-            return int(val_f)
+            raw: object = default
+            for k in keys:
+                if k in d and d[k] is not None:
+                    raw = d[k]
+                    break
+            val_i = exact_int(raw, default=None)
+            if val_i is None:
+                raise ValueError(f"non-integer value for {keys[0]}: {raw!r}")
+            return val_i
 
         def _b(key: str, default: bool) -> bool:
             raw = d.get(key, default)
@@ -149,7 +221,7 @@ class StratParams:
         sz_dec = _i(("sz_decimals",), 4)
         if not (0 <= sz_dec <= 18):
             raise ValueError(f"sz_decimals out of range [0, 18]: {sz_dec}")
-        return cls(
+        inst = cls(
             currency=ccy_val,
             direction=dir_val,
             entry_amount=_f(("entry", "entry_amount"), 50.0),
@@ -168,6 +240,8 @@ class StratParams:
             fee_pct=_f(("fee", "fee_pct"), HL_FEE_PCT),
             sz_decimals=sz_dec,
         )
+        inst._validate_numeric_bounds(dir_val)
+        return inst
 
 
 def _new_state() -> dict:
@@ -242,10 +316,15 @@ class Strategy(BaseSpotMixin):
         self.desktop = desktop
         self.leverage = safe_pos_int(leverage, default=1)
         self.replay_mode = replay_mode
-        dir_norm = str(getattr(params, "direction", "long") or "long").strip().lower()
+        raw_dir = getattr(params, "direction", None)
+        if isinstance(raw_dir, bool) or raw_dir is None or not str(raw_dir).strip():
+            raise ValueError(f"Invalid Strategy direction: {raw_dir!r}")
+        dir_norm = str(raw_dir).strip().lower()
         if dir_norm not in ("long", "short"):
             raise ValueError(f"Invalid Strategy direction: {params.direction!r}")
         self.p.direction = dir_norm
+        if hasattr(self.p, "_validate_numeric_bounds"):
+            self.p._validate_numeric_bounds(dir_norm)
         self.sign = 1 if dir_norm == "long" else -1
         self.open_side = "buy" if self.sign > 0 else "sell"     # open or increase the position
         self.close_side = "sell" if self.sign > 0 else "buy"    # reduce-only close
@@ -270,6 +349,9 @@ class Strategy(BaseSpotMixin):
             except Exception:
                 pass
 
+    def _dust_eps(self) -> float:
+        return max(self._qty_eps, 0.5 * (10.0 ** (-self.sz_dec)))
+
     # -- persistence -----------------------------------------------------------
     def _load(self) -> dict:
         st = load_json_state(
@@ -293,29 +375,33 @@ class Strategy(BaseSpotMixin):
         px_f = safe_pos_float(px, default=None)
         if sz_f is None or px_f is None:
             if not self.replay_mode:
-                log("  ! [STRAT] invalid sz/px — skipping")
+                log("  ! [STRAT] invalid sz/px -- skipping")
             return
         sz = round(sz_f, self.sz_dec)
         px = px_f
         if sz <= 0:
             if not self.replay_mode:
-                log("  ! [STRAT] sz 0 — skipping")
+                log("  ! [STRAT] sz 0 -- skipping")
             return
         side = self.open_side if role == "open" else self.close_side
         reduce_only = (role == "close")
+        now_ts = self._now()
         if self.dry_run or self.replay_mode:
             oid_paper = self._next_paper_order_id()
             if not self.replay_mode:
                 log(f"  [STRAT] [PAPER] {role.upper()}({side}) {kind} {sz} @ {px:.4f} {self.ccy}")
             self.s["orders"].append({"oid": oid_paper, "role": role, "side": side,
-                                     "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
+                                     "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": now_ts})
+            return
+        if self.client is None:
+            log("  ! [STRAT] missing HLClient in live mode -- skipping order placement")
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
         stored_oid = normalize_scalar_order_id(oid)
         if ok and stored_oid is not None:
             log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={stored_oid} {sz} @ {px:.4f} ({msg})")
             self.s["orders"].append({"oid": stored_oid, "role": role, "side": side, "sz": sz, "px": px,
-                                     "amount": amount, "kind": kind, "ts": time.time()})
+                                     "amount": amount, "kind": kind, "ts": now_ts})
         else:
             log(f"  ! [STRAT] {role} {kind} failed: {msg}")
 
@@ -325,9 +411,9 @@ class Strategy(BaseSpotMixin):
             return True
         oid = o.get("oid")
         if not self.dry_run and not self.replay_mode and _is_live_order_oid(oid):
-            if self.client.cancel(self.coin, oid) is False:
+            if self.client is None or self.client.cancel(self.coin, oid) is False:
                 if not self.replay_mode:
-                    log(f"  ! [STRAT] failed to cancel close {oid} — keeping tracked")
+                    log(f"  ! [STRAT] failed to cancel close {oid} -- keeping tracked")
                 return False
         self._remove(o)
         if not self.replay_mode:
@@ -359,6 +445,10 @@ class Strategy(BaseSpotMixin):
                         self._apply_close(self._avg() or fill_px, fill_px, o["sz"])
 
     def _reconcile_real(self, price: float) -> bool:
+        if self.client is None:
+            if not self.replay_mode:
+                log("  ! [STRAT] missing HLClient in live mode -- skipping reconcile")
+            return False
         pos_fn = getattr(self.client, "position_strict", None) or self.client.position
         try:
             szi_raw, entry_raw = pos_fn(self.coin)
@@ -453,7 +543,7 @@ class Strategy(BaseSpotMixin):
             if clean_order_id(o.get("oid")) not in active:
                 self._remove(o)
             elif orders_ok and self._open_is_stale(o, price):
-                log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")
+                log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away -- cancelling and re-placing")
                 if self.client.cancel(self.coin, o["oid"]) is not False:
                     self._remove(o)
         return True
@@ -467,7 +557,7 @@ class Strategy(BaseSpotMixin):
             return False
         if elapsed_min is None:
             ts_f = safe_float(order.get("ts"), default=0.0)
-            elapsed_min = (time.time() - ts_f) / 60.0
+            elapsed_min = (self._now() - ts_f) / 60.0
         el_f = safe_float(elapsed_min, default=None)
         if el_f is None or el_f <= self.p.order_ttl_min:
             return False
@@ -514,8 +604,9 @@ class Strategy(BaseSpotMixin):
             px_s, avg_s = self._fmt_px(price), self._fmt_px(avg)
             log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
             notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f} [hl_bot]",
-                   body=f"a{avg_s} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
+                   body=f"a{avg_s} | gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
+        flat_eps = 1e-12 if real_qty is not None else self._dust_eps()
         if real_qty is not None:
             eff_avg = safe_pos_float(real_avg, default=avg)
             self.s["qty"] = real_qty
@@ -524,11 +615,11 @@ class Strategy(BaseSpotMixin):
                 self.s["spent"] = round(self.s["cost"], 2)
         else:
             prev_qty = self.s["qty"]
-            self.s["qty"] -= sz
+            self.s["qty"] = max(0.0, self.s["qty"] - sz)
             self.s["cost"] = max(0.0, self.s["cost"] - sz * avg)
-            if self.s["qty"] > 1e-12 and prev_qty > 0:
+            if self.s["qty"] > flat_eps and prev_qty > 0:
                 self.s["spent"] = max(0.0, self.s["spent"] * (self.s["qty"] / prev_qty))
-        if self.s["qty"] <= 1e-12:
+        if self.s["qty"] <= flat_eps:
             self.s["qty"] = 0.0
             self.s["cost"] = 0.0
             self.s["spent"] = 0.0
@@ -559,14 +650,14 @@ class Strategy(BaseSpotMixin):
         loss_pct = -self.sign * (price - avg) / avg * 100   # positive while losing
         if loss_pct >= self.p.stop_loss_pct - 1e-9:
             if not self.replay_mode:
-                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — CLOSING everything (cutting the loss)")
+                log(f"  [STOP-LOSS] [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% -- CLOSING everything (cutting the loss)")
             # Cancel every pending order, including DCA, so the position cannot refill.
             close_cancel_failed = False
             for o in list(self.s["orders"]):
                 oid = o.get("oid")
                 if not self.dry_run and not self.replay_mode and _is_live_order_oid(oid):
-                    if self.client.cancel(self.coin, oid) is False:
-                        log(f"  ! [STRAT] failed to cancel {oid} before SL — keeping tracked")
+                    if self.client is None or self.client.cancel(self.coin, oid) is False:
+                        log(f"  ! [STRAT] failed to cancel {oid} before SL -- keeping tracked")
                         if o.get("role") == "close":
                             close_cancel_failed = True
                         continue
@@ -579,8 +670,8 @@ class Strategy(BaseSpotMixin):
             agg = price * (1 - self.sign * 0.005)           # aggressive price for reliable fill
             self._place("close", self.s["qty"], agg, "STOP")
             if not self.replay_mode:
-                notify(title=f"🛑 SL {self.coin} -{loss_pct:.1f}%",
-                       body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — position closed",
+                notify(title=f"STOP-LOSS {self.coin} -{loss_pct:.1f}%",
+                       body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% -- position closed",
                        source="hyperliquid", price=price, desktop=self.desktop)
             return True
         return False
@@ -589,7 +680,7 @@ class Strategy(BaseSpotMixin):
     def step(self, price: float, signal: str | None = None) -> None:
         if (safe_pos_float(price, default=None) if isinstance(price, (int, float)) else None) is None:
             if not self.replay_mode:
-                log("  ! [STRAT] invalid price — deferring step")
+                log("  ! [STRAT] invalid price -- deferring step")
             return
         held = self.s["qty"]
         d = self.p.entry_discount_pct / 100
@@ -599,6 +690,8 @@ class Strategy(BaseSpotMixin):
             if self.p.signal_gate or (signal is not None and signal != "__any__"):
                 if signal is not None:
                     trend = signal
+                elif self.replay_mode:
+                    trend = "neutral"
                 else:
                     sig = get_signal(self.client, self.coin)
                     trend = sig.get("trend") if isinstance(sig, dict) else sig
@@ -607,10 +700,10 @@ class Strategy(BaseSpotMixin):
                 want = "up" if self.sign > 0 else "down"   # long requires up; short requires down
                 if trend != "__any__" and trend != want:
                     if not self.replay_mode:
-                        log(f"  [STRAT] signal={trend} != {want} for {self.p.direction} — NOT entering (waiting for a favourable trend)")
+                        log(f"  [STRAT] signal={trend} != {want} for {self.p.direction} -- NOT entering (waiting for a favourable trend)")
                     return
                 if not self.replay_mode:
-                    log(f"  [STRAT] signal={trend} favorable for {self.p.direction} — entering")
+                    log(f"  [STRAT] signal={trend} favorable for {self.p.direction} -- entering")
             if self.s["spent"] + self.p.entry_amount > self.p.max_budget:
                 if not self.replay_mode:
                     log(f"  [STRAT] budget cap {self.p.max_budget} {self.ccy} reached")
@@ -623,14 +716,15 @@ class Strategy(BaseSpotMixin):
             return
         avg = self._avg()
         if self.p.enable_takeprofit and avg:
-            target = avg * (1 + self.sign * self.p.takeprofit_pct/100)
-            if target > 0:
+            target = avg * (1 + self.sign * self.p.takeprofit_pct / 100)
+            target_sz = round(held, self.sz_dec)
+            if target > 0 and target_sz > 0:
                 o = next((o for o in self.s["orders"] if o["role"] == "close"), None)
                 if o is None:
-                    self._place("close", held, target, "TP")
-                elif abs(o["px"]-target)/target > 0.001 or abs(o["sz"]-held) > 1e-9:
+                    self._place("close", target_sz, target, "TP")
+                elif abs(o["px"] - target) / target > 0.001 or abs(o["sz"] - target_sz) > 1e-9:
                     if self._cancel_close():
-                        self._place("close", held, target, "TP")
+                        self._place("close", target_sz, target, "TP")
         # DCA after price moves drop% AGAINST the position. Compare PRICE with a PRICE
         # threshold, not a percentage with a percentage: are_close is relative to the
         # magnitude of compared values and is correct only between two prices, matching
@@ -649,7 +743,7 @@ class Strategy(BaseSpotMixin):
                 and not any(o["role"] == "open" for o in self.s["orders"])):
             px = price * (1 - self.sign * d)
             if not self.replay_mode:
-                log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) — DCA")
+                log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) -- DCA")
             self._place("open", self._qty_for(self.p.dca_amount, px), px, "DCA", self.p.dca_amount)
 
     # -- loop ------------------------------------------------------------------
@@ -659,7 +753,7 @@ class Strategy(BaseSpotMixin):
             self.client.set_leverage(self.coin, self.leverage)
         fee_hl = getattr(self.p, "fee_pct", HL_FEE_PCT)
         log("  === HYPERLIQUID STRATEGY STARTED ===")
-        log(f"      coin       : {self.coin} perp  DIRECTION={self.p.direction.upper()} leverage {self.leverage}x  {'[PAPER]' if self.dry_run else '⚠ REAL'}")
+        log(f"      coin       : {self.coin} perp  DIRECTION={self.p.direction.upper()} leverage {self.leverage}x  {'[PAPER]' if self.dry_run else '[REAL]'}")
         log(f"      mode       : {mode}")
         log(f"      entry      : {self.p.entry_amount} {self.ccy} @ market{'-' if self.sign>0 else '+'}{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.dca_amount} {self.ccy} at {self.p.dca_drop_pct}% against (max {self.p.max_dca_buys})")
@@ -682,7 +776,7 @@ class Strategy(BaseSpotMixin):
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    log(f"  ! [STRAT] cycle failed ({e.__class__.__name__}: {e}) — retrying on next check")
+                    log(f"  ! [STRAT] cycle failed ({e.__class__.__name__}: {e}) -- retrying on next check")
                     self._save()
                 time.sleep(sleep_sec)
         except KeyboardInterrupt:

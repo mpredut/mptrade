@@ -174,6 +174,8 @@ def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
     val = safe_float(buy_hold_return_pct, default=None)
     if val is None:
         return "sideways"
+    if threshold_pct <= 0.0:
+        return "bull" if val > 0.0 else ("bear" if val < 0.0 else "sideways")
     if val >= threshold_pct:
         return "bull"
     if val <= -threshold_pct:
@@ -280,8 +282,10 @@ def aggregate_financial_windows(
             elif (gp is not None and gp > 0 and (gl is None or gl == 0.0)) or (
                 gp is None and exp_val is not None and exp_val > 0
             ):
-                active_pfs.append(float("inf"))
-            elif (gp is not None and gp == 0.0) or (gp is None and exp_val is not None and exp_val <= 0):
+                active_pfs.append(math.inf)
+            elif (gp is not None and gp == 0.0 and gl is not None and gl > 0.0) or (
+                gp is None and exp_val is not None and exp_val < 0
+            ):
                 active_pfs.append(0.0)
 
     aggregate_pf = (
@@ -298,7 +302,7 @@ def aggregate_financial_windows(
             raw_med = active_pfs[mid]
         else:
             lo_pf, hi_pf = active_pfs[mid - 1], active_pfs[mid]
-            raw_med = float("inf") if (math.isinf(lo_pf) or math.isinf(hi_pf)) else 0.5 * (lo_pf + hi_pf)
+            raw_med = math.inf if (math.isinf(lo_pf) or math.isinf(hi_pf)) else 0.5 * (lo_pf + hi_pf)
         median_pf = aggregate_pf if math.isinf(raw_med) else raw_med
 
     mean_expectancy = (

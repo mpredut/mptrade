@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import zipfile
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -38,12 +39,12 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
     cur_len = 0
     prev_ts = None
     for i in range(N):
-        t = float(ts[i])
+        t = safe_float(ts[i].item() if hasattr(ts[i], "item") else ts[i], 0.0)
         if prev_ts is not None and t > prev_ts:
             rate = safe_pos_float(t - prev_ts, default=None)
             if rate is not None:
                 sample_rate = rate
-                new_size = min(100000, max(10, int(w_sec / rate)))
+                new_size = min(100000, max(10, safe_int(w_sec / rate, 10)))
                 if new_size != win_size:
                     win_size = new_size
                     if cur_len > new_size:
@@ -122,7 +123,7 @@ def compute_window_signals_from_bounds(
     CHUNK = 4096
     for hi_start in range(0, N, CHUNK):
         hi_end = min(N, hi_start + CHUNK)
-        lo_start = int(np.min(a[hi_start:hi_end]))
+        lo_start = safe_int(np.min(a[hi_start:hi_end]).item(), 0)
         px_sub = px[lo_start:hi_end]
         g_sub = g_int[lo_start:hi_end]
         L = len(px_sub)
@@ -237,8 +238,9 @@ def compute_all_signals(
         and np.isclose(win_sec, rrb.DEFAULT_WINDOW_SECONDS, rtol=0.0, atol=1e-6)
     ):
         fast_w = pw.fast_trend_window_for_symbol(symbol)
-        if fast_w is not None and fast_w > 0.0:
-            eff_win_sec = float(fast_w)
+        fast_w_f = safe_pos_float(fast_w, default=None)
+        if fast_w_f is not None:
+            eff_win_sec = fast_w_f
     a, sr = compute_window_bounds(ts, win_sec=eff_win_sec)
     return compute_window_signals_from_bounds(
         px, a, sr, symbol=symbol, recent_win_sec=eff_win_sec, min_valid_n=2
@@ -264,10 +266,13 @@ def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, fl
     npz_path = cache_path(f"cache_365_price_{sym}.npz")
     jsonl_365 = cache_path(f"cache_365_price_{sym}.jsonl")
     if use_365 and os.path.exists(npz_path):
-        npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
-        if npz_fresh:
-            with np.load(npz_path) as z:
-                return list(zip(z["ts"].tolist(), z["px"].tolist()))
+        try:
+            npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
+            if npz_fresh:
+                with np.load(npz_path) as z:
+                    return list(zip(z["ts"].tolist(), z["px"].tolist()))
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+            pass
     path = rrb.resolve_archive_jsonl_path(sym, use_365=use_365)
     if not os.path.exists(path):
         return []
@@ -294,8 +299,9 @@ def evaluate_dataset(use_365: bool = False):
         series_map[sym] = series
         sig_map[sym] = compute_all_signals(series, symbol=sym)
         dt = time.time() - t0
+        med_m = safe_int(np.median(sig_map[sym]["m"]).item(), 0)
         print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
-              f"{len(series):>9,} ticks in {dt:.2f}s (median m={int(np.median(sig_map[sym]['m']))} steps)")
+              f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
 
     models = [
         ("1. LEGACY (sf+gr)/2 (no NG)",       lambda s: make_tape(s["legacy"], s["eps"], k_eps=0.0)),

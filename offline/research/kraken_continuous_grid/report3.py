@@ -16,12 +16,25 @@ from offline.research.kraken_continuous_grid.report import (
 )
 
 
+def _ret_dd_ratio(ret_pct: float, dd_pct: float, dd_floor: float = 1.0) -> float:
+    """Monotone return-to-drawdown ratio: avoids inverting negative-return rankings on huge drawdowns."""
+    d = max(dd_pct, dd_floor)
+    if ret_pct >= 0.0:
+        return ret_pct / d
+    return (ret_pct * d) / (dd_floor * dd_floor)
+
+
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results3_path = os.path.join(exp, "results3.jsonl")
     rows = read_jsonl_dicts(results3_path)
     errors = [r for r in rows if "error" in r]
-    rows = [r for r in rows if "error" not in r and "cfg" in r and "asset" in r]
+    rows = [
+        r for r in rows
+        if "error" not in r
+        and isinstance(r.get("cfg"), str) and r["cfg"].strip()
+        and isinstance(r.get("asset"), str) and r["asset"].strip()
+    ]
     by = defaultdict(dict)
     for r in rows:
         by[r["cfg"]][r["asset"]] = r
@@ -37,24 +50,27 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         L.append("|---|---|---|---|---|---|---|---|---|---|---|")
         items = []
         for cfg, d in by.items():
-            if not all(a in d for a in assets):
+            if not assets or not all(a in d for a in assets):
                 continue
-            if any(not isinstance(d[a].get(fee), dict) for a in assets):
+            fee_dicts = {
+                a: d[a].get(fee) if isinstance(d[a].get(fee), dict) else (d[a].get("0.40") if fee == "0.4" else None)
+                for a in assets
+            }
+            if any(not isinstance(fee_dicts[a], dict) for a in assets):
                 continue
-            ret = [safe_float(d[a][fee].get("ret"), default=None) for a in assets]
-            dd = [safe_float(d[a][fee].get("dd"), default=None) for a in assets]
+            ret = [safe_float(fee_dicts[a].get("ret"), default=None) for a in assets]
+            dd = [safe_float(fee_dicts[a].get("dd"), default=None) for a in assets]
             if any(x is None for x in ret + dd):
                 continue
             live_cfg = by.get("live", {})
-            live = [
-                safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=None)
-                if isinstance(live_cfg.get(a, {}).get(fee), dict)
-                else None
-                for a in assets
-            ]
-            refused = [safe_float(d[a][fee].get("refused"), default=0.0) for a in assets]
-            min_cash = [safe_float(d[a][fee].get("min_cash"), default=3900.0) for a in assets]
-            score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
+            live = []
+            for a in assets:
+                l_row = live_cfg.get(a, {}) if isinstance(live_cfg.get(a), dict) else {}
+                l_fee = l_row.get(fee) if isinstance(l_row.get(fee), dict) else (l_row.get("0.40") if fee == "0.4" else None)
+                live.append(safe_float(l_fee.get("ret"), default=None) if isinstance(l_fee, dict) else None)
+            refused = [safe_float(fee_dicts[a].get("refused"), default=0.0) for a in assets]
+            min_cash = [safe_float(fee_dicts[a].get("min_cash"), default=3900.0) for a in assets]
+            score = st.median(_ret_dd_ratio(r, x, dd_floor=1.0) for r, x in zip(ret, dd)) if ret else 0.0
             score_val = safe_float(score, default=None)
             items.append((score_val if score_val is not None else -1e300, cfg, ret, dd, live, refused, min_cash))
         for score, cfg, ret, dd, live, refused, min_cash in sorted(items, reverse=True):

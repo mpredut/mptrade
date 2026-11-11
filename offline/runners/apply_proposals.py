@@ -22,35 +22,42 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from botcore import FileLock, _parse_bool_flag, load_env_stack, parse_dotenv, safe_nonneg_float  # noqa: E402
+from botcore import FileLock, _parse_bool_flag, load_env_stack, parse_dotenv, safe_pos_float  # noqa: E402
 from state_io import parse_json_payload  # noqa: E402
-
-# Load .env + config.env BEFORE importing scheduled_pilot so PILOT_* thresholds and
-# notification settings (PHONE_ALERT_URL/NTFY_TOPIC) resolve from the live stack.
-try:
-    load_env_stack()
-except Exception:  # noqa: BLE001
-    pass
-
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
 
 _DEV_PROFILE = parse_dotenv(os.path.join(ROOT, "offline", "runners", "dev_backtest.env"))
-BRANCH = os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get(
-    "BACKTEST_PROPOSALS_BRANCH")
-if not BRANCH:
-    raise RuntimeError("Missing BACKTEST_PROPOSALS_BRANCH in dev_backtest.env")
+BRANCH = (os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
 
 
-def _read_proposals():
+def _resolve_branch() -> str:
+    raw = (BRANCH or os.environ.get("BACKTEST_PROPOSALS_BRANCH") or _DEV_PROFILE.get("BACKTEST_PROPOSALS_BRANCH") or "").strip()
+    if not raw:
+        raise RuntimeError("Missing BACKTEST_PROPOSALS_BRANCH in dev_backtest.env")
+    if raw.startswith("-") or ".." in raw or " " in raw:
+        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {raw!r}")
+    return raw
+
+
+def _read_proposals(branch: str | None = None):
     """Read backtest_proposals.json from origin/BRANCH WITHOUT a checkout (git show)."""
+    target_branch = _resolve_branch() if branch is None else branch.strip()
+    if not target_branch or target_branch.startswith("-") or ".." in target_branch:
+        raise RuntimeError(f"Invalid BACKTEST_PROPOSALS_BRANCH: {target_branch!r}")
     try:
-        subprocess.run(["git", "-C", ROOT, "fetch", "-q", "origin", BRANCH],
-                       capture_output=True, timeout=30)
-        out = subprocess.run(["git", "-C", ROOT, "show", f"origin/{BRANCH}:backtest_proposals.json"],
-                             capture_output=True, text=True, timeout=15)
+        fetch_res = subprocess.run(
+            ["git", "-C", ROOT, "fetch", "-q", "origin", target_branch],
+            capture_output=True, timeout=30,
+        )
+        if fetch_res.returncode != 0:
+            return []
+        out = subprocess.run(
+            ["git", "-C", ROOT, "show", f"origin/{target_branch}:backtest_proposals.json"],
+            capture_output=True, text=True, timeout=15,
+        )
     except (OSError, subprocess.SubprocessError):
         return []
     if out.returncode != 0:
@@ -59,19 +66,25 @@ def _read_proposals():
     return data if isinstance(data, list) else []
 
 
-def main():
+def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true",
                      help="show what it would apply, without writing config or committing")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    try:
+        load_env_stack()
+    except Exception:  # noqa: BLE001
+        pass
 
     if _parse_bool_flag(os.environ.get("APPLY_DISABLED"), False):
         print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
         return
 
-    proposals = _read_proposals()
+    branch = _resolve_branch()
+    proposals = _read_proposals(branch)
     if not proposals:
-        print(f"[apply] no proposal on branch {BRANCH} -- nothing to do")
+        print(f"[apply] no proposal on branch {branch} -- nothing to do")
         return
 
     with FileLock("/tmp/mptrade_apply_proposals.lock"):
@@ -89,6 +102,18 @@ def main():
                 or raw_winner is None or isinstance(raw_winner, bool)
             ):
                 continue
+            fk = fk.strip()
+            section = section.strip()
+            key = key.strip()
+            symbol = symbol.strip()
+            if fk != f"{section}.{key}" or fk not in sp.PILOT_KEYS:
+                sp._append_audit({
+                    "full_key": fk, "symbol": symbol, "source": "apply_proposals",
+                    "action": "skipped_unlisted_key",
+                    "reason": f"key {fk!r} outside pilot whitelist or mismatched section/key",
+                    "dev_commit": p.get("dev_commit"),
+                })
+                continue
             try:
                 current_raw = sp._current_value(section, key)   # LIVE from prod (authoritative)
             except (KeyError, ValueError) as exc:
@@ -98,9 +123,13 @@ def main():
                     "dev_commit": p.get("dev_commit"),
                 })
                 continue
-            winner = safe_nonneg_float(raw_winner, default=None)
-            current = safe_nonneg_float(current_raw, default=None)
-            if winner is None or current is None:
+            winner = safe_pos_float(raw_winner, default=None)
+            current = safe_pos_float(current_raw, default=None)
+            if (
+                winner is None
+                or current is None
+                or (key == "mt.hardtp_fraction" and (winner > 1.0 or current > 1.0))
+            ):
                 sp._append_audit({
                     "full_key": fk, "symbol": symbol, "source": "apply_proposals",
                     "action": "skipped_invalid_value",
@@ -111,9 +140,10 @@ def main():
             rec = {"full_key": fk, "symbol": symbol, "source": "apply_proposals",
                    "winner_value": winner, "current_value": current, "dev_commit": p.get("dev_commit")}
 
-            if abs(winner - current) < 1e-9:
+            new_value = round((current + winner) / 2, 4)
+            if abs(winner - current) < 1e-9 or abs(new_value - current) < 1e-9:
                 rec["action"] = "no_change"
-                rec["reason"] = f"the winner {winner} = the value already configured on prod"
+                rec["reason"] = f"the damped value {new_value} = the value already configured on prod ({current})"
                 sp._append_audit(rec)
                 print(f"[apply] {fk}: no_change (already {current})")
                 continue
@@ -126,7 +156,6 @@ def main():
                 print(f"[apply] {fk}: rate_limited (the last change was {last_ts_str})")
                 continue
 
-            new_value = round((current + winner) / 2, 4)
             rec["proposed_new_value"] = new_value
             rec["action"] = "would_apply" if args.dry_run else "applied"
             tag = " [dry-run]" if args.dry_run else ""
@@ -134,9 +163,9 @@ def main():
 
             if not args.dry_run:
                 sp._apply_config_change(section, key, current, new_value)
-                sp._notify_change(fk, symbol, current, new_value, winner, rec)
+                commit_ok = False
                 try:
-                    subprocess.run(
+                    commit_res = subprocess.run(
                         [
                             "git", "-C", ROOT, "commit", "-q", "--only", "instruments.conf",
                             "-m",
@@ -144,11 +173,21 @@ def main():
                             f"(winner {winner}, dev {p.get('dev_commit')})",
                         ],
                         capture_output=True,
+                        text=True,
                         timeout=10,
                     )
+                    commit_ok = commit_res.returncode == 0
+                    if not commit_ok:
+                        rec["action"] = "commit_failed"
+                        rec["reason"] = (commit_res.stderr or commit_res.stdout or f"rc={commit_res.returncode}").strip()
+                        print(f"[apply] git commit failed for {fk}: {rec['reason']}")
                 except (OSError, subprocess.SubprocessError) as exc:
+                    rec["action"] = "commit_failed"
+                    rec["reason"] = str(exc)
                     print(f"[apply] git commit warning for {fk}: {exc}")
-                applied_count += 1
+                if commit_ok:
+                    sp._notify_change(fk, symbol, current, new_value, winner, rec)
+                    applied_count += 1
             sp._append_audit(rec)
 
         if not args.dry_run:

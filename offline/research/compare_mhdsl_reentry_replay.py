@@ -75,7 +75,7 @@ def run_comparison(csv_path=None):
             sl_structural_break_enabled=True,
             **common_reentry,
         ), 240)
-        if sl == sl_levels[0] and len(bars) > 40:
+        if sl == sl_levels[0] and warmup_bars > 0 and len(bars) > warmup_bars:
             prewarm_trend_series(bars, warmup=warmup_bars, params=p_base, bar_minutes=bar_minutes)
 
         res_base = run_replay(eval_bars, p_base, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
@@ -120,8 +120,10 @@ def run_comparison(csv_path=None):
     return results
 
 
-def main():
-    if not run_comparison():
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    csv_arg = args[0] if args else None
+    if not run_comparison(csv_arg):
         sys.exit(1)
 
 

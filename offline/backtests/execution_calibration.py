@@ -36,6 +36,8 @@ def _client_order_id_valid(venue: object, client_order_id: object) -> bool | Non
     pattern = _CLIENT_ORDER_ID_PATTERNS.get(norm_venue)
     if pattern is None:
         return None
+    if isinstance(client_order_id, bool):
+        return False
     return bool(pattern.fullmatch(str(client_order_id or "")))
 
 
@@ -99,17 +101,25 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         STATUS_EVENTS = ("order_status", "order_terminal", "order_terminal_retry")
         qty = safe_float(requested.get("qty"), 0.0)
         status_rows = []
-        by_order_id: dict[str, list[tuple[dict, float, float, float]]] = {}
-        active_oid = ""
+        by_order_id: dict[str, list[tuple[dict, float, float, float | None]]] = {}
+        active_oid = clean_order_id_str(accepted.get("order_id")) if accepted is not None else ""
         for event in history:
             if event.get("event") == "submit_accepted":
                 cleaned_oid = clean_order_id_str(event.get("order_id"))
                 if cleaned_oid:
                     active_oid = cleaned_oid
+                    if "" in by_order_id and cleaned_oid != "":
+                        orphan_rows = by_order_id.pop("")
+                        by_order_id.setdefault(cleaned_oid, []).extend(orphan_rows)
+                        status_rows = [
+                            (cleaned_oid if ok == "" else ok, rt)
+                            for ok, rt in status_rows
+                        ]
             elif event.get("event") in STATUS_EVENTS:
                 filled_step = safe_nonneg_float(event.get("filled_qty"), 0.0)
                 cost_step = safe_nonneg_float(event.get("cost"), 0.0)
-                fee_step = abs(safe_float(event.get("fee"), 0.0))
+                raw_fee_val = safe_float(event.get("fee"), default=None)
+                fee_step = abs(raw_fee_val) if raw_fee_val is not None else None
                 cleaned_s_oid = clean_order_id_str(event.get("order_id"))
                 oid_key = cleaned_s_oid if cleaned_s_oid else active_oid
                 row_t = (event, filled_step, cost_step, fee_step)
@@ -120,13 +130,19 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         filled = 0.0
         cost = 0.0
         fee = 0.0
+        fee_known = False
         for bucket in by_order_id.values():
             if not bucket:
                 continue
             max_filled = max(row[1] for row in bucket)
             at_max = [row for row in bucket if math.isclose(row[1], max_filled, rel_tol=1e-12, abs_tol=1e-12)]
             best_cost = max((row[2] for row in at_max), default=0.0)
-            best_fee = max((row[3] for row in at_max), default=0.0)
+            known_fees = [row[3] for row in at_max if row[3] is not None]
+            if known_fees:
+                fee_known = True
+                best_fee = max(known_fees)
+            else:
+                best_fee = 0.0
             filled += max_filled
             cost += best_cost
             fee += best_fee
@@ -171,9 +187,13 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             )
         client_order_id = None
         if accepted is not None:
-            client_order_id = accepted.get("client_order_id")
-        if not client_order_id:
-            client_order_id = requested.get("client_order_id")
+            raw_acc_cid = accepted.get("client_order_id")
+            if raw_acc_cid is not None and (isinstance(raw_acc_cid, bool) or str(raw_acc_cid).strip()):
+                client_order_id = raw_acc_cid
+        if client_order_id is None:
+            raw_req_cid = requested.get("client_order_id")
+            if raw_req_cid is not None and (isinstance(raw_req_cid, bool) or str(raw_req_cid).strip()):
+                client_order_id = raw_req_cid
         client_order_id_valid = _client_order_id_valid(
             requested.get("venue"), client_order_id,
         )
@@ -195,7 +215,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             "requested_qty": qty,
             "final_fill_ratio": min(1.0, filled / qty) if qty > 0 else None,
             "ever_partial": any(0.0 < ratio < 1.0 - 1e-9 for ratio in fill_ratios),
-            "fee_bps": abs(fee) / cost * 10_000 if cost > 0 else None,
+            "fee_bps": abs(fee) / cost * 10_000 if (cost > 0 and fee_known) else None,
             "first_fill_latency_s": latency,
             "limit_fill_deviation_bps": deviation_bps,
             "market_execution_shortfall_bps": market_shortfall_bps,

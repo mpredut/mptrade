@@ -8,6 +8,7 @@ coordination, MDHTP take-profit configuration, and ReentrySnapshot evaluation ac
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
 import os
 import signal
@@ -17,9 +18,9 @@ from typing import Any, Callable
 
 from botcore import (
     _parse_bool_flag, are_close, exact_int, exact_nonneg_int, exact_pos_int, log,
-    normalize_epoch_sec, optional_env,
+    lru_dict_put, normalize_epoch_sec, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
-    safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
+    resolve_now_ts, safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
     split_csv, touch_module_heartbeat,
 )
 from intelligence.internal.state.volatility import (
@@ -104,9 +105,9 @@ def generate_tp_ladder(
         sigma = max(0.5, (steps - 1) / 2.8) if steps > 1 else 1.0
         weights = [math.exp(-0.5 * ((i - center) / sigma) ** 2) for i in range(steps)]
     elif curve_lower == "front_heavy":
-        weights = [float(steps - i) for i in range(steps)]
+        weights = [(steps - i) * 1.0 for i in range(steps)]
     elif curve_lower == "back_heavy":
-        weights = [float(i + 1) for i in range(steps)]
+        weights = [(i + 1) * 1.0 for i in range(steps)]
     else:
         weights = [1.0 for _ in range(steps)]
     total_w = sum(weights)
@@ -120,13 +121,16 @@ def adapt_ladder_rungs(
     held_f = safe_pos_float(held, None)
     if not remaining or held_f is None or held_f <= 1e-9:
         return []
-    min_q = safe_pos_float(min_tranche_qty, 0.01)
-    max_viable_rungs = max(1, int(held_f / max(1e-6, min_q)))
+    min_q = safe_pos_float(min_tranche_qty, 0.01) or 0.01
+    max_viable_rungs = max(1, safe_nonneg_int(math.floor(held_f / max(1e-6, min_q)), default=1) or 1)
     if len(remaining) <= max_viable_rungs:
         return list(remaining)
     if max_viable_rungs == 1:
         return [remaining[-1]]
-    indices = [int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1))) for i in range(max_viable_rungs)]
+    indices = [
+        safe_nonneg_int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1)), default=0) or 0
+        for i in range(max_viable_rungs)
+    ]
     return [remaining[idx] for idx in sorted(set(indices))]
 
 
@@ -194,10 +198,10 @@ def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[
             try:
                 p_min, p_max, p_steps = clean_raw.split(":")
                 steps_i = exact_pos_int(p_steps, default=None)
-                min_f = safe_float(p_min, default=None)
-                max_f = safe_float(p_max, default=None)
+                min_f = safe_pos_float(p_min, default=None)
+                max_f = safe_pos_float(p_max, default=None)
                 if steps_i is None or min_f is None or max_f is None:
-                    raise ValueError("non-integer or non-finite steps")
+                    raise ValueError("non-integer steps or non-positive min/max")
                 return generate_ladder_fn(min_f, max_f, steps_i, curve=ladder_curve)
             except (ValueError, OverflowError) as exc:
                 raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
@@ -216,13 +220,20 @@ def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[
         if sum(f for _, f in ladder) > 1.0 + 1e-6:
             raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
         return ladder
-    if optional_env("STRAT_TP_LADDER_MIN", env=env) and optional_env("STRAT_TP_LADDER_MAX", env=env):
-        return generate_ladder_fn(
-            required_float_env("STRAT_TP_LADDER_MIN", env),
-            required_float_env("STRAT_TP_LADDER_MAX", env),
-            required_int_env("STRAT_TP_LADDER_STEPS", env),
-            curve=ladder_curve,
-        )
+    has_min = bool(optional_env("STRAT_TP_LADDER_MIN", env=env))
+    has_max = bool(optional_env("STRAT_TP_LADDER_MAX", env=env))
+    has_steps = bool(optional_env("STRAT_TP_LADDER_STEPS", env=env))
+    if has_min or has_max or has_steps:
+        if not (has_min and has_max and has_steps):
+            raise ValueError(
+                "STRAT_TP_LADDER_MIN, STRAT_TP_LADDER_MAX, and STRAT_TP_LADDER_STEPS must all be set together"
+            )
+        min_l = safe_pos_float(required_float_env("STRAT_TP_LADDER_MIN", env), default=None)
+        max_l = safe_pos_float(required_float_env("STRAT_TP_LADDER_MAX", env), default=None)
+        steps_l = required_int_env("STRAT_TP_LADDER_STEPS", env)
+        if min_l is None or max_l is None or steps_l < 1:
+            raise ValueError("STRAT_TP_LADDER_MIN/MAX must be > 0 and STRAT_TP_LADDER_STEPS >= 1")
+        return generate_ladder_fn(min_l, max_l, steps_l, curve=ladder_curve)
     return []
 
 
@@ -230,15 +241,24 @@ def parse_max_dca_buys_env(
     env: dict | None, budget: float, entry_amt: float, dca_amt: float
 ) -> tuple[int, float]:
     """Parse ``STRAT_MAX_DCA_BUYS`` (supporting ``auto``/``budget`` or explicit non-negative integer)."""
+    budget_f = safe_nonneg_float(budget, default=None)
+    entry_f = safe_nonneg_float(entry_amt, default=None)
+    dca_f = safe_nonneg_float(dca_amt, default=None)
+    if budget_f is None or entry_f is None or dca_f is None:
+        raise ValueError("parse_max_dca_buys_env requires finite non-negative budget, entry_amt, and dca_amt")
     mdb = optional_env("STRAT_MAX_DCA_BUYS", env=env).lower()
     if mdb in ("auto", "budget"):
-        max_dca = max(0, int((budget - entry_amt) // dca_amt)) if dca_amt > 0 else 0
-        return max_dca, budget - max_dca * dca_amt
+        if budget_f < entry_f:
+            raise ValueError(f"STRAT_MAX_BUDGET ({budget_f}) cannot be smaller than STRAT_ENTRY ({entry_f})")
+        if dca_f <= 0.0:
+            return 0, entry_f
+        max_dca = safe_nonneg_int(math.floor((budget_f - entry_f) / dca_f), default=0) or 0
+        return max_dca, budget_f - max_dca * dca_f
     if mdb:
         max_dca_i = exact_nonneg_int(mdb, default=None)
         if max_dca_i is None:
             raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {mdb!r}")
-        return max_dca_i, entry_amt
+        return max_dca_i, entry_f
     raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
 
 
@@ -333,7 +353,7 @@ def sanitize_common_spot_state(
     cyc_i = safe_pos_int(state.get("cycle"), default=None)
     if cyc_i is None:
         cyc_f = safe_float(state.get("cycle"), default=None)
-        cyc_i = max(1, int(cyc_f)) if cyc_f is not None else 1
+        cyc_i = max(1, safe_int(math.trunc(cyc_f), default=1) or 1) if cyc_f is not None else 1
     state["cycle"] = cyc_i
     for nkey in nonneg_float_keys:
         state[nkey] = safe_nonneg_float(state.get(nkey), 0.0) or 0.0
@@ -343,7 +363,7 @@ def sanitize_common_spot_state(
         i = safe_int(state.get(ikey), default=None)
         if i is None:
             if_val = safe_float(state.get(ikey), default=None)
-            i = int(if_val) if if_val is not None else 0
+            i = safe_int(math.trunc(if_val), default=0) if if_val is not None else 0
         state[ikey] = i if (i is not None and i >= 0) else 0
     for pkey in pos_float_keys:
         if pkey in state and state.get(pkey) is not None:
@@ -448,16 +468,25 @@ class BaseSpotMixin:
     _use_shadow_tick_time_default: bool = True
     _exit_config_ratio_fn: Callable[[float], float] | None = None
 
-    _SHADOW_VOL_CACHE: dict = {}
-    _TRAIL_VOL_CACHE: dict = {}
-    _HOURLY_VOL_CACHE: dict = {}
+    _SHADOW_VOL_CACHE: OrderedDict = OrderedDict()
+    _TRAIL_VOL_CACHE: OrderedDict = OrderedDict()
+    _HOURLY_VOL_CACHE: OrderedDict = OrderedDict()
+    _VOL_CACHE_LOCK: threading.Lock = threading.Lock()
     _REPLAY_CACHE_MAX: int = 262144
+    _CACHE_MISS = object()
 
     @staticmethod
-    def _cache_store(cache: dict, key: tuple, val: Any) -> Any:
-        if len(cache) >= BaseSpotMixin._REPLAY_CACHE_MAX:
-            cache.clear()
-        cache[key] = val
+    def _cache_get(cache: OrderedDict, key: tuple) -> Any:
+        with BaseSpotMixin._VOL_CACHE_LOCK:
+            if key not in cache:
+                return BaseSpotMixin._CACHE_MISS
+            cache.move_to_end(key)
+            return cache[key]
+
+    @staticmethod
+    def _cache_store(cache: OrderedDict, key: tuple, val: Any) -> Any:
+        with BaseSpotMixin._VOL_CACHE_LOCK:
+            lru_dict_put(cache, key, val, max_entries=BaseSpotMixin._REPLAY_CACHE_MAX)
         return val
 
     def _mod_global(self, name: str, default: Any = None) -> Any:
@@ -474,20 +503,26 @@ class BaseSpotMixin:
 
     def _now(self) -> float:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
-        clock = getattr(self, "_clock", None)
-        if callable(clock):
-            val = float(clock())
-            return normalize_epoch_sec(val, val, allow_zero=True) or val
-        if getattr(self, "replay_mode", False):
+        replay = bool(getattr(self, "replay_mode", False))
+        if replay:
             sim_ts = getattr(self, "_simulated_ts", None)
             if sim_ts is not None:
                 return sim_ts
+        clock = getattr(self, "_clock", None)
+        if callable(clock) and not (replay and clock is time.time):
+            raw_val = clock()
+            norm_val = normalize_epoch_sec(raw_val, default=None, allow_zero=True)
+            if norm_val is None:
+                raise ValueError(f"Invalid Strategy clock timestamp: {raw_val!r}")
+            return norm_val
+        if replay:
             sp = getattr(self, "_shadow_prices", None)
             if sp:
                 return normalize_epoch_sec(sp[-1][0], 0.0, allow_zero=True) or 0.0
             return 0.0
-        val = float(self._mod_global("time", time).time())
-        return normalize_epoch_sec(val, val, allow_zero=True) or val
+        raw_now = self._mod_global("time", time).time()
+        norm_now = normalize_epoch_sec(raw_now, default=None, allow_zero=True)
+        return norm_now if norm_now is not None else resolve_now_ts()
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
@@ -521,7 +556,7 @@ class BaseSpotMixin:
             return
         try:
             if os.path.exists(self.state_file):
-                self._state_file_mtime = float(os.path.getmtime(self.state_file))
+                self._state_file_mtime = safe_nonneg_float(os.path.getmtime(self.state_file), default=0.0) or 0.0
         except OSError:
             pass
 
@@ -603,7 +638,7 @@ class BaseSpotMixin:
         o["cancel_requested"] = True
         o["cancel_ts"] = self._now()
         self._save()
-        self._log_msg(f"  [STRAT] cancel requested {o.get('side', '?')} {o[id_key]} — waiting for a terminal status")
+        self._log_msg(f"  [STRAT] cancel requested {o.get('side', '?')} {o[id_key]} -- waiting for a terminal status")
         return True
 
     def _cancel_tracked_order(
@@ -620,7 +655,7 @@ class BaseSpotMixin:
         except Exception as exc:
             if not isinstance(exc, self._mod_global("ProviderError", Exception)):
                 raise
-            self._log_msg(f"  ! [STRAT] cancel failed for {o[id_key]}: {exc} — the order stays tracked")
+            self._log_msg(f"  ! [STRAT] cancel failed for {o[id_key]}: {exc} -- the order stays tracked")
             return False
         return self._mark_order_cancel_requested(o, id_key)
 
@@ -702,8 +737,9 @@ class BaseSpotMixin:
         if len(closes_slice) < 20:
             return None
         cache_key = (closes_slice, itv_f)
-        if cache_key in BaseSpotMixin._HOURLY_VOL_CACHE:
-            return BaseSpotMixin._HOURLY_VOL_CACHE[cache_key]
+        cached_val = BaseSpotMixin._cache_get(BaseSpotMixin._HOURLY_VOL_CACHE, cache_key)
+        if cached_val is not BaseSpotMixin._CACHE_MISS:
+            return cached_val
         returns = [math.log(cur / prev) for prev, cur in zip(closes_slice, closes_slice[1:]) if prev > 0 and cur > 0]
         val = BaseSpotMixin._scaled_log_return_vol_pct(returns, 60.0 / itv_f)
         return BaseSpotMixin._cache_store(BaseSpotMixin._HOURLY_VOL_CACHE, cache_key, val)
@@ -711,40 +747,8 @@ class BaseSpotMixin:
     def _shadow_vol_1h(self) -> float | None:
         """Return one-hour volatility from local tick history, or None during warm-up."""
         sp = getattr(self, "_shadow_prices", None)
-        if not sp or (n_sp := len(sp)) < 20:
+        if not sp or len(sp) < 20:
             return None
-        t0_raw, tn_raw = sp[0][0], sp[-1][0]
-        if (
-            self.replay_mode
-            and isinstance(t0_raw, (int, float))
-            and isinstance(tn_raw, (int, float))
-            and -1e11 < t0_raw <= 1e11
-            and -1e11 < tn_raw <= 1e11
-            and tn_raw > t0_raw
-        ):
-            cache_key = (
-                round(tn_raw - t0_raw, 3),
-                tuple(item[1] for item in sp),
-            )
-            if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
-                return self._shadow_vol_cache_val
-            if cache_key in BaseSpotMixin._SHADOW_VOL_CACHE:
-                self._shadow_vol_cache_key = cache_key
-                self._shadow_vol_cache_val = val = BaseSpotMixin._SHADOW_VOL_CACHE[cache_key]
-                return val
-            mean_dt = (tn_raw - t0_raw) / (n_sp - 1)
-            pts = list(sp)
-            rets = [
-                math.log(pts[i][1] / pts[i - 1][1])
-                for i in range(1, n_sp)
-                if 0.0 < pts[i - 1][1] < float("inf") and 0.0 < pts[i][1] < float("inf")
-            ]
-            val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
-            if val is not None:
-                self._shadow_vol_cache_key = cache_key
-                self._shadow_vol_cache_val = val
-                self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
-            return val
         clean_pts = _iter_valid_shadow_prices(sp)
         n_clean = len(clean_pts)
         if n_clean < 20:
@@ -752,6 +756,25 @@ class BaseSpotMixin:
         mean_dt = (clean_pts[-1][0] - clean_pts[0][0]) / (n_clean - 1)
         if mean_dt <= 0:
             return None
+        if getattr(self, "replay_mode", False):
+            cache_key = (
+                round(clean_pts[-1][0] - clean_pts[0][0], 3),
+                tuple(pt[1] for pt in clean_pts),
+            )
+            if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
+                return self._shadow_vol_cache_val
+            cached_val = BaseSpotMixin._cache_get(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key)
+            if cached_val is not BaseSpotMixin._CACHE_MISS:
+                self._shadow_vol_cache_key = cache_key
+                self._shadow_vol_cache_val = cached_val
+                return cached_val
+            rets = [math.log(clean_pts[i][1] / clean_pts[i - 1][1]) for i in range(1, n_clean)]
+            val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
+            if val is not None:
+                self._shadow_vol_cache_key = cache_key
+                self._shadow_vol_cache_val = val
+                self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
+            return val
         rets = [math.log(clean_pts[i][1] / clean_pts[i - 1][1]) for i in range(1, n_clean)]
         return self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
 
@@ -760,7 +783,7 @@ class BaseSpotMixin:
         trail_itv = getattr(self.p, "tp_trail_vol_interval", None)
         if getattr(self, "replay_mode", False):
             sp = getattr(self, "_shadow_prices", None)
-            if not sp or (n_sp := len(sp)) < 20:
+            if not sp or len(sp) < 20:
                 return None
             cache_key = (
                 tuple(item[1] for item in sp),
@@ -768,10 +791,11 @@ class BaseSpotMixin:
             )
             if getattr(self, "_trail_vol_cache_key", None) == cache_key:
                 return self._trail_vol_cache_val
-            if cache_key in BaseSpotMixin._TRAIL_VOL_CACHE:
+            cached_val = BaseSpotMixin._cache_get(BaseSpotMixin._TRAIL_VOL_CACHE, cache_key)
+            if cached_val is not BaseSpotMixin._CACHE_MISS:
                 self._trail_vol_cache_key = cache_key
-                self._trail_vol_cache_val = val = BaseSpotMixin._TRAIL_VOL_CACHE[cache_key]
-                return val
+                self._trail_vol_cache_val = cached_val
+                return cached_val
             val = self._hourly_vol_from_closes([price for _, price in sp], trail_itv)
             self._trail_vol_cache_key = cache_key
             self._trail_vol_cache_val = val
@@ -838,8 +862,8 @@ class BaseSpotMixin:
         k_re = self.p.shadow_k_reentry
         try:
             vol = self._resolve_reentry_vol_1h_pct()
-        except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            self._log_msg(f"  [REENTRY-ADAPTIVE] calculation error ({e}) — fallback to fixed")
+        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
+            self._log_msg(f"  [REENTRY-ADAPTIVE] calculation error ({e}) -- fallback to fixed")
             return self.p.reentry_drop_pct, "fix (fallback, error)"
         if vol is None:
             return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
@@ -853,7 +877,7 @@ class BaseSpotMixin:
         try:
             vol = self._resolve_reentry_vol_1h_pct()
         except Exception as e:
-            self._log_msg(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
+            self._log_msg(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) -- fallback to fixed")
             vol = None
         sp_len = len(getattr(self, "_shadow_prices", None) or ())
         fallback_reason, vol_label = self._reentry_pullback_labels(sp_len)
@@ -870,8 +894,8 @@ class BaseSpotMixin:
             return self.p.tp_trail_pct
         try:
             vol = self._trail_vol_1h()
-        except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) — fallback to fixed")
+        except Exception as e:  # noqa: BLE001 -- observational failure must not stop trading.
+            self._log_msg(f"  [STRAT] adaptive trailing: OHLC unavailable ({e}) -- fallback to fixed")
             vol = None
         if vol is None:
             return self.p.tp_trail_pct
@@ -970,7 +994,7 @@ class BaseSpotMixin:
         if decision.metadata.get("priority") in (1, 2) or (
             self.exit_manager is not None and self._symbol_id in self.exit_manager.sl_bounce_state
         ):
-            self._log_msg(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
+            self._log_msg(f"  [SHIELD] [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
 
     def _sync_mdhtp_config(self, eff_trail_pct: float, *, trend_ride_enabled: bool | None = None) -> None:
         """Synchronize MDHTP parameters onto ``self.exit_manager.config``."""
@@ -1101,7 +1125,7 @@ class BaseSpotMixin:
     ) -> bool:
         """Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
         blocked_tick = getattr(self, "_reentry_blocked_tick", None)
-        if blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
+        if tick_time is not None and blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
             allowed, reason = False, blocked_tick[2]
         else:
             allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
@@ -1109,10 +1133,10 @@ class BaseSpotMixin:
             self._log_msg(f"  [STRAT] re-entry blocked: {reason}")
             return False
         if self.s.get("last_sell_price"):
-            self._log_msg(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
+            self._log_msg(f"  [STRAT] re-entry approved: {reason} -- placing ENTRY")
         if self.s[self._spent_state_key] + entry_amt > budget:
             self._restore_reentry_state()
-            self._log_msg(f"  [STRAT] {cap_label} {budget:.0f} {self.ccy} reached — not entering")
+            self._log_msg(f"  [STRAT] {cap_label} {budget:.0f} {self.ccy} reached -- not entering")
             return False
         placed = self._place_entry_order(entry_amt, entry_px)
         if not placed:
@@ -1181,7 +1205,7 @@ class BaseSpotMixin:
                 price = safe_pos_float(price_fn(), default=None)
                 last_price[0] = price
                 if price is None:
-                    self._log_msg("  [STRAT] price unavailable — retrying")
+                    self._log_msg("  [STRAT] price unavailable -- retrying")
                     _delay()
                     continue
                 try:
@@ -1195,8 +1219,10 @@ class BaseSpotMixin:
                         and isinstance(getattr(self, "state_file", None), str)
                     ):
                         try:
-                            if os.path.exists(self.state_file) and float(os.path.getmtime(self.state_file)) > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
-                                self.s = self._load()
+                            if os.path.exists(self.state_file):
+                                mtime_val = safe_nonneg_float(os.path.getmtime(self.state_file), default=0.0) or 0.0
+                                if mtime_val > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
+                                    self.s = self._load()
                         except OSError:
                             pass
                     if self.reconcile(price) is False:
@@ -1204,8 +1230,8 @@ class BaseSpotMixin:
                         continue
                     self.step(price)
                     self._save()
-                except Exception as e:  # noqa: BLE001 — RESILIENCE: network/API down -> retry
-                    self._log_msg(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
+                except Exception as e:  # noqa: BLE001 -- RESILIENCE: network/API down -> retry
+                    self._log_msg(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) -- retrying")
                     _delay()
                     continue
                 status_log_fn(price)

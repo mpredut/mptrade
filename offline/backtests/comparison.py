@@ -27,16 +27,15 @@ def relative_to_baseline(
 ) -> dict[str, Any]:
     """Compute relative win, loss, tie counts and mean return delta against baseline."""
     tol = safe_nonneg_float(tolerance, default=1e-10)
-    base_by_key = {
-        window[key_field]: window
-        for window in baseline
+    base_by_key: dict[Hashable, Mapping[str, Any]] = {}
+    for window in baseline:
         if (
             isinstance(window, Mapping)
             and key_field in window
             and not isinstance(window[key_field], bool)
             and isinstance(window[key_field], Hashable)
-        )
-    }
+        ):
+            base_by_key.setdefault(window[key_field], window)
     deltas = []
     seen_keys: set[Hashable] = set()
     for window in candidate:

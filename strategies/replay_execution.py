@@ -80,6 +80,8 @@ class ExecutionModel:
         """Evaluate the limit against bid/ask estimated from the observed OHLC."""
         err_msg = "high, low, and limit must be finite positive numbers"
         high_f, low_f, limit_f = _req_pos_float(high, err_msg), _req_pos_float(low, err_msg), _req_pos_float(limit, err_msg)
+        if low_f > high_f:
+            raise ValueError(f"low ({low_f}) cannot exceed high ({high_f})")
         half_spread = self.spread_bps / 20_000.0
         side_norm = normalize_side(side)
         if side_norm == "BUY":
@@ -109,10 +111,21 @@ def select_eligible_intrabar_orders(
     limit_key: str,
 ) -> tuple[list[dict], bool]:
     """Return orders touched inside the current bar and whether both buy and sell sides are eligible."""
-    eligible = [
-        o for o in orders
-        if o.get("market") or execution.limit_touched(o["side"], high=high, low=low, limit=o[limit_key])
-    ]
+    err_msg = "high and low must be finite positive numbers"
+    high_f, low_f = _req_pos_float(high, err_msg), _req_pos_float(low, err_msg)
+    if low_f > high_f:
+        raise ValueError(f"low ({low_f}) cannot exceed high ({high_f})")
+    eligible: list[dict] = []
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        side_raw = o.get("side")
+        side_norm = normalize_side(side_raw)
+        if side_norm not in {"BUY", "SELL"}:
+            raise ValueError(f"side invalid: {side_raw!r}")
+        is_mkt = _parse_bool_flag(o.get("market"), default=False)
+        if is_mkt or execution.limit_touched(side_norm, high=high_f, low=low_f, limit=o.get(limit_key)):
+            eligible.append(o)
     sides = {normalize_side(o.get("side")) for o in eligible}
     ambiguous = len(eligible) > 1 and {"BUY", "SELL"}.issubset(sides)
     return eligible, ambiguous
@@ -147,9 +160,9 @@ def split_order_fill(
 
     order[quantity_key] = max(0.0, remaining - chunk)
     complete = order[quantity_key] <= max(1e-12, original * 1e-12)
-    already_filled = bool(order.get("_replay_had_fill"))
+    already_filled = _parse_bool_flag(order.get("_replay_had_fill"), default=False)
     order["_replay_had_fill"] = True
-    if already_filled and normalize_side(fill.get("side")) == "BUY" and fill.get("kind") in {"DCA", "TREND_ENTRY"}:
+    if already_filled and fill.get("kind") in {"DCA", "TREND_ENTRY"}:
         fill["kind"] = f"{fill['kind']}_PARTIAL"
     return fill, chunk, complete
 
@@ -167,7 +180,7 @@ def choose_intrabar_scenario(
         scenarios.items(),
         key=lambda item: (
             require_finite_float(item[1].get("return_pct"), "return_pct"),
-            -safe_nonneg_float(item[1].get("max_drawdown_pct"), 0.0),
+            -require_finite_float(item[1].get("max_drawdown_pct"), "max_drawdown_pct", min_value=0.0),
         ),
     )
     result = dict(selected)

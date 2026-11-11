@@ -31,9 +31,19 @@ from botcore import (
 from cachepaths import canonical_symbol_key, normalize_venue_name
 
 
-def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[float]:
-    f = (safe_pos_float if pos_only else safe_float)(val, default=default)
-    return (f / 1000.0 if f > 100_000_000_000 else f) if f is not None else default
+_NON_FINITE_FLOAT_TOKENS = frozenset({
+    "nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity",
+})
+
+
+def _is_non_finite_numeric(val) -> bool:
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, float):
+        return not math.isfinite(val)
+    if isinstance(val, str):
+        return val.strip().lower() in _NON_FINITE_FLOAT_TOKENS
+    return False
 
 
 @dataclass(frozen=True)
@@ -118,12 +128,12 @@ class MarketRegimeContext:
         require_identity: bool = False,
     ) -> bool:
         """Validate whether context matches instrument identity, timestamp sanity, and freshness constraints."""
-        current_time = time.time() if now is None else _norm_epoch_float(now)
+        current_time = resolve_now_ts() if now is None else normalize_epoch_sec(now, default=None, allow_zero=True)
         if current_time is None:
             return False
 
         # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
-        eval_at = _norm_epoch_float(self.evaluated_at, pos_only=True)
+        eval_at = normalize_epoch_sec(self.evaluated_at, default=None, allow_zero=False)
         if eval_at is None or eval_at > (current_time + 1.0):
             return False
 
@@ -133,8 +143,8 @@ class MarketRegimeContext:
             return False
 
         if max_age_seconds is not None:
-            max_age_f = safe_float(max_age_seconds, default=None)
-            if max_age_f is None or (max_age_f > 0 and age > max_age_f):
+            max_age_f = safe_pos_float(max_age_seconds, default=None)
+            if max_age_f is None or age > max_age_f:
                 return False
 
         # 3. Temporal horizon and trend duration validation
@@ -143,8 +153,8 @@ class MarketRegimeContext:
             return False
 
         if max_horizon_seconds is not None:
-            max_hor_f = safe_float(max_horizon_seconds, default=None)
-            if max_hor_f is None or (max_hor_f > 0 and dur > max_hor_f):
+            max_hor_f = safe_pos_float(max_horizon_seconds, default=None)
+            if max_hor_f is None or dur > max_hor_f:
                 return False
 
         # 4. Identity validation
@@ -210,11 +220,11 @@ class MarketRegimeContext:
         decision = cls._coerce_decision(decision)
         benchmark_decision = cls._coerce_decision(benchmark_decision)
         trend = "flat" if decision.regime == "sideways" else decision.regime
-        eval_ts = (
-            time.time()
-            if (evaluated_at is None or isinstance(evaluated_at, bool))
-            else _norm_epoch_float(evaluated_at, default=0.0)
-        )
+        if evaluated_at is None or isinstance(evaluated_at, bool):
+            eval_ts = resolve_now_ts()
+        else:
+            norm_eval = normalize_epoch_sec(evaluated_at, default=None, allow_zero=True)
+            eval_ts = norm_eval if norm_eval is not None else (safe_float(evaluated_at, default=0.0) or 0.0)
         dur_s = (
             0.0
             if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool))
@@ -250,8 +260,8 @@ class MarketRegimeEvidence:
 
     @property
     def age_seconds(self) -> Optional[float]:
-        eval_f = _norm_epoch_float(self.evaluated_at)
-        obs_f = _norm_epoch_float(self.observed_at)
+        eval_f = normalize_epoch_sec(self.evaluated_at, default=None, allow_zero=True)
+        obs_f = normalize_epoch_sec(self.observed_at, default=None, allow_zero=True)
         return None if (eval_f is None or obs_f is None) else safe_float(eval_f - obs_f, default=None)
 
     @property
@@ -353,16 +363,14 @@ class MarketRegimeEvaluator:
                 continue
             if isinstance(candidate, bool):
                 return self.unknown("invalid_signal")
-            try:
-                cf = float(candidate)
-            except (TypeError, ValueError):
-                return self.unknown("invalid_signal")
-            if not math.isfinite(cf):
+            if _is_non_finite_numeric(candidate):
                 return self.unknown("non_finite_signal")
+            if safe_float(candidate, default=None) is None:
+                return self.unknown("invalid_signal")
         if raw_grad is None or raw_eps is None:
             return self.unknown("invalid_signal")
-        gradient = float(raw_grad)
-        epsilon = abs(float(raw_eps))
+        gradient = safe_float(raw_grad, default=0.0) or 0.0
+        epsilon = abs(safe_float(raw_eps, default=0.0) or 0.0)
         samples = snapshot.get("n_samples")
         window = snapshot.get("window_seconds")
         try:
@@ -582,7 +590,7 @@ class MarketRegimeService:
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         include_alternates = _parse_bool_flag(include_alternates, False)
         role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
-        evaluated_at = time.time() if now is None else normalize_epoch_sec(now, default=None)
+        evaluated_at = resolve_now_ts() if now is None else normalize_epoch_sec(now, default=None)
         if evaluated_at is None:
             raise ValueError("now must be a positive finite Unix timestamp")
 
@@ -639,8 +647,8 @@ class MarketRegimeService:
                 if ws_f is None:
                     raise ValueError("the regime interval and window must be positive")
             primary = (
-                int(configured[0][0] if interval_min is None else im_i),
-                float(configured[0][1] if window_seconds is None else ws_f),
+                configured[0][0] if interval_min is None else im_i,
+                configured[0][1] if window_seconds is None else ws_f,
             )
             configured = (primary,) + tuple(
                 item for item in configured if item != primary
@@ -763,25 +771,27 @@ class MarketRegimeService:
         observed_at = continuous = None
         try:
             series = self._closed_series(provider, symbol, interval_min)
-            closes = tuple(series.closes)
-            timestamps = tuple(series.timestamps or ())
-            needed = max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
-            if not timestamps or len(timestamps) == len(closes):
-                closes = closes[-needed:]
-                timestamps = timestamps[-needed:]
-            if not timestamps:
+            raw_closes = tuple(series.closes)
+            raw_timestamps = tuple(series.timestamps or ())
+            needed = max(3, safe_pos_int(math.ceil(window_seconds / (interval_min * 60.0)), default=3) or 3)
+            closes = raw_closes[-needed:]
+            if not raw_timestamps:
                 observed_at = (
                     self._timestamp_seconds(series.last_closed_at)
                     if series.last_closed_at is not None
                     else None
                 )
+            elif len(raw_timestamps) != len(raw_closes):
+                observed_at = None
+                continuous = False
             else:
+                timestamps = raw_timestamps[-needed:]
                 normalized = tuple(self._timestamp_seconds(v) for v in timestamps)
-                observed_at = normalized[-1]
-                if len(normalized) != len(closes):
+                observed_at = normalized[-1] if normalized else None
+                if len(normalized) < 2 or len(normalized) != len(closes):
                     continuous = False
                 else:
-                    expected = int(interval_min) * 60.0
+                    expected = interval_min * 60.0
                     tolerance = max(1.0, expected * 0.02)
                     continuous = all(
                         abs((right - left) - expected) <= tolerance
@@ -823,9 +833,10 @@ class MarketRegimeService:
         _parsed, interval, window_seconds = cls._resolve_horizon_window(
             horizon, interval_min=interval_min
         )
-        return max(3, int(math.ceil(window_seconds / (interval * 60.0))))
+        return max(3, safe_pos_int(math.ceil(window_seconds / (interval * 60.0)), default=3) or 3)
 
-    _EVAL_CLOSES_CACHE: dict = {}
+    _EVAL_CLOSES_CACHE: OrderedDict = OrderedDict()
+    _EVAL_CLOSES_LOCK: threading.Lock = threading.Lock()
     _EVAL_CLOSES_CACHE_MAX = 262144
 
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
@@ -851,13 +862,18 @@ class MarketRegimeService:
         if im_i is None or win is None:
             return self.evaluator.unknown("invalid_window_metadata")
         itv = im_i
-        needed = max(3, int(math.ceil(win / (itv * 60.0))))
+        needed = max(3, safe_pos_int(math.ceil(win / (itv * 60.0)), default=3) or 3)
         try:
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]
             if any(isinstance(value, bool) or value is None for value in tail):
                 return self.evaluator.unknown("invalid_ohlc")
-            values = tuple([float(value) for value in tail])
+            if any(_is_non_finite_numeric(value) for value in tail):
+                return self.evaluator.unknown("non_finite_ohlc")
+            parsed_vals = [safe_float(value, default=None) for value in tail]
+            if any(v is None for v in parsed_vals):
+                return self.evaluator.unknown("invalid_ohlc")
+            values = tuple(parsed_vals)
         except (TypeError, ValueError, OverflowError):
             return self.evaluator.unknown("invalid_ohlc")
         n = len(values)
@@ -868,9 +884,11 @@ class MarketRegimeService:
             return self.evaluator.unknown("non_finite_ohlc")
 
         cache_key = (itv, win, self.evaluator.strength_threshold, values)
-        cached = self._EVAL_CLOSES_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._EVAL_CLOSES_LOCK:
+            cached = self._EVAL_CLOSES_CACHE.get(cache_key)
+            if cached is not None:
+                self._EVAL_CLOSES_CACHE.move_to_end(cache_key)
+                return cached
 
         base = values[0]
         inv_base = 1.0 / base
@@ -890,7 +908,6 @@ class MarketRegimeService:
             "n_samples": n,
             "window_seconds": win,
         })
-        if len(self._EVAL_CLOSES_CACHE) >= self._EVAL_CLOSES_CACHE_MAX:
-            self._EVAL_CLOSES_CACHE.clear()
-        self._EVAL_CLOSES_CACHE[cache_key] = decision
+        with self._EVAL_CLOSES_LOCK:
+            lru_dict_put(self._EVAL_CLOSES_CACHE, cache_key, decision, self._EVAL_CLOSES_CACHE_MAX)
         return decision

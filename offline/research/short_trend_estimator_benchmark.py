@@ -27,6 +27,7 @@ import io
 import math
 import os
 import sys
+import zipfile
 from multiprocessing import Pool
 
 import numpy as np
@@ -72,8 +73,11 @@ def load_series(sym):
     if not jsonl_path:
         for existing_npz in (npz_365, npz_sparse):
             if os.path.exists(existing_npz):
-                with np.load(existing_npz) as z:
-                    return z["ts"], z["px"]
+                try:
+                    with np.load(existing_npz) as z:
+                        return z["ts"], z["px"]
+                except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+                    continue
         return np.empty(0), np.empty(0)
     npz_target = npz_365 if chosen_prefix == "cache_365_price_" else npz_sparse
     if os.path.exists(npz_target):
@@ -81,7 +85,7 @@ def load_series(sym):
             if os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path):
                 with np.load(npz_target) as z:
                     return z["ts"], z["px"]
-        except OSError:
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
             pass
 
     valid_syms = set(sym_cands) | {sym}
@@ -145,7 +149,7 @@ def step_wols(series, p):
 
 def exp_steps(series, half_life):
     k = np.arange(1, N_WIN, dtype=np.float64)
-    lam = float(np.log(2.0)) / half_life
+    lam = math.log(2.0) / half_life
     return conv_steps(series, kernel_newest_first(np.exp(lam * (k - (N_WIN - 1)))))
 
 
@@ -305,6 +309,8 @@ def evaluate(sym):
         while j < upper - 1 and ts[j] - t0 < max_wait:
             if (sig[j] >= 0) if want_positive else (sig[j] <= 0):
                 break
+            if ts[j + 1] - t0 > max_wait + 5.0:
+                break
             j += 1
         return j
 
@@ -333,6 +339,8 @@ def evaluate(sym):
                 t0 = ts[ix]
                 j = ix
                 while j < seg_bound - 1 and ts[j] - t0 < 240 and sgn[j] != want:
+                    if ts[j + 1] - t0 > 245.0:
+                        break
                     j += 1
                 lags.append(min(240.0, ts[j] - t0))
             # GT_S BUY on dips: wait while falling (sig < 0)
@@ -347,16 +355,22 @@ def evaluate(sym):
                     peak = max(peak, px[j])
                     if sig[j] <= 0 or (peak - px[j]) / peak * 1e4 >= 20.0:
                         break
+                    if ts[j + 1] - t0 > 365.0:
+                        break
                     j += 1
                 ride.append((px[j] - p0) / p0 * 1e4)
+            buy_m = _safe_mean(buy_sav)
+            sell_m = _safe_mean(sell_sav)
+            ride_m = _safe_mean(ride)
+            finite_parts = [x for x in (buy_m, sell_m, ride_m) if math.isfinite(x)]
             out[sname] = dict(
                 sp60=spread60, sp180=spread180, hit=hit, flips=flips,
                 lag_med=safe_float(np.median(lags).item(), default=math.nan) if lags else math.nan,
                 lag_mean=safe_float(np.mean(lags).item(), default=math.nan) if lags else math.nan,
-                buy=_safe_mean(buy_sav), sell=_safe_mean(sell_sav), ride=_safe_mean(ride),
+                buy=buy_m, sell=sell_m, ride=ride_m,
                 n_dip=len(buy_sav), n_rally=len(sell_sav), n_tp=len(lags),
             )
-            out[sname]["edge"] = out[sname]["buy"] + out[sname]["sell"] + out[sname]["ride"]
+            out[sname]["edge"] = sum(finite_parts) if finite_parts else math.nan
             out[sname]["raw"] = (np.asarray(buy_sav, dtype=np.float64), np.asarray(sell_sav, dtype=np.float64), np.asarray(ride, dtype=np.float64))
         res[cname] = out
     return sym, N, res
@@ -369,15 +383,22 @@ def main():
     ap.add_argument("symbols", nargs="*", default=["BTCUSDC", "TAOUSDC", "ARBUSDC"])
     args = ap.parse_args()
     D = args.data_dir
+    prev_env_d = os.environ.get("SHORT_TREND_BENCH_DATA_DIR")
     os.environ["SHORT_TREND_BENCH_DATA_DIR"] = D
-    syms = args.symbols
-    n_workers = min(len(syms), max(1, int_env("BENCH_WORKERS") or 1))
-    if n_workers <= 1:
-        _set_data_dir(D)
-        results = [evaluate(s) for s in syms]
-    else:
-        with Pool(n_workers, initializer=_set_data_dir, initargs=(D,)) as pool:
-            results = pool.map(evaluate, syms)
+    try:
+        syms = args.symbols
+        n_workers = min(len(syms), max(1, int_env("BENCH_WORKERS") or 1))
+        if n_workers <= 1:
+            _set_data_dir(D)
+            results = [evaluate(s) for s in syms]
+        else:
+            with Pool(n_workers, initializer=_set_data_dir, initargs=(D,)) as pool:
+                results = pool.map(evaluate, syms)
+    finally:
+        if prev_env_d is None:
+            os.environ.pop("SHORT_TREND_BENCH_DATA_DIR", None)
+        else:
+            os.environ["SHORT_TREND_BENCH_DATA_DIR"] = prev_env_d
     agg = {}
     for sym, N, res in results:
         if not res:
@@ -412,20 +433,22 @@ def main():
                 d_buy = res[c][s]["raw"][0] - res[base][s]["raw"][0]
                 d_sell = res[c][s]["raw"][1] - res[base][s]["raw"][1]
                 d_ride = res[c][s]["raw"][2] - res[base][s]["raw"][2]
-                point = _safe_mean(d_buy) + _safe_mean(d_sell) + _safe_mean(d_ride)
+                finite_d = [x for x in (_safe_mean(d_buy), _safe_mean(d_sell), _safe_mean(d_ride)) if math.isfinite(x)]
+                point = sum(finite_d) if finite_d else math.nan
                 boots = np.zeros(2000)
+                has_any_boot = False
                 if len(d_buy) > 0:
                     idx_b = rng.integers(0, len(d_buy), size=(2000, len(d_buy)))
                     boots += d_buy[idx_b].mean(axis=1)
-                else:
-                    boots += np.nan
+                    has_any_boot = True
                 # Pair sell_sav and ride on their shared rally trigger indices to preserve covariance
                 if len(d_sell) > 0 and len(d_sell) == len(d_ride):
                     d_rally = d_sell + d_ride
                     idx_r = rng.integers(0, len(d_rally), size=(2000, len(d_rally)))
                     boots += d_rally[idx_r].mean(axis=1)
-                else:
-                    boots += np.nan
+                    has_any_boot = True
+                if not has_any_boot:
+                    boots[:] = np.nan
                 lo, hi = np.percentile(boots, [2.5, 97.5])
                 cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
             print(f"{sym:<8} {c:<24} " + " | ".join(cells))

@@ -9,8 +9,9 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Iterable, Sequence
+from decimal import Decimal, ROUND_CEILING
 
-from botcore import safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from botcore import _parse_bool_flag, exact_int, safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
 
 
 def round_metric(value: object, decimals: int = 10) -> object:
@@ -115,27 +116,46 @@ def calculate_performance_metrics(
         if len(periodic_returns) > 1:
             volatility = statistics.stdev(periodic_returns, xbar=mean_return)
             if volatility > 0:
-                sharpe = mean_return / volatility * math.sqrt(periods_per_year)
+                sharpe = safe_float(mean_return / volatility * math.sqrt(periods_per_year), default=None)
 
             downside_deviation = math.sqrt(
                 statistics.fmean(min(value, 0.0) ** 2 for value in periodic_returns)
             )
             if downside_deviation > 0:
-                sortino = mean_return / downside_deviation * math.sqrt(periods_per_year)
+                sortino = safe_float(mean_return / downside_deviation * math.sqrt(periods_per_year), default=None)
         if annualized_return is not None and max_drawdown_pct > 0:
-            calmar = annualized_return / max_drawdown_pct
+            calmar = safe_float(annualized_return / max_drawdown_pct, default=None)
 
     cvar = None
     if periodic_returns and returns_valid:
-        tail_size = max(1, math.ceil((1.0 - cvar_confidence) * len(periodic_returns)))
+        raw_tail = (Decimal("1") - Decimal(str(cvar_confidence))) * Decimal(len(periodic_returns))
+        ceil_tail = exact_int(raw_tail.to_integral_value(rounding=ROUND_CEILING), default=1) or 1
+        tail_size = max(1, min(len(periodic_returns), ceil_tail))
         cvar = statistics.fmean(sorted(periodic_returns)[:tail_size])
 
-    exposure_values = [] if exposure is None else list(exposure)
+    if exposure is not None and isinstance(exposure, (str, bytes, bool)):
+        raise ValueError("exposure must be an iterable of booleans")
+    exposure_flags: list[bool] = []
+    for value in ([] if exposure is None else exposure):
+        if isinstance(value, bool):
+            exposure_flags.append(value)
+        elif isinstance(value, str):
+            parsed_exp = _parse_bool_flag(value, default=None)
+            if parsed_exp is None:
+                raise ValueError(f"invalid exposure flag: {value!r}")
+            exposure_flags.append(parsed_exp)
+        else:
+            f_exp = safe_float(value, default=None)
+            if f_exp is None:
+                raise ValueError(f"invalid exposure value: {value!r}")
+            exposure_flags.append(f_exp != 0.0)
     exposure_pct = (
-        100.0 * statistics.fmean(bool(value) for value in exposure_values)
-        if exposure_values else 0.0
+        100.0 * statistics.fmean(exposure_flags)
+        if exposure_flags else 0.0
     )
 
+    if trade_pnls is not None and isinstance(trade_pnls, (str, bytes, bool)):
+        raise ValueError("trade_pnls must be an iterable of finite numbers")
     pnls: list[float] = []
     for value in ([] if trade_pnls is None else trade_pnls):
         if isinstance(value, bool):
@@ -192,10 +212,12 @@ def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
 
 def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
     """Compute percentage buy-and-hold return across an OHLC bar sequence or close series."""
-    if not ohlc_or_closes:
+    if not ohlc_or_closes or isinstance(ohlc_or_closes, (str, bytes, bool)):
         return 0.0
     first, last = ohlc_or_closes[0], ohlc_or_closes[-1]
-    if isinstance(first, (list, tuple)):
+    if isinstance(first, (list, tuple)) or isinstance(last, (list, tuple)):
+        if not (isinstance(first, (list, tuple)) and isinstance(last, (list, tuple))):
+            return 0.0
         if len(first) < 4 or len(last) < 4:
             return 0.0
         c0 = safe_pos_float(first[3], default=None)
@@ -223,20 +245,23 @@ def print_single_backtest_report(
     b_val = safe_pos_float(budget, default=None)
     if b_val is None:
         raise ValueError("budget must be positive")
-    tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
-    net_pct = safe_float(m.get("net"), 0.0) / b_val * 100.0
-    cycles = safe_nonneg_int(m.get("cycles"), default=0)
-    wins = safe_nonneg_int(m.get("wins"), default=0)
+    md = m if isinstance(m, dict) else {}
+    bh_f = safe_float(bh, 0.0)
+    qty_dec = safe_nonneg_int(open_qty_decimals, default=4)
+    tot = safe_float(md.get("total"), 0.0) / b_val * 100.0
+    net_pct = safe_float(md.get("net"), 0.0) / b_val * 100.0
+    cycles = safe_nonneg_int(md.get("cycles"), default=0)
+    wins = safe_nonneg_int(md.get("wins"), default=0)
     wr = 100.0 * wins / cycles if cycles else 0.0
-    realized = safe_float(m.get("realized"), 0.0)
-    upnl = safe_float(m.get("final_upnl"), 0.0)
-    fees = safe_float(m.get("fees"), 0.0)
-    maxdd = safe_float(m.get("maxdd"), 0.0)
-    open_qty = safe_float(m.get("open_qty"), 0.0)
+    realized = safe_float(md.get("realized"), 0.0)
+    upnl = safe_float(md.get("final_upnl"), 0.0)
+    fees = safe_float(md.get("fees"), 0.0)
+    maxdd = safe_float(md.get("maxdd"), 0.0)
+    open_qty = safe_float(md.get("open_qty"), 0.0)
     emit(header)
     emit(f"  params: {params_line}")
     if include_funding:
-        funding = safe_float(m.get("funding"), 0.0)
+        funding = safe_float(md.get("funding"), 0.0)
         emit(
             f"  REAL TOTAL: {tot:+.2f}% of the budget  <= realised ${realized:+.2f} "
             f"+ funding ${funding:+.2f} + the open position ${upnl:+.2f} - fees ${fees:.2f}"
@@ -253,13 +278,13 @@ def print_single_backtest_report(
         )
         emit(f"  (realized alone: {net_pct:+.2f}%)")
         emit(f"  cycles: {cycles}  win-rate {wr:.0f}%   max drawdown ${maxdd:.2f}")
-    for line in format_performance_summary(m, indent="  "):
+    for line in format_performance_summary(md, indent="  "):
         emit(line)
     if include_funding:
         status = "LOSING" if upnl < -1 else "ok"
-        emit(f"  buy&hold: {bh:+.2f}%   final position: {open_qty:.{open_qty_decimals}f} ({status})")
+        emit(f"  buy&hold: {bh_f:+.2f}%   final position: {open_qty:.{qty_dec}f} ({status})")
     else:
-        emit(f"  buy&hold: {bh:+.2f}%   final position: {open_qty:.{open_qty_decimals}f}")
+        emit(f"  buy&hold: {bh_f:+.2f}%   final position: {open_qty:.{qty_dec}f}")
 
 
 def run_tp_drop_sl_sweep(

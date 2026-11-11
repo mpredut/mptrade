@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
 from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
@@ -113,11 +113,27 @@ def _precompute_intelligence_tape(
             return 0.0
         return rolling_prices[idx]
 
-    for raw_t, raw_p in sampled:
-        t = safe_float(raw_t, default=None)
-        p = safe_pos_float(raw_p, default=None)
-        if t is None or p is None:
+    cleaned_samples: List[Tuple[float, float]] = []
+    needs_sort = False
+    prev_ts: Optional[float] = None
+    for item in sampled or ():
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
+        t_clean = normalize_epoch_sec(item[0], default=None, allow_zero=True)
+        p_clean = safe_pos_float(item[1], default=None)
+        if t_clean is None or p_clean is None:
+            continue
+        if prev_ts is not None and t_clean < prev_ts:
+            needs_sort = True
+        prev_ts = t_clean
+        cleaned_samples.append((t_clean, p_clean))
+    if needs_sort:
+        cleaned_samples.sort(key=lambda x: x[0])
+
+    bars_4h = max(2, safe_int(round(14400.0 / step_sec_f), 48))
+    bars_recent = max(2, safe_int(round(6000.0 / step_sec_f), 20))
+
+    for t, p in cleaned_samples:
         if trend_start_ts is None:
             trend_start_ts = t
         rolling_prices.append(p)
@@ -146,8 +162,7 @@ def _precompute_intelligence_tape(
         p_30m = _price_asof(t - 1800.0)
         p_1h = _price_asof(t - 3600.0)
         p_4h = _price_asof(t - 14400.0)
-        bars_4h = max(48, safe_int(round(14400.0 / step_sec_f), 48))
-        prior_20 = rolling_prices[-21:-1] if n_roll >= 21 else rolling_prices[:-1]
+        prior_20 = rolling_prices[-bars_recent - 1:-1] if n_roll >= (bars_recent + 1) else rolling_prices[:-1]
         prior_4h = rolling_prices[-bars_4h - 1:-1] if n_roll >= 2 else []
 
         tape.append({
@@ -160,8 +175,8 @@ def _precompute_intelligence_tape(
             "p_dec": p_dec,
             "current_trend": current_trend,
             "trend_duration_sec": max(0.0, t - trend_start_ts),
-            "recent_high_20": max(prior_20) if n_roll >= 20 and prior_20 else 0.0,
-            "local_high_48": max(prior_4h) if len(prior_4h) >= min(47, bars_4h - 1) else 0.0,
+            "recent_high_20": max(prior_20) if n_roll >= bars_recent and prior_20 else 0.0,
+            "local_high_48": max(prior_4h) if len(prior_4h) >= max(1, bars_4h - 1) else 0.0,
             "drop_15m": (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0,
             "drop_30m": (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0,
             "p_1h_pct": (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0,
@@ -223,7 +238,11 @@ def run_intelligence_backtest(
     step_f = _req_pos_num(step_seconds, "step_seconds")
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    fee_f = safe_nonneg_float(fee_pct, default=None) if isinstance(fee_pct, (int, float)) else None
+    fee_f = (
+        safe_nonneg_float(fee_pct, default=None)
+        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
+        else None
+    )
     if fee_f is None or fee_f >= 1.0:
         raise ValueError("fee_pct must be in [0, 1)")
     step_seconds = max(1, safe_int(round(step_f), 1))
@@ -352,7 +371,7 @@ def run_intelligence_backtest(
                 entry_cost = 0.0
                 last_exit_ts = t
 
-            elif want_buy and asset_qty == 0 and usd > 50.0:
+            elif want_buy and not want_sell and asset_qty == 0 and usd > 50.0:
                 scale = 1.0
 
                 # Phase A: Hard-veto guards first (so downscale counters only reflect surviving orders)
@@ -432,25 +451,24 @@ def run_intelligence_backtest(
                             continue
 
                     # 6. Orderbook Wall & Depth Imbalance Guard (Unabsorbed ask resistance below local high)
-                    if n_roll >= 48:
-                        local_high = bar["local_high_48"]
-                        if local_high > 0 and (local_high * 0.995) <= p < local_high and p_1h_pct < 1.2:
-                            ob_snap = OrderbookSnapshot(
-                                symbol=symbol,
-                                mid_price=p,
-                                bid_depth_usd=160_000.0,
-                                ask_depth_usd=850_000.0,
-                                imbalance_ratio=0.15,
-                                largest_bid_wall_usd=60_000.0,
-                                largest_bid_wall_price=p * 0.99,
-                                largest_ask_wall_usd=1_500_000.0,
-                                largest_ask_wall_price=local_high,
-                                ts=t,
-                            )
-                            ob_dec = orderbook_guard.check(symbol, "BUY", snapshot=ob_snap)
-                            if not ob_dec.allowed:
-                                orderbook_vetoes += 1
-                                continue
+                    local_high = bar["local_high_48"]
+                    if local_high > 0 and (local_high * 0.995) <= p < local_high and p_1h_pct < 1.2:
+                        ob_snap = OrderbookSnapshot(
+                            symbol=symbol,
+                            mid_price=p,
+                            bid_depth_usd=160_000.0,
+                            ask_depth_usd=850_000.0,
+                            imbalance_ratio=0.15,
+                            largest_bid_wall_usd=60_000.0,
+                            largest_bid_wall_price=p * 0.99,
+                            largest_ask_wall_usd=1_500_000.0,
+                            largest_ask_wall_price=local_high,
+                            ts=t,
+                        )
+                        ob_dec = orderbook_guard.check(symbol, "BUY", snapshot=ob_snap)
+                        if not ob_dec.allowed:
+                            orderbook_vetoes += 1
+                            continue
 
                 # Phase B: Sizing downscale guards on surviving buy intents
                 e_dec = None
@@ -461,6 +479,7 @@ def run_intelligence_backtest(
                         trend_duration_sec,
                         p90_days=p90_days,
                         median_days=median_days,
+                        trend_direction=current_trend,
                     )
                     if not e_dec.allowed:
                         continue
@@ -483,7 +502,12 @@ def run_intelligence_backtest(
                             continue
 
                 s_dec = None
-                if use_full and n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
+                if (
+                    use_full
+                    and bar["local_high_48"] > 0
+                    and p >= bar["local_high_48"] * 0.998
+                    and bar["p_1h_pct"] >= 1.5
+                ):
                     fg_snap = FearGreedSnapshot(
                         value=88,
                         classification="Extreme Greed",
@@ -516,12 +540,24 @@ def run_intelligence_backtest(
                     entry_price = p
                     entry_cost += alloc_usd
 
+            post_equity = usd + (asset_qty * p * (1.0 - fee_pct))
+            if post_equity > peak_equity:
+                peak_equity = post_equity
+            post_dd = ((peak_equity - post_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+            if post_dd > max_dd_pct:
+                max_dd_pct = post_dd
+
         # Final liquidation at end
         final_price = safe_pos_float(tape[-1]["p"], default=0.0) if tape else (safe_pos_float(sampled[-1][1], default=0.0) if sampled else 0.0)
         if asset_qty > 0:
             final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
         final_equity = usd + (asset_qty * final_price * (1.0 - fee_pct))
+        if final_equity > peak_equity:
+            peak_equity = final_equity
+        final_dd = ((peak_equity - final_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+        if final_dd > max_dd_pct:
+            max_dd_pct = final_dd
         net_profit = final_equity - initial_balance
         net_return_pct = (net_profit / initial_balance) * 100.0
 

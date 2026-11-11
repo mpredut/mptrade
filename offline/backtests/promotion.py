@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 
-from botcore import exact_pos_int, safe_float, safe_int
+from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_int
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,16 @@ class RiskAdjustedThresholds:
     require_more_drawdown_wins_than_losses: bool = True
 
 
+def _id_val(val: object) -> object:
+    return ("__bool__", val) if isinstance(val, bool) else val
+
+
+def _window_sort_key(key: object) -> tuple[int, int | str]:
+    if isinstance(key, int) and not isinstance(key, bool):
+        return (0, key)
+    return (1, str(key))
+
+
 def _identity(report: dict) -> tuple:
     if not isinstance(report, dict):
         return (None,) * 9
@@ -43,11 +53,14 @@ def _identity(report: dict) -> tuple:
     dataset = raw_ds if isinstance(raw_ds, dict) else {}
     raw_wf = report.get("walk_forward")
     walk = raw_wf if isinstance(raw_wf, dict) else {}
-    return (
-        dataset.get("sha256"), dataset.get("bars"),
-        report.get("initial_capital_usd"), walk.get("interval_minutes"),
-        walk.get("train"), walk.get("validation"), walk.get("test"),
-        walk.get("step"), walk.get("warmup"),
+    return tuple(
+        _id_val(v)
+        for v in (
+            dataset.get("sha256"), dataset.get("bars"),
+            report.get("initial_capital_usd"), walk.get("interval_minutes"),
+            walk.get("train"), walk.get("validation"), walk.get("test"),
+            walk.get("step"), walk.get("warmup"),
+        )
     )
 
 
@@ -59,14 +72,14 @@ def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
     if active == 0:
         return 1.0
     total_comb = sum(math.comb(active, value) for value in range(w, active + 1))
-    return float(total_comb / (1 << active))
+    return total_comb / (1 << active)
 
 
 def _diff(left, right) -> float:
     lv = safe_float(left, default=None)
     rv = safe_float(right, default=None)
     if lv is None or rv is None:
-        return float("nan")
+        return math.nan
     return lv - rv
 
 
@@ -93,7 +106,7 @@ def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, 
         raise ValueError("baseline and candidate use different datasets or windows")
     base_wf = baseline.get("walk_forward") if isinstance(baseline.get("walk_forward"), dict) else {}
     cand_wf = candidate.get("walk_forward") if isinstance(candidate.get("walk_forward"), dict) else {}
-    if bool(base_wf.get("anchored_train", False)) != bool(cand_wf.get("anchored_train", False)):
+    if _parse_bool_flag(base_wf.get("anchored_train"), False) != _parse_bool_flag(cand_wf.get("anchored_train"), False):
         raise ValueError("baseline and candidate use different datasets or windows")
     base_venue = "" if isinstance(baseline.get("venue"), bool) else str(baseline.get("venue") or "").strip().lower()
     cand_venue = "" if isinstance(candidate.get("venue"), bool) else str(candidate.get("venue") or "").strip().lower()
@@ -169,7 +182,7 @@ def evaluate_promotion(
         )
         deltas = [
             _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
-            for key in sorted(base_windows)
+            for key in sorted(base_windows, key=_window_sort_key)
         ]
         all_deltas_finite = all(math.isfinite(d) for d in deltas)
         wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(deltas)
@@ -252,7 +265,7 @@ def evaluate_risk_adjusted_promotion(
 
         drawdown_improvements = [
             _diff(base_windows[key].get("max_drawdown_pct"), cand_windows[key].get("max_drawdown_pct"))
-            for key in sorted(base_windows)
+            for key in sorted(base_windows, key=_window_sort_key)
         ]
         all_dd_finite = all(math.isfinite(d) for d in drawdown_improvements)
         wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(

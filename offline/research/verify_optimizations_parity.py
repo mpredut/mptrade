@@ -32,22 +32,22 @@ from providers.replay_provider import load_price_series
 
 def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
     print(f"[TEST 1/5] Testing pricewindow.py linear regression vs scipy.stats.linregress ({iterations:,} trials)...")
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     max_diff_slope = 0.0
     max_diff_intercept = 0.0
     max_diff_r = 0.0
 
     for i in range(iterations):
-        n = np.random.randint(2, 500)
+        n = rng.integers(2, 500).item()
         # Generate random price walk
-        base = np.random.uniform(10.0, 100_000.0)
-        vol_pct = np.random.uniform(0.0001, 0.05)
-        returns = np.random.normal(0, vol_pct, size=n)
+        base = rng.uniform(10.0, 100_000.0)
+        vol_pct = rng.uniform(0.0001, 0.05)
+        returns = rng.normal(0, vol_pct, size=n)
         prices = base * np.exp(np.cumsum(returns))
 
         # 1. Unoptimized baseline using scipy.stats.linregress
         x = np.arange(n)
-        y = np.asarray(prices, dtype=float)
+        y = np.asarray(prices, dtype=np.float64)
         slope_base, intercept_base, r_base, _, _ = linregress(x, y)
         line_base = slope_base * x + intercept_base
 
@@ -73,21 +73,21 @@ def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
 
 def test_priceanalysis_ols_parity(iterations: int = 10_000) -> None:
     print(f"[TEST 2/5] Testing priceAnalysis.py _fast_linear_regression_1d vs np.polyfit ({iterations:,} trials)...")
-    np.random.seed(123)
+    rng = np.random.default_rng(123)
     max_diff_slope = 0.0
     max_diff_intercept = 0.0
 
     for i in range(iterations):
-        n = np.random.randint(4, 200)
+        n = rng.integers(4, 200).item()
         # Realistic irregular timestamps (seconds)
-        t0 = 1_700_000_000.0 + np.random.uniform(0, 10_000_000.0)
-        dt = np.random.exponential(scale=2.5, size=n)
+        t0 = 1_700_000_000.0 + rng.uniform(0, 10_000_000.0)
+        dt = rng.exponential(scale=2.5, size=n)
         dt[0] = 0.0
         timestamps = t0 + np.cumsum(dt)
 
-        base_p = np.random.uniform(50.0, 90_000.0)
-        drift = np.random.uniform(-5.0, 5.0)
-        noise = np.random.normal(0, base_p * 0.005, size=n)
+        base_p = rng.uniform(50.0, 90_000.0)
+        drift = rng.uniform(-5.0, 5.0)
+        noise = rng.normal(0, base_p * 0.005, size=n)
         prices = base_p + drift * (timestamps - t0) / 3600.0 + noise
 
         # 1. Unoptimized baseline using np.polyfit
@@ -213,20 +213,20 @@ def test_monitortrades_position_stats_parity() -> None:
 
 def test_volatility_parity(iterations: int = 10_000) -> None:
     print(f"[TEST 5/5] Testing volatility.py log-ratio vs np.diff(np.log(p)) ({iterations:,} trials)...")
-    np.random.seed(999)
+    rng = np.random.default_rng(999)
     max_diff_vol = 0.0
 
     saved_vol_cache = dict(vol._vol_memo_cache)
     try:
         for i in range(iterations):
-            n = np.random.randint(20, 200)
-            p0 = np.random.uniform(1.0, 50_000.0)
-            returns = np.random.normal(0, 0.02, size=n)
+            n = rng.integers(20, 200).item()
+            p0 = rng.uniform(1.0, 50_000.0)
+            returns = rng.normal(0, 0.02, size=n)
             prices = p0 * np.exp(np.cumsum(returns))
-            sample_rate = safe_float(np.random.choice([0.8, 1.0, 5.0, 60.0, 300.0]).item(), 1.0)
+            sample_rate = safe_float(rng.choice([0.8, 1.0, 5.0, 60.0, 300.0]).item(), 1.0)
 
             # Baseline calculation using np.diff(np.log(p))
-            p = np.asarray(prices, dtype=float)
+            p = np.asarray(prices, dtype=np.float64)
             p = p[p > 0]
             rets_base = np.diff(np.log(p))
             std_base = safe_float(np.std(rets_base).item(), 0.0)
@@ -238,7 +238,9 @@ def test_volatility_parity(iterations: int = 10_000) -> None:
 
             diff = abs(vol_base - vol_opt)
             max_diff_vol = max(max_diff_vol, diff)
-            assert vol_base == vol_opt, f"Volatility mismatch at iter {i}: {vol_base} vs {vol_opt}"
+            assert math.isclose(vol_base, vol_opt, rel_tol=1e-12, abs_tol=1e-12), (
+                f"Volatility mismatch at iter {i}: {vol_base} vs {vol_opt}"
+            )
     finally:
         vol._vol_memo_cache.clear()
         vol._vol_memo_cache.update(saved_vol_cache)

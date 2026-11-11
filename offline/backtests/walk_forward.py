@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import statistics
 
@@ -85,7 +86,10 @@ def summarize_test_windows(windows: list[dict]) -> dict:
     ``buy_hold_return_pct``, ``cycles`` and ``fills``. The windows are weighted
     equally; we do not mix equity curves with different frequencies.
     """
-    if not windows or isinstance(windows, (str, bytes, bool)):
+    if windows is None or isinstance(windows, (str, bytes, bool, Mapping)) or not isinstance(windows, Iterable):
+        raise ValueError("at least one TEST window is required")
+    windows = list(windows)
+    if not windows:
         raise ValueError("at least one TEST window is required")
     required = {
         "return_pct", "max_drawdown_pct", "buy_hold_return_pct", "cycles", "fills",

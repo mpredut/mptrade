@@ -11,6 +11,7 @@ from botcore import (
     normalize_epoch_sec,
     resolve_patched_attr,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
     timeToHMS,
@@ -105,6 +106,8 @@ def _summarize_orders(orders):
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
     total_qty = total_val = 0.0
     latest_ts = 0
+    latest_key: tuple[int, str] | None = None
+    latest_id: Any = 0
     for o in orders:
         q, p = extract_order_qty(o), extract_order_price(o)
         ts = extract_timestamp_ms(o, default=0) or 0
@@ -113,10 +116,12 @@ def _summarize_orders(orders):
             total_val += p * q
         if ts > latest_ts:
             latest_ts = ts
-    first = orders[0]
-    first_ts = extract_timestamp_ms(first, default=0) or 0
-    first_id = (first.get("id") or first.get("orderId") or first_ts) if isinstance(first, dict) else first_ts
-    sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
+        cand_id = (o.get("id") or o.get("orderId") or ts) if isinstance(o, dict) else ts
+        cand_key = (ts, str(cand_id))
+        if latest_key is None or cand_key > latest_key:
+            latest_key = cand_key
+            latest_id = cand_id
+    sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, latest_id)
     return total_qty, total_val, sig
 
 
@@ -312,10 +317,11 @@ def _eval_reentry_buy_quantity_decision(
     base_asset, quote_asset = _mt_attr("resolve_assets", resolve_assets)(
         symbol, getattr(inst, "base", None), getattr(inst, "quote", None)
     )
+    safeback_h = safe_pos_float(buy_safeback_hours, default=1.0) or 1.0
     decision = provider.quantity_decision(
         symbol, "BUY", current_price, requested_qty,
         base=base_asset, quote=quote_asset,
-        cancelorders=True, hours=float(buy_safeback_hours),
+        cancelorders=True, hours=safeback_h,
         apply_policy=not bypass_qlimit1, market=False,
     )
     return decision, quote_asset
@@ -326,7 +332,8 @@ def _validate_scaled_buy_qty(
     min_qty: float, prefix_msg: str, qty_label: str = "scaled qty",
 ) -> Tuple[bool, float]:
     scaled_qty = _mt_attr("round_provider_qty", round_provider_qty)(provider, symbol, raw_qty * scale)
-    if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
+    min_q = safe_pos_float(min_qty, default=0.0) or 0.0
+    if scaled_qty <= 0.0 or (min_q > 0.0 and scaled_qty < min_q):
         print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} below min_qty {min_qty} (scale={scale:.2f})")
         return False, scaled_qty
     scaled_refusal = _mt_attr("check_order_filter_refusal", check_order_filter_refusal)(
@@ -353,8 +360,12 @@ def _infer_mt_exit_kind(
     last_exit_kind_map: dict,
 ) -> str:
     latest_sell = (
-        trade_orders_sell[0]
-        if isinstance(trade_orders_sell, (list, tuple)) and trade_orders_sell and isinstance(trade_orders_sell[0], dict)
+        max(
+            (o for o in trade_orders_sell if isinstance(o, dict)),
+            key=lambda o: extract_timestamp_ms(o, default=0) or 0,
+            default={},
+        )
+        if isinstance(trade_orders_sell, (list, tuple)) and trade_orders_sell
         else {}
     )
     latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
@@ -406,7 +417,11 @@ def _update_mt_reentry_state(
 ) -> dict:
     sell_time_clean = normalize_epoch_sec(sell_time, default=None)
     now_s = normalize_epoch_sec(current_time_s, default=0.0, allow_zero=True) or 0.0
-    current_time_s = int(now_s) if isinstance(current_time_s, int) and not isinstance(current_time_s, bool) else now_s
+    current_time_s = (
+        safe_nonneg_int(math.trunc(now_s), default=0) or 0
+        if isinstance(current_time_s, int) and not isinstance(current_time_s, bool)
+        else now_s
+    )
     prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
     if is_reentry_state_stale(prev_reentry_state, sell_time_clean):
         prev_reentry_state = {}

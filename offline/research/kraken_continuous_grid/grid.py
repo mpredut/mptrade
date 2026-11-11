@@ -121,16 +121,22 @@ _TASK_CACHE: dict = {}
 def load(path):
     if isinstance(path, (bool, int, float)):
         return []
-    cached = _LOAD_CACHE.get(path)
+    key = os.path.abspath(os.fspath(path))
+    try:
+        mtime_ns = os.stat(key).st_mtime_ns
+    except OSError:
+        mtime_ns = None
+    cached = _LOAD_CACHE.get((key, mtime_ns))
     if cached is not None:
         return cached
     rows = load_ohlc_tuples_csv(path, strict=True)
-    _LOAD_CACHE[path] = rows
+    _LOAD_CACHE[(key, mtime_ns)] = rows
     return rows
 
 
 def load_asset(asset):
-    cached = _ASSET_CACHE.get(asset)
+    asset_key = (os.path.abspath(DATA), asset)
+    cached = _ASSET_CACHE.get(asset_key)
     if cached is not None:
         return cached
     bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
@@ -145,11 +151,13 @@ def load_asset(asset):
         if len(idx) >= 360 and idx[0] >= WARM:
             year_slices.append((str(y), idx[0], idx[-1] + 1))
     res = (bars, ohlc, year_slices)
-    _ASSET_CACHE[asset] = res
+    _ASSET_CACHE[asset_key] = res
     return res
 
 
 def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
+    prev_peak = FLAGS["peak"]
+    prev_step = strat.Strategy.step
     FLAGS["peak"] = bool(peak)
     strat.Strategy.step = _step if peak else _orig_step
     try:
@@ -159,8 +167,9 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
             if initial_cash is not None:
                 return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": safe_nonneg_float(initial_cash, 0.0)}
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
+        fee_val = safe_nonneg_float(fee, 0.0)
         interval_params = rp.align_spot_interval_params(params, 240)
-        m = rp.run_replay(ohlc, interval_params, fee_pct=fee, bar_minutes=240,
+        m = rp.run_replay(ohlc, interval_params, fee_pct=fee_val, bar_minutes=240,
                           warmup_ohlc=w_ohlc, initial_cash=initial_cash)
         tot = safe_float(m.get("total"), 0.0)
         if initial_cash is not None:
@@ -176,14 +185,16 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
         budget = safe_pos_float(params.allocated_budget(), 0.0)
         p0 = safe_pos_float(ohlc[0][3], 0.0)
         p1 = safe_float(ohlc[-1][3], 0.0)
+        fee_r = min(0.9999, fee_val / 100.0)
+        bh_pct = (((p1 * (1.0 - fee_r)) / (p0 * (1.0 + fee_r))) - 1.0) * 100.0 if p0 > 0 else 0.0
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
                 "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
                 "cyc": safe_nonneg_int(m.get("cycles"), default=0),
                 "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
-                "bh": round((p1 / p0 - 1) * 100, 3) if p0 > 0 else 0.0}
+                "bh": round(bh_pct, 3)}
     finally:
-        FLAGS["peak"] = False
-        strat.Strategy.step = _orig_step
+        FLAGS["peak"] = prev_peak
+        strat.Strategy.step = prev_step
 
 
 def task(args):
@@ -191,7 +202,7 @@ def task(args):
     try:
         bars, ohlc, year_slices = load_asset(asset)
         params, peak = CONFIGS[cfg]
-        cache_key = (asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+        cache_key = (os.path.abspath(DATA), asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
                      repr(params), bool(peak))
         cached = _TASK_CACHE.get(cache_key)
         if cached is not None:
@@ -216,7 +227,14 @@ def task(args):
 
 
 def _row_matches_current_spec(r: dict, assets_set: set[str]) -> bool:
-    if "error" in r or r.get("asset") not in assets_set or r.get("cfg") not in CONFIGS:
+    if (
+        "error" in r
+        or r.get("asset") not in assets_set
+        or r.get("cfg") not in CONFIGS
+        or not isinstance(r.get("full"), dict)
+        or not isinstance(r.get("w30"), list)
+        or not isinstance(r.get("w90"), list)
+    ):
         return False
     bars, _, _ = load_asset(r["asset"])
     if r.get("bars") != len(bars):

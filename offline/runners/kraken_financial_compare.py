@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import safe_float  # noqa: E402
+from botcore import safe_float, safe_pos_int  # noqa: E402
 from offline.runners import kraken_financial_benchmark as benchmark  # noqa: E402
 from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
@@ -95,9 +95,21 @@ def build_comparison(args) -> dict:
 
 
 def markdown_report(report: dict) -> str:
+    n_win = 31
+    for cand_val in (report.get("candidates") or {}).values():
+        if isinstance(cand_val, dict):
+            for scen_agg in (cand_val.get("scenarios") or {}).values():
+                if isinstance(scen_agg, dict):
+                    parsed_wc = safe_pos_int(scen_agg.get("window_count"), default=None)
+                    if parsed_wc is not None:
+                        n_win = parsed_wc
+                        break
+            else:
+                continue
+            break
     lines = [
         "# HYPE financial candidate comparison", "",
-        "Pre-registered set; the same 31 OOS windows and the same costs for all.",
+        f"Pre-registered set; the same {n_win} OOS windows and the same costs for all.",
         "No candidate is enabled by this runner.", "",
         "| Candidate | Scenario | Mean % | d mean pp | Worst % | d worst pp | "
         "d DD pp | Return W/T/L | Calmar d | DD W/T/L | Return/Risk |",
@@ -139,7 +151,7 @@ def markdown_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--dataset", type=Path, default=benchmark.DEFAULT_DATASET)
@@ -154,7 +166,7 @@ def main() -> int:
     parser.add_argument("--strict-baseline", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     benchmark.validate_financial_benchmark_args(parser, args)
     args.baseline = args.baseline.expanduser().resolve()
     args.dataset = args.dataset.expanduser().resolve()
@@ -162,20 +174,20 @@ def main() -> int:
 
     try:
         report = build_comparison(args)
-    except ValueError as error:
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        output = (
+            args.output.expanduser().resolve() if args.output else
+            ROOT / "offline" / "results" / "hype_financial" /
+            f"candidate_comparison_{stamp}.json"
+        )
+        markdown = (
+            args.markdown.expanduser().resolve() if args.markdown else
+            output.with_suffix(".md")
+        )
+        atomic_write_json(output, report, indent=2, ensure_ascii=True)
+        atomic_write_text(markdown, markdown_report(report))
+    except (ValueError, OSError) as error:
         parser.error(str(error))
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output = (
-        args.output.expanduser().resolve() if args.output else
-        ROOT / "offline" / "results" / "hype_financial" /
-        f"candidate_comparison_{stamp}.json"
-    )
-    markdown = (
-        args.markdown.expanduser().resolve() if args.markdown else
-        output.with_suffix(".md")
-    )
-    atomic_write_json(output, report, indent=2, ensure_ascii=True)
-    atomic_write_text(markdown, markdown_report(report))
 
     print(f"Financial comparison JSON: {output}")
     print(f"Financial comparison Markdown: {markdown}")

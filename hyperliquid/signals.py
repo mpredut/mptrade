@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-signals.py — SIGNAL layer decoupled from the strategy.
+signals.py -- SIGNAL layer decoupled from the strategy.
 
 The strategy reads {"trend": "up"|"down"|"neutral", "confidence": 0..1}.
 SIGNAL_SOURCE selects:
@@ -29,7 +29,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402
-    load_env_stack,
+    load_layered_env_config,
     load_local_module,
     log,
     normalize_epoch_sec,
@@ -47,10 +47,44 @@ from state_io import read_json_dict  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
 
-load_env_stack(os.path.join(_HERE, ".env"))
+
+def _hl_signals_env() -> dict[str, str]:
+    base = load_layered_env_config(
+        os.path.join(_HERE, "config.env"),
+        os.path.join(_HERE, ".env"),
+        fallback_prefixes=(),
+    )
+    base.update(os.environ)
+    return base
+
 
 MIN_POINTS_PER_WINDOW = 3
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
+
+
+def _extract_closed_candle_points(candles: object, *, now_sec: float | None = None) -> list[tuple[float, float]]:
+    """Extract sorted, deduplicated (ts_sec, close) points, dropping unclosed candles when 'T' is present."""
+    eff_now = time.time() if now_sec is None else now_sec
+    by_ts: dict[float, float] = {}
+    ordered_closes_no_ts: list[tuple[float, float]] = []
+    for idx, c in enumerate(candles or []):
+        if not isinstance(c, dict):
+            continue
+        if "T" in c and c.get("T") is not None:
+            close_ts = normalize_epoch_sec(c.get("T"), default=None)
+            if close_ts is not None and close_ts > eff_now:
+                continue
+        c_v = safe_pos_float(c.get("c"), default=None)
+        if c_v is None:
+            continue
+        t_s = normalize_epoch_sec(c.get("t"), default=None)
+        if t_s is not None:
+            by_ts[t_s] = c_v
+        else:
+            ordered_closes_no_ts.append((idx * 1.0, c_v))
+    if by_ts:
+        return sorted(by_ts.items(), key=lambda item: item[0])
+    return ordered_closes_no_ts
 
 
 def detect_long_term_trend(
@@ -80,30 +114,35 @@ def detect_long_term_trend(
     return res
 
 
-def analyze(client, coin: str) -> dict | None:
-    """Run analysis over HL candles for the coin."""
-    window_hours = required_int_env("ANALYSIS_WINDOW_H")
-    step_hours = required_int_env("ANALYSIS_STEP_H")
+def _analyze_with_last_px(client, coin: str, env: dict[str, str] | None = None) -> tuple[dict | None, float | None]:
+    eff_env = _hl_signals_env() if env is None else env
+    window_hours = required_int_env("ANALYSIS_WINDOW_H", eff_env)
+    step_hours = required_int_env("ANALYSIS_STEP_H", eff_env)
     if window_hours <= 0 or step_hours <= 0:
-        return None
+        return None, None
     lookback = window_hours + step_hours * 14
     candles = client.candles(coin, "1h", lookback_hours=lookback)
-    pts: list[tuple[float, float]] = []
-    for c in candles or []:
-        if not isinstance(c, dict):
-            continue
-        t_s = normalize_epoch_sec(c.get("t"), default=None)
-        c_v = safe_pos_float(c.get("c"), default=None)
-        if t_s is not None and c_v is not None:
-            pts.append((t_s, c_v))
+    pts = _extract_closed_candle_points(candles)
     if len(pts) < window_hours:
-        return None
-    return detect_long_term_trend([p[0] for p in pts], [p[1] for p in pts], window_hours, step_hours)
+        return None, None
+    res = detect_long_term_trend([p[0] for p in pts], [p[1] for p in pts], window_hours, step_hours)
+    return res, pts[-1][1]
+
+
+def analyze(client, coin: str) -> dict | None:
+    """Run analysis over HL candles for the coin."""
+    res, _ = _analyze_with_last_px(client, coin)
+    return res
 
 
 def signal(client, coin: str) -> dict:
     """Return a bot-format signal: {trend, confidence, source, detail}."""
-    res = analyze(client, coin)
+    res = None
+    fallback_px = None
+    if analyze is _DEFAULT_ANALYZE:
+        res, fallback_px = _analyze_with_last_px(client, coin)
+    else:
+        res = analyze(client, coin)
     if not res:
         return {"trend": "neutral", "confidence": 0.0, "source": "analysis(insuf.)"}
     last_px = None
@@ -111,6 +150,8 @@ def signal(client, coin: str) -> dict:
         last_px = safe_pos_float(client.mid(coin), None)
     except Exception:  # noqa: BLE001
         pass
+    if last_px is None:
+        last_px = fallback_px
     slope_pct_h = abs(res["current_slope_h"]) / last_px * 100 if last_px is not None else 0.0
     dur_h = res["duration_seconds"] / 3600.0
     conf = round(min(1.0, slope_pct_h / 0.3 * 0.6 + min(dur_h / 48.0, 1.0) * 0.4), 2)
@@ -140,21 +181,23 @@ def classify_fast_slow_closes(win_fast, win_slow, band: float) -> tuple[float, f
 
 
 def _builtin_trend(client, coin: str) -> dict:
-    fast = required_int_env("SIGNAL_FAST_H")
-    slow = required_int_env("SIGNAL_SLOW_H")
-    band = required_float_env("SIGNAL_BAND_PCT") / 100
+    eff_env = _hl_signals_env()
+    fast = required_int_env("SIGNAL_FAST_H", eff_env)
+    slow = required_int_env("SIGNAL_SLOW_H", eff_env)
+    band = required_float_env("SIGNAL_BAND_PCT", eff_env) / 100
     band_f = safe_nonneg_float(band, default=None)
     if fast <= 0 or slow <= 0 or band_f is None:
         return {**NEUTRAL, "source": "builtin(insuf. data)"}
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
-    closes = [
-        v for c in (candles or [])
-        if isinstance(c, dict) and (v := safe_pos_float(c.get("c"), 0.0)) > 0
-    ]
+    pts = _extract_closed_candle_points(candles)
+    closes = [p[1] for p in pts]
     if len(closes) < max(fast, slow):
         return {**NEUTRAL, "source": "builtin(insuf. data)"}
-    mf, ms, diff, trend = classify_fast_slow_closes(closes[-fast:], closes[-slow:], band)
-    conf = round(min(1.0, abs(diff) / (band * 3)), 2) if band > 0 else 0.0
+    mf, ms, diff, trend = classify_fast_slow_closes(closes[-fast:], closes[-slow:], band_f)
+    if band_f > 0:
+        conf = round(min(1.0, abs(diff) / (band_f * 3)), 2)
+    else:
+        conf = 1.0 if trend != "neutral" else 0.0
     return {"trend": trend, "confidence": conf, "source": "builtin",
             "detail": f"avg{fast}h={mf:.3f} avg{slow}h={ms:.3f} diff={diff*100:+.2f}%"}
 
@@ -168,25 +211,29 @@ def _file_signal(path: str) -> dict:
         log(f"  ! an invalid signal file: {e}")
         return {**NEUTRAL, "source": "file(corrupt)"}
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
-    max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60
-    if ts is not None:
-        ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
-        if ts_f <= 0:
-            return {**NEUTRAL, "source": "file(expired)"}
-        age = time.time() - ts_f
-        max_age_f = safe_pos_float(max_age, default=None)
-        if max_age_f is None or age > max_age_f or age < -60.0:
-            return {**NEUTRAL, "source": "file(expired)"}
+    eff_env = _hl_signals_env()
+    max_age = required_float_env("SIGNAL_MAX_AGE_MIN", eff_env) * 60
+    if ts is None:
+        return {**NEUTRAL, "source": "file(expired)"}
+    ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
+    if ts_f <= 0:
+        return {**NEUTRAL, "source": "file(expired)"}
+    age = time.time() - ts_f
+    max_age_f = safe_pos_float(max_age, default=None)
+    if max_age_f is None or age > max_age_f or age < -60.0:
+        return {**NEUTRAL, "source": "file(expired)"}
     tr = _normalize_signal_trend(d.get("trend", "neutral"))
     conf = max(0.0, min(1.0, safe_float(d.get("confidence", 0), 0.0)))
     return {"trend": tr, "confidence": conf, "source": "file"}
 
 
+_DEFAULT_ANALYZE = analyze
 _DEFAULT_ANALYSIS_SIGNAL = signal
 
 
 def get_signal(client, coin: str) -> dict:
-    src = required_env("SIGNAL_SOURCE").strip().lower()
+    eff_env = _hl_signals_env()
+    src = required_env("SIGNAL_SOURCE", eff_env).strip().lower()
     if src == "builtin":
         return _builtin_trend(client, coin)
     if src == "analysis":               # ported WMA/time-window slope analysis
@@ -200,7 +247,7 @@ def get_signal(client, coin: str) -> dict:
         )
         return analysis_signal(client, coin)
     if src == "file":
-        return _file_signal(required_env("SIGNAL_FILE"))
+        return _file_signal(required_env("SIGNAL_FILE", eff_env))
     if src == "off":
         return {**NEUTRAL, "source": "off"}
     raise ValueError(f"Invalid SIGNAL_SOURCE: {src!r}")

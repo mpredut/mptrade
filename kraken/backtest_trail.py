@@ -24,11 +24,35 @@ _ROOT = os.path.dirname(_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_int, safe_pos_float
+from botcore import (
+    normalize_epoch_sec,
+    require_nonneg_float,
+    require_pos_float,
+    safe_float,
+    safe_int,
+    safe_nonneg_int,
+    safe_pos_float,
+)
 from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
 from strategies.replay_metrics import buy_hold_pct as bh
+
+
+_ISOLATED_COMPARISON_OVERRIDES = {
+    "tp_mdhtp_enabled": False,
+    "tp_dynamic_flat": False,
+    "tp_tranches": [],
+    "fast_profit_guard": False,
+    "surge_guard": False,
+    "slow_grind_guard": False,
+    "sl_mhdsl_enabled": False,
+    "trend_overlay": False,
+    "trend_trail_dynamic": False,
+    "dca_trend_brake": False,
+    "reentry_hybrid_enabled": False,
+    "reentry_adaptive": False,
+}
 
 
 def _resolve_reentry_drop(P: dict) -> float:
@@ -39,6 +63,16 @@ def _resolve_reentry_drop(P: dict) -> float:
         return 0.0
     val = safe_float(re_drop, default=0.0)
     return max(0.0, val) if val is not None else 0.0
+
+
+def _validated_fee_and_interval(P: dict) -> tuple[float, float]:
+    raw_fee = P.get("fee") if P.get("fee") is not None else 0.25
+    fee_f = require_nonneg_float(raw_fee, "fee")
+    if fee_f >= 100.0:
+        raise ValueError(f"fee must be < 100, got {raw_fee!r}")
+    raw_iv = P.get("interval") if P.get("interval") is not None else 60
+    iv_f = require_pos_float(raw_iv, "interval")
+    return fee_f, iv_f
 
 
 def fetch_with_time(pair, interval):
@@ -54,21 +88,26 @@ def simulate_trail(ohlc, P, *, warmup_ohlc=()):
     strategies.spot_engine.Strategy directly with trailing take-profit enabled,
     eliminating parity bugs and duplicate simulation drift.
     """
-    trail_val = P.get("trail") if P.get("trail") is not None else 3.0
+    if not isinstance(P, dict):
+        raise ValueError("simulate_trail requires a dict P")
+    raw_trail = P.get("trail") if P.get("trail") is not None else 3.0
+    trail_val = require_pos_float(raw_trail, "trail")
+    if trail_val >= 100.0:
+        raise ValueError(f"trail must be < 100, got {raw_trail!r}")
+    fee_f, iv_f = _validated_fee_and_interval(P)
     over = {
+        **_ISOLATED_COMPARISON_OVERRIDES,
         "tp_trend_hold": True,
         "tp_trail_adaptive": False,
         "tp_trail_pct": trail_val,
-        "tp_mdhtp_enabled": False,
-        "tp_dynamic_flat": False,
         "reentry_drop_pct": _resolve_reentry_drop(P),
     }
     params = _bt_params(P, over)
     return rp.run_replay(
         ohlc,
         params,
-        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
-        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
+        fee_pct=fee_f,
+        bar_minutes=iv_f,
         warmup_ohlc=warmup_ohlc,
         intrabar_high=True,
     )
@@ -76,29 +115,33 @@ def simulate_trail(ohlc, P, *, warmup_ohlc=()):
 
 def simulate_fixed_tp(ohlc, P, *, warmup_ohlc=()):
     """Run fixed-TP replay with trailing, MDHTP, and dynamic flat TP disabled."""
+    if not isinstance(P, dict):
+        raise ValueError("simulate_fixed_tp requires a dict P")
+    fee_f, iv_f = _validated_fee_and_interval(P)
     over = {
+        **_ISOLATED_COMPARISON_OVERRIDES,
         "tp_trend_hold": False,
-        "tp_mdhtp_enabled": False,
-        "tp_dynamic_flat": False,
         "reentry_drop_pct": _resolve_reentry_drop(P),
     }
     params = _bt_params(P, over)
     return rp.run_replay(
         ohlc,
         params,
-        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
-        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
+        fee_pct=fee_f,
+        bar_minutes=iv_f,
         warmup_ohlc=warmup_ohlc,
+        intrabar_high=True,
     )
 
 
 def base_params(budget=3000):
+    b_val = require_pos_float(budget, "budget")
     return dict(entry=300, dca=150, disc=0.8, drop=1.0, tp=5.0, maxdca=10,
-                budget=budget, fee=0.25, sl=7.0, trail=3.0)
+                budget=b_val, fee=0.25, sl=7.0, trail=3.0)
 
 
 def _eval_fixed_vs_trail(ohlc, params, *, warmup_ohlc=()):
-    budget = params["budget"]
+    budget = require_pos_float(params.get("budget"), "budget")
     h = bh(ohlc)
     f = simulate_fixed_tp(ohlc, params, warmup_ohlc=warmup_ohlc)["total"] / budget * 100
     t = simulate_trail(ohlc, params, warmup_ohlc=warmup_ohlc)["total"] / budget * 100
@@ -180,13 +223,13 @@ def run_intraday(pair, tz_offset=3):
         ts, o, _h, _l, c = row[:5]
         ts_sec = normalize_epoch_sec(ts, default=None)
         o_f = safe_pos_float(o, default=None)
-        c_f = safe_float(c, default=None)
+        c_f = safe_pos_float(c, default=None)
         if ts_sec is None or o_f is None or c_f is None:
             continue
         ts_i = safe_int(ts_sec, default=0)
         hr = (ts_i // 3600 + tz_offset) % 24
         by_hour[hr].append((c_f - o_f) / o_f * 100)
-    print(f"=== INTRADAY {pair} (LOCAL hour UTC+{tz_offset}, {len(rows)} hourly bars) ===")
+    print(f"=== INTRADAY {pair} (LOCAL hour UTC{tz_offset:+d}, {len(rows)} hourly bars) ===")
     print(f"{'hour':<5} {'n':<5} {'avg.return/hour':>14} {'% positive bars':>16}")
     for hr in range(24):
         v = by_hour.get(hr, [])
@@ -210,6 +253,8 @@ def main() -> int:
     ap.add_argument("--intraday", metavar="PAIR", help="the pattern by hour of day")
     ap.add_argument("--interval", type=int, default=60)
     args = ap.parse_args()
+    if args.interval <= 0:
+        ap.error("--interval must be > 0")
     if args.wf:
         run_wf(args.wf, args.interval)
     elif args.intraday:

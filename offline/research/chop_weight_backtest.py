@@ -51,7 +51,11 @@ _CHOP_POLICY_WEIGHTS = {
 
 
 def _req_pos_num(val: Any, name: str) -> float:
-    fval = safe_pos_float(val, default=None) if isinstance(val, (int, float)) else None
+    fval = (
+        safe_pos_float(val, default=None)
+        if isinstance(val, (int, float)) and not isinstance(val, bool)
+        else None
+    )
     if fval is None:
         raise ValueError(f"{name} must be finite and > 0")
     return fval
@@ -109,11 +113,11 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
     """Detect local trend regime from price window using linear slope and Mann-Kendall test."""
     if prices is None:
         return "CHOP", 0.0
-    p_arr = np.asarray(prices, dtype=float)
+    p_arr = np.asarray(prices, dtype=np.float64)
     p_arr = p_arr[np.isfinite(p_arr) & (p_arr > 0)]
     if len(p_arr) < 10:
         return "CHOP", 0.0
-    x = np.arange(len(p_arr), dtype=float)
+    x = np.arange(len(p_arr), dtype=np.float64)
     try:
         slope, _ = np.polyfit(x, p_arr, 1)
     except Exception:
@@ -183,11 +187,24 @@ def _precompute_chop_bar_tape(
     last_regime_check_ts = 0.0
     tape: List[Dict[str, Any]] = []
 
-    for raw_t, raw_p in sampled:
-        t = normalize_epoch_sec(raw_t, default=None, allow_zero=True)
-        p = safe_pos_float(raw_p, default=None)
-        if t is None or p is None:
+    cleaned_samples: List[Tuple[float, float]] = []
+    needs_sort = False
+    prev_t: Optional[float] = None
+    for item in sampled:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
+        t_c = normalize_epoch_sec(item[0], default=None, allow_zero=True)
+        p_c = safe_pos_float(item[1], default=None)
+        if t_c is None or p_c is None:
+            continue
+        if prev_t is not None and t_c < prev_t:
+            needs_sort = True
+        prev_t = t_c
+        cleaned_samples.append((t_c, p_c))
+    if needs_sort:
+        cleaned_samples.sort(key=lambda x: x[0])
+
+    for t, p in cleaned_samples:
         if trend_start_ts is None:
             trend_start_ts = t
         if btc_trend_start_ts is None:
@@ -202,9 +219,13 @@ def _precompute_chop_bar_tape(
                 last_btc_idx = b_idx
                 btc_rolling.append(btc_px[b_idx])
                 btc_rolling_ts.append(btc_ts[b_idx])
-                while btc_rolling_ts and (t - btc_rolling_ts[0]) > 86400.0:
-                    btc_rolling.pop(0)
-                    btc_rolling_ts.pop(0)
+            while btc_rolling_ts and (t - btc_rolling_ts[0]) > 86400.0:
+                btc_rolling.pop(0)
+                btc_rolling_ts.pop(0)
+            if len(btc_rolling) < 2 or (btc_rolling_ts and (t - btc_rolling_ts[-1]) > btc_max_staleness):
+                if btc_regime != "CHOP":
+                    btc_regime = "CHOP"
+                    btc_trend_start_ts = t
 
         # Check regime every 4 hours over a 6h-24h rolling window
         if (t - last_regime_check_ts) >= 14400.0 and len(rolling_prices) >= bars_6h:
@@ -279,7 +300,11 @@ def run_single_simulation(
     step_f = _req_pos_num(step_seconds, "step_seconds")
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     base_notional = _req_pos_num(base_notional, "base_notional")
-    fee_f = safe_nonneg_float(fee_pct, default=None) if isinstance(fee_pct, (int, float)) else None
+    fee_f = (
+        safe_nonneg_float(fee_pct, default=None)
+        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
+        else None
+    )
     if fee_f is None or fee_f >= 1.0:
         raise ValueError("fee_pct must be in [0, 1)")
     tp_pct = _req_pos_num(tp_pct, "tp_pct")
@@ -364,7 +389,7 @@ def run_single_simulation(
             entry_cost = 0.0
 
         # Execute BUY
-        elif want_buy and asset_qty == 0 and usd > 50.0:
+        elif want_buy and not want_sell and asset_qty == 0 and usd > 50.0:
             # Determine weight based on policy and current regime
             trend_len_days = max(0.0, (t - trend_start_ts) / 86400.0)
 
@@ -390,16 +415,25 @@ def run_single_simulation(
                 continue  # Skip order under 0% chop policy
 
             # Allocation
-            trade_budget = min(usd * 0.98, base_notional * weight)
+            max_affordable_notional = usd / (1.0 + fee_pct)
+            trade_budget = min(usd * 0.98, max_affordable_notional, base_notional * weight)
             if trade_budget >= 10.0:
                 cost = trade_budget * (1.0 + fee_pct)
-                if cost <= usd:
+                if cost <= usd + 1e-9:
+                    cost = min(cost, usd)
                     buy_qty = trade_budget / p
                     asset_qty += buy_qty
                     entry_price = p
                     entry_cost += cost
                     entry_regime = trade_regime
                     usd -= cost
+
+        post_equity = usd + (asset_qty * p * (1.0 - fee_pct))
+        if post_equity > peak_equity:
+            peak_equity = post_equity
+        post_dd = ((peak_equity - post_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+        if post_dd > max_dd_pct:
+            max_dd_pct = post_dd
 
     # Close remaining open position at end
     if asset_qty > 0 and (tape or sampled):
@@ -414,6 +448,12 @@ def run_single_simulation(
             "regime": entry_regime,
             "is_win": pnl > 0,
         })
+        asset_qty = 0.0
+    if usd > peak_equity:
+        peak_equity = usd
+    final_dd = ((peak_equity - usd) / peak_equity * 100.0) if peak_equity > 0 else 0.0
+    if final_dd > max_dd_pct:
+        max_dd_pct = final_dd
 
     # Stats Calculation
     total_trades = len(trades)

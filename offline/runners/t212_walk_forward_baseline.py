@@ -19,7 +19,7 @@ T212_DIR = ROOT / "212trading"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float  # noqa: E402
+from botcore import _parse_bool_flag, exact_nonneg_int, parse_dotenv, safe_pos_float  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
@@ -48,13 +48,27 @@ def periods_per_year(interval_minutes: int) -> float:
     return t212_replay.equity_periods_per_year(interval_minutes)
 
 
+def _validate_safe_token(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a non-empty string")
+    tok = value.strip()
+    if not tok or "/" in tok or "\\" in tok or ".." in tok:
+        raise ValueError(f"invalid {label}: {value!r}")
+    return tok
+
+
 def fx_quote(currency: str) -> tuple[str, bool]:
     """Return the Yahoo symbol and whether the value must be inverted to USD per unit."""
     if currency is None or isinstance(currency, bool):
         raise ValueError("currency must be a non-empty string")
-    norm_ccy = str(currency).strip().upper()
+    raw_ccy = str(currency).strip()
+    norm_ccy = raw_ccy.upper()
     if not norm_ccy:
         raise ValueError("currency must be a non-empty string")
+    if norm_ccy == "USD":
+        raise ValueError("USD does not require FX conversion")
+    if raw_ccy in ("GBX", "GBp") or norm_ccy == "GBX":
+        raise ValueError("GBX pence quotes require pence-to-GBP scaling before USD conversion")
     if norm_ccy == "RON":
         return "USDRON=X", True
     return f"{norm_ccy}USD=X", False
@@ -83,144 +97,154 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    interval_minutes = parse_interval_minutes(args.interval)
-    config_path = T212_DIR / f"config.{args.profile}.env"
-    if not config_path.exists():
-        parser.error(f"non-existent profile: {config_path}")
-    config = parse_dotenv(str(config_path))
-    params = StratParams.from_env(config)
-    symbol = str(config.get("YAHOO_SYMBOL") or params.yahoo_sym or "").strip().upper()
-    if not symbol:
-        parser.error("the profile does not define YAHOO_SYMBOL")
-    if args.fx_to_usd is not None and args.fx_dataset is not None:
-        parser.error("--fx-to-usd and --fx-dataset are alternatives")
-    if args.dataset is not None and args.seed_dataset is not None:
-        parser.error("--dataset and --seed-dataset are alternatives")
-    if args.fx_to_usd is not None and safe_pos_float(args.fx_to_usd, default=None) is None:
-        parser.error("--fx-to-usd must be positive")
-    execution = build_execution_model_from_args(parser, args)
-    warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup
-    if warmup < 0:
-        parser.error("--warmup cannot be negative")
+    try:
+        profile_tok = _validate_safe_token(args.profile, "--profile")
+        interval_tok = _validate_safe_token(args.interval, "--interval")
+        interval_minutes = parse_interval_minutes(interval_tok)
+        config_path = T212_DIR / f"config.{profile_tok}.env"
+        if not config_path.exists():
+            parser.error(f"non-existent profile: {config_path}")
+        config = parse_dotenv(str(config_path))
+        params = StratParams.from_env(config)
+        symbol = str(config.get("YAHOO_SYMBOL") or params.yahoo_sym or "").strip().upper()
+        if not symbol:
+            parser.error("the profile does not define YAHOO_SYMBOL")
+        symbol = _validate_safe_token(symbol, "YAHOO_SYMBOL")
+        if args.fx_symbol is not None:
+            _validate_safe_token(args.fx_symbol, "--fx-symbol")
+        if args.fx_to_usd is not None and args.fx_dataset is not None:
+            parser.error("--fx-to-usd and --fx-dataset are alternatives")
+        if args.dataset is not None and args.seed_dataset is not None:
+            parser.error("--dataset and --seed-dataset are alternatives")
+        if args.fx_to_usd is not None and safe_pos_float(args.fx_to_usd, default=None) is None:
+            parser.error("--fx-to-usd must be positive")
+        execution = build_execution_model_from_args(parser, args)
+        raw_warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup
+        warmup = exact_nonneg_int(raw_warmup, default=None)
+        if warmup is None:
+            parser.error("--warmup cannot be negative")
 
-    source = args.dataset.expanduser().resolve() if args.dataset else None
-    seed_source = args.seed_dataset.expanduser().resolve() if args.seed_dataset else None
-    if source:
-        records = load_dataset(source)
-        source_label = str(source)
-    else:
-        fetched = fetch_yahoo_candles(symbol, args.range, args.interval)
-        records = merge_datasets(load_dataset(seed_source), fetched) if seed_source else fetched
-        source_label = (
-            f"Yahoo chart {args.range}/{args.interval} + seed {seed_source}"
-            if seed_source else f"Yahoo chart {args.range}/{args.interval}"
+        source = args.dataset.expanduser().resolve() if args.dataset else None
+        seed_source = args.seed_dataset.expanduser().resolve() if args.seed_dataset else None
+        if source:
+            records = load_dataset(source)
+            source_label = str(source)
+        else:
+            fetched = fetch_yahoo_candles(symbol, args.range, interval_tok)
+            records = merge_datasets(load_dataset(seed_source), fetched) if seed_source else fetched
+            source_label = (
+                f"Yahoo chart {args.range}/{interval_tok} + seed {seed_source}"
+                if seed_source else f"Yahoo chart {args.range}/{interval_tok}"
+            )
+        records = validate_dataset(records)
+        output_dir = args.output_dir.expanduser().resolve() / profile_tok
+
+        fx_records = None
+        fx_metadata = None
+        fx_fixed = args.fx_to_usd
+        fx_source = None
+        fx_symbol = None
+        fx_invert = False
+        if params.currency == "USD":
+            if args.fx_dataset or args.fx_symbol or args.fx_invert:
+                parser.error("the historical FX options are not needed for a USD profile")
+            fx_fixed = 1.0 if fx_fixed is None else fx_fixed
+            usd_mode = "identity" if (args.fx_to_usd is None or fx_fixed == 1.0) else "fixed_override"
+            fx_metadata = {"mode": usd_mode, "currency": "USD", "usd_per_unit": fx_fixed}
+        elif fx_fixed is not None:
+            fx_metadata = {
+                "mode": "fixed_override", "currency": params.currency,
+                "usd_per_unit": fx_fixed,
+            }
+        else:
+            default_symbol, default_invert = fx_quote(params.currency)
+            fx_symbol = _validate_safe_token((args.fx_symbol or default_symbol).upper(), "fx_symbol")
+            fx_invert = args.fx_invert or (args.fx_symbol is None and default_invert)
+            fx_source = args.fx_dataset.expanduser().resolve() if args.fx_dataset else None
+            fx_records = (
+                load_dataset(fx_source) if fx_source
+                else fetch_yahoo_candles(fx_symbol, args.range, interval_tok)
+            )
+            fx_records = validate_dataset(fx_records)
+            fx_data = dataset_metadata(fx_records)
+            fx_frozen = (
+                output_dir / "datasets"
+                / f"{fx_symbol.replace('=', '')}_{interval_tok}_{fx_data['sha256'][:12]}.csv"
+            )
+            save_dataset(fx_records, fx_frozen)
+            fx_metadata = {
+                "mode": "historical_asof", "currency": params.currency,
+                "quote_symbol": fx_symbol, "invert": fx_invert,
+                "source": str(fx_source) if fx_source else f"Yahoo chart {args.range}/{interval_tok}",
+                "frozen_file": str(fx_frozen), **fx_data,
+            }
+        train, validation, test, step = resolve_window_sizes(args, len(records))
+
+        metadata = dataset_metadata(records)
+        frozen_path = output_dir / "datasets" / f"{symbol}_{interval_tok}_{metadata['sha256'][:12]}.csv"
+        save_dataset(records, frozen_path)
+        adapter = t212_replay.make_t212_replay_adapter(
+            params,
+            bar_minutes=interval_minutes,
+            fx_to_usd=fx_fixed,
+            fx_records=fx_records,
+            fx_invert=fx_invert,
+            periods_per_year=periods_per_year(interval_minutes),
+            execution=execution,
         )
-    records = validate_dataset(records)
-    output_dir = args.output_dir.expanduser().resolve() / args.profile
+        result = evaluate_walk_forward(
+            records,
+            adapter,
+            train_size=train,
+            validation_size=validation,
+            test_size=test,
+            step_size=step,
+            warmup_bars=warmup,
+            validate_contract=True,
+        )
+        evidence = assess_decision_evidence(records, result["aggregate_test"])
 
-    fx_records = None
-    fx_metadata = None
-    fx_fixed = args.fx_to_usd
-    fx_source = None
-    fx_symbol = None
-    fx_invert = False
-    if params.currency == "USD":
-        if args.fx_dataset or args.fx_symbol or args.fx_invert:
-            parser.error("the historical FX options are not needed for a USD profile")
-        fx_fixed = 1.0 if fx_fixed is None else fx_fixed
-        fx_metadata = {"mode": "identity", "currency": "USD", "usd_per_unit": fx_fixed}
-    elif fx_fixed is not None:
-        fx_metadata = {
-            "mode": "fixed_override", "currency": params.currency,
-            "usd_per_unit": fx_fixed,
+        generated_at = dt.datetime.now(tz=dt.timezone.utc)
+        report = {
+            "schema_version": 1,
+            "generated_at_utc": generated_at.isoformat(),
+            "purpose": "Trading212 live-engine fixed-config walk-forward baseline",
+            "runtime": {
+                "profile": profile_tok,
+                "ticker": config.get("T212_TICKER"),
+                "yahoo_symbol": symbol,
+                "interval": interval_tok,
+                "interval_minutes": interval_minutes,
+                "execute_live": _parse_bool_flag(config.get("STRAT_EXECUTE"), False),
+            },
+            "strategy_params": dataclasses.asdict(params),
+            "fee_pct_per_leg": params.fx_fee_pct,
+            "fx_model": fx_metadata,
+            "dataset": {
+                "source": source_label,
+                "frozen_file": str(frozen_path),
+                **metadata,
+            },
+            "window_sizes": {
+                "train": train, "validation": validation, "test": test, "step": step,
+                "signal_warmup_bars": warmup,
+            },
+            "execution_model": {
+                "decision": "live Strategy.step at close",
+                "earliest_fill": "next bar",
+                "orders": "limit fill against OHLC high/low",
+                "fx_fee_pct_per_leg": params.fx_fee_pct,
+                "calendar_periods_per_year": periods_per_year(interval_minutes),
+                **dataclasses.asdict(execution),
+            },
+            "evidence_gate": evidence,
+            **result,
         }
-    else:
-        default_symbol, default_invert = fx_quote(params.currency)
-        fx_symbol = (args.fx_symbol or default_symbol).upper()
-        fx_invert = args.fx_invert or (args.fx_symbol is None and default_invert)
-        fx_source = args.fx_dataset.expanduser().resolve() if args.fx_dataset else None
-        fx_records = (
-            load_dataset(fx_source) if fx_source
-            else fetch_yahoo_candles(fx_symbol, args.range, args.interval)
-        )
-        fx_records = validate_dataset(fx_records)
-        fx_data = dataset_metadata(fx_records)
-        fx_frozen = (
-            output_dir / "datasets"
-            / f"{fx_symbol.replace('=', '')}_{args.interval}_{fx_data['sha256'][:12]}.csv"
-        )
-        save_dataset(fx_records, fx_frozen)
-        fx_metadata = {
-            "mode": "historical_asof", "currency": params.currency,
-            "quote_symbol": fx_symbol, "invert": fx_invert,
-            "source": str(fx_source) if fx_source else f"Yahoo chart {args.range}/{args.interval}",
-            "frozen_file": str(fx_frozen), **fx_data,
-        }
-    train, validation, test, step = resolve_window_sizes(args, len(records))
-
-    metadata = dataset_metadata(records)
-    frozen_path = output_dir / "datasets" / f"{symbol}_{args.interval}_{metadata['sha256'][:12]}.csv"
-    save_dataset(records, frozen_path)
-    adapter = t212_replay.make_t212_replay_adapter(
-        params,
-        bar_minutes=interval_minutes,
-        fx_to_usd=fx_fixed,
-        fx_records=fx_records,
-        fx_invert=fx_invert,
-        periods_per_year=periods_per_year(interval_minutes),
-        execution=execution,
-    )
-    result = evaluate_walk_forward(
-        records,
-        adapter,
-        train_size=train,
-        validation_size=validation,
-        test_size=test,
-        step_size=step,
-        warmup_bars=warmup,
-        validate_contract=True,
-    )
-    evidence = assess_decision_evidence(records, result["aggregate_test"])
-
-    generated_at = dt.datetime.now(tz=dt.timezone.utc)
-    report = {
-        "schema_version": 1,
-        "generated_at_utc": generated_at.isoformat(),
-        "purpose": "Trading212 live-engine fixed-config walk-forward baseline",
-        "runtime": {
-            "profile": args.profile,
-            "ticker": config.get("T212_TICKER"),
-            "yahoo_symbol": symbol,
-            "interval": args.interval,
-            "interval_minutes": interval_minutes,
-            "execute_live": _parse_bool_flag(config.get("STRAT_EXECUTE"), False),
-        },
-        "strategy_params": dataclasses.asdict(params),
-        "fee_pct_per_leg": params.fx_fee_pct,
-        "fx_model": fx_metadata,
-        "dataset": {
-            "source": source_label,
-            "frozen_file": str(frozen_path),
-            **metadata,
-        },
-        "window_sizes": {
-            "train": train, "validation": validation, "test": test, "step": step,
-            "signal_warmup_bars": warmup,
-        },
-        "execution_model": {
-            "decision": "live Strategy.step at close",
-            "earliest_fill": "next bar",
-            "orders": "limit fill against OHLC high/low",
-            "fx_fee_pct_per_leg": params.fx_fee_pct,
-            "calendar_periods_per_year": periods_per_year(interval_minutes),
-            **dataclasses.asdict(execution),
-        },
-        "evidence_gate": evidence,
-        **result,
-    }
-    stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
-    report_path = output_dir / f"baseline_{symbol}_{stamp}.json"
-    atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
+        stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+        report_path = output_dir / f"baseline_{symbol}_{stamp}.json"
+        atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
     aggregate = result["aggregate_test"]
     print(f"Baseline saved: {report_path}")

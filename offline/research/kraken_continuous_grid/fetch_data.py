@@ -28,18 +28,23 @@ def fetch(symbol: str, name: str, force: bool = False) -> bool:
     if not force and os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
         print(f"[fetch] {name}: using cached {out_path}", flush=True)
         return True
-    candles = mkt.fetch_ohlc_candles(
-        symbol, interval=240, provider_name="binance", start_ms=START_MS, drop_incomplete=True,
-    )
-    if not candles:
-        print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
+    try:
+        candles = mkt.fetch_ohlc_candles(
+            symbol, interval=240, provider_name="binance", start_ms=START_MS, drop_incomplete=True,
+        )
+        if not candles:
+            print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
+            return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
+        # Allow historical exchange maintenance windows while enforcing strict chronological order & OHLC invariants.
+        validated = validate_dataset(candles)
+        save_dataset(validated, out_path)
+        print(f"[fetch] {name}: {len(validated)} bars "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(validated[-1]['timestamp']))}", flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fetch] {name}: error {exc}; keeping existing file if present", flush=True)
         return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
-    validated = validate_dataset(candles, interval_minutes=240)
-    save_dataset(validated, out_path)
-    print(f"[fetch] {name}: {len(validated)} bars "
-          f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
-          f"{time.strftime('%Y-%m-%d', time.gmtime(validated[-1]['timestamp']))}", flush=True)
-    return True
 
 
 if __name__ == "__main__":

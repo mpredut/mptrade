@@ -83,6 +83,35 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
     return _funding_rate_from_sorted(fund_ts, fund_rates, t_ms)
 
 
+def _resolve_hl_strat_params(
+    params: StratParams | dict | None,
+    direction: str | None,
+    fee_pct: float | None,
+) -> StratParams:
+    if isinstance(params, StratParams):
+        strat_params = dataclasses.replace(params)
+        if direction is not None:
+            if isinstance(direction, bool) or not str(direction).strip():
+                raise ValueError(f"Invalid Strategy direction: {direction!r}")
+            strat_params.direction = str(direction).strip().lower()
+    elif isinstance(params, dict):
+        strat_params = StratParams.from_dict(params, direction=direction)
+    elif params is None:
+        eff_dir = direction if direction is not None else "long"
+        if isinstance(eff_dir, bool) or not str(eff_dir).strip():
+            raise ValueError(f"Invalid Strategy direction: {eff_dir!r}")
+        strat_params = StratParams(direction=str(eff_dir).strip().lower())
+    else:
+        raise ValueError(f"Unsupported params type: {type(params).__name__}")
+
+    if fee_pct is not None:
+        fee_f = safe_nonneg_float(fee_pct, default=None)
+        if fee_f is None or isinstance(fee_pct, bool) or fee_f >= 100.0:
+            raise ValueError(f"invalid fee_pct: {fee_pct!r}")
+        strat_params.fee_pct = fee_f
+    return strat_params
+
+
 def run_replay(
     ohlc: list[tuple[float, float, float, float]],
     ts: list[int] | None = None,
@@ -97,51 +126,46 @@ def run_replay(
     fee_pct: float | None = None,
 ) -> dict:
     """Replay historical candles through the live Strategy engine."""
-    if not ohlc:
-        init_cap = 500.0
-        if isinstance(params, StratParams):
-            init_cap = require_pos_float(params.max_budget, "max_budget")
-        elif isinstance(params, dict):
-            raw_b = params.get("budget") if params.get("budget") is not None else params.get("max_budget", 500.0)
-            init_cap = safe_pos_float(raw_b, default=500.0)
-        raw_ccy = (
-            getattr(params, "currency", "USDC")
-            if isinstance(params, StratParams)
-            else params.get("currency", "USDC")
-            if isinstance(params, dict)
-            else "USDC"
-        )
-        ccy = (
-            str(raw_ccy).strip().upper()
-            if raw_ccy is not None and not isinstance(raw_ccy, bool) and str(raw_ccy).strip()
-            else "USDC"
-        )
-        return {
-            "net": 0.0,
-            "realized": 0.0,
-            "fees": 0.0,
-            "funding": 0.0,
-            "cycles": 0,
-            "wins": 0,
-            "maxdd": 0.0,
-            "open_qty": 0.0,
-            "final_upnl": 0.0,
-            "total": 0.0,
-            "fills": 0,
-            "ambiguous_bars": 0,
-            "initial_capital": init_cap,
-            "account_currency": ccy,
-            "return_pct": 0.0,
-            "max_drawdown_pct": 0.0,
-            "net_pnl": 0.0,
-        }
-
     if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
         raise ValueError(f"bar_minutes must be finite and positive, got {bar_minutes!r}")
     if ts is not None and len(ts) != len(ohlc):
         raise ValueError(f"ts length ({len(ts)}) must match ohlc length ({len(ohlc)})")
     if sig is not None and len(sig) != len(ohlc):
         raise ValueError(f"sig length ({len(sig)}) must match ohlc length ({len(ohlc)})")
+
+    strat_params = _resolve_hl_strat_params(params, direction, fee_pct)
+    Strategy(
+        client=None,
+        coin=coin,
+        params=dataclasses.replace(strat_params),
+        dry_run=True,
+        replay_mode=True,
+    )
+    init_cap = require_pos_float(strat_params.max_budget, "max_budget")
+    valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
+
+    if not ohlc:
+        return build_replay_summary(
+            realized=0.0,
+            net=0.0,
+            fees=0.0,
+            total=0.0,
+            final_upnl=0.0,
+            cycles=0,
+            wins=0,
+            open_qty=0.0,
+            fills=0,
+            ambiguous_bars=0,
+            initial_capital=init_cap,
+            account_currency=strat_params.currency,
+            equity_curve=[init_cap],
+            exposure=[],
+            trade_pnls=[],
+            turnover_notional=0.0,
+            bar_minutes=valid_bar_minutes,
+            periods_per_year=periods_per_year,
+            extra_fields={"funding": 0.0},
+        )
 
     fund_ts, fund_rates = _normalize_funding_series(fund)
     model = execution or ExecutionModel()
@@ -153,13 +177,13 @@ def run_replay(
             fund_ts=fund_ts,
             fund_rates=fund_rates,
             sig=sig,
-            params=params,
-            direction=direction,
+            params=strat_params,
+            direction=None,
             coin=coin,
             bar_minutes=bar_minutes,
             periods_per_year=periods_per_year,
             execution=scenario,
-            fee_pct=fee_pct,
+            fee_pct=None,
         ),
     )
 
@@ -179,22 +203,7 @@ def _run_once(
     fee_pct: float | None = None,
 ) -> dict:
     exec_model = execution or ExecutionModel()
-    if isinstance(params, StratParams):
-        strat_params = dataclasses.replace(params)
-        if direction is not None:
-            strat_params.direction = str(direction).strip().lower()
-    elif isinstance(params, dict):
-        eff_dir = direction if direction is not None else str(params.get("direction") or "long")
-        strat_params = StratParams.from_dict(params, direction=eff_dir)
-    else:
-        strat_params = StratParams(direction=direction if direction is not None else "long")
-
-    if fee_pct is not None:
-        fee_f = safe_nonneg_float(fee_pct, default=None)
-        if fee_f is None or isinstance(fee_pct, bool):
-            raise ValueError(f"invalid fee_pct: {fee_pct!r}")
-        strat_params.fee_pct = fee_f
-
+    strat_params = _resolve_hl_strat_params(params, direction, fee_pct)
     initial_capital = require_pos_float(strat_params.max_budget, "max_budget")
 
     strategy = Strategy(
@@ -217,6 +226,7 @@ def _run_once(
     fills = 0
     funding = 0.0
     ambiguous_bars = 0
+    liquidated = False
     c = require_pos_float(ohlc[0][3], "close")
 
     open_side = "buy" if strategy.sign > 0 else "sell"
@@ -224,6 +234,8 @@ def _run_once(
     order_placed_bar: dict[str, int] = {}
     valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
     eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
+    lot_step = 10.0 ** (-strategy.sz_dec)
+    dust_eps = max(1e-12, 0.5 * lot_step)
     f_ts = fund_ts or []
     f_rates = fund_rates or []
 
@@ -256,6 +268,85 @@ def _run_once(
         cycle_net_start = strategy.s["realized_net"]
         cycle_funding_start = funding
 
+    def _quantize_partial_fill(order_dict: dict, *, is_open: bool) -> tuple[dict, float, bool]:
+        orig_sz = require_pos_float(order_dict.get("sz"), "sz")
+        orig_amt = safe_nonneg_float(order_dict.get("amount", 0.0), default=0.0) if is_open else 0.0
+        fill_order, sz, complete = split_order_fill(
+            order_dict,
+            quantity_key="sz",
+            amount_key="amount" if is_open else None,
+            ratio=exec_model.partial_fill_ratio,
+            force_full=False,
+        )
+        if not complete:
+            q_sz = round(sz, strategy.sz_dec)
+            if q_sz <= 0.0 or q_sz >= orig_sz - dust_eps:
+                q_sz = orig_sz
+                complete = True
+                order_dict["sz"] = 0.0
+                if is_open:
+                    order_dict["amount"] = 0.0
+                    fill_order["amount"] = orig_amt
+                fill_order["sz"] = orig_sz
+            else:
+                rem_sz = max(0.0, round(orig_sz - q_sz, strategy.sz_dec))
+                if rem_sz <= dust_eps:
+                    q_sz = orig_sz
+                    complete = True
+                    order_dict["sz"] = 0.0
+                    if is_open:
+                        order_dict["amount"] = 0.0
+                        fill_order["amount"] = orig_amt
+                    fill_order["sz"] = orig_sz
+                else:
+                    order_dict["sz"] = rem_sz
+                    fill_order["sz"] = q_sz
+                    if is_open and orig_sz > 0:
+                        fill_amt = orig_amt * (q_sz / orig_sz)
+                        fill_order["amount"] = fill_amt
+                        order_dict["amount"] = max(0.0, orig_amt - fill_amt)
+            sz = q_sz
+        return fill_order, sz, complete
+
+    def _bankruptcy_price_if_breached(adverse_px: float) -> float | None:
+        held_q = strategy.s["qty"]
+        if held_q <= dust_eps:
+            return None
+        avg_now = strategy._avg()
+        if not avg_now or avg_now <= 0.0:
+            return None
+        fee_rate = getattr(strategy.p, "fee_pct", HL_FEE_PCT) / 100.0
+        avail = initial_capital + strategy.s["realized_net"] + funding
+        if avail <= 0.0:
+            return max(1e-12, adverse_px)
+        denom = strategy.sign - fee_rate
+        if abs(denom) <= 1e-12:
+            return None
+        liq_px = ((strategy.sign + fee_rate) * avg_now - (avail / held_q)) / denom
+        if strategy.sign > 0:
+            if liq_px > 0.0 and adverse_px <= liq_px + 1e-12:
+                return max(1e-12, liq_px)
+        else:
+            if liq_px > 0.0 and adverse_px >= liq_px - 1e-12:
+                return liq_px
+        return None
+
+    def _execute_liquidation(liq_px: float) -> None:
+        nonlocal fills, turnover_notional, liquidated
+        held_q = strategy.s["qty"]
+        avg_now = strategy._avg() or liq_px
+        strategy.s["orders"].clear()
+        order_placed_bar.clear()
+        cycle_before = strategy.s.get("cycles_completed", 0)
+        strategy._apply_close(avg_now, liq_px, held_q)
+        # Clamp residual float rounding so ruined account equity is absorbed at 0.0.
+        strategy.s["realized_net"] = -(initial_capital + funding)
+        turnover_notional += held_q * liq_px
+        fills += 1
+        if strategy.s.get("cycles_completed", 0) > cycle_before:
+            _record_closed_cycle()
+        liquidated = True
+
     for i in range(len(ohlc)):
         o = require_pos_float(ohlc[i][0], "open")
         h = require_pos_float(ohlc[i][1], "high")
@@ -263,11 +354,24 @@ def _run_once(
         c = require_pos_float(ohlc[i][3], "close")
         t_ms = ts[i] if ts and i < len(ts) else 0
 
+        if liquidated:
+            equity_curve.append(0.0)
+            exposure.append(False)
+            continue
+
+        held_at_bar_open = strategy.s["qty"] > dust_eps
+
         # 1. Funding on held perpetuals at bar open notional: shorts receive funding; longs pay it.
         qty = strategy.s["qty"]
-        if qty > 1e-12 and f_ts:
+        if qty > dust_eps and f_ts:
             f = _bar_funding_rate_sum(t_ms) * qty * o
             funding += (f if strategy.sign < 0 else -f)
+            liq_open = _bankruptcy_price_if_breached(o)
+            if liq_open is not None:
+                _execute_liquidation(liq_open)
+                equity_curve.append(0.0)
+                exposure.append(False)
+                continue
 
         # 2. Check active limit orders against the bar range
         open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
@@ -276,19 +380,23 @@ def _run_once(
             open_eligible = exec_model.limit_touched(
                 open_side, high=h, low=l, limit=open_order["px"]
             )
-            # If a held position breaches stop-loss before reaching a deeper DCA limit, SL triggers first.
-            if open_eligible and strategy.s["qty"] > 1e-12 and strategy.p.stop_loss_pct > 0:
-                avg_now = strategy._avg()
-                if avg_now:
-                    sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-                    worst_px_pre = l if strategy.sign > 0 else h
-                    loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
-                    if loss_pre >= strategy.p.stop_loss_pct - 1e-9 and strategy.sign * (sl_level_pre - open_order["px"]) >= 0:
-                        open_eligible = False
+            # If a held position breaches stop-loss or bankruptcy before reaching a deeper DCA limit, abort DCA.
+            if open_eligible and strategy.s["qty"] > dust_eps:
+                liq_pre = _bankruptcy_price_if_breached(l if strategy.sign > 0 else h)
+                if liq_pre is not None and strategy.sign * (liq_pre - open_order["px"]) >= 0:
+                    open_eligible = False
+                elif strategy.p.stop_loss_pct > 0:
+                    avg_now = strategy._avg()
+                    if avg_now:
+                        sl_level_pre = avg_now * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
+                        worst_px_pre = l if strategy.sign > 0 else h
+                        loss_pre = -strategy.sign * (worst_px_pre - avg_now) / avg_now * 100.0
+                        if loss_pre >= strategy.p.stop_loss_pct - 1e-9 and strategy.sign * (sl_level_pre - open_order["px"]) >= 0:
+                            open_eligible = False
 
         close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
         close_eligible = False
-        if close_order and strategy.s["qty"] > 1e-12:
+        if close_order and strategy.s["qty"] > dust_eps:
             close_eligible = exec_model.limit_touched(
                 close_side, high=h, low=l, limit=close_order["px"]
             )
@@ -299,13 +407,7 @@ def _run_once(
         for side in exec_model.side_order():
             if side == open_side and open_eligible and open_order in strategy.s["orders"]:
                 px = open_order["px"]
-                fill_order, sz, complete = split_order_fill(
-                    open_order,
-                    quantity_key="sz",
-                    amount_key="amount",
-                    ratio=exec_model.partial_fill_ratio,
-                    force_full=False,
-                )
+                fill_order, sz, complete = _quantize_partial_fill(open_order, is_open=True)
                 open_kind = fill_order.get("kind")
                 if open_kind == "ENTRY":
                     count_dca = False
@@ -321,20 +423,14 @@ def _run_once(
                 turnover_notional += sz * px
                 fills += 1
 
-            if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > 1e-12:
+            if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > dust_eps:
                 px = close_order["px"]
-                fill_order, sz, complete = split_order_fill(
-                    close_order,
-                    quantity_key="sz",
-                    amount_key=None,
-                    ratio=exec_model.partial_fill_ratio,
-                    force_full=False,
-                )
+                fill_order, sz, complete = _quantize_partial_fill(close_order, is_open=False)
                 held_now = strategy.s["qty"]
-                if sz >= held_now - 1e-12:
+                if sz >= held_now - dust_eps:
                     sz = held_now
                     complete = True
-                if sz <= 1e-12:
+                if sz <= dust_eps:
                     strategy._remove(close_order)
                     continue
                 if complete:
@@ -347,23 +443,41 @@ def _run_once(
                 if strategy.s.get("cycles_completed", 0) > cycle_before:
                     _record_closed_cycle()
 
-        # 3. Intrabar Stop-Loss Check (if held after limit fills)
-        if strategy.s["qty"] > 1e-12 and strategy.p.stop_loss_pct > 0:
+        # 3. Intrabar Stop-Loss & Margin Wipeout Check (if held after limit fills)
+        if strategy.s["qty"] > dust_eps:
             worst_px = l if strategy.sign > 0 else h
-            avg = strategy._avg()
-            if avg:
-                loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
-                if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
-                    sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
-                    raw_exec_px = min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)
-                    exec_px = exec_model.market_price(close_side, raw_exec_px)
-                    held_qty = strategy.s["qty"]
-                    cycle_before = strategy.s.get("cycles_completed", 0)
-                    if strategy._check_stop_loss(exec_px):
-                        turnover_notional += held_qty * exec_px
-                        fills += 1
-                        if strategy.s.get("cycles_completed", 0) > cycle_before:
-                            _record_closed_cycle()
+            if strategy.p.stop_loss_pct > 0:
+                avg = strategy._avg()
+                if avg:
+                    loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
+                    if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
+                        sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
+                        if held_at_bar_open:
+                            raw_exec_px = min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)
+                        else:
+                            raw_exec_px = sl_level
+                        exec_px = exec_model.market_price(close_side, raw_exec_px)
+                        liq_sl = _bankruptcy_price_if_breached(exec_px)
+                        if liq_sl is not None:
+                            _execute_liquidation(liq_sl)
+                            equity_curve.append(0.0)
+                            exposure.append(False)
+                            continue
+                        held_qty = strategy.s["qty"]
+                        cycle_before = strategy.s.get("cycles_completed", 0)
+                        if strategy._check_stop_loss(exec_px):
+                            turnover_notional += held_qty * exec_px
+                            fills += 1
+                            if strategy.s.get("cycles_completed", 0) > cycle_before:
+                                _record_closed_cycle()
+
+            if strategy.s["qty"] > dust_eps:
+                liq_intrabar = _bankruptcy_price_if_breached(worst_px)
+                if liq_intrabar is not None:
+                    _execute_liquidation(liq_intrabar)
+                    equity_curve.append(0.0)
+                    exposure.append(False)
+                    continue
 
         # 4. TTL / Runaway price cancellation
         open_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "open"), None)
@@ -392,23 +506,33 @@ def _run_once(
         qty = strategy.s["qty"]
         cost = strategy.s["cost"]
         realized = strategy.s["realized_net"]
-        upnl = (strategy.sign * (c - cost / qty) * qty) if qty > 1e-12 else 0.0
+        upnl = (strategy.sign * (c - cost / qty) * qty) if qty > dust_eps else 0.0
         fee_pct_eff = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
-        open_fee = (fee_pct_eff / 100.0) * cost if qty > 1e-12 else 0.0
+        open_fee = (fee_pct_eff / 100.0) * cost if qty > dust_eps else 0.0
         current_equity = initial_capital + realized + funding + upnl - open_fee
+        if current_equity <= 0.0:
+            if qty > dust_eps:
+                _execute_liquidation(c)
+            else:
+                strategy.s["orders"].clear()
+                strategy.s["realized_net"] = -(initial_capital + funding)
+                liquidated = True
+            equity_curve.append(0.0)
+            exposure.append(False)
+            continue
         equity_curve.append(current_equity)
-        exposure.append(qty > 1e-12)
+        exposure.append(qty > dust_eps)
 
     qty = strategy.s["qty"]
     cost = strategy.s["cost"]
     realized_gross = strategy.s["realized_gross"]
     realized_net = strategy.s["realized_net"]
-    final_upnl = (strategy.sign * (c - cost / qty) * qty) if qty > 1e-12 else 0.0
+    final_upnl = (strategy.sign * (c - cost / qty) * qty) if qty > dust_eps else 0.0
     cycles = strategy.s.get("cycles_completed", 0)
     wins = net_wins
     total_fees = strategy.s["fees_total"]
     final_open_fee = 0.0
-    if qty > 1e-12:
+    if qty > dust_eps:
         fee_pct_eff = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
         final_open_fee = (fee_pct_eff / 100.0) * cost
         total_fees += final_open_fee
@@ -436,9 +560,59 @@ def _run_once(
     )
 
 
+def _to_spot_params(params: SpotStratParams | StratParams | dict, direction: str | None) -> SpotStratParams:
+    if direction is not None:
+        if isinstance(direction, bool) or str(direction).strip().lower() != "long":
+            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {direction!r}")
+    if isinstance(params, SpotStratParams):
+        return params
+    if isinstance(params, StratParams):
+        if str(params.direction).strip().lower() != "long":
+            raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params.direction!r}")
+        return SpotStratParams(
+            currency=params.currency,
+            entry_amount=params.entry_amount,
+            entry_discount_pct=params.entry_discount_pct,
+            dca_amount=params.dca_amount,
+            dca_drop_pct=params.dca_drop_pct,
+            check_minutes=params.check_minutes,
+            takeprofit_pct=params.takeprofit_pct,
+            max_budget=params.max_budget,
+            max_dca_buys=params.max_dca_buys,
+            enable_takeprofit=params.enable_takeprofit,
+            order_ttl_min=params.order_ttl_min,
+            stop_loss_pct=params.stop_loss_pct,
+            reentry_tolerance_pct=params.reentry_tolerance_pct,
+            sl_mhdsl_enabled=False,
+        )
+    if isinstance(params, dict):
+        if "direction" in params and params["direction"] is not None:
+            if isinstance(params["direction"], bool) or str(params["direction"]).strip().lower() != "long":
+                raise ValueError(f"Hyperliquid spot engine supports only 'long' direction, got {params['direction']!r}")
+        hl_defaults = StratParams.from_dict(params, direction="long")
+        spot_defaults = {
+            "currency": hl_defaults.currency,
+            "entry_amount": hl_defaults.entry_amount,
+            "entry_discount_pct": hl_defaults.entry_discount_pct,
+            "dca_amount": hl_defaults.dca_amount,
+            "dca_drop_pct": hl_defaults.dca_drop_pct,
+            "check_minutes": hl_defaults.check_minutes,
+            "takeprofit_pct": hl_defaults.takeprofit_pct,
+            "max_budget": hl_defaults.max_budget,
+            "max_dca_buys": hl_defaults.max_dca_buys,
+            "enable_takeprofit": hl_defaults.enable_takeprofit,
+            "order_ttl_min": hl_defaults.order_ttl_min,
+            "stop_loss_pct": hl_defaults.stop_loss_pct,
+            "reentry_tolerance_pct": hl_defaults.reentry_tolerance_pct,
+            "sl_mhdsl_enabled": False,
+        }
+        return SpotStratParams.from_dict(params, defaults=spot_defaults)
+    raise ValueError(f"Unsupported spot params type: {type(params).__name__}")
+
+
 def make_hyperliquid_replay_adapter(
-    params: StratParams | dict,
-    direction: str = "long",
+    params: StratParams | SpotStratParams | dict,
+    direction: str | None = None,
     coin: str = "HYPE",
     fund: list[tuple[int, float]] | None = None,
     bar_minutes: float | None = 60.0,
@@ -454,10 +628,21 @@ def make_hyperliquid_replay_adapter(
     if engine_norm not in ("perp", "spot"):
         raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
     if engine_norm == "spot":
-        spot_params = SpotStratParams.from_dict(params) if isinstance(params, dict) else params
+        spot_params = _to_spot_params(params, direction)
+        eff_fee = (
+            fee_pct
+            if fee_pct is not None
+            else (
+                params.fee_pct
+                if isinstance(params, StratParams)
+                else safe_nonneg_float(params.get("fee", params.get("fee_pct")), default=HL_FEE_PCT)
+                if isinstance(params, dict)
+                else HL_FEE_PCT
+            )
+        )
         return make_spot_replay_adapter(
             params=spot_params,
-            fee_pct=fee_pct if fee_pct is not None else HL_FEE_PCT,
+            fee_pct=eff_fee,
             bar_minutes=bar_minutes,
             execution=execution,
         )

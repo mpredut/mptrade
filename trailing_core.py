@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-trailing_core.py — provider-agnostic trailing-stop core with re-buy support.
+trailing_core.py -- provider-agnostic trailing-stop core with re-buy support.
 
 Why it exists: binance_api/trailing_stop.py and kraken/trailing_stop.py used the
 SAME state machine (track the peak -> sell at trail% below the peak -> re-buy on
@@ -258,7 +258,18 @@ class TrailingCore:
                 if is_flat:
                     st["is_flat"] = True
                 if self._rebuy_for(pair, arm=True):
-                    st["rebuy"] = {"qty": accum_qty, "sell_price": overall_avg, "low": avg}
+                    prev_rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
+                    prev_rb_qty = safe_pos_float(prev_rb.get("qty"), default=0.0) or 0.0
+                    prev_rb_sell = safe_pos_float(prev_rb.get("sell_price"), default=overall_avg) or overall_avg
+                    prev_rb_low = safe_pos_float(prev_rb.get("low"), default=avg) or avg
+                    comb_qty = round(prev_rb_qty + accum_qty, 8)
+                    comb_sell = (
+                        ((prev_rb_qty * prev_rb_sell) + (accum_qty * overall_avg)) / comb_qty
+                        if prev_rb_qty > 0 and comb_qty > 0
+                        else overall_avg
+                    )
+                    comb_low = min(prev_rb_low, avg) if prev_rb_qty > 0 else avg
+                    st["rebuy"] = {"qty": comb_qty, "sell_price": comb_sell, "low": comb_low}
             else:
                 st["exit_sold_qty"] = accum_qty
                 st["exit_sold_cost"] = accum_cost
@@ -379,10 +390,13 @@ class TrailingCore:
             state[key] = {"peak": price}
         st = state[key]
         raw_peak = safe_pos_float(st.get("peak"), default=None)
-        if raw_peak is None:
-            st["peak"] = price
-        if "warmup_at" in st and safe_pos_float(st.get("warmup_at"), default=None) is None:
-            st.pop("warmup_at", None)
+        st["peak"] = price if raw_peak is None else raw_peak
+        if "warmup_at" in st:
+            warmup_f = safe_pos_float(st.get("warmup_at"), default=None)
+            if warmup_f is None:
+                st.pop("warmup_at", None)
+            else:
+                st["warmup_at"] = warmup_f
 
         total_pos = self._remaining_qty(asset) or free
         has_pos = (total_pos * price >= self.min_notional)
@@ -436,7 +450,9 @@ class TrailingCore:
         )
         if can_sell and should_sell(price, st["peak"], trail):
             if self.sell_skip_if_trend_up and self._safe_trend(pair) > 0:
-                now_ts = time.time()
+                now_fn = getattr(self.a, "now", None)
+                adapter_now = safe_pos_float(now_fn(), default=None) if callable(now_fn) else None
+                now_ts = adapter_now if adapter_now is not None else time.time()
                 defer_start = safe_pos_float(st.get("sell_defer_started_at"), default=None)
                 if defer_start is None or defer_start > now_ts:
                     defer_start = now_ts
@@ -446,8 +462,8 @@ class TrailingCore:
                     self.a.log_skip_sell_trend(key, asset, pair, trail)
                     return
                 self.log(
-                    f"  ⚠ [TRAIL] {asset}: -{trail}% sell trend deferral expired "
-                    f"({elapsed:.0f}s >= {self.sell_trend_defer_max_sec:.0f}s) — forcing emergency SELL"
+                    f"  [WARN] [TRAIL] {asset}: -{trail}% sell trend deferral expired "
+                    f"({elapsed:.0f}s >= {self.sell_trend_defer_max_sec:.0f}s) -- forcing emergency SELL"
                 )
             else:
                 st.pop("sell_defer_started_at", None)
@@ -502,10 +518,21 @@ class TrailingCore:
                 overall_avg = vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):
+                    prev_rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
+                    prev_rb_qty = safe_pos_float(prev_rb.get("qty"), default=0.0) or 0.0
+                    prev_rb_sell = safe_pos_float(prev_rb.get("sell_price"), default=overall_avg) or overall_avg
+                    prev_rb_low = safe_pos_float(prev_rb.get("low"), default=min(overall_avg, price)) or min(overall_avg, price)
+                    comb_qty = round(prev_rb_qty + sold_qty, 8)
+                    comb_sell = (
+                        ((prev_rb_qty * prev_rb_sell) + (sold_qty * overall_avg)) / comb_qty
+                        if prev_rb_qty > 0 and comb_qty > 0
+                        else overall_avg
+                    )
+                    comb_low = min(prev_rb_low, overall_avg, price) if prev_rb_qty > 0 else min(overall_avg, price)
                     st["rebuy"] = {
-                        "qty": sold_qty,
-                        "sell_price": overall_avg,
-                        "low": min(overall_avg, price),
+                        "qty": comb_qty,
+                        "sell_price": comb_sell,
+                        "low": comb_low,
                     }
             st["is_flat"] = True
             _clear_exit_progress(st)
@@ -518,7 +545,7 @@ class TrailingCore:
             # Warm up until price exceeds the threshold set on the first tick or after re-buy.
             # Normal dips do not sell, but crash circuit breaker above still protects against collapse.
             if price < st["warmup_at"]:
-                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up — active at {st['warmup_at']:.4f}"
+                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up -- active at {st['warmup_at']:.4f}"
                          f" (+{self.min_profit_pct}%)")
                 return
             st.pop("warmup_at")                              # threshold reached; trailing is now active
@@ -534,7 +561,7 @@ class TrailingCore:
             for key, asset, pair, trail in self.a.assets():
                 try:
                     self._process(key, asset, pair, trail, state)
-                except Exception as e:  # noqa: BLE001 — one coin must not stop the rest
+                except Exception as e:  # noqa: BLE001 -- one coin must not stop the rest
                     self.a.log_item_error(key, e)
             self.save(state)
         else:                                                 # Kraken: one try per tick; retry errors without saving
@@ -543,7 +570,7 @@ class TrailingCore:
                 for key, asset, pair, trail in self.a.assets():
                     self._process(key, asset, pair, trail, state)
                 self.save(state)
-            except Exception as e:  # noqa: BLE001 — resilience: retry after a network failure
+            except Exception as e:  # noqa: BLE001 -- resilience: retry after a network failure
                 self.a.log_tick_error(e)
 
 
@@ -657,7 +684,7 @@ class TrailingAdapterBase:
             return False
         sym_norm = symbol.strip().upper()
         rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
-        default_rebuy = bool(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled))
+        default_rebuy = _parse_bool_flag(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled), self.core.rebuy_enabled)
         has_auto_trend = callable(getattr(self, "_long_trend_up", None))
         predicate = (
             (lambda v: v in ("on", "off", "auto"))
@@ -793,7 +820,7 @@ class TrailingAdapterBase:
         price_f = safe_float(price, 0.0)
         peak_f = safe_float(peak, price_f)
         self.log(
-            f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
+            f"  [DRY] {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
             f"(peak {peak_f:.4f}, drop >= {trail}%)  "
             f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
         )
@@ -803,7 +830,7 @@ class TrailingAdapterBase:
         low_val, _ = extract_rebuy_anchors(rb, price_f)
         target_desc = f"{qty} {asset}" if self._PREFER_ASSET_LABEL else f"{pair} {qty}"
         self.log(
-            f"  🟡 {self._LOG_TAG}[DRY] WOULD RE-BUY {target_desc} @ ~{price_f:.4f}  "
+            f"  [DRY] {self._LOG_TAG}[DRY] WOULD RE-BUY {target_desc} @ ~{price_f:.4f}  "
             f"(a pullback from the low {low_val:.4f})  [{self._ENABLED_ENV_VAR}=true for it to execute]"
         )
 
@@ -818,20 +845,20 @@ class TrailingAdapterBase:
 
     def log_skip_rebuy_trend(self, asset) -> None:
         self.log(
-            f"  {self._LOG_TAG} re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)"
+            f"  {self._LOG_TAG} re-buy {asset} deferred -- the instant trend is CLEARLY down (not catching the knife)"
         )
 
     def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
         target = asset if self._PREFER_ASSET_LABEL else pair
         self.log(
-            f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)"
+            f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP -- NOT selling (anti-wick)"
         )
 
     def log_item_error(self, key, e) -> None:
         self.log(f"  ! {self._LOG_TAG} {key}: {e}")
 
     def log_tick_error(self, e) -> None:
-        self.log(f"  ! {self._LOG_TAG} cycle error ({e}) — continuing")
+        self.log(f"  ! {self._LOG_TAG} cycle error ({e}) -- continuing")
 
     def _log_sell_result(
         self,
@@ -850,17 +877,17 @@ class TrailingAdapterBase:
         peak_f = safe_float(peak, price_f)
         if result.outcome == "refused":
             self.log(
-                f"  🛑 {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
+                f"  [STOP] {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
                 f"({result.intent.get('refusal_reason')})"
             )
         else:
             self.log(
-                f"  🛑 {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
+                f"  [STOP] {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
                 f"(peak {peak_f:.4f}, -{trail}%, orderId={result.intent.get('order_id')})"
             )
 
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
-        use_market = bool(getattr(self, "trailing_market", True))
+        use_market = _parse_bool_flag(getattr(self, "trailing_market", True), True)
         order_price = (
             price
             if (use_market or self._SELL_LIMIT_SLIPPAGE_FACTOR == 1.0)
@@ -904,7 +931,7 @@ class TrailingAdapterBase:
             if result.outcome == "refused"
             else f"orderId={result.intent.get('order_id')}"
         )
-        self.log(f"  🟢 {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
+        self.log(f"  [REBUY] {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
         self._sync_retry_count_from_state(pair, "REBUY", persist)

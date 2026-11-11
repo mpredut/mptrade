@@ -32,13 +32,14 @@ def generate_ed25519_keypair(priv_path: str = 'ed25519_private.pem', pub_path: s
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
 
-    pub_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    pub_der = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    pub_pem = public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
     priv_bytes = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
 
     atomic_write_bytes(priv_path, priv_bytes)
-    atomic_write_bytes(pub_path, pub_bytes)
+    atomic_write_bytes(pub_path, pub_pem)
 
-    return base64.b64encode(pub_bytes).decode()
+    return base64.b64encode(pub_der).decode("ascii")
 
 
 if __name__ == "__main__":

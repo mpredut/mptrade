@@ -48,6 +48,9 @@ def is_reentry_state_stale(state: Any, sell_time_s: float | None) -> bool:
     """Return True if ``state`` predates or mismatches ``sell_time_s``, normalizing timestamps in-place."""
     if not isinstance(state, dict) or not state or sell_time_s is None:
         return False
+    sell_f = normalize_epoch_sec(sell_time_s, default=None)
+    if sell_f is None:
+        return False
     st_sell_time = normalize_epoch_sec(state.get("sell_time"), default=None)
     if st_sell_time is not None:
         state["sell_time"] = st_sell_time
@@ -55,8 +58,8 @@ def is_reentry_state_stale(state: Any, sell_time_s: float | None) -> bool:
     if st_started is not None:
         state["started_at"] = st_started
     return (
-        (st_sell_time is not None and st_sell_time != sell_time_s)
-        or (st_sell_time is None and st_started is not None and st_started < sell_time_s)
+        (st_sell_time is not None and abs(st_sell_time - sell_f) > 1e-6)
+        or (st_sell_time is None and st_started is not None and st_started + 1e-6 < sell_f)
     )
 
 
@@ -479,6 +482,22 @@ class PositionExitManager:
                 for sym_k in [k for k, v in sub.items() if not isinstance(v, dict)]:
                     sub.pop(sym_k, None)
             setattr(self, key, sub)
+        if "hard_tp_last" in store or self.config.hard_tp_enabled:
+            raw_hard = store.get("hard_tp_last")
+            if not isinstance(raw_hard, dict):
+                clean_hard: Dict[str, float] = {}
+                store["hard_tp_last"] = clean_hard
+            else:
+                cleaned_items = {
+                    hk_clean: hv_clean
+                    for hk, hv in raw_hard.items()
+                    if (hk_clean := _clean_symbol_str(hk))
+                    and (hv_clean := normalize_epoch_sec(hv, default=None, allow_zero=True)) is not None
+                }
+                raw_hard.clear()
+                raw_hard.update(cleaned_items)
+                clean_hard = raw_hard
+            self.hard_tp_last = clean_hard
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
@@ -597,7 +616,8 @@ class PositionExitManager:
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price, buy_price = float(snapshot.current_price), float(snapshot.avg_buy_price)
+        current_price = safe_pos_float(snapshot.current_price, default=0.0) or 0.0
+        buy_price = safe_pos_float(snapshot.avg_buy_price, default=0.0) or 0.0
         price_decrease = snapshot.loss_ratio
 
         _sanitize_position_state(self.sl_bounce_state, symbol, buy_price)
@@ -772,11 +792,11 @@ class PositionExitManager:
         ):
             return None
         symbol = _clean_symbol_str(snapshot.symbol)
-        last_hard = safe_pos_float(self.hard_tp_last.get(symbol), 0.0)
-        if last_hard > now:
-            last_hard = 0.0
+        last_hard = safe_nonneg_float(self.hard_tp_last.get(symbol), default=None)
+        if last_hard is not None and last_hard > now:
+            last_hard = None
             self.hard_tp_last.pop(symbol, None)
-        if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
+        if last_hard is None or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
             reason = (
                 f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
                 f"selling {self.config.hard_tp_frac*100:.0f}%)"
@@ -825,7 +845,8 @@ class PositionExitManager:
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price, buy_price = float(snapshot.current_price), float(snapshot.avg_buy_price)
+        current_price = safe_pos_float(snapshot.current_price, default=0.0) or 0.0
+        buy_price = safe_pos_float(snapshot.avg_buy_price, default=0.0) or 0.0
         price_increase = snapshot.gain_ratio
 
         # PRIORITY 0: Hard TP Spike Exit
@@ -984,8 +1005,9 @@ class PositionExitManager:
         if last_sell_f is None:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
-        last_sell, current_price = last_sell_f, float(snapshot.current_price)
-        sell_time_s = safe_pos_float(snapshot.last_sell_time_s, default=None)
+        last_sell = last_sell_f
+        current_price = safe_pos_float(snapshot.current_price, default=0.0) or 0.0
+        sell_time_s = normalize_epoch_sec(snapshot.last_sell_time_s, default=None)
 
         # Case 1: TTL barrier expiration
         if self.config.reentry_ttl_hours > 0 and sell_time_s is not None:
@@ -1023,7 +1045,7 @@ class PositionExitManager:
         if is_stop_exit_kind(last_kind) and self.config.reentry_sl_bounce_pct > 0:
             if (
                 self.config.reentry_post_stop_cooldown_sec > 0
-                and sell_time_s is not None and now > 0
+                and sell_time_s is not None and now >= 0.0
                 and 0 <= (now - sell_time_s) < self.config.reentry_post_stop_cooldown_sec
             ):
                 elapsed_s = now - sell_time_s
