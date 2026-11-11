@@ -33,9 +33,15 @@ from botcore import (
 from cachepaths import clean_symbol_key
 from guard_hierarchy import (
     GUARD_REGISTRY,
+    _is_valid_regime_context,
+    _load_margins,
+    is_intelligence_master_off,
     is_master_bypass,
     make_intel_cache_key,
+    merge_guard_scale,
     normalize_bypassed_guards,
+    resolve_high_stake_min_notional_usd,
+    validate_guard_mode_cfg,
 )
 from intelligence.internal.guards.guard_decision import BrakeAction
 
@@ -87,7 +93,6 @@ def evaluate_high_stake_order_guard(
         HighStakeGuard,
         is_llm_guard_exempt,
     )
-    from order_guard import is_intelligence_master_off, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
     side = normalize_side(side)
     if side not in ("BUY", "SELL"):
@@ -245,7 +250,6 @@ def check_geopolitical_order_guards(
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
-    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -385,7 +389,6 @@ def check_llm_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _is_valid_regime_context, _load_margins, is_intelligence_master_off, merge_guard_scale
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):

@@ -10,8 +10,10 @@ Unifies:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import importlib
 import logging
 import os
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -960,3 +962,85 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 no_options_ttl=no_options_ttl,
             )
         return ctx_out
+
+
+# ============================================================================
+# Read-Only Collector Singletons (SSOT for Guards & Pre-Trade Telemetry)
+# ============================================================================
+
+_READONLY_COLLECTOR_SINGLETONS: Dict[str, Any] = {
+    "_whale_collector": None,
+    "_orderbook_collector": None,
+    "_derivatives_collector": None,
+}
+_ORIG_COLLECTOR_GETTERS: Dict[str, Any] = {}
+
+
+def _resolve_readonly_collector(
+    getter_name: str,
+    attr_name: str,
+    module_path: str,
+    cls_name: str,
+) -> Any:
+    """Resolve a read-only collector singleton while honoring ``external_order_guard`` overrides."""
+    eog_mod = sys.modules.get("external_order_guard")
+    if eog_mod is not None:
+        orig_getter = _ORIG_COLLECTOR_GETTERS.get(getter_name)
+        patched_getter = eog_mod.__dict__.get(getter_name)
+        if callable(patched_getter) and patched_getter is not orig_getter:
+            return patched_getter()
+        if attr_name in eog_mod.__dict__:
+            cur = eog_mod.__dict__.get(attr_name)
+            if cur is not None:
+                return cur
+    else:
+        cur = _READONLY_COLLECTOR_SINGLETONS.get(attr_name)
+        if cur is not None:
+            return cur
+
+    cls_obj = getattr(importlib.import_module(module_path), cls_name)
+    try:
+        cur = cls_obj(start_sync=False)
+    except TypeError:
+        cur = cls_obj()
+    _READONLY_COLLECTOR_SINGLETONS[attr_name] = cur
+    if eog_mod is not None:
+        setattr(eog_mod, attr_name, cur)
+    return cur
+
+
+def get_whale_collector() -> Any:
+    """Lazily load singleton whale positioning collector (read-only consumer, start_sync=False)."""
+    return _resolve_readonly_collector(
+        "get_whale_collector",
+        "_whale_collector",
+        "intelligence.external.collectors.whale_positioning_collector",
+        "WhalePositioningCollector",
+    )
+
+
+def get_orderbook_collector() -> Any:
+    """Lazily load singleton orderbook depth collector (read-only consumer, start_sync=False)."""
+    return _resolve_readonly_collector(
+        "get_orderbook_collector",
+        "_orderbook_collector",
+        "intelligence.external.collectors.orderbook_depth_collector",
+        "OrderbookDepthCollector",
+    )
+
+
+def get_derivatives_collector() -> Any:
+    """Lazily load singleton derivatives telemetry collector (read-only consumer, start_sync=False)."""
+    return _resolve_readonly_collector(
+        "get_derivatives_collector",
+        "_derivatives_collector",
+        "intelligence.external.collectors.derivatives_telemetry_collector",
+        "DerivativesTelemetryCollector",
+    )
+
+
+_ORIG_COLLECTOR_GETTERS.update({
+    "get_whale_collector": get_whale_collector,
+    "get_orderbook_collector": get_orderbook_collector,
+    "get_derivatives_collector": get_derivatives_collector,
+})

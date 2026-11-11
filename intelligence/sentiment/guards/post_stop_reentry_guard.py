@@ -240,7 +240,7 @@ def get_post_stop_reentry_guard(
     """Factory retrieving or initializing the singleton PostStopReentryGuard."""
     global _POST_STOP_GUARD_INSTANCE
     if margins is None:
-        from order_guard import _load_margins
+        from guard_hierarchy import _load_margins
         m = _load_margins()
     else:
         m = margins

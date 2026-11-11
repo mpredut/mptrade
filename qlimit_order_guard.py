@@ -16,18 +16,39 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import clean_scale, normalize_side, obj_attr, safe_nonneg_float, safe_pos_float
+from botcore import (
+    clean_scale,
+    normalize_side,
+    obj_attr,
+    resolve_patched_attr,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from guard_hierarchy import (
     GUARD_REGISTRY,
+    _load_margins,
+    is_intelligence_master_off,
     is_master_bypass,
     normalize_bypassed_guards,
     resolve_qlimit2_sub_bypasses,
+    validate_guard_mode_cfg,
 )
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-from intelligence.internal.state.survival import get_cached_t_entry
-import order_guard as _og
+import intelligence.internal.state.survival as _survival
+from intelligence.internal.state.survival import (
+    _ORIG_READ_CACHED_PRICE_HISTORY,
+    _ORIG_RESOLVE_TREND_DIRECTION,
+    _ORIG_RESOLVE_TREND_DURATION,
+    _read_cached_price_history,
+    _resolve_trend_direction,
+    get_cached_t_entry,
+    resolve_effective_trend_duration,
+)
+
+# Backward-compatible module handle for callers/tests patching ``qlimit_order_guard._og``
+_og = _survival
 
 
 def resolve_cached_gaussian_horizon(
@@ -77,12 +98,6 @@ def check_qlimit2_order_guards(
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import (
-        _load_margins,
-        is_intelligence_master_off,
-        resolve_effective_trend_duration,
-        validate_guard_mode_cfg,
-    )
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -108,11 +123,17 @@ def check_qlimit2_order_guards(
     history = price_history if px_clean > 0.0 else None
     if history is None and px_clean > 0.0:
         try:
-            from order_guard import _read_cached_price_history
+            read_hist_fn = resolve_patched_attr(
+                "_read_cached_price_history",
+                _ORIG_READ_CACHED_PRICE_HISTORY,
+                local_val=_read_cached_price_history,
+                modules=("order_guard", "intelligence.internal.state.survival"),
+                require_callable=True,
+            )
             try:
-                history = _read_cached_price_history(symbol, window_seconds=7200.0, now=now)
+                history = read_hist_fn(symbol, window_seconds=7200.0, now=now)
             except TypeError:
-                history = _read_cached_price_history(symbol, window_seconds=7200.0)
+                history = read_hist_fn(symbol, window_seconds=7200.0)
         except Exception:
             pass
 
@@ -126,8 +147,15 @@ def check_qlimit2_order_guards(
 
     # 2. Weibull trend exhaustion check (calibrated past G_QLIMIT1's Gaussian Zone 2 when resolved from live cache)
     explicit_duration_override = safe_pos_float(trend_duration_seconds, 0.0) > 0.0
+    dur_resolver = resolve_patched_attr(
+        "_resolve_trend_duration",
+        _ORIG_RESOLVE_TREND_DURATION,
+        local_val=_og._resolve_trend_duration,
+        modules=("order_guard", "intelligence.internal.state.survival"),
+        require_callable=True,
+    )
     dur_sec = resolve_effective_trend_duration(
-        symbol, trend_duration_seconds, regime_context, fallback_resolver=_og._resolve_trend_duration
+        symbol, trend_duration_seconds, regime_context, fallback_resolver=dur_resolver
     )
 
     if dur_sec > 0.0 and not weibull_only_bypass and not bool(raw_bypass_tokens & {"exhaustion_guard", "weibullexhaustionguard"}):
@@ -135,7 +163,14 @@ def check_qlimit2_order_guards(
         if explicit_duration_override and ctx_rt is None:
             trend_dir = None
         else:
-            trend_dir = _og._resolve_trend_direction(symbol, regime_context=regime_context)
+            dir_resolver = resolve_patched_attr(
+                "_resolve_trend_direction",
+                _ORIG_RESOLVE_TREND_DIRECTION,
+                local_val=_resolve_trend_direction,
+                modules=("order_guard", "intelligence.internal.state.survival"),
+                require_callable=True,
+            )
+            trend_dir = dir_resolver(symbol, regime_context=regime_context)
 
         gauss_horizon_d = None
         p90_d = None

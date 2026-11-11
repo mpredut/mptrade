@@ -25,7 +25,6 @@ from botcore import (
     normalize_side,
     normalize_trend_direction,
     obj_attr,
-    parse_dotenv,
     resolve_now_ts,
     resolve_order_notional,
     resolve_patched_attr,
@@ -36,27 +35,43 @@ from botcore import (
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from cachepaths import (
-    CACHE_LONG_TREND_FILENAME,
-    CACHE_WATCHER_ALL_PRICE_FILENAME,
-    cache_24_price_filename,
-    cache_symbol_variants,
     get_cachedb_dir,
-    has_equity_suffix,
     normalize_venue_name,
-    resolve_cachedb_filepath,
 )
+import guard_hierarchy as _gh
 from guard_hierarchy import (
     GUARD_REGISTRY,
+    VALID_GUARD_MODES,
+    VALID_PROFIT_GUARD_MODES,
+    _DISCRETE_POLICY_SETS,
+    _GUARD_MODE_KEYS,
+    _MODULE_REFERENCE_KEYS,
+    _REQUIRED_ORDER_GUARD_KEYS,
+    _is_valid_regime_context,
+    _load_margins,
+    _validate_discrete_cfg,
+    _validate_margins_cfg,
+    _venue_cfg,
     is_category_bypassed,
+    is_intelligence_master_off,
     is_master_bypass,
     make_intel_cache_key,
+    merge_guard_scale,
     normalize_bypassed_guards,
     normalize_intel_bypass_with_qlimit2_subs,
+    resolve_effective_bypass_guards,
+    resolve_high_stake_min_notional_usd,
+    validate_guard_mode_cfg,
+    validate_profit_guard_mode_cfg,
 )
-from intelligence.internal.state.survival import get_weight_for_cash_permission_at_quant_time
-from intelligence.macro_sentiment_ssot import (
-    lookup_symbol_cache_items,
-    scan_latest_long_trend_value,
+from intelligence.internal.state.survival import (
+    _JSON_RECOVERING_MEMO,
+    _read_cached_price_history,
+    _resolve_trend_direction,
+    _resolve_trend_duration,
+    _scan_cached_long_trend,
+    get_weight_for_cash_permission_at_quant_time,
+    resolve_effective_trend_duration,
 )
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 from providers.order_ohlc_utils import (
@@ -66,261 +81,12 @@ from providers.order_ohlc_utils import (
     extract_timestamp_s,
 )
 from providers.strategy_executor import ProviderError, SubmissionRefused
-from state_io import read_json_dict_cached
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
-_MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
-_MARGINS_FILE_MTIME: float = 0.0
-_MARGINS_LAST_CHECK: float = 0.0
-
-
-_REQUIRED_ORDER_GUARD_KEYS = frozenset({
-    "default", "binance", "kraken", "default_window_h", "kraken_window_h",
-    "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy",
-    "default_chop_weight", "binance_chop_weight", "kraken_chop_weight",
-    "default_max_daily_trades", "default_safeback_sec",
-    "default_buy_reference", "binance_buy_reference", "kraken_buy_reference",
-    "default_sell_reference", "binance_sell_reference", "kraken_sell_reference",
-    "assetguardian_buy_reference", "assetguardian_sell_reference",
-    "monitortrades_buy_reference", "monitortrades_sell_reference",
-    "tradeall_buy_reference", "tradeall_sell_reference",
-    "rtrade_buy_reference", "rtrade_sell_reference",
-    "dynamic_window_favorable_h", "dynamic_window_flat_h", "dynamic_window_adverse_h",
-    "regime_context_max_age_sec",
-    # Pillar 1: Internal Quantitative Mathematical Guards
-    "internal_guard_mode", "intelligence_guards_mode", "parabolic_surge_pct",
-    "parabolic_pullback_pct", "weibull_exhaustion_policy", "weibull_exhausted_scale",
-    "weibull_p90_days",
-    # Pillar 2: External Microstructure & Derivatives Flow Guards
-    "external_guard_mode", "whale_guard_mode", "severe_cascade_oi_pct", "min_taker_ratio",
-    "taker_downscale_threshold", "taker_downscaled_scale", "orderbook_wall_guard_mode",
-    "whale_wall_usd_limit", "min_buy_imbalance", "max_sell_imbalance",
-    "high_stake_min_notional_usd", "funding_guard_mode", "funding_max_long_rate",
-    "funding_min_short_rate", "funding_crowding_policy", "funding_crowded_scale",
-    # Pillar 2 Sub-Module: Smart Stop-Loss
-    "smart_sl_mode", "smart_sl_max_threshold_pct", "smart_sl_grace_seconds",
-    "smart_sl_disaster_buffer_pct", "smart_sl_min_whale_long_pct", "smart_sl_min_taker_ratio",
-    # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
-    "llm_guard_mode", "llm_timeout_sec", "llm_fallback", "post_stop_reentry_mode",
-    "post_stop_reentry_timeout_sec", "post_stop_reentry_fallback", "post_stop_reentry_notify",
-    "post_stop_reentry_cache_ttl_sec", "macro_advisor_interval_sec", "macro_llm_interval_sec",
-    # Pillar 4 & Global + Autonomous AI Supervisor & Trading Gateway + Bypass
-    "geopolitical_guard_mode", "shadow_notify", "supervisor_mode", "supervisor_notify",
-    "autonomous_trading_mode", "autonomous_trading_max_notional_usd",
-    "autonomous_trading_min_notional_usd", "autonomous_trading_min_confidence",
-    "autonomous_trading_notify", "default_bypass_guards", "binance_bypass_guards",
-    "kraken_bypass_guards",
-})
-
-VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
-VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
-
-_GUARD_MODE_KEYS = (
-    "internal_guard_mode", "intelligence_guards_mode", "external_guard_mode",
-    "whale_guard_mode", "orderbook_wall_guard_mode", "funding_guard_mode",
-    "smart_sl_mode", "llm_guard_mode", "post_stop_reentry_mode",
-    "geopolitical_guard_mode", "supervisor_mode", "autonomous_trading_mode",
-)
-
-_MODULE_REFERENCE_KEYS = frozenset({
-    "assetguardian_buy_reference", "assetguardian_sell_reference",
-    "monitortrades_buy_reference", "monitortrades_sell_reference",
-    "tradeall_buy_reference", "tradeall_sell_reference",
-    "rtrade_buy_reference", "rtrade_sell_reference",
-})
-
-_DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
-    "weibull_exhaustion_policy": frozenset({"block", "veto", "downscale"}),
-    "funding_crowding_policy": frozenset({"defer", "downscale"}),
-    "llm_fallback": frozenset({"allow", "block", "veto", "downscale"}),
-    "post_stop_reentry_fallback": frozenset({"allow", "block", "veto", "downscale"}),
-}
-
-
-def _validate_discrete_cfg(val: Any, valid_set: Any, label: str) -> str:
-    if not isinstance(val, str):
-        raise ValueError(f"Invalid {label} {val!r}; must be a string in {sorted(valid_set)}")
-    mode = val.strip().lower()
-    if mode not in valid_set:
-        raise ValueError(f"Invalid {label} {val!r}; must be one of {sorted(valid_set)}")
-    return mode
-
-
-def validate_profit_guard_mode_cfg(val: Any) -> str:
-    """Validate that a profit guard mode is strictly one of VALID_PROFIT_GUARD_MODES."""
-    return _validate_discrete_cfg(val, VALID_PROFIT_GUARD_MODES, "profit guard mode")
-
-
-def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
-    """Validate that a guard / supervisor / gateway mode is strictly in VALID_GUARD_MODES."""
-    return _validate_discrete_cfg(val, VALID_GUARD_MODES, key_name)
-
-
-def is_intelligence_master_off(margins: Dict[str, Any], *, require_key: bool = False) -> bool:
-    """Return True when intelligence_guards_mode is set to 'off'."""
-    if not require_key and "intelligence_guards_mode" not in margins:
-        return False
-    return validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off"
-
-
-def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
-    """Validate discrete mode and policy values in order_guard.conf at load time."""
-    for key in _GUARD_MODE_KEYS:
-        validate_guard_mode_cfg(m[key], key_name=key)
-
-    for key, val in m.items():
-        if key.endswith("_buy_reference") or key.endswith("_sell_reference"):
-            if key in _MODULE_REFERENCE_KEYS:
-                sval = str(val).strip().lower() if isinstance(val, str) else None
-                if sval != "venue":
-                    validate_profit_guard_mode_cfg(val)
-            else:
-                validate_profit_guard_mode_cfg(val)
-
-    for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
-        _validate_discrete_cfg(m[policy_key], valid_set, f"{policy_key}")
-
-    min_auto_usd = safe_pos_float(m.get("autonomous_trading_min_notional_usd"), default=None)
-    max_auto_usd = safe_pos_float(m.get("autonomous_trading_max_notional_usd"), default=None)
-    if min_auto_usd is None:
-        raise ValueError(
-            f"Invalid autonomous_trading_min_notional_usd {m.get('autonomous_trading_min_notional_usd')!r} in {path}"
-        )
-    if max_auto_usd is None or max_auto_usd < min_auto_usd:
-        raise ValueError(
-            f"Invalid autonomous_trading_max_notional_usd {m.get('autonomous_trading_max_notional_usd')!r} in {path}; "
-            f"must be >= autonomous_trading_min_notional_usd ({min_auto_usd})"
-        )
-
-    fav_h = safe_pos_float(m.get("dynamic_window_favorable_h"), default=None)
-    flat_h = safe_pos_float(m.get("dynamic_window_flat_h"), default=None)
-    adv_h = safe_pos_float(m.get("dynamic_window_adverse_h"), default=None)
-    if fav_h is None or flat_h is None or adv_h is None or not (fav_h <= flat_h <= adv_h):
-        raise ValueError(
-            f"Invalid dynamic window progression in {path}: require 0 < dynamic_window_favorable_h ({fav_h}) "
-            f"<= dynamic_window_flat_h ({flat_h}) <= dynamic_window_adverse_h ({adv_h})"
-        )
-
-    pullback_pct = safe_pos_float(m.get("parabolic_pullback_pct"), default=None)
-    surge_pct = safe_pos_float(m.get("parabolic_surge_pct"), default=None)
-    if pullback_pct is None or surge_pct is None or pullback_pct > surge_pct:
-        raise ValueError(
-            f"Invalid parabolic bounds in {path}: require 0 < parabolic_pullback_pct ({pullback_pct}) "
-            f"<= parabolic_surge_pct ({surge_pct})"
-        )
-
-    min_taker = safe_pos_float(m.get("min_taker_ratio"), default=None)
-    downscale_taker = safe_pos_float(m.get("taker_downscale_threshold"), default=None)
-    if min_taker is None or downscale_taker is None or min_taker > downscale_taker:
-        raise ValueError(
-            f"Invalid taker ratio bounds in {path}: require 0 < min_taker_ratio ({min_taker}) "
-            f"<= taker_downscale_threshold ({downscale_taker})"
-        )
-
-    min_imb = safe_pos_float(m.get("min_buy_imbalance"), default=None)
-    max_imb = safe_pos_float(m.get("max_sell_imbalance"), default=None)
-    if min_imb is None or max_imb is None or not (0.0 < min_imb < max_imb < 1.0):
-        raise ValueError(
-            f"Invalid orderbook imbalance bounds in {path}: require 0 < min_buy_imbalance ({min_imb}) "
-            f"< max_sell_imbalance ({max_imb}) < 1.0"
-        )
-
-    min_short_rate = safe_float(m.get("funding_min_short_rate"), default=None)
-    max_long_rate = safe_pos_float(m.get("funding_max_long_rate"), default=None)
-    if min_short_rate is None or max_long_rate is None or not (min_short_rate < 0.0 < max_long_rate):
-        raise ValueError(
-            f"Invalid funding rate bounds in {path}: require funding_min_short_rate ({min_short_rate}) "
-            f"< 0 < funding_max_long_rate ({max_long_rate})"
-        )
-
-
-def _load_margins():
-    """Read and cache `key = value` lines strictly from order_guard.conf.
-    The configuration file is the SINGLE source of truth without code fallbacks.
-    Checks file mtime periodically (every 5 seconds) to hot-reload config edits."""
-    global _MARGINS, _MARGINS_FILE_MTIME, _MARGINS_LAST_CHECK
-    now_ts = time.time()
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
-    if _MARGINS is not None and 0.0 <= (now_ts - _MARGINS_LAST_CHECK) < 5.0:
-        return _MARGINS
-    _MARGINS_LAST_CHECK = now_ts
-    if not os.path.exists(path):
-        if _MARGINS is not None:
-            return _MARGINS
-        raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
-    mtime = os.path.getmtime(path)
-    if _MARGINS is not None and (_MARGINS_FILE_MTIME == 0.0 or mtime == _MARGINS_FILE_MTIME):
-        _MARGINS_FILE_MTIME = mtime
-        return _MARGINS
-    _MARGINS_FILE_MTIME = mtime
-    m: Dict[str, Any] = parse_dotenv(path, lower_keys=True, coerce_floats=True)
-    missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
-    if missing:
-        if _MARGINS is not None and _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
-            return _MARGINS
-        raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
-    _validate_margins_cfg(m, path)
-    _MARGINS = m
-    return m
-
-
-def resolve_high_stake_min_notional_usd(
-    margins: Dict[str, Any],
-    *,
-    side: Optional[str] = None,
-    require_key: bool = False,
-) -> float:
-    """Resolve the unified high-stake notional threshold (high_stake_min_notional_usd) from margins."""
-    if isinstance(margins, dict) and "high_stake_min_notional_usd" in margins:
-        return safe_pos_float(margins.get("high_stake_min_notional_usd"), default=700.0) or 700.0
-    if require_key:
-        raise KeyError("high_stake_min_notional_usd")
-    return 700.0
-
-
+_MARGINS = _gh._MARGINS
+_MARGINS_FILE_MTIME: float = _gh._MARGINS_FILE_MTIME
+_MARGINS_LAST_CHECK: float = _gh._MARGINS_LAST_CHECK
 _load_margins()
-
-
-def _venue_cfg(
-    provider_name,
-    suffix: str = "",
-    default: Any = None,
-    *,
-    margins: Optional[Dict[str, Any]] = None,
-    required: bool = False,
-):
-    """Resolve `<venue><suffix>` with fallback to `default<suffix>` from `order_guard.conf`."""
-    m = margins if isinstance(margins, dict) else _load_margins()
-    venue = (normalize_venue_name(provider_name, default="") or str(provider_name or "")).strip().lower()
-    venue_key = f"{venue}{suffix}" if venue else ""
-    default_key = f"default{suffix}"
-    if venue_key and venue_key in m:
-        return m[venue_key]
-    if default_key in m:
-        return m[default_key]
-    if required:
-        raise KeyError(
-            f"Missing required profit guard config key {venue_key or default_key!r} (and {default_key!r}) in order_guard.conf"
-        )
-    return default
-
-
-def resolve_effective_bypass_guards(
-    venue: Any = None,
-    *,
-    bypass_guards: Any = None,
-    inst_bypass: Any = None,
-    margins: Optional[Dict[str, Any]] = None,
-) -> set[str]:
-    """Return normalized bypass guards unioning venue config, instrument config, and caller overrides."""
-    res = normalize_bypassed_guards(
-        bypass_guards=_venue_cfg(venue, "_bypass_guards", margins=margins)
-    )
-    if inst_bypass:
-        res |= normalize_bypassed_guards(bypass_guards=inst_bypass)
-    if bypass_guards:
-        res |= normalize_bypassed_guards(bypass_guards=bypass_guards)
-    return res
 
 
 _PROCESS_TO_MODULE = {
@@ -541,34 +307,6 @@ def symbol_regime_context(
         provider=provider_name,
         trend_duration_seconds=dur_sec,
         benchmark_symbol=benchmark_symbol,
-    )
-
-
-def _is_valid_regime_context(
-    regime_context: Any,
-    symbol: Optional[str],
-    provider: Any,
-    *,
-    margins: Optional[Dict[str, Any]] = None,
-    now: Optional[float] = None,
-    require_identity: bool = True,
-    default_max_age: float = 600.0,
-) -> bool:
-    """Return True when `regime_context` is non-None and passes identity/freshness validation."""
-    if regime_context is None:
-        return False
-    if not hasattr(regime_context, "is_valid_for"):
-        return True
-    m = _load_margins() if margins is None else margins
-    max_age = safe_pos_float(m.get("regime_context_max_age_sec") if isinstance(m, dict) else None, default_max_age)
-    return bool(
-        regime_context.is_valid_for(
-            symbol=symbol,
-            provider=provider,
-            max_age_seconds=max_age,
-            now=now,
-            require_identity=require_identity,
-        )
     )
 
 
@@ -1052,160 +790,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     return True, None
 
 
-
-_JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
-
-
-def _scan_cached_long_trend(symbol: str, parser):
-    if not symbol or not isinstance(symbol, str):
-        return None
-    try:
-        p = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
-        data = read_json_dict_cached(p, _JSON_RECOVERING_MEMO, max_entries=32)
-        entries = lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True) if isinstance(data, dict) else None
-        return scan_latest_long_trend_value(entries, parser)
-    except Exception:
-        return None
-
-
-def _resolve_trend_duration(symbol: str) -> float:
-    """Resolve trend duration in seconds from memory/cache files once."""
-    return (
-        _scan_cached_long_trend(
-            symbol, lambda e: safe_pos_float(e.get("duration_seconds"), default=None)
-        )
-        or 0.0
-    )
-
-
-def resolve_effective_trend_duration(
-    symbol: str,
-    explicit_duration_sec: float = 0.0,
-    regime_context: Any = None,
-    *,
-    fallback_resolver: Optional[Callable[[str], float]] = None,
-) -> float:
-    """Resolve trend duration from explicit override -> regime_context -> live cache."""
-    dur_sec = safe_pos_float(explicit_duration_sec, 0.0)
-    if dur_sec <= 0.0 and regime_context is not None:
-        dur_sec = safe_pos_float(obj_attr(regime_context, "trend_duration_seconds", 0.0), 0.0)
-    if dur_sec <= 0.0 and symbol:
-        resolver = fallback_resolver or _resolve_trend_duration
-        dur_sec = safe_pos_float(resolver(symbol), 0.0)
-    return dur_sec
-
-
-def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
-    """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
-    if regime_context is not None:
-        rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")
-        norm_rt = normalize_trend_direction(rt, default=None, preserve_bull_bear=True)
-        if norm_rt is not None:
-            return norm_rt
-    return _scan_cached_long_trend(
-        symbol,
-        lambda e: normalize_trend_direction(
-            e.get("direction"), default=None, preserve_bull_bear=True
-        ),
-    )
-
-
-def _read_cached_price_history(
-    symbol: str,
-    window_seconds: float = 7200.0,
-    now: Optional[float] = None,
-) -> Optional[List[Tuple[float, float]]]:
-    """Read rolling price history from local cache for parabolic surge evaluation.
-
-    Prefers the authoritative 24h per-symbol cache (cachedb/cache_24_price_{symbol}.json)
-    which captures every high-resolution tick, and falls back to cache_watcher_all_price.json
-    with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
-    Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
-    """
-    if not symbol or not isinstance(symbol, str):
-        return None
-    su = symbol.strip().upper()
-    if not su:
-        return None
-    win_sec = safe_pos_float(window_seconds, 7200.0)
-    now_ts = resolve_now_ts(now)
-    cachedb_dir = get_cachedb_dir()
-    cutoff_ts = now_ts - win_sec
-    history: List[Tuple[float, float]] = []
-    cand_symbols = cache_symbol_variants(symbol, include_base=True)
-
-    def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
-        if isinstance(item, dict):
-            ts_raw = item.get("ts") if item.get("ts") is not None else item.get("timestamp")
-            px_raw = item.get("price") if item.get("price") is not None else item.get("close")
-        elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            ts_raw, px_raw = item[0], item[1]
-        else:
-            return None
-        ts_sec = normalize_epoch_sec(ts_raw)
-        px = safe_pos_float(px_raw, default=None)
-        return (ts_sec, px) if (ts_sec is not None and px is not None) else None
-
-    def _extract_valid_ticks(raw_items: Any) -> None:
-        if isinstance(raw_items, list) and len(raw_items) > 512:
-            first_tick = next((t for x in raw_items[:16] if (t := _parse_tick(x)) is not None), None)
-            last_tick = next((t for x in reversed(raw_items[-16:]) if (t := _parse_tick(x)) is not None), None)
-            iter_seq = raw_items if (first_tick and last_tick and first_tick[0] > last_tick[0]) else reversed(raw_items)
-            tail_buf: List[Tuple[float, float]] = []
-            older_streak = 0
-            for item in iter_seq:
-                parsed = _parse_tick(item)
-                if parsed is None:
-                    continue
-                ts_sec, px = parsed
-                if ts_sec < cutoff_ts:
-                    older_streak += 1
-                    if older_streak >= 64:
-                        break
-                    continue
-                older_streak = 0
-                if ts_sec <= (now_ts + 5.0):
-                    tail_buf.append((ts_sec, px))
-            tail_buf.reverse()
-            if len(tail_buf) > 1 and any(tail_buf[i][0] > tail_buf[i + 1][0] for i in range(len(tail_buf) - 1)):
-                tail_buf.sort(key=lambda pair: pair[0])
-            history.extend(tail_buf)
-            return
-
-        for item in raw_items or []:
-            parsed = _parse_tick(item)
-            if parsed is not None:
-                ts_sec, px = parsed
-                if cutoff_ts <= ts_sec <= (now_ts + 5.0):
-                    history.append((ts_sec, px))
-        if len(history) > 1 and any(history[i][0] > history[i + 1][0] for i in range(len(history) - 1)):
-            history.sort(key=lambda pair: pair[0])
-
-    p24_paths = list(dict.fromkeys(
-        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
-        for cand in cand_symbols
-        if "/" not in cand and ("_" not in cand or has_equity_suffix(cand))
-    ))
-    watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
-    for p_path in (*p24_paths, watcher_path):
-        data = read_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
-        if not isinstance(data, (dict, list)):
-            continue
-        try:
-            raw_items = (
-                data
-                if isinstance(data, list)
-                else lookup_symbol_cache_items(data, su, cand_keys=cand_symbols, require_list=True, unwrap_items=True)
-            )
-            _extract_valid_ticks(raw_items)
-            if history:
-                break
-        except Exception:
-            pass
-
-    return history if history else None
-
-
 def _record_context_suggested_scale(
     regime_context: Any,
     side: str,
@@ -1281,17 +865,6 @@ def _update_context_intel_cache(
             object.__setattr__(regime_context, "_intelligence_notional", notional)
     except Exception:
         pass
-
-
-def merge_guard_scale(
-    effective_scale: float,
-    active_reason: str,
-    new_scale: float,
-    new_reason: str,
-) -> Tuple[float, str]:
-    if new_scale < 1.0 and new_scale <= effective_scale:
-        return new_scale, new_reason
-    return effective_scale, active_reason
 
 
 def check_intelligence_guards(

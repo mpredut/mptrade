@@ -555,7 +555,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
         f_snap = None
         w_snap = None
         try:
-            from external_order_guard import get_orderbook_collector
+            from intelligence.external.collectors.base_collector import get_orderbook_collector
 
             ob_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj
@@ -604,7 +604,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             pass
 
         try:
-            from external_order_guard import get_derivatives_collector
+            from intelligence.external.collectors.base_collector import get_derivatives_collector
 
             f_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj
@@ -620,7 +620,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             pass
 
         try:
-            from external_order_guard import get_whale_collector
+            from intelligence.external.collectors.base_collector import get_whale_collector
 
             w_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj

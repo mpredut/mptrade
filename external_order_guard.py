@@ -10,7 +10,6 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 
 from __future__ import annotations
 
-import importlib
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
@@ -25,43 +24,31 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import clean_symbol_key
-from guard_hierarchy import GUARD_REGISTRY, is_master_bypass, normalize_bypassed_guards
+from guard_hierarchy import (
+    GUARD_REGISTRY,
+    _load_margins,
+    is_intelligence_master_off,
+    is_master_bypass,
+    merge_guard_scale,
+    normalize_bypassed_guards,
+    resolve_effective_bypass_guards,
+    validate_guard_mode_cfg,
+)
+from intelligence.external.collectors.base_collector import (
+    _READONLY_COLLECTOR_SINGLETONS,
+    get_derivatives_collector,
+    get_orderbook_collector,
+    get_whale_collector,
+)
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
 import intelligence.external.guards.whale_divergence_guard as wdg
 from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
 
-_whale_collector = None
-_orderbook_collector = None
-_derivatives_collector = None
+_whale_collector = _READONLY_COLLECTOR_SINGLETONS.get("_whale_collector")
+_orderbook_collector = _READONLY_COLLECTOR_SINGLETONS.get("_orderbook_collector")
+_derivatives_collector = _READONLY_COLLECTOR_SINGLETONS.get("_derivatives_collector")
 _MICRO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
-
-
-def _get_collector(attr_name: str, module_path: str, cls_name: str):
-    cur = globals().get(attr_name)
-    if cur is None:
-        cls_obj = getattr(importlib.import_module(module_path), cls_name)
-        try:
-            cur = cls_obj(start_sync=False)
-        except TypeError:
-            cur = cls_obj()
-        globals()[attr_name] = cur
-    return cur
-
-
-def get_whale_collector():
-    """Lazily load singleton whale positioning collector (read-only consumer, start_sync=False)."""
-    return _get_collector("_whale_collector", "intelligence.external.collectors.whale_positioning_collector", "WhalePositioningCollector")
-
-
-def get_orderbook_collector():
-    """Lazily load singleton orderbook depth collector (read-only consumer, start_sync=False)."""
-    return _get_collector("_orderbook_collector", "intelligence.external.collectors.orderbook_depth_collector", "OrderbookDepthCollector")
-
-
-def get_derivatives_collector():
-    """Lazily load singleton derivatives telemetry collector (read-only consumer, start_sync=False)."""
-    return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry_collector", "DerivativesTelemetryCollector")
 
 
 def check_external_order_guards(
@@ -87,8 +74,6 @@ def check_external_order_guards(
         return True, "not_supported_side", 1.0
 
     sym_norm = clean_symbol_key(symbol)
-
-    from order_guard import _load_margins, is_intelligence_master_off, merge_guard_scale, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -238,7 +223,6 @@ def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
     try:
         from intelligence.internal.guards.guard_decision import normalize_guard_mode
-        from order_guard import _load_margins, resolve_effective_bypass_guards
         m = _load_margins()
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
             if normalize_guard_mode(m.get(mode_key, "enforce"), default="enforce") != "enforce":

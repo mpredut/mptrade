@@ -16,7 +16,7 @@ import math
 import os
 import sys
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -31,6 +31,8 @@ from botcore import (
     lru_dict_put,
     normalize_epoch_sec,
     normalize_trend_direction,
+    obj_attr,
+    resolve_now_ts,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -38,7 +40,19 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import CACHE_T_TREND_FILENAME, cache_path, canonical_symbol_key, normalize_cache_base_asset
+from cachepaths import (
+    CACHE_LONG_TREND_FILENAME,
+    CACHE_T_TREND_FILENAME,
+    CACHE_WATCHER_ALL_PRICE_FILENAME,
+    cache_24_price_filename,
+    cache_path,
+    cache_symbol_variants,
+    canonical_symbol_key,
+    get_cachedb_dir,
+    has_equity_suffix,
+    normalize_cache_base_asset,
+    resolve_cachedb_filepath,
+)
 from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from providers.base import normalize_side
@@ -843,6 +857,181 @@ def get_weight_for_cash_permission_at_quant_time(
     return current_weight
 
 
+_JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
+_ORIG_GET_CACHEDB_DIR = get_cachedb_dir
+
+
+def _resolve_guard_cachedb_dir() -> str:
+    cdir_fn = resolve_patched_attr(
+        "get_cachedb_dir",
+        _ORIG_GET_CACHEDB_DIR,
+        local_val=get_cachedb_dir,
+        modules=("order_guard", "intelligence.internal.state.survival", "cachepaths"),
+        require_callable=True,
+    )
+    return str(cdir_fn())
+
+
+def _scan_cached_long_trend(symbol: str, parser: Callable[[Dict[str, Any]], Any]) -> Any:
+    if not symbol or not isinstance(symbol, str):
+        return None
+    try:
+        p = str(resolve_cachedb_filepath(os.path.join(_resolve_guard_cachedb_dir(), CACHE_LONG_TREND_FILENAME)))
+        data = read_json_dict_cached(p, _JSON_RECOVERING_MEMO, max_entries=32)
+        entries = (
+            lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
+            if isinstance(data, dict)
+            else None
+        )
+        return scan_latest_long_trend_value(entries, parser)
+    except Exception:
+        return None
+
+
+def _resolve_trend_duration(symbol: str) -> float:
+    """Resolve trend duration in seconds from memory/cache files once."""
+    return (
+        _scan_cached_long_trend(
+            symbol, lambda e: safe_pos_float(e.get("duration_seconds"), default=None)
+        )
+        or 0.0
+    )
+
+
+def resolve_effective_trend_duration(
+    symbol: str,
+    explicit_duration_sec: float = 0.0,
+    regime_context: Any = None,
+    *,
+    fallback_resolver: Optional[Callable[[str], float]] = None,
+) -> float:
+    """Resolve trend duration from explicit override -> regime_context -> live cache."""
+    dur_sec = safe_pos_float(explicit_duration_sec, 0.0)
+    if dur_sec <= 0.0 and regime_context is not None:
+        dur_sec = safe_pos_float(obj_attr(regime_context, "trend_duration_seconds", 0.0), 0.0)
+    if dur_sec <= 0.0 and symbol:
+        resolver = fallback_resolver or resolve_patched_attr(
+            "_resolve_trend_duration",
+            _ORIG_RESOLVE_TREND_DURATION,
+            local_val=_resolve_trend_duration,
+            modules=("order_guard", "intelligence.internal.state.survival"),
+            require_callable=True,
+        )
+        dur_sec = safe_pos_float(resolver(symbol), 0.0)
+    return dur_sec
+
+
+def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optional[str]:
+    """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
+    if regime_context is not None:
+        rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")
+        norm_rt = normalize_trend_direction(rt, default=None, preserve_bull_bear=True)
+        if norm_rt is not None:
+            return norm_rt
+    return _scan_cached_long_trend(
+        symbol,
+        lambda e: normalize_trend_direction(
+            e.get("direction"), default=None, preserve_bull_bear=True
+        ),
+    )
+
+
+def _read_cached_price_history(
+    symbol: str,
+    window_seconds: float = 7200.0,
+    now: Optional[float] = None,
+) -> Optional[List[Tuple[float, float]]]:
+    """Read rolling price history from local cache for parabolic surge evaluation.
+
+    Prefers the authoritative 24h per-symbol cache (``cachedb/cache_24_price_{symbol}.json``)
+    which captures every high-resolution tick, and falls back to ``cache_watcher_all_price.json``
+    with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
+    Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
+    """
+    if not symbol or not isinstance(symbol, str):
+        return None
+    su = symbol.strip().upper()
+    if not su:
+        return None
+    win_sec = safe_pos_float(window_seconds, 7200.0)
+    now_ts = resolve_now_ts(now)
+    cachedb_dir = _resolve_guard_cachedb_dir()
+    cutoff_ts = now_ts - win_sec
+    history: List[Tuple[float, float]] = []
+    cand_symbols = cache_symbol_variants(symbol, include_base=True)
+
+    def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
+        if isinstance(item, dict):
+            ts_raw = item.get("ts") if item.get("ts") is not None else item.get("timestamp")
+            px_raw = item.get("price") if item.get("price") is not None else item.get("close")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            ts_raw, px_raw = item[0], item[1]
+        else:
+            return None
+        ts_sec = normalize_epoch_sec(ts_raw)
+        px = safe_pos_float(px_raw, default=None)
+        return (ts_sec, px) if (ts_sec is not None and px is not None) else None
+
+    def _extract_valid_ticks(raw_items: Any) -> None:
+        if isinstance(raw_items, list) and len(raw_items) > 512:
+            first_tick = next((t for x in raw_items[:16] if (t := _parse_tick(x)) is not None), None)
+            last_tick = next((t for x in reversed(raw_items[-16:]) if (t := _parse_tick(x)) is not None), None)
+            iter_seq = raw_items if (first_tick and last_tick and first_tick[0] > last_tick[0]) else reversed(raw_items)
+            tail_buf: List[Tuple[float, float]] = []
+            older_streak = 0
+            for item in iter_seq:
+                parsed = _parse_tick(item)
+                if parsed is None:
+                    continue
+                ts_sec, px = parsed
+                if ts_sec < cutoff_ts:
+                    older_streak += 1
+                    if older_streak >= 64:
+                        break
+                    continue
+                older_streak = 0
+                if ts_sec <= (now_ts + 5.0):
+                    tail_buf.append((ts_sec, px))
+            tail_buf.reverse()
+            if len(tail_buf) > 1 and any(tail_buf[i][0] > tail_buf[i + 1][0] for i in range(len(tail_buf) - 1)):
+                tail_buf.sort(key=lambda pair: pair[0])
+            history.extend(tail_buf)
+            return
+
+        for item in raw_items or []:
+            parsed = _parse_tick(item)
+            if parsed is not None:
+                ts_sec, px = parsed
+                if cutoff_ts <= ts_sec <= (now_ts + 5.0):
+                    history.append((ts_sec, px))
+        if len(history) > 1 and any(history[i][0] > history[i + 1][0] for i in range(len(history) - 1)):
+            history.sort(key=lambda pair: pair[0])
+
+    p24_paths = list(dict.fromkeys(
+        str(resolve_cachedb_filepath(os.path.join(cachedb_dir, cache_24_price_filename(cand))))
+        for cand in cand_symbols
+        if "/" not in cand and ("_" not in cand or has_equity_suffix(cand))
+    ))
+    watcher_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)))
+    for p_path in (*p24_paths, watcher_path):
+        data = read_json_dict_cached(p_path, _JSON_RECOVERING_MEMO, max_entries=32)
+        if not isinstance(data, (dict, list)):
+            continue
+        try:
+            raw_items = (
+                data
+                if isinstance(data, list)
+                else lookup_symbol_cache_items(data, su, cand_keys=cand_symbols, require_list=True, unwrap_items=True)
+            )
+            _extract_valid_ticks(raw_items)
+            if history:
+                break
+        except Exception:
+            pass
+
+    return history if history else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Empirical trend survival analysis.")
     ap.add_argument("--symbol", default="BTCUSDC")
@@ -878,6 +1067,9 @@ def main() -> int:
 _ORIG_FETCH_KLINES = fetch_klines
 _ORIG_ESTIMATE_T = estimate_T
 _ORIG_GET_TRADE_WEIGHT = get_trade_weight
+_ORIG_RESOLVE_TREND_DURATION = _resolve_trend_duration
+_ORIG_RESOLVE_TREND_DIRECTION = _resolve_trend_direction
+_ORIG_READ_CACHED_PRICE_HISTORY = _read_cached_price_history
 
 
 if __name__ == "__main__":

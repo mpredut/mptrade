@@ -85,7 +85,7 @@ class MacroAnalyzer:
         symbols: Optional[List[str]] = None,
     ) -> None:
         self.cache_dir = cache_dir
-        from order_guard import _load_margins
+        from guard_hierarchy import _load_margins
         conf_margins = _load_margins()
         derived = resolve_derived_telemetry_intervals()
         exec_scale = derived["crypto_executor_interval_sec"] / 360.0

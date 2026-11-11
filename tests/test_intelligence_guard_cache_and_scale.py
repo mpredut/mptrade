@@ -2497,3 +2497,28 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
             ):
                 raise AssertionError(f"{rel}:{node.lineno} calls raw json.{node.func.attr}")
 
+    # 4. Acyclic Guard Hierarchy: sub-guards, collectors, and macro_analyzer never import order_guard
+    gh_imports = _collect_imports("guard_hierarchy.py")
+    assert not any(
+        m.startswith(("order_guard", "providers", "strategies", "intelligence", "orchestrator"))
+        for m in gh_imports
+    ), f"guard_hierarchy.py must remain pure Layer-2 SSOT, got: {gh_imports}"
+
+    for rel in (
+        "qlimit_order_guard.py",
+        "external_order_guard.py",
+        "llm_order_guard.py",
+        "intelligence/external/guards/smart_stop_loss_guard.py",
+        "intelligence/sentiment/guards/post_stop_reentry_guard.py",
+        "intelligence/sentiment/collectors/pretrade_telemetry_collector.py",
+        "intelligence/macro_analyzer.py",
+    ):
+        imps = _collect_imports(rel)
+        assert "order_guard" not in imps, f"{rel} must not import order_guard cyclically/upward: {imps}"
+
+    for rel in (
+        "intelligence/external/guards/smart_stop_loss_guard.py",
+        "intelligence/sentiment/collectors/pretrade_telemetry_collector.py",
+    ):
+        imps = _collect_imports(rel)
+        assert "external_order_guard" not in imps, f"{rel} must resolve collectors via base_collector SSOT: {imps}"

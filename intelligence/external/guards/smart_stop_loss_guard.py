@@ -307,7 +307,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             return True, reason, meta
 
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
-        from external_order_guard import get_orderbook_collector, get_whale_collector
+        from intelligence.external.collectors.base_collector import get_orderbook_collector, get_whale_collector
 
         w_snap = (
             whale_snapshot
@@ -514,7 +514,7 @@ def evaluate_smart_stop_loss(
     orderbook_snapshot=None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """Convenience functional interface for monitortrades.py."""
-    from order_guard import _load_margins
+    from guard_hierarchy import _load_margins
     m = _load_margins()
     if not isinstance(m, dict):
         m = {}
