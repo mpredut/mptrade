@@ -59,9 +59,9 @@ Repository = "https://github.com/mariusv/binance-trading-bot.git"
 
 [tool.setuptools]
 py-modules = [
+    "account_cache_health",
     "active_intents",
     "assetguardian",
-    "binance_cache_health",
     "botcore",
     "cacheInterface",
     "cacheManager",

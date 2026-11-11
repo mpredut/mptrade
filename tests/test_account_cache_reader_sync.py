@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi_ws_bridge
-import binance_cache_health as health
+import account_cache_health as health
 import cacheManager as cm
 
 
@@ -1745,7 +1745,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             ensure_account_cache_readers=MagicMock())
         with patch.dict(sys.modules, {"cacheManager": cache_module}), \
              patch.object(
-                 self._placeorder.binance_cache_health,
+                 self._placeorder.account_cache_health,
                  "require_fresh_account_cache",
                  side_effect=[requested, confirmed],
              ):
@@ -1764,7 +1764,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             ensure_account_cache_readers=MagicMock())
         with patch.dict(sys.modules, {"cacheManager": cache_module}), \
              patch.object(
-                 self._placeorder.binance_cache_health,
+                 self._placeorder.account_cache_health,
                  "require_fresh_account_cache",
                  side_effect=[first, advanced, advanced, advanced],
              ):
@@ -1785,7 +1785,7 @@ class AccountCacheReaderConfirmationTest(unittest.TestCase):
             ensure_account_cache_readers=MagicMock())
         with patch.dict(sys.modules, {"cacheManager": cache_module}), \
              patch.object(
-                 self._placeorder.binance_cache_health,
+                 self._placeorder.account_cache_health,
                  "require_fresh_account_cache",
                  side_effect=[
                      requested,

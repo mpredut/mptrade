@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import binance_cache_health as health
+import account_cache_health as health
 
 
 class BinanceAccountCacheHealthTest(unittest.TestCase):
@@ -341,18 +341,18 @@ if __name__ == "__main__":
 # ============================================================================
 
 
-def test_binance_cache_health__clean_now_ms_ignores_bool_nan_iter38_s3():
-    """[ITER38 #3] binance_cache_health.resolve_now_ms ignores bool/NaN."""
-    import binance_cache_health as bch
-    # 3. binance_cache_health.resolve_now_ms ignores bool/NaN
+def test_account_cache_health__clean_now_ms_ignores_bool_nan_iter38_s3():
+    """[ITER38 #3] account_cache_health.resolve_now_ms ignores bool/NaN."""
+    import account_cache_health as bch
+    # 3. account_cache_health.resolve_now_ms ignores bool/NaN
     ts_clean = bch.resolve_now_ms(True)
     assert ts_clean > 1_000_000_000_000
     assert bch.resolve_now_ms(float("nan")) > 1_000_000_000_000
 
-def test_binance_cache_health_accountcachenotready_record_successful_sync_record_persisted_version_iter107_s1():
-    """[ITER107 #1] binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version."""
-    import binance_cache_health as bch
-    # 1. binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
+def test_account_cache_health_accountcachenotready_record_successful_sync_record_persisted_version_iter107_s1():
+    """[ITER107 #1] account_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version."""
+    import account_cache_health as bch
+    # 1. account_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
     err = bch.AccountCacheNotReady(True)
     assert err.reason == "account_cache_not_fresh"
     assert bch.record_successful_sync("BinanceOrder", True) is False
@@ -360,22 +360,105 @@ def test_binance_cache_health_accountcachenotready_record_successful_sync_record
     assert bch.record_persisted_version("BinanceTrade", True) is False
     assert bch.record_persisted_version(True, "v1") is False
 
-def test_binance_cache_health__clean_version_str_rejects_sentinel_strings_iter151_s2():
-    """[ITER151 #2] binance_cache_health._clean_version_str rejects sentinel strings."""
-    import binance_cache_health as bch
-    # 2. binance_cache_health._clean_version_str rejects sentinel strings
+def test_account_cache_health__clean_version_str_rejects_sentinel_strings_iter151_s2():
+    """[ITER151 #2] account_cache_health._clean_version_str rejects sentinel strings."""
+    import account_cache_health as bch
+    # 2. account_cache_health._clean_version_str rejects sentinel strings
     for bad_ver in ("", "   ", "nan", "null", "none", "inf", "-inf", "+inf", None, 123):
         assert bch._clean_version_str(bad_ver) == ""
     assert bch._clean_version_str(" v123 ") == "v123"
 
-def test_binance_cache_health_require_int_accepts_integer_strings_floats_and_rejects_iter160_s4():
-    """[ITER160 #4] binance_cache_health: require_int accepts integer strings/floats and rejects bool/negative."""
+def test_account_cache_health_require_int_accepts_integer_strings_floats_and_rejects_iter160_s4():
+    """[ITER160 #4] account_cache_health: require_int accepts integer strings/floats and rejects bool/negative."""
     import pytest
-    import binance_cache_health as bch
-    # 4. binance_cache_health: require_int accepts integer strings/floats and rejects bool/negative
+    import account_cache_health as bch
+    # 4. account_cache_health: require_int accepts integer strings/floats and rejects bool/negative
     assert bch.require_int("123.0", "pid", min_value=1) == 123
     assert bch.require_int("0.0", "gen", min_value=0) == 0
     with pytest.raises(ValueError):
         bch.require_int("123.5", "pid", min_value=1)
     with pytest.raises(ValueError):
         bch.require_int(True, "pid", min_value=1)
+
+
+def test_persistence_and_cache_layer_dag_and_sibling_purity_ast():
+    """Enforce strict acyclic DAG imports across Layer 1/2 Persistence and Layer 3 Cache modules."""
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+
+    def _imported_roots(rel_path: str) -> set[str]:
+        tree = ast.parse((repo_root / rel_path).read_text(encoding="utf-8"), filename=rel_path)
+        roots: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    roots.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots.add(node.module.split(".")[0])
+        return roots
+
+    assert not (repo_root / "binance_cache_health.py").exists()
+
+    # cacheintegrity.py must remain pure Layer 2 (stdlib + botcore + state_io only).
+    ci_imports = _imported_roots("cacheintegrity.py")
+    forbidden_layer2 = {
+        "account_cache_health",
+        "binance_cache_health",
+        "cacheInterface",
+        "cacheaccount",
+        "cacheprice",
+        "cachetrend",
+        "cacheManager",
+        "providers",
+        "instrument",
+        "order_guard",
+        "strategies",
+        "intelligence",
+        "shadow_signals",
+        "binance_api",
+        "kraken",
+        "hyperliquid",
+        "212trading",
+    }
+    assert not (ci_imports & forbidden_layer2), f"cacheintegrity.py upward leak: {ci_imports & forbidden_layer2}"
+
+    # All 5 cache modules must never import higher layers or venue SDK packages.
+    forbidden_cache_upward = {
+        "binance_cache_health",
+        "instrument",
+        "order_guard",
+        "guard_hierarchy",
+        "order_lifecycle",
+        "order_retry",
+        "strategies",
+        "trailing_core",
+        "intelligence",
+        "shadow_signals",
+        "orchestratorOS",
+        "orchestratorTrade",
+        "binance_api",
+        "kraken",
+        "hyperliquid",
+        "212trading",
+    }
+    cache_modules = (
+        "cacheInterface.py",
+        "cacheaccount.py",
+        "cacheprice.py",
+        "cachetrend.py",
+        "cacheManager.py",
+    )
+    for mod_name in cache_modules:
+        imports = _imported_roots(mod_name)
+        assert not (imports & forbidden_cache_upward), f"{mod_name} upward leak: {imports & forbidden_cache_upward}"
+
+    # Sibling domain cache modules must remain mutually independent.
+    siblings = ("cacheaccount", "cacheprice", "cachetrend")
+    for sib in siblings:
+        imports = _imported_roots(f"{sib}.py")
+        other_siblings = set(siblings) - {sib}
+        assert not (imports & other_siblings), f"{sib}.py imports sibling cache domain: {imports & other_siblings}"
+        assert "cacheManager" not in imports, f"{sib}.py must not import cacheManager"
+

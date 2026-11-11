@@ -1343,12 +1343,12 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip().splitlines()[-1] == "OK"
 
-    import intelligence.internal.state.volatility as vol_mod
+    import pricewindow as pw_mod
     prices_sample = [100.0 + (i % 3) * 0.5 for i in range(25)]
-    vol_with_np = vol_mod.calculate_volatility_1h(prices_sample, 60.0)
-    vol_mod._vol_memo_cache.clear()
-    monkeypatch.setattr(vol_mod, "np", None)
-    vol_without_np = vol_mod.calculate_volatility_1h(prices_sample, 60.0)
+    vol_with_np = pw_mod.calculate_volatility_1h(prices_sample, 60.0)
+    pw_mod._vol_memo_cache.clear()
+    monkeypatch.setattr(pw_mod, "np", None)
+    vol_without_np = pw_mod.calculate_volatility_1h(prices_sample, 60.0)
     assert vol_with_np is not None and vol_without_np == vol_with_np
 
     # 2. GeminiClient.probe_live_model_quota and query_text (REST fallback) respect monkeypatches on gemini_client

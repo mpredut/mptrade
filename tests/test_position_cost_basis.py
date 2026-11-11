@@ -53,7 +53,7 @@ def test_negative_fee_is_unknown():
 
 @pytest.fixture
 def binance_history(monkeypatch):
-    import binance_cache_health as health
+    import account_cache_health as health
     import cacheManager as cm
     from providers.market_api import api
 
@@ -88,7 +88,7 @@ def test_binance_uses_immutable_fills_and_current_durable_versions(binance_histo
 
 
 def test_binance_rejects_stale_history_before_reading(binance_history):
-    import binance_cache_health as health
+    import account_cache_health as health
     api, rows, current, ensure, get_cache = binance_history
     rows.append(native(1))
     current.side_effect = health.AccountCacheNotReady("stale")

@@ -308,10 +308,10 @@ def test_bapi_ws_health_normalizes_whitespace_padded_manager_names_and_class_ite
     bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderManager ")
     assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
 
-def test_binance_cache_health_require_int_accepts_integer_floats_and_normalize_class_name_handles_iter133_s5():
-    """[ITER133 #5] binance_cache_health.require_int accepts integer floats and normalize_class_name handles class objects."""
-    import binance_cache_health as bch
-    # 5. binance_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
+def test_account_cache_health_require_int_accepts_integer_floats_and_normalize_class_name_handles_iter133_s5():
+    """[ITER133 #5] account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects."""
+    import account_cache_health as bch
+    # 5. account_cache_health.require_int accepts integer floats and normalize_class_name handles class objects
     assert bch.require_int(100.0, "writer_pid", min_value=1) == 100
     assert bch.require_int(0.0, "generation", min_value=0) == 0
     class CacheOrderManager:

@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from binance_api import bapi_placeorder as placeorder
-from binance_cache_health import CacheHealthStatus
+from account_cache_health import CacheHealthStatus
 from providers.strategy_executor import SubmissionRefused
 
 
@@ -128,7 +128,7 @@ class BinanceSubmitPermitTest(unittest.TestCase):
                 placeorder.time, "time",
                 return_value=(
                     issued_wall
-                    + placeorder.binance_cache_health.MAX_AGE_SEC + 1.0)),
+                    + placeorder.account_cache_health.MAX_AGE_SEC + 1.0)),
             patch.object(
                 placeorder.time, "monotonic",
                 return_value=issued_monotonic + 1.0),
@@ -155,7 +155,7 @@ class BinanceSubmitPermitTest(unittest.TestCase):
     def test_near_stale_snapshot_cannot_authorize_a_pre_cancel_window(self):
         near_stale = CacheHealthStatus(
             True, "",
-            placeorder.binance_cache_health.MAX_AGE_SEC - 1.0,
+            placeorder.account_cache_health.MAX_AGE_SEC - 1.0,
             1.0,
             "order-version",
             "trade-version",
@@ -282,9 +282,9 @@ class BinanceSubmitGuardTest(unittest.TestCase):
         self.trade_enabled = patch.object(
             placeorder.cfg, "is_trade_enabled", return_value=True)
         self.stale_cache = patch.object(
-            placeorder.binance_cache_health,
+            placeorder.account_cache_health,
             "require_fresh_account_cache",
-            side_effect=placeorder.binance_cache_health.AccountCacheNotReady(
+            side_effect=placeorder.account_cache_health.AccountCacheNotReady(
                 "trade_cache_stale"),
         )
         self.trade_enabled.start()

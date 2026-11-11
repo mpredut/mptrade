@@ -548,7 +548,7 @@ def test_dust_protected_sell_sizing_and_ohlc_client_id_border_cases():
 
 def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
     """Verify CacheAccountManagerBase cursor/fetchtime sanitization and legacy JSONL strict ID / tail handling."""
-    import binance_cache_health as account_cache_health
+    import account_cache_health
     import cacheintegrity
     import cachepaths
 

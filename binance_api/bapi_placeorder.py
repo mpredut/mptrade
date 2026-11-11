@@ -40,7 +40,7 @@ from providers.quantity import (
     fee_cap_quantity,
 )
 from providers.strategy_executor import SubmissionRefused
-import binance_cache_health
+import account_cache_health
 
 # Load versioned, non-secret tuning parameters before reading the environment below.
 # ``botcore.load_dotenv`` never overwrites variables already set in the real environment;
@@ -97,8 +97,8 @@ class _AccountCacheSubmitPermit:
         object.__setattr__(self, "_scope", _AccountCacheSubmitScope(
             pid=os.getpid(),
             issued_at=issued_at,
-            expires_at=issued_at + binance_cache_health.SUBMIT_PERMIT_TTL_SEC,
-            expires_at_wall=issued_at_wall + binance_cache_health.SUBMIT_PERMIT_TTL_SEC,
+            expires_at=issued_at + account_cache_health.SUBMIT_PERMIT_TTL_SEC,
+            expires_at_wall=issued_at_wall + account_cache_health.SUBMIT_PERMIT_TTL_SEC,
             order_cache_version=str(status.order_cache_version),
             trade_cache_version=str(status.trade_cache_version),
             symbol="" if isinstance(symbol, bool) else str(symbol or "").strip().upper(),
@@ -194,16 +194,16 @@ def require_account_cache_for_submit():
         raise SubmissionRefused("trading_disabled")
     try:
         for _attempt in range(2):
-            requested = binance_cache_health.require_fresh_account_cache()
+            requested = account_cache_health.require_fresh_account_cache()
             MarketDataProvider.ensure_ssot_account_cache_readers(requested)
-            confirmed = binance_cache_health.require_fresh_account_cache()
+            confirmed = account_cache_health.require_fresh_account_cache()
             if (requested.order_cache_version, requested.trade_cache_version) == (
                 confirmed.order_cache_version, confirmed.trade_cache_version
             ):
                 return confirmed
-        raise binance_cache_health.AccountCacheNotReady(
+        raise account_cache_health.AccountCacheNotReady(
             "account_cache_changed_during_reader_sync")
-    except binance_cache_health.AccountCacheNotReady as exc:
+    except account_cache_health.AccountCacheNotReady as exc:
         print(f"[BINANCE][GUARD] account cache is not fresh: {exc.reason}")
         raise SubmissionRefused("account_cache_not_fresh") from exc
 
@@ -212,7 +212,7 @@ def _require_submit_permit_headroom(status):
     parsed_ages = [safe_nonneg_float(age, default=None) for age in (status.order_age_sec, status.trade_age_sec)]
     if (
         any(age_f is None for age_f in parsed_ages)
-        or max(parsed_ages) + binance_cache_health.SUBMIT_PERMIT_TTL_SEC > binance_cache_health.MAX_AGE_SEC
+        or max(parsed_ages) + account_cache_health.SUBMIT_PERMIT_TTL_SEC > account_cache_health.MAX_AGE_SEC
     ):
         raise SubmissionRefused("account_cache_not_fresh")
     return status

@@ -24,7 +24,7 @@ import threading
 from typing import Any, Optional, Sequence
 import uuid
 
-import binance_cache_health as account_cache_health
+import account_cache_health
 from botcore import (
     _is_fresh_obs_ts,
     _parse_bool_flag,

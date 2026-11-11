@@ -184,7 +184,7 @@ class BinanceProvider(MarketDataProvider):
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
-        import binance_cache_health as health
+        import account_cache_health as health
 
         since_s = require_pos_float(since_s, "since_s")
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():

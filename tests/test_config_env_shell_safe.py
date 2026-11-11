@@ -178,7 +178,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     from decimal import Decimal
     import pytest
     import active_intents
-    import binance_cache_health
+    import account_cache_health
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from providers import quantity as binance_filters, execution_audit
     from strategies.position_exit_manager import (
@@ -195,7 +195,7 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     with pytest.raises(binance_filters.BinanceFilterError):
         binance_filters.decimal_places(Decimal("NaN"))
     with pytest.raises(ValueError):
-        binance_cache_health.require_pos_float(True, "test")
+        account_cache_health.require_pos_float(True, "test")
 
     summary = active_intents._build_summary(
         intents=[{"symbol": "BTCUSDC", "side": "BUY", "requested_qty": "bad", "executed_qty": None, "requested_price": "nan"}],

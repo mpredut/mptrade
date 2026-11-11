@@ -18,12 +18,14 @@ import threading
 from collections import deque
 from bisect import bisect_left
 
+from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from botcore import (
     are_close,
     diff_percent,
     float_env,
+    pos_float_env,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -1222,3 +1224,207 @@ class WindowAnalyzer:
     #     slope_max = u.slope(max_price, max_index, newest_price, newest_index)
     #     slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
     #     return slope_max_min, price_diff
+
+
+# -- Realized 1h Volatility & Adaptive Threshold Primitives -------------------
+K_REENTRY_DEFAULT = pos_float_env("SHADOW_K_REENTRY", 2.0)
+K_DCA_DEFAULT = pos_float_env("SHADOW_K_DCA", 1.0)
+
+_vol_memo_cache: dict = {}
+_VOL_MEMO_MAX_ENTRIES = 128
+
+
+def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
+    return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+
+
+def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60.0) -> Optional[float]:
+    """Estimate one-sigma hourly volatility percentage from scaled log returns."""
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return None
+    if np is not None and isinstance(prices, np.ndarray):
+        if prices.dtype == bool:
+            return None
+        if prices.ndim == 2 and prices.shape[1] >= 2:
+            try:
+                arr2 = prices[:, :2].astype(float, copy=False)
+                ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
+                valid_ts = np.isfinite(ts_col) & (ts_col > 0)
+                if np.all(valid_ts) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
+                    order = np.argsort(ts_col, kind="mergesort")
+                    prices = arr2[order, 1]
+                else:
+                    prices = arr2[:, 1]
+            except (TypeError, ValueError):
+                return None
+    else:
+        try:
+            first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
+            if isinstance(first_item, (list, tuple)):
+                pts_with_ts = []
+                pts_only = []
+                all_have_ts = True
+                for item in prices:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2:
+                        tf = safe_pos_float(item[0], default=None)
+                        pf = safe_pos_float(item[1], default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                            if tf is not None:
+                                pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                            else:
+                                all_have_ts = False
+                    elif isinstance(item, (list, tuple)) and len(item) == 1:
+                        all_have_ts = False
+                        pf = safe_pos_float(item[0], default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                    else:
+                        all_have_ts = False
+                        pf = safe_pos_float(item, default=None)
+                        if pf is not None:
+                            pts_only.append(pf)
+                if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
+                    if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
+                        pts_with_ts.sort(key=lambda x: x[0])
+                    if all_have_ts or len(pts_with_ts) == len(pts_only):
+                        prices = [p for _, p in pts_with_ts]
+                    else:
+                        prices = pts_only
+                else:
+                    prices = pts_only
+        except TypeError:
+            return None
+    sr_f = safe_pos_float(sample_rate_sec, default=None)
+    if sr_f is None:
+        return None
+    try:
+        n = len(prices)
+    except TypeError:
+        return None
+    if n < 20:
+        return None
+    sample_rate_sec = sr_f
+
+    p0 = None
+    pn = None
+    _bool_types = (bool, np.bool_) if np is not None else (bool,)
+    if not isinstance(prices[0], _bool_types) and not isinstance(prices[-1], _bool_types):
+        cand0 = safe_pos_float(prices[0], default=None)
+        candn = safe_pos_float(prices[-1], default=None)
+        if cand0 is not None and candn is not None:
+            p0 = cand0
+            pn = candn
+
+    tbuf = getattr(prices, "_trend_buf", None)
+    if tbuf is not None and p0 is not None and pn is not None:
+        blen = len(tbuf.prices)
+        if (
+            blen >= n
+            and tbuf.prices[blen - n] == p0
+            and tbuf.prices[-1] == pn
+        ):
+            std = tbuf.log_return_std(blen - n, blen - 1)
+            if std is not None:
+                return _std_to_vol1h_pct(std, sample_rate_sec)
+
+    seq_sig = None
+    if p0 is not None and pn is not None:
+        try:
+            if np is not None and isinstance(prices, np.ndarray):
+                if prices.ndim == 1 and prices.dtype.kind in ("f", "i", "u"):
+                    seq_sig = prices.astype(float, copy=False).tobytes()
+            elif n <= 512:
+                cand_tup = tuple(prices)
+                hash(cand_tup)
+                seq_sig = cand_tup
+        except Exception:
+            seq_sig = None
+
+    cache_key = (
+        (n, p0, pn, round(float(sample_rate_sec), 3), seq_sig)
+        if (p0 is not None and pn is not None and seq_sig is not None)
+        else None
+    )
+    if cache_key is not None:
+        cached = _vol_memo_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    if np is not None:
+        if isinstance(prices, np.ndarray):
+            if prices.dtype == bool or prices.ndim != 1:
+                return None
+            try:
+                p = prices.astype(float, copy=False)
+            except (TypeError, ValueError):
+                return None
+        else:
+            try:
+                if any(isinstance(x, _bool_types) for x in prices):
+                    raise TypeError("bool in prices")
+                p = np.asarray(prices, dtype=float)
+            except (TypeError, ValueError):
+                clean_p = [
+                    xf for x in prices
+                    if not isinstance(x, _bool_types)
+                    and (xf := safe_pos_float(x, default=None)) is not None
+                ]
+                p = np.asarray(clean_p, dtype=float)
+                cache_key = None
+        p = p[np.isfinite(p) & (p > 0)]
+        if len(p) < 20:
+            return None
+        if len(p) != n:
+            cache_key = None
+
+        # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
+        rets = np.log(p[1:] / p[:-1])
+        std = float(np.std(rets))
+    else:
+        clean_p = [
+            xf for x in prices
+            if not isinstance(x, _bool_types)
+            and (xf := safe_pos_float(x, default=None)) is not None
+        ]
+        if len(clean_p) < 20:
+            return None
+        if len(clean_p) != n:
+            cache_key = None
+        rets_py = [math.log(clean_p[i] / clean_p[i - 1]) for i in range(1, len(clean_p))]
+        mean_r = sum(rets_py) / len(rets_py)
+        std = math.sqrt(sum((r - mean_r) ** 2 for r in rets_py) / len(rets_py))
+
+    res = _std_to_vol1h_pct(std, sample_rate_sec)
+
+    if cache_key is not None:
+        if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:
+            _vol_memo_cache.clear()
+        _vol_memo_cache[cache_key] = res
+    return res
+
+
+def adaptive_thresholds(
+    vol1h: Optional[float],
+    k_reentry: float = K_REENTRY_DEFAULT,
+    k_dca: float = K_DCA_DEFAULT,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return adaptive reentry and DCA percentages as multipliers of hourly volatility."""
+    vol_f = safe_nonneg_float(vol1h, default=None)
+    kr_f = safe_nonneg_float(k_reentry, default=None)
+    kd_f = safe_nonneg_float(k_dca, default=None)
+    if vol_f is None or kr_f is None or kd_f is None:
+        return None, None
+    return round(kr_f * vol_f, 3), round(kd_f * vol_f, 3)
+
+
+def vol_pct_to_ratio(vol_pct: float) -> float:
+    """Convert an hourly volatility percentage to decimal ratio (e.g. 2.5% -> 0.025, 0.05% -> 0.0005)."""
+    vf = safe_pos_float(vol_pct, default=None)
+    return (vf / 100.0) if vf is not None else 0.0
+
+
+def vol_ratio_to_pct(vol_ratio: float) -> float:
+    """Convert an hourly volatility decimal ratio to percentage (e.g. 0.025 -> 2.5%, 0.0005 -> 0.05%)."""
+    vf = safe_pos_float(vol_ratio, default=None)
+    return (vf * 100.0) if vf is not None else 0.0

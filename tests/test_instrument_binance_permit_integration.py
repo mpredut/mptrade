@@ -10,7 +10,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from binance_api import bapi_placeorder as placeorder
-from binance_cache_health import CacheHealthStatus
+from account_cache_health import CacheHealthStatus
 from instrument import Instrument
 import instrument as instrument_module
 import order_guard

@@ -81,8 +81,8 @@ class BinanceExecutorContractTest(unittest.TestCase):
             bapi_placeorder.cfg, "is_trade_enabled", return_value=True,
         )
         self._freshness_patch = mock.patch.object(
-            bapi_placeorder.binance_cache_health, "require_fresh_account_cache",
-            return_value=bapi_placeorder.binance_cache_health.CacheHealthStatus(
+            bapi_placeorder.account_cache_health, "require_fresh_account_cache",
+            return_value=bapi_placeorder.account_cache_health.CacheHealthStatus(
                 ready=True, reason="ok", order_age_sec=1.0,
                 trade_age_sec=1.0,
                 order_cache_version="order-v1",
@@ -167,7 +167,7 @@ class BinanceExecutorContractTest(unittest.TestCase):
 
     def test_stale_account_cache_refusal_reaches_caller_without_submission(self):
         self.freshness_gate.side_effect = (
-            self.placeorder.binance_cache_health.AccountCacheNotReady(
+            self.placeorder.account_cache_health.AccountCacheNotReady(
                 "trade_cache_stale")
         )
         with self.assertRaisesRegex(

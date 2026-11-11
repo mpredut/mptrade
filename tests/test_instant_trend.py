@@ -1480,7 +1480,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
     def test_audit39_health_pid_overflow_and_sub_satoshi_aggregation_and_ws_classify(self):
         """Audit #39: _pid_is_alive overflow guard, sub-satoshi get_filled_orders/aggregate_trades, and _classify non-dict inner event."""
         import threading
-        import binance_cache_health as bch
+        import account_cache_health as bch
         from binance_api import bapi_allorders, bapi_trades, bapi_ws
 
         # 1. _pid_is_alive guards against OverflowError / invalid PIDs without raising

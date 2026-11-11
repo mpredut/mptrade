@@ -7,7 +7,6 @@ import hashlib
 import os
 from typing import Any, Callable, Iterable
 
-import binance_cache_health as account_cache_health
 from botcore import safe_pos_int, strict_ascii_int
 from state_io import (
     JSONDecodeError,
@@ -21,6 +20,14 @@ from state_io import (
 )
 
 CACHE_META_SCHEMA_VERSION = 2
+
+
+class AccountCacheNotReady(RuntimeError):
+    """The shared account-cache snapshot cannot authorize a live submit or strict read."""
+
+    def __init__(self, reason: str):
+        self.reason = reason.strip() if isinstance(reason, str) and reason.strip() else "account_cache_not_fresh"
+        super().__init__(self.reason)
 
 
 def _is_strict_int(val: Any, min_val: int = 0) -> bool:
@@ -236,7 +243,7 @@ def load_versioned_account_meta_file(
     except (OSError, ValueError, TypeError) as exc:
         if optional:
             return None
-        raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+        raise AccountCacheNotReady(reader_reason) from exc
 
     try:
         version = metadata["data_version"]
@@ -281,7 +288,7 @@ def load_versioned_account_meta_file(
             })
         return result
     except (KeyError, TypeError, ValueError) as exc:
-        raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+        raise AccountCacheNotReady(reader_reason) from exc
 
 
 def read_trade_records_range_strict(
@@ -320,7 +327,7 @@ def read_trade_records_range_strict(
             records.append((record["s"], record["i"]))
         return records
     except (OSError, UnicodeError, TypeError, ValueError, JSONDecodeError) as exc:
-        raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+        raise AccountCacheNotReady(reader_reason) from exc
 
 
 def read_trade_snapshot_strict(
@@ -335,7 +342,7 @@ def read_trade_snapshot_strict(
         path, 0, metadata["committed_bytes"], is_valid_item_fn=is_valid_item_fn, reader_reason=reader_reason
     )
     if trade_records_digest(records) != metadata["content_digest"]:
-        raise account_cache_health.AccountCacheNotReady(reader_reason)
+        raise AccountCacheNotReady(reader_reason)
     cache: dict[str, list[dict[str, Any]]] = {}
     seen_ids: defaultdict[str, set[str]] = defaultdict(set)
     for symbol, item in records:
@@ -343,14 +350,14 @@ def read_trade_snapshot_strict(
         try:
             trade_id = str(_strict_int_field(item["id"]))
         except (KeyError, TypeError, ValueError) as exc:
-            raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+            raise AccountCacheNotReady(reader_reason) from exc
         if trade_id in seen_ids[normalized_symbol]:
-            raise account_cache_health.AccountCacheNotReady(reader_reason)
+            raise AccountCacheNotReady(reader_reason)
         seen_ids[normalized_symbol].add(trade_id)
         cache.setdefault(symbol, []).append(item)
     actual = {symbol: len(items) for symbol, items in cache.items()}
     if actual != nonzero_counts(metadata["counts"]):
-        raise account_cache_health.AccountCacheNotReady(reader_reason)
+        raise AccountCacheNotReady(reader_reason)
     return cache, dict(metadata["counts"])
 
 
@@ -447,7 +454,7 @@ def read_legacy_trade_jsonl_strict(
             )
             if recoverable_tail:
                 break
-            raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+            raise AccountCacheNotReady(reader_reason) from exc
     return cache
 
 
@@ -521,10 +528,10 @@ def read_order_snapshot_strict(
         if snapshot_data_version(items) != required_version:
             raise ValueError("Order cache digest is invalid")
         return items, normalized_fetchtime, actual_counts
-    except account_cache_health.AccountCacheNotReady:
+    except AccountCacheNotReady:
         raise
     except (OSError, TypeError, ValueError, JSONDecodeError) as exc:
-        raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
+        raise AccountCacheNotReady(reader_reason) from exc
 
 
 def validate_account_cache_state(

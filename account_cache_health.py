@@ -26,11 +26,11 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import resolve_cachedb_filepath
+from cacheintegrity import AccountCacheNotReady
+from cachepaths import CACHE_ACCOUNT_HEALTH_FILENAME, cache_path, resolve_cachedb_filepath
 from state_io import atomic_write_json, read_json_dict, read_text_file, read_text_lines
 
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
 
 MAX_AGE_SEC = require_pos_float(
@@ -45,7 +45,8 @@ if SUBMIT_PERMIT_TTL_SEC >= MAX_AGE_SEC:
     raise ValueError("account-cache permit TTL must be below cache maximum age")
 
 SCHEMA_VERSION = 2
-HEALTH_PATH = os.path.join(_ROOT, "cachedb", "binance_account_cache_health.json")
+_DEFAULT_HEALTH_PATH = cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
+HEALTH_PATH = _DEFAULT_HEALTH_PATH
 _PROCESS_IDENTITY_REQUIRED = sys.platform.startswith("linux")
 _DEAD_PROC_STATES = frozenset({"Z", "X", "x"})
 _SYNC_FIELDS = {
@@ -56,12 +57,11 @@ _SYNC_FIELDS = {
 }
 
 
-class AccountCacheNotReady(RuntimeError):
-    """The shared Binance account snapshot cannot authorize a live submit."""
-
-    def __init__(self, reason: str):
-        self.reason = reason.strip() if isinstance(reason, str) and reason.strip() else "account_cache_not_fresh"
-        super().__init__(self.reason)
+def _resolve_health_path(path: Optional[str]) -> str:
+    target = HEALTH_PATH if path is None else os.fspath(path)
+    if target == _DEFAULT_HEALTH_PATH:
+        return cache_path(CACHE_ACCOUNT_HEALTH_FILENAME)
+    return str(resolve_cachedb_filepath(target))
 
 
 @dataclass(frozen=True)
@@ -110,12 +110,12 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         return None
 
 
-def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:
+def enable_writer(*, path: Optional[str] = None, pid: Optional[int] = None, now_ms: Optional[int] = None) -> None:
     """Enable the sole cacheManager writer and invalidate the old generation."""
     global _writer_enabled, _writer_path, _writer_state
     timestamp = resolve_now_ms(now_ms)
     with _writer_lock:
-        _writer_path = os.fspath(path)
+        _writer_path = _resolve_health_path(path)
         writer_pid = exact_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
@@ -225,7 +225,7 @@ def _pid_is_alive(pid: int) -> bool:
 
 def inspect_health(
     *,
-    path: str = HEALTH_PATH,
+    path: Optional[str] = None,
     now_ms: Optional[int] = None,
     max_age_sec: float = MAX_AGE_SEC,
     pid_is_alive: Callable[[int], bool] = _pid_is_alive,
@@ -233,7 +233,7 @@ def inspect_health(
     future_tolerance_sec: float = 5.0,
 ) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
-    eff_path = str(resolve_cachedb_filepath(path))
+    eff_path = _resolve_health_path(path)
     try:
         state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import builtins
+import importlib
 import math
 import os
 import threading
@@ -261,6 +262,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
     LIVE_TREND_SUBDIR = "24trend"
     LIVE_FILE_PREFIX = "live_"
     LIVE_FILE_EXT = "json"
+    _kalman_tracker_factory: Optional[Callable[..., Any]] = None
+
+    @classmethod
+    def _resolve_kalman_tracker_factory(cls) -> Callable[..., Any]:
+        if callable(cls._kalman_tracker_factory):
+            return cls._kalman_tracker_factory
+        mod = importlib.import_module("shadow_signals")
+        return getattr(mod, "KalmanStateTracker")
 
     @classmethod
     def live_window_relpath_for_symbol(cls, symbol: str) -> str:
@@ -601,9 +610,6 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         kalman_extra = {}
         if w_big is not None:
             try:
-                from intelligence.internal.state.volatility import (
-                    calculate_volatility_1h,
-                )
                 with getattr(w_big, "_lock", threading.RLock()):
                     eff_v1h_sr = float(w_big.sample_rate_sec)
                     n_big = len(w_big.prices)
@@ -640,7 +646,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                                         (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
                                     )
                                     v1h_prices = [r[1] for r in tail_1m]
-                    v1h = calculate_volatility_1h(
+                    v1h = pw.calculate_volatility_1h(
                         v1h_prices, eff_v1h_sr
                     )
             except Exception:
@@ -651,12 +657,11 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             and is_live_network_backfill_enabled(getattr(self, "_enable_kalman_tracker", None))
         ):
             try:
-                import shadow_signals
-
                 k_tracker = getattr(self, "_kalman_tracker", None)
                 if k_tracker is None:
                     k_path = os.path.join(os.path.dirname(self.filename), self.KALMAN_TREND_FILENAME)
-                    k_tracker = shadow_signals.KalmanStateTracker(state_path=k_path, compute_vol=False)
+                    tracker_cls = self._resolve_kalman_tracker_factory()
+                    k_tracker = tracker_cls(state_path=k_path, compute_vol=False)
                     self._kalman_tracker = k_tracker
                 with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
                     big_seq = list(w_big.prices) if w_big is not None else ()
