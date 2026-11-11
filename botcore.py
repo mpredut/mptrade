@@ -2785,6 +2785,17 @@ class ClosedPriceSeries:
         )
 
 
+def stop_monitoring_thread(
+    instance: object, label: str, *, timeout: float = 5.0
+) -> None:
+    """Stop a background monitoring loop backed by ``_running`` and ``_thread``."""
+    setattr(instance, "_running", False)
+    thread = getattr(instance, "_thread", None)
+    if thread and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
+    print(f"[{label}] Monitoring stopped")
+
+
 _REEXPORT_MODULE_NAMES = (
     "utils",
     "intelligence.macro_sentiment_ssot",

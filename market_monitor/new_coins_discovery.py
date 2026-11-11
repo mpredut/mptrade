@@ -7,7 +7,16 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 
-from botcore import _parse_bool_flag, normalize_epoch_sec, optional_env, safe_float, safe_pos_float, safe_pos_int, split_csv
+from botcore import (
+    _parse_bool_flag,
+    normalize_epoch_sec,
+    optional_env,
+    safe_float,
+    safe_pos_float,
+    safe_pos_int,
+    split_csv,
+    stop_monitoring_thread,
+)
 from instrument_registry import casefold_get
 
 # ============================================
@@ -537,10 +546,7 @@ class NewCoinsMonitor:
         self._thread.start()
 
     def stop_monitoring(self):
-        self._running = False
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
-        print("[NewCoinsMonitor] Monitoring stopped")
+        stop_monitoring_thread(self, "NewCoinsMonitor", timeout=5)
 
     def get_report(self) -> str:
         report = "\n" + "=" * 80 + "\n"

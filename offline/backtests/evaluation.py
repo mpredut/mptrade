@@ -392,6 +392,8 @@ def add_walk_forward_cli_args(
     *,
     include_warmup: bool = True,
     default_warmup: int | None = 0,
+    include_dataset_list: bool = False,
+    default_output_dir: Path | str | None = None,
 ) -> None:
     """Register standard execution model and walk-forward window arguments on a CLI parser."""
     parser.add_argument("--spread-bps", type=float, default=0.0)
@@ -412,6 +414,20 @@ def add_walk_forward_cli_args(
             type=int,
             default=default_warmup,
             help="preceding signal bars; they carry no position or P&L into the segment",
+        )
+    if include_dataset_list:
+        parser.add_argument(
+            "--dataset",
+            action="append",
+            default=[],
+            metavar="INTERVAL=PATH",
+            help="frozen dataset CSV path for an interval (e.g. 60=path/to/candles.csv)",
+        )
+    if default_output_dir is not None:
+        parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=Path(default_output_dir),
         )
 
 

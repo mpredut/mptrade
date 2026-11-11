@@ -39,6 +39,7 @@ from instrument_registry import (
     is_equity_symbol,
     tracked_price_instruments,
 )
+from intelligence.external.collectors.base_collector import TelemetryCacheCollectorInterface
 from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
@@ -596,18 +597,14 @@ class CachedHttpJsonCollector:
         allow_network: Optional[bool] = None,
     ) -> Any:
         """Fetch the latest snapshot from ``self.endpoint_url``, respecting cache TTL with stale fallback."""
-        now = resolve_now_ts(now_ts)
-        eff_allow_net = (
-            bool(allow_network)
-            if allow_network is not None
-            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        now, should_fetch, ready = TelemetryCacheCollectorInterface._check_in_memory_fetch_cache(
+            self,
+            force_refresh=force_refresh,
+            now_ts=now_ts,
+            allow_network=allow_network,
         )
-        if not eff_allow_net:
-            return self._cached_snapshot
-        if self._cached_snapshot and is_cache_fresh(
-            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
-        ):
-            return self._cached_snapshot
+        if not should_fetch:
+            return ready
         try:
             fetch_fn = _resolve_daemon_helper(
                 "fetch_public_json", fetch_public_json, _fetch_public_json, self.__class__.__module__

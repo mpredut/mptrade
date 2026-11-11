@@ -889,13 +889,11 @@ class KrakenProvider(MarketDataProvider):
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch normalized Kraken fills for ``symbol`` via ``Ledgers`` (when ``client`` is provided) or ``TradesHistory``."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
+        if parsed is None:
             return []
-        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
-        if start_ms is None:
-            return []
+        sym_u, start_ms = parsed
         if client is not None and callable(getattr(client, "_private", None)):
-            sym_u = str(symbol).strip().upper()
             now_s = time.time()
             start_sec = (
                 normalize_epoch_sec(start_ms, default=None)
@@ -907,13 +905,7 @@ class KrakenProvider(MarketDataProvider):
                 pairs=[sym_u],
                 lookback_sec=max(60.0, now_s - start_sec),
             )
-            rows = casefold_get(by_sym, sym_u) or []
-            return [
-                dict(r)
-                for r in rows
-                if isinstance(r, dict)
-                and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
-            ]
+            return self._filter_remote_trade_rows(casefold_get(by_sym, sym_u), start_ms)
         return super().fetch_remote_trades(symbol, start_time_ms)
 
     def _fills_from_api(self, symbol: str):

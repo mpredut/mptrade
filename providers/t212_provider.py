@@ -375,11 +375,10 @@ class T212Provider(MarketDataProvider):
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch normalized T212 fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
+        if parsed is None:
             return []
-        start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
-        if start_ms is None:
-            return []
+        sym_u, start_ms = parsed
         cli = client if client is not None else self._client()
         refresh_fn = getattr(cli, "refresh_order_history", None)
         if not callable(refresh_fn):
@@ -388,14 +387,11 @@ class T212Provider(MarketDataProvider):
         if not isinstance(items, list) or not items:
             return []
         by_sym = self.normalize_history_items(items)
-        sym_u = symbol.strip().upper()
-        out: List[dict] = []
+        matched_rows: List[dict] = []
         for k, rows in by_sym.items():
             if k.upper() == sym_u or _t212_tickers_match(symbol, k):
-                for r in rows:
-                    if isinstance(r, dict) and (extract_timestamp_ms(r, default=0) or 0) >= start_ms:
-                        out.append(dict(r))
-        return out
+                matched_rows.extend(rows)
+        return self._filter_remote_trade_rows(matched_rows, start_ms)
 
     def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
         """Fetch recent T212 order history and return normalized fills for ``symbol``."""

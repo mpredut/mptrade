@@ -14,7 +14,14 @@ from collections import defaultdict
 from operator import itemgetter
 from urllib.parse import quote
 
-from botcore import is_rth_gate_enabled, is_us_rth_open, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    is_rth_gate_enabled,
+    is_us_rth_open,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    stop_monitoring_thread,
+)
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
@@ -435,7 +442,4 @@ class PriceChecker:
         self._thread.start()
 
     def stop_monitoring(self):
-        self._running = False
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
-        print("[Checker] Monitoring stopped")
+        stop_monitoring_thread(self, "Checker", timeout=5)

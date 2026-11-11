@@ -91,9 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fx-dataset", type=Path, help="a frozen FX OHLC CSV")
     parser.add_argument("--fx-symbol", help="override Yahoo FX symbol, e.g. EURUSD=X")
     parser.add_argument("--fx-invert", action="store_true", help="invert the FX close")
-    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=None)
-    parser.add_argument(
-        "--output-dir", type=Path, default=ROOT / "offline/results/t212_walk_forward",
+    add_walk_forward_cli_args(
+        parser,
+        include_warmup=True,
+        default_warmup=None,
+        default_output_dir=ROOT / "offline/results/t212_walk_forward",
     )
     args = parser.parse_args(argv)
 

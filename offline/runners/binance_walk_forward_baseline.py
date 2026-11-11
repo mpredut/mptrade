@@ -51,13 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         "--lookback-days", type=int, default=630,
         help="API fetch lookback in days when --dataset is omitted (defaults to 630)",
     )
-    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
-    parser.add_argument(
-        "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
-        help="frozen dataset CSV path for an interval (e.g. 60=path/to/candles.csv)",
-    )
-    parser.add_argument(
-        "--output-dir", type=Path, default=ROOT / "offline/results/binance_walk_forward",
+    add_walk_forward_cli_args(
+        parser,
+        include_warmup=True,
+        default_warmup=0,
+        include_dataset_list=True,
+        default_output_dir=ROOT / "offline/results/binance_walk_forward",
     )
     args = parser.parse_args(argv)
     if safe_nonneg_float(args.fee, default=None) is None:

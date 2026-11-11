@@ -687,18 +687,14 @@ class NewsFeedCollector(TelemetryCacheCollectorInterface):
         allow_network: Optional[bool] = None,
     ) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines across specialized feeds and dynamic crisis queries."""
-        now = resolve_now_ts(now_ts)
-        eff_allow_net = (
-            bool(allow_network)
-            if allow_network is not None
-            else (self._explicit_start_sync if self._explicit_start_sync is not None else True)
+        now, should_fetch, ready = self._check_in_memory_fetch_cache(
+            force_refresh=force_refresh,
+            now_ts=now_ts,
+            allow_network=allow_network,
+            offline_fallback_fn=lambda ts: self.get_pool_snapshot(now_ts=ts),
         )
-        if not eff_allow_net:
-            return self._cached_snapshot or self.get_pool_snapshot(now_ts=now)
-        if self._cached_snapshot and is_cache_fresh(
-            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
-        ):
-            return self._cached_snapshot
+        if not should_fetch:
+            return ready
 
         cache_dir = self._CacheDirOrNone()
         if self._explicit_rss_url is None:

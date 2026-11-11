@@ -230,6 +230,34 @@ class TelemetryCacheCollectorInterface(ABC):
         call_kwargs.setdefault("ensure_fresh", False)
         return self.collect(cachedb_dir, symbol, **call_kwargs)
 
+    def _check_in_memory_fetch_cache(
+        self,
+        *,
+        force_refresh: bool = False,
+        now_ts: Optional[float] = None,
+        allow_network: Optional[bool] = None,
+        offline_fallback_fn: Optional[Callable[[float], Any]] = None,
+    ) -> Tuple[float, bool, Any]:
+        """Resolve ``(now, should_fetch_network, cached_or_fallback_snapshot)`` for in-memory TTL collectors."""
+        now = resolve_now_ts(now_ts)
+        exp_sync = getattr(self, "_explicit_start_sync", None)
+        eff_allow_net = (
+            bool(allow_network)
+            if allow_network is not None
+            else (exp_sync if exp_sync is not None else True)
+        )
+        cached = getattr(self, "_cached_snapshot", None)
+        if not eff_allow_net:
+            return now, False, cached or (offline_fallback_fn(now) if callable(offline_fallback_fn) else None)
+        if cached and is_cache_fresh(
+            getattr(self, "_last_fetch_ts", 0.0),
+            now,
+            getattr(self, "cache_ttl_sec", 0.0),
+            force_refresh=force_refresh,
+        ):
+            return now, False, cached
+        return now, True, cached
+
 
 class TelemetryCollectorFactory:
     """Singleton registry and factory for price-series, microstructure, external, portfolio, and macro collectors (modeled on ``CacheFactory``)."""

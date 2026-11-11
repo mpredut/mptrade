@@ -836,21 +836,40 @@ class MarketDataProvider(ABC):
                 self.write_ssot_fills_cache(symbol, cache_file, rows)
         return rows
 
-    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
-        """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        self.validate_symbol(symbol)
+    @staticmethod
+    def _parse_remote_trades_query(
+        symbol: Any, start_time_ms: Any = 0
+    ) -> Optional[tuple[str, float]]:
+        """Validate ``(symbol, start_time_ms)`` for ``fetch_remote_trades`` without raising on blank symbols."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
         start_ms = 0.0 if start_time_ms is None else safe_nonneg_float(start_time_ms, default=None)
         if start_ms is None:
-            return []
-        rows = self._invoke_fills_from_api(symbol, publish_cache=False)
+            return None
+        return str(symbol).strip().upper(), start_ms
+
+    @staticmethod
+    def _filter_remote_trade_rows(rows: Any, start_ms: float) -> List[dict]:
+        """Return shallow copies of dict trade rows whose timestamp is ``>= start_ms``."""
         if not isinstance(rows, list):
             return []
         return [
             dict(r)
             for r in rows
             if isinstance(r, dict)
-            and (start_ms <= 0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
+            and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
+
+    def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
+        """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
+        self.validate_symbol(symbol)
+        parsed = self._parse_remote_trades_query(symbol, start_time_ms)
+        if parsed is None:
+            return []
+        _, start_ms = parsed
+        return self._filter_remote_trade_rows(
+            self._invoke_fills_from_api(symbol, publish_cache=False), start_ms
+        )
 
     def get_orders(
         self,

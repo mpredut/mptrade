@@ -73,13 +73,12 @@ def main(argv: list[str] | None = None) -> int:
         "--lookback-days", type=int, default=None,
         help="API fetch lookback in days when --dataset is omitted (defaults to full 5000-candle window)",
     )
-    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
-    parser.add_argument(
-        "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
-        help="frozen dataset CSV path for an interval (e.g. 60=path/to/candles.csv)",
-    )
-    parser.add_argument(
-        "--output-dir", type=Path, default=ROOT / "offline/results/hyperliquid_walk_forward",
+    add_walk_forward_cli_args(
+        parser,
+        include_warmup=True,
+        default_warmup=0,
+        include_dataset_list=True,
+        default_output_dir=ROOT / "offline/results/hyperliquid_walk_forward",
     )
     args = parser.parse_args(argv)
     lookback_days = None
