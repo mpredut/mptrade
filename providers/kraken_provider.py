@@ -12,7 +12,9 @@ The legacy ``place_order`` path submits validation-only requests unless
 strict and always sends a real request; its caller's dry-run policy is the controlling
 gate. Importing this module does not eagerly initialize the Kraken client.
 """
+import inspect
 import os
+import re
 import threading
 import time
 from typing import Any, List, Optional, Sequence
@@ -35,7 +37,6 @@ from botcore import (
 )
 from .base import (
     MarketDataProvider,
-    bool_env,
     extract_order_id,
 )
 from .order_ohlc_utils import (
@@ -146,21 +147,18 @@ def _clean_kraken_order_id(order_id: object, caller: str) -> str:
     return require_clean_order_id(order_id, f"{caller} {order_id}", str_only=True)
 
 
-def _live() -> bool:
-    # os.environ takes precedence, with kraken/.env as the API-key-style fallback.
-    return bool_env("KRAKEN_LIVE_ORDERS", _KRAKEN_DIR)
-
-
-def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
-    """Combine the strategy and provider gates for Kraken orchestration."""
-    return MarketDataProvider.resolve_strategy_dry_run(
-        force_paper, strategy_execute, _live()
-    )
-
-
 class KrakenProvider(MarketDataProvider):
     _CLIENT_CLASS_NAME = "KrakenClient"
     _DEFERS_PREFLIGHT_QUANTITY = True
+    _LIVE_ORDERS_ENV = "KRAKEN_LIVE_ORDERS"
+    _LIVE_ORDERS_DIR_ATTR = "_KRAKEN_DIR"
+    _CLIENT_ID_128BIT_SPEC = (
+        "Kraken",
+        b"assertguardian:kraken:cloid:v1\0",
+        re.compile(r"^[0-9a-fA-F]{32}$"),
+        "",
+    )
+    _INTENT_CLIENT_ID_FORMAT = "{token}"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_KRAKEN_TRADE_FILENAME
     _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
     _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
@@ -170,10 +168,11 @@ class KrakenProvider(MarketDataProvider):
     _fills_match_fn = staticmethod(kraken_pair_matches)
     _fills_normalize_fn = staticmethod(_normalize_kraken_fill)
 
-    def __init__(self, client=None):
+    def __init__(self, client=None, live_enabled: Optional[bool] = None):
         # kraken_bot can inject its _BOT client to share connection and nonce.
         # None lazily builds a fleet client using the _SPARE credentials.
         self._cli = client
+        self._live_enabled = live_enabled
         self._auto_cli = None
         self._bot_fallback_cli = None
         self._minqty = {}  # Cache symbol-to-ordermin from pair_info.
@@ -187,10 +186,6 @@ class KrakenProvider(MarketDataProvider):
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
         sym = str(symbol or "").strip().upper()
         return "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
-
-    def execution_enabled(self) -> bool:
-        """Return whether the generic pipeline may create a real Kraken order."""
-        return _live()
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -1245,9 +1240,16 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: malformed pair_info ({e})") from e
 
     @classmethod
-    def extract_cached_fee_and_limits(cls, provider: object, symbol: str) -> dict:
+    def extract_cached_fee_and_limits(
+        cls,
+        provider: object,
+        symbol: str,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
         """Extract non-blocking cached fee tier, ordermin, costmin, step_size, and tick_size for ``symbol``."""
-        if provider is None:
+        _ = price
+        if provider is None or isinstance(symbol, bool):
             return {}
         sym_u = str(symbol or "").strip().upper()
         kr_cands = list(
@@ -1268,7 +1270,12 @@ class KrakenProvider(MarketDataProvider):
             mq = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), None)
             if mq is not None:
                 out["min_qty"] = mq
-        client = getattr(provider, "_cli", None) or getattr(provider, "_client", None)
+        raw_cli = getattr(provider, "_cli", None)
+        if raw_cli is None:
+            cand_cli = getattr(provider, "_client", None)
+            if cand_cli is not None and not inspect.ismethod(cand_cli) and not inspect.isfunction(cand_cli):
+                raw_cli = cand_cli
+        client = raw_cli
         p_meta = None
         if client is not None and callable(getattr(type(client), "cached_pair_info", None)):
             cand_meta = client.cached_pair_info(kr_cands)
@@ -1294,10 +1301,10 @@ class KrakenProvider(MarketDataProvider):
                 out["min_qty"] = ord_min
             if (cost_min := safe_pos_float(p_meta.get("costmin"), default=None)) is not None:
                 out["min_notional"] = cost_min
-            if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None and 0 <= int(lot_dec) <= 18:
-                out["step_size"] = round(10.0 ** (-int(lot_dec)), 8)
-            if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None and 0 <= int(pair_dec) <= 18:
-                out["tick_size"] = round(10.0 ** (-int(pair_dec)), 8)
+            if (lot_dec := exact_nonneg_int(p_meta.get("lot_decimals"), default=None)) is not None and lot_dec <= 18:
+                out["step_size"] = round(10.0 ** (-lot_dec), 8)
+            if (pair_dec := exact_nonneg_int(p_meta.get("pair_decimals"), default=None)) is not None and pair_dec <= 18:
+                out["tick_size"] = round(10.0 ** (-pair_dec), 8)
         return out
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:

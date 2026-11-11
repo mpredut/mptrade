@@ -12,10 +12,7 @@ import instrument as instrument_module  # noqa: E402
 import order_guard  # noqa: E402
 from instrument import Instrument  # noqa: E402
 from providers import kraken_provider  # noqa: E402
-from providers.kraken_provider import (  # noqa: E402
-    KrakenProvider,
-    kraken_strategy_dry_run,
-)
+from providers.kraken_provider import KrakenProvider  # noqa: E402
 from providers.market_api import MarketApi  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     StrategyExecutor, OrderStatus, PairPrecision, ProviderError)
@@ -238,10 +235,10 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 os.environ["KRAKEN_LIVE_ORDERS"] = (
                     "true" if provider_execute else "false")
                 self.assertEqual(
-                    kraken_strategy_dry_run(False, strategy_execute),
+                    KrakenProvider.strategy_dry_run(False, strategy_execute),
                     expected_dry)
                 self.assertTrue(
-                    kraken_strategy_dry_run(True, strategy_execute))
+                    KrakenProvider.strategy_dry_run(True, strategy_execute))
 
     def test_preflight_behaviors(self):
         with self.subTest(msg="sell_refuses_quantity_above_balance"):
@@ -1507,15 +1504,15 @@ def test_kraken_shadow_live__get_anchor_handles_integral_float_strings_and_iter1
     finally:
         ksl.LOG_DIR = orig_log_dir
 
-def test_krakenprovider__clean_kraken_order_id_kraken_strategy_dry_run_iter152_s2():
-    """[ITER152 #2] KrakenProvider _clean_kraken_order_id & kraken_strategy_dry_run."""
+def test_krakenprovider__clean_kraken_order_id_strategy_dry_run_iter152_s2():
+    """[ITER152 #2] KrakenProvider _clean_kraken_order_id & KrakenProvider.strategy_dry_run."""
     import pytest
-    from providers.kraken_provider import KrakenProvider, _clean_kraken_order_id, _parse_bool_flag as krk_bool, kraken_strategy_dry_run
+    from providers.kraken_provider import KrakenProvider, _clean_kraken_order_id, _parse_bool_flag as krk_bool
     from providers.strategy_executor import ProviderError
-    # 2. KrakenProvider _clean_kraken_order_id & kraken_strategy_dry_run
+    # 2. KrakenProvider _clean_kraken_order_id & KrakenProvider.strategy_dry_run
     assert krk_bool("false", True) is False
-    assert kraken_strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
-    assert kraken_strategy_dry_run(False, float("nan")) is True  # type: ignore[arg-type]
+    assert KrakenProvider.strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
+    assert KrakenProvider.strategy_dry_run(False, float("nan")) is True  # type: ignore[arg-type]
     for bad_oid in ("", "0", "0.0", "nan", "null", "none", "inf", True, 123, ["O-1"], None):
         with pytest.raises(ProviderError):
             _clean_kraken_order_id(bad_oid, "order_status")

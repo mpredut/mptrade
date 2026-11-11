@@ -542,8 +542,8 @@ class TestRebuyGuardsKraken(Base):
         from types import SimpleNamespace
         from unittest.mock import patch
         from providers.base import MarketDataProvider
-        from providers.hyperliquid_provider import HyperliquidProvider, hl_strategy_dry_run
-        from providers.kraken_provider import KrakenProvider, kraken_strategy_dry_run
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.kraken_provider import KrakenProvider
 
         # 1. KrakenTrailing.cost_basis delegates to KrakenProvider.position_cost_basis / compute_fills_cost_basis
         fd, cache_path = tempfile.mkstemp(suffix=".json")
@@ -611,11 +611,11 @@ class TestRebuyGuardsKraken(Base):
         self.assertFalse(MarketDataProvider.resolve_strategy_dry_run(False, True, True))
 
         with patch.dict(os.environ, {"HL_LIVE_ORDERS": "true", "KRAKEN_LIVE_ORDERS": "true"}):
-            self.assertFalse(hl_strategy_dry_run(False, True))
-            self.assertFalse(kraken_strategy_dry_run(False, True))
+            self.assertFalse(HyperliquidProvider.strategy_dry_run(False, True))
+            self.assertFalse(KrakenProvider.strategy_dry_run(False, True))
         with patch.dict(os.environ, {"HL_LIVE_ORDERS": "false", "KRAKEN_LIVE_ORDERS": "false"}):
-            self.assertTrue(hl_strategy_dry_run(False, True))
-            self.assertTrue(kraken_strategy_dry_run(False, True))
+            self.assertTrue(HyperliquidProvider.strategy_dry_run(False, True))
+            self.assertTrue(KrakenProvider.strategy_dry_run(False, True))
 
         # 4. AuditedStrategyExecutor passthroughs & SSOT cache_path resolution
         c.pair_info = lambda _p: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": "0.01", "base": "HYPE"}

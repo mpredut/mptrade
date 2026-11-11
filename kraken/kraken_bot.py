@@ -52,10 +52,7 @@ from strategies.spot_engine import Strategy, StratParams
 # in KrakenProvider so Strategy shares its connection/nonce. Balance/find/price CLI
 # commands continue using KrakenClient directly.
 from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
-from providers.kraken_provider import (  # noqa: E402
-    KrakenProvider,
-    kraken_strategy_dry_run,
-)
+from providers.kraken_provider import KrakenProvider  # noqa: E402
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
 
@@ -110,7 +107,7 @@ def main() -> int:
     pair        = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
-    strat_dry = kraken_strategy_dry_run(args.paper, strategy_execution)
+    strat_dry = KrakenProvider.strategy_dry_run(args.paper, strategy_execution)
     observe_only = required_bool_env("KRAKEN_BOT_OBSERVE_ONLY")
     interval    = max(args.interval, 15)
 

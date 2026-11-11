@@ -630,3 +630,149 @@ def test_account_cache_and_legacy_jsonl_border_cases(tmp_path: Path):
             is_valid_item_fn=lambda _r: True,
             reader_reason="test_legacy_bool_id",
         )
+
+
+def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(monkeypatch):
+    """Verify declarative provider class specs, cross-venue live/dry-run symmetry, and border hardening."""
+    import re
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider, _call_hl_info_read
+    from providers.order_ohlc_utils import (
+        derive_venue_128bit_client_order_id,
+        format_venue_intent_client_order_id,
+    )
+    from providers.quantity import (
+        clamp_notional_to_wallet_balance,
+        venue_adjust_partial_sell_quantity,
+        venue_fee_cap_quantity,
+    )
+    from providers.t212_provider import T212Provider
+
+    # 1. Open-Closed custom MarketDataProvider subclass works without touching any central dict
+    class _CustomDexProvider(MarketDataProvider):
+        _LIVE_ORDERS_ENV = "CUSTOM_DEX_LIVE_ORDERS"
+        _CLIENT_ID_128BIT_SPEC = (
+            "CustomDex",
+            b"assertguardian:customdex:cloid:v1\0",
+            re.compile(r"^0x[0-9a-fA-F]{32}$"),
+            "0x",
+        )
+        _INTENT_CLIENT_ID_FORMAT = "CDX_{token}"
+        _BUY_SLIPPAGE_FEE_BUFFER = 0.97
+        _SELL_DUST_SPEC = (3, 5.0)
+
+        def __init__(self, live_enabled=None):
+            self._live_enabled = live_enabled
+
+        @property
+        def name(self) -> str:
+            return "CustomDex"
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 1.0 if asset == "ABC" else 100.0
+
+    monkeypatch.setenv("CUSTOM_DEX_LIVE_ORDERS", "false")
+    custom_p = _CustomDexProvider()
+    assert custom_p.execution_enabled() is False
+    assert _CustomDexProvider.strategy_dry_run(False, True) is True
+    monkeypatch.setenv("CUSTOM_DEX_LIVE_ORDERS", "true")
+    assert custom_p.execution_enabled() is True
+    assert _CustomDexProvider.strategy_dry_run(False, True) is False
+    assert _CustomDexProvider(live_enabled=False).execution_enabled() is False
+
+    cloid = derive_venue_128bit_client_order_id(_CustomDexProvider, "intent-42")
+    assert cloid.startswith("0x") and len(cloid) == 34
+    assert derive_venue_128bit_client_order_id(custom_p, "intent-42") == cloid
+    assert format_venue_intent_client_order_id(custom_p, "deadbeef" * 4) == "CDX_" + ("deadbeef" * 4)
+    assert venue_fee_cap_quantity(custom_p, "BUY", 10.0, 100.0) == pytest.approx(97.0)
+    adj_q, adj_mode = venue_adjust_partial_sell_quantity(
+        custom_p, "SELL", 0.8, 1.0, 10.0, min_notional_usd=5.0
+    )
+    assert adj_mode == "leave_min_5_remainder"
+    assert adj_q == pytest.approx(0.5)
+
+    ok_clamp, clamped_usd, clamp_reason = clamp_notional_to_wallet_balance(
+        SimpleNamespace(symbol="ABCUSD", base="ABC", quote="USD", provider_name="CustomDex", _provider=custom_p),
+        "SELL",
+        10.0,
+        8.0,
+        min_notional_usd=5.0,
+    )
+    assert ok_clamp is True
+    assert clamped_usd == pytest.approx(5.0)
+    assert "$5" in clamp_reason
+
+    # 2. Cross-venue live_enabled override & strategy_dry_run symmetry across all 4 concrete providers
+    for prov_cls in (BinanceProvider, KrakenProvider, HyperliquidProvider, T212Provider):
+        assert prov_cls(live_enabled=True).execution_enabled() is True
+        assert prov_cls(live_enabled=False).execution_enabled() is False
+        assert prov_cls(live_enabled="false").execution_enabled() is False  # type: ignore[arg-type]
+        assert prov_cls(live_enabled=float("nan")).execution_enabled() is False  # type: ignore[arg-type]
+        assert prov_cls.strategy_dry_run(True, True) is True
+        assert prov_cls.strategy_dry_run(False, False) is True
+
+    # 3. KrakenProvider.extract_cached_fee_and_limits does not mistake bound _client method for client object
+    fresh_kr = KrakenProvider()
+    assert fresh_kr._cli is None
+    assert callable(getattr(fresh_kr, "_client", None))
+    assert KrakenProvider.extract_cached_fee_and_limits(fresh_kr, "XBTUSD") == {}
+
+    class _BadDecimalsKrakenClient:
+        def cached_pair_info(self, _cands):
+            return {
+                "ordermin": "0.01",
+                "pair_decimals": True,
+                "lot_decimals": "2.5",
+                "fees_maker": [[0, 0.16]],
+                "fees": [[0, 0.26]],
+            }
+
+    bad_kr = KrakenProvider(client=_BadDecimalsKrakenClient())
+    meta_bad = KrakenProvider.extract_cached_fee_and_limits(bad_kr, "XBTUSD", price=80000.0)
+    assert "tick_size" not in meta_bad
+    assert "step_size" not in meta_bad
+    assert meta_bad["min_qty"] == pytest.approx(0.01)
+    assert KrakenProvider.extract_cached_fee_and_limits(bad_kr, True) == {}  # type: ignore[arg-type]
+
+    bad_hl = SimpleNamespace(_meta_cache={"HYPE": {"szDecimals": "2.5"}}, _client=None)
+    assert HyperliquidProvider.extract_cached_fee_and_limits(bad_hl, "HYPEUSDC", price=30.0) == {}
+    assert HyperliquidProvider.extract_cached_fee_and_limits(bad_hl, True, price=30.0) == {}  # type: ignore[arg-type]
+
+    # 4. _call_hl_info_read safely coerces bool/zero/NaN attempts and negative/NaN backoff_s
+    calls = []
+
+    def _flaky_hl():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("(429, 'rate limit')")
+        return ["ok"]
+
+    assert _call_hl_info_read(_flaky_hl, attempts=2, backoff_s=float("nan")) == ["ok"]
+    assert len(calls) == 2
+
+    single_calls = []
+    with pytest.raises(RuntimeError):
+        _call_hl_info_read(
+            lambda: (single_calls.append(1), (_ for _ in ()).throw(RuntimeError("(503, 'busy')"))),
+            attempts=True,  # type: ignore[arg-type]
+            backoff_s=-1.0,
+        )
+    assert len(single_calls) == 1
+
+    # 5. BinanceProvider.supports_symbol enforces instrument_registry venue ownership and non-empty base
+    from providers import binance_provider as bp_mod
+
+    bp = BinanceProvider()
+    assert bp.supports_symbol("BTCUSDC") is True
+    assert bp.supports_symbol("HYPEUSDC") is False
+    assert bp.supports_symbol("HYPE/USDC") is False
+    assert bp.supports_symbol("USDC") is False
+    assert bp.supports_symbol("/USDC") is False
+    assert bp.supports_symbol(True) is False  # type: ignore[arg-type]
+    assert bp.supports_symbol("") is False
+    monkeypatch.setattr(bp_mod, "venue_for_symbol", lambda s: "hyperliquid" if "PURR" in s else "binance")
+    assert bp.supports_symbol("PURRUSDC") is False
+

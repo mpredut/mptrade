@@ -289,28 +289,42 @@ def dust_protected_partial_sell_qty(
     return req_f, None
 
 
-_VENUE_BUY_SLIPPAGE_FEE_BUFFERS: dict[str, float] = {
-    "hyperliquid": 0.95,
-    "t212": 0.998,
-}
-_VENUE_SELL_DUST_SPECS: dict[str, tuple[int, float]] = {
-    "t212": (2, 6.0),
-}
+def _resolve_venue_sizing_specs(
+    venue: Any, provider: Any = None
+) -> tuple[Optional[float], Optional[tuple[int, float]]]:
+    if (
+        venue is None or isinstance(venue, bool) or (isinstance(venue, str) and not venue.strip())
+    ) and provider is None:
+        return None, None
+    from .base import MarketDataProvider
+
+    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue, provider=provider)
+    if prov_cls is None:
+        return None, None
+    buy_buf = safe_pos_float(getattr(prov_cls, "_BUY_SLIPPAGE_FEE_BUFFER", None), default=None)
+    raw_dust = getattr(prov_cls, "_SELL_DUST_SPEC", None)
+    dust_spec = raw_dust if isinstance(raw_dust, tuple) and len(raw_dust) == 2 else None
+    return buy_buf, dust_spec
 
 
 def venue_fee_cap_quantity(
-    venue: Any, side: str, price: float, available_qty: float, *, default_buy_buf: float = 1.0
+    venue: Any,
+    side: str,
+    price: float,
+    available_qty: float,
+    *,
+    default_buy_buf: float = 1.0,
+    provider: Any = None,
 ) -> float:
-    """Apply venue-specific BUY slippage/fee buffers and SELL dust caps via declarative venue tables."""
-    venue_l = normalize_venue_name(str(venue or ""))
-    if venue_l not in _VENUE_BUY_SLIPPAGE_FEE_BUFFERS and venue_l not in _VENUE_SELL_DUST_SPECS and default_buy_buf == 1.0:
+    """Apply venue-specific BUY slippage/fee buffers and SELL dust caps from provider class specs."""
+    buy_buf, dust_spec = _resolve_venue_sizing_specs(venue, provider=provider)
+    if buy_buf is None and dust_spec is None and default_buy_buf == 1.0:
         return available_qty
     avail_f = safe_pos_float(available_qty, default=None)
     if avail_f is None:
         return 0.0
     if normalize_side(side) == "BUY":
-        return avail_f * _VENUE_BUY_SLIPPAGE_FEE_BUFFERS.get(venue_l, default_buy_buf)
-    dust_spec = _VENUE_SELL_DUST_SPECS.get(venue_l)
+        return avail_f * (buy_buf if buy_buf is not None else default_buy_buf)
     if dust_spec is not None:
         qty_dec, rem_min = dust_spec
         return dust_protected_sell_balance_cap(
@@ -327,12 +341,13 @@ def venue_adjust_partial_sell_quantity(
     price: float,
     *,
     min_notional_usd: float = 0.0,
+    provider: Any = None,
 ) -> Tuple[float, Optional[str]]:
-    """Apply venue-specific partial SELL remainder/dust adjustments via declarative venue tables."""
+    """Apply venue-specific partial SELL remainder/dust adjustments from provider class specs."""
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
     if normalize_side(side) != "SELL" or req_f <= 0.0:
         return req_f, None
-    dust_spec = _VENUE_SELL_DUST_SPECS.get(normalize_venue_name(str(venue or "")))
+    _, dust_spec = _resolve_venue_sizing_specs(venue, provider=provider)
     if dust_spec is None:
         return req_f, None
     qty_dec, rem_min = dust_spec
@@ -402,7 +417,9 @@ def clamp_notional_to_wallet_balance(
 
     raw_venue = getattr(inst, "provider_name", None) or getattr(provider, "name", "")
     venue_l = normalize_venue_name(str(raw_venue or ""))
-    capped_bal = venue_fee_cap_quantity(venue_l, side_u, price, bal, default_buy_buf=0.998)
+    capped_bal = venue_fee_cap_quantity(
+        venue_l, side_u, price, bal, default_buy_buf=0.998, provider=provider
+    )
     avail_usd = capped_bal if side_u == "BUY" else capped_bal * price
 
     min_usd = safe_nonneg_float(min_notional_usd, default=10.0) or 0.0
@@ -412,9 +429,15 @@ def clamp_notional_to_wallet_balance(
         return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
     if price > 0:
         adj_qty, adj_mode = venue_adjust_partial_sell_quantity(
-            venue_l, side_u, desired_usd / price, bal, price, min_notional_usd=min_usd
+            venue_l,
+            side_u,
+            desired_usd / price,
+            bal,
+            price,
+            min_notional_usd=min_usd,
+            provider=provider,
         )
-        dust_spec = _VENUE_SELL_DUST_SPECS.get(venue_l)
+        _, dust_spec = _resolve_venue_sizing_specs(venue_l, provider=provider)
         rem_tag = f"{dust_spec[1]:g}" if dust_spec is not None else "min"
         venue_tag = venue_l.upper() or "VENUE"
         if adj_mode and adj_mode.startswith("leave_min_"):

@@ -39,7 +39,7 @@ _common_mod = load_local_module(_HERE, "common")
 from strategies.spot_engine import Strategy, StratParams
 from providers.order_ohlc_utils import format_strategy_execution_mode
 from providers.execution_audit import AuditedStrategyExecutor
-from providers.hyperliquid_provider import HyperliquidProvider, hl_strategy_dry_run
+from providers.hyperliquid_provider import HyperliquidProvider
 
 
 def state_dir_for(dry_run: bool) -> str:
@@ -66,7 +66,7 @@ def main() -> int:
     token = (args.test_strategy or args.token or required_env("HL_SPOT_TOKEN")).strip().upper()
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     required_bool_env("HL_LIVE_ORDERS")
-    strat_dry = hl_strategy_dry_run(args.paper, strategy_enabled)
+    strat_dry = HyperliquidProvider.strategy_dry_run(args.paper, strategy_enabled)
     observe_only = bool_env("HL_BOT_OBSERVE_ONLY", False)
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()

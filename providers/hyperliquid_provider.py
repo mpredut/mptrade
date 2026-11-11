@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    safe_pos_int,
 )
 from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
@@ -44,7 +46,6 @@ from instrument_registry import casefold_get
 from state_io import encode_json_payload
 from .base import (
     MarketDataProvider,
-    bool_env,
     extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
@@ -114,17 +115,14 @@ def _cloid_for_client_order_id(client_order_id: str) -> str:
     return derive_venue_128bit_client_order_id("hyperliquid", client_order_id)
 
 
-def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
-    """Combine the strategy and provider gates for Hyperliquid orchestration."""
-    return MarketDataProvider.resolve_strategy_dry_run(
-        force_paper, strategy_execute, bool_env(_LIVE_ENV, _HL_DIR)
-    )
-
-
 def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
     """Invoke a read-only Hyperliquid Info callable with bounded retry on transient 5xx/429."""
+    max_attempts = max(1, safe_pos_int(attempts, default=1) or 1)
+    backoff_f = safe_nonneg_float(backoff_s, default=0.2)
+    if backoff_f is None:
+        backoff_f = 0.2
     last_exc = None
-    for attempt in range(max(1, int(attempts))):
+    for attempt in range(max_attempts):
         try:
             return fn(*args)
         except Exception as exc:  # noqa: BLE001
@@ -135,9 +133,9 @@ def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
                 bool(exc_args and type(exc_args[0]) is int and exc_args[0] in (429, 500, 502, 503, 504))
                 or any(f"({code}," in msg or f"status_code={code}" in msg for code in (429, 500, 502, 503, 504))
             )
-            if not is_transient or attempt + 1 >= attempts:
+            if not is_transient or attempt + 1 >= max_attempts:
                 raise
-            time.sleep(backoff_s * (attempt + 1))
+            time.sleep(backoff_f * (attempt + 1))
     if last_exc is not None:
         raise last_exc
     return None
@@ -151,6 +149,17 @@ class HyperliquidProvider(MarketDataProvider):
     _DEFERS_PREFLIGHT_QUANTITY = True
     _STRATEGY_HEARTBEAT_NAME = "HL-bot"
     _RUNTIME_ENV_RELPATH = ("hyperliquid", "config.env")
+    _LIVE_ORDERS_ENV = _LIVE_ENV
+    _LIVE_ORDERS_DIR_ATTR = "_HL_DIR"
+    _LIVE_ORDERS_EXEC_READS_DIR = False
+    _CLIENT_ID_128BIT_SPEC = (
+        "Hyperliquid",
+        b"assertguardian:hyperliquid:cloid:v1\0",
+        re.compile(r"^0x[0-9a-fA-F]{32}$"),
+        "0x",
+    )
+    _INTENT_CLIENT_ID_FORMAT = "0x{token}"
+    _BUY_SLIPPAGE_FEE_BUFFER = 0.95
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_HYPERLIQUID_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 60.0
     PUBLIC_WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -175,16 +184,13 @@ class HyperliquidProvider(MarketDataProvider):
     def name(self) -> str:
         return "Hyperliquid"
 
-    def execution_enabled(self) -> bool:
-        """Return whether the generic pipeline may create a real spot order."""
+    def _before_execution_enabled_check(self) -> None:
         if (
-            getattr(self, "_live_enabled", None) is None
-            and _LIVE_ENV not in os.environ
+            _LIVE_ENV not in os.environ
             and not getattr(self, "_client_tried", False)
             and not getattr(self, "_env_loaded", False)
         ):
             self._load_env()
-        return self._is_live_order_enabled(_LIVE_ENV)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -830,17 +836,17 @@ class HyperliquidProvider(MarketDataProvider):
         price: Optional[float] = None,
     ) -> dict:
         """Extract non-blocking cached size/price precision limits for ``symbol``."""
-        if provider is None:
+        if provider is None or isinstance(symbol, bool):
             return {}
         client = getattr(provider, "_client", None)
         base_tok = canonical_base_asset(symbol)
         meta_cache = getattr(provider, "_meta_cache", None) or getattr(client, "_meta_cache", None)
         meta_entry = casefold_get(meta_cache, base_tok) if isinstance(meta_cache, dict) else None
-        sz_dec = safe_nonneg_float(meta_entry.get("szDecimals"), default=None) if isinstance(meta_entry, dict) else None
+        sz_dec = exact_nonneg_int(meta_entry.get("szDecimals"), default=None) if isinstance(meta_entry, dict) else None
         if sz_dec is None:
             sz_cache = getattr(client, "_sz_decimals_cache", None)
             if isinstance(sz_cache, dict):
-                sz_dec = safe_nonneg_float(casefold_get(sz_cache, base_tok), default=None)
+                sz_dec = exact_nonneg_int(casefold_get(sz_cache, base_tok), default=None)
         if sz_dec is None:
             info_obj = getattr(client, "info", None)
             c2a = getattr(info_obj, "coin_to_asset", None)
@@ -856,18 +862,17 @@ class HyperliquidProvider(MarketDataProvider):
                         for ck in (spot_pair, base_tok)
                         if ck
                         and (asset_id := casefold_get(c2a, ck)) is not None
-                        and (v := safe_nonneg_float(a2sz.get(asset_id), default=None)) is not None
+                        and (v := exact_nonneg_int(a2sz.get(asset_id), default=None)) is not None
                     ),
                     None,
                 )
         out: dict = {}
-        if sz_dec is not None and 0 <= int(sz_dec) <= 18:
-            sz_i = int(sz_dec)
-            step = round(10.0 ** (-sz_i), 8)
+        if sz_dec is not None and 0 <= sz_dec <= 18:
+            step = round(10.0 ** (-sz_dec), 8)
             out["step_size"] = step
             out["min_qty"] = step
             px_f = safe_pos_float(price, default=0.0) or 0.0
-            eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
+            eff_px_dec = min(max(8 - sz_dec, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
             out["tick_size"] = round(10.0 ** (-eff_px_dec), 8)
         return out
 

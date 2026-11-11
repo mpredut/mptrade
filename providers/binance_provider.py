@@ -11,7 +11,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import cache_symbol_variants, canonical_symbol_key
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, venue_for_symbol
 
 from .base import (
     MarketDataProvider,
@@ -113,12 +113,17 @@ class BinanceProvider(MarketDataProvider):
     _REQUIRES_CACHE_PERMIT: bool = True
     _DEFERS_SMART_CANCELLATION: bool = True
     _SUPPORTS_BUSINESS_MINIMUM: bool = True
+    _INTENT_CLIENT_ID_FORMAT: str = "SD_{token}"
+
+    def __init__(self, live_enabled: Optional[bool] = None):
+        self._live_enabled = live_enabled
 
     @property
     def name(self) -> str:
         return "Binance"
 
-    def execution_enabled(self) -> bool:
+    @classmethod
+    def _venue_live_orders_enabled(cls) -> bool:
         """Return the authoritative Binance live-order feature gate."""
         import botcore as cfg
 
@@ -137,15 +142,12 @@ class BinanceProvider(MarketDataProvider):
         return _get_bapi().get_current_price(symbol)
 
     def supports_symbol(self, symbol: str) -> bool:
-        # The operational Binance account uses USDC pairs exclusively, preserving
-        # the facade's Binance default. Hyperliquid owns HYPE spot symbols, so
-        # exclude them before Binance's broad USDC claim can capture HYPEUSDC.
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
         sym_norm = symbol.strip().upper()
-        if sym_norm.startswith("HYPE"):
+        if not sym_norm.endswith("USDC") or not sym_norm[:-4].strip("/-_"):
             return False
-        return sym_norm.endswith("USDC")
+        return venue_for_symbol(sym_norm) == "binance"
 
     # -- Account data, repackaged through the facade without semantic changes. --
     def free_balance(self, asset: str) -> Optional[float]:

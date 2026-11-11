@@ -484,31 +484,12 @@ def format_strategy_execution_mode(
     return paper_label if _parse_bool_flag(dry_run, True) else real_label
 
 
-_VENUE_128BIT_CLIENT_ID_SPECS: dict[str, tuple[str, bytes, re.Pattern[str], str]] = {
-    "kraken": (
-        "Kraken",
-        b"assertguardian:kraken:cloid:v1\0",
-        re.compile(r"^[0-9a-fA-F]{32}$"),
-        "",
-    ),
-    "hyperliquid": (
-        "Hyperliquid",
-        b"assertguardian:hyperliquid:cloid:v1\0",
-        re.compile(r"^0x[0-9a-fA-F]{32}$"),
-        "0x",
-    ),
-}
-_VENUE_INTENT_TOKEN_FORMATS: dict[str, str] = {
-    "kraken": "{token}",
-    "binance": "SD_{token}",
-    "hyperliquid": "0x{token}",
-}
-
-
-def derive_venue_128bit_client_order_id(venue: str, client_order_id: Any) -> str:
+def derive_venue_128bit_client_order_id(venue: Any, client_order_id: Any) -> str:
     """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
-    v_key = normalize_venue_name(venue)
-    spec = _VENUE_128BIT_CLIENT_ID_SPECS.get(v_key)
+    from .base import MarketDataProvider
+
+    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue)
+    spec = getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) if prov_cls is not None else None
     if spec is None:
         raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
     venue_label, domain_prefix, exact_re, hex_prefix = spec
@@ -531,21 +512,29 @@ def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
     raw = clean_order_id(client_order_id)
     if not raw:
         return set()
+    from .base import MarketDataProvider
+
     out = {raw.lower()}
-    for venue_key in _VENUE_128BIT_CLIENT_ID_SPECS:
+    for venue_key in MarketDataProvider._VENUE_PROVIDER_SPECS:
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(venue_key)
+        if getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) is None:
+            continue
         try:
-            out.add(derive_venue_128bit_client_order_id(venue_key, raw).lower())
+            out.add(derive_venue_128bit_client_order_id(prov_cls, raw).lower())
         except Exception:
             pass
     return out
 
 
-def format_venue_intent_client_order_id(venue: str, token: str) -> Optional[str]:
+def format_venue_intent_client_order_id(venue: Any, token: str) -> Optional[str]:
     """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
     if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
         return None
-    fmt = _VENUE_INTENT_TOKEN_FORMATS.get(normalize_venue_name(venue))
-    return fmt.format(token=token.strip()) if fmt else None
+    from .base import MarketDataProvider
+
+    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue)
+    fmt = getattr(prov_cls, "_INTENT_CLIENT_ID_FORMAT", None) if prov_cls is not None else None
+    return fmt.format(token=token.strip()) if isinstance(fmt, str) and fmt else None
 
 
 def require_clean_order_id(

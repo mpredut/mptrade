@@ -94,6 +94,10 @@ class T212Provider(MarketDataProvider):
     _DEFAULT_INTENT_EXECUTOR_TAG = "[auto_sharetrade_executor]"
     _ASSET_SCOPE = "equities"
     _RUNTIME_ENV_RELPATH = ("212trading", "runtime.env")
+    _LIVE_ORDERS_ENV = "T212_LIVE_ORDERS"
+    _LIVE_ORDERS_DIR_ATTR = "_T212_DIR"
+    _BUY_SLIPPAGE_FEE_BUFFER = 0.998
+    _SELL_DUST_SPEC = (2, 6.0)
     _SUPPORTS_ORDER_VALIDITY = True
     _STRATEGY_HEARTBEAT_NAME = "T212-bot"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
@@ -110,10 +114,6 @@ class T212Provider(MarketDataProvider):
         # Autonomous profiles historically use GOOD_TILL_CANCEL; the generic
         # contract remains configurable through T212_ORDER_VALIDITY.
         self._order_validity = order_validity
-
-    def execution_enabled(self) -> bool:
-        """Return whether the generic pipeline may create a real T212 order."""
-        return self._is_live_order_enabled("T212_LIVE_ORDERS", _T212_DIR)
 
     @property
     def name(self) -> str:

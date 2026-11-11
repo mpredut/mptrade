@@ -134,6 +134,13 @@ class MarketDataProvider(ABC):
     _SUPPORTS_ORDER_VALIDITY: bool = False
     _DEFERS_PREFLIGHT_QUANTITY: bool = False
     _STRATEGY_HEARTBEAT_NAME: str = ""
+    _LIVE_ORDERS_ENV: Optional[str] = None
+    _LIVE_ORDERS_DIR_ATTR: Optional[str] = None
+    _LIVE_ORDERS_EXEC_READS_DIR: bool = True
+    _CLIENT_ID_128BIT_SPEC: Optional[tuple[str, bytes, Any, str]] = None
+    _INTENT_CLIENT_ID_FORMAT: Optional[str] = None
+    _BUY_SLIPPAGE_FEE_BUFFER: Optional[float] = None
+    _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
         "binance": ("providers.binance_provider", "BinanceProvider"),
         "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
@@ -433,13 +440,27 @@ class MarketDataProvider(ABC):
         return res if res is not None else {}
 
     @classmethod
-    def resolve_venue_provider_class(cls, venue: Any) -> Any:
-        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` via declarative registry."""
-        spec = cls._VENUE_PROVIDER_SPECS.get(normalize_venue_name(venue))
-        if spec is None:
-            return None
-        mod_path, cls_name = spec
-        return getattr(importlib.import_module(mod_path), cls_name, None)
+    def resolve_venue_provider_class(cls, venue: Any, *, provider: Any = None) -> Any:
+        """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` or ``provider``."""
+        if not isinstance(venue, bool) and venue is not None:
+            if isinstance(venue, type) and (issubclass(venue, cls) or hasattr(venue, "supports_symbol")):
+                return venue
+            if not isinstance(venue, (str, bytes)) and (
+                isinstance(venue, cls) or hasattr(type(venue), "supports_symbol")
+            ):
+                return type(venue)
+            spec = cls._VENUE_PROVIDER_SPECS.get(normalize_venue_name(venue))
+            if spec is not None:
+                mod_path, cls_name = spec
+                resolved = getattr(importlib.import_module(mod_path), cls_name, None)
+                if resolved is not None:
+                    return resolved
+        if provider is not None and not isinstance(provider, (str, bytes, bool)):
+            if isinstance(provider, type) and (issubclass(provider, cls) or hasattr(provider, "supports_symbol")):
+                return provider
+            if isinstance(provider, cls) or hasattr(type(provider), "supports_symbol"):
+                return type(provider)
+        return None
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
@@ -773,14 +794,42 @@ class MarketDataProvider(ABC):
             return bool_env(env_key, folder)
         return _parse_bool_flag(live_override, False)
 
+    @classmethod
+    def _resolve_live_orders_dir(cls) -> Optional[str]:
+        dir_attr = getattr(cls, "_LIVE_ORDERS_DIR_ATTR", None)
+        if not dir_attr:
+            return None
+        val = resolve_patched_attr(dir_attr, None, modules=(cls.__module__,))
+        return str(val) if isinstance(val, (str, Path)) and str(val) else None
+
+    @classmethod
+    def _venue_live_orders_enabled(cls) -> bool:
+        """Return whether the venue-level live-order config gate is enabled."""
+        env_key = getattr(cls, "_LIVE_ORDERS_ENV", None)
+        return bool_env(env_key, cls._resolve_live_orders_dir()) if env_key else True
+
+    def _before_execution_enabled_check(self) -> None:
+        """Optional hook run before reading ``_LIVE_ORDERS_ENV`` when ``_live_enabled`` is unset."""
+
     def execution_enabled(self) -> bool:
         """Return whether this provider may create a real venue order now.
 
-        Providers with an explicit dry/live switch override this hook. The shared
-        placement pipeline checks it before creating durable retry state so a dry
-        validation cannot become a live order after a later configuration change.
+        Providers declare ``_LIVE_ORDERS_ENV`` / ``_venue_live_orders_enabled`` so the
+        shared placement pipeline checks the live gate before creating durable retry state.
         """
-        return True
+        live_override = getattr(self, "_live_enabled", None)
+        if live_override is not None:
+            return _parse_bool_flag(live_override, False)
+        self._before_execution_enabled_check()
+        env_key = getattr(type(self), "_LIVE_ORDERS_ENV", None)
+        if env_key:
+            folder = (
+                type(self)._resolve_live_orders_dir()
+                if getattr(type(self), "_LIVE_ORDERS_EXEC_READS_DIR", True)
+                else None
+            )
+            return self._is_live_order_enabled(env_key, folder)
+        return type(self)._venue_live_orders_enabled()
 
     @staticmethod
     def resolve_strategy_dry_run(
@@ -791,6 +840,13 @@ class MarketDataProvider(ABC):
             _parse_bool_flag(force_paper, True)
             or not _parse_bool_flag(strategy_execute, False)
             or not _parse_bool_flag(venue_live_enabled, False)
+        )
+
+    @classmethod
+    def strategy_dry_run(cls, force_paper: bool, strategy_execute: bool) -> bool:
+        """Combine CLI ``--paper``, strategy gate (``STRAT_EXECUTE``), and this venue's live gate."""
+        return cls.resolve_strategy_dry_run(
+            force_paper, strategy_execute, cls._venue_live_orders_enabled()
         )
 
     def _round_required_qty(self, symbol: str, qty: float, err_prefix: str = "submit_order") -> float:
