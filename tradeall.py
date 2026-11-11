@@ -681,9 +681,7 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     if regime_ctx is None:
         regime_ctx = _resolve_regime_ctx(symbol, "TRADEALL")
-        if regime_ctx is not None:
-            print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
-    else:
+    if regime_ctx is not None:
         print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
     # SMALL ONE!!
@@ -776,8 +774,8 @@ class TrendCoordinator:
         self.trend_states = {}
         self.trend_states_big = {}
         for symbol in self.symbols:
-            self.trend_states[symbol] = TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
-            self.trend_states_big[symbol] = TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
+            self.trend_states[symbol] = self._new_trend_state()
+            self.trend_states_big[symbol] = self._new_trend_state()
             # Windows and the fast channel live in ``instant_mgr``; subscribe here.
             # Use Cache24 only for its evaluation signal (dirty flag and event).
             if cache24_managers is not None:
@@ -788,6 +786,18 @@ class TrendCoordinator:
                 )
                 if c24 is not None:
                     c24.subscribe_price(self)
+
+    @staticmethod
+    def _new_trend_state() -> TrendState:
+        return TrendState(expiration_trend_time=2.7 * 60, fresh_trend_time=3.7 * 60)
+
+    @staticmethod
+    def _attempt_timestamps(ts_small, ts_big) -> tuple:
+        return tuple(
+            getattr(ts, attr, None)
+            for ts in (ts_small, ts_big)
+            for attr in ("_last_attempt_up_ts", "_last_attempt_down_ts")
+        )
 
     def _resolve_symbol(self, symbol: str) -> str:
         if isinstance(symbol, str):
@@ -821,15 +831,9 @@ class TrendCoordinator:
     def evaluate(self, symbol):
         symbol = self._resolve_symbol(symbol)
         if symbol not in self.trend_states:
-            self.trend_states[symbol] = TrendState(
-                expiration_trend_time=2.7 * 60,
-                fresh_trend_time=3.7 * 60,
-            )
+            self.trend_states[symbol] = self._new_trend_state()
         if symbol not in self.trend_states_big:
-            self.trend_states_big[symbol] = TrendState(
-                expiration_trend_time=2.7 * 60,
-                fresh_trend_time=3.7 * 60,
-            )
+            self.trend_states_big[symbol] = self._new_trend_state()
         get_entry = getattr(self.current_price_mgr, "get_price", None)
         if callable(get_entry):
             entry = get_entry(symbol)
@@ -894,12 +898,7 @@ class TrendCoordinator:
 
         ts_small = self.trend_states[symbol]
         ts_big = self.trend_states_big[symbol]
-        prev_attempts = (
-            getattr(ts_small, "_last_attempt_up_ts", None),
-            getattr(ts_small, "_last_attempt_down_ts", None),
-            getattr(ts_big, "_last_attempt_up_ts", None),
-            getattr(ts_big, "_last_attempt_down_ts", None),
-        )
+        prev_attempts = self._attempt_timestamps(ts_small, ts_big)
         prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
         snapshot = handle_symbol(
             symbol, current_price,
@@ -911,12 +910,7 @@ class TrendCoordinator:
             regime_ctx=regime_ctx,
         )
         cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
-        cur_attempts = (
-            getattr(ts_small, "_last_attempt_up_ts", None),
-            getattr(ts_small, "_last_attempt_down_ts", None),
-            getattr(ts_big, "_last_attempt_up_ts", None),
-            getattr(ts_big, "_last_attempt_down_ts", None),
-        )
+        cur_attempts = self._attempt_timestamps(ts_small, ts_big)
         handle_placed_order = bool(
             (cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot)
             or cur_attempts != prev_attempts

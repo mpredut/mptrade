@@ -97,6 +97,15 @@ def base_params(budget=3000):
                 budget=budget, fee=0.25, sl=7.0, trail=3.0)
 
 
+def _eval_fixed_vs_trail(ohlc, params, *, warmup_ohlc=()):
+    budget = params["budget"]
+    h = bh(ohlc)
+    f = simulate_fixed_tp(ohlc, params, warmup_ohlc=warmup_ohlc)["total"] / budget * 100
+    t = simulate_trail(ohlc, params, warmup_ohlc=warmup_ohlc)["total"] / budget * 100
+    win = "tie" if abs(t - f) <= 1e-9 else ("trailing" if t > f else "TP-fix")
+    return h, f, t, win
+
+
 def run_compare(pairs, intervals):
     P = base_params()
     print(f"params: entry={P['entry']} dca={P['dca']} drop={P['drop']}% sl={P['sl']}% | "
@@ -111,18 +120,12 @@ def run_compare(pairs, intervals):
                 print(f"{pair:<9} {iv:<5} ERROR: {e}"); continue
             if len(ohlc) < 30:
                 print(f"{pair:<9} {iv:<5} not enough data ({len(ohlc)})"); continue
-            P_iv = {**P, "interval": iv}
-            h = bh(ohlc)
-            f = simulate_fixed_tp(ohlc, P_iv)["total"]/P["budget"]*100
-            t = simulate_trail(ohlc, P_iv)["total"]/P["budget"]*100
-            if abs(t - f) <= 1e-9:
-                win = "tie"
+            h, f, t, win = _eval_fixed_vs_trail(ohlc, {**P, "interval": iv})
+            if win == "tie":
                 ties += 1
-            elif t > f:
-                win = "trailing"
+            elif win == "trailing":
                 trailw += 1
             else:
-                win = "TP-fix"
                 fixw += 1
             print(f"{pair:<9} {iv:<5} {len(ohlc):<5} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
     print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} cases ({ties} ties)")
@@ -147,17 +150,12 @@ def run_wf(pair, interval, segments=4):
         if len(s) < 20:
             continue
         warmup = ohlc[max(0, start_idx - 40):start_idx]
-        h = bh(s)
-        f = simulate_fixed_tp(s, P, warmup_ohlc=warmup)["total"]/P["budget"]*100
-        t = simulate_trail(s, P, warmup_ohlc=warmup)["total"]/P["budget"]*100
-        if abs(t - f) <= 1e-9:
-            win = "tie"
+        h, f, t, win = _eval_fixed_vs_trail(s, P, warmup_ohlc=warmup)
+        if win == "tie":
             ties += 1
-        elif t > f:
-            win = "trailing"
+        elif win == "trailing":
             trailw += 1
         else:
-            win = "TP-fix"
             fixw += 1
         print(f"#{i+1:<8} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
     print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} segments ({ties} ties, sequential out-of-sample)")

@@ -39,7 +39,7 @@ def log(msg: str) -> None:
 
 def now_str() -> str:
     """Return current timestamp formatted in Europe/Bucharest timezone."""
-    return f"{datetime.now(timezone.utc).astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"
+    return f"{datetime.now(timezone.utc).astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucharest"
 
 
 def single_instance(name: str, lockdir: str = "/tmp") -> None:
