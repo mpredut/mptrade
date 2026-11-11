@@ -36,6 +36,7 @@ from botcore import (
     FileLock,
     _parse_bool_flag,
     clamp_float,
+    coerce_finite_float,
     exact_nonneg_int,
     load_root_config,
     normalize_epoch_sec,
@@ -261,8 +262,7 @@ ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(
 )
 
 
-def _finite_float(raw, *, positive=False):
-    return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
+_finite_float = coerce_finite_float
 
 
 def _price_row(row):

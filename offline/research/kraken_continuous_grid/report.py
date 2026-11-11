@@ -79,6 +79,20 @@ def _format_errors_section(errors: list[dict], *, label_fn=None, limit: int = 20
     return lines
 
 
+def _finalize_markdown_report(
+    lines: list[str],
+    errors: list[dict],
+    out_path: str,
+    *,
+    label_fn=None,
+    limit: int = 20,
+) -> list[str]:
+    """Append formatted error section, write markdown report to ``out_path``, and return ``lines``."""
+    lines.extend(_format_errors_section(errors, label_fn=label_fn, limit=limit))
+    atomic_write_text(out_path, "\n".join(lines) + "\n")
+    return lines
+
+
 def _risk_adjusted_score(ret_pct: float, dd_pct: float, dd_floor: float = 5.0) -> float:
     """Monotone risk-adjusted return score: penalises larger drawdowns even when return < 0."""
     r = safe_float(ret_pct, 0.0)
@@ -311,9 +325,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             else:
                 L.append(f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | - | - |")
 
-    L.extend(_format_errors_section(errors))
-
-    atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")
+    _finalize_markdown_report(L, errors, os.path.join(exp, "REPORT.md"))
     atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1)
     return L
 

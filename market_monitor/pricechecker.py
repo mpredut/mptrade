@@ -7,7 +7,6 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 import copy
 import time
-import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Callable
 from collections import defaultdict
@@ -20,6 +19,8 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    sleep_monitoring_interval,
+    start_monitoring_daemon_thread,
     stop_monitoring_thread,
 )
 from cachepaths import cache_symbol_variants
@@ -432,14 +433,9 @@ class PriceChecker:
                     print(f"[Checker] Error in main loop: {e}")
 
                 print(f"[Checker] Waiting {interval_seconds} seconds until next check...")
-                steps = max(1, int(iv_f) + (1 if iv_f > int(iv_f) else 0))
-                for _ in range(steps):
-                    if not self._running:
-                        break
-                    time.sleep(1)
+                sleep_monitoring_interval(self, iv_f, max_sleep_step=iv_f + 1.0)
 
-        self._thread = threading.Thread(target=run, name="PriceChecker", daemon=True)
-        self._thread.start()
+        start_monitoring_daemon_thread(self, run, "PriceChecker")
 
     def stop_monitoring(self):
         stop_monitoring_thread(self, "Checker", timeout=5)

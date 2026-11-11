@@ -18,6 +18,7 @@ from botcore import (
     _parse_bool_flag,
     check_cooldown_gate,
     clean_order_id,
+    coerce_finite_float,
     exact_pos_int,
     load_dotenv,
     load_root_config,
@@ -54,8 +55,7 @@ PersistPending = Callable[[Optional[dict]], None]
 SubmitIntent = Callable[[], object]
 
 
-def _lifecycle_finite(raw, *, positive: bool = False):
-    return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
+_lifecycle_finite = coerce_finite_float
 
 
 def _terminal_payload(status: OrderStatus, observed_at: float) -> dict:

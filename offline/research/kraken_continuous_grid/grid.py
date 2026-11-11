@@ -24,10 +24,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import (
-    int_env,
     load_local_module,
     lru_dict_put,
     optional_env,
+    resolve_mem_bounded_worker_cap,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -162,21 +162,22 @@ def load_asset(asset):
 
 
 def resolve_grid_workers() -> int:
-    raw_w = int_env("WORKERS")
-    if raw_w is not None and raw_w > 0:
-        return raw_w
-    cpu_default = min(4, os.cpu_count() or 2)
-    meminfo = read_text_file("/proc/meminfo", default="")
-    if isinstance(meminfo, str):
-        for line in meminfo.splitlines():
-            if line.startswith("MemTotal:"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    mem_kb = safe_nonneg_int(parts[1], default=0)
-                    if 0 < mem_kb <= 4608 * 1024:
-                        return min(2, cpu_default)
-                break
-    return cpu_default
+    return resolve_mem_bounded_worker_cap(4, default_cpus=2, read_text_fn=read_text_file)
+
+
+def _bar_ts_bounds(bars: list) -> tuple[int, int]:
+    """Return ``(start_ts, end_ts)`` from a sequence of OHLC bars, or ``(0, 0)`` when empty."""
+    return (bars[0][0], bars[-1][0]) if bars else (0, 0)
+
+
+def _populate_rolling_windows(
+    res: dict, bars: list, params, peak, fee: float = 0.26
+) -> None:
+    """Populate ``w30`` and ``w90`` rolling evaluation windows on ``res``."""
+    for key, size in (("w30", W30), ("w90", W90)):
+        for s in range(WARM, len(bars) - size + 1, WSTEP):
+            r = replay(bars[s:s + size], bars[s - WARM:s], params, peak, fee)
+            res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
 
 
 def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
@@ -224,23 +225,19 @@ def task(args):
     try:
         bars, ohlc, year_slices = load_asset(asset)
         params, peak = CONFIGS[cfg]
-        cache_key = (os.path.abspath(DATA), asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+        start_ts, end_ts = _bar_ts_bounds(bars)
+        cache_key = (os.path.abspath(DATA), asset, len(bars), start_ts, end_ts,
                      repr(params), bool(peak))
         cached = _TASK_CACHE.get(cache_key)
         if cached is not None:
             return {**cached, "cfg": cfg, "secs": 0.0}
         t0 = time.time()
-        start_ts = bars[0][0] if bars else 0
-        end_ts = bars[-1][0] if bars else 0
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
                "start_ts": start_ts, "end_ts": end_ts, "params_repr": repr(params), "peak": bool(peak),
                "full": replay(bars[WARM:], bars[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
         for y_str, s_idx, e_idx in year_slices:
             res["year"][y_str] = replay(bars[s_idx:e_idx], bars[s_idx - WARM:s_idx], params, peak)
-        for key, size in (("w30", W30), ("w90", W90)):
-            for s in range(WARM, len(bars) - size + 1, WSTEP):
-                r = replay(bars[s:s + size], bars[s - WARM:s], params, peak)
-                res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
+        _populate_rolling_windows(res, bars, params, peak)
         res["secs"] = round(time.time() - t0, 1)
         lru_dict_put(_TASK_CACHE, cache_key, res, max_entries=512)
         return res
@@ -261,8 +258,7 @@ def _row_matches_current_spec(r: dict, assets_set: set[str]) -> bool:
     bars, _, _ = load_asset(r["asset"])
     if r.get("bars") != len(bars):
         return False
-    start_ts = bars[0][0] if bars else 0
-    end_ts = bars[-1][0] if bars else 0
+    start_ts, end_ts = _bar_ts_bounds(bars)
     if "start_ts" in r and r.get("start_ts") != start_ts:
         return False
     if "end_ts" in r and r.get("end_ts") != end_ts:

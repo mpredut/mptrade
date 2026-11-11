@@ -40,13 +40,12 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import (
     bool_env,
-    int_env,
     load_ini_config,
     lru_dict_put,
+    resolve_mem_bounded_worker_cap,
     safe_float,
     safe_int,
     safe_nonneg_float,
-    safe_nonneg_int,
     safe_pos_float,
 )
 
@@ -644,21 +643,9 @@ def _cli_run_target(task_args):
 
 
 def _resolve_replay_worker_cap(use_365_cli: bool) -> int:
-    raw_w = int_env("WORKERS")
-    if raw_w is not None and raw_w > 0:
-        return raw_w
-    cpu_cap = min(2 if use_365_cli else 4, os.cpu_count() or 1)
-    meminfo = read_text_file("/proc/meminfo", default="")
-    if isinstance(meminfo, str):
-        for line in meminfo.splitlines():
-            if line.startswith("MemTotal:"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    mem_kb = safe_nonneg_int(parts[1], default=0)
-                    if 0 < mem_kb <= 4608 * 1024:
-                        return min(2, cpu_cap)
-                break
-    return cpu_cap
+    return resolve_mem_bounded_worker_cap(
+        2 if use_365_cli else 4, default_cpus=1, read_text_fn=read_text_file
+    )
 
 
 if __name__ == "__main__":

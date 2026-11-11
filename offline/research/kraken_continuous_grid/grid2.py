@@ -61,8 +61,7 @@ replay = grid.replay
 def views(asset, cfg, fee_key):
     bars, ohlc, _ = grid.load_asset(asset)
     params, peak = ALL[cfg]
-    start_ts = bars[0][0] if bars else 0
-    end_ts = bars[-1][0] if bars else 0
+    start_ts, end_ts = grid._bar_ts_bounds(bars)
     cache_key = (os.path.abspath(grid.DATA), asset, len(bars), start_ts, end_ts,
                  repr(params), bool(peak), fee_key)
     cached = _VIEWS_CACHE.get(cache_key)
@@ -73,10 +72,7 @@ def views(asset, cfg, fee_key):
            "start_ts": start_ts, "end_ts": end_ts,
            "params_repr": repr(params), "peak": bool(peak),
            "full": replay(bars[WARM:], bars[:WARM], params, peak, fee), "w30": [], "w90": []}
-    for key, size in (("w30", W30), ("w90", W90)):
-        for s in range(WARM, len(bars) - size + 1, WSTEP):
-            r = replay(bars[s:s + size], bars[s - WARM:s], params, peak, fee)
-            res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
+    grid._populate_rolling_windows(res, bars, params, peak, fee)
     lru_dict_put(_VIEWS_CACHE, cache_key, res, max_entries=512)
     return res
 

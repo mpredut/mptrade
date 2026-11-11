@@ -21,7 +21,6 @@ from botcore import (
     _parse_bool_flag,
     clean_order_id,
     clean_order_id_str,
-    exact_pos_int,
     float_env,
     lru_dict_put,
     optional_env,
@@ -82,6 +81,7 @@ from .order_ohlc_utils import (
     extract_orig_qty,
     format_venue_intent_client_order_id,
     normalize_timestamp_ms,
+    require_pos_ohlc_interval,
     resolve_order_actor,
 )
 from .strategy_executor import (
@@ -455,9 +455,7 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "ohlc_series", None)
         if callable(reader):
             return reader(symbol, interval_min)
-        interval_i = exact_pos_int(interval_min, default=None)
-        if interval_i is None:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+        interval_i = require_pos_ohlc_interval(symbol, interval_min)
         return ClosedPriceSeries(
             tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),
             interval_i,

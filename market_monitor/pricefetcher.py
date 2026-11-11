@@ -40,7 +40,7 @@ from cacheprice import CachePriceManagerBase
 import providers.market_api as _market_api
 from providers.market_api import api
 from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
-from providers.quantity import resolve_assets
+from providers.quantity import resolve_base_asset
 
 
 # ============================================
@@ -944,8 +944,7 @@ def is_valid_symbol_for_monitoring(symbol: str) -> bool:
     return not (len(symbol) > 8 and symbol.startswith("0"))
 
 
-def get_base_symbol(symbol: str) -> str:
-    return resolve_assets(symbol)[0]
+get_base_symbol = resolve_base_asset
 
 
 def is_rth_equity_symbol(symbol: object, price_factory: Optional[object] = None) -> bool:

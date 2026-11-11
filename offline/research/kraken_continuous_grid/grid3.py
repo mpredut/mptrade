@@ -24,8 +24,7 @@ def task(args):
     try:
         bars, ohlc, _ = grid.load_asset(asset)
         params, peak = grid2.ALL[cfg]
-        start_ts = bars[0][0] if bars else 0
-        end_ts = bars[-1][0] if bars else 0
+        start_ts, end_ts = grid._bar_ts_bounds(bars)
         cache_key = (os.path.abspath(grid.DATA), asset, len(bars), start_ts, end_ts,
                      repr(params), bool(peak))
         cached = _TASK3_CACHE.get(cache_key)

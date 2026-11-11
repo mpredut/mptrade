@@ -196,6 +196,11 @@ def resolve_assets(
     return base_u or symbol_u, quote_u
 
 
+def resolve_base_asset(symbol: str) -> str:
+    """Return a trading symbol's resolved base asset by stripping its known quote suffix."""
+    return resolve_assets(symbol)[0]
+
+
 def balance_cap_quantity(
     free_balance: Callable[[str], Optional[float]],
     symbol: str,

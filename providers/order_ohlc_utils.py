@@ -43,6 +43,14 @@ class ProviderError(Exception):
     """Venue-neutral error raised by strict strategy-execution adapters."""
 
 
+def require_pos_ohlc_interval(symbol: object, interval_min: Any) -> int:
+    """Validate and return a positive integer OHLC interval in minutes or raise ``ProviderError``."""
+    interval_i = exact_pos_int(interval_min, default=None)
+    if interval_i is None:
+        raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+    return interval_i
+
+
 _ORIG_QTY_KEYS = (
     "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty", "requested_qty",
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",

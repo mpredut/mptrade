@@ -1,6 +1,5 @@
 # new_coins_discovery.py
 import time
-import threading
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -14,7 +13,9 @@ from botcore import (
     safe_float,
     safe_pos_float,
     safe_pos_int,
+    sleep_monitoring_interval,
     split_csv,
+    start_monitoring_daemon_thread,
     stop_monitoring_thread,
 )
 from instrument_registry import casefold_get
@@ -537,13 +538,8 @@ class NewCoinsMonitor:
                     print(f"[NewCoinsMonitor] Error: {e}")
                 itv_f = safe_pos_float(interval_seconds, default=60.0)
                 print(f"[NewCoinsMonitor] Waiting {itv_f} seconds until the next check...")
-                steps = max(1, int(itv_f) + (1 if itv_f > int(itv_f) else 0))
-                for _ in range(steps):
-                    if not self._running:
-                        break
-                    time.sleep(min(1.0, itv_f))
-        self._thread = threading.Thread(target=run, name="NewCoinsMonitor", daemon=True)
-        self._thread.start()
+                sleep_monitoring_interval(self, itv_f)
+        start_monitoring_daemon_thread(self, run, "NewCoinsMonitor")
 
     def stop_monitoring(self):
         stop_monitoring_thread(self, "NewCoinsMonitor", timeout=5)

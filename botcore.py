@@ -1696,6 +1696,39 @@ def safe_thresh(val: object, default: int) -> int:
     return int(round(f)) if 0.0 <= f <= 100.0 else default
 
 
+def coerce_finite_float(
+    raw: object, *, positive: bool = False, default: float | None = None
+) -> float | None:
+    """Coerce ``raw`` to a finite float (or strictly positive finite float when ``positive=True``)."""
+    return safe_pos_float(raw, default=default) if positive else safe_float(raw, default=default)
+
+
+def resolve_mem_bounded_worker_cap(
+    max_workers: int = 4,
+    *,
+    default_cpus: int = 2,
+    env_var: str = "WORKERS",
+    read_text_fn: object = None,
+) -> int:
+    """Resolve worker pool size from ``env_var`` or CPU count bounded to 2 on <=4.5 GiB hosts."""
+    raw_w = int_env(env_var)
+    if raw_w is not None and raw_w > 0:
+        return raw_w
+    cpu_cap = min(max(1, safe_pos_int(max_workers, 4)), os.cpu_count() or max(1, safe_pos_int(default_cpus, 2)))
+    reader = read_text_fn if callable(read_text_fn) else _state_io.read_text_file
+    meminfo = reader("/proc/meminfo", default="")
+    if isinstance(meminfo, str):
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_kb = safe_nonneg_int(parts[1], default=0)
+                    if 0 < mem_kb <= 4608 * 1024:
+                        return min(2, cpu_cap)
+                break
+    return cpu_cap
+
+
 def resolve_order_notional(
     notional_eur: object,
     price: object,
@@ -2865,6 +2898,29 @@ class ClosedPriceSeries:
             timestamps,
             volumes,
         )
+
+
+def sleep_monitoring_interval(
+    instance: object, interval_sec: object, *, max_sleep_step: float = 1.0
+) -> None:
+    """Sleep in interruptible steps up to ``interval_sec`` while ``instance._running`` remains truthy."""
+    iv_f = safe_pos_float(interval_sec, default=60.0) or 60.0
+    steps = max(1, int(iv_f) + (1 if iv_f > int(iv_f) else 0))
+    step_sec = min(safe_pos_float(max_sleep_step, default=1.0) or 1.0, iv_f)
+    for _ in range(steps):
+        if not getattr(instance, "_running", False):
+            break
+        _time.sleep(step_sec)
+
+
+def start_monitoring_daemon_thread(
+    instance: object, target: object, name: str
+) -> threading.Thread:
+    """Create, attach to ``instance._thread``, and start a daemon monitoring thread."""
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    setattr(instance, "_thread", thread)
+    thread.start()
+    return thread
 
 
 def stop_monitoring_thread(

@@ -34,13 +34,11 @@ from botcore import (
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from state_io import iter_jsonl_dicts
 from .base import MarketDataProvider
-from .quantity import resolve_assets
+from .quantity import resolve_base_asset
 from .strategy_executor import PairPrecision, ProviderError, SubmissionRefused
 
 
-def _base_asset(symbol: str) -> str:
-    """Return a trading symbol's base asset by removing the first known quote suffix."""
-    return resolve_assets(symbol)[0]
+_base_asset = resolve_base_asset
 
 
 _BT_ENV_KEYS = (

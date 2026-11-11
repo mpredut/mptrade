@@ -9,11 +9,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import atomic_write_text
 from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
+    _finalize_markdown_report,
     _fmt_num,
-    _format_errors_section,
     _load_grid_results_by_cfg,
     _resolve_exp_dir,
     _risk_adjusted_score as _ret_dd_ratio,
@@ -90,10 +89,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 cells.append("- / -")
         L.append(f"| {a} | " + " | ".join(cells) + " |")
 
-    L.extend(_format_errors_section(errors))
-
-    atomic_write_text(os.path.join(exp, "REPORT3.md"), "\n".join(L) + "\n")
-    return L
+    return _finalize_markdown_report(L, errors, os.path.join(exp, "REPORT3.md"))
 
 
 if __name__ == "__main__":

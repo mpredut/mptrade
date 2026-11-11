@@ -52,6 +52,7 @@ from .order_ohlc_utils import (
     get_cached_pair_info,
     normalize_order,
     require_clean_order_id,
+    require_pos_ohlc_interval,
     resolve_market_flag,
 )
 from .strategy_executor import (
@@ -1316,9 +1317,7 @@ class KrakenProvider(MarketDataProvider):
         return list(zip(k_ts, k_px)) if len(k_ts) == len(k_px) else []
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        interval_i = exact_pos_int(interval_min, default=None)
-        if interval_i is None:
-            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
+        interval_i = require_pos_ohlc_interval(symbol, interval_min)
         try:
             client = self._client()
             series_reader = getattr(client, "ohlc_closes_with_timestamps", None)

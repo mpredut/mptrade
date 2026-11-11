@@ -10,11 +10,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import atomic_write_text, read_jsonl_dicts
+from state_io import read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
+    _finalize_markdown_report,
     _fmt_num,
-    _format_errors_section,
     _is_error_row,
     _matches_known_spec,
     _rank_key,
@@ -185,9 +185,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 fee += [a, b]
     table(fee, "Fee stress: 0.26% vs 0.40% per leg")
 
-    L.extend(_format_errors_section(errors, label_fn=lambda e: str(e.get("args", "?"))))
-    atomic_write_text(os.path.join(exp, "REPORT2.md"), "\n".join(L) + "\n")
-    return L
+    return _finalize_markdown_report(
+        L, errors, os.path.join(exp, "REPORT2.md"), label_fn=lambda e: str(e.get("args", "?"))
+    )
 
 
 if __name__ == "__main__":

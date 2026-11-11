@@ -10,11 +10,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import load_local_module, optional_env, safe_float
 from offline.research.kraken_continuous_grid.report import (
+    _finalize_markdown_report,
     _fmt_num as _fmt_cell,
-    _format_errors_section,
     load_grid_results_partitioned,
 )
-from state_io import atomic_write_text
 
 EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
@@ -149,17 +148,14 @@ def generate_report(exp_dir=None):
         ):
             L.append(f"| {v} | {bl1}/{n} | {pos1}/{n} | {med:+.1f} | {dd1:.1f} | {bl2}/{n2} | {pos2}/{n2} | {med2:+.1f} | {dd2:.1f} |")
 
-    L.extend(
-        _format_errors_section(
-            errors,
-            limit=15,
-            label_fn=lambda e: f"{e.get('profile')} {e.get('variant')} {e.get('asset')}",
-        )
+    _finalize_markdown_report(
+        L,
+        errors,
+        os.path.join(exp, "REPORT.md"),
+        limit=15,
+        label_fn=lambda e: f"{e.get('profile')} {e.get('variant')} {e.get('asset')}",
     )
-
-    report_content = "\n".join(L) + "\n"
-    atomic_write_text(os.path.join(exp, "REPORT.md"), report_content)
-    return report_content
+    return "\n".join(L) + "\n"
 
 
 if __name__ == "__main__":
