@@ -1216,8 +1216,7 @@ class MarketDataProvider(ABC):
 
     def round_quantity(self, symbol: str, qty: float) -> float:
         """Round or floor quantity to venue volume precision."""
-        qty_f = safe_pos_float(qty, default=None)
-        if qty_f is None:
+        if (qty_f := safe_pos_float(qty, default=None)) is None:
             return 0.0
         dec = exact_nonneg_int(self._pair_precision_attr(symbol, "volume_decimals"), default=None)
         if dec is not None:
@@ -1229,8 +1228,7 @@ class MarketDataProvider(ABC):
 
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to venue price precision (tick size / price decimals)."""
-        price_f = safe_pos_float(price, default=None)
-        if price_f is None:
+        if (price_f := safe_pos_float(price, default=None)) is None:
             return 0.0
         dec = exact_nonneg_int(self._pair_precision_attr(symbol, "price_decimals"), default=None)
         return round(price_f, min(dec, 18)) if dec is not None else price_f

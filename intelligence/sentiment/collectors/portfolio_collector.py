@@ -561,12 +561,7 @@ class PortfolioCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """
 
     cls_name = "PortfolioCacheCollectorBase"
-
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is PortfolioCacheCollectorBase:
-            raise TypeError("Cannot instantiate abstract class PortfolioCacheCollectorBase")
-        super().__init__(start_sync=start_sync)
-        _ensure_cacheprice_classes_bound()
+    _on_collector_init = staticmethod(_ensure_cacheprice_classes_bound)
 
 
 class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):

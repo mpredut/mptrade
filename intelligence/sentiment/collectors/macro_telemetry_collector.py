@@ -173,11 +173,6 @@ class MacroTelemetryCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     cls_name = "MacroTelemetryCollectorBase"
 
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is MacroTelemetryCollectorBase:
-            raise TypeError("Cannot instantiate abstract class MacroTelemetryCollectorBase")
-        super().__init__(start_sync=start_sync)
-
 
 class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
     """Concrete collector (Level 3) fetching SPY/QQQ/ES=F/NQ=F/VIX/DXY/US10Y/IBIT/Deribit DVOL benchmarks."""

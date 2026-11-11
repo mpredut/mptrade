@@ -249,9 +249,12 @@ class TelemetryCacheCollectorInterface(SyncModeMixin, ABC):
     COLLECTOR_ID: str = ""
 
     def __init__(self, *, start_sync: Optional[bool] = False) -> None:
-        if type(self) is TelemetryCacheCollectorInterface:
-            raise TypeError("Cannot instantiate abstract class TelemetryCacheCollectorInterface")
+        if ABC in type(self).__bases__:
+            raise TypeError(f"Cannot instantiate abstract class {type(self).__name__}")
         self._init_sync_mode(start_sync)
+        init_hook = getattr(self, "_on_collector_init", None)
+        if callable(init_hook):
+            init_hook()
 
     @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
@@ -373,13 +376,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         *,
         start_sync: Optional[bool] = None,
     ) -> None:
-        if type(self) is _DiskBackedSymbolCollector:
-            raise TypeError("Cannot instantiate abstract class _DiskBackedSymbolCollector")
-        self._explicit_start_sync: Optional[bool] = (
-            _parse_bool_flag(start_sync, default=False) if start_sync is not None else None
-        )
-        eff_sync = bool(self._explicit_start_sync) if self._explicit_start_sync is not None else False
-        super().__init__(start_sync=eff_sync)
+        super().__init__(start_sync=start_sync)
         self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
         self.cache_dir = cache_dir
         self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
@@ -777,8 +774,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         timeout: float = 4.0,
     ) -> Optional[Dict[str, Any]]:
         """Fetch the Hyperliquid `metaAndAssetCtxs` context dict for `symbol`'s base coin."""
-        base_coin = normalize_cache_base_asset(symbol)
-        if not base_coin:
+        if not (base_coin := normalize_cache_base_asset(symbol)):
             return None
         raw = self._fetch_json_dict(
             "https://api.hyperliquid.xyz/info?type=metaAndAssetCtxs",

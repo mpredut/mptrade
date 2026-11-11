@@ -567,13 +567,9 @@ class MarketApi:
         side = self._validate_open_order_side_and_symbol(
             order_type, symbol, provider_name=provider_name
         )
-        expire_val = safe_pos_float(expire_time, default=None)
-        if expire_val is None:
+        if (expire_val := safe_pos_float(expire_time, default=None)) is None:
             return
-        open_map = self.get_open_orders(
-            side, symbol, allowed_owners=allowed_owners, provider_name=provider_name
-        )
-        if not open_map:
+        if not (open_map := self.get_open_orders(side, symbol, allowed_owners=allowed_owners, provider_name=provider_name)):
             return
         current_time = float(time.time())
         for order_id in iter_expired_open_order_ids(open_map, expire_val, current_time_sec=current_time):

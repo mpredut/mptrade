@@ -365,8 +365,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""
-        lookback_f = safe_pos_float(lookback_h, default=None)
-        if lookback_f is None:
+        if (lookback_f := safe_pos_float(lookback_h, default=None)) is None:
             return None
         c = self._hl()
         pair = self._pair()
@@ -662,8 +661,7 @@ class HyperliquidProvider(MarketDataProvider):
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to Hyperliquid rules: max 5 significant figures and (8 - szDecimals) decimals for spot."""
         self.validate_symbol(symbol)
-        price_f = safe_pos_float(price, default=None)
-        if price_f is None:
+        if (price_f := safe_pos_float(price, default=None)) is None:
             return 0.0
         sz_dec = safe_nonneg_int(
             self._pair_precision_attr(symbol, "volume_decimals", 2), default=2

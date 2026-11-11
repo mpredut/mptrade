@@ -270,11 +270,9 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
 def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
-    expire_val = safe_pos_float(expire_time, default=None)
-    if expire_val is None:
+    if (expire_val := safe_pos_float(expire_time, default=None)) is None:
         return
-    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-    if not open_orders:
+    if not (open_orders := get_open_orders(order_type, symbol, allowed_owners=allowed_owners)):
         return
     current_time = float(time.time())
     print(f"Available open orders {len(open_orders)}. Try cancel {order_type} orders type ... ")

@@ -34,6 +34,7 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
+    normalize_cycle_args,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
@@ -90,14 +91,12 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.skip_news = _parse_bool_flag(skip_news, False)
-        self.skip_external = _parse_bool_flag(skip_external, False)
-        self.running = False
         parsed_syms = parse_symbol_list(symbols)
         self._explicit_symbols = bool(parsed_syms)
         self.symbols = parsed_syms or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True)
         self._auto_detected_symbols = list(self.symbols)
 
-        self._init_external_collectors(logger)
+        self._init_external_collectors(logger, skip_external=skip_external)
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
             history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
@@ -253,8 +252,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
-        force = _parse_bool_flag(force, False)
-        current_ts = resolve_now_ts(now)
+        force, current_ts = normalize_cycle_args(force, now)
         if not getattr(self, "_explicit_symbols", False) and self.symbols == getattr(self, "_auto_detected_symbols", None):
             if detected_syms := detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True):
                 self.symbols = detected_syms

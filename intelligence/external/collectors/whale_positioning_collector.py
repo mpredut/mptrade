@@ -495,10 +495,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         cached: Any,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fallback to Hyperliquid L1 recentTrades and metaAndAssetCtxs for HYPE/HL symbols."""
-        if not _has_hyperliquid_instrument(symbol):
-            return None
-        base_coin = normalize_cache_base_asset(symbol)
-        if not base_coin:
+        if not _has_hyperliquid_instrument(symbol) or not (base_coin := normalize_cache_base_asset(symbol)):
             return None
         trades_raw = self._fetch_json_dict(
             f"https://api.hyperliquid.xyz/info?type=recentTrades&coin={base_coin}",

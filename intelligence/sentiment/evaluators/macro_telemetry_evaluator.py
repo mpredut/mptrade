@@ -443,11 +443,6 @@ class MacroTelemetryEvaluatorBase(TelemetryEvaluatorInterface, ABC):
 
     cls_name = "MacroTelemetryEvaluatorBase"
 
-    def __init__(self) -> None:
-        if type(self) is MacroTelemetryEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class MacroTelemetryEvaluatorBase")
-        super().__init__()
-
 
 class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
     """Concrete evaluator (Level 3) computing US index futures pre-market/extended-hours lead (NQ=F vs QQQ, ES=F vs SPY)."""

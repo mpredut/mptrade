@@ -960,12 +960,7 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for price-series cache collectors (24h, 365d, sparse, watcher, live, Yahoo 5d)."""
 
     cls_name = "PriceSeriesCacheCollectorBase"
-
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is PriceSeriesCacheCollectorBase:
-            raise TypeError("Cannot instantiate abstract class PriceSeriesCacheCollectorBase")
-        super().__init__(start_sync=start_sync)
-        _ensure_cacheprice_classes_bound()
+    _on_collector_init = staticmethod(_ensure_cacheprice_classes_bound)
 
 
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
@@ -1267,11 +1262,6 @@ class MicrostructureCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
     """Abstract base contract (Level 2) for orderbook, derivatives, and whale positioning cache collectors."""
 
     cls_name = "MicrostructureCacheCollectorBase"
-
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is MicrostructureCacheCollectorBase:
-            raise TypeError("Cannot instantiate abstract class MicrostructureCacheCollectorBase")
-        super().__init__(start_sync=start_sync)
 
 
 class SymbolMicrostructureSnapshotCollector(MicrostructureCacheCollectorBase):

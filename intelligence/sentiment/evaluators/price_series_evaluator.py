@@ -1862,8 +1862,8 @@ class TelemetryEvaluatorInterface(ABC):
     cls_name = "TelemetryEvaluatorInterface"
 
     def __init__(self) -> None:
-        if type(self) is TelemetryEvaluatorInterface:
-            raise TypeError("Cannot instantiate abstract class TelemetryEvaluatorInterface")
+        if ABC in type(self).__bases__:
+            raise TypeError(f"Cannot instantiate abstract class {type(self).__name__}")
 
     @abstractmethod
     def evaluate(self, data: Any, *, now_ts: Optional[float] = None, **kwargs: Any) -> Dict[str, Any]:
@@ -1874,11 +1874,6 @@ class PriceSeriesEvaluatorBase(TelemetryEvaluatorInterface, ABC):
     """Abstract base contract (Level 2) for price-series, volume-profile, swing-wave, and trend evaluators."""
 
     cls_name = "PriceSeriesEvaluatorBase"
-
-    def __init__(self) -> None:
-        if type(self) is PriceSeriesEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class PriceSeriesEvaluatorBase")
-        super().__init__()
 
 
 class VolumeProfileEvaluator(PriceSeriesEvaluatorBase):

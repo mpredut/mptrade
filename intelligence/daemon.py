@@ -27,7 +27,6 @@ from botcore import (
     obj_attr,
     obj_float,
     required_float_env,
-    resolve_now_ts,
     safe_pos_float,
     single_instance,
 )
@@ -36,6 +35,7 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
+    normalize_cycle_args,
     prune_automated_cli_threads,
     run_daemon_loop,
     run_scheduled_step,
@@ -75,11 +75,9 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, required_float_env("MACRO_LLM_INTERVAL_SEC"))
         self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, 10800.0)
         self.skip_macro = _parse_bool_flag(skip_macro, False)
-        self.skip_external = _parse_bool_flag(skip_external, False)
-        self.running = False
         self.symbols = parse_symbol_list(symbols) or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=False)
 
-        self._init_external_collectors(logger)
+        self._init_external_collectors(logger, skip_external=skip_external)
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.macro_interval_sec * 0.5),
             history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
@@ -119,8 +117,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating tasks whose scheduled interval has elapsed."""
-        force = _parse_bool_flag(force, False)
-        current_ts = resolve_now_ts(now)
+        force, current_ts = normalize_cycle_args(force, now)
         results = self._new_external_cycle_results(current_ts, macro_updated=False)
 
         self._step_external_symbols(current_ts, force, results, bounded=False)

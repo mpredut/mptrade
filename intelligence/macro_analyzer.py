@@ -41,6 +41,7 @@ from intelligence.macro.calendar_ssot import (
 from intelligence.macro.daemon_ssot import (
     compute_step_retry_ts,
     configure_daemon_cli_logging,
+    normalize_cycle_args,
     prune_automated_cli_threads,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
@@ -289,8 +290,7 @@ class MacroAnalyzer:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose context-adaptive interval has elapsed."""
-        force = _parse_bool_flag(force, False)
-        current_ts = resolve_now_ts(now)
+        force, current_ts = normalize_cycle_args(force, now)
         session_ctx = resolve_global_trading_session(current_ts)
         results: Dict[str, Any] = {
             "ts": current_ts,

@@ -47,8 +47,7 @@ class MarketBreadthTrigger:
         ts: Optional[float] = None,
     ) -> Tuple[Optional[str], Optional[TriggerEvent]]:
         """Evaluate market breadth snapshot and generate actionable triggers."""
-        price_f = safe_pos_float(price, 0.0)
-        if snapshot is None or price_f <= 0.0:
+        if snapshot is None or (price := safe_pos_float(price, default=None)) is None:
             return None, None
         adv_r = clean_scale(obj_attr(snapshot, "advance_ratio", None), default=None, allow_percent=True)
         med_c = safe_float(obj_attr(snapshot, "median_change_pct", None), default=None)
@@ -56,7 +55,6 @@ class MarketBreadthTrigger:
             return None, None
         raw_regime = obj_attr(snapshot, "regime", None)
         regime = str(raw_regime).strip() if (isinstance(raw_regime, str) and raw_regime.strip()) else "NEUTRAL"
-        price = price_f
         now = resolve_now_ts(ts)
 
         # 1. Capitulation Washout Bounce Entry

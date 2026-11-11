@@ -43,8 +43,7 @@ class SentimentContrarianTrigger:
 
         Returns (signal_type, Optional[TriggerEvent]).
         """
-        price_f = safe_pos_float(price, 0.0)
-        if snapshot is None or price_f <= 0.0:
+        if snapshot is None or (price := safe_pos_float(price, default=None)) is None:
             return None, None
         extracted = FearGreedSnapshot.extract_value_and_label(
             snapshot, preserve_float=True
@@ -52,7 +51,6 @@ class SentimentContrarianTrigger:
         if extracted is None:
             return None, None
         val, cls_label = extracted
-        price = price_f
         now = resolve_now_ts(ts)
         trend_7d = obj_attr(snapshot, "trend_7d_change", None)
 

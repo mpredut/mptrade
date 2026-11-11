@@ -1491,11 +1491,6 @@ class MicrostructureEvaluatorBase(TelemetryEvaluatorInterface, ABC):
 
     cls_name = "MicrostructureEvaluatorBase"
 
-    def __init__(self) -> None:
-        if type(self) is MicrostructureEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class MicrostructureEvaluatorBase")
-        super().__init__()
-
 
 class OrderbookCvdFlowEvaluator(MicrostructureEvaluatorBase):
     """Concrete evaluator (Level 3) for multi-horizon taker flow, synthetic spot CVD, and spot-vs-perp flow regime."""

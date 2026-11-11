@@ -306,6 +306,11 @@ def write_daemon_heartbeat(
     return payload
 
 
+def normalize_cycle_args(force: Any = False, now: Optional[float] = None) -> Tuple[bool, float]:
+    """Normalize ``(force, now)`` arguments for daemon ``run_cycle`` entrypoints."""
+    return _parse_bool_flag(force, default=False), resolve_now_ts(now)
+
+
 def run_scheduled_step(
     obj: Any,
     *,
@@ -484,7 +489,12 @@ class ExternalTelemetryMixin:
     whale_collector: Any
     _telemetry_logger: logging.Logger
 
-    def _init_external_collectors(self, logger_inst: logging.Logger) -> None:
+    def _init_external_collectors(
+        self, logger_inst: logging.Logger, *, skip_external: Any = None
+    ) -> None:
+        if skip_external is not None:
+            self.skip_external = _parse_bool_flag(skip_external, default=False)
+        self.running = False
         self._telemetry_logger = logger_inst
         self._last_orderbook_ts: Dict[str, float] = {}
         self._last_derivatives_ts: Dict[str, float] = {}

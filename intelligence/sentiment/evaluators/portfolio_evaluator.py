@@ -344,11 +344,6 @@ class PortfolioEvaluatorBase(TelemetryEvaluatorInterface, ABC):
 
     cls_name = "PortfolioEvaluatorBase"
 
-    def __init__(self) -> None:
-        if type(self) is PortfolioEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class PortfolioEvaluatorBase")
-        super().__init__()
-
 
 class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
     """Concrete evaluator (Level 3) normalizing venue `.state_*.json` DCA cycle records."""

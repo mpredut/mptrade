@@ -72,11 +72,6 @@ class TcaRiskEvaluatorBase(TelemetryEvaluatorInterface, ABC):
 
     cls_name = "TcaRiskEvaluatorBase"
 
-    def __init__(self) -> None:
-        if type(self) is TcaRiskEvaluatorBase:
-            raise TypeError("Cannot instantiate abstract class TcaRiskEvaluatorBase")
-        super().__init__()
-
 
 class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
     """Concrete evaluator (Level 3) resolving venue fee tiers, maker/taker bps, and effective order size limits."""

@@ -514,11 +514,6 @@ class PretradePillarCollectorBase(TelemetryCacheCollectorInterface, ABC):
 
     cls_name = "PretradePillarCollectorBase"
 
-    def __init__(self, *, start_sync: bool = False) -> None:
-        if type(self) is PretradePillarCollectorBase:
-            raise TypeError("Cannot instantiate abstract class PretradePillarCollectorBase")
-        super().__init__(start_sync=start_sync)
-
     def collect(self, cachedb_dir: str, symbol: str, *, ctx: Optional[PretradeEvaluationContext] = None, **kwargs: Any) -> Dict[str, Any]:
         if ctx is not None:
             self.evaluate(ctx)

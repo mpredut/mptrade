@@ -397,8 +397,7 @@ class KrakenProvider(MarketDataProvider):
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending public OHLC closes from Kraken as timestamp/price mappings."""
-        lookback_f = safe_pos_float(lookback_h, default=None)
-        if lookback_f is None:
+        if (lookback_f := safe_pos_float(lookback_h, default=None)) is None:
             return None
         try:
             cli = self._client()
