@@ -550,6 +550,30 @@ def load_layered_env_config(
     return cfg
 
 
+def load_isolated_venue_cfg(
+    venue_dir: str | os.PathLike[str],
+    *,
+    config_path: str | os.PathLike[str] | None = None,
+    env_path: str | os.PathLike[str] | None = None,
+    override_prefixes: tuple[str, ...] | list[str] = (),
+    fallback_prefixes: tuple[str, ...] | list[str] = (),
+) -> dict[str, str]:
+    """Load a venue folder's config.env + .env into an isolated dict without mutating os.environ."""
+    base_dir = os.fspath(venue_dir)
+    resolved_env = os.fspath(env_path) if env_path is not None else os.path.join(base_dir, ".env")
+    resolved_cfg = (
+        os.fspath(config_path)
+        if config_path is not None
+        else os.path.join(os.path.dirname(resolved_env) or base_dir, "config.env")
+    )
+    return load_layered_env_config(
+        resolved_cfg,
+        resolved_env,
+        override_prefixes=override_prefixes,
+        fallback_prefixes=fallback_prefixes,
+    )
+
+
 # ── 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ────────────
 
 _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigParser]] = (

@@ -61,9 +61,18 @@ def _req_pos_num(val: Any, name: str) -> float:
     return fval
 
 
-def _downsample_price_series(
-    raw_series: List[Tuple[float, float]], step_seconds: int
-) -> List[Tuple[float, float]]:
+def _validate_fee_pct(fee_pct: Any) -> float:
+    fee_f = (
+        safe_nonneg_float(fee_pct, default=None)
+        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
+        else None
+    )
+    if fee_f is None or fee_f >= 1.0:
+        raise ValueError("fee_pct must be in [0, 1)")
+    return fee_f
+
+
+def _clean_sorted_price_samples(raw_series: Any) -> List[Tuple[float, float]]:
     cleaned: List[Tuple[float, float]] = []
     needs_sort = False
     prev_t: Optional[float] = None
@@ -80,6 +89,13 @@ def _downsample_price_series(
         cleaned.append((t, p))
     if needs_sort:
         cleaned.sort(key=lambda x: x[0])
+    return cleaned
+
+
+def _downsample_price_series(
+    raw_series: List[Tuple[float, float]], step_seconds: int
+) -> List[Tuple[float, float]]:
+    cleaned = _clean_sorted_price_samples(raw_series)
     sampled: List[Tuple[float, float]] = []
     last_t: Optional[float] = None
     for t, p in cleaned:
@@ -158,15 +174,7 @@ def _precompute_chop_bar_tape(
     btc_ts: List[float] = []
     btc_px: List[float] = []
     if btc_sampled:
-        btc_pairs: List[Tuple[float, float]] = []
-        for item in btc_sampled:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            bt_f = normalize_epoch_sec(item[0], default=None, allow_zero=True)
-            bp_f = safe_pos_float(item[1], default=None)
-            if bt_f is not None and bp_f is not None:
-                btc_pairs.append((bt_f, bp_f))
-        btc_pairs.sort(key=lambda x: x[0])
+        btc_pairs = _clean_sorted_price_samples(btc_sampled)
         btc_ts = [x[0] for x in btc_pairs]
         btc_px = [x[1] for x in btc_pairs]
 
@@ -187,22 +195,7 @@ def _precompute_chop_bar_tape(
     last_regime_check_ts = 0.0
     tape: List[Dict[str, Any]] = []
 
-    cleaned_samples: List[Tuple[float, float]] = []
-    needs_sort = False
-    prev_t: Optional[float] = None
-    for item in sampled:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        t_c = normalize_epoch_sec(item[0], default=None, allow_zero=True)
-        p_c = safe_pos_float(item[1], default=None)
-        if t_c is None or p_c is None:
-            continue
-        if prev_t is not None and t_c < prev_t:
-            needs_sort = True
-        prev_t = t_c
-        cleaned_samples.append((t_c, p_c))
-    if needs_sort:
-        cleaned_samples.sort(key=lambda x: x[0])
+    cleaned_samples = _clean_sorted_price_samples(sampled)
 
     for t, p in cleaned_samples:
         if trend_start_ts is None:
@@ -300,13 +293,7 @@ def run_single_simulation(
     step_f = _req_pos_num(step_seconds, "step_seconds")
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     base_notional = _req_pos_num(base_notional, "base_notional")
-    fee_f = (
-        safe_nonneg_float(fee_pct, default=None)
-        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
-        else None
-    )
-    if fee_f is None or fee_f >= 1.0:
-        raise ValueError("fee_pct must be in [0, 1)")
+    fee_f = _validate_fee_pct(fee_pct)
     tp_pct = _req_pos_num(tp_pct, "tp_pct")
     stop_pct = _req_pos_num(stop_pct, "stop_pct")
     _req_pos_num(T_days, "T_days")

@@ -279,6 +279,52 @@ def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, fl
     return load_price_series(path, sym)
 
 
+def run_mt_model_sweep_table(
+    models,
+    symbols: list[str],
+    series_map: dict,
+    sig_map: dict,
+    *,
+    title_col: str = "Model Architecture",
+    col_width: int = 34,
+    include_buy_hold: bool = False,
+) -> None:
+    """Evaluate a list of ``(model_name, tape_fn)`` definitions across ``symbols`` and print a comparison table."""
+    hdr = f"{title_col:<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
+    print("\n" + hdr)
+    print("-" * len(hdr))
+
+    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
+    bh_Wait = {}
+    try:
+        for m_name, tape_fn in models:
+            rrb._TREND_TAPE_CACHE.clear()
+            cells = []
+            tot_net = 0.0
+            for sym in symbols:
+                series = series_map[sym]
+                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
+                rrb._TREND_TAPE_CACHE[key] = tuple(
+                    tape_fn(sig_map[sym], sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig_map[sym])
+                )
+                cfg = rrb.SYMBOLS[sym]
+                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+                net = safe_float(res.get("net"), 0.0)
+                bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
+                tot_net += net
+                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
+            print(f"{m_name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
+    finally:
+        rrb._TREND_TAPE_CACHE.clear()
+        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
+
+    if include_buy_hold:
+        bh_tot = sum(bh_Wait.values())
+        bh_cells = [f"{bh_Wait[sym]:>+14.2f}" for sym in symbols]
+        print("-" * len(hdr))
+        print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+
+
 def evaluate_dataset(use_365: bool = False):
     label = "DENSE 1-SECOND ARCHIVE (cache_365_price_*.jsonl)" if use_365 else "FULL 329-DAY SPARSE ARCHIVE (cache_sparse_price_*.jsonl)"
     print(f"\n{'=' * 105}")
@@ -313,36 +359,15 @@ def evaluate_dataset(use_365: bool = False):
         ("7. DIFFERENTIATED (BTC p3/ALT p2)", lambda s: make_tape(s["diff"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
     ]
 
-    hdr = f"{'Model Architecture':<34} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
-    print("\n" + hdr)
-    print("-" * len(hdr))
-
-    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
-    bh_Wait = {}
-    try:
-        for m_name, tape_fn in models:
-            rrb._TREND_TAPE_CACHE.clear()
-            cells = []
-            tot_net = 0.0
-            for sym in symbols:
-                series = series_map[sym]
-                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-                rrb._TREND_TAPE_CACHE[key] = tuple(tape_fn(sig_map[sym]))
-                cfg = rrb.SYMBOLS[sym]
-                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-                net = safe_float(res.get("net"), 0.0)
-                bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
-                tot_net += net
-                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
-            print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
-    finally:
-        rrb._TREND_TAPE_CACHE.clear()
-        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
-
-    bh_tot = sum(bh_Wait.values())
-    bh_cells = [f"{bh_Wait[sym]:>+14.2f}" for sym in symbols]
-    print("-" * len(hdr))
-    print(f"{'Buy & Hold Benchmark':<34} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+    run_mt_model_sweep_table(
+        models,
+        symbols,
+        series_map,
+        sig_map,
+        title_col="Model Architecture",
+        col_width=34,
+        include_buy_hold=True,
+    )
 
 
 if __name__ == "__main__":

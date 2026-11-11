@@ -15,13 +15,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import safe_float, safe_int
 import pricewindow as pw
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_all_signals,
     load_archive_series,
     make_tape,
+    run_mt_model_sweep_table,
 )
 
 
@@ -95,29 +95,15 @@ def run_multiwindow_sweep(use_365: bool = False):
          lambda d, sym="": _up_arr(d["prod"]).tolist()),
     ]
 
-    hdr = f"{'Multi-Window Policy':<36} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
-    print("\n" + hdr)
-    print("-" * len(hdr))
-
-    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
-    try:
-        for m_name, fn in models:
-            rrb._TREND_TAPE_CACHE.clear()
-            cells = []
-            tot_net = 0.0
-            for sym in symbols:
-                series = series_map[sym]
-                key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-                rrb._TREND_TAPE_CACHE[key] = tuple(fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym]))
-                cfg = rrb.SYMBOLS[sym]
-                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-                net = safe_float(res.get("net"), 0.0)
-                tot_net += net
-                cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
-            print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
-    finally:
-        rrb._TREND_TAPE_CACHE.clear()
-        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
+    run_mt_model_sweep_table(
+        models,
+        symbols,
+        series_map,
+        sigs,
+        title_col="Multi-Window Policy",
+        col_width=36,
+        include_buy_hold=False,
+    )
 
 
 if __name__ == "__main__":

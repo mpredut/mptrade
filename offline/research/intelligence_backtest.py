@@ -22,10 +22,15 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
-from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
+from offline.research.chop_weight_backtest import (
+    _clean_sorted_price_samples,
+    _downsample_price_series,
+    _req_pos_num,
+    _validate_fee_pct,
+)
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -113,22 +118,7 @@ def _precompute_intelligence_tape(
             return 0.0
         return rolling_prices[idx]
 
-    cleaned_samples: List[Tuple[float, float]] = []
-    needs_sort = False
-    prev_ts: Optional[float] = None
-    for item in sampled or ():
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        t_clean = normalize_epoch_sec(item[0], default=None, allow_zero=True)
-        p_clean = safe_pos_float(item[1], default=None)
-        if t_clean is None or p_clean is None:
-            continue
-        if prev_ts is not None and t_clean < prev_ts:
-            needs_sort = True
-        prev_ts = t_clean
-        cleaned_samples.append((t_clean, p_clean))
-    if needs_sort:
-        cleaned_samples.sort(key=lambda x: x[0])
+    cleaned_samples = _clean_sorted_price_samples(sampled)
 
     bars_4h = max(2, safe_int(round(14400.0 / step_sec_f), 48))
     bars_recent = max(2, safe_int(round(6000.0 / step_sec_f), 20))
@@ -238,13 +228,7 @@ def run_intelligence_backtest(
     step_f = _req_pos_num(step_seconds, "step_seconds")
     initial_balance = _req_pos_num(initial_balance, "initial_balance")
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    fee_f = (
-        safe_nonneg_float(fee_pct, default=None)
-        if isinstance(fee_pct, (int, float)) and not isinstance(fee_pct, bool)
-        else None
-    )
-    if fee_f is None or fee_f >= 1.0:
-        raise ValueError("fee_pct must be in [0, 1)")
+    fee_f = _validate_fee_pct(fee_pct)
     step_seconds = max(1, safe_int(round(step_f), 1))
     fee_pct = fee_f
     if cache_path is None:

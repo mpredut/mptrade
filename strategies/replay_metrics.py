@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, ROUND_CEILING
+from typing import Any
 
 from botcore import _parse_bool_flag, exact_int, safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
 

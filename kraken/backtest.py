@@ -32,6 +32,7 @@ from strategies.replay_metrics import (
 from botcore import (
     exact_nonneg_int,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from strategies import spot_replay as rp
