@@ -713,7 +713,7 @@ def get_weight_for_cash_permission_at_quant_time(
     `cache_long_trend.json` and `cache_T_trend.json` without triggering live OHLC network fetches
     or importing heavy plotting daemons.
     """
-    import cacheManager as cm
+    import cachetrend as ct
 
     if not isinstance(symbol, str) or not symbol.strip():
         return None
@@ -725,7 +725,7 @@ def get_weight_for_cash_permission_at_quant_time(
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
         return None
 
-    lt_mgr = cm.get_cache_manager("LongTrend")
+    lt_mgr = ct.get_long_trend_manager()
     if hasattr(lt_mgr, "resync_mem_file"):
         lt_mgr.resync_mem_file()
     all_trend_data = lt_mgr.cache

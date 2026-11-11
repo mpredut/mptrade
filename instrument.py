@@ -952,13 +952,13 @@ class Instrument:
             # 2 & 2b: Short Trend Gate (GT_S) & Medium-Term Trend Gate (GT_M).
             if ctx.wait_for_trend:
                 try:
-                    import cacheManager as cm
+                    import cachetrend as ct
                     import pricewindow as pw
                     if pw.should_wait_short_trend(
-                        cm.get_short_trend_manager(),
+                        ct.get_short_trend_manager(),
                         ctx.side_u,
                         self.symbol,
-                        short_trend_cls=cm.CacheShortTrendManager,
+                        short_trend_cls=ct.CacheShortTrendManager,
                     ):
                         retry_note = (
                             "caller owns retry"

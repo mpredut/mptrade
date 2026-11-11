@@ -12,6 +12,7 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 import os
 import re
@@ -815,5 +816,31 @@ def scan_latest_long_trend_value(
                 if val is not None:
                     return val
     return None
+
+
+@dataclass
+class TelemetrySensorSnapshot:
+    """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
+
+    fear_greed: Optional[Dict[str, Any]] = None
+    market_breadth: Optional[Dict[str, Any]] = None
+    sentiment_advisor: Optional[Dict[str, Any]] = None
+    geopolitical_threat: Optional[Dict[str, Any]] = None
+    macro_benchmarks: Optional[Dict[str, Any]] = None
+    macro_calendar: Optional[Dict[str, Any]] = None
+    breaking_news: List[Dict[str, Any]] = field(default_factory=list)
+    active_heartbeats: Dict[str, Any] = field(default_factory=dict)
+    state_files: Dict[str, Any] = field(default_factory=dict)
+    prices_and_trends: Dict[str, Any] = field(default_factory=dict)
+    microstructure: Dict[str, Any] = field(default_factory=dict)
+    portfolio_summary: Dict[str, Any] = field(default_factory=dict)
+    fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
+    system_and_vpn: Dict[str, Any] = field(default_factory=dict)
+    snapshot_id: str = ""
+    source: str = ""
+    asset_scope: str = ""
+    ts: float = 0.0
+    evaluated_at_ts: float = 0.0
+    age_sec: float = 0.0
 
 

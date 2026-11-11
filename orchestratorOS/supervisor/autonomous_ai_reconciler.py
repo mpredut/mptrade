@@ -36,10 +36,10 @@ from botcore import (
     safe_pos_float,
     topic_spec,
 )
+from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
-    TelemetrySensorSnapshot,
 )
 from orchestratorOS.lib.technical_repair_ssot import (
     LogEventSummary,

@@ -2522,3 +2522,33 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
     ):
         imps = _collect_imports(rel)
         assert "external_order_guard" not in imps, f"{rel} must resolve collectors via base_collector SSOT: {imps}"
+
+    # 5. Producer-Consumer Decoupling: gateway, trailing, survival, and guards never import cacheManager daemon
+    for rel in (
+        "instrument.py",
+        "trailing_core.py",
+        "intelligence/internal/state/survival.py",
+        "order_guard.py",
+        "guard_hierarchy.py",
+        "qlimit_order_guard.py",
+        "external_order_guard.py",
+        "llm_order_guard.py",
+    ):
+        imps = _collect_imports(rel)
+        assert "cacheManager" not in imps, f"{rel} must consume trend/price caches via domain SSOT, not cacheManager: {imps}"
+
+    # 6. TelemetrySensorSnapshot canonical SSOT placement in intelligence.macro_sentiment_ssot
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot as _SSOTSnapshot
+    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot as _CollectorSnapshot
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot as _ReconcilerSnapshot
+
+    assert _SSOTSnapshot is _CollectorSnapshot
+    assert _SSOTSnapshot is _ReconcilerSnapshot
+
+    # 7. importlib.reload(botcore) keeps botcore.cache_path / utils.cache_path recursion-free and patchable
+    import importlib
+    import utils as _utils_mod
+
+    importlib.reload(botcore)
+    assert botcore.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")
+    assert _utils_mod.cache_path("cache_short_trend.json").endswith("cache_short_trend.json")

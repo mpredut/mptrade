@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from abc import ABC
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import glob as _glob
 import logging
@@ -26,6 +25,7 @@ from intelligence.macro.lexicon_ssot import (
     is_off_topic_general_news_title,
 )
 from intelligence.macro_sentiment_ssot import (
+    TelemetrySensorSnapshot,
     _cfg_str,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
@@ -915,32 +915,6 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
                 break
 
         return kraken_cycles, hyperliquid_cycles, t212_cycles
-
-
-@dataclass
-class TelemetrySensorSnapshot:
-    """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
-
-    fear_greed: Optional[Dict[str, Any]] = None
-    market_breadth: Optional[Dict[str, Any]] = None
-    sentiment_advisor: Optional[Dict[str, Any]] = None
-    geopolitical_threat: Optional[Dict[str, Any]] = None
-    macro_benchmarks: Optional[Dict[str, Any]] = None
-    macro_calendar: Optional[Dict[str, Any]] = None
-    breaking_news: List[Dict[str, Any]] = field(default_factory=list)
-    active_heartbeats: Dict[str, Any] = field(default_factory=dict)
-    state_files: Dict[str, Any] = field(default_factory=dict)
-    prices_and_trends: Dict[str, Any] = field(default_factory=dict)
-    microstructure: Dict[str, Any] = field(default_factory=dict)
-    portfolio_summary: Dict[str, Any] = field(default_factory=dict)
-    fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
-    system_and_vpn: Dict[str, Any] = field(default_factory=dict)
-    snapshot_id: str = ""
-    source: str = ""
-    asset_scope: str = ""
-    ts: float = 0.0
-    evaluated_at_ts: float = 0.0
-    age_sec: float = 0.0
 
 
 class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):

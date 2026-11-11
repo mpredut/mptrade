@@ -697,18 +697,16 @@ class TrailingAdapterBase:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
-            from cachetrend import CacheShortTrendManager
+            import cachetrend as ct
 
             cache_trend_path = self._module_attr("CACHE_TREND")
             if cache_trend_path:
-                snap = CacheShortTrendManager.read_ssot_short_trend_file(
+                snap = ct.CacheShortTrendManager.read_ssot_short_trend_file(
                     str(cache_trend_path), [pair] + cache_symbol_variants(pair), max_age_sec=15.0
                 )
             else:
-                import cacheManager as cm
-
-                snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
-            return CacheShortTrendManager.extract_slope(snap, pair) if snap else 0.0
+                snap = ct.get_short_trend_manager().get_fresh_snapshot(pair)
+            return ct.CacheShortTrendManager.extract_slope(snap, pair) if snap else 0.0
         except Exception:
             return 0.0
 

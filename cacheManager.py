@@ -75,6 +75,10 @@ from cachetrend import (
     CacheLongTrendManager,
     CacheShortTrendManager,
     CacheTrendManagerBase,
+    LONG_TREND_SYNC_INTERVAL_SEC,
+    _READONLY_TREND_READERS,
+    get_long_trend_manager,
+    get_short_trend_manager,
 )
 import instrument_registry as sym
 from instrument_registry import tracked_price_instruments
@@ -110,27 +114,11 @@ def get_current_price_manager(
     )
 
 
-def get_short_trend_manager(
-    symbols=None,
-    filename=CacheShortTrendManager.DEFAULT_FILENAME,
-    *,
-    data_sync_mode: Optional[str] = None,
-):
-    """Return the CacheShortTrendManager singleton."""
-    return CacheFactory.get(
-        "ShortTrend",
-        symbols=symbols,
-        data_sync_mode=data_sync_mode,
-        filename=filename,
-    )
-
-
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60
 TRADE_SYNC_INTERVAL_SEC = 3 * 60
 SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60
 PRICE_24_SYNC_INTERVAL_SEC = 30
 CURRENT_PRICE_SYNC_INTERVAL_SEC = 30
-LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60
 
 _PRICE_TREND_CACHES = frozenset(
@@ -489,6 +477,7 @@ class CacheFactory:
                         managers.append(manager)
             cls._instances = {}
             cls._sync_started = set()
+            _READONLY_TREND_READERS.clear()
             for manager in managers:
                 req_stop = getattr(manager, "request_stop", None)
                 if callable(req_stop):
@@ -508,6 +497,7 @@ class CacheFactory:
         with cls._lock:
             value = cls._instances.get(name)
             cls._sync_started.discard(name)
+            _READONLY_TREND_READERS.pop(name, None)
             if value is None:
                 return True
             results = [
@@ -605,6 +595,12 @@ def get_cache_manager(
         symbols,
         data_sync_mode=data_sync_mode,
     )
+
+
+get_cache_manager._is_ssot_cache_manager_getter = True  # type: ignore[attr-defined]
+with CacheFactory._lock:
+    for _trend_key, _trend_inst in list(_READONLY_TREND_READERS.items()):
+        CacheFactory._instances.setdefault(_trend_key, _trend_inst)
 
 
 # Inject readers and runtime services across the domain base classes and MarketDataProvider.
