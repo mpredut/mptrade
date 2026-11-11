@@ -122,6 +122,17 @@ class RefusingInstrument(FakeInstrument):
         return None
 
 
+class UnknownOutcomeInstrument(FakeInstrument):
+    """Records an attempted placement while simulating an ambiguous/timeout submission outcome."""
+
+    def place(self, side, price, qty, **kwargs):
+        super().place(side, price, qty, **kwargs)
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx.update(accepted=False, reason="timeout", state="unknown")
+        return None
+
+
 class UnavailableBalanceApi:
     """Provider account read failed: this is distinct from a real zero balance."""
 
@@ -1029,14 +1040,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_hard_tp_unknown_outcome_sets_cooldown_and_returns(self):
         """When Hard-TP submit has unknown/ambiguous outcome (timeout), cooldown is set and tick returns."""
-        class UnknownOutcomeInstrument(FakeInstrument):
-            def place(self, side, price, qty, **kwargs):
-                super().place(side, price, qty, **kwargs)
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="timeout", state="unknown")
-                return None
-
         inst = UnknownOutcomeInstrument(price=125.0, free=4.0, fills=[_fill("BUY", 100, 4)])
         sym = inst.symbol
         # Hard TP is triggered at 25% gain (>= hardtp 17%)
@@ -1049,14 +1052,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_reentry_unknown_outcome_clears_reentry_state(self):
         """When Reentry BUY submit has unknown/ambiguous outcome, reentry state is cleared to prevent repeated spam."""
-        class UnknownOutcomeInstrument(FakeInstrument):
-            def place(self, side, price, qty, **kwargs):
-                super().place(side, price, qty, **kwargs)
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="timeout", state="unknown")
-                return None
-
         inst = UnknownOutcomeInstrument(
             price=85.0,
             free=0.0,
@@ -1078,14 +1073,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_stop_loss_unknown_outcome_defers_duplicate_submission(self):
         """When Stop-Loss submit has unknown/ambiguous outcome, in-flight state is tracked and duplicate submission deferred."""
-        class UnknownOutcomeInstrument(FakeInstrument):
-            def place(self, side, price, qty, **kwargs):
-                super().place(side, price, qty, **kwargs)
-                ctx = kwargs.get("_outcome_context")
-                if isinstance(ctx, dict):
-                    ctx.update(accepted=False, reason="timeout", state="unknown")
-                return None
-
         # Position bought at 100, now dropped to 95 (-5% > lost_threshold 3.3%)
         inst = UnknownOutcomeInstrument(
             price=95.0,
@@ -1454,15 +1441,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             mt._PENDING_STOP_EXIT.clear()
             mt._TP_RIDE_STATE.clear()
 
-            class UnknownTpInstrument(FakeInstrument):
-                def place(self, side, price, qty, **kwargs):
-                    super().place(side, price, qty, **kwargs)
-                    ctx = kwargs.get("_outcome_context")
-                    if isinstance(ctx, dict):
-                        ctx.update(accepted=False, reason="timeout", state="unknown")
-                    return None
-
-            inst = UnknownTpInstrument(
+            inst = UnknownOutcomeInstrument(
                 price=110.0,
                 free=4.0,
                 fills=[_fill("BUY", 100.0, 4.0)],

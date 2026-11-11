@@ -57,6 +57,13 @@ def _margins(**overrides):
 _build_test_context = make_test_regime_context
 
 
+class MockProvider:
+    name = "binance"
+
+
+MockProv = MockProvider
+
+
 class TestIntelligenceGuardDynamicEvaluation:
     def test_price_surge_blocked_on_same_regime_context(self, monkeypatch):
         """Verify that BUY at 100 is approved, but subsequent BUY at 125 is blocked by parabolic surge guard on the same context."""
@@ -502,9 +509,6 @@ class TestCase5HistoryFailClosed:
             fake_gemini_check
         )
 
-        class MockProvider:
-            name = "binance"
-
         # 1. First evaluation at notional 1000 EUR
         order_guard.check_intelligence_guards(
             MockProvider(), "BTCUSDC", "BUY", 100.0,
@@ -552,9 +556,6 @@ class TestArchitectureFixes4Cases:
             parabolic_pullback_pct=2.0,
             regime_context_max_age_sec=120.0,
         ))
-
-        class MockProvider:
-            name = "binance"
 
         # 1. At price 114.9 (+14.9% < 15.0%), BUY is permitted
         ok, reason, scale = order_guard.check_intelligence_guards(
@@ -764,9 +765,6 @@ class TestSisterArchitecturalDefects:
             fake_gemini_check
         )
 
-        class MockProvider:
-            name = "binance"
-
         # 1. Initial evaluation at 1000 EUR
         order_guard.check_intelligence_guards(
             MockProvider(), "BTCUSDC", "BUY", 100.0,
@@ -816,9 +814,6 @@ class TestSisterArchitecturalDefects:
             "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
         )
-
-        class MockProvider:
-            name = "binance"
 
         # 1. Initial check at 100 EUR (< 1000 min_notional): passes baseline
         ok, reason, scale = order_guard.check_intelligence_guards(
@@ -2161,9 +2156,6 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
         regime_context_max_age_sec=120.0,
     ))
 
-    class MockProv:
-        name = "binance"
-
     now_ts = time.time()
 
     # 1. Order 1 at 750 EUR on ctx1 -> 1 telemetry read, 1 LLM call
@@ -2217,23 +2209,6 @@ def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypa
 
 def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_iter9_s1(monkeypatch):
     """[ITER9 #1] check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed."""
-    _BASE_MARGINS = dict(order_guard._load_margins())
-    def _margins(**overrides):
-        return {
-            **_BASE_MARGINS,
-            'whale_guard_mode': 'off',
-            'orderbook_wall_guard_mode': 'off',
-            'funding_guard_mode': 'off',
-            'geopolitical_guard_mode': 'off',
-            'weibull_exhaustion_policy': 'off',
-            **overrides,
-        }
-    def _build_test_context(symbol='BTCUSDC', provider='binance'):
-        decision = MarketRegimeDecision(
-            regime='bull', gradient=0.5, epsilon=0.1, strength=5.0,
-            fresh=True, reason='signal', source='mock',
-        )
-        return MarketRegimeContext.from_decision(decision, symbol=symbol, provider=provider)
     # 1. check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed
     ctx = _build_test_context()
     raw_calls = []
@@ -2269,9 +2244,6 @@ def test_check_intelligence_guards_cache_hit_across_g_prof_gllm1_bypass_gllm1_it
             regime_context_max_age_sec=120.0,
         ),
     )
-
-    class MockProv:
-        name = "binance"
 
     # Call 1: bypass_guards={"G_PROF", "GLLM1"} at notional=1000 -> populates static cache, skips GLLM1
     ok1, reason1, _ = order_guard.check_intelligence_guards(

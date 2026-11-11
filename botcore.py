@@ -24,6 +24,30 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
+from cachepaths import (
+    _coerce_int,
+    _parse_bool_flag,
+    cache_path,
+    cache_path as _cache_path,
+    cache_symbol_variants,
+    canonical_base_asset,
+    clean_finite_floats,
+    compatible_quote_suffixes,
+    exact_int,
+    exact_nonneg_int,
+    exact_pos_int,
+    has_equity_suffix,
+    is_equity_venue_or_suffix,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+    resolve_cachedb_filepath as _resolve_hb,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
@@ -63,7 +87,6 @@ class FileLock:
     """Cross-process/thread lock using fcntl.flock(LOCK_EX) on an owned fd."""
 
     def __init__(self, path):
-        from cachepaths import resolve_cachedb_filepath
 
         self.path = resolve_cachedb_filepath(path)
         self._fd = None
@@ -97,21 +120,6 @@ class FileLock:
 # 1. NUMERIC COERCION & OBJECT SANITIZATION PRIMITIVES
 # ═════════════════════════════════════════════════════════════════════════════
 
-from cachepaths import (
-    _coerce_int,
-    _parse_bool_flag,
-    cache_path,
-    clean_finite_floats,
-    exact_int,
-    exact_nonneg_int,
-    exact_pos_int,
-    safe_float,
-    safe_int,
-    safe_nonneg_float,
-    safe_nonneg_int,
-    safe_pos_float,
-    safe_pos_int,
-)
 
 
 def strict_ascii_int(
@@ -1243,7 +1251,6 @@ def touch_module_heartbeat(
     else:
         fname = clean_name if clean_name.endswith(".heartbeat") else f"{clean_name}.heartbeat"
         try:
-            from cachepaths import cache_path as _cache_path, resolve_cachedb_filepath as _resolve_hb
 
             hb_path = str(_resolve_hb(_cache_path(fname)))
         except Exception:
@@ -2466,14 +2473,6 @@ def compute_venue_nav_breakdown(
     scope: str = "all",
 ) -> dict[str, object]:
     """Canonical SSOT multi-venue NAV calculator and position/cash deduplicator."""
-    from cachepaths import (
-        cache_symbol_variants,
-        canonical_base_asset,
-        compatible_quote_suffixes,
-        has_equity_suffix,
-        is_equity_venue_or_suffix,
-        normalize_venue_name,
-    )
 
     excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
     scope_norm = str(scope or "all").strip().lower()

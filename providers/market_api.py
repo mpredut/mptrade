@@ -17,15 +17,17 @@ from typing import Any, Callable, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    is_live_network_backfill_enabled,
     lru_dict_put,
     normalize_scalar_order_id,
     require_finite_float,
     require_pos_float,
-    safe_pos_float,
     safe_nonneg_float,
     safe_nonneg_ts,
+    safe_pos_float,
 )
 from cachepaths import normalize_venue_name
+from instrument_registry import is_equity_symbol
 from . import order_id_context as rc
 from .base import (
     MarketDataProvider,
@@ -207,9 +209,6 @@ class MarketApi:
         interval: str = "1h",
     ) -> list[tuple[float, float]]:
         """Return historical ``(epoch_sec, close_price)`` OHLC points across configured venue providers."""
-        from botcore import is_live_network_backfill_enabled
-        from instrument_registry import is_equity_symbol
-
         sym_u = str(symbol or "").strip().upper()
         is_eq = is_equity_symbol(sym_u)
         target_scope = "equities" if is_eq else "crypto"

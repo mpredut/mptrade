@@ -31,7 +31,7 @@ from botcore import (
     safe_pos_float,
     topic_spec,
 )
-from cachepaths import clean_symbol_key
+from cachepaths import clean_symbol_key, get_cachedb_dir
 from guard_hierarchy import (
     GUARD_REGISTRY,
     _is_valid_regime_context,
@@ -277,7 +277,6 @@ def check_geopolitical_order_guards(
             market_absorbed = False
             if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:
                 try:
-                    from cachepaths import get_cachedb_dir
                     from instrument_registry import is_equity_symbol
                     from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, read_first_cached_dict
 

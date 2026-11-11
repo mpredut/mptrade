@@ -42,6 +42,9 @@ class _MockVenueProvider:
     def last_opposite_fill(self, symbol, order_type):
         return 216.28
 
+    def get_orders(self, _symbol, _side, _window_s):
+        return []
+
 
 class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
     def setUp(self):
@@ -366,12 +369,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                     self.assertEqual(allowed, expected)
 
     def test_profit_guard_reuses_one_regime_for_window_and_policy(self):
-        class _Provider:
-            name = "binance"
-
-            def get_orders(self, _symbol, _side, _window_s):
-                return []
-
         margins = {
             **order_guard._load_margins(),
             "default": 1.15,
@@ -389,7 +386,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                 "ts": self.now - 10.0,
             }
 
-        provider = _Provider()
+        provider = _MockVenueProvider()
         context = order_guard.symbol_regime_context(
             "TAOUSDC",
             provider=provider,
@@ -460,12 +457,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertAlmostEqual(ctx.strength, 6.0)
 
     def test_profit_guard_uses_passed_regime_context_without_trend_lookup(self):
-        class _Provider:
-            name = "binance"
-
-            def get_orders(self, _symbol, _side, _window_s):
-                return []
-
         margins = {
             **order_guard._load_margins(),
             "default": 1.15,
@@ -483,7 +474,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         with mock.patch.object(order_guard, "_MARGINS", margins), \
                 mock.patch.object(order_guard, "_symbol_trend") as mock_trend:
             allowed = order_guard.profit_guard(
-                _Provider(),
+                _MockVenueProvider(),
                 "TAOUSDC",
                 "BUY",
                 293.0,
@@ -587,12 +578,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertFalse(generic_ctx.is_valid_for("ANY_SYMBOL", max_age_seconds=60.0, now=self.now + 65.0))
 
     def test_profit_guard_rejects_mismatched_or_stale_context(self):
-        class _Provider:
-            name = "binance"
-            def get_orders(self, _symbol, _side, _window_s):
-                return []
-
-        provider = _Provider()
+        provider = _MockVenueProvider()
         margins = {
             **order_guard._load_margins(),
             "default": 1.15,
