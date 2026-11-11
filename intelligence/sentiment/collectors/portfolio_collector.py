@@ -19,6 +19,9 @@ from cachepaths import (
     canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
+    ensure_equity_suffix,
+    filter_asset_class_variants,
+    has_equity_suffix,
     iter_venue_cycle_state_files,
     normalize_venue_name,
     resolve_venue_trailing_state_path,
@@ -412,7 +415,7 @@ def _apply_open_orders_locked_balances(
             oo_item["age_min"] = 0.0
             oo_item["age"] = "0.0m"
         if oo_px > 0.0 and oo_sym and oo_item.get("dist_from_spot_pct") is None:
-            oo_lookup_sym = f"{oo_sym}_US_EQ" if oo_v == "t212" and not oo_sym.endswith(("_EQ", "_US_EQ")) else oo_sym
+            oo_lookup_sym = ensure_equity_suffix(oo_sym, is_equity=(oo_v == "t212"))
             spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_lookup_sym, prices_and_trends)
             if spot_oo > 0.0:
                 oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
@@ -596,7 +599,7 @@ class VenueCyclesCollector(PortfolioCacheCollectorBase):
 
         def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
             if isinstance((st_data := _rj(st_path)), dict):
-                lookup_sym = f"{sym}_US_EQ" if is_eq and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ")) else sym
+                lookup_sym = ensure_equity_suffix(sym, is_equity=is_eq)
                 parsed = parse_venue_cycle_state(
                     st_data, lookup_sym, eff_pt, avg_decimals=dec, fallback_prices=eff_fb, include_meta=True
                 )
@@ -845,7 +848,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     except Exception:
                         if px_f <= 0:
                             px, px_f = None, 0.0
-                lookup_sym_p = f"{sym}_US_EQ" if v_norm == "t212" and not sym.endswith(("_EQ", "_US_EQ")) else sym
+                lookup_sym_p = ensure_equity_suffix(sym, is_equity=(v_norm == "t212"))
                 if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if v_norm == "t212" else quote)) > 0:
                     px = px_f
                 if px_f <= 0 and prev_pos_px > 0:
@@ -982,7 +985,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     if p_sym:
                         exact_pt_px = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or 0.0
                         cached_pos_px = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
-                        p_lookup_rec = f"{p_sym}_US_EQ" if v_rec_norm == "t212" and not p_sym.endswith(("_EQ", "_US_EQ")) else p_sym
+                        p_lookup_rec = ensure_equity_suffix(p_sym, is_equity=(v_rec_norm == "t212"))
                         sib_pt_px = (
                             resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if v_rec_norm == "t212" else p_quote)
                             if exact_pt_px <= 0.0
@@ -1111,18 +1114,10 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
         best_venue: Optional[str] = None
         best_fill_key: Tuple[int, int, float] = (-1, -1, -1.0)
         sym_upper = str(symbol or "").strip().upper()
-        is_eq_sym = sym_upper.endswith(("_EQ", "_US_EQ"))
+        is_eq_sym = has_equity_suffix(sym_upper)
         is_crypto_pair = (not is_eq_sym) and (split_symbol_assets(sym_upper) is not None)
         scoped_variants = (
-            [
-                c
-                for c in quote_variants
-                if (
-                    not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-                    if is_eq_sym
-                    else not str(c).strip().upper().endswith(("_EQ", "_US_EQ"))
-                )
-            ]
+            list(filter_asset_class_variants(sym_upper, quote_variants, is_equity=is_eq_sym))
             if (is_eq_sym or is_crypto_pair)
             else list(quote_variants)
         )
@@ -1410,11 +1405,10 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 return []
             return [
                 str(v_s).strip().upper()
-                for v_s in (s_u, *cache_symbol_variants(s_u, include_base=True))
-                if (
-                    not str(v_s).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-                    if is_eq
-                    else not str(v_s).strip().upper().endswith(("_EQ", "_US_EQ"))
+                for v_s in filter_asset_class_variants(
+                    s_u,
+                    (s_u, *cache_symbol_variants(s_u, include_base=True)),
+                    is_equity=is_eq,
                 )
             ]
 
@@ -1504,7 +1498,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 lb = safe_pos_float(pos_item.get("locked_base_qty"), default=0.0) or 0.0
                 if pv and ps and (fb >= 0.0 or lb > 0.0):
                     held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
-                    for sv in _scoped_sym_variants(ps, is_eq=(pv == "t212" or ps.endswith(("_EQ", "_US_EQ")))):
+                    for sv in _scoped_sym_variants(ps, is_eq=(pv == "t212" or has_equity_suffix(ps))):
                         sv_k = (pv, sv.upper())
                         if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
                             live_held_by_venue_sym[sv_k] = held_q
@@ -1517,7 +1511,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                 if not t_sym_u or (c_venue_ro, t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
                     continue
                 t_base_u = canonical_base_asset(t_sym_u)
-                ro_cands = _scoped_sym_variants(t_sym_u, is_eq=(c_venue_ro == "t212" or t_sym_u.endswith(("_EQ", "_US_EQ"))))
+                ro_cands = _scoped_sym_variants(t_sym_u, is_eq=(c_venue_ro == "t212" or has_equity_suffix(t_sym_u)))
                 c_pos = next(
                     (
                         v_pos
@@ -1545,7 +1539,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
                     if c_venue_ro == "t212" and held_c > 1e-8:
                         t_cyc["qty"] = round(held_c, 6)
                         t_px = resolve_symbol_price(
-                            t_sym_u if t_sym_u.endswith(("_EQ", "_US_EQ")) else f"{t_sym_u}_US_EQ",
+                            ensure_equity_suffix(t_sym_u),
                             prices_and_trends,
                         )
                         if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:

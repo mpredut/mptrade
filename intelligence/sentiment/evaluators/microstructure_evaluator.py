@@ -13,6 +13,8 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
+    filter_asset_class_variants,
+    has_equity_suffix,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -58,17 +60,7 @@ def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any
 
 def _scope_candidate_keys(sym: str, raw_cands: Any) -> Tuple[str, ...]:
     """Filter symbol candidate variants so US equities (`_EQ`/`_US_EQ`) and crypto pairs never cross-contaminate."""
-    is_eq_sym = str(sym or "").strip().upper().endswith(("_EQ", "_US_EQ"))
-    return tuple(
-        c
-        for c in (raw_cands or ())
-        if isinstance(c, str)
-        and (
-            not c.strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-            if is_eq_sym
-            else not c.strip().upper().endswith(("_EQ", "_US_EQ", "USEQ"))
-        )
-    )
+    return filter_asset_class_variants(sym, raw_cands, include_compact_equity=True)
 
 
 def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bool:
@@ -612,13 +604,13 @@ def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[
     """Infer canonical venue name, maker/taker fee bps, and half-spread bps from SSOT `_VENUE_DEFAULT_FEE_SPECS`."""
     sym_u = str(sym or "").strip().upper()
     explicit_v = normalize_venue_name((m_dict or {}).get("venue")) if isinstance(m_dict, dict) else ""
-    sym_parts = split_symbol_assets(sym_u) if sym_u and not sym_u.endswith(("_EQ", "_US_EQ")) else None
+    sym_parts = split_symbol_assets(sym_u) if sym_u and not has_equity_suffix(sym_u) else None
     sym_quote = sym_parts[1] if sym_parts is not None else ""
     if explicit_v in _VENUE_DEFAULT_FEE_SPECS:
         venue = explicit_v
     elif ":" in sym_u and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0])) in _VENUE_DEFAULT_FEE_SPECS:
         venue = pref_v
-    elif sym_u.endswith(("_EQ", "_US_EQ")):
+    elif has_equity_suffix(sym_u):
         venue = "t212"
     elif canonical_base_asset(sym_u) == "HYPE" and (sym_quote == "USDC" or sym_u.endswith("USDC")):
         venue = "hyperliquid"
@@ -649,14 +641,14 @@ def compute_cross_venue_arb_metrics(
     if not (own_px and own_px > 0.0 and "USD" in msym_quotes):
         return
     mbase = canonical_base_asset(msym)
-    msym_is_eq = str(msym).strip().upper().endswith(("_EQ", "_US_EQ"))
+    msym_is_eq = has_equity_suffix(msym)
     own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
     peer_candidates = [
         (peer_sym, peer_m)
         for peer_sym, peer_m in microstructure.items()
         if peer_sym != msym
         and isinstance(peer_m, dict)
-        and str(peer_sym).strip().upper().endswith(("_EQ", "_US_EQ")) == msym_is_eq
+        and has_equity_suffix(peer_sym) == msym_is_eq
         and canonical_base_asset(peer_sym) == mbase
         and "USD" in compatible_quote_suffixes(peer_sym)
     ]
@@ -770,9 +762,9 @@ def evaluate_microstructure_cycle_deltas(
         h_list = own_h_list
         used_variant_hist = False
         if not h_list:
-            msym_is_eq_h = str(msym).strip().upper().endswith(("_EQ", "_US_EQ"))
+            msym_is_eq_h = has_equity_suffix(msym)
             for ck in cache_symbol_variants(msym, include_base=True):
-                if str(ck or "").strip().upper().endswith(("_EQ", "_US_EQ")) != msym_is_eq_h:
+                if has_equity_suffix(ck) != msym_is_eq_h:
                     continue
                 if h_list := _clean_hist_list(casefold_get(orig_mhist, ck)):
                     used_variant_hist = True
@@ -882,7 +874,7 @@ def evaluate_microstructure_cycle_deltas(
     usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
         if isinstance(minfo, dict) and isinstance(minfo.get("cycle_delta"), dict) and "USD" in compatible_quote_suffixes(msym):
-            grp_k = f"EQ:{canonical_base_asset(msym)}" if str(msym).strip().upper().endswith(("_EQ", "_US_EQ")) else canonical_base_asset(msym)
+            grp_k = f"EQ:{canonical_base_asset(msym)}" if has_equity_suffix(msym) else canonical_base_asset(msym)
             usd_delta_groups.setdefault(grp_k, []).append((msym, minfo))
     for grp_items in usd_delta_groups.values():
         if len(grp_items) < 2:
@@ -1094,7 +1086,7 @@ def enrich_cross_venue_trends(
                 for m in (pa_map, long_map)
                 for v in m.values()
             )
-            if pa_neutral or lt_neutral or (any_neutral_regime and not sym.endswith(("_EQ", "_US_EQ"))):
+            if pa_neutral or lt_neutral or (any_neutral_regime and not has_equity_suffix(sym)):
                 entry["long_trend_neutral"] = True
         tt_p_cont: Optional[Dict[str, Any]] = None
         if isinstance(t_trend_map, dict) and isinstance(tt := _first_variant_dict(t_trend_map, cand_keys), dict):
@@ -1102,7 +1094,7 @@ def enrich_cross_venue_trends(
             tt_p_cont = tt.get("p_cont") if isinstance(tt.get("p_cont"), dict) else None
         elif (
             entry.get("weibull_median_d") is None
-            and not sym.endswith(("_EQ", "_US_EQ"))
+            and not has_equity_suffix(sym)
             and allow_network is not False
         ):
             try:
@@ -1145,7 +1137,7 @@ def enrich_cross_venue_trends(
                     continue
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
                 w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
-                is_eq_w7 = sym.endswith(("_EQ", "_US_EQ"))
+                is_eq_w7 = has_equity_suffix(sym)
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
                 if (
                     not is_eq_w7
@@ -1341,7 +1333,7 @@ def reconcile_sibling_flow_and_liq_regimes(
     usd_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
         if isinstance(minfo, dict) and "USD" in compatible_quote_suffixes(msym):
-            grp_k = f"EQ:{canonical_base_asset(msym)}" if str(msym).strip().upper().endswith(("_EQ", "_US_EQ")) else canonical_base_asset(msym)
+            grp_k = f"EQ:{canonical_base_asset(msym)}" if has_equity_suffix(msym) else canonical_base_asset(msym)
             usd_groups.setdefault(grp_k, []).append((msym, minfo))
     for _, grp in usd_groups.items():
         if len(grp) < 2:

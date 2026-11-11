@@ -8,6 +8,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compute_venue_nav_breakdown,
+    has_equity_suffix,
     normalize_venue_name,
 )
 from instrument_registry import casefold_get
@@ -964,12 +965,12 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 is_t212 = v_n == "t212"
             else:
                 sym_u = str(item.get("symbol") or "").strip().upper()
-                is_t212 = sym_u.endswith(("_EQ", "_US_EQ")) or sym_u in t212_sym_set
+                is_t212 = has_equity_suffix(sym_u) or sym_u in t212_sym_set
             return is_t212 == want_t212
 
         if want_t212:
-            prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
-            microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
+            prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or has_equity_suffix(k)}
+            microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or has_equity_suffix(k)}
             for crypto_key in (
                 "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
                 "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
@@ -987,8 +988,8 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
             else:
                 portfolio_summary.pop("portfolio_total_usd", None)
         else:
-            prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
-            microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
+            prices_and_trends = {k: v for k, v in prices_and_trends.items() if not has_equity_suffix(k) and str(k).upper() not in t212_sym_set}
+            microstructure = {k: v for k, v in microstructure.items() if not has_equity_suffix(k) and str(k).upper() not in t212_sym_set}
             portfolio_summary.pop("t212_cycles", None)
             if isinstance(portfolio_summary.get("venues_value_usd"), dict):
                 crypto_venues = {
@@ -1029,7 +1030,7 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                     is_eq = normalize_venue_name(rv.get("venue")) == "t212"
                 else:
                     rk_up = str(rk).upper()
-                    if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
+                    if rk_up.startswith("T212:") or has_equity_suffix(rk_up):
                         is_eq = True
                     else:
                         is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)

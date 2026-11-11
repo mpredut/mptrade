@@ -24,6 +24,7 @@ from cachepaths import (
     canonical_base_asset,
     clean_symbol_key,
     compatible_quote_suffixes,
+    has_equity_suffix,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cache_dir_path,
@@ -424,11 +425,11 @@ def load_symbol_microstructure(
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     read_json_fn = _resolve_read_json_cached(read_json_fn)
     sym_u = str(sym or "").strip().upper()
-    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ")) or is_equity_symbol(sym_u)
+    is_eq_sym = is_equity_symbol(sym_u)
     sym_cands = [
         c
         for c in cache_symbol_variants(sym, include_base=True)
-        if (c.upper().endswith(("_EQ", "_US_EQ")) or is_equity_symbol(c)) == is_eq_sym
+        if is_equity_symbol(c) == is_eq_sym
     ]
 
     def _first_telemetry_dict(prefix: str, *, prefer_freshest: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -661,7 +662,7 @@ def discover_reference_microstructure_symbols(
     covered_micro_bases = {
         canonical_base_asset(k)
         for k in microstructure
-        if not str(k).strip().upper().endswith(("_EQ", "_US_EQ"))
+        if not has_equity_suffix(k)
     }
     ref_micro_syms: List[str] = []
     for pfx in (CACHE_ORDERBOOK_DEPTH_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_WHALE_SNAPSHOT_PREFIX):
@@ -671,7 +672,7 @@ def discover_reference_microstructure_symbols(
                 if (
                     msym
                     and msym.isalnum()
-                    and not msym.endswith(("_EQ", "_US_EQ"))
+                    and not has_equity_suffix(msym)
                     and msym not in microstructure
                     and msym not in ref_micro_syms
                 ):
@@ -684,7 +685,7 @@ def discover_reference_microstructure_symbols(
                         existing_bds = [
                             safe_nonneg_float(mv.get("bid_depth_usd"), default=None)
                             for mk, mv in microstructure.items()
-                            if not str(mk).strip().upper().endswith(("_EQ", "_US_EQ"))
+                            if not has_equity_suffix(mk)
                             and canonical_base_asset(mk) == mbase
                             and isinstance(mv, dict)
                         ]
@@ -1396,7 +1397,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             )
             hl_m_seed = load_symbol_microstructure(cachedb_dir, hl_sym, _rj) if hl_sym not in pt_map else None
             if hl_sym not in pt_map and (
-                any(not str(k).strip().upper().endswith(("_EQ", "_US_EQ")) and canonical_base_asset(k) == hl_base for k in pt_map)
+                any(not has_equity_suffix(k) and canonical_base_asset(k) == hl_base for k in pt_map)
                 or hl_m_seed
             ):
                 cached_hl_pos = cached_bals.get(f"pos:hyperliquid:{hl_sym}")
@@ -1408,7 +1409,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 pt_map[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
         for sym in list(pt_map.keys()):
             sym_px_cur = safe_float(pt_map[sym].get("price"), 0.0)
-            is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
+            is_eq_sym = has_equity_suffix(sym)
             eq_div_thr = 0.35 if is_eq_sym else 0.10
             if sym == "BTCUSDC" and btc_series_24h:
                 matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
@@ -1735,7 +1736,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                         bool(matched_series_24h)
                         or any(
                             pk != sym
-                            and str(pk).strip().upper().endswith(("_EQ", "_US_EQ")) == is_eq_sym
+                            and has_equity_suffix(pk) == is_eq_sym
                             and canonical_base_asset(pk) == canonical_base_asset(sym)
                             and (p_sib := safe_pos_float((pv if isinstance(pv, dict) else {}).get("price"), default=None)) is not None
                             and abs(sym_px_m - p_sib) / max(sym_px_m, p_sib) <= 0.01

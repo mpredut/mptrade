@@ -10201,3 +10201,53 @@ def test_post_rth_equity_24_5_move_up_to_35pct_aligns_series_orderbook_and_pretr
     )
     assert "1.5441" in str(tel_rgnt.get("Orderbook Ask Wall Ahead"))
 
+
+def test_equity_suffix_ssot_primitives_and_zero_manual_endswith_ast():
+    """Verify cachepaths equity-suffix SSOT helpers and lock zero manual _EQ/_US_EQ endswith checks."""
+    import ast
+    import pathlib
+    from cachepaths import ensure_equity_suffix, filter_asset_class_variants, has_equity_suffix
+
+    assert has_equity_suffix("NVDA_US_EQ") is True
+    assert has_equity_suffix("asml_eq") is True
+    assert has_equity_suffix("NVDAUSEQ") is False
+    assert has_equity_suffix("NVDAUSEQ", include_compact=True) is True
+    assert has_equity_suffix("BTCUSDC", include_compact=True) is False
+    assert has_equity_suffix(True) is False
+
+    assert ensure_equity_suffix("nvda") == "NVDA_US_EQ"
+    assert ensure_equity_suffix("NVDA_US_EQ") == "NVDA_US_EQ"
+    assert ensure_equity_suffix("ASML_EQ") == "ASML_EQ"
+    assert ensure_equity_suffix("BTCUSDC", is_equity=False) == "BTCUSDC"
+    assert ensure_equity_suffix(False) == ""
+
+    cands = ("NVDA", "NVDA_US_EQ", "NVDAUSEQ", "NVDAUSDC", "NVDAUSD")
+    assert filter_asset_class_variants("NVDA_US_EQ", cands) == ("NVDA", "NVDA_US_EQ", "NVDAUSEQ")
+    assert filter_asset_class_variants("NVDAUSDC", cands) == ("NVDA", "NVDAUSEQ", "NVDAUSDC", "NVDAUSD")
+    assert filter_asset_class_variants("NVDAUSDC", cands, include_compact_equity=True) == (
+        "NVDA",
+        "NVDAUSDC",
+        "NVDAUSD",
+    )
+
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    exempt_prefixes = ("tests/", "offline/", ".venv/", "myenv/")
+    violations: list[str] = []
+    for py_file in sorted(repo_root.rglob("*.py")):
+        rel = py_file.relative_to(repo_root).as_posix()
+        if rel == "cachepaths.py" or rel.startswith(exempt_prefixes):
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "endswith"
+                and node.args
+            ):
+                arg_src = ast.unparse(node.args[0])
+                if '"_EQ"' in arg_src or "'_EQ'" in arg_src or '"_US_EQ"' in arg_src or "'_US_EQ'" in arg_src:
+                    violations.append(f"{rel}:{node.lineno}: .endswith({arg_src})")
+    assert violations == [], f"Manual _EQ/_US_EQ .endswith() found outside cachepaths.py: {violations}"
+
+

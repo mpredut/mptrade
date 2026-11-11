@@ -424,7 +424,6 @@ def _upgrade_pretrade_tpo_vp_from_ohlc(
     if (
         not m24_d
         or m24_d.get("vp_source") != "TPO"
-        or sym_u_pt.endswith(("_EQ", "_US_EQ"))
         or is_equity_symbol(sym_u_pt)
         or (
             not (allow_network and is_live_network_backfill_enabled())
@@ -1023,7 +1022,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
                 f"va_pos={m24.get('va_pos_pct')}%{vp_src_s}"
             )
 
-        if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")) and not is_equity_symbol(symbol):
+        if canonical_base_asset(symbol) != "BTC" and not is_equity_symbol(symbol):
             btc_series_24h, btc_vals_7d = load_symbol_price_series(
                 cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
             )
@@ -1104,7 +1103,7 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
         cur_p_items = ctx.cur_p_items
         _rj = ctx.rj
         allow_network = bool(ctx.allow_network)
-        is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ")) or is_equity_symbol(symbol)
+        is_eq = is_equity_symbol(symbol)
         eq_div_thr = 0.35 if is_eq else 0.10
         if cur_px_est > 0.0 and arch_vals_7d:
             if _prices_diverged(cur_px_est, safe_float(arch_vals_7d[-1], 0.0), threshold=eq_div_thr):

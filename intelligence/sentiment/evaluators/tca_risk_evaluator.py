@@ -10,6 +10,9 @@ from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
     compute_venue_nav_breakdown,
+    ensure_equity_suffix,
+    filter_asset_class_variants,
+    has_equity_suffix,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -50,17 +53,11 @@ def resolve_symbol_price(
     if not symbol:
         return 0.0
     sym_u = str(symbol).strip().upper()
-    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
+    is_eq_sym = has_equity_suffix(sym_u)
     sym_quotes = compatible_quote_suffixes(symbol, explicit_quote)
     raw_variants = cache_symbol_variants(symbol, include_base="USD" in sym_quotes, quotes=sym_quotes)
-    if is_eq_sym:
-        sym_variants = [
-            c
-            for c in raw_variants
-            if not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-        ]
-    elif split_symbol_assets(sym_u) is not None or explicit_quote is not None:
-        sym_variants = [c for c in raw_variants if not str(c).strip().upper().endswith(("_EQ", "_US_EQ"))]
+    if is_eq_sym or split_symbol_assets(sym_u) is not None or explicit_quote is not None:
+        sym_variants = list(filter_asset_class_variants(sym_u, raw_variants, is_equity=is_eq_sym))
     else:
         sym_variants = raw_variants
     for cand in sym_variants:
@@ -208,16 +205,16 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             if not sym or lim_px is None or lim_px <= 0.0:
                 continue
             v_norm = normalize_venue_name(o.get("venue"))
-            is_eq_o = sym.endswith(("_EQ", "_US_EQ")) or v_norm == "t212"
-            scoped_sym = f"{sym}_US_EQ" if (is_eq_o and not sym.endswith(("_EQ", "_US_EQ"))) else sym
+            is_eq_o = has_equity_suffix(sym) or v_norm == "t212"
+            scoped_sym = ensure_equity_suffix(sym, is_equity=is_eq_o)
             p_entry = (
                 casefold_get(prices_and_trends, sym)
-                if isinstance(prices_and_trends, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq_o
+                if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq_o
                 else None
             )
             if not isinstance(p_entry, dict) and isinstance(prices_and_trends, dict):
                 for cand in cache_symbol_variants(scoped_sym, include_base=False):
-                    if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    if has_equity_suffix(cand) != is_eq_o:
                         continue
                     cand_p = casefold_get(prices_and_trends, cand)
                     if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
@@ -225,12 +222,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         break
             m_entry = (
                 casefold_get(microstructure, sym)
-                if isinstance(microstructure, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq_o
+                if isinstance(microstructure, dict) and has_equity_suffix(sym) == is_eq_o
                 else None
             )
             if not isinstance(m_entry, dict):
                 for cand in cache_symbol_variants(scoped_sym, include_base=False):
-                    if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    if has_equity_suffix(cand) != is_eq_o:
                         continue
                     cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
                     if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
@@ -256,7 +253,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
             if raw_vol_1h is None and isinstance(prices_and_trends, dict):
                 for cand in cache_symbol_variants(sym, include_base=True):
-                    if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    if has_equity_suffix(cand) != is_eq_o:
                         continue
                     cand_p = casefold_get(prices_and_trends, cand)
                     if isinstance(cand_p, dict) and (v_cand := safe_pos_float(cand_p.get("vol_1h_pct"), default=None)) is not None:
@@ -397,10 +394,10 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
             if val_u >= 1.0:
                 sym = str(p.get("symbol") or "").strip().upper()
                 base = canonical_base_asset(p.get("base") or sym)
-                is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+                is_eq = has_equity_suffix(sym) or v_name == "t212"
                 p_info = (
                     casefold_get(prices_and_trends, sym)
-                    if isinstance(prices_and_trends, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq
+                    if isinstance(prices_and_trends, dict) and has_equity_suffix(sym) == is_eq
                     else None
                 )
                 if not isinstance(p_info, dict):
@@ -410,7 +407,7 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
                         return p_info.get(m_key)
                     if isinstance(prices_and_trends, dict):
                         for c in cache_symbol_variants(sym, include_base=True):
-                            if str(c).upper().endswith(("_EQ", "_US_EQ")) != is_eq:
+                            if has_equity_suffix(c) != is_eq:
                                 continue
                             if isinstance(v_d := casefold_get(prices_and_trends, c), dict) and v_d.get(m_key) is not None:
                                 return v_d.get(m_key)
@@ -543,13 +540,13 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
         ctx: Dict[str, Any] = {}
 
         def _bellwether_rank(s: str, p: Dict[str, Any]) -> Tuple[int, int, int]:
-            return (1 if "USD" in compatible_quote_suffixes(s) else 0, 1 if s.endswith(("USDC", "_US_EQ", "_EQ")) else 0, len(p))
+            return (1 if "USD" in compatible_quote_suffixes(s) else 0, 1 if s.endswith("USDC") or has_equity_suffix(s) else 0, len(p))
 
         by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
         for sym, pinfo in sorted(prices_and_trends.items()):
             if (
                 isinstance(pinfo, dict)
-                and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ"))
+                and not has_equity_suffix(sym)
                 and (b_canon := canonical_base_asset(sym))
             ):
                 prev = by_base.get(b_canon)
@@ -570,7 +567,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
 
         crypto_bellwethers: Dict[str, Any] = {}
         for b_canon, (sym, pinfo) in sorted(by_base.items()):
-            if str(sym).upper().endswith(("_EQ", "_US_EQ")) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
+            if has_equity_suffix(sym) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
                 continue
             is_sub24h_dup_7d = (
                 "chg_24h_pct" not in pinfo
@@ -594,7 +591,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 m_cands = [
                     (mv, compatible_quote_suffixes(mk) == sym_quotes, len(mv))
                     for mk, mv in microstructure.items()
-                    if not str(mk).upper().endswith(("_EQ", "_US_EQ"))
+                    if not has_equity_suffix(mk)
                     and canonical_base_asset(mk) == b_canon
                     and isinstance(mv, dict)
                 ]
@@ -628,8 +625,8 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
             else None
         )
         eq_syms = sorted(
-            {str(s).strip().upper() for s in prices_and_trends if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
-            | {str(s).strip().upper() for s in all_t212_cycles if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
+            {str(s).strip().upper() for s in prices_and_trends if has_equity_suffix(s)}
+            | {str(s).strip().upper() for s in all_t212_cycles if has_equity_suffix(s)}
         )
         for eq_sym in eq_syms:
             pinfo_raw = casefold_get(prices_and_trends, eq_sym)

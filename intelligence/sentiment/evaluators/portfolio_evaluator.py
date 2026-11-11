@@ -10,6 +10,9 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
+    ensure_equity_suffix,
+    filter_asset_class_variants,
+    has_equity_suffix,
     normalize_venue_name,
 )
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
@@ -180,14 +183,7 @@ _FLAT_POS_KEYS = (
 
 
 def _scope_variants(sym: str, variants: Any, *, is_eq: Optional[bool] = None) -> tuple[str, ...]:
-    eq_flag = str(sym or "").strip().upper().endswith(("_EQ", "_US_EQ")) if is_eq is None else is_eq
-    if eq_flag:
-        return tuple(
-            c
-            for c in variants
-            if not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
-        )
-    return tuple(c for c in variants if not str(c).strip().upper().endswith(("_EQ", "_US_EQ")))
+    return filter_asset_class_variants(sym, variants, is_equity=is_eq)
 
 
 def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, Any], *, full_pos_clear: bool = False) -> None:
@@ -403,7 +399,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
 
         def _same_asset_scope_and_quote(s1: str, s2: str) -> bool:
             u1, u2 = str(s1 or "").strip().upper(), str(s2 or "").strip().upper()
-            if not u1 or not u2 or u1.endswith(("_EQ", "_US_EQ")) != u2.endswith(("_EQ", "_US_EQ")):
+            if not u1 or not u2 or has_equity_suffix(u1) != has_equity_suffix(u2):
                 return False
             return u1 == u2 or (
                 canonical_base_asset(u1) == canonical_base_asset(u2)
@@ -810,7 +806,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                     continue
                 entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
                 c_quotes = compatible_quote_suffixes(c_sym)
-                c_is_eq = c_venue == "t212" or str(c_sym).strip().upper().endswith(("_EQ", "_US_EQ"))
+                c_is_eq = c_venue == "t212" or has_equity_suffix(c_sym)
                 c_cands = _scope_variants(
                     c_sym,
                     (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes)),
@@ -983,7 +979,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         _sync_exit_kind(cyc, ls_px, rem_after_sell)
                 elif (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
                     px_c = resolve_symbol_price(
-                        c_sym if not c_is_eq or str(c_sym).strip().upper().endswith(("_EQ", "_US_EQ")) else f"{str(c_sym).strip().upper()}_US_EQ",
+                        ensure_equity_suffix(c_sym, is_equity=c_is_eq),
                         prices_and_trends,
                     )
                     eff_rem_wallet = (
@@ -1086,7 +1082,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
             p_venue = normalize_venue_name(pos.get("venue"))
-            p_is_eq = p_sym.endswith(("_EQ", "_US_EQ")) or p_venue == "t212"
+            p_is_eq = has_equity_suffix(p_sym) or p_venue == "t212"
             p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
             p_quote_variants = _scope_variants(
                 p_sym,
@@ -1098,7 +1094,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     seen_venue_syms.add((p_venue, str(cand_vs).upper()))
             p_variants = (*p_quote_variants, *_scope_variants(p_sym, cache_symbol_variants(p_sym), is_eq=p_is_eq))
             pos_px_f = safe_float(pos.get("price"), 0.0)
-            p_lookup_sym = f"{p_sym}_US_EQ" if p_is_eq and not p_sym.endswith(("_EQ", "_US_EQ")) else p_sym
+            p_lookup_sym = ensure_equity_suffix(p_sym, is_equity=p_is_eq)
             cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
             if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px, threshold=0.35 if p_is_eq else 0.10))):
                 pos_px_f = round(cand_px, 4 if p_venue == "t212" else 6)
@@ -1438,7 +1434,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 c_quote_variants = _scope_variants(
                     c_sym_u,
                     cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes),
-                    is_eq=(c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ"))),
+                    is_eq=(c_venue == "t212" or has_equity_suffix(c_sym_u)),
                 )
                 ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
                 if ro is None and isinstance(recent_orders, dict):
@@ -1458,9 +1454,9 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 c_rpnl_c = safe_float(cyc.get("realized_pnl_usd"), default=None)
                 if lp_ro_c is not None and c_rpnl_c is not None and c_rpnl_c < 0.0 and lp_ro_c > c_rpnl_c:
                     cyc["realized_pnl_usd"] = round(lp_ro_c, 2)
-                c_is_eq = c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ"))
+                c_is_eq = c_venue == "t212" or has_equity_suffix(c_sym_u)
                 c_px = resolve_symbol_price(
-                    c_sym_u if not c_is_eq or c_sym_u.endswith(("_EQ", "_US_EQ")) else f"{c_sym_u}_US_EQ",
+                    ensure_equity_suffix(c_sym_u, is_equity=c_is_eq),
                     prices_and_trends,
                 )
                 if c_px > 0.0:

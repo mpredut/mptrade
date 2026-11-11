@@ -15,7 +15,13 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float
-from cachepaths import cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, normalize_venue_name
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    compatible_quote_suffixes,
+    has_equity_suffix,
+    normalize_venue_name,
+)
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_bottom_structure_6h_parts,
@@ -482,7 +488,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         (
             (k, entry)
             for k, entry in prices_and_trends.items()
-            if isinstance(entry, dict) and not k.upper().endswith(("_EQ", "_US_EQ")) and canonical_base_asset(k) == "BTC"
+            if isinstance(entry, dict) and not has_equity_suffix(k) and canonical_base_asset(k) == "BTC"
         ),
         key=lambda kv: (
             0 if kv[0].endswith("USDC") else (1 if "USD" in compatible_quote_suffixes(kv[0]) else 2),
@@ -501,7 +507,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     grouped_3a: Dict[Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]] = {}
     for s_k, s_v in sorted(prices_and_trends.items()):
         if isinstance(s_v, dict):
-            s_b_key = f"EQ:{canonical_base_asset(s_k)}" if s_k.upper().endswith(("_EQ", "_US_EQ")) else canonical_base_asset(s_k)
+            s_b_key = f"EQ:{canonical_base_asset(s_k)}" if has_equity_suffix(s_k) else canonical_base_asset(s_k)
             grouped_3a.setdefault(
                 (s_b_key, compatible_quote_suffixes(s_k)), []
             ).append((s_k, s_v))
@@ -509,7 +515,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
         sym_group.sort(
             key=lambda item: (
-                0 if item[0].endswith(("USDC", "_US_EQ", "_EQ")) else 1,
+                0 if item[0].endswith("USDC") or has_equity_suffix(item[0]) else 1,
                 -len(item[1]),
                 item[0],
             )
@@ -625,7 +631,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             and pinfo.get("low_24h") is not None
             and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
         )
-        is_non_btc_crypto = not sym.endswith(("_EQ", "_US_EQ")) and canonical_base_asset(sym) != "BTC"
+        is_non_btc_crypto = not has_equity_suffix(sym) and canonical_base_asset(sym) != "BTC"
         if is_non_btc_crypto:
             vs_btc_parts: List[str] = []
             if btc_entry:
@@ -762,7 +768,7 @@ def _format_microstructure_section(
     seen_3b_groups: set[Tuple[str, Tuple[str, ...]]] = set()
 
     def _group_key_3b(s: str, m: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
-        s_is_eq = s.upper().endswith(("_EQ", "_US_EQ"))
+        s_is_eq = has_equity_suffix(s)
         b_c = f"EQ:{canonical_base_asset(s)}" if s_is_eq else canonical_base_asset(s)
         q_s = compatible_quote_suffixes(s)
         has_px_anchors = any(
@@ -773,7 +779,7 @@ def _format_microstructure_section(
             has_distinct_usd_sib = any(
                 other_s != s
                 and isinstance(other_m, dict)
-                and other_s.upper().endswith(("_EQ", "_US_EQ")) == s_is_eq
+                and has_equity_suffix(other_s) == s_is_eq
                 and canonical_base_asset(other_s) == canonical_base_asset(s)
                 and "USD" in compatible_quote_suffixes(other_s)
                 and other_m.get("bid_depth_usd") is not None
@@ -865,7 +871,7 @@ def _format_microstructure_section(
             ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
 
-        sym_is_eq_3b = sym.upper().endswith(("_EQ", "_US_EQ"))
+        sym_is_eq_3b = has_equity_suffix(sym)
         raw_p = (
             prices_and_trends.get(sym)
             if isinstance(prices_and_trends.get(sym), dict)
@@ -877,7 +883,7 @@ def _format_microstructure_section(
                         key=lambda kv: (0 if compatible_quote_suffixes(kv[0]) == sym_quotes_3b else 1, kv[0]),
                     )
                     if isinstance(v, dict)
-                    and k.upper().endswith(("_EQ", "_US_EQ")) == sym_is_eq_3b
+                    and has_equity_suffix(k) == sym_is_eq_3b
                     and canonical_base_asset(k) == b_canon_3b
                     and (
                         compatible_quote_suffixes(k) == sym_quotes_3b
@@ -908,7 +914,7 @@ def _format_microstructure_section(
         if "USD" in sym_quotes_3b and any(
             other_s != sym
             and isinstance(other_m, dict)
-            and other_s.upper().endswith(("_EQ", "_US_EQ")) == sym_is_eq_3b
+            and has_equity_suffix(other_s) == sym_is_eq_3b
             and canonical_base_asset(other_s) == b_canon_3b
             and "USD" in compatible_quote_suffixes(other_s)
             for other_s, other_m in microstructure.items()
@@ -918,7 +924,7 @@ def _format_microstructure_section(
                 if (
                     other_s != sym
                     and isinstance(other_m, dict)
-                    and other_s.upper().endswith(("_EQ", "_US_EQ")) == sym_is_eq_3b
+                    and has_equity_suffix(other_s) == sym_is_eq_3b
                     and canonical_base_asset(other_s) == b_canon_3b
                     and "USD" in compatible_quote_suffixes(other_s)
                 ):

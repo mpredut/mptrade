@@ -33,7 +33,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import has_equity_suffix, normalize_venue_name, resolve_cachedb_filepath
 from providers.base import extract_order_id
 from state_io import (
     atomic_write_text,
@@ -1620,7 +1620,7 @@ def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
     )
     if len(raw_stem) > 2 and raw_stem.endswith("x") and raw_stem[:-1].isalnum() and raw_stem[:-1].isupper():
         return False
-    v_norm, is_eq_sym = normalize_venue_name(dec.get("venue")), sym_u.endswith(("_EQ", "_US_EQ"))
+    v_norm, is_eq_sym = normalize_venue_name(dec.get("venue")), has_equity_suffix(sym_u)
     if scope == "equities":
         return (not v_norm or v_norm == "t212") and not sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR")) and (v_norm == "t212" or is_eq_sym)
     if scope == "crypto":

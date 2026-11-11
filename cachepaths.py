@@ -509,11 +509,51 @@ def _has_xstock_lowercase_x(token: str) -> bool:
     return len(token) > 2 and token.endswith("x") and token[:-1].isalnum() and token[:-1].isupper()
 
 
-def has_equity_suffix(symbol: object) -> bool:
+_CRYPTO_QUOTE_SUFFIXES: tuple[str, ...] = (
+    "USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH",
+)
+
+
+def has_equity_suffix(symbol: object, *, include_compact: bool = False) -> bool:
     """Return True if ``symbol`` is a string ending in ``_EQ`` or ``_US_EQ`` (case-insensitive)."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return False
-    return symbol.strip().upper().endswith(("_EQ", "_US_EQ"))
+    s = symbol.strip().upper()
+    if s.endswith(("_EQ", "_US_EQ")):
+        return True
+    return bool(include_compact and len(s) > 4 and s.endswith("USEQ"))
+
+
+def ensure_equity_suffix(symbol: object, *, is_equity: bool = True, suffix: str = "_US_EQ") -> str:
+    """Append ``suffix`` when ``is_equity`` is True and ``symbol`` lacks an equity suffix."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return ""
+    if not is_equity or has_equity_suffix(symbol):
+        return symbol
+    s = symbol.strip().upper()
+    return f"{s}{suffix}" if s else symbol
+
+
+def filter_asset_class_variants(
+    symbol: object,
+    variants: object,
+    *,
+    is_equity: bool | None = None,
+    include_compact_equity: bool = False,
+) -> tuple[str, ...]:
+    """Filter ``variants`` so US equities (``_EQ``/``_US_EQ``) and crypto pairs never cross-contaminate."""
+    eq_flag = has_equity_suffix(symbol) if is_equity is None else bool(is_equity)
+    if eq_flag:
+        return tuple(
+            c
+            for c in (variants or ())
+            if isinstance(c, str) and not c.strip().upper().endswith(_CRYPTO_QUOTE_SUFFIXES)
+        )
+    return tuple(
+        c
+        for c in (variants or ())
+        if isinstance(c, str) and not has_equity_suffix(c, include_compact=include_compact_equity)
+    )
 
 
 def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
