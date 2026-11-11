@@ -97,10 +97,9 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         """Fetch breaking macro news and update geopolitical threat assessment."""
         force = _parse_bool_flag(force, False)
         try:
-            try:
-                news_snap = self.news_collector.fetch(force_refresh=force, now_ts=now)
-            except TypeError:
-                news_snap = self.news_collector.fetch(force_refresh=force)
+            news_snap = self._call_collector_fetch(
+                self.news_collector, force_refresh=force, now_ts=now
+            )
             try:
                 assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=now)
             except TypeError:

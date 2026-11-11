@@ -433,11 +433,16 @@ def add_walk_forward_cli_args(
 
 
 def parse_optional_lookback_days(
-    parser: argparse.ArgumentParser, raw_val: Any
+    parser: argparse.ArgumentParser,
+    raw_val: Any,
+    *,
+    allow_none: bool = True,
 ) -> int | None:
     """Validate optional ``--lookback-days`` CLI value as a positive integer."""
     if raw_val is None:
-        return None
+        if allow_none:
+            return None
+        parser.error("--lookback-days must be positive")
     lookback_days = exact_pos_int(raw_val, default=None)
     if lookback_days is None:
         parser.error("--lookback-days must be positive")

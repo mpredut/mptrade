@@ -428,6 +428,24 @@ def add_external_telemetry_cli_args(
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
 
 
+def run_daemon_cli_once_or_start(
+    instance: Any,
+    *,
+    once: bool,
+    force: bool = True,
+    once_msg: str = "Running single update cycle...",
+    logger_inst: Optional[logging.Logger] = None,
+) -> None:
+    """Execute a single daemon cycle when ``--once`` is set, otherwise start the daemon loop."""
+    log = logger_inst or logger
+    if once:
+        log.info(once_msg)
+        instance.run_cycle(force=force)
+        log.info("Cycle completed.")
+    else:
+        instance.start()
+
+
 def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) -> int:
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
@@ -499,6 +517,17 @@ class ExternalTelemetryMixin:
         label: str = "telemetry_step",
     ) -> bool:
         return run_step_bounded(fn, *args, timeout_sec=timeout_sec, label=label)
+
+    @staticmethod
+    def _call_collector_fetch(
+        collector: Any, *, force_refresh: bool, now_ts: Optional[float] = None
+    ) -> Any:
+        if now_ts is not None:
+            try:
+                return collector.fetch(force_refresh=force_refresh, now_ts=now_ts)
+            except TypeError:
+                pass
+        return collector.fetch(force_refresh=force_refresh)
 
     def _new_external_cycle_results(
         self, current_ts: float, **extra_fields: Any

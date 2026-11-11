@@ -27,7 +27,7 @@ if ROOT not in sys.path:
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from strategies import spot_engine as strat
 from botcore import normalize_epoch_sec, safe_float, safe_nonneg_int, safe_pos_float
-from state_io import read_text_lines
+from state_io import atomic_write_json, read_text_lines
 
 
 def load_ohlc_with_timestamps_csv(
@@ -271,3 +271,20 @@ def evaluate_asset(
                 "error": str(exc),
             })
     return results
+
+
+def save_validated_ablation_results(
+    results: list[dict[str, Any]],
+    out_json: str,
+    *,
+    empty_error_msg: str,
+    saved_label: str = "Raw results",
+) -> list[dict[str, Any]]:
+    """Verify at least one non-error ablation row exists, then persist ``results`` to ``out_json``."""
+    valid_results = [r for r in results if isinstance(r, dict) and "error" not in r]
+    if not valid_results:
+        print(f"\n{empty_error_msg}", file=sys.stderr)
+        sys.exit(1)
+    atomic_write_json(out_json, results, indent=2)
+    print(f"\n{saved_label} saved to {out_json}")
+    return valid_results

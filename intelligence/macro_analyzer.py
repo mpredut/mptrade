@@ -42,6 +42,7 @@ from intelligence.macro.daemon_ssot import (
     compute_step_retry_ts,
     configure_daemon_cli_logging,
     prune_automated_cli_threads,
+    run_daemon_cli_once_or_start,
     run_daemon_loop,
     write_daemon_heartbeat,
 )
@@ -487,12 +488,13 @@ def main():
         macro_llm_interval_sec=args.macro_llm_interval,
         advisor_interval_sec=args.advisor_interval,
     )
-    if args.once:
-        logger.info("Running single macro analysis cycle...")
-        analyzer.run_cycle(force=args.force)
-        logger.info("Cycle completed.")
-    else:
-        analyzer.start()
+    run_daemon_cli_once_or_start(
+        analyzer,
+        once=args.once,
+        force=args.force,
+        once_msg="Running single macro analysis cycle...",
+        logger_inst=logger,
+    )
 
 
 if __name__ == "__main__":

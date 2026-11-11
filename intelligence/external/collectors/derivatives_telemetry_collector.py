@@ -126,12 +126,8 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         if resolved is None:
             return None
         ctx, _, mark_px = resolved
-        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
-        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
-        total_opt_contracts = call_oi + put_oi
+        _, _, _, oi_shares, oi_usd = self._extract_equity_options_oi(ctx, mark_px)
         idx_px = mark_px
-        oi_shares = total_opt_contracts * 100.0
-        oi_usd = round(oi_shares * mark_px, 2)
         funding_equiv = 0.0
         basis_bps = 0.0
         telemetry = DerivativesTelemetry(
@@ -160,12 +156,9 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             return ready
 
         if is_equity_symbol(symbol):
-            try:
-                if (eq_tel := self._fetch_equity_derivatives(symbol, now)) is not None:
-                    return eq_tel
-            except Exception as eq_exc:
-                logger.warning("Could not fetch equity derivatives telemetry for %s: %s", symbol, eq_exc)
-            return self._fallback_stale(symbol, cached)
+            return self._fetch_equity_or_fallback(
+                symbol, now, cached, self._fetch_equity_derivatives, "equity derivatives telemetry", logger
+            )
 
         is_hl_primary = MarketDataProvider.has_native_l1_derivatives(venue_for_symbol(symbol))
         if is_hl_primary:

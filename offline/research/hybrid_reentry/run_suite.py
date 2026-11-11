@@ -18,6 +18,7 @@ from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,
     load_ohlc_with_timestamps_csv,
+    save_validated_ablation_results,
 )
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
@@ -114,15 +115,12 @@ def main():
             print(f"    [ERROR] {asset} {err_row.get('test_id')}: {err_row.get('error')}")
         all_results.extend(res)
 
-    valid_results = [r for r in all_results if isinstance(r, dict) and "error" not in r]
-    if not valid_results:
-        print("\nERROR: No valid ablation results produced; keeping existing output files untouched.", file=sys.stderr)
-        sys.exit(1)
-
-    # Save raw results
-    out_json = os.path.join(OUT_DIR, "ablation_results.json")
-    atomic_write_json(out_json, all_results, indent=2)
-    print(f"\nRaw results saved to {out_json}")
+    save_validated_ablation_results(
+        all_results,
+        os.path.join(OUT_DIR, "ablation_results.json"),
+        empty_error_msg="ERROR: No valid ablation results produced; keeping existing output files untouched.",
+        saved_label="Raw results",
+    )
 
     # Aggregate by test variant
     variant_names = {k: v[0] for k, v in build_ablation_variants(BASE_PARAMS).items()}

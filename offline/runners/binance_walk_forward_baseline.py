@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float
 from cachepaths import split_symbol_assets
 from offline.backtests.datasets import (
     dataset_metadata,
@@ -31,6 +31,7 @@ from offline.backtests.evaluation import (
     extract_cfg_int,
     parse_dataset_specs,
     parse_intervals,
+    parse_optional_lookback_days,
 )
 from providers.market_api import api as mkt
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
@@ -61,9 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if safe_nonneg_float(args.fee, default=None) is None:
         parser.error("--fee cannot be negative")
-    lookback_days = safe_pos_int(args.lookback_days, default=0)
-    if lookback_days <= 0:
-        parser.error("--lookback-days must be positive")
+    lookback_days = parse_optional_lookback_days(
+        parser, args.lookback_days, allow_none=False
+    ) or 630
 
     try:
         cfg = load_layered_env_config(

@@ -14,8 +14,8 @@ from offline.backtests.evaluation import load_venue_replay_module
 from offline.research.hybrid_reentry.harness import (
     evaluate_asset,
     load_ohlc_with_timestamps_csv,
+    save_validated_ablation_results,
 )
-from state_io import atomic_write_json
 from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -134,12 +134,12 @@ def main():
                     f"| Cycles {row['cycles']}"
                 )
 
-    if not results or not any("error" not in r for r in results):
-        print("\nERROR: No valid equity ablation results produced; refusing to overwrite report JSON.", file=sys.stderr)
-        sys.exit(1)
-    out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
-    atomic_write_json(out_json, results, indent=2)
-    print(f"\nEquities results saved to {out_json}")
+    save_validated_ablation_results(
+        results,
+        os.path.join(OUT_DIR, "equities_ablation_results.json"),
+        empty_error_msg="ERROR: No valid equity ablation results produced; refusing to overwrite report JSON.",
+        saved_label="Equities results",
+    )
 
 
 if __name__ == "__main__":

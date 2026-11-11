@@ -131,12 +131,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return ready
 
         if is_equity_symbol(symbol):
-            try:
-                if (eq_ob := self._fetch_equity_orderbook(symbol, now)) is not None:
-                    return eq_ob
-            except Exception as eq_exc:
-                logger.warning("Could not fetch equity orderbook depth for %s: %s", symbol, eq_exc)
-            return self._fallback_stale(symbol, cached)
+            return self._fetch_equity_or_fallback(
+                symbol, now, cached, self._fetch_equity_orderbook, "equity orderbook depth", logger
+            )
 
         lookup_sym = resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)

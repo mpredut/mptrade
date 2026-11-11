@@ -547,6 +547,33 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
         return self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
 
+    def _fetch_equity_or_fallback(
+        self,
+        symbol: str,
+        now: float,
+        cached: Any,
+        fetch_fn: Callable[[str, float], Optional[Any]],
+        label: str,
+        logger_inst: logging.Logger,
+    ) -> Optional[Any]:
+        try:
+            if (eq_snap := fetch_fn(symbol, now)) is not None:
+                return eq_snap
+        except Exception as eq_exc:
+            logger_inst.warning("Could not fetch %s for %s: %s", label, symbol, eq_exc)
+        return self._fallback_stale(symbol, cached)
+
+    @staticmethod
+    def _extract_equity_options_oi(
+        ctx: Dict[str, Any], mark_px: float
+    ) -> Tuple[float, float, float, float, float]:
+        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
+        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
+        total_opt = call_oi + put_oi
+        oi_shares = total_opt * 100.0
+        oi_usd = round(oi_shares * mark_px, 2)
+        return call_oi, put_oi, total_opt, oi_shares, oi_usd
+
     def record_snapshot(self, item: Any, save_to_disk: bool = False) -> None:
         if isinstance(item, dict):
             item = self._SNAPSHOT_CLS.from_dict(item)

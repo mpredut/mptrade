@@ -34,6 +34,7 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
+    run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
     write_daemon_heartbeat,
@@ -123,15 +124,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         if now is not None:
             return safe_pos_float(now, default=None)
         return safe_pos_float(getattr(self, "_active_cycle_ts", None), default=None)
-
-    @staticmethod
-    def _call_collector_fetch(collector: Any, *, force_refresh: bool, now_ts: Optional[float]) -> Any:
-        if now_ts is not None:
-            try:
-                return collector.fetch(force_refresh=force_refresh, now_ts=now_ts)
-            except TypeError:
-                pass
-        return collector.fetch(force_refresh=force_refresh)
 
     def update_news(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""
@@ -371,12 +363,9 @@ def main():
         skip_news=args.skip_news,
         skip_external=args.skip_external,
     )
-    if args.once:
-        logger.info("Running single update cycle...")
-        collector.run_cycle(force=True)
-        logger.info("Cycle completed.")
-    else:
-        collector.start()
+    run_daemon_cli_once_or_start(
+        collector, once=args.once, force=True, logger_inst=logger
+    )
 
 
 if __name__ == "__main__":
