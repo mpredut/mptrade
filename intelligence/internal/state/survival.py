@@ -23,7 +23,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from binance_api.market_data import fetch_ohlc_candles
 from botcore import (
     _parse_bool_flag,
     is_live_network_backfill_enabled,
@@ -67,61 +66,16 @@ def _effective_t_cache_file() -> str:
 
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
-    """Return paginated Binance history with 1,000 candles per request (falling back to Kraken 1h OHLC or Yahoo Finance for equities)."""
-    sym_u = str(symbol or "").strip().upper()
-    if is_equity_symbol(sym_u):
-        try:
-            import importlib
+    """Return historical ``(timestamps_sec, closes)`` OHLC arrays via the canonical ``MarketApi`` provider facade."""
+    from providers.market_api import api as _market_api
 
-            market_data = importlib.import_module("212trading.market_data")
-            yahoo_sym = market_data.t212_to_yahoo(sym_u)
-            iv_norm = str(interval or "1h").strip()
-            if iv_norm not in ("5m", "15m", "30m", "1h", "1d"):
-                iv_norm = "1h"
-            max_days = 59 if iv_norm in ("5m", "15m", "30m") else 720
-            days_i = min(max(1, safe_pos_int(days, default=30) or 30), max_days)
-            bars = market_data.fetch_yahoo_candles(
-                yahoo_sym, f"{days_i}d", iv_norm, drop_incomplete=False
-            ) or []
-            y_ts: list[float] = []
-            y_px: list[float] = []
-            for b in bars:
-                if not isinstance(b, dict):
-                    continue
-                tf = normalize_epoch_sec(b.get("timestamp"), default=None)
-                pf = safe_pos_float(b.get("close"), default=None)
-                if tf is not None and pf is not None:
-                    y_ts.append(tf)
-                    y_px.append(pf)
-            return np.asarray(y_ts, dtype=float), np.asarray(y_px, dtype=float)
-        except Exception:
-            return np.asarray([], dtype=float), np.asarray([], dtype=float)
-    candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
-    ts_list: list[float] = []
-    px_list: list[float] = []
-    for c in candles:
-        if not isinstance(c, dict):
-            continue
-        tf = normalize_epoch_sec(c.get("timestamp"), default=None)
-        pf = safe_pos_float(c.get("close"), default=None)
-        if tf is not None and pf is not None:
-            ts_list.append(tf)
-            px_list.append(pf)
-    if len(ts_list) < 50 and is_live_network_backfill_enabled():
-        try:
-            from providers.kraken_provider import KrakenProvider
-
-            base_u = normalize_cache_base_asset(symbol)
-            krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
-            s60 = KrakenProvider().ohlc_series(krk_sym, 60)
-            k_ts = [float(t) for t in getattr(s60, "timestamps", ()) if (safe_pos_float(t, default=None) or 0.0) > 0]
-            k_px = [float(p) for p in getattr(s60, "closes", ()) if (safe_pos_float(p, default=None) or 0.0) > 0]
-            if len(k_ts) >= 50 and len(k_ts) == len(k_px):
-                ts_list, px_list = k_ts, k_px
-        except Exception:
-            pass
-    return np.asarray(ts_list, dtype=float), np.asarray(px_list, dtype=float)
-
+    pts = _market_api.fetch_historical_ohlc_points(symbol, days, interval=interval)
+    if not pts:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    return (
+        np.asarray([t for t, _ in pts], dtype=float),
+        np.asarray([p for _, p in pts], dtype=float),
+    )
 
 def _coerce_xy_pairs(xs: Any, ys: Any, parser_x: Any, parser_y: Any) -> tuple[list[float], list[float]]:
     if xs is None or ys is None or isinstance(xs, (bool, str, bytes)) or isinstance(ys, (bool, str, bytes)):

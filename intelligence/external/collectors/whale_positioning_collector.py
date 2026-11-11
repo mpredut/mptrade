@@ -20,7 +20,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
-from instrument_registry import venue_for_symbol
+from instrument_registry import is_equity_symbol, venue_for_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
@@ -247,7 +247,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
-        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if is_equity_symbol(symbol):
             try:
                 ctx = self._fetch_equity_market_context(symbol, now)
                 if isinstance(ctx, dict):

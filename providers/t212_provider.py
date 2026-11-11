@@ -21,6 +21,7 @@ from botcore import (
     _parse_bool_flag,
     env_value,
     env_values_map,
+    normalize_epoch_sec,
     normalize_side,
     safe_float,
     safe_nonneg_float,
@@ -186,6 +187,42 @@ class T212Provider(MarketDataProvider):
             return None
 
     # -- Market data. ----------------------------------------------------------
+    @classmethod
+    def fetch_public_market_price_usd(cls, symbol: str) -> Optional[float]:
+        market_data = importlib.import_module("212trading.market_data")
+        yahoo_sym = market_data.t212_to_yahoo(symbol)
+        return safe_pos_float(market_data.get_price_usd(yahoo_sym), default=None)
+
+    def fetch_historical_ohlc_points(
+        self,
+        symbol: str,
+        days: int,
+        interval: str = "1h",
+    ) -> list[tuple[float, float]]:
+        sym_u = str(symbol or "").strip().upper()
+        try:
+            market_data = importlib.import_module("212trading.market_data")
+            yahoo_sym = market_data.t212_to_yahoo(sym_u)
+            iv_norm = str(interval or "1h").strip()
+            if iv_norm not in ("5m", "15m", "30m", "1h", "1d"):
+                iv_norm = "1h"
+            max_days = 59 if iv_norm in ("5m", "15m", "30m") else 720
+            days_i = min(max(1, safe_pos_int(days, default=30) or 30), max_days)
+            bars = market_data.fetch_yahoo_candles(
+                yahoo_sym, f"{days_i}d", iv_norm, drop_incomplete=False
+            ) or []
+            out: list[tuple[float, float]] = []
+            for b in bars:
+                if not isinstance(b, dict):
+                    continue
+                tf = normalize_epoch_sec(b.get("timestamp"), default=None)
+                pf = safe_pos_float(b.get("close"), default=None)
+                if tf is not None and pf is not None:
+                    out.append((tf, pf))
+            return out
+        except Exception:
+            return []
+
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         p = self._position(symbol)
         if p:
@@ -194,9 +231,7 @@ class T212Provider(MarketDataProvider):
                 return px
         # Fallback to market data feed when no open position is held in the account
         try:
-            market_data = importlib.import_module("212trading.market_data")
-            yahoo_sym = market_data.t212_to_yahoo(symbol)
-            return safe_pos_float(market_data.get_price_usd(yahoo_sym), default=None)
+            return self.fetch_public_market_price_usd(symbol)
         except Exception as e:
             print(f"[T212] get_current_price fallback {symbol}: {e}")
         return None

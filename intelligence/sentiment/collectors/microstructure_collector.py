@@ -233,32 +233,20 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         sym_q = sym_parts[1] if sym_parts is not None else ""
         if sym_clean == "HYPEUSDC":
             prov_key = "hyperliquid"
-            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
-                    prov_key,
-                    lambda: __import__("providers.hyperliquid_provider", fromlist=["HyperliquidProvider"]).HyperliquidProvider().ohlc_series,
-                    is_factory=True,
-                )
         elif sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
             prov_key = "binance"
-            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
-                    prov_key,
-                    lambda: getattr(
-                        __import__("providers.market_api", fromlist=["api"]).api.provider_by_name("binance"),
-                        "ohlc_series",
-                        None,
-                    ),
-                    is_factory=True,
-                )
         elif sym_q == "USD" or (sym_u.endswith("USD") and not is_equity_symbol(sym_u) and not sym_u.endswith(("FDUSD", "TUSD", "BUSD"))):
             prov_key = "kraken"
-            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
-                    prov_key,
-                    lambda: __import__("providers.kraken_provider", fromlist=["KrakenProvider"]).KrakenProvider().ohlc_series,
-                    is_factory=True,
-                )
+        if prov_key and prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+            _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
+                prov_key,
+                lambda pk=prov_key: getattr(
+                    __import__("providers.market_api", fromlist=["api"]).api.provider_by_name(pk),
+                    "ohlc_series",
+                    None,
+                ),
+                is_factory=True,
+            )
         if prov_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(prov_key)):
             return cached_fn
     except Exception:
@@ -798,10 +786,9 @@ def _refresh_stale_t212_cached_positions(
             if (now_ts - prev_c_ts) < max_age_sec:
                 continue
             try:
-                import importlib as _imp
+                from providers.base import MarketDataProvider
 
-                _md = _imp.import_module("212trading.market_data")
-                cur_px_fb = safe_pos_float(_md.get_price_usd(_md.t212_to_yahoo(rticker)), default=None)
+                cur_px_fb = MarketDataProvider.resolve_venue_public_price_usd("t212", rticker)
                 if cur_px_fb is not None:
                     prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
                     new_c_px = round(cur_px_fb, 4)

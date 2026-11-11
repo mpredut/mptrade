@@ -35,6 +35,11 @@ from botcore import (
     safe_pos_float,
     split_csv,
 )
+from cachepaths import (
+    canonical_symbol_key,
+    normalize_cache_base_asset,
+    resolve_kraken_lookup_symbol,
+)
 from .base import (
     MarketDataProvider,
     extract_order_id,
@@ -1306,6 +1311,34 @@ class KrakenProvider(MarketDataProvider):
             if (pair_dec := exact_nonneg_int(p_meta.get("pair_decimals"), default=None)) is not None and pair_dec <= 18:
                 out["tick_size"] = round(10.0 ** (-pair_dec), 8)
         return out
+
+    @classmethod
+    def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        canon_sym = canonical_symbol_key(symbol)
+        if canon_sym.endswith("EUR"):
+            base_asset = normalize_cache_base_asset(canon_sym)
+            bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
+            krk_eur_pair = (
+                "XBTEUR"
+                if base_asset == "BTC"
+                else ("XDGEUR" if base_asset == "DOGE" else bin_eur_sym)
+            )
+            return (f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",), ()
+        kraken_pair = resolve_kraken_lookup_symbol(symbol)
+        return (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",), ()
+
+    def fetch_historical_ohlc_points(
+        self,
+        symbol: str,
+        days: int,
+        interval: str = "1h",
+    ) -> list[tuple[float, float]]:
+        base_u = normalize_cache_base_asset(symbol)
+        krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
+        s60 = self.ohlc_series(krk_sym, 60)
+        k_ts = [float(t) for t in getattr(s60, "timestamps", ()) if (safe_pos_float(t, default=None) or 0.0) > 0]
+        k_px = [float(p) for p in getattr(s60, "closes", ()) if (safe_pos_float(p, default=None) or 0.0) > 0]
+        return list(zip(k_ts, k_px)) if len(k_ts) == len(k_px) else []
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = exact_pos_int(interval_min, default=None)

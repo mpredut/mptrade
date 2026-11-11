@@ -19,11 +19,9 @@ from intelligence.macro_sentiment_ssot import (
 )
 from cachepaths import (
     canonical_symbol_key,
-    normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
-    resolve_kraken_lookup_symbol,
 )
-from instrument_registry import venue_for_symbol
+from instrument_registry import is_equity_symbol, venue_for_symbol
 from providers.base import MarketDataProvider
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
@@ -133,7 +131,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if is_equity_symbol(symbol):
             try:
                 if (eq_ob := self._fetch_equity_orderbook(symbol, now)) is not None:
                     return eq_ob
@@ -146,67 +144,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         try:
             data = None
             last_err: Optional[Exception] = None
-            kraken_pair = resolve_kraken_lookup_symbol(symbol)
-            hl_book_url = ""
-            if canon_sym.endswith("EUR"):
-                base_asset = normalize_cache_base_asset(canon_sym)
-                bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
-                krk_eur_pair = (
-                    "XBTEUR"
-                    if base_asset == "BTC"
-                    else ("XDGEUR" if base_asset == "DOGE" else bin_eur_sym)
-                )
-                base_urls: Tuple[str, ...] = (
-                    f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",
-                    f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",
-                )
-            else:
-                usdc_sym = f"{normalize_cache_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
-                spot_urls = (
-                    (
-                        f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
-                        f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
-                    )
-                    if (usdc_sym and usdc_sym != lookup_sym)
-                    else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
-                )
-                hl_coin = normalize_cache_base_asset(canon_sym)
-                hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
-                venue = venue_for_symbol(canon_sym)
-                multi_venue = _is_multi_venue_base(canon_sym)
-                if venue == "kraken":
-                    base_urls = (
-                        (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",)
-                        if multi_venue
-                        else (
-                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                            *spot_urls,
-                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                            *((hl_book_url,) if hl_book_url else ()),
-                        )
-                    )
-                elif venue == "hyperliquid" and hl_book_url:
-                    base_urls = (
-                        (hl_book_url,)
-                        if multi_venue
-                        else (
-                            hl_book_url,
-                            *spot_urls,
-                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                        )
-                    )
-                else:
-                    base_urls = (
-                        spot_urls
-                        if multi_venue
-                        else (
-                            *spot_urls,
-                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                            *((hl_book_url,) if hl_book_url else ()),
-                        )
-                    )
+            base_urls, hl_book_url = MarketDataProvider.resolve_orderbook_depth_urls(
+                canon_sym,
+                venue=venue_for_symbol(canon_sym),
+                multi_venue=_is_multi_venue_base(canon_sym),
+            )
             pref_url = self._preferred_url.get(symbol)
             urls = (
                 (pref_url, *(u for u in base_urls if u != pref_url))

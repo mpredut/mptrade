@@ -1218,6 +1218,79 @@ class MarketDataProvider(ABC):
         )
 
     @classmethod
+    def fetch_public_market_price_usd(cls, symbol: str) -> Optional[float]:
+        """Return public unauthenticated USD spot/equity price for ``symbol`` if supported."""
+        return None
+
+    @classmethod
+    def resolve_venue_public_price_usd(cls, venue: object, symbol: str) -> Optional[float]:
+        """Resolve public USD market price for ``symbol`` via the registered venue provider class."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        fn = getattr(prov_cls, "fetch_public_market_price_usd", None) if prov_cls is not None else None
+        return fn(symbol) if callable(fn) else None
+
+    @classmethod
+    def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return ``(primary_urls, secondary_urls)`` public L2 orderbook endpoints for ``symbol``."""
+        return ((), ())
+
+    @classmethod
+    def resolve_orderbook_depth_urls(
+        cls,
+        symbol: str,
+        *,
+        venue: str = "",
+        multi_venue: bool = False,
+    ) -> tuple[tuple[str, ...], str]:
+        """Return ``(ordered_depth_urls, hl_book_url)`` across registered venue providers."""
+        canon_sym = canonical_symbol_key(symbol)
+        if canon_sym.endswith("EUR"):
+            eur_urls: list[str] = []
+            for v_key in ("binance", "kraken"):
+                prov_cls = cls.resolve_venue_provider_class(v_key)
+                if prov_cls is not None:
+                    prim, _ = prov_cls.public_orderbook_depth_urls(canon_sym)
+                    eur_urls.extend(prim)
+            return tuple(eur_urls), ""
+
+        primary_map: dict[str, tuple[str, ...]] = {}
+        secondary_map: dict[str, tuple[str, ...]] = {}
+        for v_key in ("binance", "kraken", "hyperliquid"):
+            prov_cls = cls.resolve_venue_provider_class(v_key)
+            if prov_cls is not None:
+                prim, sec = prov_cls.public_orderbook_depth_urls(canon_sym)
+                primary_map[v_key] = prim
+                secondary_map[v_key] = sec
+            else:
+                primary_map[v_key] = ()
+                secondary_map[v_key] = ()
+
+        hl_urls = primary_map.get("hyperliquid", ())
+        hl_book_url = hl_urls[0] if hl_urls else ""
+        v_norm = normalize_venue_name(venue)
+        eff_venue = v_norm if (v_norm in primary_map and primary_map[v_norm]) else "binance"
+        if multi_venue:
+            return primary_map.get(eff_venue, ()), hl_book_url
+
+        ordered: list[str] = list(primary_map.get(eff_venue, ()))
+        for peer in ("binance", "kraken"):
+            if peer != eff_venue:
+                ordered.extend(primary_map.get(peer, ()))
+        ordered.extend(secondary_map.get("binance", ()))
+        if eff_venue != "hyperliquid":
+            ordered.extend(hl_urls)
+        return tuple(ordered), hl_book_url
+
+    def fetch_historical_ohlc_points(
+        self,
+        symbol: str,
+        days: int,
+        interval: str = "1h",
+    ) -> list[tuple[float, float]]:
+        """Return historical ``(epoch_sec, close_price)`` OHLC points for ``symbol``."""
+        return []
+
+    @classmethod
     def normalize_orderbook_payload(cls, raw_data: Any) -> Optional[dict]:
         """Normalize L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""
         if not isinstance(raw_data, dict):

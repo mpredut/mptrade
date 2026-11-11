@@ -149,6 +149,33 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return provider.ohlc_closes(symbol, interval_min) if hasattr(provider, "ohlc_closes") else []
 
+    def fetch_historical_ohlc_points(
+        self,
+        symbol: str,
+        days: int,
+        interval: str = "1h",
+    ) -> list[tuple[float, float]]:
+        """Return historical ``(epoch_sec, close_price)`` OHLC points across configured venue providers."""
+        from botcore import is_live_network_backfill_enabled
+        from instrument_registry import is_equity_symbol
+
+        sym_u = str(symbol or "").strip().upper()
+        if is_equity_symbol(sym_u):
+            t212_prov = self.provider_by_name("t212")
+            return t212_prov.fetch_historical_ohlc_points(sym_u, days, interval=interval) if t212_prov is not None else []
+        bn_prov = self.provider_by_name("binance")
+        pts = bn_prov.fetch_historical_ohlc_points(symbol, days, interval=interval) if bn_prov is not None else []
+        if len(pts) < 50 and is_live_network_backfill_enabled():
+            krk_prov = self.provider_by_name("kraken")
+            if krk_prov is not None:
+                try:
+                    k_pts = krk_prov.fetch_historical_ohlc_points(symbol, days, interval=interval)
+                    if len(k_pts) >= 50:
+                        pts = k_pts
+                except Exception:
+                    pass
+        return pts
+
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
         """Return free balance for asset from its routed provider."""

@@ -2315,3 +2315,38 @@ def test__diskbackedsymbolcollector__fetch_json_dict_and__fetch_latest_json_row_
     )
     latest, rows = _DiskBackedSymbolCollector._fetch_latest_json_row("https://example.com", "topLongShortPositionRatio", "BTCUSDT")
     assert latest == {"longShortRatio": "1.5"} and len(rows) == 2
+
+
+def test_intelligence_and_market_monitor_zero_venue_sdk_imports_ast():
+    """Enforce zero direct venue SDK imports across all intelligence/ and market_monitor/ modules."""
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    forbidden_venue_sdks = {"binance_api", "kraken", "hyperliquid", "212trading"}
+
+    for pkg_name in ("intelligence", "market_monitor"):
+        pkg_dir = repo_root / pkg_name
+        for py_file in sorted(pkg_dir.rglob("*.py")):
+            rel = str(py_file.relative_to(repo_root))
+            source = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=rel)
+            imported: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        imported.add(alias.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module.split(".")[0])
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "import_module"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    imported.add(node.args[0].value.split(".")[0])
+            leak = imported & forbidden_venue_sdks
+            assert not leak, f"{rel} imports venue SDK directly instead of providers/: {leak}"
+

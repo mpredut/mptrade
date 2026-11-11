@@ -574,7 +574,7 @@ class TestUnifiedWeightResolution(unittest.TestCase):
 
         with (
             patch.object(md, "fetch_yahoo_candles", return_value=raw_bars) as mock_yahoo,
-            patch.object(surv, "fetch_ohlc_candles") as mock_binance,
+            patch("binance_api.market_data.fetch_ohlc_candles") as mock_binance,
         ):
             ts_k, px_k = surv.fetch_klines("NVDA_US_EQ", 33, "1h")
             self.assertEqual(len(ts_k), len(raw_bars))

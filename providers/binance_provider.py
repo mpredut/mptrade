@@ -5,12 +5,18 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    normalize_epoch_sec,
     require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_symbol_variants, canonical_symbol_key
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_symbol_key,
+    normalize_cache_base_asset,
+    resolve_binance_lookup_symbol,
+)
 from instrument_registry import casefold_get, venue_for_symbol
 
 from .base import (
@@ -448,6 +454,43 @@ class BinanceProvider(MarketDataProvider):
         except BinanceFilterError as exc:
             return binance_filter_refusal_reason(exc)
         return None
+
+    @classmethod
+    def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        canon_sym = canonical_symbol_key(symbol)
+        if canon_sym.endswith("EUR"):
+            base_asset = normalize_cache_base_asset(canon_sym)
+            bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
+            return (f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",), ()
+        lookup_sym = resolve_binance_lookup_symbol(symbol)
+        usdc_sym = f"{normalize_cache_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
+        spot_urls = (
+            (
+                f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
+                f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+            )
+            if (usdc_sym and usdc_sym != lookup_sym)
+            else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
+        )
+        return spot_urls, (f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",)
+
+    def fetch_historical_ohlc_points(
+        self,
+        symbol: str,
+        days: int,
+        interval: str = "1h",
+    ) -> list[tuple[float, float]]:
+        md = importlib.import_module("binance_api.market_data")
+        candles = md.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
+        out: list[tuple[float, float]] = []
+        for c in candles:
+            if not isinstance(c, dict):
+                continue
+            tf = normalize_epoch_sec(c.get("timestamp"), default=None)
+            pf = safe_pos_float(c.get("close"), default=None)
+            if tf is not None and pf is not None:
+                out.append((tf, pf))
+        return out
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         iv = candle_interval(interval_min)

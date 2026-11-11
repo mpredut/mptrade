@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from botcore import safe_nonneg_float, safe_pos_float
 from cachepaths import resolve_binance_lookup_symbol
-from instrument_registry import venue_for_symbol
+from instrument_registry import is_equity_symbol, venue_for_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
@@ -162,7 +162,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        if venue_for_symbol(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+        if is_equity_symbol(symbol):
             try:
                 if (eq_tel := self._fetch_equity_derivatives(symbol, now)) is not None:
                     return eq_tel

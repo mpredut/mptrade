@@ -40,6 +40,8 @@ from botcore import (
 from cachepaths import (
     CACHE_HYPERLIQUID_TRADE_FILENAME,
     canonical_base_asset,
+    canonical_symbol_key,
+    normalize_cache_base_asset,
     split_symbol_assets,
 )
 from instrument_registry import casefold_get
@@ -875,6 +877,16 @@ class HyperliquidProvider(MarketDataProvider):
             eff_px_dec = min(max(8 - sz_dec, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
             out["tick_size"] = round(10.0 ** (-eff_px_dec), 8)
         return out
+
+    @classmethod
+    def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        canon_sym = canonical_symbol_key(symbol)
+        if canon_sym.endswith("EUR"):
+            return (), ()
+        hl_coin = normalize_cache_base_asset(canon_sym)
+        if not hl_coin:
+            return (), ()
+        return (f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}",), ()
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)

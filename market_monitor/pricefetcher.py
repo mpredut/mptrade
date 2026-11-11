@@ -14,7 +14,6 @@ from urllib.parse import quote
 from abc import ABC, abstractmethod
 
 import instrument_registry as sym
-from binance_api import bapi as api
 from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, required_env, safe_pos_float, safe_pos_int
 from cachepaths import CACHE_WATCHER_ALL_PRICE_FILENAME, cache_path, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
@@ -22,9 +21,8 @@ from instrument_registry import casefold_get
 # Import the base classes and factory
 from cacheManager import CacheFactory
 from cacheprice import CachePriceManagerBase
-# Market-data facade. market_api imports binance_api.bapi without importing pricefetcher,
-# so this direction is safe. BinancePricePlatform uses the facade as its price client.
 import providers.market_api as _market_api
+from providers.market_api import api
 from providers.quantity import resolve_assets
 
 
