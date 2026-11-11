@@ -55,6 +55,7 @@ import log
 from botcore import _parse_bool_flag, float_env, load_env_stack, load_ini_config, safe_float, single_instance
 from cachepaths import cache_path
 from instrument_registry import select_instruments
+from notify_engine import alertnotifiers as alert
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
@@ -455,7 +456,6 @@ def _restart_monitortrades():
 
 def _notify_change(full_key, symbol, old_value, new_value, winner_val, entry):
     try:
-        from notify_engine import alertnotifiers as alert
         body = (f"{full_key}: {old_value} -> {new_value} "
                 f"(a backtest winner confirmed on 2 windows: {winner_val}, "
                 f"averaged with the old value)")
@@ -678,7 +678,6 @@ def main():
             # notify user that new proposals are available to review and apply
             try:
                 load_env_stack()
-                from notify_engine import alertnotifiers as alert
                 lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
                          for p in proposals]
                 alert.notify(title=f"Backtest: {len(proposals)} new config proposal(s)",

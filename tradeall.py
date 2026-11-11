@@ -1,4 +1,5 @@
 import os
+import signal as _signal
 import time
 import datetime
 import threading
@@ -1016,7 +1017,6 @@ if __name__ == "__main__":
         current_price_mgr=current_price_mgr,
         cache24_managers=cache24_managers,
     )
-    import signal as _signal
 
     def _request_stop(_signum=None, _frame=None):
         coordinator.stop()

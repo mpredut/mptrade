@@ -6,14 +6,10 @@ from datetime import datetime, timedelta, timezone
 import importlib
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None  # type: ignore[assignment]
 
 from botcore import (
     _parse_bool_flag,

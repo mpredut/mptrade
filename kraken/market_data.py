@@ -26,11 +26,7 @@ from botcore import (
     safe_pos_float,
 )
 from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
-
-try:
-    from kraken.kraken_client import KrakenClient, KrakenError
-except ImportError:
-    from kraken_client import KrakenClient, KrakenError
+from kraken.kraken_client import KrakenClient, KrakenError
 
 
 def fetch_ohlc_candles(

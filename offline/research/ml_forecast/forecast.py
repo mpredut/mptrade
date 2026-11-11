@@ -26,6 +26,10 @@ if _ROOT not in sys.path:
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int  # noqa: E402
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor  # noqa: E402
+from sklearn.linear_model import LogisticRegression  # noqa: E402
+from sklearn.pipeline import make_pipeline  # noqa: E402
+from sklearn.preprocessing import StandardScaler  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 HORIZON_H = 24
@@ -86,11 +90,6 @@ def build_dataset(px: np.ndarray):
 
 def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     """Train on the past, predict the UNSEEN future, and refit weekly."""
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-
     n = len(X)
     if n == 0:
         return {
@@ -141,10 +140,6 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
 
 def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> dict:
     """Train on ALL history and forecast from the latest candle."""
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
     boost_acc = safe_float(rep.get("boost"), default=None) if isinstance(rep, dict) else None
     logit_acc = safe_float(rep.get("logit"), default=None) if isinstance(rep, dict) else None
     lindy_acc = safe_float(rep.get("lindy"), default=None) if isinstance(rep, dict) else None

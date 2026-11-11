@@ -11,12 +11,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from offline.simulations.sim import PriceWindow
+import matplotlib.pyplot as plt  # noqa: E402
 
 
 def plot_graphs(price_window, full_prices):
     """Plot the charts with every price and the current window."""
-    import matplotlib.pyplot as plt
-
     # Clear previous charts.
     plt.clf()
 
@@ -55,8 +54,6 @@ def plot_graphs(price_window, full_prices):
 
 
 def main():
-    import matplotlib.pyplot as plt
-
     window_size = 10
     max_full_prices = 500
     price_window = PriceWindow(window_size)

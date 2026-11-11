@@ -38,14 +38,9 @@ from botcore import (
     safe_pos_float,
     single_instance,
 )
-try:
-    from kraken.kraken_common import notify
-    from kraken.kraken_client import KrakenClient, KrakenError
-    from kraken.market_data import check_pair_listing, get_price
-except ImportError:
-    from kraken_common import notify
-    from kraken_client import KrakenClient, KrakenError
-    from market_data import check_pair_listing, get_price
+from kraken.kraken_common import notify
+from kraken.kraken_client import KrakenClient, KrakenError
+from kraken.market_data import check_pair_listing, get_price
 from strategies.spot_engine import Strategy, StratParams
 
 # Provider-agnostic path B requires the StrategyExecutor contract. Wrap the _BOT client

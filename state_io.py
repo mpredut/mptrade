@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import fcntl
 import glob
 import gzip
 import json
@@ -19,10 +20,6 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore[assignment]
 
 from cachepaths import (
     STALE_STAGING_MAX_AGE_SEC,

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import builtins
 import os
+import signal as _signal
 import threading
 import time
 from typing import Optional
@@ -699,8 +700,6 @@ if __name__ == "__main__":
 
     def _request_stop(_signum=None, _frame=None):
         _stop_requested.set()
-
-    import signal as _signal
 
     _signal.signal(_signal.SIGTERM, _request_stop)
     _signal.signal(_signal.SIGINT, _request_stop)

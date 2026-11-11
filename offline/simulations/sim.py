@@ -11,6 +11,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import exact_pos_int, safe_float, safe_nonneg_float  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 
 
 class PriceWindow:
@@ -113,8 +114,6 @@ class PriceWindow:
 
     def plot_window(self):
         """Plot the values in the window and mark the low and the high."""
-        import matplotlib.pyplot as plt
-
         prices = list(self.prices)
         min_price, min_pos = self.get_min()
         max_price, max_pos = self.get_max()
@@ -135,8 +134,6 @@ class PriceWindow:
 
 
 def main():
-    import matplotlib.pyplot as plt
-
     window_size = 10
     price_window = PriceWindow(window_size)
     random.seed(42)

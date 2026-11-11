@@ -51,14 +51,9 @@ from botcore import (
 )
 from providers.order_ohlc_utils import extract_yahoo_chart_latest_price
 from strategies.spot_engine import state_path_for
-try:
-    from kraken.kraken_common import notify
-    from kraken.kraken_client import KrakenClient, KrakenError
-    from kraken.market_data import is_pair_status_tradable
-except ImportError:
-    from kraken_common import notify
-    from kraken_client import KrakenClient, KrakenError
-    from market_data import is_pair_status_tradable
+from kraken.kraken_common import notify
+from kraken.kraken_client import KrakenClient, KrakenError
+from kraken.market_data import is_pair_status_tradable
 from state_io import load_json_state, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get

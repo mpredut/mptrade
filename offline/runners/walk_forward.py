@@ -34,6 +34,7 @@ if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
 from cachepaths import normalize_venue_name
+from offline.runners import walk_forward_compare
 
 SUPPORTED_VENUES = ("kraken", "binance", "hyperliquid", "hl", "trading212", "t212")
 SUPPORTED_MODES = ("baseline", "compare")
@@ -72,8 +73,6 @@ def run_baseline(venue: str, argv: list[str] | None = None) -> int:
 
 def run_compare(argv: list[str] | None = None, venue: str | None = None) -> int:
     """Dispatch to the canonical multi-venue compare runner."""
-    from offline.runners import walk_forward_compare
-
     forward_args = list(argv or [])
     norm_venue = canonical_venue(venue)
     if norm_venue and not any(a == "--venue" or a.startswith("--venue=") for a in forward_args):

@@ -51,7 +51,7 @@ from intelligence.internal.state.survival import (
     last_timestamp,
     last_w,
 )
-from instrument_registry import casefold_get, is_equity_symbol
+from instrument_registry import casefold_get, is_equity_symbol, tracked_price_instruments
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
@@ -404,7 +404,6 @@ def write_all_trends(all_trends, filename=None):
 UPDATE_AND_REFRESH_TREND = 60 * 1  # One minute.
 if __name__ == "__main__":
     import psutil
-    from instrument_registry import tracked_price_instruments
     symbols, _nb_syms, _nb_providers = tracked_price_instruments()
     build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
     touch_module_heartbeat(
