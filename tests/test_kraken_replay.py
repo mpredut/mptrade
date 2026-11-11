@@ -15,6 +15,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_replay as rp
+from tests.conftest import make_spot_test_params
 strat = rp._strat
 
 
@@ -28,13 +29,7 @@ def _series():
 
 
 def _params(**over):
-    d = dict(currency="USD", entry_amount=100.0, entry_discount_pct=0.2, dca_amount=50.0,
-             dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=3.0, max_budget=500.0,
-             max_dca_buys=3, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
-             adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=0.0, reentry_tolerance_pct=0.05,
-             reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[])
-    d.update(over)
-    return strat.StratParams(**d)
+    return make_spot_test_params(**over)
 
 
 class ReplayEngineTest(unittest.TestCase):

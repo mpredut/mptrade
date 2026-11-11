@@ -21,6 +21,7 @@ from providers.strategy_executor import (  # noqa: E402
     SubmissionRefused,
 )
 from providers.kraken_provider import KrakenProvider  # noqa: E402
+from tests.conftest import make_spot_test_params  # noqa: E402
 
 
 class FakeExecutor:
@@ -78,14 +79,13 @@ class FakeExecutor:
 
 
 def _strategy(fake, **over):
-    p = dict(currency="USD", entry_amount=650.0, entry_discount_pct=0.8, dca_amount=325.0,
-             dca_drop_pct=1.25, check_minutes=2.0, takeprofit_pct=5.0, max_budget=3900.0,
-             max_dca_buys=10, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
-             adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2, reentry_tolerance_pct=0.05,
-             reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
-             tp_trend_hold=True, tp_trail_pct=3.0)
-    p.update(over)
-    s = strat.Strategy(fake, "HYPEUSD", strat.StratParams(**p),
+    params = make_spot_test_params(**{
+        "entry_amount": 650.0, "entry_discount_pct": 0.8, "dca_amount": 325.0,
+        "dca_drop_pct": 1.25, "takeprofit_pct": 5.0, "max_budget": 3900.0,
+        "max_dca_buys": 10, "reentry_drop_pct": 2.2, "tp_trend_hold": True,
+        "tp_trail_pct": 3.0, **over,
+    })
+    s = strat.Strategy(fake, "HYPEUSD", params,
                        dry_run=False, initial_state=strat._new_state())
     s._save = lambda *a, **k: None
     return s

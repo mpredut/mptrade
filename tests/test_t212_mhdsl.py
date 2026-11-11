@@ -18,6 +18,7 @@ for _p in (str(T212_DIR), str(ROOT)):
         sys.path.insert(0, _p)
 
 from botcore import float_env, load_local_module, parse_dotenv  # noqa: E402
+from tests.conftest import make_t212_test_env  # noqa: E402
 
 ipo_common = importlib.import_module("ipo_common")
 strategy = load_local_module(str(T212_DIR), "strategy", module_key="t212_strategy_mhdsl_test", reload=True)
@@ -27,50 +28,17 @@ listing_watcher = load_local_module(str(T212_DIR), "listing_watcher", module_key
 
 
 def _params(**overrides):
-    config = {
-        "STRAT_CURRENCY": "USD",
-        "YAHOO_SYMBOL": "TEST",
-        "STRATEGY_MODE": "avg_tp",
-        "STRAT_ENTRY_PCT": "20",
-        "STRAT_DCA_PCT": "10",
+    base = {
         "STRAT_ENTRY_DISCOUNT_PCT": "0.0",
-        "STRAT_DCA_DROP_PCT": "2",
-        "STRAT_TAKEPROFIT_PCT": "3",
-        "STRAT_MAX_DCA_BUYS": "3",
-        "STRAT_MAX_BUDGET": "500",
-        "STRAT_FX_FEE_PCT": "0.15",
         "STRAT_STOP_LOSS_PCT": "10",
-        "STRAT_CHECK_MINUTES": "5",
-        "STRAT_ORDER_TTL_MIN": "10",
         "STRAT_REENTRY_DROP_PCT": "2.0",
         "STRAT_REENTRY_TOLERANCE_PCT": "0.05",
-        "STRAT_LOSS_ALERT_STEP": "1",
-        "STRAT_LADDER_MIN_FREE": "6",
-        "STRAT_SL_REBUY_ENABLED": "false",
-        "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
-        "STRAT_DCA_TREND_GATE_PCT": "0",
-        "STRAT_TRAIL_PCT": "0",
-        "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
         "STRAT_REENTRY_HYBRID_ENABLED": "true",
-        "STRAT_REENTRY_PEAK_RELATIVE": "false",
-        "STRAT_REENTRY_PULLBACK_PCT": "1.5",
-        "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
-        "STRAT_REENTRY_PULLBACK_K": "1.0",
-        "STRAT_REENTRY_PULLBACK_MIN": "0.8",
-        "STRAT_REENTRY_PULLBACK_MAX": "4.0",
         "STRAT_REENTRY_TTL_HOURS": "24.0",
         "STRAT_SL_MHDSL_ENABLED": "true",
-        "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
-        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
-        "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
-        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
-        "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
-        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
-        "STRAT_TP_MDHTP_ENABLED": "false",
-        "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
+        **overrides,
     }
-    config.update(overrides)
-    return strategy.StratParams.from_env(config)
+    return strategy.StratParams.from_env(make_t212_test_env(**base))
 
 
 # ─── Environment Precedence & Loader ────────────────────────────────────────
@@ -897,7 +865,7 @@ class TestLansare(_MarketDataBase):
         self.assertIsNone(market_data.check_market("SPCX"))
 
 
-class TestPretProaspat(_MarketDataBase):
+class TestFreshPrice(_MarketDataBase):
     def test_get_price_prefers_the_series(self):
         self.feed(_chart_payload(price=135.0, meta_vol=0, meta_age_s=55 * 3600,
                                  series=[(120, 164.0, 100), (30, 168.0, 200)]))

@@ -1,4 +1,4 @@
-"""Contractul auditului observational al StrategyExecutor."""
+"""Observational audit contract for StrategyExecutor."""
 import json
 import os
 import tempfile

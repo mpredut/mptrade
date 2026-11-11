@@ -1009,7 +1009,7 @@ class TestFailedReads(_DNBase):
         self.assertIsNone(d.legs())
 
 
-class TestPiciorOrfan(_DNBase):
+class TestOrphanLeg(_DNBase):
     def test_a_single_suspicious_tick_does_not_act(self):
         d = self.make()
         self.opened(d)
@@ -1053,7 +1053,7 @@ class TestPiciorOrfan(_DNBase):
         self.assertTrue(any("MANUAL INTERVENTION" in a for a in self.alerts))
 
 
-class TestDriftSiDust(_DNBase):
+class TestDriftAndDust(_DNBase):
     def test_a_large_drift_needs_confirmation_over_2_ticks(self):
         d = self.make()
         self.opened(d)
@@ -1087,10 +1087,10 @@ class TestFailedOrders(_DNBase):
         self.assertTrue(any("3 consecutive failed orders" in a for a in self.alerts))
         self.c.fail_orders = False
         d._buy_spot(1.0, 50.0)
-        self.assertEqual(d.s["order_fails"], 0, "succesul reseteaza contorul")
+        self.assertEqual(d.s["order_fails"], 0, "success resets the counter")
 
 
-class TestCooldownSiIntrare(_DNBase):
+class TestCooldownAndEntry(_DNBase):
     def test_the_cooldown_blocks_reopening(self):
         d = self.make()
         d.s["cooldown_until"] = _time.time() + 600
@@ -1103,10 +1103,10 @@ class TestCooldownSiIntrare(_DNBase):
         d.s["cooldown_until"] = _time.time() - 1
         d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0, funding=0.001))
         self.assertEqual(d.s["status"], "open")
-        self.assertEqual(len(self.c.orders), 2, "ambele picioare plasate")
+        self.assertEqual(len(self.c.orders), 2, "both legs placed")
 
 
-class TestIesireInteligenta(_DNBase):
+class TestSmartExit(_DNBase):
     def _force_avg(self, d, val):
         d.s["funding_hist"] = [[_time.time(), val]] * 5
 
@@ -1127,12 +1127,12 @@ class TestIesireInteligenta(_DNBase):
         self.assertEqual(len(self.c.orders), 2, "it sells the spot and covers the perp")
 
 
-class TestInfrastructura(_DNBase):
+class TestInfrastructure(_DNBase):
     def test_the_second_instance_is_refused_by_the_lock(self):
         d1 = self.make()
         self.assertTrue(d1._acquire_lock())
         d2 = self.make()
-        self.assertFalse(d2._acquire_lock(), "lacatul previne dublarea ordinelor")
+        self.assertFalse(d2._acquire_lock(), "the lock prevents duplicate orders")
         d1._lock_fh.close()
         d3 = self.make()
         self.assertTrue(d3._acquire_lock(), "after the stop the lock is released")
@@ -1163,7 +1163,7 @@ class TestLiquidationProtection(_DNBase):
         d.tick(_dn_legs())
         covers = [o for o in self.c.orders if o[0] == "perp" and o[1] == "buy"]
         sells = [o for o in self.c.orders if o[0] == "spot" and o[1] == "sell"]
-        self.assertEqual((len(covers), len(sells)), (1, 1), "reduce ambele picioare")
+        self.assertEqual((len(covers), len(sells)), (1, 1), "reduces both legs")
         self.assertTrue(any("LIQUIDATION" in a or "reduced" in a for a in self.alerts))
 
 
@@ -1214,25 +1214,25 @@ class TestRank(_unittest.TestCase):
             {"funding": "-0.0001", "dayNtlVlm": "90000000", "markPx": "3",  "openInterest": "100"},
         ]
 
-    def test_filtreaza_ilichid(self):
+    def test_filters_illiquid(self):
         r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
         coins = [x["coin"] for x in r]
         self.assertNotIn("BBB", coins)
 
-    def test_filtreaza_funding_negativ(self):
+    def test_filters_negative_funding(self):
         r = rank(self.uni, self.ctxs, min_vol_usd=0)
         self.assertNotIn("DDD", [x["coin"] for x in r])
 
-    def test_claseaza_desc_pe_funding(self):
+    def test_ranks_descending_by_funding(self):
         r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
         self.assertEqual(r[0]["coin"], "AAA")
         self.assertEqual(r[1]["coin"], "CCC")
 
-    def test_apr_corect(self):
+    def test_correct_apr(self):
         r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
         aaa = next(x for x in r if x["coin"] == "AAA")
         self.assertAlmostEqual(aaa["apr"], 0.00005 * 24 * 365 * 100, places=2)
 
-    def test_top_limiteaza(self):
+    def test_top_limits_results(self):
         self.assertLessEqual(len(rank(self.uni, self.ctxs, 0, top=1)), 1)
 

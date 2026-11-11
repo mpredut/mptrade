@@ -1,8 +1,8 @@
 """Invariants for reconciling real Kraken orders.
 
 Kraken reports execution cumulatively through QueryOrders. The live engine must
-apply only the new delta and keep the order locally until the exchange marks it
-raporteaza terminal (closed/canceled/expired).
+apply only the new delta and keep the order locally until the exchange
+reports it terminal (closed/canceled/expired).
 """
 import json
 import os
@@ -19,22 +19,16 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from strategies import spot_engine as strat  # noqa: E402
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError  # noqa: E402
 from botcore import parse_dotenv  # noqa: E402
+from tests.conftest import make_spot_test_params  # noqa: E402
 
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
 
 
 def _params(**overrides):
-    values = dict(
-        currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
-        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
+    return make_spot_test_params(
         takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
-        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2,
-        reentry_tolerance_pct=0.0, reentry_adaptive=False,
-        reentry_sl_bounce_pct=1.5, tp_tranches=[],
+        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0, **overrides,
     )
-    values.update(overrides)
-    return strat.StratParams(**values)
 
 
 def _strategy(*, state=None, **param_overrides):

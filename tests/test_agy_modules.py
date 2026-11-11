@@ -202,7 +202,7 @@ class TestTopics:
             prompt_arg = cmd[cmd.index("-p") + 1]
             cli_calls.append((cmd, prompt_arg))
             if prompt_arg.startswith("/compact "):
-                resp = "Sistemul a compactat istoricul conversatiei si functioneaza autonom."
+                resp = "The system compacted the conversation history and is operating autonomously."
             else:
                 resp = '{"summary": "Nominal 5m cycle", "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.91}}'
             return subprocess.CompletedProcess(

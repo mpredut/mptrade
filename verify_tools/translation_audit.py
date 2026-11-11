@@ -68,9 +68,15 @@ inchide inchis inchisa cicluri motorul combinatii difera intrarea umple
 graficul graficele ferestrei glisante minimului maximului ajustam incrementam curatam plotam actualizam
 moneda strategie valuta cumpararea cumparari plafon alocare pereche cheie cheia secrete
 copiaza completeaza notificari bani reali forteaza levier lichidare sigur eticheta balanta
+contractul auditului raporteaza ambele picioare picior orfan iesire inteligenta infrastructura
+lacatul previne dublarea ordinelor succesul reseteaza contorul filtreaza ilichid negativ
+claseaza corect limiteaza proaspat logica pozitia existenta ramane neatinsa plafonul
+aditionali conversatiei functioneaza istoricul
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+_IDENT_IGNORE = frozenset({"sub", "cand"})
+_CAMEL_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)")
 SKIP_DIRS = {".git", ".venv", "myenv", "__pycache__", "node_modules", ".pytest_cache", "cachedb", "logs", "data", "archive"}
 SCAN_EXTS = (".py", ".sh", ".conf", ".env", ".example", ".md")
 _TOKEN_RE = re.compile(r'`+[^`]+`+|"[^"\n]+"|\([a-zA-Z0-9_]+\)|[a-zA-Z_][a-zA-Z0-9_]*(?:[-/][a-zA-Z0-9_$]+)*')
@@ -116,6 +122,15 @@ def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
         return sorted(hits), False
 
     for node in ast.walk(tree):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            id_words = [
+                w.lower()
+                for w in _CAMEL_WORD_RE.findall(node.name)
+                if len(w) >= 3 and w.lower() not in _IDENT_IGNORE
+            ]
+            id_score = sum(1 for w in id_words if w in RO_WORDS)
+            if id_score >= min_score:
+                hits.append((getattr(node, "lineno", 0), "identifier", id_score, node.name))
         if isinstance(node, DOC_OWNERS):
             doc = ast.get_docstring(node, clean=False)
             if not doc:

@@ -15,56 +15,14 @@ sys.path.insert(0, ROOT)
 
 from botcore import load_local_module  # noqa: E402
 from providers.execution_audit import ExecutionAudit  # noqa: E402
+from tests.conftest import make_t212_test_env  # noqa: E402
 
 replay = load_local_module(T212_DIR, "replay", module_key="t212_replay_under_test", reload=True)
 strategy = replay._strat
 
 
 def _params(**overrides):
-    config = {
-        "STRAT_CURRENCY": "USD",
-        "YAHOO_SYMBOL": "TEST",
-        "STRATEGY_MODE": "avg_tp",
-        "STRAT_ENTRY_PCT": "20",
-        "STRAT_DCA_PCT": "10",
-        "STRAT_ENTRY_DISCOUNT_PCT": "0.2",
-        "STRAT_DCA_DROP_PCT": "2",
-        "STRAT_TAKEPROFIT_PCT": "3",
-        "STRAT_MAX_DCA_BUYS": "3",
-        "STRAT_MAX_BUDGET": "500",
-        "STRAT_FX_FEE_PCT": "0.15",
-        "STRAT_STOP_LOSS_PCT": "20",
-        "STRAT_CHECK_MINUTES": "5",
-        "STRAT_ORDER_TTL_MIN": "10",
-        "STRAT_REENTRY_DROP_PCT": "0",
-        "STRAT_REENTRY_TOLERANCE_PCT": "0",
-        "STRAT_LOSS_ALERT_STEP": "1",
-        "STRAT_LADDER_MIN_FREE": "6",
-        "STRAT_SL_REBUY_ENABLED": "false",
-        "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
-        "STRAT_DCA_TREND_GATE_PCT": "0",
-        "STRAT_TRAIL_PCT": "0",
-        "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
-        "STRAT_REENTRY_HYBRID_ENABLED": "false",
-        "STRAT_REENTRY_PEAK_RELATIVE": "false",
-        "STRAT_REENTRY_PULLBACK_PCT": "1.5",
-        "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
-        "STRAT_REENTRY_PULLBACK_K": "1.0",
-        "STRAT_REENTRY_PULLBACK_MIN": "0.8",
-        "STRAT_REENTRY_PULLBACK_MAX": "4.0",
-        "STRAT_REENTRY_TTL_HOURS": "0.0",
-        "STRAT_SL_MHDSL_ENABLED": "false",
-        "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
-        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
-        "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
-        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
-        "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
-        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
-        "STRAT_TP_MDHTP_ENABLED": "false",
-        "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
-    }
-    config.update({key: str(value) for key, value in overrides.items()})
-    return strategy.StratParams.from_env(config)
+    return strategy.StratParams.from_env(make_t212_test_env(**overrides))
 
 
 class T212ReplayTest(unittest.TestCase):

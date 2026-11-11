@@ -922,7 +922,7 @@ class TestAdoptare(_XStockBase):
         s = self._strategy(FakeKrakenXStock(bal={"TSTX": "99"}))
         s._maybe_adopt()
         self.assertFalse(s.s.get("adopted", False))
-        self.assertEqual(s.s["qty"], 2.46, "pozitia existenta ramane neatinsa")
+        self.assertEqual(s.s["qty"], 2.46, "the existing position remains untouched")
 
     def test_it_does_not_re_adopt_after_a_restart(self):
         s = self._strategy(FakeKrakenXStock(bal={"TSTX": "37.5"}))
@@ -936,7 +936,7 @@ class TestAdoptare(_XStockBase):
     def test_the_allocation_does_not_consume_the_dca_cap(self):
         s = self._strategy(FakeKrakenXStock(bal={"TSTX": "37.5"}))
         s._maybe_adopt()
-        self.assertEqual(s.s["spent"], 0.0, "plafonul ramane pt bani aditionali")
+        self.assertEqual(s.s["spent"], 0.0, "the cap remains available for additional funds")
 
 
 if __name__ == "__main__":

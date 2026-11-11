@@ -129,6 +129,74 @@ def temp_cache_dir(tmp_path):
     return str(cache_dir)
 
 
+T212_TEST_BASE_ENV: dict[str, str] = {
+    "STRAT_CURRENCY": "USD",
+    "YAHOO_SYMBOL": "TEST",
+    "STRATEGY_MODE": "avg_tp",
+    "STRAT_ENTRY_PCT": "20",
+    "STRAT_DCA_PCT": "10",
+    "STRAT_ENTRY_DISCOUNT_PCT": "0.2",
+    "STRAT_DCA_DROP_PCT": "2",
+    "STRAT_TAKEPROFIT_PCT": "3",
+    "STRAT_MAX_DCA_BUYS": "3",
+    "STRAT_MAX_BUDGET": "500",
+    "STRAT_FX_FEE_PCT": "0.15",
+    "STRAT_STOP_LOSS_PCT": "20",
+    "STRAT_CHECK_MINUTES": "5",
+    "STRAT_ORDER_TTL_MIN": "10",
+    "STRAT_REENTRY_DROP_PCT": "0",
+    "STRAT_REENTRY_TOLERANCE_PCT": "0",
+    "STRAT_LOSS_ALERT_STEP": "1",
+    "STRAT_LADDER_MIN_FREE": "6",
+    "STRAT_SL_REBUY_ENABLED": "false",
+    "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
+    "STRAT_DCA_TREND_GATE_PCT": "0",
+    "STRAT_TRAIL_PCT": "0",
+    "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
+    "STRAT_REENTRY_HYBRID_ENABLED": "false",
+    "STRAT_REENTRY_PEAK_RELATIVE": "false",
+    "STRAT_REENTRY_PULLBACK_PCT": "1.5",
+    "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
+    "STRAT_REENTRY_PULLBACK_K": "1.0",
+    "STRAT_REENTRY_PULLBACK_MIN": "0.8",
+    "STRAT_REENTRY_PULLBACK_MAX": "4.0",
+    "STRAT_REENTRY_TTL_HOURS": "0.0",
+    "STRAT_SL_MHDSL_ENABLED": "false",
+    "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
+    "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
+    "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
+    "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
+    "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
+    "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
+    "STRAT_TP_MDHTP_ENABLED": "false",
+    "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
+}
+
+
+def make_t212_test_env(**overrides) -> dict[str, str]:
+    """Build a standard Trading 212 test environment dictionary with stringified overrides."""
+    cfg = dict(T212_TEST_BASE_ENV)
+    cfg.update({k: str(v) for k, v in overrides.items()})
+    return cfg
+
+
+def make_spot_test_params(**overrides):
+    """Build a standard ``strategies.spot_engine.StratParams`` test instance with overrides."""
+    from strategies import spot_engine as strat
+
+    values = dict(
+        currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
+        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
+        takeprofit_pct=3.0, max_budget=500.0, max_dca_buys=3,
+        enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
+        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=0.0,
+        reentry_tolerance_pct=0.05, reentry_adaptive=False,
+        reentry_sl_bounce_pct=1.5, tp_tranches=[],
+    )
+    values.update(overrides)
+    return strat.StratParams(**values)
+
+
 @pytest.fixture(autouse=True)
 def restore_strategy_step():
     """Ensure spot_engine.Strategy.step is restored if a test monkeypatches it directly."""

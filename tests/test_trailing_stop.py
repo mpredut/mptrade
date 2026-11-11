@@ -88,7 +88,7 @@ class Base(unittest.TestCase):
                             min_profit_pct=min_profit_pct)
 
 
-class TestLogica(unittest.TestCase):
+class TestLogic(unittest.TestCase):
     def test_should_sell(self):
         self.assertTrue(should_sell(90, 100, 10))      # exact -10%
         self.assertTrue(should_sell(89, 100, 10))
