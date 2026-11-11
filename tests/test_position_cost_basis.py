@@ -1,19 +1,37 @@
 """Inventory-reconciled acquisition cost; no exchange requests or real state writes."""
+import json
 import math
-from types import SimpleNamespace
+import os
 from threading import RLock
-from unittest.mock import Mock
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from providers.quantity import remaining_average_cost
 import account_cache_health as health
-import cacheManager as cm
-import json
 from binance_api import bapi_ws_bridge
-from providers.order_ohlc_utils import extract_remaining_qty
+from botcore import load_local_module
+import cacheManager as cm
+import instrument
+import monitortrades as mt
+import order_retry
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_timestamp_ms,
+)
 from providers.market_api import api
+from providers.order_id_context import resolve_order_owner
+from providers.order_ohlc_utils import (
+    extract_order_fee,
+    extract_order_qty,
+    extract_order_side,
+    extract_remaining_qty,
+)
+from providers.quantity import remaining_average_cost
 from tests.conftest import DummyTrailingAdapter
+from trailing_core import TrailingCore
 
 
 def fill(i, side="BUY", qty=1, price=100, **values):
@@ -74,7 +92,6 @@ def binance_history(monkeypatch):
 
 
 def native(i, side="BUY", qty=1, price=100, **extra):
-    import time
     return dict(symbol="ARBUSDC", id=i, orderId=i, time=int(time.time()*1000)-1000+i,
                 isBuyer=side == "BUY", qty=str(qty), price=str(price),
                 commission="0", commissionAsset="USDC", **extra)
@@ -123,8 +140,6 @@ def test_binance_missing_commission_returns_none_instead_of_keyerror(binance_his
 
 
 def test_extract_order_fee_canonical_across_venues():
-    from providers.order_ohlc_utils import extract_order_fee
-
     # Binance REST trade shape
     info = extract_order_fee(
         {"commission": "0.02", "commissionAsset": "ARB"},
@@ -206,8 +221,6 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
 
 
 def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fills(tmp_path, monkeypatch):
-    from unittest.mock import MagicMock
-
     trade_file = str(tmp_path / "cache_trade_binance.jsonl")
     rest_calls = []
 
@@ -281,10 +294,6 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
 
 
 def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
-    import instrument
-    import order_retry
-    import monitortrades as mt
-
     # 1. Explicit remainingQty=0 must return 0.0 instead of falling back to origQty/quantity
     assert extract_remaining_qty({"remainingQty": 0.0, "origQty": 1.5, "quantity": 1.5}) == 0.0
     assert extract_remaining_qty({"remainingQty": "0.00000000", "origQty": "2.0"}) == 0.0
@@ -320,14 +329,6 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
 
 
 def test_cross_venue_and_ws_extract_normalization_edges():
-    from providers.base import (
-        extract_order_id,
-        extract_order_price,
-        extract_timestamp_ms,
-    )
-    from providers.order_ohlc_utils import extract_order_qty, extract_order_side
-    from providers.order_id_context import resolve_order_owner
-
     # 1. Binance WS executionReport: remainingQty from q - z, price from L/Z, timestamp from T/E, side from S
     ws_event = {
         "e": "executionReport",
@@ -378,8 +379,6 @@ def test_cross_venue_and_ws_extract_normalization_edges():
 
 
 def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
-    from trailing_core import TrailingCore
-
     adapter = DummyTrailingAdapter(assets_list=[("HYPE", "HYPE", "HYPEUSD", 18.0)], free=0.0, px=50.0)
     state_file = str(tmp_path / "trailing_state.json")
     core = TrailingCore(
@@ -451,9 +450,6 @@ def test_cache_order_on_items_update_routes_through_persist_items(tmp_path):
 
 def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
     """Verify Hyperliquid Strategy does not drop tracked open/close orders or place duplicates when cancel fails."""
-    import os
-    from botcore import load_local_module
-
     saved_env = dict(os.environ)
     try:
         hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")

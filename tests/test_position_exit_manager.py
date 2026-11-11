@@ -1,8 +1,16 @@
 """Unit tests for Centralized PositionExitManager (MHDSL Stop-Loss & MDHTP Take-Profit Mirror)."""
 
+from decimal import Decimal
+import math
 from types import SimpleNamespace
 import unittest
 
+import pytest
+
+from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
+from market_regime import MarketRegimeHorizon
+import monitortrades as mt
 from strategies.position_exit_manager import (
     ExitAction,
     PositionExitConfig,
@@ -10,10 +18,9 @@ from strategies.position_exit_manager import (
     PositionSnapshot,
     ReentryAction,
     ReentrySnapshot,
+    _parse_bool_flag as pem_bool,
 )
-import math
-import monitortrades as mt
-import pytest
+from strategies.spot_engine import _parse_bool_flag as se_bool
 
 
 class TestPositionExitManager(unittest.TestCase):
@@ -1598,9 +1605,6 @@ def test_positionexitmanager_evaluate_reentry_honors_lower_external_post_sell_tr
 
 def test_all_str_enum_classes_return_raw_value_on_iter125_s1():
     """[ITER125 #1] All (str, Enum) classes return raw value on str() in Python 3.12+."""
-    from intelligence.internal.guards.guard_decision import BrakeAction
-    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
-    from market_regime import MarketRegimeHorizon
     # 1. All (str, Enum) classes return raw value on str() in Python 3.12+
     assert str(TriggerAction.ENTRY) == "ENTRY"
     assert str(TriggerSide.BUY) == "BUY"
@@ -1641,8 +1645,6 @@ def test_positionsnapshot_reentrysnapshot_normalize_string_nan_boolean_flags_and
 
 def test__parse_bool_flag_preserves_default_true_on_empty_null_strings_iter173_s1():
     """[ITER173 #1] _parse_bool_flag preserves default=True on empty/null strings across modules."""
-    from strategies.position_exit_manager import _parse_bool_flag as pem_bool
-    from strategies.spot_engine import _parse_bool_flag as se_bool
     # 1. _parse_bool_flag preserves default=True on empty/null strings across modules
     assert pem_bool("", True) is True
     assert pem_bool("none", True) is True
@@ -1656,7 +1658,6 @@ def test__parse_bool_flag_preserves_default_true_on_empty_null_strings_iter173_s
 
 def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s2():
     """[ITER173 #2] PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal."""
-    from decimal import Decimal
     # 2. PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal
     cfg = PositionExitConfig(smart_sl_enabled="", sl_bounce_ratchet_enabled="")
     assert cfg.smart_sl_enabled is True

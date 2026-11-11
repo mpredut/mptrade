@@ -2,23 +2,35 @@
 
 All queue files are isolated in a temporary directory.
 """
+from decimal import Decimal
+import glob
 import os
+import subprocess
 import sys
 import time
-import subprocess
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import order_retry as oq
-from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus, ProviderError
-from types import SimpleNamespace
+import pytest
+
+import active_intents
 import instrument as inst_mod
 import order_lifecycle as ol
-import pytest
-from order_lifecycle import extract_order_restore_params
-from providers.execution_audit import AuditedStrategyExecutor
+import order_retry as oq
+from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
+from providers.market_api import MarketApi
+from providers.quantity import QuantityDecision
+from providers.strategy_executor import (
+    OrderReconciliationCapabilities,
+    OrderStatus,
+    ProviderError,
+    SubmissionOutcome,
+)
+from shadow_signals import KalmanStateTracker
+import state_io as sio
 from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
 
 
@@ -1232,8 +1244,6 @@ def test_order_retry_valid_record_rejects_boolean_id_symbol_order_id_replaces_or
 
 def test_kalmanstatetracker_active_intents_iter54_s5():
     """[ITER54 #5] KalmanStateTracker & active_intents."""
-    from active_intents import _intent_row
-    from shadow_signals import KalmanStateTracker
     # 5. KalmanStateTracker & active_intents
     kst = KalmanStateTracker(state_min_interval=float("nan"), now_fn=lambda: 1000.0)
     assert kst.state_min_interval == 1.0
@@ -1244,12 +1254,11 @@ def test_kalmanstatetracker_active_intents_iter54_s5():
     kst._state["BTCUSDC"] = {"ts": 995.0, "kalman_trend": 1}
     assert kst.current_trend("BTCUSDC") == (1, 5.0)
 
-    assert _intent_row({"id": "ord-1", "side": "BUY", "qty": True}, owner="test", source="s", location="$", inherited={}) is None
-    assert _intent_row({"id": True, "side": "BUY", "qty": 1.0}, owner="test", source="s", location="$", inherited={}) is None
+    assert active_intents._intent_row({"id": "ord-1", "side": "BUY", "qty": True}, owner="test", source="s", location="$", inherited={}) is None
+    assert active_intents._intent_row({"id": True, "side": "BUY", "qty": 1.0}, owner="test", source="s", location="$", inherited={}) is None
 
 def test_active_intents__intent_row_ignores_boolean_ids_and_non_positive_iter62_s1():
     """[ITER62 #1] active_intents._intent_row ignores boolean IDs and non-positive/NaN quantities."""
-    import active_intents
     # 1. active_intents._intent_row ignores boolean IDs and non-positive/NaN quantities
     assert active_intents._intent_row(
         {"order_id": True, "side": "BUY", "qty": 1.0},
@@ -1274,7 +1283,7 @@ def test_active_intents__intent_row_ignores_boolean_ids_and_non_positive_iter62_
 def test_order_rollback_extract_order_restore_params_guards_against_qty_price_overflow_iter71_s3():
     """[ITER71 #3] order_rollback.extract_order_restore_params guards against qty * price overflow."""
     # 3. order_rollback.extract_order_restore_params guards against qty * price overflow
-    restored_params = extract_order_restore_params({"side": "BUY", "price": 1e200, "origQty": 1e200})
+    restored_params = ol.extract_order_restore_params({"side": "BUY", "price": 1e200, "origQty": 1e200})
     assert restored_params["amount"] == 0.0
 
 def test_order_retry_enqueue_rejects_whitespace_only_boolean_symbols_and_iter88_s4(monkeypatch, tmp_path):
@@ -1424,7 +1433,6 @@ def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_i
 
 def test_state_io_discard_generation_file_safely_ignores_bool_int_iter113_s5():
     """[ITER113 #5] state_io.discard_generation_file safely ignores bool/int."""
-    import state_io as sio
     # 5. state_io.discard_generation_file safely ignores bool/int
     sio.discard_generation_file(True)
     sio.discard_generation_file(123)
@@ -1469,7 +1477,6 @@ class _DummyLifecycleExec:
 
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
-    from providers.execution_audit import ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
     audit = ExecutionAudit(directory=str(tmp_path / "audit"))
     wrapped = AuditedStrategyExecutor(_DummyLifecycleExec("kraken"), audit=audit, venue="kraken")
@@ -1495,11 +1502,11 @@ def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_
 def test_extract_order_restore_params_normalizes_string_level_to_float_and_rejects_iter140_s2():
     """[ITER140 #2] extract_order_restore_params normalizes string level to float and rejects sentinel/container level & kind."""
     # 2. extract_order_restore_params normalizes string level to float and rejects sentinel/container level & kind
-    p_valid = extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": "11.0", "kind": "TP"})
+    p_valid = ol.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": "11.0", "kind": "TP"})
     assert p_valid["level"] == pytest.approx(11.0)
     assert isinstance(p_valid["level"], float)
     for bad_lvl in ("nan", "null", -2.0, 0.0, [5.0], {"lvl": 5.0}, True):
-        p_bad = extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": bad_lvl, "kind": bad_lvl})
+        p_bad = ol.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": bad_lvl, "kind": bad_lvl})
         assert p_bad["level"] is None
         assert p_bad["kind"] == "TP"
 
@@ -1519,7 +1526,6 @@ def test_accepted_order_persistence__accepted_is_durable_normalizes_ids_rejects_
 
 def test_order_outcomes_log_sanitizes_nan_inf_containers_and_none_regime_context_iter151_s1(tmp_path):
     """[ITER151 #1] order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used."""
-    import glob
     # 1. order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used
     orig_dir = ol.ORDER_OUTCOMES_LOG_DIR
     ol.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
@@ -1639,7 +1645,6 @@ def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
 
 def test_trackedorderlifecycle_retry_on_lookup_error_and_identity_order_fields_normalization_iter157_s3():
     """[ITER157 #3] TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization."""
-    from providers.strategy_executor import SubmissionOutcome
     # 3. TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization
     lc_false = ol.TrackedOrderLifecycle(
         object(),
@@ -1791,9 +1796,6 @@ def test_order_outcomes_log_with_dict_regime_context_and_primitive_regime_contex
 
 def test_instrument__parse_bool_flag_side_aliases_bid_ask_decimal_free_balance_iter171_s2(monkeypatch):
     """[ITER171 #2] Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders='false', and GT_M dict/case."""
-    from decimal import Decimal
-    from providers.market_api import MarketApi
-    from providers.quantity import QuantityDecision
     # 2. Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders="false", and GT_M dict/case
     qd_calls = []
     test_prov = DummySpotExecutionProvider("TestProv", free_bal=Decimal("500.0"))

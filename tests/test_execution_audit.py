@@ -1,17 +1,43 @@
 """Observational audit contract for StrategyExecutor."""
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import providers.execution_audit as execution_audit_module
-from order_lifecycle import StrategyExecutorLifecycleApi
+import pytest
 
+from intelligence.sentiment.collectors.microstructure_collector import (
+    load_microstructure_cycle_history,
+    save_microstructure_cycle_history,
+)
+from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    MicrostructureCycleDeltaEvaluator,
+    evaluate_microstructure_cycle_deltas,
+)
+from offline.backtests.execution_calibration import calibrate_execution_events
+from order_lifecycle import StrategyExecutorLifecycleApi
+from providers import (
+    execution_audit as execution_audit_module,
+    hyperliquid_provider as hlp_mod,
+    intent_execution,
+    intent_state,
+    order_ohlc_utils,
+)
 from providers.execution_audit import (
     AuditedStrategyExecutor,
     ExecutionAudit,
+    _parse_bool_flag as ea_parse_bool,
     intent_client_order_id,
+)
+from providers.market_api import (
+    MarketApi,
+    _parse_bool_flag as ma_parse_bool,
+    require_int_order_id,
 )
 from providers.strategy_executor import (
     OrderReconciliationCapabilities,
@@ -19,9 +45,8 @@ from providers.strategy_executor import (
     PairPrecision,
     ProviderError,
     StrategyExecutor,
+    candle_interval,
 )
-import pytest
-from offline.backtests.execution_calibration import calibrate_execution_events
 from tests.conftest import TempDirTestCase
 
 
@@ -177,8 +202,6 @@ class ExecutionAuditTest(TempDirTestCase):
         )
 
     def test_audit_ohlc_series_and_strategy_executor_validation(self):
-        from providers.strategy_executor import candle_interval
-
         for bad_itv in (True, False, None, 0, -5, 1.5, float("nan"), float("inf"), "bad"):
             with self.assertRaises(ProviderError):
                 self.wrapped.ohlc_series("ABC", bad_itv)
@@ -346,20 +369,6 @@ class ExecutionCalibrationTest(unittest.TestCase):
         self.assertEqual(report["summary"]["all"]["first_fill_latency_s"]["max"], 4.0)
 
     def test_provider_import_cycle_cache_decoupling_and_intent_split(self):
-        import subprocess
-        import sys
-        import time
-        from intelligence.sentiment.collectors.microstructure_collector import (
-            load_microstructure_cycle_history,
-            save_microstructure_cycle_history,
-        )
-        from intelligence.sentiment.evaluators.microstructure_evaluator import (
-            MicrostructureCycleDeltaEvaluator,
-            evaluate_microstructure_cycle_deltas,
-        )
-        from providers import hyperliquid_provider as hlp_mod
-        from providers import intent_execution, intent_state, order_ohlc_utils
-
         # 1. Fresh Python process imports providers.strategy_executor first without circular ImportError
         proc = subprocess.run(
             [
@@ -503,7 +512,6 @@ if __name__ == "__main__":
 
 def test_executionaudit_record_strips_nan_inf_fields_strict_json_iter43_s3(tmp_path):
     """[ITER43 #3] ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock."""
-    from types import SimpleNamespace
     # 3. ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock
     audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: float("nan"))
     ok = audit.record(
@@ -563,8 +571,6 @@ def test_providers_execution_audit_intent_client_order_id_rejects_none_bool_empt
 
 def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id__clean_order_id_arg_iter151_s3():
     """[ITER151 #3] execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg."""
-    from providers.execution_audit import _parse_bool_flag as ea_parse_bool
-    from providers.market_api import MarketApi, _parse_bool_flag as ma_parse_bool, require_int_order_id
     # 3. execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg
     assert ea_parse_bool("false", True) is False
     assert ea_parse_bool(float("nan"), False) is False

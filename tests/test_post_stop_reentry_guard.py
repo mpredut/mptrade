@@ -13,18 +13,23 @@ Verifies:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import monitortrades as mt
+from instrument import Instrument
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.sentiment.guards.high_stake_guard import (
+    _HIGH_STAKE_DECISION_CACHE,
+    HighStakeGuard,
+)
 from intelligence.sentiment.guards.post_stop_reentry_guard import (
     _POST_STOP_DECISION_CACHE,
     PostStopReentryGuard,
     clear_post_stop_reentry_cache,
     get_post_stop_reentry_guard,
 )
+import monitortrades as mt
 from providers.quantity import QuantityDecision
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 from tests.conftest import DummyGeminiClient as FakeGeminiClient
 
 
@@ -491,8 +496,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     """Verify that when Pillar 3 AI guard downscales a post-stop BUY by 0.5 and
     GeopoliticalGuard in Instrument.place also recommends suggested_scale=0.5,
     the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
-    from instrument import Instrument
-
     provider = _MinNotionalBinanceProvider(policy_cap=600.0, refuse_reason=None, cap_to_requested=True)
     mock_api = MagicMock()
     mock_api.provider_by_name.return_value = provider
@@ -679,7 +682,6 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
 
 def test_poststopreentryguard_string_none_nan_input_formatting_safety_iter31_s4():
     """[ITER31 #4] PostStopReentryGuard string/None/NaN input formatting safety."""
-    from types import SimpleNamespace
     # 4. PostStopReentryGuard string/None/NaN input formatting safety
     clear_post_stop_reentry_cache()
     ps_guard = PostStopReentryGuard(
@@ -730,7 +732,6 @@ def test_get_post_stop_reentry_guard_tolerates_partial_margins_dict_without_post
 
 def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps_iter180_s2():
     """[ITER180 #2] PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps."""
-    from intelligence.sentiment.guards.high_stake_guard import _HIGH_STAKE_DECISION_CACHE
     # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
     ps_enforced = PostStopReentryGuard(
         gemini_client=FakeGeminiClient({"decision": "REJECTED", "reason": "trap"}),

@@ -74,7 +74,25 @@ finally:
         _ca_mod.apiorders = _real_bapi_allorders
 
 mock_bapi = _mock_bapi
-from pricewindow import PriceWindow, WindowAnalyzer
+from offline.backtests.tradeall import BacktestBroker
+from offline.simulations.sim import PriceWindow as SimPriceWindow
+from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
+from orchestratorOS.livecheck import os_resources_watchdog
+from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+from pricewindow import (
+    PriceTrendAnalyzer,
+    PriceWindow,
+    WindowAnalyzer,
+    instant_trend_from_prices,
+)
+from visuals import tradeall_observe
+from visuals.tradeall_observe import (
+    _parse_shadow_rows,
+    format_state_text,
+    load_backtest_order_events,
+    load_backtest_price_samples,
+    load_backtest_trend_starts,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1251,7 +1269,6 @@ def test_pricewindow_symbol_clamps_to_while_bool_nan_inf_iter55_s1():
 
 def test_tradeall_observe_format_state_text_does_not_treat_bool_as_trend_iter55_s2(tmp_path):
     """[ITER55 #2] tradeall_observe: format_state_text does not treat bool as 1/0 trend, and backtest loaders reject NaN/Inf."""
-    from visuals.tradeall_observe import _parse_shadow_rows, format_state_text, load_backtest_order_events, load_backtest_price_samples, load_backtest_trend_starts
     # 2. tradeall_observe: format_state_text does not treat bool as 1/0 trend, and backtest loaders reject NaN/Inf
     txt = format_state_text({"final_trend": True, "trend_fast": False, "kalman_trend": True}, "HDR")
     assert "trend:     ?" in txt
@@ -1278,7 +1295,6 @@ def test_tradeall_observe_format_state_text_does_not_treat_bool_as_trend_iter55_
 
 def test_pricetrendanalyzer_calculate_gradient_handles_empty_prices_iter63_s3():
     """[ITER63 #3] PriceTrendAnalyzer.calculate_gradient handles empty prices;."""
-    from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
     # 3. PriceTrendAnalyzer.calculate_gradient handles empty prices;
     #    instant_trend_from_prices handles bool/inf/tiny sample_rate_sec
     assert PriceTrendAnalyzer([]).calculate_gradient() == ([], 0)
@@ -1289,7 +1305,6 @@ def test_pricetrendanalyzer_calculate_gradient_handles_empty_prices_iter63_s3():
 
 def test_visuals_tradeall_observe__log_dates_and_build_backtest_state_text_iter77_s2(tmp_path):
     """[ITER77 #2] visuals.tradeall_observe _log_dates and build_backtest_state_text."""
-    from visuals import tradeall_observe
     # 2. visuals.tradeall_observe _log_dates and build_backtest_state_text
     assert tradeall_observe._log_dates(False) == []
     assert tradeall_observe._log_dates(-3) == []
@@ -1303,16 +1318,15 @@ def test_visuals_tradeall_observe__log_dates_and_build_backtest_state_text_iter7
 
 def test_pricewindow_input_validation_and_synchronized_normalization_when_window_size_iter78_s3():
     """[ITER78 #3] PriceWindow input validation and synchronized normalization when window_size >= max_index."""
-    from offline.simulations.sim import PriceWindow
     # 3. PriceWindow input validation and synchronized normalization when window_size >= max_index
     with pytest.raises(ValueError):
-        PriceWindow(True)
+        SimPriceWindow(True)
     with pytest.raises(ValueError):
-        PriceWindow(5, max_index=0)
+        SimPriceWindow(5, max_index=0)
     with pytest.raises(ValueError):
-        PriceWindow(5, epsilon=-0.1)
+        SimPriceWindow(5, epsilon=-0.1)
 
-    pw = PriceWindow(window_size=5, max_index=3)
+    pw = SimPriceWindow(window_size=5, max_index=3)
     for px in [10.0, 20.0, 5.0, 30.0, 15.0, 25.0]:
         pw.process_price(px)
     min_px, min_pos = pw.get_min()
@@ -1322,14 +1336,12 @@ def test_pricewindow_input_validation_and_synchronized_normalization_when_window
 
 def test_fleethealthmonitor_parses_float_hb_stale_s_and_rejects_invalid_loop_iter80_s3(tmp_path):
     """[ITER80 #3] FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals."""
-    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     # 3. FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals
     procs_file = tmp_path / "procs.conf"
     procs_file.write_text(
         "tradeall.py|$ROOT|python tradeall.py|tradeall|logs/tradeall.log|180.5|bot\n",
         encoding="utf-8",
     )
-    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
     mon = FleetHealthMonitor(workspace_dir=str(tmp_path))
     parsed = parse_procs_manifest(mon.workspace_dir)
     assert len(parsed) == 1
@@ -1344,7 +1356,6 @@ def test_fleethealthmonitor_parses_float_hb_stale_s_and_rejects_invalid_loop_ite
 
 def test_os_resources_watchdog__parse_proc_stat_raises_valueerror_on_truncated_stat_lines_iter82_s3():
     """[ITER82 #3] os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts."""
-    from orchestratorOS.livecheck import os_resources_watchdog
     # 3. os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts
     with pytest.raises(ValueError, match="malformed /proc/stat line"):
         os_resources_watchdog._parse_proc_stat("123 (python) S 1 2 3")
@@ -1353,7 +1364,6 @@ def test_os_resources_watchdog__parse_proc_stat_raises_valueerror_on_truncated_s
 
 def test_backtestbroker_normalizes_lowercase_whitespace_order_type_and_sanitizes_nan_iter134_s2(tmp_path):
     """[ITER134 #2] BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec."""
-    from offline.backtests.tradeall import BacktestBroker
     # 2. BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec
     broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate_max_wait_sec=float("nan"))
     assert broker.trend_gate_max_wait_sec == pytest.approx(3600.0)
