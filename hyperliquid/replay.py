@@ -32,13 +32,13 @@ ensure_local_module_priority(_HERE, "strategy")
 from strategies.spot_engine import StratParams as SpotStratParams  # noqa: E402
 from strategies.spot_replay import build_replay_summary, make_spot_replay_adapter  # noqa: E402
 from strategy import Strategy, StratParams, HL_FEE_PCT  # noqa: E402
-from offline.backtests.execution import (  # noqa: E402
+from strategies.replay_execution import (  # noqa: E402
     ExecutionModel,
     choose_intrabar_scenario,
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import round_metric  # noqa: E402
+from strategies.replay_metrics import round_metric  # noqa: E402
 
 
 def _normalize_funding_series(fund: list[tuple[int, float]] | None) -> tuple[list[float], list[float]]:

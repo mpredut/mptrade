@@ -50,6 +50,7 @@ if ROOT not in sys.path:
 from state_io import append_jsonl_record, atomic_write_json, atomic_write_text, read_json_file, read_text_file  # noqa: E402
 from botcore import (  # noqa: E402
     exact_pos_int,
+    load_layered_env_config,
     load_shadow_environment,
     prepare_shadow_runtime,
     required_env,
@@ -57,7 +58,6 @@ from botcore import (  # noqa: E402
     safe_int,
     safe_pos_float,
 )
-from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
 from strategies import spot_replay as rp  # noqa: E402

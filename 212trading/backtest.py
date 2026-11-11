@@ -22,7 +22,7 @@ T212_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from offline.backtests.metrics import (
+from strategies.replay_metrics import (
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,

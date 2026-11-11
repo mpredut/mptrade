@@ -20,7 +20,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from offline.backtests.execution import (
+from strategies.replay_execution import (
     ExecutionModel,
     FeeModel,
     choose_intrabar_scenario,
@@ -28,7 +28,7 @@ from offline.backtests.execution import (
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import calculate_performance_metrics, round_metric
+from strategies.replay_metrics import calculate_performance_metrics, round_metric
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
 from strategies.spot_engine import StratParams

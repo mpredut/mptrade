@@ -23,6 +23,7 @@ if _ROOT not in sys.path:
 from botcore import (
     fetch_public_json,
     float_env,
+    load_layered_env_config,
     load_local_module,
     safe_float,
     safe_int,
@@ -30,9 +31,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import canonical_base_asset
-from offline.backtests.datasets import drop_incomplete_last_bar
-from offline.backtests.evaluation import load_layered_env_config
-from providers.order_ohlc_utils import parse_ohlc_interval_minutes
+from providers.order_ohlc_utils import drop_incomplete_last_bar, parse_ohlc_interval_minutes
 
 _extract_yahoo_result_and_quote = load_local_module(_HERE, "market_data")._extract_yahoo_result_and_quote
 

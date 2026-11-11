@@ -13,16 +13,22 @@ from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
 import datetime as dt
-import os
 from pathlib import Path
 from statistics import fmean
 from typing import Any
 
 from cachepaths import normalize_venue_name
-from offline.backtests.execution import ExecutionModel
-from offline.backtests.metrics import validate_replay_metrics
+from strategies.replay_execution import ExecutionModel
+from strategies.replay_metrics import validate_replay_metrics
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
-from botcore import exact_pos_int, float_env, load_local_module, parse_dotenv, safe_float, safe_int
+from botcore import (
+    exact_pos_int,
+    float_env,
+    load_layered_env_config,
+    load_local_module,
+    safe_float,
+    safe_int,
+)
 
 
 Ohlc = list[tuple[float, float, float, float]]
@@ -341,27 +347,6 @@ def load_venue_replay_module(
         module_name or f"{v_norm}_wf_replay",
         reload=reload,
     )
-
-
-def load_layered_env_config(
-    config_file: str | Path,
-    env_file: str | Path,
-    *,
-    override_prefixes: Sequence[str] = (),
-    fallback_prefixes: Sequence[str] = ("STRAT_",),
-) -> dict[str, str]:
-    """Load config_file then env_file, applying os.environ overrides and fallbacks."""
-    cfg: dict[str, str] = {}
-    for path_str in (config_file, env_file):
-        p = Path(path_str)
-        if p.exists():
-            cfg.update(dict(parse_dotenv(str(p))))
-    ov_tuple = tuple(override_prefixes)
-    fb_tuple = tuple(fallback_prefixes)
-    for k, v in os.environ.items():
-        if (ov_tuple and k.startswith(ov_tuple)) or (fb_tuple and k.startswith(fb_tuple) and k not in cfg):
-            cfg[k] = v
-    return cfg
 
 
 def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:

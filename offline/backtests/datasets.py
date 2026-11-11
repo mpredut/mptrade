@@ -12,11 +12,12 @@ import datetime as dt
 import hashlib
 import io
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping
 
-from botcore import safe_float, safe_pos_float
+from botcore import safe_pos_float
 from providers.order_ohlc_utils import (
     REQUIRED_FIELDS,
+    align_previous_values,
     drop_incomplete_last_bar,
     normalize_record,
     validate_dataset,
@@ -108,52 +109,3 @@ def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None
             rows[-1]["timestamp"], tz=dt.timezone.utc,
         ).isoformat(),
     }
-
-
-def align_previous_values(
-    target_timestamps: Sequence[int],
-    source_records: Iterable[Mapping],
-    *,
-    value_field: str = "close",
-    transform: Callable[[float], float] | None = None,
-) -> list[float]:
-    """Align as-of without lookahead: the last value with timestamp <= target."""
-    by_ts: dict[int, float] = {}
-    for record in source_records:
-        raw_ts = record["timestamp"]
-        raw_val = record[value_field]
-        if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
-            raise ValueError("source_records cannot contain None or boolean timestamp/value")
-        ts_f = safe_float(raw_ts, default=None)
-        val_f = safe_float(raw_val, default=None)
-        if ts_f is None or val_f is None:
-            raise ValueError("invalid or non-finite timestamp or value in source_records")
-        ts_i = int(ts_f)
-        by_ts[ts_i] = val_f
-    source = sorted(by_ts.items(), key=lambda item: item[0])
-    if not source:
-        raise ValueError("the source series for alignment cannot be empty")
-    convert = transform or (lambda value: value)
-    result = []
-    source_index = 0
-    current: float | None = None
-    for timestamp in target_timestamps:
-        if isinstance(timestamp, bool) or timestamp is None:
-            raise ValueError("target_timestamps cannot contain None or boolean")
-        tf = safe_float(timestamp, default=None)
-        if tf is None:
-            raise ValueError(f"invalid or non-finite target timestamp: {timestamp!r}")
-        target = int(tf)
-        while source_index < len(source) and source[source_index][0] <= target:
-            current = convert(source[source_index][1])
-            source_index += 1
-        if current is None:
-            raise ValueError(
-                f"no known FX value at or before timestamp {target}; "
-                "extend the FX dataset further back"
-            )
-        cur_f = safe_pos_float(current, default=None)
-        if cur_f is None:
-            raise ValueError(f"non-positive aligned value at timestamp {target}")
-        result.append(cur_f)
-    return result

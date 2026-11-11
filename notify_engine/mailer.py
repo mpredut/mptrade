@@ -49,13 +49,13 @@ def last_error_is_auth_failure() -> bool:
 
 
 def _config() -> dict | None:
-    if not os.environ.get("SMTP_USERNAME") or not os.environ.get("ALERT_TO_EMAIL"):
+    if not optional_env("SMTP_USERNAME") or not optional_env("ALERT_TO_EMAIL"):
         load_env_stack()
     cfg = {
         "server": optional_env("SMTP_SERVER", "smtp.gmail.com"),
         "port": optional_env("SMTP_PORT", "587"),
         "username": optional_env("SMTP_USERNAME"),
-        "password": os.environ.get("SMTP_PASSWORD", "").strip(),
+        "password": optional_env("SMTP_PASSWORD"),
         "to": optional_env("ALERT_TO_EMAIL"),
     }
     missing = [k for k in ("username", "password", "to") if not cfg[k]]

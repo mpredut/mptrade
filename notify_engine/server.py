@@ -16,6 +16,7 @@ from botcore import (
     check_cooldown_gate,
     load_env_stack,
     obj_attr,
+    optional_env,
     required_env,
     safe_float,
     safe_nonneg_float,
@@ -89,6 +90,12 @@ _PROVIDER_LABELS = {
     "t212": "T212",
     "binance": "Binance",
 }
+_PROVIDER_HINT_SPECS = (
+    ("kraken", ("kraken",), (), ("xstock",), (), ()),
+    ("hyperliquid", ("hyperliquid",), ("hl",), (), ("hl",), ()),
+    ("t212", ("t212",), ("trading212",), (), (), ()),
+    ("binance", ("binance", "monitororder"), (), (), (), ("rtrade", "tradeall", "monitortrades", "order_retry")),
+)
 _STRIP_BOT_PREFIX_RE = re.compile(
     r"^\[(?:price_watcher|macro_analyzer)(?:\.py)?\]\s*",
     flags=re.IGNORECASE,
@@ -112,14 +119,15 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
             return _PROVIDER_LABELS[cand]
     s, b = src_str.lower(), bot_str.lower()
     combined = f"{s} {b}"
-    if "kraken" in combined or "xstock" in b:
-        return "Kraken"
-    if "hyperliquid" in combined or "hl" in s or b.startswith("hl"):
-        return "Hyperliquid"
-    if "t212" in combined or "trading212" in s:
-        return "T212"
-    if "binance" in combined or "monitororder" in combined or b in ("rtrade", "tradeall", "monitortrades", "order_retry"):
-        return "Binance"
+    for venue_key, comb_subs, src_subs, bot_subs, bot_pfxs, bot_exact in _PROVIDER_HINT_SPECS:
+        if (
+            any(tok in combined for tok in comb_subs)
+            or any(tok in s for tok in src_subs)
+            or any(tok in b for tok in bot_subs)
+            or (bot_pfxs and b.startswith(bot_pfxs))
+            or b in bot_exact
+        ):
+            return _PROVIDER_LABELS[venue_key]
     if "-" in bot_str:
         return bot_str.split("-")[0]
     return bot_str or (src_str.capitalize() if src_str else "")
@@ -133,14 +141,14 @@ class NotificationServer:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
-        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
+        self.queue_file = optional_env("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _load_ntfy_token(self) -> str:
-        tok = os.environ.get("NTFY_TOKEN", "").strip()
+        tok = optional_env("NTFY_TOKEN")
         if not tok:
             load_env_stack()
-            tok = os.environ.get("NTFY_TOKEN", "").strip()
+            tok = optional_env("NTFY_TOKEN")
         return tok
 
     def _load_rules(self) -> List[Dict[str, Any]]:

@@ -28,13 +28,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import (  # noqa: E402
+    load_layered_env_config,
     load_local_module,
     load_shadow_environment,
     prepare_shadow_runtime,
     require_shadow_interval,
     required_env,
 )
-from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 from providers.order_ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)

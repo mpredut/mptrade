@@ -4,7 +4,7 @@ import hashlib
 import importlib
 import re
 import time
-from typing import Any, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
 
 from botcore import (
     ClosedPriceSeries,
@@ -950,5 +950,81 @@ def drop_incomplete_last_bar(
     while rows and int(rows[-1]["timestamp"]) + interval_seconds > int(now_timestamp):
         rows.pop()
     return rows
+
+
+def validate_ohlc_bars(
+    ohlc: Any,
+    *,
+    exact_len_4: bool = False,
+    check_envelope: bool = True,
+) -> None:
+    """Validate a non-empty sequence of OHLC bars."""
+    if not isinstance(ohlc, (list, tuple)) or not ohlc:
+        raise ValueError("ohlc cannot be empty")
+    for idx, row in enumerate(ohlc):
+        if not isinstance(row, (list, tuple)) or (len(row) != 4 if exact_len_4 else len(row) < 4):
+            raise ValueError(f"invalid OHLC bar at index {idx}")
+        if any(isinstance(row[i], bool) for i in range(4)):
+            raise ValueError(f"OHLC bar at index {idx} contains bool")
+        vals = [safe_pos_float(row[i], default=None) for i in range(4)]
+        if any(v is None for v in vals):
+            if any(not isinstance(row[i], (int, float)) and safe_float(row[i], default=None) is None for i in range(4)):
+                raise ValueError(f"OHLC bar at index {idx} has non-numeric prices")
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+        o_f, h_f, l_f, c_f = vals[0], vals[1], vals[2], vals[3]
+        if (
+            h_f < l_f
+            or (check_envelope and (h_f < max(o_f, c_f) or l_f > min(o_f, c_f)))
+        ):
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+
+
+def align_previous_values(
+    target_timestamps: Sequence[int],
+    source_records: Iterable[Mapping],
+    *,
+    value_field: str = "close",
+    transform: Optional[Callable[[float], float]] = None,
+) -> List[float]:
+    """Align as-of without lookahead: the last value with timestamp <= target."""
+    by_ts: dict[int, float] = {}
+    for record in source_records:
+        raw_ts = record["timestamp"]
+        raw_val = record[value_field]
+        if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
+            raise ValueError("source_records cannot contain None or boolean timestamp/value")
+        ts_f = safe_float(raw_ts, default=None)
+        val_f = safe_float(raw_val, default=None)
+        if ts_f is None or val_f is None:
+            raise ValueError("invalid or non-finite timestamp or value in source_records")
+        ts_i = int(ts_f)
+        by_ts[ts_i] = val_f
+    source = sorted(by_ts.items(), key=lambda item: item[0])
+    if not source:
+        raise ValueError("the source series for alignment cannot be empty")
+    convert = transform or (lambda value: value)
+    result: List[float] = []
+    source_index = 0
+    current: Optional[float] = None
+    for timestamp in target_timestamps:
+        if isinstance(timestamp, bool) or timestamp is None:
+            raise ValueError("target_timestamps cannot contain None or boolean")
+        tf = safe_float(timestamp, default=None)
+        if tf is None:
+            raise ValueError(f"invalid or non-finite target timestamp: {timestamp!r}")
+        target = int(tf)
+        while source_index < len(source) and source[source_index][0] <= target:
+            current = convert(source[source_index][1])
+            source_index += 1
+        if current is None:
+            raise ValueError(
+                f"no known FX value at or before timestamp {target}; "
+                "extend the FX dataset further back"
+            )
+        cur_f = safe_pos_float(current, default=None)
+        if cur_f is None:
+            raise ValueError(f"non-positive aligned value at timestamp {target}")
+        result.append(cur_f)
+    return result
 
 

@@ -23,13 +23,18 @@ if _ROOT not in sys.path:
 
 import dataclasses
 from strategies.spot_engine import StratParams
-from offline.backtests.evaluation import load_layered_env_config
-from offline.backtests.metrics import (
+from strategies.replay_metrics import (
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,
 )
-from botcore import exact_nonneg_int, load_dotenv, safe_float, safe_pos_float
+from botcore import (
+    exact_nonneg_int,
+    load_dotenv,
+    load_layered_env_config,
+    safe_float,
+    safe_pos_float,
+)
 from strategies import spot_replay as rp
 from kraken.market_data import fetch_ohlc_candles
 

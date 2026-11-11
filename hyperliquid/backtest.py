@@ -31,6 +31,7 @@ if _ROOT not in sys.path:
 
 
 from botcore import (
+    load_layered_env_config,
     load_local_module,
     log,
     required_env,
@@ -40,8 +41,7 @@ from botcore import (
     safe_int,
     safe_pos_float,
 )
-from offline.backtests.evaluation import load_layered_env_config
-from offline.backtests.metrics import (
+from strategies.replay_metrics import (
     buy_hold_pct,
     print_single_backtest_report,
     run_tp_drop_sl_sweep,

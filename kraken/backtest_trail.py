@@ -28,7 +28,7 @@ from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_int, 
 from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
-from offline.backtests.metrics import buy_hold_pct as bh
+from strategies.replay_metrics import buy_hold_pct as bh
 
 
 def _resolve_reentry_drop(P: dict) -> float:

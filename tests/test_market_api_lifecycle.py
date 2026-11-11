@@ -599,6 +599,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
 
     pkg_edges = defaultdict(set)
     mod_edges = defaultdict(set)
+    offline_imports = []
     for mod_name, rel in sorted(all_mods.items()):
         p = root / rel
         src_top = rel.parts[0].removesuffix(".py")
@@ -635,6 +636,8 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                 if tgt.startswith(("hyperliquid.info", "hyperliquid.exchange", "hyperliquid.utils")):
                     continue
                 t_top = tgt.split(".")[0]
+                if t_top == "offline":
+                    offline_imports.append(f"{rel}:{getattr(node, 'lineno', 0)} -> {tgt}")
                 if (
                     t_top != src_top
                     and t_top not in excluded_top_dirs
@@ -648,6 +651,8 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                         if cand != mod_name:
                             mod_edges[mod_name].add(cand)
                         break
+
+    assert not offline_imports, f"Upward/sideways offline.* imports in production modules: {offline_imports}"
 
     def _find_sccs(graph):
         index = 0
@@ -738,5 +743,37 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     assert isinstance(replay, StrategyExecutor)
     replay_oid = replay.submit_order("BTCUSDC", "BUY", 1.0, price=100.0)
     assert replay_oid.startswith("replay-")
+
+
+def test_replay_execution_metrics_and_config_ssot_identity():
+    """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
+    import importlib
+    import botcore
+    import offline.backtests.datasets as ds
+    import offline.backtests.evaluation as ev
+    import offline.backtests.execution as ex
+    import offline.backtests.metrics as mt
+    from notify_engine.server import _resolve_provider_label
+    from providers import order_ohlc_utils
+    from strategies import replay_execution, replay_metrics
+
+    assert ex.ExecutionModel is replay_execution.ExecutionModel
+    assert ex.FeeModel is replay_execution.FeeModel
+    assert ex.split_order_fill is replay_execution.split_order_fill
+    assert ex.choose_intrabar_scenario is replay_execution.choose_intrabar_scenario
+    assert ex.validate_ohlc_bars is order_ohlc_utils.validate_ohlc_bars
+    assert ds.align_previous_values is order_ohlc_utils.align_previous_values
+    assert mt.calculate_performance_metrics is replay_metrics.calculate_performance_metrics
+    assert mt.round_metric is replay_metrics.round_metric
+    assert mt.buy_hold_pct is replay_metrics.buy_hold_pct
+    assert ev.load_layered_env_config is botcore.load_layered_env_config
+
+    importlib.reload(botcore)
+    assert ev.load_layered_env_config is botcore.load_layered_env_config
+
+    assert _resolve_provider_label("xstock_watch", "") == "Kraken"
+    assert _resolve_provider_label("hl_bot", "") == "Hyperliquid"
+    assert _resolve_provider_label("", "trading212") == "T212"
+    assert _resolve_provider_label("rtrade", "") == "Binance"
 
 

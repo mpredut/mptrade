@@ -514,6 +514,27 @@ def load_key_value_conf(
     return conf
 
 
+def load_layered_env_config(
+    config_file: str | os.PathLike,
+    env_file: str | os.PathLike,
+    *,
+    override_prefixes: tuple[str, ...] | list[str] = (),
+    fallback_prefixes: tuple[str, ...] | list[str] = ("STRAT_",),
+) -> dict[str, str]:
+    """Load ``config_file`` then ``env_file``, applying ``os.environ`` overrides and fallbacks."""
+    cfg: dict[str, str] = {}
+    for path_val in (config_file, env_file):
+        p_str = os.fspath(path_val)
+        if p_str and os.path.exists(p_str):
+            cfg.update(dict(parse_dotenv(p_str)))
+    ov_tuple = tuple(override_prefixes)
+    fb_tuple = tuple(fallback_prefixes)
+    for k, v in os.environ.items():
+        if (ov_tuple and k.startswith(ov_tuple)) or (fb_tuple and k.startswith(fb_tuple) and k not in cfg):
+            cfg[k] = v
+    return cfg
+
+
 # ── 2.2. INI (.conf) Parsing, Mtime Caching & Override Resolution ────────────
 
 _INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int, bool], configparser.ConfigParser]] = (
@@ -2689,7 +2710,12 @@ class ClosedPriceSeries:
         )
 
 
-for _reexport_mod_name in ("utils", "intelligence.macro_sentiment_ssot", "macro_sentiment_ssot"):
+for _reexport_mod_name in (
+    "utils",
+    "intelligence.macro_sentiment_ssot",
+    "macro_sentiment_ssot",
+    "offline.backtests.evaluation",
+):
     _reexport_mod = sys.modules.get(_reexport_mod_name)
     if _reexport_mod is None:
         continue

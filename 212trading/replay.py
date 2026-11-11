@@ -27,16 +27,16 @@ finally:
         sys.modules["market_data"] = _prev_md
     else:
         sys.modules.pop("market_data", None)
-from offline.backtests.datasets import align_previous_values
-from offline.backtests.execution import (
+from providers.order_ohlc_utils import align_previous_values
+from providers.replay_provider import SimClock
+from strategies.replay_execution import (
     ExecutionModel,
     choose_intrabar_scenario,
     select_eligible_intrabar_orders,
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import round_metric
-from providers.replay_provider import SimClock
+from strategies.replay_metrics import round_metric
 from strategies.spot_replay import build_replay_summary
 
 
