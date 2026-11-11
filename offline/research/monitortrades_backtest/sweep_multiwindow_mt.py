@@ -23,6 +23,7 @@ from offline.research.monitortrades_backtest.sweep_mt_models import (
     evaluate_mt_model_symbol_cell,
     load_archive_series,
     make_tape,
+    preserve_replay_backtest_caches,
     print_mt_sweep_header,
     print_mt_sweep_row,
 )
@@ -68,10 +69,7 @@ def run_multiwindow_sweep(use_365: bool = False):
     model_cells: list[list[str]] = [[] for _ in models]
     model_totals: list[float] = [0.0 for _ in models]
 
-    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
-    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
-    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
-    try:
+    with preserve_replay_backtest_caches():
         for sym in all_symbols:
             series = load_archive_series(sym, use_365=use_365)
             if not series:
@@ -106,13 +104,6 @@ def run_multiwindow_sweep(use_365: bool = False):
                 model_cells[m_idx].append(cell)
             rrb._TREND_TAPE_CACHE.clear()
             del sym_sigs, series
-    finally:
-        rrb._TREND_TAPE_CACHE.clear()
-        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
-        rrb._LAST_RUN_DIAGNOSTICS.clear()
-        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
-        rrb._LAST_HARD_TP_TOUCHED.clear()
-        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
     print_mt_sweep_header("Multi-Window Policy", symbols, col_width=36)
     for m_idx, (m_name, _fn) in enumerate(models):

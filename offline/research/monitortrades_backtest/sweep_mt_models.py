@@ -10,6 +10,7 @@ monitortrades instruments (BTCUSDC, TAOUSDC, ARBUSDC, HYPEUSD) on:
 """
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import sys
@@ -316,8 +317,34 @@ def print_mt_sweep_header(title_col: str, symbols: list[str], *, col_width: int 
     return hdr
 
 
+@contextlib.contextmanager
+def preserve_replay_backtest_caches():
+    """Save and restore module-level replay backtest caches across a sweep."""
+    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
+    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
+    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
+    try:
+        yield
+    finally:
+        rrb._TREND_TAPE_CACHE.clear()
+        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
+        rrb._LAST_RUN_DIAGNOSTICS.clear()
+        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
+        rrb._LAST_HARD_TP_TOUCHED.clear()
+        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
+
+
 def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_width: int = 34) -> None:
     print(f"{name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {total_net:>+14.2f}")
+
+
+def print_mt_buy_hold_footer(
+    symbols: list[str], bh_by_sym: dict[str, float], hdr: str, *, col_width: int = 34
+) -> None:
+    bh_tot = sum(bh_by_sym.get(sym, 0.0) for sym in symbols)
+    bh_cells = [f"{bh_by_sym.get(sym, 0.0):>+14.2f}" for sym in symbols]
+    print("-" * len(hdr))
+    print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
 
 
 def run_mt_model_sweep_table(
@@ -333,11 +360,8 @@ def run_mt_model_sweep_table(
     """Evaluate a list of ``(model_name, tape_fn)`` definitions across ``symbols`` and print a comparison table."""
     hdr = print_mt_sweep_header(title_col, symbols, col_width=col_width)
 
-    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
-    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
-    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
     bh_Wait = {}
-    try:
+    with preserve_replay_backtest_caches():
         for m_name, tape_fn in models:
             cells = []
             tot_net = 0.0
@@ -349,19 +373,9 @@ def run_mt_model_sweep_table(
                 tot_net += net
                 cells.append(cell)
             print_mt_sweep_row(m_name, cells, tot_net, col_width=col_width)
-    finally:
-        rrb._TREND_TAPE_CACHE.clear()
-        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
-        rrb._LAST_RUN_DIAGNOSTICS.clear()
-        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
-        rrb._LAST_HARD_TP_TOUCHED.clear()
-        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
     if include_buy_hold:
-        bh_tot = sum(bh_Wait.values())
-        bh_cells = [f"{bh_Wait[sym]:>+14.2f}" for sym in symbols]
-        print("-" * len(hdr))
-        print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+        print_mt_buy_hold_footer(symbols, bh_Wait, hdr, col_width=col_width)
 
 
 def evaluate_dataset(use_365: bool = False):
@@ -386,10 +400,7 @@ def evaluate_dataset(use_365: bool = False):
     per_model_net: dict[str, float] = {m_name: 0.0 for m_name, _ in models}
     bh_by_sym: dict[str, float] = {}
 
-    saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
-    saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
-    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
-    try:
+    with preserve_replay_backtest_caches():
         for sym in all_symbols:
             t0 = time.time()
             series = load_archive_series(sym, use_365=use_365)
@@ -401,43 +412,22 @@ def evaluate_dataset(use_365: bool = False):
             med_m = safe_int(np.median(sig["m"]).item(), 0)
             print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
                   f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
-            key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-            cfg = rrb.SYMBOLS[sym]
             for m_name, tape_fn in models:
-                rrb._TREND_TAPE_CACHE.clear()
-                rrb._TREND_TAPE_CACHE[key] = tuple(
-                    tape_fn(sig, sym) if tape_fn.__code__.co_argcount >= 2 else tape_fn(sig)
-                )
-                res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-                net = safe_float(res.get("net"), 0.0)
-                bh_by_sym[sym] = safe_float(res.get("buy_hold"), 0.0)
+                net, bh_val, cell = evaluate_mt_model_symbol_cell(sym, series, sig, tape_fn)
+                bh_by_sym[sym] = bh_val
                 per_model_net[m_name] += net
-                per_model_cells[m_name][sym] = (
-                    f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)"
-                )
+                per_model_cells[m_name][sym] = cell
             rrb._TREND_TAPE_CACHE.clear()
             del sig
             del series
             gc.collect()
-    finally:
-        rrb._TREND_TAPE_CACHE.clear()
-        rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
-        rrb._LAST_RUN_DIAGNOSTICS.clear()
-        rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
-        rrb._LAST_HARD_TP_TOUCHED.clear()
-        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
     col_width = 34
-    hdr = f"{'Model Architecture':<{col_width}} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
-    print("\n" + hdr)
-    print("-" * len(hdr))
+    hdr = print_mt_sweep_header("Model Architecture", symbols, col_width=col_width)
     for m_name, _ in models:
         cells = [per_model_cells[m_name].get(sym, "") for sym in symbols]
-        print(f"{m_name:<{col_width}} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {per_model_net[m_name]:>+14.2f}")
-    bh_tot = sum(bh_by_sym.get(sym, 0.0) for sym in symbols)
-    bh_cells = [f"{bh_by_sym.get(sym, 0.0):>+14.2f}" for sym in symbols]
-    print("-" * len(hdr))
-    print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+        print_mt_sweep_row(m_name, cells, per_model_net[m_name], col_width=col_width)
+    print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=col_width)
 
 
 if __name__ == "__main__":

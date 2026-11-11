@@ -23,7 +23,6 @@ from botcore import (
     required_float_env,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
 )
 from strategies.spot_engine import StratParams as SpotStratParams
 from strategies.spot_replay import align_spot_interval_params
@@ -41,6 +40,7 @@ from offline.backtests.evaluation import (
     load_venue_replay_module,
     parse_dataset_specs,
     parse_intervals,
+    parse_optional_lookback_days,
 )
 
 from providers.market_api import api as mkt
@@ -81,11 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         default_output_dir=ROOT / "offline/results/hyperliquid_walk_forward",
     )
     args = parser.parse_args(argv)
-    lookback_days = None
-    if args.lookback_days is not None:
-        lookback_days = safe_pos_int(args.lookback_days, default=0)
-        if lookback_days <= 0:
-            parser.error("--lookback-days must be positive")
+    lookback_days = parse_optional_lookback_days(parser, args.lookback_days)
 
     try:
         cfg = load_isolated_hl_cfg(

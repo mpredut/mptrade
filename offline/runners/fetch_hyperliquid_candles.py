@@ -19,7 +19,11 @@ if str(ROOT) not in sys.path:
 from botcore import exact_int, exact_pos_int, safe_int
 from state_io import atomic_write_bytes, atomic_write_json
 from offline.backtests.datasets import canonical_bytes, dataset_metadata
-from offline.backtests.evaluation import load_venue_module, parse_intervals
+from offline.backtests.evaluation import (
+    load_venue_module,
+    parse_intervals,
+    parse_optional_lookback_days,
+)
 
 _hl_md = load_venue_module("hyperliquid", "market_data.py", "local_hl_market_data")
 API_URL = _hl_md.API_URL
@@ -113,12 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         default=ROOT / "offline/results/hyperliquid_proxy/datasets",
     )
     args = parser.parse_args(argv)
-    lookback_days = None
-    if args.lookback_days is not None:
-        lookback_days = exact_pos_int(args.lookback_days, default=None)
-        if lookback_days is None:
-            parser.error("--lookback-days must be positive")
-    args.lookback_days = lookback_days
+    args.lookback_days = parse_optional_lookback_days(parser, args.lookback_days)
     for label, tok in (("--token", args.token), ("--quote", args.quote)):
         if not isinstance(tok, str) or not tok.strip() or "/" in tok or "\\" in tok or ".." in tok:
             parser.error(f"invalid {label}: {tok!r}")

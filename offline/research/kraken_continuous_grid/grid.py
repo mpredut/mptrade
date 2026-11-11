@@ -39,6 +39,7 @@ OUT = os.path.join(EXP, "results.jsonl")
 from state_io import append_jsonl_record, read_jsonl_dicts
 from strategies import spot_engine as strat, spot_replay as rp
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
+from offline.research.kraken_continuous_grid.report import _matches_known_spec  # noqa: E402
 
 load_isolated_kraken_cfg = load_local_module(
     os.path.join(ROOT, "kraken"), "kraken_common", module_key="kraken_common"
@@ -262,12 +263,7 @@ def _row_matches_current_spec(r: dict, assets_set: set[str]) -> bool:
         return False
     if "end_ts" in r and r.get("end_ts") != end_ts:
         return False
-    params, peak = CONFIGS[r["cfg"]]
-    if "params_repr" in r and r.get("params_repr") != repr(params):
-        return False
-    if "peak" in r and bool(r.get("peak")) != bool(peak):
-        return False
-    return True
+    return _matches_known_spec(r, CONFIGS)
 
 
 if __name__ == "__main__":

@@ -93,13 +93,13 @@ def _is_error_row(r: dict) -> bool:
 
 
 def _matches_known_spec(r: dict, spec_map: dict | None) -> bool:
-    if not spec_map or "params_repr" not in r:
+    if not spec_map:
         return True
     cfg_name = r.get("cfg")
     if cfg_name not in spec_map:
         return True
     params, peak = spec_map[cfg_name]
-    if r.get("params_repr") != repr(params):
+    if "params_repr" in r and r.get("params_repr") != repr(params):
         return False
     if "peak" in r and bool(r.get("peak")) != bool(peak):
         return False
