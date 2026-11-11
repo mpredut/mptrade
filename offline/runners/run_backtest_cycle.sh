@@ -9,7 +9,16 @@ source "$RUNNER_DIR/load_dev_backtest_env.sh"
 REPO_ROOT="${BINANCE_REPO_ROOT:-$ROOT}"
 cd "$REPO_ROOT"
 
-if [ "${1:-local}" = "remote" ] || [ "${1:-}" = "trigger" ]; then
+MODE="${1:-local}"
+case "$MODE" in
+    local|remote|trigger) ;;
+    *)
+        echo "[run_backtest_cycle] ERROR: invalid mode '$MODE' (expected: local|remote|trigger)" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$MODE" = "remote" ] || [ "$MODE" = "trigger" ]; then
     echo "[trigger $(date '+%F %T')] 1/3 sync dev (code+data)"
     "$REPO_ROOT/offline/runners/sync_cache_to.sh" dev
     echo "[trigger $(date '+%F %T')] 2/3 running the backtest cycle on dev"
@@ -33,33 +42,43 @@ ONLY="${PILOT_ONLY:-}"
 exec 9>"/tmp/mptrade_backtest_cycle.lock"
 flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running -- skipping"; exit 75; }
 
+case "${PILOT_DISABLED:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+        echo "[cycle $(date '+%F %T')] PILOT_DISABLED=${PILOT_DISABLED} -- leaving cleanly without publishing"
+        exit 0
+        ;;
+esac
+
+SRC_FILE="$REPO_ROOT/backtest_proposals.json"
+rm -f "$SRC_FILE"
+
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
-"$PYTHON_BIN" offline/research/monitortrades_backtest/scheduled_pilot.py "${args[@]}"
+( exec 9>&-; "$PYTHON_BIN" offline/research/monitortrades_backtest/scheduled_pilot.py "${args[@]}" )
 
 echo "[cycle $(date '+%F %T')] publish proposals to git"
 DEFAULT_WT="$(dirname "$REPO_ROOT")/mptrade-proposals"
 [ ! -d "$DEFAULT_WT" ] && [ -d "$(dirname "$REPO_ROOT")/binance-proposals" ] && DEFAULT_WT="$(dirname "$REPO_ROOT")/binance-proposals"
 WT="${WT:-$DEFAULT_WT}"
 BRANCH="$BACKTEST_PROPOSALS_BRANCH"
-SRC_FILE="$REPO_ROOT/backtest_proposals.json"
 [ -f "$SRC_FILE" ] || { echo "[publish] is missing $SRC_FILE -- run the pilot with --propose first"; exit 1; }
 
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}"
 timeout 30 git -C "$REPO_ROOT" fetch -q origin || true
+git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1 || true
 
-if ! git -C "$REPO_ROOT" worktree list --porcelain | grep -q "worktree $WT"; then
+if ! git -C "$REPO_ROOT" worktree list --porcelain | grep -Fqx "worktree $WT"; then
   rm -rf "$WT"
   if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
-    git -C "$REPO_ROOT" worktree add -q "$WT" "$BRANCH"
+    git -C "$REPO_ROOT" worktree add -q -B "$BRANCH" "$WT" "refs/remotes/origin/$BRANCH"
   else
-    git -C "$REPO_ROOT" worktree add -q -b "$BRANCH" "$WT" origin/main
+    git -C "$REPO_ROOT" worktree add -q -B "$BRANCH" "$WT" origin/main
   fi
 else
   timeout 30 git -C "$WT" fetch -q origin "$BRANCH" 2>/dev/null || true
   if git -C "$WT" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
-    git -C "$WT" checkout -q -B "$BRANCH" "origin/$BRANCH"
+    git -C "$WT" checkout -f -q -B "$BRANCH" "refs/remotes/origin/$BRANCH"
   fi
 fi
 

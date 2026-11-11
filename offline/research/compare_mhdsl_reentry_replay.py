@@ -10,7 +10,7 @@ if ROOT not in sys.path:
 
 from pathlib import Path
 from strategies import spot_engine as strat
-from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
+from strategies.spot_replay import prepare_spot_interval_params, prewarm_trend_series, run_replay
 from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
 from botcore import safe_float, safe_nonneg_int
@@ -40,7 +40,8 @@ def run_comparison(csv_path=None):
 
     print(f"Loaded {len(bars)} historical bars (HYPE spot 4h).")
     bar_minutes = 240.0
-    defer_max_sec = 3.0 * bar_minutes * 60.0
+    check_minutes = 2.0
+    defer_max_sec = 3.0 * check_minutes * 60.0
     warmup_bars = 40 if len(bars) > 60 else 0
     eval_bars = bars[warmup_bars:]
     warmup_ohlc = bars[:warmup_bars]
@@ -56,16 +57,16 @@ def run_comparison(csv_path=None):
             reentry_hybrid_enabled=True, reentry_pullback_pct=2.0,
             reentry_pullback_adaptive=False, reentry_ttl_hours=48.0,
         )
-        p_base = align_spot_interval_params(strat.StratParams(
+        p_base = prepare_spot_interval_params(strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
-            dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=5.0, max_budget=1050.0,
+            dca_drop_pct=2.0, check_minutes=check_minutes, takeprofit_pct=5.0, max_budget=1050.0,
             max_dca_buys=7, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=sl,
             sl_mhdsl_enabled=False,
             **common_reentry,
         ), 240)
-        p_prop = align_spot_interval_params(strat.StratParams(
+        p_prop = prepare_spot_interval_params(strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
-            dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=5.0, max_budget=1050.0,
+            dca_drop_pct=2.0, check_minutes=check_minutes, takeprofit_pct=5.0, max_budget=1050.0,
             max_dca_buys=7, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=sl,
             sl_mhdsl_enabled=True,
             sl_disaster_buffer_ratio=0.30,

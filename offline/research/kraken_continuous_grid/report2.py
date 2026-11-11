@@ -32,7 +32,18 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L = ["# Overnight wave 2: selection, fine overlay grid, fee stress\n"]
 
     # ---------------------------------------------------------------- selection
-    sel = [r for r in rows if r.get("kind") == "select" and r.get("steps")]
+    sel_by_asset: dict[str, dict] = {}
+    for r in rows:
+        if (
+            r.get("kind") == "select"
+            and not _is_error_row(r)
+            and isinstance(r.get("asset"), str)
+            and r["asset"].strip()
+            and isinstance(r.get("steps"), list)
+            and r["steps"]
+        ):
+            sel_by_asset[r["asset"]] = r
+    sel = list(sel_by_asset.values())
     L.append("## Walk-forward selection (365-day lookback, 90-day out-of-sample steps)\n")
     L.append("Each step ranks the candidate set by trailing return/max(DD,5) and runs the winner on the "
              "next 90 days. `sum` = sum of out-of-sample 90-day returns (% of budget); `beat live` = "
@@ -107,9 +118,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     by = defaultdict(dict)
     for r in views:
         by[(r["cfg"], r["fee"])][r["asset"]] = r
+    wave1_dedup: dict[tuple[str, str], dict] = {}
     for r in wave1_valid:
-        by.setdefault((r["cfg"], "std"), {}).setdefault(r["asset"], r)
-    assets = sorted({r["asset"] for r in views} or {r["asset"] for r in wave1_valid})
+        wave1_dedup[(r["cfg"], r["asset"])] = r
+    for (cfg_k, asset_k), r in wave1_dedup.items():
+        by.setdefault((cfg_k, "std"), {}).setdefault(asset_k, r)
+    assets = sorted({r["asset"] for r in views} | {r["asset"] for r in wave1_valid})
 
     def summ(key):
         d = by[key]

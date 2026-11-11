@@ -46,16 +46,19 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 
 from cachepaths import cache_path
 from instrument_registry import select_instruments
+from offline.backtests.evaluation import parse_cli_float
 from providers.replay_provider import (
     ReplayMarketDataProvider,
     backtest_isolation_context,
     load_price_series,
 )
+from state_io import read_text_file
 from providers.market_api import MarketApi
 from instrument import Instrument
 from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
@@ -431,7 +434,11 @@ def run_symbol(
             max_untriggered_trail_ratio = 0.0
 
             _now_fn = lambda: now_s
-            _eff_up_thresh = min(_cfg_gain, _cfg_hard_tp_pct) if mt.HARD_TP_ENABLED else _cfg_gain
+            _eff_up_thresh = (
+                min(_cfg_gain, _cfg_hard_tp_pct)
+                if (mt.HARD_TP_ENABLED and _cfg_hard_tp_pct > 0.0 and _cfg_hard_tp_frac > 0.0)
+                else _cfg_gain
+            )
             _fast_ver = -1
             _fast_min_ts_ms = -1.0
             _fast_low_buy_px = -1.0
@@ -495,11 +502,14 @@ def run_symbol(
                         continue
                     reentry_st = mt._REENTRY_STATE.get(symbol)
                     if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
-                        t_up = (
-                            cached_tape[tick_idx]
-                            if cached_tape is not None
-                            else bool(trend_source.is_trend_up(symbol))
-                        )
+                        if cached_tape is not None:
+                            t_up = (
+                                cached_tape[tick_idx]
+                                if 0 <= tick_idx < len(cached_tape)
+                                else (bool(cached_tape[-1]) if cached_tape else False)
+                            )
+                        else:
+                            t_up = bool(trend_source.is_trend_up(symbol)) if trend_source is not None else False
                         if not t_up or (
                             not _fast_exit_is_stop
                             and not mt.MT_REENTRY_HYBRID_ENABLED
@@ -633,17 +643,37 @@ def _cli_run_target(task_args):
     return run_symbol(symbol, params, base, trend_window_seconds=trend_window_sec)
 
 
+def _resolve_replay_worker_cap(use_365_cli: bool) -> int:
+    raw_w = int_env("WORKERS")
+    if raw_w is not None and raw_w > 0:
+        return raw_w
+    cpu_cap = min(2 if use_365_cli else 4, os.cpu_count() or 1)
+    meminfo = read_text_file("/proc/meminfo", default="")
+    if isinstance(meminfo, str):
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_kb = safe_nonneg_int(parts[1], default=0)
+                    if 0 < mem_kb <= 4608 * 1024:
+                        return min(2, cpu_cap)
+                break
+    return cpu_cap
+
+
 if __name__ == "__main__":
     os.chdir(ROOT)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbol", choices=list(SYMBOLS._SECTIONS), default=None,
                      help="run ONLY this symbol (default: BTCUSDC + TAOUSDC)")
-    ap.add_argument("--trend-window-sec", type=float, default=DEFAULT_WINDOW_SECONDS,
+    ap.add_argument("--trend-window-sec", type=parse_cli_float, default=DEFAULT_WINDOW_SECONDS,
                      help=f"window horizon for ReplayTrendSource (seconds), default "
                           f"{DEFAULT_WINDOW_SECONDS:.0f}s (~3.7 min, matching live "
                           f"is_trend_up()). For A/B tests: short 60-420 (1-7 min), "
                           f"medium 5400-21600 (1.5-6h, matching tradeall slope_big).")
     args = ap.parse_args()
+    if args.trend_window_sec <= 0.0:
+        ap.error("--trend-window-sec must be positive")
 
     targets = [args.symbol] if args.symbol else list(SYMBOLS._SECTIONS)
     cli_tasks = [
@@ -651,7 +681,7 @@ if __name__ == "__main__":
         for sym in targets
     ]
     use_365_cli = bool_env("MPTRADE_REPLAY_USE_365", default=False)
-    worker_cap = int_env("WORKERS") or min(2 if use_365_cli else 4, os.cpu_count() or 1)
+    worker_cap = _resolve_replay_worker_cap(use_365_cli)
     n_workers = min(len(cli_tasks), max(1, worker_cap))
     if n_workers > 1:
         with Pool(processes=n_workers) as pool:

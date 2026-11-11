@@ -264,9 +264,18 @@ def load_fresh_365_npz_arrays(sym: str) -> tuple[np.ndarray, np.ndarray] | None:
         try:
             npz_fresh = not os.path.exists(jsonl_365) or os.path.getmtime(npz_path) >= os.path.getmtime(jsonl_365)
             if npz_fresh:
-                with np.load(npz_path) as z:
-                    return z["ts"].astype(np.float64), z["px"].astype(np.float64)
-        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+                with np.load(npz_path, allow_pickle=False) as z:
+                    if "ts" not in z or "px" not in z:
+                        return None
+                    ts_arr = np.asarray(z["ts"], dtype=np.float64)
+                    px_arr = np.asarray(z["px"], dtype=np.float64)
+                    if ts_arr.ndim != 1 or px_arr.ndim != 1 or len(ts_arr) != len(px_arr) or len(ts_arr) == 0:
+                        return None
+                    valid_mask = np.isfinite(ts_arr) & np.isfinite(px_arr) & (px_arr > 0.0)
+                    if not np.any(valid_mask):
+                        return None
+                    return ts_arr[valid_mask], px_arr[valid_mask]
+        except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
             pass
     return None
 
@@ -354,10 +363,13 @@ def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_wid
 def print_mt_buy_hold_footer(
     symbols: list[str], bh_by_sym: dict[str, float], hdr: str, *, col_width: int = 34
 ) -> None:
-    bh_tot = sum(bh_by_sym.get(sym, 0.0) for sym in symbols)
-    bh_cells = [f"{bh_by_sym.get(sym, 0.0):>+14.2f}" for sym in symbols]
+    width = exact_pos_int(col_width, default=34) or 34
+    bh_map = bh_by_sym if isinstance(bh_by_sym, dict) else {}
+    bh_vals = [safe_float(bh_map.get(sym), 0.0) for sym in symbols]
+    bh_tot = sum(bh_vals)
+    bh_cells = [f"{val:>+14.2f}" for val in bh_vals]
     print("-" * len(hdr))
-    print(f"{'Buy & Hold Benchmark':<{col_width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+    print(f"{'Buy & Hold Benchmark':<{width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
 
 
 def run_mt_model_sweep_table(

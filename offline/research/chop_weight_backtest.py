@@ -33,6 +33,7 @@ from instrument_registry import symbols_for
 from intelligence.internal.state.survival import get_trade_weight
 from providers.replay_provider import load_price_series
 from state_io import atomic_write_json
+from offline.backtests.evaluation import parse_cli_int
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.state.volatility import calculate_volatility_1h
@@ -601,13 +602,15 @@ if __name__ == "__main__":
     default_syms = ",".join(symbols_for("binance", role="tradeall_fire"))
     parser = argparse.ArgumentParser(description="Run Chop Weight Backtest")
     parser.add_argument("--symbols", default=default_syms, help="Comma-separated symbols")
-    parser.add_argument("--step-sec", type=int, default=900, help="Bar resolution in seconds (default 900 = 15m)")
+    parser.add_argument("--step-sec", type=parse_cli_int, default=900, help="Bar resolution in seconds (default 900 = 15m)")
     parser.add_argument(
         "--out",
         default=os.path.join(ROOT, "logger", "chop_weight_backtest_results.json"),
         help="Output JSON path (defaults to logger/chop_weight_backtest_results.json)",
     )
     args = parser.parse_args()
+    if args.step_sec <= 0:
+        parser.error("--step-sec must be positive")
 
     symbols = parse_symbol_list(args.symbols)
     results = run_chop_benchmark(symbols=symbols, step_seconds=args.step_sec)
@@ -619,5 +622,8 @@ if __name__ == "__main__":
         sym: [asdict(s) for s in stats]
         for sym, stats in results.items()
     }
+    if not json_data:
+        logger.error("No chop benchmark results produced; refusing to overwrite %s with empty results", args.out)
+        sys.exit(1)
     atomic_write_json(args.out, json_data, indent=2)
     logger.info("Saved chop benchmark results to %s", args.out)

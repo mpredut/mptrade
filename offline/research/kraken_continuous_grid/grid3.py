@@ -24,7 +24,9 @@ def task(args):
     try:
         bars, ohlc, _ = grid.load_asset(asset)
         params, peak = grid2.ALL[cfg]
-        cache_key = (os.path.abspath(grid.DATA), asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+        start_ts = bars[0][0] if bars else 0
+        end_ts = bars[-1][0] if bars else 0
+        cache_key = (os.path.abspath(grid.DATA), asset, len(bars), start_ts, end_ts,
                      repr(params), bool(peak))
         cached = _TASK3_CACHE.get(cache_key)
         if cached is not None:
@@ -33,7 +35,16 @@ def task(args):
             str(fee): grid.replay(bars[WARM:], bars[:WARM], params, peak, fee=fee, initial_cash=3900.0)
             for fee in (0.26, 0.40)
         }
-        res = {"asset": asset, "cfg": cfg, **out}
+        res = {
+            "asset": asset,
+            "cfg": cfg,
+            "bars": len(bars),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "params_repr": repr(params),
+            "peak": bool(peak),
+            **out,
+        }
         lru_dict_put(_TASK3_CACHE, cache_key, res, max_entries=512)
         return res
     except Exception:

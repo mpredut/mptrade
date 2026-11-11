@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import optional_env
-from offline.backtests.datasets import save_dataset, validate_dataset
+from offline.backtests.datasets import load_ohlc_tuples_csv, save_dataset, validate_dataset
 from providers.market_api import api as mkt
 from state_io import atomic_snapshot_file
 
@@ -22,11 +22,22 @@ EXP = optional_env("GRID_OUT") or os.path.join(ROOT, "offline", "results", "krak
 DATA = os.path.join(EXP, "data")
 ASSETS = ("TAO", "ADA", "SOL", "BTC", "ETH", "XRP", "DOGE", "LINK", "AVAX", "BNB")
 START_MS = 1514764800000   # 2018-01-01
+MIN_GRID_BARS = 43
+
+
+def _has_usable_csv(path: str, min_bars: int = MIN_GRID_BARS) -> bool:
+    if not os.path.isfile(path):
+        return False
+    try:
+        rows = load_ohlc_tuples_csv(path, strict=True)
+    except (OSError, ValueError):
+        return False
+    return len(rows) >= min_bars
 
 
 def fetch(symbol: str, name: str, force: bool = False) -> bool:
     out_path = os.path.join(DATA, f"{name}_240m.csv")
-    if not force and os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+    if not force and _has_usable_csv(out_path):
         print(f"[fetch] {name}: using cached {out_path}", flush=True)
         return True
     try:
@@ -35,9 +46,16 @@ def fetch(symbol: str, name: str, force: bool = False) -> bool:
         )
         if not candles:
             print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
-            return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
+            return _has_usable_csv(out_path)
         # Allow historical exchange maintenance windows while enforcing strict chronological order & OHLC invariants.
         validated = validate_dataset(candles)
+        if len(validated) < MIN_GRID_BARS:
+            print(
+                f"[fetch] {name}: insufficient bars ({len(validated)} < {MIN_GRID_BARS}); "
+                "keeping existing file if present",
+                flush=True,
+            )
+            return _has_usable_csv(out_path)
         save_dataset(validated, out_path)
         print(f"[fetch] {name}: {len(validated)} bars "
               f"{time.strftime('%Y-%m-%d', time.gmtime(validated[0]['timestamp']))} -> "
@@ -45,7 +63,7 @@ def fetch(symbol: str, name: str, force: bool = False) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"[fetch] {name}: error {exc}; keeping existing file if present", flush=True)
-        return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
+        return _has_usable_csv(out_path)
 
 
 if __name__ == "__main__":

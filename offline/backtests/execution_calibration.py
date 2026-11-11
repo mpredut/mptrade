@@ -13,13 +13,24 @@ from botcore import (
     normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
+    safe_pos_float,
 )
 from cachepaths import normalize_venue_name
 from providers.base import normalize_side
 
 
-def _ts_sec(val: object, default: float = 0.0) -> float:
-    return normalize_epoch_sec(val, default=default, allow_zero=True) or default
+def _opt_ts_sec(val: object) -> float | None:
+    return normalize_epoch_sec(val, default=None, allow_zero=True)
+
+
+def _ts_sort_key(val: object) -> tuple[bool, float]:
+    ts = _opt_ts_sec(val)
+    return (ts is None, ts if ts is not None else 0.0)
+
+
+def _has_cid(order: dict) -> bool:
+    cid = order.get("client_order_id")
+    return cid is not None and (isinstance(cid, bool) or bool(str(cid).strip()))
 
 
 _CLIENT_ORDER_ID_PATTERNS = {
@@ -78,13 +89,26 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     """Correlate the events by ``intent_id`` without assuming missing fills."""
     intents: dict[str, list[dict]] = {}
     safe_events = events if isinstance(events, (list, tuple)) else []
-    for event in sorted(safe_events, key=lambda item: _ts_sec(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
+    keyed_events: list[tuple[tuple[bool, float, int], str, dict]] = []
+    last_ts_by_intent: dict[str, float] = {}
+    for idx, event in enumerate(safe_events):
         if not isinstance(event, dict):
             continue
         raw_intent_id = event.get("intent_id")
         intent_id = "" if isinstance(raw_intent_id, bool) or raw_intent_id is None else str(raw_intent_id).strip()
-        if intent_id:
-            intents.setdefault(intent_id, []).append(event)
+        if not intent_id:
+            continue
+        ev_ts = _opt_ts_sec(event.get("ts"))
+        if ev_ts is not None:
+            last_ts_by_intent[intent_id] = ev_ts
+            sort_key = (False, ev_ts, idx)
+        elif intent_id in last_ts_by_intent:
+            sort_key = (False, last_ts_by_intent[intent_id], idx)
+        else:
+            sort_key = (True, 0.0, idx)
+        keyed_events.append((sort_key, intent_id, event))
+    for _, intent_id, event in sorted(keyed_events, key=lambda item: item[0]):
+        intents.setdefault(intent_id, []).append(event)
 
     orders = []
     for intent_id, history in intents.items():
@@ -117,7 +141,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
                         ]
             elif event.get("event") in STATUS_EVENTS:
                 filled_step = safe_nonneg_float(event.get("filled_qty"), 0.0)
-                cost_step = safe_nonneg_float(event.get("cost"), 0.0)
+                cost_step = safe_pos_float(event.get("cost"), default=None)
                 raw_fee_val = safe_float(event.get("fee"), default=None)
                 fee_step = abs(raw_fee_val) if raw_fee_val is not None else None
                 cleaned_s_oid = clean_order_id_str(event.get("order_id"))
@@ -130,18 +154,28 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         filled = 0.0
         cost = 0.0
         fee = 0.0
-        fee_known = False
+        all_costs_known = True
+        fee_any_known = False
+        all_fees_known = True
         for bucket in by_order_id.values():
             if not bucket:
                 continue
             max_filled = max(row[1] for row in bucket)
+            if max_filled <= 0.0:
+                continue
             at_max = [row for row in bucket if math.isclose(row[1], max_filled, rel_tol=1e-12, abs_tol=1e-12)]
-            best_cost = max((row[2] for row in at_max), default=0.0)
+            known_costs = [row[2] for row in at_max if row[2] is not None and row[2] > 0.0]
+            if known_costs:
+                best_cost = max(known_costs)
+            else:
+                all_costs_known = False
+                best_cost = 0.0
             known_fees = [row[3] for row in at_max if row[3] is not None]
             if known_fees:
-                fee_known = True
+                fee_any_known = True
                 best_fee = max(known_fees)
             else:
+                all_fees_known = False
                 best_fee = 0.0
             filled += max_filled
             cost += best_cost
@@ -155,7 +189,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
                 cum_filled = sum(running_by_oid.values())
                 if cum_filled > 0:
                     fill_ratios.append(min(1.0, max(0.0, cum_filled / qty)))
-        avg_fill = cost / filled if filled > 0 and cost > 0 else None
+        avg_fill = cost / filled if (filled > 0 and cost > 0 and all_costs_known) else None
         side_norm = normalize_side(requested.get("side"))
         direction = 1.0 if side_norm == "BUY" else (-1.0 if side_norm == "SELL" else 0.0)
         requested_price = requested.get("price")
@@ -180,11 +214,10 @@ def calibrate_execution_events(events: list[dict]) -> dict:
                 )
         latency = None
         if accepted is not None and first_fill is not None:
-            latency = max(
-                0.0,
-                _ts_sec(first_fill[0].get("ts"), 0.0)
-                - _ts_sec(accepted.get("ts"), 0.0),
-            )
+            acc_ts = _opt_ts_sec(accepted.get("ts"))
+            fill_ts = _opt_ts_sec(first_fill[0].get("ts"))
+            if acc_ts is not None and fill_ts is not None:
+                latency = max(0.0, fill_ts - acc_ts)
         client_order_id = None
         if accepted is not None:
             raw_acc_cid = accepted.get("client_order_id")
@@ -215,7 +248,11 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             "requested_qty": qty,
             "final_fill_ratio": min(1.0, filled / qty) if qty > 0 else None,
             "ever_partial": any(0.0 < ratio < 1.0 - 1e-9 for ratio in fill_ratios),
-            "fee_bps": abs(fee) / cost * 10_000 if (cost > 0 and fee_known) else None,
+            "fee_bps": (
+                abs(fee) / cost * 10_000
+                if (cost > 0 and all_costs_known and fee_any_known and all_fees_known)
+                else None
+            ),
             "first_fill_latency_s": latency,
             "limit_fill_deviation_bps": deviation_bps,
             "market_execution_shortfall_bps": market_shortfall_bps,
@@ -262,7 +299,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     seen_venues_norm: set[str] = set()
     for order in sorted(
         supported_client_ids,
-        key=lambda item: _ts_sec(item.get("accepted_ts"), 0.0),
+        key=lambda item: _ts_sort_key(item.get("accepted_ts")),
     ):
         raw_venue = order.get("venue")
         venue = "" if isinstance(raw_venue, bool) else str(raw_venue or "").strip()
@@ -309,19 +346,19 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         "client_order_id_validation": {
             "supported_accepted_orders": len(supported_client_ids),
             "with_client_order_id": sum(
-                bool(order["client_order_id"]) for order in supported_client_ids
+                _has_cid(order) for order in supported_client_ids
             ),
             "valid_client_order_ids": sum(
                 order["client_order_id_valid"] is True
                 for order in supported_client_ids
             ),
             "invalid_client_order_ids": sum(
-                bool(order["client_order_id"])
+                _has_cid(order)
                 and order["client_order_id_valid"] is False
                 for order in supported_client_ids
             ),
             "missing_client_order_ids": sum(
-                not order["client_order_id"] for order in supported_client_ids
+                not _has_cid(order) for order in supported_client_ids
             ),
             "first_valid_by_venue": first_valid_by_venue,
         },

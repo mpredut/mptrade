@@ -15,7 +15,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import safe_pos_float
+from botcore import safe_float, safe_pos_float
 import pricewindow as pw
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_all_signals,
@@ -62,10 +62,10 @@ def run_multiwindow_sweep(use_365: bool = False):
     def _build_multiwindow_sigs(sym: str, series):
         prod_w = safe_pos_float(pw.fast_trend_window_for_symbol(sym), default=222.0)
         sigs: dict = {
-            w: compute_all_signals(series, win_sec=float(w), symbol=sym, use_symbol_fast_window=False)
+            w: compute_all_signals(series, win_sec=safe_float(w, 0.0), symbol=sym, use_symbol_fast_window=False)
             for w in (60, 90, 222, 900)
         }
-        matched = next((sigs[w] for w in (60, 90, 222, 900) if np.isclose(prod_w, float(w))), None)
+        matched = next((sigs[w] for w in (60, 90, 222, 900) if np.isclose(prod_w, safe_float(w, 0.0))), None)
         sigs["prod"] = (
             matched
             if matched is not None

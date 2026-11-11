@@ -162,7 +162,7 @@ def test_detect_long_term_trend_real_data() -> None:
             print(
                 f"  -> PASSED for {sym} history: "
                 f"direction={res_cold.get('direction') if res_cold else None}, "
-                f"duration={res_cold.get('duration_seconds') if res_cold else 0:.0f}s"
+                f"duration={safe_float(res_cold.get('duration_seconds'), 0.0) if res_cold else 0.0:.0f}s"
             )
     finally:
         pa._trend_memo_cache.clear()
@@ -239,7 +239,7 @@ def test_volatility_parity(iterations: int = 10_000) -> None:
 
             # Optimized calculate_volatility_1h
             vol._vol_memo_cache.clear()
-            vol_opt = vol.calculate_volatility_1h(prices, sample_rate)
+            vol_opt = safe_float(vol.calculate_volatility_1h(prices, sample_rate), 0.0)
 
             diff = abs(vol_base - vol_opt)
             max_diff_vol = max(max_diff_vol, diff)

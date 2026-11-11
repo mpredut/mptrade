@@ -61,13 +61,16 @@ replay = grid.replay
 def views(asset, cfg, fee_key):
     bars, ohlc, _ = grid.load_asset(asset)
     params, peak = ALL[cfg]
-    cache_key = (os.path.abspath(grid.DATA), asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+    start_ts = bars[0][0] if bars else 0
+    end_ts = bars[-1][0] if bars else 0
+    cache_key = (os.path.abspath(grid.DATA), asset, len(bars), start_ts, end_ts,
                  repr(params), bool(peak), fee_key)
     cached = _VIEWS_CACHE.get(cache_key)
     if cached is not None:
         return {**cached, "cfg": cfg}
     fee = FEE[fee_key]
     res = {"kind": "views", "fee": fee_key, "asset": asset, "cfg": cfg, "bars": len(bars),
+           "start_ts": start_ts, "end_ts": end_ts,
            "params_repr": repr(params), "peak": bool(peak),
            "full": replay(bars[WARM:], bars[:WARM], params, peak, fee), "w30": [], "w90": []}
     for key, size in (("w30", W30), ("w90", W90)):
@@ -137,10 +140,10 @@ if __name__ == "__main__":
                 and isinstance(r.get("full"), dict)
                 and isinstance(r.get("w30"), list)
                 and isinstance(r.get("w90"), list)
-                and ("start_ts" not in r or r.get("start_ts") == start_ts)
-                and ("end_ts" not in r or r.get("end_ts") == end_ts)
-                and ("params_repr" not in r or r.get("params_repr") == repr(p))
-                and ("peak" not in r or bool(r.get("peak")) == bool(pk))
+                and "start_ts" in r and r.get("start_ts") == start_ts
+                and "end_ts" in r and r.get("end_ts") == end_ts
+                and "params_repr" in r and r.get("params_repr") == repr(p)
+                and "peak" in r and bool(r.get("peak")) == bool(pk)
             ):
                 ck = (
                     os.path.abspath(grid.DATA), r["asset"], len(bars), start_ts, end_ts,
@@ -155,6 +158,8 @@ if __name__ == "__main__":
                         "asset": r["asset"],
                         "cfg": r["cfg"],
                         "bars": r["bars"],
+                        "start_ts": start_ts,
+                        "end_ts": end_ts,
                         "params_repr": repr(p),
                         "peak": bool(pk),
                         "full": r["full"],

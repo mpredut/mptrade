@@ -622,5 +622,8 @@ if __name__ == "__main__":
             logger.error("Failed backtest for %s: %s", sym, e, exc_info=True)
 
     out_file = os.path.join(ROOT, "logger", "intelligence_backtest_results.json")
+    if not all_results:
+        logger.error("No symbol backtests succeeded; refusing to overwrite %s with empty results", out_file)
+        sys.exit(1)
     atomic_write_json(out_file, all_results, indent=2)
     logger.info("Saved backtest results to %s", out_file)

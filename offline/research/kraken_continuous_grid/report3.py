@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Aggregate results3.jsonl (finite 3900 USD cash, continuous history) into REPORT3.md."""
+import math
 import os
 import statistics as st
 import sys
@@ -9,7 +10,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
 from state_io import atomic_write_text
+from offline.research.kraken_continuous_grid import grid2
 from offline.research.kraken_continuous_grid.report import (
+    _fmt_num,
     _format_errors_section,
     _load_grid_results_by_cfg,
     _resolve_exp_dir,
@@ -20,7 +23,7 @@ from offline.research.kraken_continuous_grid.report import (
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = _resolve_exp_dir(exp_dir)
     results3_path = os.path.join(exp, "results3.jsonl")
-    _, errors, by, assets = _load_grid_results_by_cfg(results3_path)
+    _, errors, by, assets = _load_grid_results_by_cfg(results3_path, spec_map=grid2.ALL)
 
     L = ["# Finite-cash continuous runs (3900 USD, no refill after losses)\n",
          "Return and max drawdown as % of 3900 USD over the whole history per asset; "
@@ -54,15 +57,19 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             min_cash = [safe_float(fee_dicts[a].get("min_cash"), default=3900.0) for a in assets]
             score = st.median(_ret_dd_ratio(r, x, dd_floor=1.0) for r, x in zip(ret, dd)) if ret else 0.0
             score_val = safe_float(score, default=None)
-            items.append((score_val if score_val is not None else -1e300, cfg, ret, dd, live, refused, min_cash))
-        for score, cfg, ret, dd, live, refused, min_cash in sorted(items, reverse=True):
+            items.append((score_val, cfg, ret, dd, live, refused, min_cash))
+        for score, cfg, ret, dd, live, refused, min_cash in sorted(
+            items,
+            key=lambda x: (x[0] is not None, x[0] if x[0] is not None else -math.inf, x[1]),
+            reverse=True,
+        ):
             if not ret:
                 continue
             live_pairs = [(r, l) for r, l in zip(ret, live) if l is not None]
             beat_str = f"{sum(r > l + 1e-9 for r, l in live_pairs)}/{len(live_pairs)}" if live_pairs else "-/-"
             L.append(f"| {cfg} | {beat_str} | "
                      f"{sum(r < 0 for r in ret)} | {st.median(ret):+.1f} | {min(ret):+.1f} | {max(ret):+.1f} | "
-                     f"{st.median(dd):.1f} | {max(dd):.1f} | {score:+.2f} | {st.median(refused):.0f} | {st.median(min_cash):.0f} |")
+                     f"{st.median(dd):.1f} | {max(dd):.1f} | {_fmt_num(score, '+.2f')} | {st.median(refused):.0f} | {st.median(min_cash):.0f} |")
 
     L.append("\n## Per asset, fee 0.26% (return %, DD % in brackets)\n")
     cfgs = [c for c in ("live", "old_live_pre0923", "sl0", "ov650_t8", "ov650_t8_brake_gateoff",
@@ -73,8 +80,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         cells = []
         for c in cfgs:
             d026 = by.get(c, {}).get(a, {}).get("0.26")
-            if isinstance(d026, dict) and "ret" in d026 and "dd" in d026:
-                cells.append(f"{safe_float(d026.get('ret'), 0.0):+.1f} ({safe_float(d026.get('dd'), 0.0):.0f})")
+            if (
+                isinstance(d026, dict)
+                and (r_v := safe_float(d026.get("ret"), default=None)) is not None
+                and (d_v := safe_float(d026.get("dd"), default=None)) is not None
+            ):
+                cells.append(f"{r_v:+.1f} ({d_v:.0f})")
             else:
                 cells.append("- / -")
         L.append(f"| {a} | " + " | ".join(cells) + " |")

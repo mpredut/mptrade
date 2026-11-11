@@ -27,14 +27,14 @@ from botcore import (  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params, prepare_spot_interval_params  # noqa: E402
 from offline.backtests.comparison import add_report_output_cli_args, format_number  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
     validate_dataset,
 )
-from offline.backtests.evaluation import evaluate_segment, iso_utc  # noqa: E402
+from offline.backtests.evaluation import evaluate_segment, iso_utc, parse_cli_float, parse_cli_int  # noqa: E402
 from offline.backtests.financial_benchmark import (  # noqa: E402
     aggregate_financial_windows,
     default_scenarios,
@@ -110,7 +110,7 @@ def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
     if not folds:
         raise ValueError("the dataset is too small for the walk-forward schema")
 
-    aligned_params = align_spot_interval_params(params, interval)
+    aligned_params = prepare_spot_interval_params(params, interval)
     adapter = kraken_replay.make_spot_replay_adapter(
         aligned_params,
         bar_minutes=interval,
@@ -330,12 +330,12 @@ def _projection(report: dict) -> dict:
 def add_financial_benchmark_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--train", type=int, default=720)
-    parser.add_argument("--validation", type=int, default=180)
-    parser.add_argument("--test", type=int, default=90)
-    parser.add_argument("--step", type=int, default=90)
-    parser.add_argument("--warmup", type=int, default=40)
-    parser.add_argument("--regime-threshold", type=float, default=3.0)
+    parser.add_argument("--train", type=parse_cli_int, default=720)
+    parser.add_argument("--validation", type=parse_cli_int, default=180)
+    parser.add_argument("--test", type=parse_cli_int, default=90)
+    parser.add_argument("--step", type=parse_cli_int, default=90)
+    parser.add_argument("--warmup", type=parse_cli_int, default=40)
+    parser.add_argument("--regime-threshold", type=parse_cli_float, default=3.0)
     add_report_output_cli_args(parser)
 
 
@@ -395,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     validate_financial_benchmark_args(
-        parser, args, path_attrs=("params_report", "compare_to")
+        parser,
+        args,
+        path_attrs=("env_file", "config_file", "params_report", "compare_to", "verify"),
     )
     if not isinstance(args.name, str) or not args.name.strip() or "/" in args.name or "\\" in args.name or ".." in args.name:
         parser.error(f"invalid --name: {args.name!r}")
