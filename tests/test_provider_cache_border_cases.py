@@ -36,7 +36,15 @@ from providers.order_ohlc_utils import (
 from providers.quantity import venue_adjust_partial_sell_quantity, venue_fee_cap_quantity
 from providers import order_id_context as oic
 import order_guard
-from tests.conftest import MockHttpResponse
+from tests.conftest import DummyGeminiClient, MockHttpResponse
+
+
+class _StubKrakenPairClient:
+    def __init__(self, info: dict):
+        self._info = info
+
+    def cached_pair_info(self, _cands):
+        return self._info
 
 
 def test_freshness_parameters_fail_closed_on_nonpositive_bool_and_nan(tmp_path: Path):
@@ -302,21 +310,19 @@ def test_fee_and_limits_resolution_symmetry_and_no_double_trailing_rest_call(tmp
     from kraken.trailing_stop import KrakenTrailing
 
     # 1. Custom MarketDataProvider subclass named 'kraken' resolves Kraken fee/limits via base class
-    class _FakeKrakenPairClient:
-        def cached_pair_info(self, _cands):
-            return {
-                "ordermin": "0.0001",
-                "pair_decimals": 1,
-                "lot_decimals": 8,
-                "fees_maker": [[0, 0.16]],
-                "fees": [[0, 0.26]],
-            }
-
     class _KrakenSubStub(MarketDataProvider):
         name = "kraken"
 
         def __init__(self):
-            self._cli = _FakeKrakenPairClient()
+            self._cli = _StubKrakenPairClient(
+                {
+                    "ordermin": "0.0001",
+                    "pair_decimals": 1,
+                    "lot_decimals": 8,
+                    "fees_maker": [[0, 0.16]],
+                    "fees": [[0, 0.26]],
+                }
+            )
 
         def supports_symbol(self, symbol: str) -> bool:
             return True
@@ -334,10 +340,9 @@ def test_fee_and_limits_resolution_symmetry_and_no_double_trailing_rest_call(tmp
     ) == {"symbol": "BTCUSDC", "maker_fee_bps": 5.0}
 
     # 3. HyperliquidProvider inherits resolve_cached_fee_and_limits with dynamic price tick_size
-    class _FakeHLClient:
-        _sz_decimals_cache = {"HYPE": 2}
-
-    hl = HyperliquidProvider(token="HYPE", client=_FakeHLClient(), live_enabled=False)
+    hl = HyperliquidProvider(
+        token="HYPE", client=SimpleNamespace(_sz_decimals_cache={"HYPE": 2}), live_enabled=False
+    )
     hl_meta = hl.resolve_cached_fee_and_limits("HYPE", price=42.35)
     assert hl_meta["step_size"] == pytest.approx(0.01)
     assert hl_meta["tick_size"] > 0
@@ -363,31 +368,26 @@ def test_t212_empty_fills_publish_stampede_prevention_and_open_orders_normalizat
 
     refresh_calls = []
 
-    class _FakeT212Cli:
-        def refresh_order_history(self, max_age_sec: float = 0.0):
-            refresh_calls.append(max_age_sec)
-            return []
+    fake_t212_cli = SimpleNamespace(
+        refresh_order_history=lambda max_age_sec=0.0: refresh_calls.append(max_age_sec) or [],
+        get_portfolio=lambda: [],
+        list_active_orders=lambda: [
+            {"ticker": "NVDA_US_EQ", "side": "BUY", "quantity": 2.0, "limitPrice": 130.0},  # missing id -> skipped
+            {
+                "id": 98765,
+                "ticker": "NVDA_US_EQ",
+                "side": "BUY",
+                "type": "LIMIT",
+                "status": "WORKING",
+                "quantity": 2.5,
+                "filledQuantity": 0.5,
+                "limitPrice": 131.25,
+                "dateCreated": "2026-11-10T18:00:00Z",
+            },
+        ],
+    )
 
-        def get_portfolio(self):
-            return []
-
-        def list_active_orders(self):
-            return [
-                {"ticker": "NVDA_US_EQ", "side": "BUY", "quantity": 2.0, "limitPrice": 130.0},  # missing id -> skipped
-                {
-                    "id": 98765,
-                    "ticker": "NVDA_US_EQ",
-                    "side": "BUY",
-                    "type": "LIMIT",
-                    "status": "WORKING",
-                    "quantity": 2.5,
-                    "filledQuantity": 0.5,
-                    "limitPrice": 131.25,
-                    "dateCreated": "2026-11-10T18:00:00Z",
-                },
-            ]
-
-    prov = T212Provider(client=_FakeT212Cli(), live_enabled=False)
+    prov = T212Provider(client=fake_t212_cli, live_enabled=False)
     prov._ssot_fills_cache_path = str(fills_cache)
 
     # Authoritative refresh with publish_cache=True records fetchtime even when symbol has 0 fills
@@ -423,19 +423,16 @@ def test_kraken_fetch_remote_trades_case_insensitivity_and_60s_floor_filtering()
     old_ts = now_s - 45.0
     new_ts = now_s - 5.0
 
-    class _FakeKrakenLedgerCli:
-        def _private(self, method: str, params=None, fresh: bool = False):
-            assert method == "Ledgers"
-            return {
-                "ledger": {
-                    "L1_B": {"refid": "REF_OLD", "type": "trade", "asset": "XXBT", "amount": "0.01", "fee": "0", "time": old_ts},
-                    "L1_Q": {"refid": "REF_OLD", "type": "trade", "asset": "ZUSD", "amount": "-900.0", "fee": "0.9", "time": old_ts},
-                    "L2_B": {"refid": "REF_NEW", "type": "trade", "asset": "XXBT", "amount": "0.02", "fee": "0", "time": new_ts},
-                    "L2_Q": {"refid": "REF_NEW", "type": "trade", "asset": "ZUSD", "amount": "-1820.0", "fee": "1.8", "time": new_ts},
-                }
+    cli = SimpleNamespace(
+        _private=lambda method, params=None, fresh=False: {
+            "ledger": {
+                "L1_B": {"refid": "REF_OLD", "type": "trade", "asset": "XXBT", "amount": "0.01", "fee": "0", "time": old_ts},
+                "L1_Q": {"refid": "REF_OLD", "type": "trade", "asset": "ZUSD", "amount": "-900.0", "fee": "0.9", "time": old_ts},
+                "L2_B": {"refid": "REF_NEW", "type": "trade", "asset": "XXBT", "amount": "0.02", "fee": "0", "time": new_ts},
+                "L2_Q": {"refid": "REF_NEW", "type": "trade", "asset": "ZUSD", "amount": "-1820.0", "fee": "1.8", "time": new_ts},
             }
-
-    cli = _FakeKrakenLedgerCli()
+        }
+    )
     kp = KrakenProvider(client=cli)
 
     # Cutoff at now - 20s must exclude REF_OLD (at now - 45s) even though Ledgers uses a 60s lookback floor,
@@ -712,17 +709,17 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
     assert callable(getattr(fresh_kr, "_client", None))
     assert KrakenProvider.extract_cached_fee_and_limits(fresh_kr, "XBTUSD") == {}
 
-    class _BadDecimalsKrakenClient:
-        def cached_pair_info(self, _cands):
-            return {
+    bad_kr = KrakenProvider(
+        client=_StubKrakenPairClient(
+            {
                 "ordermin": "0.01",
                 "pair_decimals": True,
                 "lot_decimals": "2.5",
                 "fees_maker": [[0, 0.16]],
                 "fees": [[0, 0.26]],
             }
-
-    bad_kr = KrakenProvider(client=_BadDecimalsKrakenClient())
+        )
+    )
     meta_bad = KrakenProvider.extract_cached_fee_and_limits(bad_kr, "XBTUSD", price=80000.0)
     assert "tick_size" not in meta_bad
     assert "step_size" not in meta_bad
@@ -835,18 +832,17 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
     captured_kr: list[dict] = []
     captured_ledgers: list[dict] = []
 
-    class _FakeKrakenClient:
-        def _public(self, method, params):
-            assert method == "OHLC"
+    fake_kr_cli = SimpleNamespace(
+        _public=lambda method, params: (
             captured_kr.append(dict(params))
-            return {"HYPEUSD": [[1700000000, "20", "21", "19", "20.5"], [1e308, "20", "21", "19", "21.0"]], "last": 1}
+            or {"HYPEUSD": [[1700000000, "20", "21", "19", "20.5"], [1e308, "20", "21", "19", "21.0"]], "last": 1}
+        ),
+        _private=lambda method, params=None, fresh=False: (
+            captured_ledgers.append(dict(params or {})) or {"ledger": {}}
+        ),
+    )
 
-        def _private(self, method, params=None, fresh=False):
-            assert method == "Ledgers"
-            captured_ledgers.append(dict(params or {}))
-            return {"ledger": {}}
-
-    kp = KrakenProvider(client=_FakeKrakenClient())
+    kp = KrakenProvider(client=fake_kr_cli)
     pts_kr = kp._fetch_price_history("HYPEUSD", 1e308)
     assert pts_kr == [{"timestamp": 1700000000000, "price": 20.5}]
     assert captured_kr[-1]["interval"] == 21600
@@ -856,7 +852,7 @@ def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
         lambda r: r[1],
         ts_in_seconds=True,
     ) == [{"timestamp": 1700000000000, "price": 12.5}]
-    assert KrakenProvider.fetch_ledger_fills_by_symbol(_FakeKrakenClient(), pairs=("HYPEUSD",), lookback_sec=1e20) == {
+    assert KrakenProvider.fetch_ledger_fills_by_symbol(fake_kr_cli, pairs=("HYPEUSD",), lookback_sec=1e20) == {
         "HYPEUSD": []
     }
     assert captured_ledgers[-1]["start"] == 0
@@ -1651,14 +1647,7 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     assert iter_expired_open_order_ids(orders, 30.0, current_time_sec=1_700_000_100_000) == ["ord_old"]
 
     # 2. SyncModeMixin string boolean flags ("false"/"0") and non-timestamp TTL durations (>= 1e11)
-    class _DummyGemini:
-        calls = 0
-
-        def query_json(self, *_a, **_kw):
-            self.calls += 1
-            return {"market_bias": "NEUTRAL"}
-
-    dummy_llm = _DummyGemini()
+    dummy_llm = DummyGeminiClient({"market_bias": "NEUTRAL"})
     adv = SentimentAdvisor(
         gemini_client=dummy_llm,  # type: ignore[arg-type]
         cache_ttl_sec=2e11,
@@ -1668,14 +1657,14 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     assert adv.start_sync is False
     assert adv.cache_ttl_sec == pytest.approx(2e11)
     assert adv.review(now_ts=1_700_000_000.0) is None
-    assert dummy_llm.calls == 0
+    assert dummy_llm.call_count == 0
 
     adv_default = SentimentAdvisor(
         gemini_client=dummy_llm,  # type: ignore[arg-type]
         cache_file=str(tmp_path / "sentiment_eval2.json"),
     )
     assert adv_default.review(now_ts=1_700_000_000.0, allow_llm="0") is None  # type: ignore[arg-type]
-    assert dummy_llm.calls == 0
+    assert dummy_llm.call_count == 0
 
     class _DummyHttpCollector(CachedHttpJsonCollector):
         def _parse_fetched_payload(self, data, now):

@@ -454,15 +454,13 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
     against historical 14-day sales, but actively blocks on microstructure ask walls / cascades."""
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
-    class _MockProvider:
-        name = "binance"
-        def guards_internally(self):
-            return False
-        def get_orders(self, symbol, side, since_s):
-            # Previous sell was at 200, current price is 250 (math reference would block a BUY at 250)
-            return [{"price": 200.0, "qty": 1.0, "timestamp": time.time() * 1000 - 3600 * 1000}]
-
-    p = _MockProvider()
+    p = SimpleNamespace(
+        name="binance",
+        guards_internally=lambda: False,
+        get_orders=lambda symbol, side, since_s: [
+            {"price": 200.0, "qty": 1.0, "timestamp": time.time() * 1000 - 3600 * 1000}
+        ],
+    )
 
     # With normal profit_guard (no bypass): blocked by math reference
     assert not order_guard.profit_guard(
@@ -508,14 +506,14 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
 
 def test_profit_guard_all_bypasses_everything():
     """Verify emergency stop-loss / 'all' bypasses both math reference and all pillars."""
-
-    class _MockProvider:
-        name = "binance"
-        def guards_internally(self):
-            return False
-
     allowed = order_guard.profit_guard(
-        _MockProvider(), "BTCUSDC", "SELL", 50000.0, 1.15, window_ref=60000.0, qty=1.0,
+        SimpleNamespace(name="binance", guards_internally=lambda: False),
+        "BTCUSDC",
+        "SELL",
+        50000.0,
+        1.15,
+        window_ref=60000.0,
+        qty=1.0,
         bypass_guards={"all"},
     )
     assert allowed is True
@@ -1504,19 +1502,17 @@ def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
     assert hits == [] and is_rt is False
 
     # 2. watch_trade_decisions.main handles specs where spec.number("mt.gain") returns None (e.g. ARBUSDC)
-    class _DummyMgr:
-        def get_snapshot(self, sym):
-            return {"current_price": 1.5, "growth_coefficient": 0.01}
-
-    class _DummySpec:
-        symbol = "ARBUSDC"
-
-        def number(self, key):
-            return None
-
     monkeypatch.setattr(wtd_mod, "SYMBOLS", ["ARBUSDC"])
-    monkeypatch.setattr(wtd_mod.cm, "get_short_trend_manager", lambda: _DummyMgr())
-    monkeypatch.setattr(wtd_mod, "load_registry", lambda: {"BINANCE_ARB": _DummySpec()})
+    monkeypatch.setattr(
+        wtd_mod.cm,
+        "get_short_trend_manager",
+        lambda: SimpleNamespace(get_snapshot=lambda sym: {"current_price": 1.5, "growth_coefficient": 0.01}),
+    )
+    monkeypatch.setattr(
+        wtd_mod,
+        "load_registry",
+        lambda: {"BINANCE_ARB": SimpleNamespace(symbol="ARBUSDC", number=lambda key: None)},
+    )
     monkeypatch.setattr(wtd_mod, "position", lambda sym: (1.4, 10.0, 0, 1.4))
     monkeypatch.setattr(wtd_mod, "free_qty", lambda sym: 10.0)
     wtd_mod.main()
@@ -1860,20 +1856,16 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
 
     # 1. shadow_longterm._fetch_with_ts reuses existing sys.modules['hl_client'] without clobbering mocks
     called = []
-
-    class FakeHLClient:
-        @classmethod
-        def public(cls):
-            called.append("public")
-            return cls()
-
-        def candles(self, token, interval, lookback_hours=0):
-            return [
+    fake_hl_cls = SimpleNamespace(
+        public=lambda: called.append("public")
+        or SimpleNamespace(
+            candles=lambda token, interval, lookback_hours=0: [
                 {"t": 1700000000000, "o": 10.0, "h": 11.0, "l": 9.0, "c": 10.5},
                 {"t": 1700014400000, "o": 10.5, "h": 12.0, "l": 10.0, "c": 11.0},
             ]
-
-    monkeypatch.setitem(sys.modules, "hl_client", types.SimpleNamespace(HLClient=FakeHLClient))
+        )
+    )
+    monkeypatch.setitem(sys.modules, "hl_client", types.SimpleNamespace(HLClient=fake_hl_cls))
     monkeypatch.setenv("HL_SPOT_TOKEN", "@107")
     monkeypatch.setattr(hl_sl, "load_shadow_environment", lambda *a, **k: None)
     rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
@@ -2131,14 +2123,11 @@ def test_order_guard_side_normalization_daily_limit_guard_weight_limit_and__read
 def test_order_guard_weight_limit_preserves_float_inf_for_auto_quantity_iter101_s5():
     """[ITER101 #5] order_guard.weight_limit preserves float('inf') for auto-quantity (requested_qty=None)."""
     # 5. order_guard.weight_limit preserves float("inf") for auto-quantity (requested_qty=None)
-    class _DummyProvider:
-        name = "Dummy"
-        def get_orders(self, sym, side, sec):
-            return []
+    dummy_prov = SimpleNamespace(name="Dummy", get_orders=lambda sym, side, sec: [])
     with patch.object(order_guard, "resolve_trade_weight", return_value=0.10):
-        capped_inf = order_guard.weight_limit(_DummyProvider(), "BTCUSDC", "BUY", 100.0, float("inf"), available_qty=10.0)
+        capped_inf = order_guard.weight_limit(dummy_prov, "BTCUSDC", "BUY", 100.0, float("inf"), available_qty=10.0)
         assert capped_inf == pytest.approx(1.0)
-        capped_bool = order_guard.weight_limit(_DummyProvider(), "BTCUSDC", "BUY", 100.0, True, available_qty=10.0)
+        capped_bool = order_guard.weight_limit(dummy_prov, "BTCUSDC", "BUY", 100.0, True, available_qty=10.0)
         assert capped_bool == 0.0
 
 def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():

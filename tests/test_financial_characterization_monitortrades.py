@@ -1516,33 +1516,22 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 vol_source="1h_cache",
             )
 
-            class _LivePolicyProvider:
-                name = "binance"
-
-                @staticmethod
-                def free_balance(_asset):
-                    return 1000.0
-
-                @staticmethod
-                def quantity_decision(_sym, _side, _px, _req_qty, **_kw):
-                    # 24h weight cap limits 250 USDC (~1388.88 ARB) down to 406.0 ARB (~73.08 USDC)
-                    return SimpleNamespace(final_qty=406.0, refuse_reason=None, balance_asset="USDC")
-
-                @staticmethod
-                def round_amount(_sym, q):
-                    return round(q, 1)
-
-                @staticmethod
-                def order_filter_refusal(_sym, _side, px, q, **_kw):
-                    return "below_min_notional" if (px * q) < 50.0 else None
-
+            live_policy_prov = SimpleNamespace(
+                name="binance",
+                free_balance=lambda _asset: 1000.0,
+                quantity_decision=lambda _sym, _side, _px, _req_qty, **_kw: SimpleNamespace(
+                    final_qty=406.0, refuse_reason=None, balance_asset="USDC"
+                ),
+                round_amount=lambda _sym, q: round(q, 1),
+                order_filter_refusal=lambda _sym, _side, px, q, **_kw: "below_min_notional" if (px * q) < 50.0 else None,
+            )
             live_inst = SimpleNamespace(
                 symbol="ARBUSDC",
                 base="ARB",
                 quote="USDC",
                 provider_name="binance",
-                provider=_LivePolicyProvider(),
-                _provider=_LivePolicyProvider(),
+                provider=live_policy_prov,
+                _provider=live_policy_prov,
                 min_qty=lambda: 1.0,
             )
             fake_guard = SimpleNamespace(
@@ -1595,32 +1584,26 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             resolved_ids = []
             placed_calls = []
 
-            class _FakeTPInst:
-                @staticmethod
-                def open_orders():
-                    return [
-                        {"orderId": "tp_ok", "side": "SELL", "price": "110.0", "origQty": "10.0", "executedQty": "4.0", "remainingQty": "6.0"},
-                        {"orderId": "tp_fail", "side": "SELL", "price": "112.0", "origQty": "5.0"},
-                    ]
-
-                @staticmethod
-                def cancel_order(oid):
+            fake_tp_inst = SimpleNamespace(
+                open_orders=lambda: [
+                    {"orderId": "tp_ok", "side": "SELL", "price": "110.0", "origQty": "10.0", "executedQty": "4.0", "remainingQty": "6.0"},
+                    {"orderId": "tp_fail", "side": "SELL", "price": "112.0", "origQty": "5.0"},
+                ],
+                cancel_order=lambda oid: (
                     cancelled_ids.append(oid)
-                    return False if oid == "tp_fail" else {"orderId": oid, "status": "CANCELED"}
-
-                @staticmethod
-                def place(side, px, q, **kw):
-                    placed_calls.append((side, px, q, kw))
-                    return {"orderId": "tp_restored"}
+                    or (False if oid == "tp_fail" else {"orderId": oid, "status": "CANCELED"})
+                ),
+                place=lambda side, px, q, **kw: placed_calls.append((side, px, q, kw)) or {"orderId": "tp_restored"},
+            )
 
             import order_retry
             with patch.object(order_retry, "resolve_accepted_order", side_effect=lambda s, o: resolved_ids.append((s, o)) or True):
-                cancelled = mt._cancel_resting_tp_orders(_FakeTPInst(), sym)
+                cancelled = mt._cancel_resting_tp_orders(fake_tp_inst, sym)
             self.assertEqual(len(cancelled), 1)
             self.assertEqual(cancelled[0]["orderId"], "tp_ok")
             self.assertEqual(resolved_ids, [(sym, "tp_ok")])
 
-            mt._restore_resting_tp_orders(_FakeTPInst(), sym, cancelled, 6.0, "refused")
+            mt._restore_resting_tp_orders(fake_tp_inst, sym, cancelled, 6.0, "refused")
             self.assertEqual(len(placed_calls), 1)
             self.assertEqual(placed_calls[0][:3], ("SELL", 110.0, 6.0))
             self.assertEqual(placed_calls[0][3].get("kind"), "TP")
@@ -2051,29 +2034,23 @@ def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_an
     # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
     qdec_kwargs = []
 
-    class _MTPolicyProv:
-        name = "binance"
-
-        @staticmethod
-        def free_balance(_asset):
-            return 1000.0
-
-        @staticmethod
-        def get_orders(_sym, _side, _since):
-            return []
-
-        @staticmethod
-        def quantity_decision(_sym, _side, _px, req_qty, **kw):
+    mt_policy_prov = SimpleNamespace(
+        name="binance",
+        free_balance=lambda _asset: 1000.0,
+        get_orders=lambda _sym, _side, _since: [],
+        quantity_decision=lambda _sym, _side, _px, req_qty, **kw: (
             qdec_kwargs.append(dict(kw))
-            return SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
+            or SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
+        ),
+    )
 
     mt_inst = SimpleNamespace(
         symbol="BTCUSDC",
         base="BTC",
         quote="USDC",
         provider_name="binance",
-        provider=_MTPolicyProv(),
-        _provider=_MTPolicyProv(),
+        provider=mt_policy_prov,
+        _provider=mt_policy_prov,
         params={"bypass_guards": "G_QLIMIT2"},
     )
     dl_calls = []
@@ -2332,24 +2309,17 @@ def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter1
 def test_monitortrades__can_pass_buy_quantity_policy_rejects_nan_final_qty_iter158_s3():
     """[ITER158 #3] monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty."""
     # 3. monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty
-    class _NanDecision:
-        final_qty = float("nan")
-        refuse_reason = "nan_qty"
-        balance_asset = "USDC"
+    nan_inst = SimpleNamespace(
+        provider=SimpleNamespace(
+            name="binance",
+            quantity_decision=lambda *a, **kw: SimpleNamespace(
+                final_qty=float("nan"), refuse_reason="nan_qty", balance_asset="USDC"
+            ),
+            free_balance=lambda _asset: 100.0,
+        ),
+        base="BTC",
+        quote="USDC",
+        params={},
+    )
 
-    class _NanProvider:
-        name = "binance"
-
-        def quantity_decision(self, *a, **kw):
-            return _NanDecision()
-
-        def free_balance(self, asset):
-            return 100.0
-
-    class _NanInst:
-        provider = _NanProvider()
-        base = "BTC"
-        quote = "USDC"
-        params = {}
-
-    assert mt._can_pass_buy_quantity_policy(_NanInst(), "BTCUSDC", 60000.0, 0.01) is False
+    assert mt._can_pass_buy_quantity_policy(nan_inst, "BTCUSDC", 60000.0, 0.01) is False

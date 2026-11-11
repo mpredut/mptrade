@@ -1073,19 +1073,20 @@ def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_i
 
 
     # 3. BinanceProvider.order_status normalizes lowercase/whitespace venue status
-    class _FakeClient:
-        def get_order(self, symbol, orderId):
-            return {
-                "status": " filled ",
-                "executedQty": "0.0",
-                "cummulativeQuoteQty": "0.0",
-                "origQty": "1.0",
-            }
-
-    class _FakeBapi:
-        client = _FakeClient()
-
-    monkeypatch.setattr(market_api_mod, "_get_bapi", lambda: _FakeBapi())
+    monkeypatch.setattr(
+        market_api_mod,
+        "_get_bapi",
+        lambda: SimpleNamespace(
+            client=SimpleNamespace(
+                get_order=lambda symbol, orderId: {
+                    "status": " filled ",
+                    "executedQty": "0.0",
+                    "cummulativeQuoteQty": "0.0",
+                    "origQty": "1.0",
+                }
+            )
+        ),
+    )
     st = bp.order_status("BTCUSDC", "12345")
     assert st.status == "closed"
     assert st.venue_status == "FILLED"
@@ -1472,12 +1473,6 @@ def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_
     # 4. bapi_placeorder: order_candidate_price and _submit_binance_order handle market="false" and client_order_id="0"
     assert bapi_placeorder.order_candidate_price("BUY", 60000.0, 60100.0, market="false") == 60000.0
     captured_submit = {}
-
-    class _DummyBinanceClient:
-        def order_limit_buy(self, **kw):
-            captured_submit.update(kw)
-            return {"orderId": 888}
-
     monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
     monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
     res_order = bapi_placeorder._submit_binance_order(
@@ -1487,7 +1482,7 @@ def test_bapi_placeorder_order_candidate_price_and__submit_binance_order_handle_
         price=60000.0,
         market="false",
         client_order_id="0",
-        api_client=_DummyBinanceClient(),
+        api_client=SimpleNamespace(order_limit_buy=lambda **kw: captured_submit.update(kw) or {"orderId": 888}),
     )
     assert res_order == {"orderId": 888}
     assert captured_submit["newClientOrderId"] != "0"
@@ -1499,17 +1494,7 @@ def test_bapi_allorders_paginate_my_trades_accepts_tail_id_and_get_filled_orders
         [{"id": "100.0", "orderId": 0, "price": "100.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
         [{"id": "101", "orderId": "0.0", "price": "200.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
     ]
-
-    class _PagerClient:
-        def __init__(self):
-            self.calls = 0
-
-        def get_my_trades(self, **kw):
-            idx = self.calls
-            self.calls += 1
-            return pages[idx] if idx < len(pages) else []
-
-    pager = _PagerClient()
+    pager = SimpleNamespace(get_my_trades=lambda **kw: pages.pop(0) if pages else [])
     monkeypatch.setattr(bapi_allorders.time, "sleep", lambda _s: None)
     all_trades = bapi_allorders.paginate_my_trades(pager, "BTCUSDC", int(time.time() * 1000) - 10000, limit=1, strict="false")
     assert len(all_trades) == 2
@@ -1582,18 +1567,14 @@ def test_binance_filters_decimal_places_with_decimal_str_float_and_invalid_iter1
 def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock_and_iter185_s2():
     """[ITER185 #2] bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants."""
     # 2. bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants
-    class DummyCacheManager:
-        def __init__(self):
-            self.lock = threading.Lock()
-            self.cache = {"BTCUSDC": [{"orderId": 100, "status": "FILLED"}]}
-            self.sync_called = False
-
-        def sync_account_reader_if_needed(self):
-            self.sync_called = True
-
-    mgr = DummyCacheManager()
+    sync_calls = []
+    mgr = SimpleNamespace(
+        lock=threading.Lock(),
+        cache={"BTCUSDC": [{"orderId": 100, "status": "FILLED"}]},
+        sync_account_reader_if_needed=lambda: sync_calls.append(True),
+    )
     rows = bapi_allorders.snapshot_cache_symbol_rows(mgr, "BTC/USDC")
-    assert mgr.sync_called is True
+    assert sync_calls == [True]
     assert rows == [{"orderId": 100, "status": "FILLED"}]
     # Ensure rows are defensive copies (mutating snapshot does not mutate cache)
     rows[0]["status"] = "CANCELED"

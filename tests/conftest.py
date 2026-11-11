@@ -470,6 +470,7 @@ class DummyTrailingAdapter:
         self.free = free
         self.px = px
         self.trend_val = trend_val
+        self.skip_sell_trends = []
 
     def assets(self):
         return list(self._assets)
@@ -491,6 +492,9 @@ class DummyTrailingAdapter:
 
     def log_hold(self, *_a):
         pass
+
+    def log_skip_sell_trend(self, sym, tr):
+        self.skip_sell_trends.append((sym, tr))
 
 
 class DummyGeminiClient:

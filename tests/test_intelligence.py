@@ -165,6 +165,30 @@ from verify_tools import inspect_prod_fleet
 import credentials
 import instrument_registry
 import intelligence.macro.daemon_ssot as daemon_ssot
+from tests.conftest import DummyTrailingAdapter
+
+
+class _TestSpotStrategy(BaseSpotMixin):
+    replay_mode = True
+
+    def __init__(self, *, p=None, client=None, save_cb=None, state_write_failed=False):
+        if p is not None:
+            self.p = p
+        if client is not None:
+            self.client = client
+        self._save_cb = save_cb
+        self._state_write_failed = state_write_failed
+
+    def _mod_global(self, name, default):
+        return default
+
+    def _touch_strategy_heartbeat(self, *args, **kwargs):
+        pass
+
+    def _save(self):
+        if self._save_cb is not None:
+            self._save_cb()
+        self._state_write_failed = False
 
 
 class TestIntelligenceTriggers(unittest.TestCase):
@@ -1185,14 +1209,11 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
     from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
 
     # 1. AuditedStrategyExecutor fallback to pair_precision for round_quantity/round_price/min_order_qty and CacheShortTrendManager direction/slope
-
-    class _MinimalExec:
-        name = "test_exec"
-
-        def pair_precision(self, symbol: str):
-            return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.05)
-
-    audited = AuditedStrategyExecutor(_MinimalExec(), ExecutionAudit(str(tmp_path)))
+    minimal_exec = SimpleNamespace(
+        name="test_exec",
+        pair_precision=lambda symbol: PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.05),
+    )
+    audited = AuditedStrategyExecutor(minimal_exec, ExecutionAudit(str(tmp_path)))
     assert audited.round_quantity("BTCUSDC", 1.23456) == 1.234
     assert audited.round_price("BTCUSDC", 99.987) == 99.99
     assert audited.min_order_qty("BTCUSDC") == 0.05
@@ -1497,30 +1518,31 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
     from providers.strategy_executor import ProviderError
 
     # 1. T212Provider.order_status rejects empty-string fill fields and falls back from fee=None to commission
-    class _FakeT212Client:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def get_order_status(self, oid):
-            return self._payload
-
-    prov = T212Provider(client=_FakeT212Client({
-        "status": "FILLED",
-        "ticker": "NVDA_US_EQ",
-        "filledQuantity": "",
-        "filledValue": 100.0,
-    }))
+    prov = T212Provider(
+        client=SimpleNamespace(
+            get_order_status=lambda oid: {
+                "status": "FILLED",
+                "ticker": "NVDA_US_EQ",
+                "filledQuantity": "",
+                "filledValue": 100.0,
+            }
+        )
+    )
     with pytest.raises(ProviderError, match="invalid fill values"):
         prov.order_status("NVDA_US_EQ", "101")
 
-    prov_comm = T212Provider(client=_FakeT212Client({
-        "status": "FILLED",
-        "ticker": "NVDA_US_EQ",
-        "filledQuantity": 2.0,
-        "filledValue": 250.0,
-        "fee": None,
-        "commission": 0.75,
-    }))
+    prov_comm = T212Provider(
+        client=SimpleNamespace(
+            get_order_status=lambda oid: {
+                "status": "FILLED",
+                "ticker": "NVDA_US_EQ",
+                "filledQuantity": 2.0,
+                "filledValue": 250.0,
+                "fee": None,
+                "commission": 0.75,
+            }
+        )
+    )
     st = prov_comm.order_status("NVDA_US_EQ", "102")
     assert st.status == "closed"
     assert st.filled_qty == 2.0
@@ -1535,16 +1557,14 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
     assert cachetrend._cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", 14.0) == 42.5
 
     # 3. _filter_ohlc_closes_since handles None closes/timestamps and non-numeric values safely
-    class _MalformedSeries:
-        timestamps = [None, "bad", 1700001000.0, 1700002000.0]
-        closes = [10.0, 20.0, "nan", 125.5]
+    malformed_series = SimpleNamespace(
+        timestamps=[None, "bad", 1700001000.0, 1700002000.0],
+        closes=[10.0, 20.0, "nan", 125.5],
+    )
+    none_closes_series = SimpleNamespace(timestamps=[1700001000.0], closes=None)
 
-    class _NoneClosesSeries:
-        timestamps = [1700001000.0]
-        closes = None
-
-    assert msc_mod._filter_ohlc_closes_since(_MalformedSeries(), 1700000000.0) == [125.5]
-    assert msc_mod._filter_ohlc_closes_since(_NoneClosesSeries(), 1700000000.0) == []
+    assert msc_mod._filter_ohlc_closes_since(malformed_series, 1700000000.0) == [125.5]
+    assert msc_mod._filter_ohlc_closes_since(none_closes_series, 1700000000.0) == []
 
     # 4. Pretrade/macro/microstructure collectors forward monkeypatches from intelligence.macro_sentiment_ssot
     seen_paths = []
@@ -1712,12 +1732,8 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
     assert "Cross-Market US Equities Telemetry" in default_lines
 
     # 3. TrailingCore._asset_for_pair is case-insensitive and trail_pct_for validates positive floats
-    class _DummyAdapter:
-        def assets(self):
-            return [("HYPE", "HYPE", "HYPEUSD", 2.0)]
-
     core = TrailingCore.__new__(TrailingCore)
-    core.a = _DummyAdapter()
+    core.a = SimpleNamespace(assets=lambda: [("HYPE", "HYPE", "HYPEUSD", 2.0)])
     assert core._asset_for_pair("hypeusd") == "HYPE"
     assert core._asset_for_pair("  HypeUsd ") == "HYPE"
     assert TrailingAdapterBase._lookup_symbol_entry({"BTCUSDC": 1.5}, "   ") is None
@@ -2255,18 +2271,10 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
         ts=1700000000.0,
     )
 
-    class _DummyLiqCol:
-        def get_summary(self, symbol, **kwargs):
-            return liq_snap
-
-    class _DummyDerivCol:
-        def fetch(self, symbol, **kwargs):
-            return deriv_snap
-
     comp = CompositeMarketIntelligence(max_active_cascade_usd=1_000_000.0, max_long_funding_rate=0.0005)
-    comp.cascade_guard.collector = _DummyLiqCol()
-    comp.funding_guard.collector = _DummyDerivCol()
-    comp.liquidation_trigger.collector = _DummyLiqCol()
+    comp.cascade_guard.collector = SimpleNamespace(get_summary=lambda symbol, **kwargs: liq_snap)
+    comp.funding_guard.collector = SimpleNamespace(fetch=lambda symbol, **kwargs: deriv_snap)
+    comp.liquidation_trigger.collector = SimpleNamespace(get_summary=lambda symbol, **kwargs: liq_snap)
 
     dec_casc = comp.evaluate_guards("BTCUSDC", "BUY", 95000.0, now=1700000000.0)
     assert dec_casc.allowed is False
@@ -2285,15 +2293,13 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
     gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_external=True)
     seen_now = {}
 
-    class _MockNews:
-        def fetch(self, force_refresh=False, now_ts=None):
-            seen_now["news"] = now_ts
-            return SimpleNamespace(total_fetched=3)
-
-    class _MockFG:
-        def fetch(self, force_refresh=False, now_ts=None):
-            seen_now["fg"] = now_ts
-            return FearGreedSnapshot(
+    gtc.news_collector = SimpleNamespace(
+        fetch=lambda force_refresh=False, now_ts=None: (seen_now.__setitem__("news", now_ts), SimpleNamespace(total_fetched=3))[1]
+    )
+    gtc.fear_greed_collector = SimpleNamespace(
+        fetch=lambda force_refresh=False, now_ts=None: (
+            seen_now.__setitem__("fg", now_ts),
+            FearGreedSnapshot(
                 value=22,
                 classification="Extreme Fear",
                 timestamp=0.0,
@@ -2301,12 +2307,13 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
                 trend_7d_change=-3,
                 is_extreme_fear=True,
                 is_extreme_greed=False,
-            )
-
-    class _MockBreadth:
-        def fetch(self, force_refresh=False, now_ts=None):
-            seen_now["breadth"] = now_ts
-            return MarketBreadthSnapshot(
+            ),
+        )[1]
+    )
+    gtc.breadth_collector = SimpleNamespace(
+        fetch=lambda force_refresh=False, now_ts=None: (
+            seen_now.__setitem__("breadth", now_ts),
+            MarketBreadthSnapshot(
                 total_count=10,
                 advancing_count=7,
                 declining_count=3,
@@ -2318,11 +2325,9 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
                 top_losers=(("ETHUSDC", -1.0),),
                 regime="broad_advance",
                 ts=0.0,
-            )
-
-    gtc.news_collector = _MockNews()
-    gtc.fear_greed_collector = _MockFG()
-    gtc.breadth_collector = _MockBreadth()
+            ),
+        )[1]
+    )
     fixed_now = 1711111111.0
     gtc.run_cycle(force=True, now=fixed_now)
     assert seen_now == {"news": fixed_now, "fg": fixed_now, "breadth": fixed_now}
@@ -2604,19 +2609,17 @@ def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(mo
     from intelligence.sentiment.evaluators.price_series_evaluator import _compute_short_slopes_from_series, _extract_ohlc_series_points, compute_cross_btc_metrics, compute_swing_wave_metrics
 
     # 1. evaluate_whale_spread_flow & resolve_whale_spread_adjustment support side aliases, dict snapshots, and no-kwarg collectors
-    class _DictCollector:
-        def fetch(self, symbol):
-            return {"taker_buy_sell_ratio": 0.95, "oi_1h_chg_pct": 2.4, "div_regime": "aggressive_shorting"}
-
-    monkeypatch.setattr(eog, "get_whale_collector", lambda: _DictCollector())
+    monkeypatch.setattr(
+        eog,
+        "get_whale_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda symbol: {"taker_buy_sell_ratio": 0.95, "oi_1h_chg_pct": 2.4, "div_regime": "aggressive_shorting"}
+        ),
+    )
     blocked, reason = eog.evaluate_whale_spread_flow("BTCUSDC", "bid", enforced=True)
     assert blocked is True and "aggressive_shorting_divergence (OI=+2.4%)" in reason
 
-    class _PressureCollector:
-        def fetch(self, symbol):
-            return {"taker_buy_sell_ratio": 0.85}
-
-    monkeypatch.setattr(eog, "get_whale_collector", lambda: _PressureCollector())
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda symbol: {"taker_buy_sell_ratio": 0.85}))
     assert eog.resolve_whale_spread_adjustment("BTCUSDC", "0.002", enforced=True) == pytest.approx(0.003)
 
     # 2. SentimentAdvisor & GeopoliticalThreatAnalyzer percent string confidence/risk_score and breadth advance_ratio
@@ -2718,16 +2721,20 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
     assert list(ps_scope["venue_quote_cash"].keys()) == ["t212:USD"]
 
     # 3. collect_pretrade_telemetry handles collectors without allow_network kwarg and percent/alias snapshot dicts
-    class _NoKwObCollector:
-        def fetch(self, symbol):
-            return {"symbol": symbol, "ob_imbalance": "64%", "largest_ask_wall_usd": 200000.0, "largest_ask_wall_price": 105.0}
-
-    class _NoKwWhaleCollector:
-        def fetch(self, symbol):
-            return {"symbol": symbol, "whale_long_pct": "60%", "taker_buy_sell_ratio": 1.35, "div_regime": "bullish_divergence"}
-
-    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: _NoKwObCollector())
-    monkeypatch.setattr(eog, "get_whale_collector", lambda: _NoKwWhaleCollector())
+    monkeypatch.setattr(
+        eog,
+        "get_orderbook_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda symbol: {"symbol": symbol, "ob_imbalance": "64%", "largest_ask_wall_usd": 200000.0, "largest_ask_wall_price": 105.0}
+        ),
+    )
+    monkeypatch.setattr(
+        eog,
+        "get_whale_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda symbol: {"symbol": symbol, "whale_long_pct": "60%", "taker_buy_sell_ratio": 1.35, "div_regime": "bullish_divergence"}
+        ),
+    )
     telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
     assert telem.get("Orderbook Depth Imbalance") == "0.64 (64% bids vs 36% asks)"
     assert telem.get("Whale Positioning") == "60.0% Top Traders Long (L/S ratio: 1.50)"
@@ -3869,15 +3876,12 @@ def test_iter73_warmup_shadow_prices_cost_basis_fill_id_and_ohlc_window():
     assert valid_pts[0][0] == pytest.approx(-1200.0)
     assert valid_pts[-1][0] == pytest.approx(-60.0)
 
-    class _DummySpot(BaseSpotMixin):
-        replay_mode = True
-
-    dummy_replay = _DummySpot()
+    dummy_replay = _TestSpotStrategy()
     dummy_replay._shadow_prices = deque(warmup_pts, maxlen=120)
     vol_replay = dummy_replay._shadow_vol_1h()
     assert vol_replay is not None and vol_replay > 0.0
 
-    dummy_live = _DummySpot()
+    dummy_live = _TestSpotStrategy()
     dummy_live.replay_mode = False
     dummy_live._shadow_prices = deque(warmup_pts, maxlen=120)
     vol_live = dummy_live._shadow_vol_1h()
@@ -4116,25 +4120,13 @@ def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_sh
 
     # 6. BaseSpotMixin._run_strategy_loop flushes dirty state on stop when _state_write_failed is True
     saved_calls = []
-
-    class _DummySpot(BaseSpotMixin):
-        def __init__(self):
-            self.p = types.SimpleNamespace(check_minutes=0.01)
-            self._state_write_failed = True
-
-        def _mod_global(self, name, default):
-            return default
-
-        def _touch_strategy_heartbeat(self, *args, **kwargs):
-            pass
-
-        def _save(self):
-            saved_calls.append(True)
-            self._state_write_failed = False
-
     stop_ev = threading.Event()
     stop_ev.set()
-    _DummySpot()._run_strategy_loop(price_fn=lambda: 100.0, status_log_fn=lambda _: None, stop=stop_ev)
+    _TestSpotStrategy(
+        p=types.SimpleNamespace(check_minutes=0.01),
+        save_cb=lambda: saved_calls.append(True),
+        state_write_failed=True,
+    )._run_strategy_loop(price_fn=lambda: 100.0, status_log_fn=lambda _: None, stop=stop_ev)
     assert saved_calls == [True]
 
 
@@ -4152,26 +4144,10 @@ def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_
     assert os.path.dirname(qset._path()) == str(tmp_path)
 
     # 3. TrailingCore does not spam trend deferral or skip finalizing exit_sold_qty when flat at price <= stop_at
-    skip_calls = []
-
-    class _FlatAdapter:
-        def price(self, pair):
-            return 90.0
-
-        def free_qty(self, asset):
-            return 0.0
-
-        def total_qty(self, asset):
-            return 0.0
-
-        def trend(self, pair):
-            return 1.0
-
-        def log_skip_sell_trend(self, *args):
-            skip_calls.append(args)
+    flat_adapter = DummyTrailingAdapter(free=0.0, px=90.0, trend_val=1.0)
 
     tc = TrailingCore(
-        _FlatAdapter(),
+        flat_adapter,
         log=lambda _: None,
         enabled=True,
         state_file=str(tmp_path / "trail_state.json"),
@@ -4190,7 +4166,7 @@ def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_
         }
     }
     tc._process("BTC", "BTC", "BTCUSDC", 5.0, state)
-    assert skip_calls == []
+    assert flat_adapter.skip_sell_trends == []
     assert state["BTC"]["is_flat"] is True
     assert state["BTC"]["rebuy"]["qty"] == 0.5
     assert state["BTC"]["rebuy"]["sell_price"] == 96.0
@@ -4587,38 +4563,36 @@ def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_
     assert order_retry.get(rec_id) is None
 
     # 3. T212Provider.open_orders and order_status fall back past explicit None fields (e.g. limitPrice=None, stopPrice=125.5)
-    class _StubT212Client:
-        def list_active_orders(self):
-            return [
-                {
-                    "id": "555",
-                    "ticker": "NVDA_US_EQ",
-                    "status": "NEW",
-                    "type": "STOP",
-                    "orderedQuantity": None,
-                    "quantity": -2.5,
-                    "limitPrice": None,
-                    "stopPrice": 125.5,
-                    "filledQuantity": None,
-                    "executedQty": 0.5,
-                }
-            ]
-
-        def get_order_status(self, oid):
-            return {
-                "id": oid,
+    stub_t212_client = SimpleNamespace(
+        list_active_orders=lambda: [
+            {
+                "id": "555",
                 "ticker": "NVDA_US_EQ",
-                "status": "FILLED",
-                "filledQuantity": 2.0,
-                "filledValue": 0.0,
-                "fillPrice": None,
-                "averagePrice": 130.0,
+                "status": "NEW",
+                "type": "STOP",
                 "orderedQuantity": None,
-                "quantity": 2.0,
-                "fee": 0.0,
+                "quantity": -2.5,
+                "limitPrice": None,
+                "stopPrice": 125.5,
+                "filledQuantity": None,
+                "executedQty": 0.5,
             }
+        ],
+        get_order_status=lambda oid: {
+            "id": oid,
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": 2.0,
+            "filledValue": 0.0,
+            "fillPrice": None,
+            "averagePrice": 130.0,
+            "orderedQuantity": None,
+            "quantity": 2.0,
+            "fee": 0.0,
+        },
+    )
 
-    t212 = T212Provider(client=_StubT212Client(), live_enabled=False)
+    t212 = T212Provider(client=stub_t212_client, live_enabled=False)
     open_list = t212.open_orders("NVDA_US_EQ")
     assert len(open_list) == 1
     assert open_list[0]["side"] == "SELL"
@@ -4655,14 +4629,9 @@ def test_iter82_late_intelligence_scale_retry_worker_kind_and_guard_hierarchy(mo
     assert instrument.parse_scale_factor("25%", default=0.5) == pytest.approx(0.25)
     assert instrument.parse_scale_factor(0.4, default=0.5) == pytest.approx(0.4)
 
-    class _DummyProvider:
-        name = "binance"
-        def round_quantity(self, symbol, qty):
-            return round(float(qty), 4)
-
     inst = object.__new__(instrument.Instrument)
     inst.symbol = "BTCUSDC"
-    inst._provider = _DummyProvider()
+    inst._provider = SimpleNamespace(name="binance", round_quantity=lambda symbol, qty: round(float(qty), 4))
     monkeypatch.setattr(instrument, "check_order_filter_refusal", lambda *a, **kw: None)
 
     ctx = {"suggested_scale": None, "_suggested_scale_by_side": {"BUY": "25%"}}
@@ -4892,18 +4861,16 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     assert dp.effective_entry_amount() == pytest.approx(25.0)
     assert dp.effective_dca_amount_base() == pytest.approx(0.0)
 
-    class _DummyStrat(BaseSpotMixin):
-        def __init__(self):
-            self.p = SimpleNamespace(
-                total_budget=0.0,
-                amount_usd=40.0,
-                dca_amount_usd=0.0,
-                dca_multiplier=None,
-                effective_dca_amount_base=lambda: 40.0,
-            )
-            self.client = SimpleNamespace()  # no ohlc_closes method (like T212 client)
-
-    ds = _DummyStrat()
+    ds = _TestSpotStrategy(
+        p=SimpleNamespace(
+            total_budget=0.0,
+            amount_usd=40.0,
+            dca_amount_usd=0.0,
+            dca_multiplier=None,
+            effective_dca_amount_base=lambda: 40.0,
+        ),
+        client=SimpleNamespace(),  # no ohlc_closes method (like T212 client)
+    )
     assert ds._dca_vol_1h() is None
     assert ds._trail_vol_1h() is None
     assert ds._effective_dca_amount() == pytest.approx(40.0)
@@ -6848,15 +6815,13 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     }
     vb_file.write_text(json.dumps(vb_data), encoding="utf-8")
 
-    class _MockT212Client:
-        def get_portfolio(self):
-            return [{"ticker": "NVDA_US_EQ", "currentPrice": 199.06}]
-
-    class _MockT212Provider:
-        def _client(self):
-            return _MockT212Client()
-
-    monkeypatch.setattr(t212_prov_mod, "T212Provider", _MockT212Provider)
+    monkeypatch.setattr(
+        t212_prov_mod,
+        "T212Provider",
+        lambda: SimpleNamespace(
+            _client=lambda: SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "currentPrice": 199.06}])
+        ),
+    )
     refreshed = ms_col_mod._refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)
     assert refreshed is True
     assert vb_data["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(199.06)
@@ -7120,11 +7085,9 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
     monkeypatch.delenv("MPTRADE_ALLOW_LIVE_BACKFILL", raising=False)
     assert callable(fn1) and fn1 is fn2
     calls = []
-
-    class _DummyOHLC:
-        closes = [100.0, 101.0]
-
-    wrapped = mc._wrap_cached_ohlc_fn("dummy_prov", lambda s, iv: (calls.append((s, iv)) or _DummyOHLC()), ttl_sec=60.0)
+    wrapped = mc._wrap_cached_ohlc_fn(
+        "dummy_prov", lambda s, iv: (calls.append((s, iv)) or SimpleNamespace(closes=[100.0, 101.0])), ttl_sec=60.0
+    )
     r1 = wrapped("TAOUSD", 5)
     r2 = wrapped("TAOUSD", 5)
     assert r1 is r2 and len(calls) == 1
@@ -7141,14 +7104,13 @@ def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp
     base_ts = int(now_s - 20 * 3600)
     ohlc_calls = []
 
-    class _MockOHLC24:
-        timestamps = [base_ts + i * 1800 for i in range(41)]
-        closes = [100.0 + i * 0.25 for i in range(41)]
-        volumes = [15.0 + i for i in range(41)]
-
     def _mock_ohlc_fn(sym, iv):
         ohlc_calls.append((sym, iv))
-        return _MockOHLC24()
+        return SimpleNamespace(
+            timestamps=[base_ts + i * 1800 for i in range(41)],
+            closes=[100.0 + i * 0.25 for i in range(41)],
+            volumes=[15.0 + i for i in range(41)],
+        )
 
     pts1 = pse._load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
     assert len(pts1) == 41 and len(ohlc_calls) == 1

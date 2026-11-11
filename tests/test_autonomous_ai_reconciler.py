@@ -97,6 +97,7 @@ from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.agy.topics import topic_spec
 from providers.order_ohlc_utils import extract_executed_qty, extract_order_side, normalize_open_order
 from verify_tools import portfolio_snapshot, watch_trade_decisions
+from tests.conftest import DummyGeminiClient
 
 
 @pytest.fixture
@@ -5594,49 +5595,30 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
     assert "6h Intraday Bottom Structure" in telem
     assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in telem["6h Intraday Bottom Structure"]
 
-    captured_prompts = {}
-
-    class _DummyClient:
-        _custom_runner = True
-
-        def __init__(self, key, resp):
-            self.key = key
-            self.resp = resp
-
-        def query_json(self, prompt, **kwargs):
-            captured_prompts[self.key] = prompt
-            return self.resp
-
     # 1. HighStakeGuard (BUY & SELL)
+    hs_buy_client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Verified 6h double bottom"})
     hs_guard = HighStakeGuard(
-        gemini_client=_DummyClient(
-            "hs_buy",
-            {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Verified 6h double bottom"},
-        ),
+        gemini_client=hs_buy_client,
         min_notional_eur=100.0,
         cache_ttl_sec=0.0,
     )
     hs_guard.check("TAOUSDC", "BUY", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
-    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in captured_prompts["hs_buy"]
-    assert "CONTRARIAN BOTTOM ACCUMULATION" in captured_prompts["hs_buy"]
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in hs_buy_client.last_prompt
+    assert "CONTRARIAN BOTTOM ACCUMULATION" in hs_buy_client.last_prompt
 
+    hs_sell_client = DummyGeminiClient({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Do not sell into 6h double bottom"})
     hs_sell_guard = HighStakeGuard(
-        gemini_client=_DummyClient(
-            "hs_sell",
-            {"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Do not sell into 6h double bottom"},
-        ),
+        gemini_client=hs_sell_client,
         min_notional_eur=100.0,
         cache_ttl_sec=0.0,
     )
     hs_sell_guard.check("TAOUSDC", "SELL", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
-    assert "CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE)" in captured_prompts["hs_sell"]
+    assert "CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE)" in hs_sell_client.last_prompt
 
     # 2. PostStopReentryGuard
+    ps_client = DummyGeminiClient({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Confirmed 6h higher low"})
     ps_guard = PostStopReentryGuard(
-        gemini_client=_DummyClient(
-            "post_stop",
-            {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Confirmed 6h higher low"},
-        ),
+        gemini_client=ps_client,
         notify_enabled=False,
         cache_ttl_sec=0.0,
     )
@@ -5650,22 +5632,22 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         telemetry=telem,
         notional_eur=463.6,
     )
-    assert "GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION" in captured_prompts["post_stop"]
-    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in captured_prompts["post_stop"]
+    assert "GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION" in ps_client.last_prompt
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in ps_client.last_prompt
 
     # 3. SentimentAdvisor
+    sent_client = DummyGeminiClient(
+        {
+            "market_bias": "NEUTRAL",
+            "risk_level": "MODERATE",
+            "confidence": 0.82,
+            "summary": "Intraday liquidity sweep reclaim underway.",
+            "key_risks": ["Residual volatility"],
+            "recommended_action": "ACCUMULATE",
+        }
+    )
     advisor = SentimentAdvisor(
-        gemini_client=_DummyClient(
-            "sentiment",
-            {
-                "market_bias": "NEUTRAL",
-                "risk_level": "MODERATE",
-                "confidence": 0.82,
-                "summary": "Intraday liquidity sweep reclaim underway.",
-                "key_risks": ["Residual volatility"],
-                "recommended_action": "ACCUMULATE",
-            },
-        ),
+        gemini_client=sent_client,
         cache_file=str(tmp_path / "sentiment_eval.json"),
     )
     advisor.review(
@@ -5679,22 +5661,22 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         force_refresh=True,
         now_ts=t0 / 1000.0,
     )
-    assert "BTC Intraday Structure:" in captured_prompts["sentiment"]
-    assert "bottom_6h(prior_6h_low=$76739.78, 1h_low=$76387.17)" in captured_prompts["sentiment"]
-    assert "'divergence_regime': 'accumulation'" not in captured_prompts["sentiment"]
-    assert "LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION" in captured_prompts["sentiment"]
+    assert "BTC Intraday Structure:" in sent_client.last_prompt
+    assert "bottom_6h(prior_6h_low=$76739.78, 1h_low=$76387.17)" in sent_client.last_prompt
+    assert "'divergence_regime': 'accumulation'" not in sent_client.last_prompt
+    assert "LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION" in sent_client.last_prompt
 
     # 4. GeopoliticalThreatAnalyzer
+    geo_client = DummyGeminiClient(
+        {
+            "threat_level": "ELEVATED",
+            "risk_score": 0.55,
+            "summary": "Ongoing priced-in headlines.",
+            "recommended_brake": "DOWNSCALE_50",
+        }
+    )
     geo = GeopoliticalThreatAnalyzer(
-        gemini_client=_DummyClient(
-            "geo",
-            {
-                "threat_level": "ELEVATED",
-                "risk_score": 0.55,
-                "summary": "Ongoing priced-in headlines.",
-                "recommended_brake": "DOWNSCALE_50",
-            },
-        ),
+        gemini_client=geo_client,
         state_file=str(tmp_path / "geopolitical_threat_eval.json"),
     )
     geo.assess(
@@ -5715,7 +5697,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         force_refresh=True,
         now_ts=t0 / 1000.0,
     )
-    assert "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES" in captured_prompts["geo"]
+    assert "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES" in geo_client.last_prompt
 
 
 def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
@@ -6048,20 +6030,17 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
         encoding="utf-8",
     )
 
-    class _DownProv:
-        def free_balance(self, _asset):
-            return None
-
-    class _DownInst:
-        symbol = "BTCUSDC"
-        provider_name = "binance"
-        base = "BTC"
-        quote = "USDC"
-        params = {}
-        _provider = _DownProv()
+    down_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        provider_name="binance",
+        base="BTC",
+        quote="USDC",
+        params={},
+        _provider=SimpleNamespace(free_balance=lambda _asset: None),
+    )
 
     pos_fb, _, cash_fb, _ = harvest_tradable_positions_and_orders(
-        {"BTCUSDC": _DownInst()},
+        {"BTCUSDC": down_inst},
         {"BTCUSDC": {"price": 77500.0}},
         {},
         {},
@@ -6183,20 +6162,17 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert sum_stale[0]["venue_status"] == "CANCELED_OR_EXPIRED"
 
     # 3. Dust balance ($1.08 ARB < $5.0 min_notional on Binance) strips trailing_peak / dd_from_peak_pct
-    class _ArbProv:
-        def free_balance(self, asset):
-            return 6.66268 if asset == "ARB" else 1500.0
-
-    class _ArbInst:
-        symbol = "ARBUSDC"
-        provider_name = "binance"
-        base = "ARB"
-        quote = "USDC"
-        params = {}
-        _provider = _ArbProv()
+    arb_inst = SimpleNamespace(
+        symbol="ARBUSDC",
+        provider_name="binance",
+        base="ARB",
+        quote="USDC",
+        params={},
+        _provider=SimpleNamespace(free_balance=lambda asset: 6.66268 if asset == "ARB" else 1500.0),
+    )
 
     pos_arb, _, _, inst_by_sym = harvest_tradable_positions_and_orders(
-        {"ARBUSDC": _ArbInst()},
+        {"ARBUSDC": arb_inst},
         {"ARBUSDC": {"price": 0.1624}},
         {"ARBUSDC": 0.1636},
         {},
@@ -7690,23 +7666,16 @@ def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_can
     assert "Last BUY=1.5 @ 140.0 (by=AI)" in t212_telem.get("Recent Venue Fills", "")
 
     # 4. KrakenProvider.cancel_order_by_id falls back to BOT client on permission error
-    class _DeniedPrimaryClient:
-        def cancel_order(self, order_id):
-            raise RuntimeError("Kraken error: EGeneral:Permission denied")
-
-    class _WorkingFallbackClient:
-        def __init__(self):
-            self.cancelled = []
-
-        def cancel_order(self, order_id):
-            self.cancelled.append(order_id)
-            return {"count": 1}
-
-    fb_cli = _WorkingFallbackClient()
-    prov = KrakenProvider(client=_DeniedPrimaryClient())
+    cancelled_ids = []
+    fb_cli = SimpleNamespace(cancel_order=lambda order_id: cancelled_ids.append(order_id) or {"count": 1})
+    prov = KrakenProvider(
+        client=SimpleNamespace(
+            cancel_order=lambda _order_id: (_ for _ in ()).throw(RuntimeError("Kraken error: EGeneral:Permission denied"))
+        )
+    )
     monkeypatch.setattr(prov, "_order_query_fallback_client", lambda: fb_cli)
     prov.cancel_order("TAOUSD", "O-CANCEL-ME-1")
-    assert fb_cli.cancelled == ["O-CANCEL-ME-1"]
+    assert cancelled_ids == ["O-CANCEL-ME-1"]
 
 
 def test_iteration51_long_trend_freshness_neutral_override_and_parse_rss_valid_keywords(tmp_path):
@@ -7831,31 +7800,29 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
     entry_ts_s = 1793369007.4793
     sell_ts_ms = int((entry_ts_s + 350000.0) * 1000)
 
-    class _FakeKrakenPartialSellProvider:
-        name = "kraken"
-
-        def recent_orders(self, symbol, limit=10):
-            return [
-                {
-                    "id": "OBUY-INIT-1",
-                    "side": "BUY",
-                    "price": 91.209992,
-                    "executedQty": 2.835368,
-                    "status": "CLOSED",
-                    "time": int(entry_ts_s * 1000),
-                },
-                {
-                    "id": "OSELL-PART-2",
-                    "side": "SELL",
-                    "price": 87.12,
-                    "executedQty": 2.295092,
-                    "status": "CLOSED",
-                    "time": sell_ts_ms,
-                    "clientOrderId": "AI_intent_1793719000_sell_hypeusd",
-                },
-            ]
-
-    inst_map = {"kraken:HYPEUSD": SimpleNamespace(_provider=_FakeKrakenPartialSellProvider(), provider_name="kraken")}
+    fake_krk_prov = SimpleNamespace(
+        name="kraken",
+        recent_orders=lambda symbol, limit=10: [
+            {
+                "id": "OBUY-INIT-1",
+                "side": "BUY",
+                "price": 91.209992,
+                "executedQty": 2.835368,
+                "status": "CLOSED",
+                "time": int(entry_ts_s * 1000),
+            },
+            {
+                "id": "OSELL-PART-2",
+                "side": "SELL",
+                "price": 87.12,
+                "executedQty": 2.295092,
+                "status": "CLOSED",
+                "time": sell_ts_ms,
+                "clientOrderId": "AI_intent_1793719000_sell_hypeusd",
+            },
+        ],
+    )
+    inst_map = {"kraken:HYPEUSD": SimpleNamespace(_provider=fake_krk_prov, provider_name="kraken")}
     tradable_positions = [
         {
             "venue": "kraken",

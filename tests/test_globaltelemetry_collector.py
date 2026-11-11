@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -533,13 +534,11 @@ def test_pretrade_telemetry_read_write_separation_and_explicit_snapshot_contract
 
     # 4. fetch_guard_snapshot defaults to allow_network=False for all Pillar 2 guards
     seen_fetch_kwargs: list[dict] = []
-
-    class _DummyCollector:
-        def fetch(self, symbol: str, **kwargs):
-            seen_fetch_kwargs.append(kwargs)
-            return {"symbol": symbol}
-
-    fetch_guard_snapshot(_DummyCollector(), "BTCUSDC", now=now_ts)
+    fetch_guard_snapshot(
+        SimpleNamespace(fetch=lambda symbol, **kwargs: seen_fetch_kwargs.append(kwargs) or {"symbol": symbol}),
+        "BTCUSDC",
+        now=now_ts,
+    )
     assert seen_fetch_kwargs == [{"allow_network": False, "now": now_ts}]
 
     # 5. Producer refresh_pretrade_telemetry_caches / GlobalTelemetryCollector.update_pretrade_caches performs refresh
@@ -883,50 +882,39 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
         indent=2,
     )
 
-    # Create a dummy instrument whose live provider methods fail if invoked
-    class _FailingProvider:
-        def free_balance(self, asset: str):
-            raise AssertionError(f"live free_balance({asset}) must not be called in read_snapshot mode")
+    # Create dummy instruments whose live provider methods fail if invoked
+    def _fail_live(msg: str):
+        raise AssertionError(msg)
 
-        def get_current_price(self, symbol: str):
-            raise AssertionError(f"live get_current_price({symbol}) must not be called in read_snapshot mode")
-
-        def usd_cash_breakdown(self):
-            raise AssertionError("live usd_cash_breakdown() must not be called in read_snapshot mode")
-
-        def get_orders(self, *args, **kwargs):
-            raise AssertionError("live get_orders() must not be called in read_snapshot mode")
-
-    class _DummyInst:
-        symbol = "BTCUSDC"
-        provider_name = "binance"
-        base = "BTC"
-        quote = "USDC"
-        params = {"trailing.pct": 2.5}
-        _provider = _FailingProvider()
-
-        def open_orders(self):
-            raise AssertionError("live open_orders() must not be called in read_snapshot mode")
-
-    class _DummyHLInst:
-        symbol = "SOLUSDC"
-        provider_name = "hyperliquid"
-        base = "SOL"
-        quote = "USDC"
-        params = {}
-        _provider = _FailingProvider()
-
-        def open_orders(self):
-            raise AssertionError("live open_orders() must not be called in read_snapshot mode")
-
-    class _DummyGateway:
-        max_notional_usd = 2000.0
-
-        def load_all_intents(self):
-            return []
-
-        def load_tradable_instruments(self, **_kwargs):
-            return {"binance:BTCUSDC": _DummyInst(), "hyperliquid:SOLUSDC": _DummyHLInst()}
+    failing_provider = SimpleNamespace(
+        free_balance=lambda asset: _fail_live(f"live free_balance({asset}) must not be called in read_snapshot mode"),
+        get_current_price=lambda symbol: _fail_live(f"live get_current_price({symbol}) must not be called in read_snapshot mode"),
+        usd_cash_breakdown=lambda: _fail_live("live usd_cash_breakdown() must not be called in read_snapshot mode"),
+        get_orders=lambda *args, **kwargs: _fail_live("live get_orders() must not be called in read_snapshot mode"),
+    )
+    dummy_inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        provider_name="binance",
+        base="BTC",
+        quote="USDC",
+        params={"trailing.pct": 2.5},
+        _provider=failing_provider,
+        open_orders=lambda: _fail_live("live open_orders() must not be called in read_snapshot mode"),
+    )
+    dummy_hl_inst = SimpleNamespace(
+        symbol="SOLUSDC",
+        provider_name="hyperliquid",
+        base="SOL",
+        quote="USDC",
+        params={},
+        _provider=failing_provider,
+        open_orders=lambda: _fail_live("live open_orders() must not be called in read_snapshot mode"),
+    )
+    dummy_gateway = SimpleNamespace(
+        max_notional_usd=2000.0,
+        load_all_intents=lambda: [],
+        load_tradable_instruments=lambda **_kwargs: {"binance:BTCUSDC": dummy_inst, "hyperliquid:SOLUSDC": dummy_hl_inst},
+    )
 
     # Ensure instruments.conf exists in workspace so load_tradable_instruments is exercised
     with open(os.path.join(temp_cache_dir, "instruments.conf"), "w", encoding="utf-8") as fh:
@@ -944,7 +932,7 @@ def test_read_market_and_portfolio_snapshot_read_only_consumer(
         snapshot=snap,
         workspace_dir=temp_cache_dir,
         logs_dirs=[],
-        intent_gateway=_DummyGateway(),
+        intent_gateway=dummy_gateway,
         scope="crypto",
         now_ts=now_ts,
     )
