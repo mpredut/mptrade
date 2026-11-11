@@ -3,7 +3,7 @@
   - opportunistic gate (should_wait / wait_for_favorable_entry) and epsilon
   - calculation API and fast on_price_update channel
 """
-import os, sys, json, time, tempfile, unittest
+import os, sys, json, time, unittest
 from unittest.mock import MagicMock, patch
 import cacheintegrity
 import pricewindow as pw_mod
@@ -215,9 +215,9 @@ class TestGate(_ShortTrendMgrTestCase):
 # ═══════════════════════════════════════════════════════════════════════════
 # Calculation API and fast channel (start_computation / on_price_update).
 # ═══════════════════════════════════════════════════════════════════════════
-class TestComputation(unittest.TestCase):
+class TestComputation(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         self.cache24 = _make_cache24("BTCUSDT", _entries_now(60), self.tmp)
         fname = os.path.join(self.tmp, "cp.json")
         self.cpm = cm.CacheCurrentPriceManager(sync_ts=9999, symbols=["BTCUSDT"],
@@ -1943,9 +1943,9 @@ def _make_ws_cache24_manager(tmp_dir, current_price_manager):
     return mgr
 
 
-class TestWsBridgeIntegration(unittest.TestCase):
+class TestWsBridgeIntegration(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         mock_api.get_current_price.return_value = 50000.0
         self.ws = BinancePriceStream(symbols=["BTCUSDC"])
         self.cur = _make_current_price_manager(self.tmp)

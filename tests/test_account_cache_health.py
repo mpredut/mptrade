@@ -2,26 +2,24 @@
 
 import json
 import os
-import tempfile
 import unittest
 from unittest.mock import patch
 
 import account_cache_health as health
+from tests.conftest import TempDirTestCase
 
 
-class BinanceAccountCacheHealthTest(unittest.TestCase):
+class BinanceAccountCacheHealthTest(TempDirTestCase):
     NOW_MS = 1_900_000_000_000
 
     WRITER_STARTED_MS = NOW_MS - 5_000
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(
-            prefix="binance-account-cache-health-test-"
-        )
+        super().setUp()
         self.path = os.path.join(self.tmp.name, "health.json")
 
     def tearDown(self):
         health.disable_writer()
-        self.tmp.cleanup()
+        super().tearDown()
 
     def _state(self, **overrides):
         state = {

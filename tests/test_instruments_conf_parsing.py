@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import textwrap
 import unittest
 
@@ -19,6 +18,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import load_instruments, load_tradable_instruments  # noqa: E402
 import instrument_registry as registry  # noqa: E402
+from tests.conftest import TempDirTestCase
 from types import SimpleNamespace
 
 
@@ -51,13 +51,10 @@ def section(name="BINANCE_TEST", **overrides):
     return f"[{name}]\n" + "\n".join(f"{key} = {value}" for key, value in values.items()) + "\n"
 
 
-class TestInstrumentRegistry(unittest.TestCase):
+class TestInstrumentRegistry(TempDirTestCase):
     def setUp(self):
-        self._temp_dir = tempfile.TemporaryDirectory()
+        super().setUp()
         self.registry = Path(self._temp_dir.name) / "instruments.conf"
-
-    def tearDown(self):
-        self._temp_dir.cleanup()
 
     def _write(self, content):
         self.registry.write_text(content, encoding="utf-8")

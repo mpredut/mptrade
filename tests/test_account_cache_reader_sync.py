@@ -15,6 +15,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from binance_api import bapi_ws_bridge
 import account_cache_health as health
 import cacheManager as cm
+from tests.conftest import TempDirTestCase
 from types import SimpleNamespace
 
 
@@ -40,20 +41,10 @@ def _trade(trade_id, timestamp):
     }
 
 
-class AccountCacheReaderSyncTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(
-            prefix="account-cache-reader-sync-"
-        )
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
+class AccountCacheReaderSyncTest(TempDirTestCase):
     def _reset_temp(self):
         self.tmp.cleanup()
-        self.tmp = tempfile.TemporaryDirectory(
-            prefix="account-cache-reader-sync-"
-        )
+        self.setUp()
 
     def _order_manager(self, items, fetchtime):
         path = os.path.join(self.tmp.name, "orders.json")

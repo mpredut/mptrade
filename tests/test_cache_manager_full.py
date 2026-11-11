@@ -249,14 +249,8 @@ class TestCacheManagerInterface(TempDirTestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Cache persistence durability
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCachePersistenceDurability(unittest.TestCase):
+class TestCachePersistenceDurability(TempDirTestCase):
     """Keep durable rows, cursors, and metadata on one coherent snapshot."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def _make_manager(self, *, append_persist, filename=None):
         suffix = "jsonl" if append_persist else "json"
@@ -489,17 +483,17 @@ class TestCacheOrderManager(TempDirTestCase):
             self.assertEqual(reloaded.cache["BTC"][0]["quantity"], "1.0")
 
 
-class TestAccountCacheHealthPublication(unittest.TestCase):
+class TestAccountCacheHealthPublication(TempDirTestCase):
     """Publish freshness only after a complete, durable account-cache sync."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        super().setUp()
         self.managers = []
 
     def tearDown(self):
         for manager in self.managers:
             manager.shutdown()
-        self.tmp.cleanup()
+        super().tearDown()
 
     def _make_manager(self, manager_class, symbols):
         filename = _tmp_file(

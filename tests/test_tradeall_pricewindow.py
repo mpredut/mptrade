@@ -572,10 +572,10 @@ class TestTrendStateCooldown(unittest.TestCase):
 # CacheCurrentPriceManager — get_sample_rate / get_update_frequency
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestCacheCurrentPriceFrequency(unittest.TestCase):
+class TestCacheCurrentPriceFrequency(TempDirTestCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         fname = os.path.join(self.tmp, "cp.json")
         self.mgr = cm.CacheCurrentPriceManager(
             sync_ts=9999, symbols=["BTCUSDT"],
@@ -849,10 +849,10 @@ class TestWindowAnalyzer(unittest.TestCase):
 # TrendCoordinator — event-driven + heartbeat + cache
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestTrendCoordinator(unittest.TestCase):
+class TestTrendCoordinator(TempDirTestCase):
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        super().setUp()
         entries = _synthetic_entries(60, interval_ms=800)
         self.cache24 = _make_cache24_manager("BTCUSDT", entries, self.tmp)
 

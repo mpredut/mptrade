@@ -22,6 +22,7 @@ from providers.strategy_executor import (
 )
 import pytest
 from offline.backtests.execution_calibration import calibrate_execution_events
+from tests.conftest import TempDirTestCase
 
 
 class _Executor:
@@ -68,15 +69,12 @@ class _Executor:
         return [99.0, 100.0]
 
 
-class ExecutionAuditTest(unittest.TestCase):
+class ExecutionAuditTest(TempDirTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        super().setUp()
         self.executor = _Executor()
         self.audit = ExecutionAudit(self.tmp.name, clock=lambda: 1_700_000_000.0)
         self.wrapped = AuditedStrategyExecutor(self.executor, self.audit, venue="Kraken")
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def _events(self):
         paths = [os.path.join(self.tmp.name, name) for name in os.listdir(self.tmp.name)]

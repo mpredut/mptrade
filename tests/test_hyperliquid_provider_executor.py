@@ -23,7 +23,7 @@ from providers.market_api import MarketApi  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     StrategyExecutor, PairPrecision, ProviderError)
 from botcore import load_local_module
-from tests.conftest import load_venue_modules
+from tests.conftest import TempDirTestCase, load_venue_modules
 from types import SimpleNamespace
 
 
@@ -590,20 +590,19 @@ class HLExecutorContractTest(unittest.TestCase):
 
 # ─── Hyperliquid Launcher, Client Timeout, Shadow Longterm & Candles ────────
 
-class HLLauncherTest(unittest.TestCase):
+class HLLauncherTest(TempDirTestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_local_module(os.path.join(ROOT, "hyperliquid"), "hl_bot", module_key="repo_hl_bot", reload=True)
 
     def setUp(self):
-        import tempfile
-        self.tempdir = tempfile.TemporaryDirectory()
+        super().setUp()
         self.original_here = self.module._HERE
         self.module._HERE = self.tempdir.name
 
     def tearDown(self):
         self.module._HERE = self.original_here
-        self.tempdir.cleanup()
+        super().tearDown()
 
     def test_live_state_is_hyperliquid_scoped(self):
         self.assertEqual(self.module.state_dir_for(False), self.tempdir.name)

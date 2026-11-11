@@ -295,11 +295,29 @@ def load_venue_modules(venue_subdir: str, *module_names: str):
                 sys.modules[k] = v
 
 
+class _TempDirPath(str):
+    """Temporary directory path string that also exposes ``.name`` and ``.cleanup()`` like ``TemporaryDirectory``."""
+
+    @property
+    def name(self) -> str:
+        return str(self)
+
+    def cleanup(self) -> None:
+        shutil.rmtree(str(self), ignore_errors=True)
+
+
 class TempDirTestCase(unittest.TestCase):
-    """Shared ``unittest.TestCase`` base class that provisions ``self.tmp = tempfile.mkdtemp()`` in ``setUp``."""
+    """Shared ``unittest.TestCase`` base class that provisions ``self.tmp = _TempDirPath(tempfile.mkdtemp())`` in ``setUp``."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = _TempDirPath(tempfile.mkdtemp())
+        self._temp_dir = self.tmp
+        self._tmp = self.tmp
+        self.temp = self.tmp
+        self.tempdir = self.tmp
+
+    def tearDown(self):
+        self.tmp.cleanup()
 
 
 class TrailingTestBase(unittest.TestCase):

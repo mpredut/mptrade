@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from binance_api import bapi, bapi_allorders, bapi_allorders as ao, bapi_client, bapi_placeorder, bapi_placeorder as po, bapi_trades, bapi_ws, bapi_ws_bridge as ws_bridge, bapi_ws_normalize, market_data as b_md, trailing_stop
+from binance_api import bapi, bapi_allorders, bapi_client, bapi_placeorder, bapi_trades, bapi_ws, bapi_ws_bridge as ws_bridge, bapi_ws_normalize, market_data as b_md, trailing_stop
 from binance_api.bapi_ws import BinanceAccountStream, BinancePriceStream
 from providers.market_api import BinanceProvider
 from providers.quantity import BinanceFilterError, BinanceOrderRules, _parse_bool_flag

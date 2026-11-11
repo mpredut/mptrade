@@ -4,7 +4,6 @@ from offline.backtests.metrics import calculate_performance_metrics
 import configparser
 import math
 import os
-import shutil
 import sys
 import tempfile
 import pytest
@@ -16,6 +15,7 @@ from offline.backtests.comparison import dominates, format_comparison_markdown, 
 from offline.backtests.datasets import align_previous_values, dataset_metadata, drop_incomplete_last_bar, load_dataset, merge_datasets, save_dataset, validate_dataset
 from offline.backtests.execution import ExecutionModel, FeeModel, choose_intrabar_scenario, split_order_fill
 from offline.backtests.hype_candidates import financial_priority_candidates, hype_240_candidates
+from tests.conftest import TempDirTestCase
 
 
 class PerformanceMetricsTest(unittest.TestCase):
@@ -119,13 +119,11 @@ if ROOT not in sys.path:
 _INI_CONFIGS = [os.path.join(ROOT, "instruments.conf")]
 
 
-class TestScanBacktestRanges(unittest.TestCase):
+class TestScanBacktestRanges(TempDirTestCase):
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="backtest_ranges_")
+        super().setUp()
+        self._tmpdir = self.tmp
         self._tmp = os.path.join(self._tmpdir, "backtest_ranges.conf")
-
-    def tearDown(self):
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def _write(self, content):
         with open(self._tmp, "w", encoding="utf-8") as f:

@@ -21,6 +21,7 @@ import os as _os
 import tempfile as _tempfile
 from pathlib import Path as _Path
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from tests.conftest import TempDirTestCase
 
 
 class FakeVenue:
@@ -1185,7 +1186,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
                 self.assertIn("cacheManager.heartbeat", stale_reason)
 
 
-class RTradePairStoreTest(unittest.TestCase):
+class RTradePairStoreTest(TempDirTestCase):
     def test_the_client_order_id_is_stable_and_rtrade_specific(self):
         first = rtrade_client_order_id("pair-1", "buy")
         self.assertEqual(first, rtrade_client_order_id("pair-1", "BUY"))
@@ -1195,11 +1196,8 @@ class RTradePairStoreTest(unittest.TestCase):
         self.assertNotEqual(first, rtrade_client_order_id("pair-1", "BUY", "hard_stop"))
 
     def setUp(self):
-        self.tmp = _tempfile.TemporaryDirectory()
+        super().setUp()
         self.store = RTradePairStore(_os.path.join(self.tmp.name, "pairs.json"))
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def _assert_existing_invalid_store_is_preserved(self, payload):
         original = json.dumps(payload, separators=(",", ":")).encode("utf-8")
