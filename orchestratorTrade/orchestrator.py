@@ -14,11 +14,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 import botcore
-from botcore import evaluate_heartbeat_files_freshness
+from botcore import evaluate_heartbeat_files_freshness, parse_procs_manifest
 botcore.load_root_config()
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 from notify_engine.server import NotificationServer
-from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
 from state_io import read_bytes_file
 
 
@@ -322,14 +321,12 @@ class BotManager:
         global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer
         try:
             import importlib
-            import orchestratorOS.lib.technical_repair_ssot as _trs
             importlib.reload(botcore)
             cfg_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(cfg_path):
                 botcore.load_dotenv(cfg_path, override=True)
-            importlib.reload(_trs)
             evaluate_heartbeat_files_freshness = botcore.evaluate_heartbeat_files_freshness
-            parse_procs_manifest = _trs.parse_procs_manifest
+            parse_procs_manifest = botcore.parse_procs_manifest
             if type(getattr(self, "server", None)).__name__ == "NotificationServer":
                 import notify_engine.alertnotifiers as _an
                 import notify_engine.mailer as _mailer

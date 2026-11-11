@@ -1335,6 +1335,121 @@ def evaluate_heartbeat_files_freshness(
     return fresh, age_sec, max_stale_duration, stale_file
 
 
+def resolve_heartbeat_paths(
+    workspace_dir: str,
+    proc_dir: str,
+    name: str,
+    pattern: str,
+    hb_log: str,
+    hb_stale_s: float,
+    *,
+    include_stdout_with_heartbeat_file: bool = False,
+) -> tuple[list[str], str]:
+    """Resolve canonical heartbeat file paths and stdout log file path for a procs.conf entry."""
+    try:
+        from cachepaths import resolve_cachedb_filepath as _resolve_path
+    except Exception:
+        _resolve_path = str  # type: ignore[assignment]
+    raw_stem = os.path.basename((name or pattern).rstrip("$"))
+    raw_stem = raw_stem[:-3] if raw_stem.endswith(".py") else raw_stem
+    clean_stem = "".join(c if (c.isalnum() or c in "-_") else "_" for c in raw_stem)
+    stdout_log_file = os.path.join(workspace_dir, "logs", f"{clean_stem}.log")
+
+    hb_paths: list[str] = []
+    if hb_log:
+        for raw_part in hb_log.split(","):
+            if not (part := raw_part.strip()):
+                continue
+            if os.path.isabs(part):
+                hb_paths.append(part)
+            elif part.startswith("cachedb/"):
+                hb_paths.append(str(_resolve_path(os.path.join(workspace_dir, part))))
+            elif part.startswith("logs/"):
+                hb_paths.append(os.path.join(workspace_dir, part))
+            else:
+                hb_paths.append(os.path.join(proc_dir, part))
+        if (
+            include_stdout_with_heartbeat_file
+            and hb_paths
+            and stdout_log_file not in hb_paths
+            and any(p.endswith(".heartbeat") for p in hb_paths)
+        ):
+            hb_paths.append(stdout_log_file)
+    elif hb_stale_s > 0:
+        hb_paths = [stdout_log_file]
+
+    return hb_paths, stdout_log_file
+
+
+def parse_procs_manifest(
+    workspace_dir: str,
+    *,
+    venv: str = "myenv",
+    roles: tuple[str, ...] = ("bot", "fleet"),
+    include_stdout_with_heartbeat_file: bool = False,
+    require_cmd: bool = False,
+) -> list[dict[str, object]]:
+    """Parse ``procs.conf`` from ``workspace_dir`` as the single source of truth for bots and fleet modules."""
+    procs: list[dict[str, object]] = []
+    procs_conf = os.path.join(workspace_dir, "procs.conf")
+    if not os.path.exists(procs_conf):
+        return procs
+
+    try:
+        with open(procs_conf, "r", encoding="utf-8", errors="replace") as f:
+            raw_lines = f.readlines()
+        for raw_line in raw_lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or len(parts := line.split("|")) < 7:
+                continue
+            pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
+            if role not in roles or (require_cmd and not cmd):
+                continue
+            hb_stale_s = max(0.0, safe_float(hbstale, default=0.0) or 0.0)
+            resolved_dir = dr.replace("$ROOT", workspace_dir)
+            resolved_cmd = cmd.replace("$ROOT", workspace_dir).replace("$VENV", venv)
+            resolved_hblog = hblog.replace("$ROOT", workspace_dir) if hblog else ""
+            name = label or pat
+            hb_paths, log_file = resolve_heartbeat_paths(
+                workspace_dir,
+                resolved_dir,
+                name,
+                pat,
+                resolved_hblog,
+                hb_stale_s,
+                include_stdout_with_heartbeat_file=include_stdout_with_heartbeat_file,
+            )
+            tokens: set[str] = {name.lower(), *([name[:-3].lower()] if name.lower().endswith(".py") else [])}
+            if clean_pat := pat.rstrip("$").strip():
+                pat_first = clean_pat.split()[0]
+                base = os.path.basename(pat_first)
+                tokens.update({clean_pat.lower(), pat_first.lower(), base.lower(), *([base[:-3].lower()] if base.endswith(".py") else [])})
+            for tok in (resolved_cmd or "").split():
+                if (cleaned := tok.strip("\"'&;")).endswith(".py"):
+                    b_tok = os.path.basename(cleaned)
+                    tokens.update({cleaned.lower(), b_tok.lower(), b_tok[:-3].lower()})
+            aliases = {t for t in tokens if t}
+            procs.append({
+                "name": name,
+                "pattern": pat,
+                "clean_pattern": pat.rstrip("$"),
+                "dir": resolved_dir,
+                "cmd": resolved_cmd,
+                "hb_log": resolved_hblog,
+                "hb_paths": hb_paths,
+                "hb_files": hb_paths,
+                "hb_file": hb_paths[0] if hb_paths else "",
+                "log_file": log_file,
+                "hb_stale_s": hb_stale_s,
+                "role": role,
+                "aliases": sorted(aliases),
+            })
+    except Exception:
+        pass
+
+    return procs
+
+
 def clamp_float(
     val: object, minimum: float = 0.0, maximum: float = 1.0, *, default: float = 0.0
 ) -> float:

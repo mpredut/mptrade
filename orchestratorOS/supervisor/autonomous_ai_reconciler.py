@@ -39,6 +39,7 @@ from botcore import (
 from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     MarketAndPortfolioSnapshotOrchestrator,
+    TelemetrySensorSnapshot,
 )
 from orchestratorOS.lib.technical_repair_ssot import (
     LogEventSummary,
@@ -68,31 +69,6 @@ load_dotenv()
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-
-@dataclass
-class TelemetrySensorSnapshot:
-    """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
-    fear_greed: Optional[Dict[str, Any]] = None
-    market_breadth: Optional[Dict[str, Any]] = None
-    sentiment_advisor: Optional[Dict[str, Any]] = None
-    geopolitical_threat: Optional[Dict[str, Any]] = None
-    macro_benchmarks: Optional[Dict[str, Any]] = None
-    macro_calendar: Optional[Dict[str, Any]] = None
-    breaking_news: List[Dict[str, Any]] = field(default_factory=list)
-    active_heartbeats: Dict[str, Any] = field(default_factory=dict)
-    state_files: Dict[str, Any] = field(default_factory=dict)
-    prices_and_trends: Dict[str, Any] = field(default_factory=dict)
-    microstructure: Dict[str, Any] = field(default_factory=dict)
-    portfolio_summary: Dict[str, Any] = field(default_factory=dict)
-    fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
-    system_and_vpn: Dict[str, Any] = field(default_factory=dict)
-    snapshot_id: str = ""
-    source: str = ""
-    asset_scope: str = ""
-    ts: float = 0.0
-    evaluated_at_ts: float = 0.0
-    age_sec: float = 0.0
 
 
 @dataclass

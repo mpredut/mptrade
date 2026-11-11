@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import glob as _glob
 import logging
@@ -916,6 +917,32 @@ class PortfolioAndVenueCyclesCollector(MacroTelemetryCollectorBase):
         return kraken_cycles, hyperliquid_cycles, t212_cycles
 
 
+@dataclass
+class TelemetrySensorSnapshot:
+    """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
+
+    fear_greed: Optional[Dict[str, Any]] = None
+    market_breadth: Optional[Dict[str, Any]] = None
+    sentiment_advisor: Optional[Dict[str, Any]] = None
+    geopolitical_threat: Optional[Dict[str, Any]] = None
+    macro_benchmarks: Optional[Dict[str, Any]] = None
+    macro_calendar: Optional[Dict[str, Any]] = None
+    breaking_news: List[Dict[str, Any]] = field(default_factory=list)
+    active_heartbeats: Dict[str, Any] = field(default_factory=dict)
+    state_files: Dict[str, Any] = field(default_factory=dict)
+    prices_and_trends: Dict[str, Any] = field(default_factory=dict)
+    microstructure: Dict[str, Any] = field(default_factory=dict)
+    portfolio_summary: Dict[str, Any] = field(default_factory=dict)
+    fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
+    system_and_vpn: Dict[str, Any] = field(default_factory=dict)
+    snapshot_id: str = ""
+    source: str = ""
+    asset_scope: str = ""
+    ts: float = 0.0
+    evaluated_at_ts: float = 0.0
+    age_sec: float = 0.0
+
+
 class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
     """Concrete collector (Level 3) orchestrating full market, macro, microstructure, and portfolio telemetry into TelemetrySensorSnapshot."""
 
@@ -942,8 +969,6 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         cache_dir = cachedb_dir
         logs_dirs = list(logs_dirs or ())
         if snapshot is None:
-            from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
-
             snapshot = TelemetrySensorSnapshot()
         if not workspace_dir and cache_dir:
             workspace_dir = os.path.dirname(os.path.abspath(str(cache_dir).rstrip("/\\")))
