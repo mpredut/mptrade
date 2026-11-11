@@ -152,7 +152,7 @@ class MeanReversionTrigger:
             source="MeanReversionTrigger",
             symbol=symbol,
             price=price,
-            strength=float(abs(new_sign)),
+            strength=abs(new_sign) * 1.0,
             ts=ts_clean,
             confidence=conf,
             metadata={

@@ -948,21 +948,32 @@ def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentP
 
 
 def add_store_true_cli_args(
-    parser: object, *specs: str | tuple[str, str]
+    parser: object, *specs: Any
 ) -> object:
-    """Register one or more ``action='store_true'`` CLI flags (``flag`` or ``(flag, help_text)``) on ``parser`` and return it."""
+    """Register one or more ``action='store_true'`` CLI flags (``flag``, ``(flag, help_text)``, or ``((flag, alias), help_text)``) on ``parser`` and return it."""
     add_arg = getattr(parser, "add_argument", None)
     if not callable(add_arg):
         return parser
     for spec in specs:
         if isinstance(spec, str):
-            add_arg(spec, action="store_true")
-        elif isinstance(spec, tuple) and len(spec) >= 2:
-            flag_name, flag_help = spec[0], spec[1]
-            if flag_help:
-                add_arg(flag_name, action="store_true", help=flag_help)
+            if flag_s := clean_nonempty_str(spec):
+                add_arg(flag_s, action="store_true")
+        elif isinstance(spec, (tuple, list)) and len(spec) >= 1:
+            raw_flags = spec[0]
+            flag_help = spec[1] if len(spec) >= 2 else ""
+            if isinstance(raw_flags, (tuple, list)):
+                flags = tuple(fs for f in raw_flags if (fs := clean_nonempty_str(f)) is not None)
+            elif (fs := clean_nonempty_str(raw_flags)) is not None:
+                flags = (fs,)
             else:
-                add_arg(flag_name, action="store_true")
+                flags = ()
+            if not flags:
+                continue
+            help_s = str(flag_help) if flag_help else ""
+            if help_s:
+                add_arg(*flags, action="store_true", help=help_s)
+            else:
+                add_arg(*flags, action="store_true")
     return parser
 
 
@@ -979,19 +990,20 @@ def add_paper_skip_wait_cli_args(
     find_metavar: str = "TERM",
     find_help: str = "",
     extra_store_true: tuple[tuple[str, str], ...] = (),
-) -> None:
-    """Register standard ``--skip-wait`` and ``--paper`` (plus optional shared bot CLI) flags on ``parser``."""
+) -> object:
+    """Register standard ``--skip-wait`` and ``--paper`` (plus optional shared bot CLI) flags on ``parser`` and return it."""
     add_arg = getattr(parser, "add_argument", None)
     if callable(add_arg):
-        if include_desktop:
+        if _parse_bool_flag(include_desktop, default=False):
             add_store_true_cli_args(parser, "--desktop")
-        if include_skip_wait:
+        if _parse_bool_flag(include_skip_wait, default=True):
             add_store_true_cli_args(parser, ("--skip-wait", skip_wait_help))
         add_store_true_cli_args(parser, ("--paper", paper_help), *extra_store_true)
-        if test_strategy_metavar:
-            add_arg("--test-strategy", metavar=test_strategy_metavar, help=test_strategy_help)
-        if find_flag:
-            add_arg(find_flag, metavar=find_metavar, help=find_help)
+        if meta_s := clean_nonempty_str(test_strategy_metavar):
+            add_arg("--test-strategy", metavar=meta_s, help=test_strategy_help)
+        if find_s := clean_nonempty_str(find_flag):
+            add_arg(find_s, metavar=find_metavar, help=find_help)
+    return parser
 
 
 # ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────

@@ -226,13 +226,14 @@ def format_comparison_markdown(
 def add_path_cli_args(parser: Any, *flags: str) -> Any:
     """Register one or more ``Path``-typed CLI arguments on ``parser`` and return it."""
     for flag in flags:
-        parser.add_argument(flag, type=Path)
+        if isinstance(flag, str) and (flag_s := flag.strip()):
+            parser.add_argument(flag_s, type=Path)
     return parser
 
 
-def add_report_output_cli_args(parser: Any) -> None:
-    """Register ``--output`` (JSON) and ``--markdown`` (Markdown) path CLI flags."""
-    add_path_cli_args(parser, "--output", "--markdown")
+def add_report_output_cli_args(parser: Any) -> Any:
+    """Register ``--output`` (JSON) and ``--markdown`` (Markdown) path CLI flags and return ``parser``."""
+    return add_path_cli_args(parser, "--output", "--markdown")
 
 
 def resolve_existing_report_path(raw_path: Path, label: str = "baseline") -> Path:

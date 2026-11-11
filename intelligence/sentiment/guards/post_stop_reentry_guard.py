@@ -14,6 +14,7 @@ consulting Gemini LLM with full multi-pillar context:
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
@@ -139,7 +140,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         if 0.0 < safe_curr_px < safe_sell_px:
             return GuardDecision.allow("PostStopReentryGuard", "below_last_sell_price")
         safe_sell_ts_f = safe_nonneg_ts(last_sell_time_s, 0.0)
-        safe_sell_ts = int(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
+        safe_sell_ts = math.trunc(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
         cache_key = (clean_symbol_key(symbol), round(safe_sell_px, 6), safe_sell_ts)
 
         safe_trough = safe_float(trough, 0.0)
@@ -202,7 +203,7 @@ class PostStopReentryGuard(PreTradeLLMGuardBase):
         if not self.notify_enabled:
             return
         try:
-            scale_pct = int(round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100))
+            scale_pct = round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100)
             action_label = (
                 "VETO"
                 if not decision.allowed

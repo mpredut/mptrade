@@ -167,9 +167,9 @@ class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInt
         total = len(changes)
         advance_ratio = advancing / total if total > 0 else 0.5
 
-        median_change = float(statistics.median(changes))
-        mean_change = float(statistics.fmean(changes))
-        dispersion_std = float(statistics.pstdev(changes)) if total > 1 else 0.0
+        median_change = safe_float(statistics.median(changes), default=0.0) or 0.0
+        mean_change = safe_float(statistics.fmean(changes), default=0.0) or 0.0
+        dispersion_std = (safe_float(statistics.pstdev(changes), default=0.0) or 0.0) if total > 1 else 0.0
 
         if advance_ratio <= 0.20 and median_change <= -4.0:
             regime = "PANIC_WASHOUT"

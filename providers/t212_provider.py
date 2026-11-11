@@ -11,10 +11,11 @@ is gated by ``T212_LIVE_ORDERS`` unless a launcher injects an explicit live flag
 the strict StrategyExecutor path uses the same gate. Market-hours enforcement belongs
 to the instrument/strategy loop; this provider itself requests regular-hours orders.
 """
+import importlib
+import math
 import os
 import threading
 import time
-import importlib
 from typing import Any, List, Optional
 
 from botcore import (
@@ -353,8 +354,8 @@ class T212Provider(MarketDataProvider):
                 "executedQty": round(qty, 6),
                 "cummulativeQuoteQty": round(cost, 4),
                 "fee": round(fee, 6),
-                "timestamp": int(ts_ms),
-                "time": int(ts_ms),
+                "timestamp": math.trunc(ts_ms),
+                "time": math.trunc(ts_ms),
                 "status": "FILLED",
             })
         for sym_list in by_symbol.values():
@@ -533,7 +534,7 @@ class T212Provider(MarketDataProvider):
         offset_s = min(2 * 3600.0, since_val * 0.5)
         return [normalize_order({
             "side": "BUY", "price": avg, "qty": qty,
-            "timestamp": int((time.time() - offset_s) * 1000),  # Inside the window, not too recent.
+            "timestamp": math.trunc((time.time() - offset_s) * 1000),  # Inside the window, not too recent.
         })]
 
     # -- Placement remains dry until T212_LIVE_ORDERS=true. --------------------
@@ -566,7 +567,7 @@ class T212Provider(MarketDataProvider):
                 and "insufficient-free-for-stocks-buy" in str(data.get("type", "")).lower()
             ):
                 scale = 10 ** _VOLUME_DECIMALS
-                retry_qty = int(signed * 0.945 * scale + 1e-9) / scale
+                retry_qty = math.trunc(signed * 0.945 * scale + 1e-9) / scale
                 if retry_qty >= _ORDER_MIN and retry_qty < signed:
                     print(
                         f"[T212] market BUY {symbol} qty={signed} hit 5% cash reserve buffer; "

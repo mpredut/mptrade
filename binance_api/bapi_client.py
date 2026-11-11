@@ -1,4 +1,5 @@
 ####Binance
+import math
 import time
 import threading
 
@@ -40,14 +41,14 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     if _client is None:
         return None
     try:
-        margin_ms = int(safe_nonneg_float(safety_margin_ms, default=TIME_SAFETY_MARGIN_MS))
-        t0_ms = int(time.time() * 1000)
+        margin_ms = math.trunc(safe_nonneg_float(safety_margin_ms, default=TIME_SAFETY_MARGIN_MS) or 0.0)
+        t0_ms = math.trunc(time.time() * 1000)
         srv_resp = _client.get_server_time()
         raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
         server_ms = exact_pos_int(raw_srv, default=None)
         if server_ms is None:
             raise ValueError("invalid serverTime in Binance response")
-        t1_ms = int(time.time() * 1000)
+        t1_ms = math.trunc(time.time() * 1000)
         local_ms = (t0_ms + t1_ms) // 2
         _client.timestamp_offset = server_ms - local_ms - margin_ms
         return _client.timestamp_offset

@@ -230,7 +230,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
                 if isinstance(oo_prev, dict):
                     c_ts = normalize_epoch_sec(oo_prev.get("created_ts"), default=None, allow_iso=True)
                     if c_ts is None and (ms_v := normalize_timestamp_ms(oo_prev.get("time") or oo_prev.get("timestamp"), default=None)) is not None:
-                        c_ts = float(ms_v) / 1000.0
+                        c_ts = ms_v / 1000.0
                     if c_ts is not None and c_ts > 0.0:
                         for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                             if kv := str(oo_prev.get(id_k) or "").strip():
@@ -325,7 +325,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                             "price": px_f,
                             "qty": f_q,
                             "executedQty": f_q,
-                            "timestamp": int(round(eff_ts_s * 1000.0)),
+                            "timestamp": round(eff_ts_s * 1000.0),
                             "status": "FILLED",
                         }
                         dedup_k = oid_s or str(rec.get("client_order_id") or "").strip()

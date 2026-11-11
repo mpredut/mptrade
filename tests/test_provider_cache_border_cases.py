@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import importlib
 import json
 import math
 import os
@@ -23,14 +25,17 @@ from cacheprice import (
     resolve_ssot_price_from_cache,
 )
 from cachetrend import CacheShortTrendManager
+from intelligence.macro.daemon_ssot import add_external_telemetry_cli_args, add_macro_analyzer_cli_args
 from kraken.trailing_stop import KrakenTrailing
+from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args
 from providers.base import MarketDataProvider
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.strategy_executor import ProviderError
 from providers.t212_provider import T212Provider
-from state_io import previous_generation_path
+from state_io import previous_generation_path, read_text_file
 from strategies.base_spot_mixin import BaseSpotMixin
+from strategies.replay_metrics import print_ascii_table_header, write_markdown_report
 import cachepaths
 import intelligence.macro_sentiment_ssot as mss
 from providers.binance_provider import BinanceProvider
@@ -2300,10 +2305,9 @@ def test_wave13_sleep_interval_max_age_ladders_warmup_and_guard_border_cases(tmp
     atomic_write_text(str(log_f), '{"a":1}\n{"a":2}\n')
     assert read_tail_complete_lines_text(str(log_f), "bad") == '{"a":2}\n'  # type: ignore[arg-type]
 
-    import importlib as _il
     pre_rth_fn = botcore.is_us_rth_open
     botcore.configure_runtime_services(enforce_rth_gate=False)
-    _il.reload(botcore)
+    importlib.reload(botcore)
     assert botcore._RUNTIME_SERVICES.enforce_rth_gate is False
     assert botcore.is_rth_gate_enabled(None, rth_fn=pre_rth_fn) is False
     assert botcore.is_rth_gate_enabled(None, rth_fn=lambda: False) is True
@@ -2322,4 +2326,129 @@ def test_wave13_sleep_interval_max_age_ladders_warmup_and_guard_border_cases(tmp
         assert dec_hold.allowed is True and dec_hold.reason == "unsupported_side_allowed"
         dec_none = ext_g.check("BTCUSDC", "BUY", None)
         assert dec_none.allowed is True
+
+
+def test_wave14_markdown_report_default_writer_cli_specs_and_provider_border_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify write_markdown_report default persistence, CLI flag spec normalization, and venue provider border cases."""
+    # 1. write_markdown_report writes via atomic_write_text by default when write_fn is omitted
+    md_default = tmp_path / "default_report.md"
+    emitted: list[str] = []
+    write_markdown_report(md_default, ["# Title", 42], joiner="\n", emit=emitted.append)  # type: ignore[list-item]
+    assert read_text_file(str(md_default)) == "# Title\n42"
+    assert emitted == [f"Report written to {md_default}"]
+
+    custom_calls: list[tuple[object, str]] = []
+    md_custom = tmp_path / "custom_report.md"
+    write_markdown_report(
+        md_custom,
+        ["lineA\n", "lineB\n"],
+        write_fn=lambda p, t: custom_calls.append((p, t)),
+        emit=lambda _m: None,
+    )
+    assert custom_calls == [(md_custom, "lineA\nlineB\n")]
+
+    # 2. print_ascii_table_header sanitizes string/non-positive widths and empty bottom_char
+    hdr_lines: list[str] = []
+    print_ascii_table_header(
+        [("Sym", 0), ("Ret", "6")],  # type: ignore[list-item]
+        width=-10,
+        bottom_char="",
+        emit=hdr_lines.append,
+    )
+    assert len(hdr_lines) == 3
+    assert len(hdr_lines[2]) == 105 and hdr_lines[2].startswith("=")
+
+    # 3. add_store_true_cli_args supports 1-tuples, lists, blank specs, and multi-alias flag tuples
+    ap = argparse.ArgumentParser()
+    assert (
+        botcore.add_store_true_cli_args(
+            ap,
+            "  ",
+            "--plain",
+            ("--solo",),
+            ["--list-flag", "List help"],
+            (("--verbose", "-v"), "Verbose help"),
+            (("", "   "), "Ignored blank aliases"),
+        )
+        is ap
+    )
+    parsed = ap.parse_args(["--plain", "--solo", "--list-flag", "-v"])
+    assert (parsed.plain, parsed.solo, parsed.list_flag, parsed.verbose) == (True, True, True, True)
+
+    ap_bot = argparse.ArgumentParser()
+    assert (
+        botcore.add_paper_skip_wait_cli_args(
+            ap_bot,
+            include_desktop="true",  # type: ignore[arg-type]
+            include_skip_wait="false",  # type: ignore[arg-type]
+        )
+        is ap_bot
+    )
+    parsed_bot = ap_bot.parse_args(["--desktop", "--paper"])
+    assert (parsed_bot.desktop, parsed_bot.paper, hasattr(parsed_bot, "skip_wait")) == (True, True, False)
+
+    ap_cmp = argparse.ArgumentParser()
+    assert add_path_cli_args(ap_cmp, "  ", "--baseline") is ap_cmp
+    assert add_report_output_cli_args(ap_cmp) is ap_cmp
+    parsed_cmp = ap_cmp.parse_args(["--baseline", "a.json", "--output", "b.json", "--markdown", "c.md"])
+    assert (parsed_cmp.baseline, parsed_cmp.output, parsed_cmp.markdown) == (
+        Path("a.json"),
+        Path("b.json"),
+        Path("c.md"),
+    )
+
+    ap_ext = argparse.ArgumentParser()
+    assert add_external_telemetry_cli_args(ap_ext, skip_flag="--skip-liq", skip_help="Skip liq") is ap_ext
+    parsed_ext = ap_ext.parse_args(["-v", "--once", "--skip-liq"])
+    assert (parsed_ext.verbose, parsed_ext.once, parsed_ext.skip_liq) == (True, True, True)
+
+    ap_macro = argparse.ArgumentParser()
+    assert add_macro_analyzer_cli_args(ap_macro) is ap_macro
+    parsed_macro = ap_macro.parse_args(["-v", "--force"])
+    assert (parsed_macro.verbose, parsed_macro.force, parsed_macro.once) == (True, True, False)
+
+    # 4. Concrete venue provider border cases (HL precision, T212 5% reserve retry, Kraken historical filter)
+    hl_stub = SimpleNamespace(_meta_cache={"HYPE": {"szDecimals": 2}})
+    hl_sub = HyperliquidProvider.extract_cached_fee_and_limits(hl_stub, "HYPEUSDC", price=0.045)
+    hl_big = HyperliquidProvider.extract_cached_fee_and_limits(hl_stub, "HYPEUSDC", price=95000.0)
+    assert hl_sub["step_size"] == pytest.approx(0.01)
+    assert hl_sub["tick_size"] == pytest.approx(1e-6)
+    assert hl_big["tick_size"] == pytest.approx(1.0)
+
+    t212_calls: list[float] = []
+
+    def _fake_market_order(_sym: str, qty_arg: float, extended_hours: bool = False):
+        t212_calls.append(qty_arg)
+        if len(t212_calls) == 1:
+            return 400, {"type": "/api-errors/insufficient-free-for-stocks-buy"}
+        return 200, {"id": 777}
+
+    t212_prov = T212Provider.__new__(T212Provider)
+    monkeypatch.setattr(t212_prov, "_client", lambda: SimpleNamespace(place_market_order=_fake_market_order))
+    st_code, resp_data = t212_prov._send_order("NVDA_US_EQ", "BUY", 10.0, None, market=True)
+    assert (st_code, resp_data) == (200, {"id": 777})
+    assert len(t212_calls) == 2 and t212_calls[0] == pytest.approx(10.0) and t212_calls[1] == pytest.approx(9.45)
+
+    krk_prov = KrakenProvider.__new__(KrakenProvider)
+    monkeypatch.setattr(
+        krk_prov,
+        "ohlc_series",
+        lambda _sym, _iv: SimpleNamespace(
+            timestamps=[1700000000, -1, 1700003600, "1700007200"],
+            closes=[50000.0, 51000.0, 0.0, "50500.5"],
+        ),
+    )
+    assert krk_prov.fetch_historical_ohlc_points("BTCUSDC", days=1) == [
+        (1700000000.0, 50000.0),
+        (1700007200.0, 50500.5),
+    ]
+    monkeypatch.setattr(
+        krk_prov,
+        "ohlc_series",
+        lambda _sym, _iv: SimpleNamespace(timestamps=[1700000000], closes=[50000.0, 50100.0]),
+    )
+    assert krk_prov.fetch_historical_ohlc_points("BTCUSDC", days=1) == []
+
 

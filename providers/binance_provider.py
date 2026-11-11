@@ -1,6 +1,7 @@
 """Binance MarketDataProvider adapter for market data, account reads, and order mechanics."""
 
 import importlib
+import math
 from typing import Any, List, Optional
 
 import account_cache_health as health
@@ -429,7 +430,7 @@ class BinanceProvider(MarketDataProvider):
     ) -> float:
         _po = _get_placeorder()
 
-        is_auto = qty is None or (not isinstance(qty, bool) and isinstance(qty, (int, float)) and qty == float("inf"))
+        is_auto = qty is None or (not isinstance(qty, bool) and isinstance(qty, (int, float)) and qty == math.inf)
         return _po.apply_weight_limit(symbol, side, price, None if is_auto else qty, available_qty)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float, available_qty: float) -> float:
@@ -447,7 +448,7 @@ class BinanceProvider(MarketDataProvider):
         return PairPrecision(
             price_decimals=decimal_places(rules.tick_size),
             volume_decimals=decimal_places(rules.lot_step),
-            order_min=float(rules.lot_min),
+            order_min=safe_nonneg_float(rules.lot_min, default=0.0) or 0.0,
             base_asset=rules.base_asset,
         )
 
@@ -558,8 +559,8 @@ class BinanceProvider(MarketDataProvider):
                 )
             except BinanceFilterError as exc:
                 raise SubmissionRefused(binance_filter_refusal_reason(exc)) from exc
-            qty = float(normalized_qty)
-            price = None if normalized_price is None else float(normalized_price)
+            qty = safe_pos_float(normalized_qty, default=0.0) or 0.0
+            price = None if normalized_price is None else (safe_pos_float(normalized_price, default=0.0) or 0.0)
             _po = _get_placeorder()
 
             if is_market or price is None:

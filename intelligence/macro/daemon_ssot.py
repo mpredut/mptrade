@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    add_store_true_cli_args,
     build_heartbeat_payload,
     exact_pos_int,
     fetch_public_json as _fetch_public_json,
@@ -469,17 +470,16 @@ def add_external_telemetry_cli_args(
     skip_flag: Optional[str] = None,
     skip_help: str = "",
     extra_float_flags: tuple[tuple[str, str], ...] = (),
-) -> None:
+) -> Any:
     """Register shared CLI arguments for external telemetry collector daemons."""
     parser.add_argument("--symbols", type=str, default="", help="Comma-separated symbols to monitor.")
-    for flag_name, flag_help in (
+    add_store_true_cli_args(
+        parser,
         ("--once", "Run a single update cycle and exit."),
         ("--skip-external", "Skip external orderbook and derivatives telemetry."),
         *(((skip_flag, skip_help),) if skip_flag else ()),
-        ("--verbose", "Enable verbose DEBUG logging."),
-    ):
-        args = ("--verbose", "-v") if flag_name == "--verbose" else (flag_name,)
-        parser.add_argument(*args, action="store_true", help=flag_help)
+        (("--verbose", "-v"), "Enable verbose DEBUG logging."),
+    )
     for flag_name, default_val, flag_help in (
         ("--ob-interval", ob_default, "Orderbook refresh interval in seconds."),
         ("--deriv-interval", deriv_default, "Derivatives refresh interval in seconds."),
@@ -487,21 +487,23 @@ def add_external_telemetry_cli_args(
         *((name, None, hlp) for name, hlp in extra_float_flags),
     ):
         parser.add_argument(flag_name, type=float, default=default_val, help=flag_help)
+    return parser
 
 
-def add_macro_analyzer_cli_args(parser: Any) -> None:
+def add_macro_analyzer_cli_args(parser: Any) -> Any:
     """Register CLI arguments for ``MacroAnalyzer`` daemon."""
-    for flags, flag_help in (
-        (("--once",), "Run a single evaluation cycle and exit."),
-        (("--force",), "Force execution of LLM assessment regardless of cache TTL."),
+    add_store_true_cli_args(
+        parser,
+        ("--once", "Run a single evaluation cycle and exit."),
+        ("--force", "Force execution of LLM assessment regardless of cache TTL."),
         (("--verbose", "-v"), "Enable verbose DEBUG logging."),
-    ):
-        parser.add_argument(*flags, action="store_true", help=flag_help)
+    )
     for flag_name, flag_help in (
         ("--macro-llm-interval", "Geopolitical LLM evaluation interval in seconds."),
         ("--advisor-interval", "Market advisor synthesis interval in seconds."),
     ):
         parser.add_argument(flag_name, type=float, default=None, help=flag_help)
+    return parser
 
 
 def run_daemon_cli_once_or_start(

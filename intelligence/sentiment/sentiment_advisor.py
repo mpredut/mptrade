@@ -131,9 +131,9 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             f"- Session Flow Profile: {session_ctx.trader_flow_profile}",
         ]
         if fear_greed:
-            fg_val = int(round(obj_float(fear_greed, "value", 50.0)))
+            fg_val = round(obj_float(fear_greed, "value", 50.0))
             fg_cls = str(obj_attr(fear_greed, "classification") or "Neutral")
-            fg_t7d = int(round(obj_float(fear_greed, "trend_7d_change", 0.0)))
+            fg_t7d = round(obj_float(fear_greed, "trend_7d_change", 0.0))
             prompt_context.append(f"- Fear & Greed Index: {fg_val}/100 ({fg_cls}), 7d trend change: {fg_t7d:+d}")
         if breadth:
             mb_adv = clean_scale(obj_attr(breadth, "advance_ratio", 0.5), default=0.5, allow_percent=True)
@@ -257,7 +257,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             "}"
         )
 
-        fg_label = f"F&G={int(round(obj_float(fear_greed, 'value', 50.0)))}" if fear_greed else "Pulse"
+        fg_label = f"F&G={round(obj_float(fear_greed, 'value', 50.0))}" if fear_greed else "Pulse"
         resp = self._query_topic(
             prompt,
             subtitle=fg_label,

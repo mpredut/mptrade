@@ -272,7 +272,7 @@ class KrakenProvider(MarketDataProvider):
             val = safe_pos_float(values.get(key), default=None)
             if val is None:
                 raise ValueError(f"Missing or invalid required Kraken cache setting: {key}")
-            return float(val)
+            return val
 
         mode = str(values.get("KRAKEN_CACHE_MODE") or "").strip().lower()
         if not mode:
@@ -404,7 +404,7 @@ class KrakenProvider(MarketDataProvider):
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
             valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
-            ratio = min(lookback_f / 12.0, float(valid_intervals[-1]))
+            ratio = min(lookback_f / 12.0, valid_intervals[-1] * 1.0)
             raw_interval = max(1, math.ceil(ratio))
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
             res = cli._public("OHLC", {"pair": str(symbol).strip(), "interval": interval})
@@ -861,7 +861,7 @@ class KrakenProvider(MarketDataProvider):
         if lb_sec is None:
             return {}
         now_s = time.time()
-        start_s = max(0, int(now_s - min(lb_sec, now_s)))
+        start_s = max(0, math.trunc(now_s - min(lb_sec, now_s)))
         res = client._private("Ledgers", {"start": start_s}, fresh=True)
         fills = cls.ledger_to_fills((res or {}).get("ledger", {}) or {})
         by_sym: dict[str, list[dict]] = {s: [] for s in (pairs or ()) if s and s != "*"}
@@ -1312,9 +1312,16 @@ class KrakenProvider(MarketDataProvider):
         base_u = normalize_cache_base_asset(symbol)
         krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
         s60 = self.ohlc_series(krk_sym, 60)
-        k_ts = [float(t) for t in getattr(s60, "timestamps", ()) if (safe_pos_float(t, default=None) or 0.0) > 0]
-        k_px = [float(p) for p in getattr(s60, "closes", ()) if (safe_pos_float(p, default=None) or 0.0) > 0]
-        return list(zip(k_ts, k_px)) if len(k_ts) == len(k_px) else []
+        raw_ts = tuple(getattr(s60, "timestamps", ()) or ())
+        raw_px = tuple(getattr(s60, "closes", ()) or ())
+        if len(raw_ts) != len(raw_px):
+            return []
+        return [
+            (tv, pv)
+            for t, p in zip(raw_ts, raw_px)
+            if (tv := safe_pos_float(t, default=None)) is not None
+            and (pv := safe_pos_float(p, default=None)) is not None
+        ]
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = require_pos_ohlc_interval(symbol, interval_min)

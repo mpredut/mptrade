@@ -9,6 +9,7 @@ and incomplete bar handling for walk-forward evaluation and offline research.
 
 from __future__ import annotations
 
+import math
 import time
 import urllib.parse
 
@@ -73,9 +74,9 @@ def fetch_ohlc_candles(
         timeout=timeout,
     )
     batch_f = safe_pos_float(limit_per_batch, default=None)
-    if batch_f is None or int(batch_f) <= 0:
+    if batch_f is None or math.trunc(batch_f) <= 0:
         raise ValueError(f"limit_per_batch must be positive: {limit_per_batch}")
-    batch_limit_raw = int(batch_f)
+    batch_limit_raw = math.trunc(batch_f)
 
     records: list[dict] = []
     seen_timestamps: set[int] = set()
@@ -137,7 +138,7 @@ def fetch_ohlc_candles(
 
         last_open_time = next(
             (
-                int(cand_ot)
+                math.trunc(cand_ot)
                 for item in reversed(raw)
                 if isinstance(item, (list, tuple)) and item and (cand_ot := safe_pos_float(item[0], default=None)) is not None
             ),

@@ -5,6 +5,7 @@ market_data.py -- Yahoo Finance market data: prices, FX rates, and real-trading 
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import statistics
@@ -122,7 +123,7 @@ def fetch_yahoo_candles(
         records = drop_incomplete_last_bar(
             records,
             interval_minutes=parse_interval_minutes(interval),
-            now_timestamp=int(time.time()),
+            now_timestamp=math.trunc(time.time()),
             regular_session_start=regular.get("start"),
             regular_session_end=regular.get("end"),
         )
@@ -165,7 +166,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
                 continue
             raw_v = vols[i] if i < len(vols) else None
             v_clean = safe_nonneg_float(raw_v, default=None)
-            bars.append((int(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
+            bars.append((math.trunc(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
         reg_period = (
             ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
             if isinstance(meta.get("currentTradingPeriod"), dict)
@@ -178,7 +179,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
             or safe_pos_float(meta.get("chartPreviousClose"), default=None)
         )
         if reg_start is not None and bars:
-            reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or float("inf"))]
+            reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or math.inf)]
             cleaned_pre_post = []
             for idx, b in enumerate(bars):
                 is_outside_reg = b[0] < reg_start or (reg_end is not None and b[0] > reg_end)

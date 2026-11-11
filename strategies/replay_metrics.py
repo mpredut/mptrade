@@ -13,7 +13,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
-from botcore import _parse_bool_flag, exact_int, safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    exact_int,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
+from state_io import atomic_write_text
 
 
 def round_metric(value: object, decimals: int = 10) -> object:
@@ -472,9 +481,11 @@ def print_ascii_table_header(
     emit=print,
 ) -> None:
     """Print a pipe-separated ASCII table header with top ``=`` and bottom ``bottom_char`` rules."""
-    emit("\n" + "=" * width)
-    emit(" | ".join(f"{label:<{col_w}}" for label, col_w in columns))
-    emit(bottom_char * width)
+    eff_width = safe_pos_int(width, default=105) or 105
+    rule_ch = str(bottom_char) if bottom_char else "="
+    emit("\n" + "=" * eff_width)
+    emit(" | ".join(f"{label:<{safe_pos_int(col_w, default=1) or 1}}" for label, col_w in (columns or ())))
+    emit(rule_ch * eff_width)
 
 
 def write_markdown_report(
@@ -486,9 +497,13 @@ def write_markdown_report(
     write_fn: Any = None,
     emit=print,
 ) -> None:
-    """Persist ``lines`` joined by ``joiner`` via ``write_fn(md_path, text)`` and print confirmation."""
-    if callable(write_fn):
-        write_fn(md_path, joiner.join(lines))
+    """Persist ``lines`` joined by ``joiner`` via ``write_fn(md_path, text)`` (default ``atomic_write_text``) and print confirmation."""
+    writer = write_fn if callable(write_fn) else atomic_write_text
+    text = str(joiner).join(str(ln) for ln in (lines or ()))
+    if writer is atomic_write_text:
+        writer(str(md_path), text)
+    else:
+        writer(md_path, text)
     emit(f"{message_prefix} {md_path}")
 
 

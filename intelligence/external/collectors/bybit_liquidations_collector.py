@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -315,7 +316,7 @@ class BybitLiquidationCollector(TelemetryCacheCollectorInterface):
             "long_count": long_n,
             "short_count": short_n,
             "net_usd": short_usd - long_usd,
-            "age_sec": max(0.0, now_ts - last_ts) if last_ts else float("inf"),
+            "age_sec": max(0.0, now_ts - last_ts) if last_ts else math.inf,
         }
 
     def capitulation_ratio(

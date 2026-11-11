@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import math
 from typing import Any
 
 from botcore import (
@@ -132,7 +133,7 @@ def parse_order_execution_report(
             # older fills twice. L/l plus t is exactly deduplicable across both paths.
             "price": last_price,
             "quantity": last_quantity,
-            "timestamp": int(ts_ms),
+            "timestamp": math.trunc(ts_ms),
             "side": side,
             "status": event.get("X"),
             "symbol": symbol,
@@ -200,7 +201,7 @@ def parse_trade_execution_report(
         ts_ms = resolve_now_ms(now_ms)
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
-        else f"{raw_order_id}-{int(ts_ms)}"
+        else f"{raw_order_id}-{math.trunc(ts_ms)}"
     )
     raw_price = event.get("L")
     if not _is_positive_finite(raw_price):
@@ -223,7 +224,7 @@ def parse_trade_execution_report(
         "orderId": raw_order_id,
         "price": raw_price,
         "qty": raw_qty,
-        "time": int(ts_ms),
+        "time": math.trunc(ts_ms),
         "isBuyer": side == "BUY",
     }
     raw_n = event.get("n")

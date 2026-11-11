@@ -61,12 +61,12 @@ class PanicWashoutGuard(OrderGuardEvaluatorBase):
             val_f = safe_float(obj_attr(fear_greed_snapshot, "value", None), default=None)
             raw_history = obj_attr(fear_greed_snapshot, "historical_values", None) or ()
             if val_f is not None and val_f <= self.severe_panic_fng_threshold:
-                val = int(round(val_f))
+                val = round(val_f)
                 if isinstance(raw_history, (list, tuple)) and len(raw_history) >= 2:
                     h0 = safe_float(raw_history[0], default=None)
                     h1 = safe_float(raw_history[1], default=None)
                     if h0 is not None and h1 is not None and (h1 - h0) > 8:
-                        drop_1d = int(round(h1 - h0))
+                        drop_1d = round(h1 - h0)
                         return GuardDecision.defer(
                             "PanicWashoutGuard",
                             f"defer_accelerating_panic_capitulation (F&G={val}, 1d drop={drop_1d})",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import urllib.parse
@@ -726,7 +727,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         if not isinstance(entries, dict):
             return empty_res
         file_sig = (_LEXICON_FILE_CACHE.get(path) or (None,))[0]
-        eval_key = (path, file_sig, id(data), int(now), ttl)
+        eval_key = (path, file_sig, id(data), math.trunc(now), ttl)
         cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
         if cached_eval is not None:
             return cached_eval
@@ -1360,7 +1361,7 @@ def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     shared = stems_a & stems_b
     if len(shared) < 4:
         return False
-    overlap = len(shared) / float(min(len(stems_a), len(stems_b)))
+    overlap = len(shared) / min(len(stems_a), len(stems_b))
     if overlap >= 0.60:
         return True
     return overlap >= 0.40 and len(shared - _GENERIC_HEADLINE_OVERLAP_STEMS) >= 3

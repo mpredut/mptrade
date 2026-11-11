@@ -145,7 +145,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
     if now <= 0.0:
         now = time.time()
     if total_ticks is None:
-        total_ticks = sum(int(v) for v in read_text_file("/proc/stat").splitlines()[0].split()[1:])
+        total_ticks = sum(require_int(v, "proc_stat_tick") for v in read_text_file("/proc/stat").splitlines()[0].split()[1:])
     if processes is None:
         processes = {}
         page_size = os.sysconf("SC_PAGE_SIZE")
@@ -157,7 +157,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
                 key = f"{entry.name}:{start_time}"
                 rss_mb = rss_pages * page_size / 1024 / 1024
                 command = read_bytes_file(entry / "cmdline").replace(b"\0", b" ").decode(errors="replace").strip() or comm
-                processes[key] = {"pid": int(entry.name), "ticks": ticks, "rss_mb": rss_mb, "command": command[:180]}
+                processes[key] = {"pid": exact_pos_int(entry.name, default=0) or 0, "ticks": ticks, "rss_mb": rss_mb, "command": command[:180]}
             except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, OSError, ValueError):
                 continue
     cpu_count = (os.cpu_count() or 1) if cpu_count is None else safe_pos_int(cpu_count, default=1)

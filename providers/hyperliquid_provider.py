@@ -728,8 +728,8 @@ class HyperliquidProvider(MarketDataProvider):
             signer,
             pair,
             is_buy,
-            float(qty),
-            float(submit_px),
+            safe_pos_float(qty, default=0.0) or 0.0,
+            safe_pos_float(submit_px, default=0.0) or 0.0,
             sz_decimals=sz_dec,
             is_market=is_market,
             tif=order_tif,
@@ -917,7 +917,7 @@ class HyperliquidProvider(MarketDataProvider):
             out["step_size"] = step
             out["min_qty"] = step
             px_f = safe_pos_float(price, default=0.0) or 0.0
-            eff_px_dec = min(max(8 - sz_dec, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
+            eff_px_dec = min(max(8 - sz_dec, 0), max(0, 4 - math.floor(math.log10(px_f))) if px_f > 0.0 else 4)
             out["tick_size"] = round(10.0 ** (-eff_px_dec), 8)
         return out
 
@@ -941,7 +941,7 @@ class HyperliquidProvider(MarketDataProvider):
         if client is None or pair is None:
             raise ProviderError(
                 f"ohlc_series({symbol}): client/pair unavailable")
-        lookback_h = max(1, int(90 * interval / 60))
+        lookback_h = max(1, (90 * interval) // 60)
         try:
             raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
             return ClosedPriceSeries.from_raw_candles(

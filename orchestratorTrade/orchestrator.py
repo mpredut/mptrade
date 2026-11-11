@@ -3,6 +3,7 @@ from collections import defaultdict, deque
 import hashlib
 import importlib
 import logging
+import math
 import os
 import re
 import signal
@@ -480,7 +481,7 @@ class BotManager:
                         if (now - proc_start) > hb_stale_s:
                             hb_fresh, _, max_stale_duration, stale_file = evaluate_heartbeat_files_freshness(
                                 hb_files,
-                                float(hb_stale_s),
+                                hb_stale_s * 1.0,
                                 now,
                                 fallback_start_ts=proc_start,
                             )
@@ -504,7 +505,7 @@ class BotManager:
                                     self.zombie_alert_cooldowns[name] = now + zombie_cd
                                     alert_body = (
                                         f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} "
-                                        f"stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s.\n"
+                                        f"stale by {math.trunc(max_stale_duration)}s > {math.trunc(hb_stale_s)}s.\n"
                                         f"Last logs:\n{last_activity}"
                                     )
                                     zombie_title = f"Zombie Bot Terminated: {name}"

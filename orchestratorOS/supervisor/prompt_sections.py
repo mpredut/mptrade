@@ -10,6 +10,7 @@ Intentional prompt compression invariants:
 - `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
 """
 
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -1139,7 +1140,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
         cap_v = safe_float(eff_pos.get(cap_k), None)
         if cap_v is not None and max_usd > 0 and cap_v > max_usd:
-            eff_pos[cap_k] = round(float(max_usd), 2)
+            eff_pos[cap_k] = round(max_usd * 1.0, 2)
     taker_bps = safe_float(eff_pos.get("taker_fee_bps"), 15.0)
     maker_bps = safe_float(eff_pos.get("maker_fee_bps"), 15.0)
     if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) >= 1:
@@ -1556,7 +1557,7 @@ def _format_portfolio_section(
         )
     if ps.get("hyperliquid_readonly"):
         lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
-    now_ms = int(time.time() * 1000)
+    now_ms = math.trunc(time.time() * 1000)
     for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
         if isinstance(oinfo, dict):
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
