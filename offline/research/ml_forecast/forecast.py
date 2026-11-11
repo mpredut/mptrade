@@ -79,32 +79,36 @@ def _to_price_array(px) -> np.ndarray:
     return np.asarray(cleaned, dtype=float).reshape(-1)
 
 
+def _normalize_ts_array(ts, expected_len: int) -> np.ndarray | None:
+    if ts is None:
+        return None
+    raw_ts = _to_price_array(ts)
+    if len(raw_ts) != expected_len:
+        return None
+    norm_ts = [normalize_epoch_sec(v, default=np.nan, allow_zero=True) for v in raw_ts]
+    return np.asarray([v if v is not None else np.nan for v in norm_ts], dtype=float)
+
+
+def _is_hourly_contiguous(ts_slice: np.ndarray, tol_sec: float = 1800.0) -> bool:
+    if len(ts_slice) < 2 or not np.all(np.isfinite(ts_slice)):
+        return len(ts_slice) == 1 and bool(np.isfinite(ts_slice[0]))
+    diffs = np.diff(ts_slice)
+    expected_span = (len(ts_slice) - 1) * 3600.0
+    return bool(
+        np.all(np.abs(diffs - 3600.0) <= tol_sec)
+        and abs((ts_slice[-1] - ts_slice[0]) - expected_span) <= tol_sec
+    )
+
+
 def build_dataset(px: np.ndarray, ts: np.ndarray | None = None):
     px_arr = _to_price_array(px)
-    ts_arr = None
-    if ts is not None:
-        raw_ts = _to_price_array(ts)
-        if len(raw_ts) == len(px_arr):
-            norm_ts = [
-                normalize_epoch_sec(v, default=np.nan, allow_zero=True)
-                for v in raw_ts
-            ]
-            ts_arr = np.asarray(
-                [v if v is not None else np.nan for v in norm_ts],
-                dtype=float,
-            )
-    expected_span_sec = (WARMUP + HORIZON_H) * 3600.0
+    ts_arr = _normalize_ts_array(ts, len(px_arr))
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     X, y_dir, y_mag = [], [], []
     for i in range(WARMUP, len(px_arr) - HORIZON_H):
-        if ts_arr is not None:
-            t_start = ts_arr[i - WARMUP]
-            t_end = ts_arr[i + HORIZON_H]
-            if not (np.isfinite(t_start) and np.isfinite(t_end)):
-                continue
-            if abs((t_end - t_start) - expected_span_sec) > 1800.0:
-                continue
+        if ts_arr is not None and not _is_hourly_contiguous(ts_arr[i - WARMUP:i + HORIZON_H + 1]):
+            continue
         row = _feat_row(i, logp, px_arr)
         fut = logp[i + HORIZON_H] - logp[i]
         if not (np.isfinite(fut) and all(np.isfinite(v) for v in row)):
@@ -200,18 +204,13 @@ def live_forecast(
     px_arr = _to_price_array(px)
     gap_detected = False
     if ts is not None:
-        raw_ts = _to_price_array(ts)
-        if len(raw_ts) != len(px_arr) or len(px_arr) <= WARMUP:
+        ts_arr = _normalize_ts_array(ts, len(px_arr))
+        if (
+            ts_arr is None
+            or len(px_arr) <= WARMUP
+            or not _is_hourly_contiguous(ts_arr[-1 - WARMUP:])
+        ):
             gap_detected = True
-        else:
-            t_start = normalize_epoch_sec(raw_ts[-1 - WARMUP], default=None, allow_zero=True)
-            t_end = normalize_epoch_sec(raw_ts[-1], default=None, allow_zero=True)
-            if (
-                t_start is None
-                or t_end is None
-                or abs((t_end - t_start) - WARMUP * 3600.0) > 1800.0
-            ):
-                gap_detected = True
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     has_valid_features = False

@@ -28,6 +28,8 @@ from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from botcore import safe_float, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
 from offline.backtests.evaluation import parse_cli_int  # noqa: E402
 from offline.research.ml_forecast.forecast import (  # noqa: E402
+    _is_hourly_contiguous,
+    _normalize_ts_array,
     _to_price_array,
     create_ml_forecast_parser,
     parse_and_validate_forecast_args,
@@ -38,8 +40,8 @@ MAX_CONTEXT = 512                       # maximum history hours supplied per pre
 BATCH = 8                               # test windows batched per call
 
 
-def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
-    """Return trailing [i-win, i] log-return standard deviation, with NaN before history."""
+def realized_vol_series(px: np.ndarray, win: int, ts: np.ndarray | None = None) -> np.ndarray:
+    """Return trailing [i-win, i] log-return standard deviation, with NaN before history or across timestamp gaps."""
     px_arr = _to_price_array(px)
     if len(px_arr) < 2:
         return np.full(len(px_arr), np.nan)
@@ -47,6 +49,13 @@ def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     r = np.diff(logp)
+    if ts is not None:
+        ts_arr = _normalize_ts_array(ts, len(px_arr))
+        if ts_arr is None:
+            return np.full(len(px_arr), np.nan)
+        dt = np.diff(ts_arr)
+        bad_step = ~np.isfinite(dt) | (np.abs(dt - 3600.0) > 1800.0)
+        r = np.where(bad_step, np.nan, r)
     rv = np.full(len(px_arr), np.nan)
     for i in range(win, len(px_arr)):
         rv[i] = np.std(r[i - win:i])
@@ -67,7 +76,13 @@ def _clean_tail(seg: np.ndarray) -> np.ndarray:
     return seg[bad[-1] + 1:] if len(bad) else seg
 
 
-def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
+def walk_forward_vol(
+    rv: np.ndarray,
+    horizon: int,
+    warmup: int,
+    stride: int,
+    ts: np.ndarray | None = None,
+):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
     rv[i] and actual rv[i+horizon]."""
@@ -76,12 +91,17 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     stride = safe_pos_int(stride, default=6)
     warmup = safe_nonneg_int(warmup, default=0)
     n = len(rv)
-    idxs = [
-        i for i in range(warmup, n - horizon, stride)
-        if np.isfinite(rv[i])
-        and np.isfinite(rv[i + horizon])
-        and len(_clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])) >= 2
-    ]
+    ts_arr = _normalize_ts_array(ts, n) if ts is not None else None
+    if ts is not None and ts_arr is None:
+        idxs = []
+    else:
+        idxs = [
+            i for i in range(warmup, n - horizon, stride)
+            if np.isfinite(rv[i])
+            and np.isfinite(rv[i + horizon])
+            and (ts_arr is None or _is_hourly_contiguous(ts_arr[i:i + horizon + 1]))
+            and len(_clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])) >= 2
+        ]
     if not idxs:
         return {
             "n_test": 0,
@@ -171,9 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     if len(px) <= warmup + horizon:
         print(f"! insufficient history ({len(px)} candles, need > {warmup + horizon})", file=sys.stderr)
         return 1
-    rv = realized_vol_series(px, win)
+    rv = realized_vol_series(px, win, ts=ts)
     if args.eval:
-        rep = walk_forward_vol(rv, horizon, warmup, stride)
+        rep = walk_forward_vol(rv, horizon, warmup, stride, ts=ts)
         imp = rep["improvement_pct"]
         imp_str = f"{imp}% {'better' if imp > 0 else 'worse'}" if imp is not None else "n/a"
         corr_val = rep["corr_model_vs_actual"]

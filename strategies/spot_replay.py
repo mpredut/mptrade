@@ -429,8 +429,8 @@ def _run_once(
                                     strategy._remove(order)
                                     continue
                                 fill_order["vol"] = volume
-                            elif cash is not None and market:
-                                fee_mult = 1.0 + fee_model.rate_pct(market=True) / 100.0
+                            elif cash is not None and side == "buy":
+                                fee_mult = 1.0 + fee_model.rate_pct(market=market) / 100.0
                                 needed = volume * price * fee_mult
                                 if needed > cash + 1e-8:
                                     max_vol = max(0.0, cash / (price * fee_mult)) if price * fee_mult > 0 else 0.0
@@ -438,17 +438,29 @@ def _run_once(
                                         cash_refusals += 1
                                         strategy._remove(order)
                                         continue
+                                    orig_vol = volume
                                     volume = min(volume, max_vol)
                                     fill_order["vol"] = volume
+                                    orig_amt = safe_nonneg_float(fill_order.get("amount"), default=None)
+                                    fill_order["amount"] = (
+                                        orig_amt * (volume / orig_vol)
+                                        if orig_amt is not None and orig_vol > 0.0
+                                        else volume * price
+                                    )
+                                    order["vol"] = 0.0
+                                    if "amount" in order:
+                                        order["amount"] = 0.0
                                     complete = True
                             if complete:
                                 strategy._remove(order)
                             fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
                             if cash is not None:
                                 cash += (-1 if side == "buy" else 1) * volume * price - fee
-                                min_cash = min(min_cash, cash)
                                 if cash < -1e-8:
                                     raise ValueError("cash account overdrawn by simulated execution")
+                                if cash < 0.0:
+                                    cash = 0.0
+                                min_cash = min(min_cash, cash)
                             strategy._apply_fill(fill_order, volume, price, fee=fee, final=complete)
                             fill_count += 1
                             turnover_notional += volume * price
@@ -474,6 +486,10 @@ def _run_once(
                 fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
                 if cash is not None:
                     cash += volume * price - fee
+                    if cash < -1e-8:
+                        raise ValueError("cash account overdrawn by simulated execution")
+                    if cash < 0.0:
+                        cash = 0.0
                     min_cash = min(min_cash, cash)
                 strategy._remove(order)
                 strategy._apply_fill(order, volume, price, fee=fee, final=True)

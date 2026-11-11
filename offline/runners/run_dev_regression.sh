@@ -13,13 +13,15 @@ cd "$ROOT"
 mkdir -p "$ROOT/logs" "$ROOT/cachedb/system"
 LOG_FILE="$ROOT/logs/dev_regression.log"
 STATUS_JSON="$ROOT/cachedb/system/dev_regression_status.json"
-LOCK="/tmp/dev_regression.lock"
-QUEUE_LOCK="/tmp/dev_regression_queued.lock"
+LOCK="${DEV_REGRESSION_LOCK:-/tmp/dev_regression.lock}"
+QUEUE_LOCK="${DEV_REGRESSION_QUEUE_LOCK:-/tmp/dev_regression_queued.lock}"
+WATCHER_LOCK="${DEV_CI_WATCHER_LOCK:-/tmp/dev_ci_watcher.lock}"
+OVERNIGHT_LOCK="${OVERNIGHT_SUITE_LOCK:-/tmp/mptrade_overnight_master_suite.lock}"
 
 do_watch() {
-    exec 9>"/tmp/dev_ci_watcher.lock"
+    exec 9>"$WATCHER_LOCK"
     flock -n 9 || exit 0
-    flock -n /tmp/mptrade_overnight_master_suite.lock true 2>/dev/null || exit 0
+    flock -n "$OVERNIGHT_LOCK" true 2>/dev/null || exit 0
     timeout 15 git fetch -q origin "$DEV_CODE_BRANCH" 2>/dev/null || exit 0
     local local_sha remote_sha
     local_sha="$(git rev-parse HEAD)"
@@ -39,6 +41,10 @@ do_watch() {
 }
 
 do_trigger() {
+    if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != "--wait" ]; }; then
+        echo "Usage: $0 trigger [--wait]" >&2
+        exit 2
+    fi
     local local_short rc=0
     local_short="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
     echo "[trigger_dev_ci $(date '+%F %T')] Contacting DEV ($DEV_HOST:$DEV_PORT) to pull and run regression..."
@@ -56,13 +62,14 @@ do_trigger() {
 }
 
 do_check() {
-    local status_file="$STATUS_JSON" dev_reachable=false is_running=false
+    local status_file="$STATUS_JSON" dev_reachable=false is_running=false lock_probe="UNREACHABLE"
     [ ! -f "$status_file" ] && [ -f "$ROOT/cachedb/dev_regression_status.json" ] && status_file="$ROOT/cachedb/dev_regression_status.json"
-    if DEV_SSH_TIMEOUT=3 dev_ssh "true" >/dev/null 2>&1; then
+    lock_probe="$(DEV_SSH_TIMEOUT=3 dev_ssh "flock -n \"$LOCK\" true 2>/dev/null && echo IDLE || echo BUSY" 2>/dev/null || echo UNREACHABLE)"
+    if [ "$lock_probe" = "IDLE" ] || [ "$lock_probe" = "BUSY" ]; then
         dev_reachable=true
         dev_sync_regression_status
         [ -f "$STATUS_JSON" ] && status_file="$STATUS_JSON"
-        DEV_SSH_TIMEOUT=3 dev_ssh "flock -n $LOCK true 2>/dev/null" || is_running=true
+        [ "$lock_probe" = "BUSY" ] && is_running=true
     else
         flock -n "$LOCK" true 2>/dev/null || is_running=true
     fi
@@ -114,14 +121,19 @@ do_run() {
 
     local sync_ok=true
     if [ "${SKIP_GIT_SYNC:-0}" != "1" ]; then
-        exec 7>"/tmp/dev_ci_watcher.lock"
-        if flock -w 45 7; then
-            dev_local_git_sync "$DEV_CODE_BRANCH" >/dev/null 2>&1 || sync_ok=false
-        else
+        if ! flock -n "$OVERNIGHT_LOCK" true 2>/dev/null; then
             sync_ok=false
+            echo "[dev_regression $(date '+%F %T')] Overnight master suite active -- skipping git reset" | tee -a "$LOG_FILE"
+        else
+            exec 7>"$WATCHER_LOCK"
+            if flock -w 45 7; then
+                dev_local_git_sync "$DEV_CODE_BRANCH" >/dev/null 2>&1 || sync_ok=false
+            else
+                sync_ok=false
+            fi
+            flock -u 7 2>/dev/null || true
+            exec 7>&-
         fi
-        flock -u 7 2>/dev/null || true
-        exec 7>&-
     fi
 
     local commit_hash commit_short commit_msg start_ts start_iso rc=0 duration prev_status
@@ -179,7 +191,7 @@ try:
             counts[key] = safe_int(m.group(1), default=0)
 except Exception as e:
     print(f"Warning parsing test output: {e}", file=sys.stderr)
-status = "PASSED" if rc == 0 and counts["failed"] == 0 and counts["errors"] == 0 else "FAILED"
+status = "PASSED" if rc == 0 and counts["passed"] > 0 and counts["failed"] == 0 and counts["errors"] == 0 else "FAILED"
 status_data = {
     "status": status, "exit_code": rc,
     "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
@@ -205,9 +217,9 @@ EOF
 }
 
 case "${1:-run}" in
-    run)            do_run ;;
-    watch)          do_watch ;;
-    trigger)        shift; do_trigger "${1:-}" ;;
-    check|status)   do_check ;;
+    run)            [ "$#" -le 1 ] || { echo "Usage: $0 {run|watch|trigger [--wait]|check}" >&2; exit 2; }; do_run ;;
+    watch)          [ "$#" -le 1 ] || { echo "Usage: $0 {run|watch|trigger [--wait]|check}" >&2; exit 2; }; do_watch ;;
+    trigger)        shift; do_trigger "$@" ;;
+    check|status)   [ "$#" -le 1 ] || { echo "Usage: $0 {run|watch|trigger [--wait]|check}" >&2; exit 2; }; do_check ;;
     *)              echo "Usage: $0 {run|watch|trigger [--wait]|check}" >&2; exit 2 ;;
 esac

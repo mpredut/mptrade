@@ -530,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         fee_stress = {}
         for fee in parsed_fees:
             windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
-            fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
+            fee_key = f"{fee:.2f}" if abs(fee - round(fee, 2)) <= 1e-9 else f"{fee:.6f}".rstrip("0").rstrip(".")
             fee_stress[fee_key] = {
                 "summary": summarize_test_windows(windows),
                 "windows": windows,

@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import FileLock, _parse_bool_flag, add_store_true_cli_args, bool_env, load_env_stack, optional_env, parse_dotenv, safe_pos_float  # noqa: E402
+from botcore import FileLock, add_store_true_cli_args, bool_env, load_env_stack, optional_env, parse_dotenv  # noqa: E402
 from state_io import parse_json_payload  # noqa: E402
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
 
@@ -109,7 +109,8 @@ def main(argv: list[str] | None = None):
         print(f"[apply] no proposal on branch {branch_label} -- nothing to do")
         return
 
-    with FileLock("/tmp/mptrade_apply_proposals.lock"):
+    lock_path = optional_env("APPLY_PROPOSALS_LOCK") or "/tmp/mptrade_apply_proposals.lock"
+    with FileLock(lock_path):
         applied_count = 0
         for p in proposals:
             if not isinstance(p, dict):
@@ -145,13 +146,9 @@ def main(argv: list[str] | None = None):
                     "dev_commit": p.get("dev_commit"),
                 })
                 continue
-            winner = safe_pos_float(raw_winner, default=None)
-            current = safe_pos_float(current_raw, default=None)
-            if (
-                winner is None
-                or current is None
-                or (key == "mt.hardtp_fraction" and (winner > 1.0 or current > 1.0))
-            ):
+            winner = sp._valid_pilot_grid_value(key, raw_winner)
+            current = sp._valid_pilot_grid_value(key, current_raw)
+            if winner is None or current is None:
                 sp._append_audit({
                     "full_key": fk, "symbol": symbol, "source": "apply_proposals",
                     "action": "skipped_invalid_value",

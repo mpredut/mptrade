@@ -299,11 +299,11 @@ def evaluate_risk_adjusted_promotion(
         base_calmar = safe_float(base_aggregate.get("median_calmar"), default=None)
         cand_calmar = safe_float(candidate_aggregate.get("median_calmar"), default=None)
         calmar_improvement = _relative_change(base_calmar, cand_calmar)
+        base_sortino = safe_float(base_aggregate.get("median_sortino"), default=None)
         cand_sortino = safe_float(candidate_aggregate.get("median_sortino"), default=None)
-        sortino_change = _relative_change(
-            base_aggregate.get("median_sortino"),
-            cand_sortino,
-        )
+        sortino_change = _relative_change(base_sortino, cand_sortino)
+        zero_base_calmar = base_calmar is not None and abs(base_calmar) <= 1e-12
+        zero_base_sortino = base_sortino is not None and abs(base_sortino) <= 1e-12
 
         checks = {
             "enough_windows": all_dd_finite and len(drawdown_improvements) >= limits.min_windows,
@@ -317,18 +317,30 @@ def evaluate_risk_adjusted_promotion(
                 math.isfinite(worst_return_delta)
                 and worst_return_delta >= -limits.max_worst_return_degradation_pp
             ),
-            "calmar_available": calmar_improvement is not None,
+            "calmar_available": base_calmar is not None and cand_calmar is not None,
             "material_calmar_improvement": (
-                calmar_improvement is not None
-                and cand_calmar is not None
+                cand_calmar is not None
                 and cand_calmar > 0.0
-                and calmar_improvement >= limits.min_median_calmar_improvement_ratio
+                and (
+                    (cand_calmar - base_calmar) >= limits.min_median_calmar_improvement_ratio
+                    if zero_base_calmar
+                    else (
+                        calmar_improvement is not None
+                        and calmar_improvement >= limits.min_median_calmar_improvement_ratio
+                    )
+                )
             ),
             "sortino_preserved": (
-                sortino_change is not None
-                and cand_sortino is not None
+                cand_sortino is not None
                 and cand_sortino > 0.0
-                and sortino_change >= -limits.max_median_sortino_degradation_ratio
+                and (
+                    True
+                    if zero_base_sortino
+                    else (
+                        sortino_change is not None
+                        and sortino_change >= -limits.max_median_sortino_degradation_ratio
+                    )
+                )
             ),
             "material_drawdown_improvement": (
                 math.isfinite(worst_drawdown_improvement)

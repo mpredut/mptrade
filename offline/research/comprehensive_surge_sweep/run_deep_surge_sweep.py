@@ -439,8 +439,9 @@ def main():
                     if args.initial_cash is None else args.initial_cash)
     if safe_pos_float(initial_cash, default=None) is None:
         parser.error("initial cash must be finite and positive")
-    if safe_nonneg_float(args.fee_pct, default=None) is None:
-        parser.error("fee percentage must be finite and non-negative")
+    fee_val = safe_nonneg_float(args.fee_pct, default=None)
+    if fee_val is None or fee_val >= 100.0:
+        parser.error("fee percentage must be finite and in [0, 100)")
     if safe_pos_int(args.workers, default=None) is None:
         parser.error("workers must be positive")
     print("Research only: 4h OHLC cannot validate 5-minute guards; "

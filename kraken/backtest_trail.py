@@ -35,7 +35,11 @@ from botcore import (
 from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
-from strategies.replay_metrics import buy_hold_pct as bh, parse_bt_cli_int
+from strategies.replay_metrics import (
+    buy_hold_pct as bh,
+    parse_bt_cli_int,
+    validate_bt_cli_token,
+)
 
 
 _ISOLATED_COMPARISON_OVERRIDES = {
@@ -253,10 +257,19 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.interval <= 0:
         ap.error("--interval must be > 0")
-    if args.wf:
-        run_wf(args.wf, args.interval)
-    elif args.intraday:
-        run_intraday(args.intraday)
+    try:
+        wf_pair = validate_bt_cli_token(args.wf, "pair", allow_slash=True) if args.wf is not None else None
+        intraday_pair = (
+            validate_bt_cli_token(args.intraday, "pair", allow_slash=True)
+            if args.intraday is not None
+            else None
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
+    if wf_pair:
+        run_wf(wf_pair, args.interval)
+    elif intraday_pair:
+        run_intraday(intraday_pair)
     else:
         run_compare(["BTCUSD", "ETHUSD", "SOLUSD", "HYPEUSD", "XRPUSD"], [60, 240])
     return 0

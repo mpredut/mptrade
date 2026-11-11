@@ -313,6 +313,8 @@ def _valid_pilot_grid_value(param_name: str, raw_val: object) -> float | None:
     vf = safe_pos_float(raw_val, default=None)
     if vf is None or (param_name == "mt.hardtp_fraction" and vf > 1.0):
         return None
+    if param_name in ("mt.lost", "trailing.pct") and vf >= 100.0:
+        return None
     return vf
 
 

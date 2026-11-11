@@ -170,6 +170,13 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))
 
+    if supplied_datasets and not summary_by_interval:
+        print(
+            f"[!] ERROR: 0 baseline reports generated for {symbol} across supplied --dataset intervals.",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0
 
 

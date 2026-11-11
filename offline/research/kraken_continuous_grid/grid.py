@@ -286,12 +286,19 @@ if __name__ == "__main__":
     order = first + [c for c in CONFIGS if c not in first]
     todo = [(a, c) for a in assets for c in order if (a, c) not in done]
     canon_groups: dict = {}
+    canon_aliases: dict[tuple[str, str], list[str]] = {}
     canon_todo = []
     for a, c in todo:
-        p, pk = CONFIGS[c]
-        k = (a, repr(p), bool(pk))
+        spec = CONFIGS.get(c)
+        if spec is not None:
+            p, pk = spec
+            k: tuple = (a, repr(p), bool(pk))
+        else:
+            k = ("__err__", a, c)
         if k not in canon_groups:
-            canon_groups[k] = []
+            aliases_list: list[str] = []
+            canon_groups[k] = aliases_list
+            canon_aliases[(a, c)] = aliases_list
             canon_todo.append((a, c))
         canon_groups[k].append(c)
     workers = resolve_grid_workers()
@@ -301,8 +308,7 @@ if __name__ == "__main__":
     valid_new_rows = 0
     with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
-            p, pk = CONFIGS[r["cfg"]]
-            aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])
+            aliases = canon_aliases.get((r["asset"], r["cfg"]), [r["cfg"]])
             for idx, alias_cfg in enumerate(aliases):
                 done_count += 1
                 row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}

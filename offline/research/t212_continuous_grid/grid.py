@@ -258,12 +258,18 @@ if __name__ == "__main__":
                 if asset != HOME[profile]:
                     todo.append((profile, variant, asset))
     canon_groups: dict = {}
+    canon_aliases: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
     canon_todo = []
     for profile, variant, asset in todo:
-        p, pk = params_for(profile, variant)
-        k = (asset, repr(p), bool(pk))
+        try:
+            p, pk = params_for(profile, variant)
+            k: tuple = (asset, repr(p), bool(pk))
+        except Exception:
+            k = ("__err__", profile, variant, asset)
         if k not in canon_groups:
-            canon_groups[k] = []
+            aliases_list: list[tuple[str, str]] = []
+            canon_groups[k] = aliases_list
+            canon_aliases[(profile, variant, asset)] = aliases_list
             canon_todo.append((profile, variant, asset))
         canon_groups[k].append((profile, variant))
     workers = resolve_grid_workers()
@@ -274,8 +280,10 @@ if __name__ == "__main__":
     rows_out: list[dict] = []
     with Pool(workers) as pool:
         for r in pool.imap(task, canon_todo):
-            p, pk = params_for(r["profile"], r["variant"])
-            aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [(r["profile"], r["variant"])])
+            aliases = canon_aliases.get(
+                (r["profile"], r["variant"], r["asset"]),
+                [(r["profile"], r["variant"])],
+            )
             for idx, (al_prof, al_var) in enumerate(aliases):
                 done_count += 1
                 row = r if idx == 0 and (al_prof, al_var) == (r["profile"], r["variant"]) else {

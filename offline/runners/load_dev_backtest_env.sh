@@ -3,17 +3,19 @@
 
 RUNNER_DIR="${RUNNER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 DEV_PROFILE="${DEV_BACKTEST_ENV:-$RUNNER_DIR/dev_backtest.env}"
-[ -r "$DEV_PROFILE" ] || { echo "Missing DEV profile: $DEV_PROFILE" >&2; return 1; }
+[ -r "$DEV_PROFILE" ] || { echo "Missing DEV profile: $DEV_PROFILE" >&2; return 1 2>/dev/null || exit 1; }
 
 set -a
 source "$DEV_PROFILE"
 set +a
 
 for name in DEV_HOST DEV_PORT DEV_USER DEV_PATH DEV_CODE_BRANCH BACKTEST_PROPOSALS_BRANCH; do
-  [ -n "${!name:-}" ] || { echo "Invalid DEV profile: missing $name" >&2; return 1; }
+  [ -n "${!name:-}" ] || { echo "Invalid DEV profile: missing $name" >&2; return 1 2>/dev/null || exit 1; }
 done
 
+[ -f "$RUNNER_DIR/../../orchestratorOS/lib/env_common.sh" ] && source "$RUNNER_DIR/../../orchestratorOS/lib/env_common.sh"
 [ -f "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh" ] && source "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh"
+ROOT="${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export BACKTEST_MODE=1 DISABLE_EXTERNAL_NOTIFICATIONS=1 DISABLE_GEMINI_LLM=1
