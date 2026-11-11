@@ -261,11 +261,8 @@ class KrakenTrailing(TrailingAdapterBase):
 
     def free_qty(self, asset: str) -> float:
         """Return FREE balance (total minus order holds), excluding the bot position."""
-        entries = self._balance_ex_entries(asset)
-        if not entries:
-            return 0.0
         total_free = 0.0
-        for bx in entries:
+        for bx in self._balance_ex_entries(asset):
             if not isinstance(bx, dict):
                 return 0.0
             bal_f = safe_nonneg_float(bx.get("balance"), default=None)
@@ -276,14 +273,10 @@ class KrakenTrailing(TrailingAdapterBase):
         return total_free
 
     def total_qty(self, asset: str) -> float | None:
-        bx_map = self._balance_ex_map()
-        if bx_map is None:
+        if self._balance_ex_map() is None:
             return None
-        entries = self._balance_ex_entries(asset)
-        if not entries:
-            return 0.0
         total_bal = 0.0
-        for bx in entries:
+        for bx in self._balance_ex_entries(asset):
             if not isinstance(bx, dict):
                 return None
             bal_f = safe_nonneg_float(bx.get("balance", 0), default=None)

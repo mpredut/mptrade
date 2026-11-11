@@ -221,8 +221,7 @@ class _DailyFileHandler(logging.Handler):
         self._current_path = ""
         self._stream = None
         self._lock = threading.Lock()
-        self._pending_records = 0
-        self._last_flush = _monotonic()
+        self._flush()
 
     def _flush(self) -> None:
         if self._stream is not None:

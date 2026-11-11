@@ -342,10 +342,14 @@ class TrackedOrderLifecycle:
         order_id = extract_order_id(response)
         return {"order_id": str(order_id)} if order_id is not None else {}
 
-    def submit(self, intent: dict, *, persist: PersistPending, submit: SubmitIntent) -> TrackedOrderResult:
-        """Persist and submit exactly once; reconcile status from a later tick."""
+    def _copy_and_validate_identity(self, intent: dict) -> dict:
         pending = dict(intent)
         self._validate_identity(pending)
+        return pending
+
+    def submit(self, intent: dict, *, persist: PersistPending, submit: SubmitIntent) -> TrackedOrderResult:
+        """Persist and submit exactly once; reconcile status from a later tick."""
+        pending = self._copy_and_validate_identity(intent)
         persist(dict(pending))
         refusal_key = (
             str(pending.get("intent_id") or ""),
@@ -411,8 +415,7 @@ class TrackedOrderLifecycle:
 
     def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
         """Reconcile one pending intent against venue truth; never submit here."""
-        pending = dict(intent)
-        self._validate_identity(pending)
+        pending = self._copy_and_validate_identity(intent)
 
         cached_terminal = _status_from_terminal_payload(pending.get("terminal_status"))
         if cached_terminal is not None:

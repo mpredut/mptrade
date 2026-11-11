@@ -755,15 +755,20 @@ def _clean_nonbool_str(val: Any, default: str = "") -> str:
     return str(val).strip() if (val is not None and not isinstance(val, bool) and str(val).strip()) else default
 
 
+def _iter_cached_section_dicts(cache_dir: str, option_key: str, now_ts: Optional[float]):
+    reader = resolve_read_json_cached()
+    eval_now = resolve_now_ts(now_ts)
+    for fname in get_cache_filenames(option_key):
+        path = os.path.join(cache_dir, fname)
+        yield path, reader, eval_now
+
+
 def load_cached_fear_greed_snapshot(
     cache_dir: str,
     now_ts: Optional[float] = None,
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
-    reader = resolve_read_json_cached()
-    eval_now = resolve_now_ts(now_ts)
-    for fg_fname in get_cache_filenames("fear_greed_files"):
-        fg_path = os.path.join(cache_dir, fg_fname)
+    for fg_path, reader, eval_now in _iter_cached_section_dicts(cache_dir, "fear_greed_files", now_ts):
         try:
             fg_data = reader(fg_path)
             if not isinstance(fg_data, dict) or not fg_data:
@@ -816,10 +821,7 @@ def load_cached_market_breadth_snapshot(
             and s_clean.isascii()
         )
 
-    reader = resolve_read_json_cached()
-    eval_now = resolve_now_ts(now_ts)
-    for mb_fname in get_cache_filenames("market_breadth_files"):
-        mb_path = os.path.join(cache_dir, mb_fname)
+    for mb_path, reader, eval_now in _iter_cached_section_dicts(cache_dir, "market_breadth_files", now_ts):
         try:
             mb_data = reader(mb_path)
             if not isinstance(mb_data, dict) or not mb_data:
@@ -1038,10 +1040,9 @@ def compute_cross_asset_regime(
     btc_chg_24h_pct: Optional[float] = None,
 ) -> str:
     """Classify the symmetric US Equity vs Crypto Institutional correlation regime."""
-    allowed = get_cross_asset_regimes()
-    extracted = _extract_equity_benchmark_changes(data)
-    if extracted is None:
+    if (extracted := _extract_equity_benchmark_changes(data)) is None:
         return "NEUTRAL"
+    allowed = get_cross_asset_regimes()
     items, eq_24h, _eq_1h = extracted
     eq_regime = str(data.get("equity_regime") or "").strip().upper()
     if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (

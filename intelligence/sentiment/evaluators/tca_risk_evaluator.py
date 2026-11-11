@@ -176,10 +176,9 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
         microstructure: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
-        prices_and_trends = prices_and_trends or {}
-        microstructure = microstructure or {}
         if not isinstance(open_orders, list) or not open_orders:
             return open_orders
+        prices_and_trends, microstructure = prices_and_trends or {}, microstructure or {}
         for o in open_orders:
             if not isinstance(o, dict):
                 continue
@@ -330,10 +329,9 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         microstructure: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        prices_and_trends = prices_and_trends or {}
-        microstructure = microstructure or {}
         if not isinstance(portfolio_summary, dict):
             return {}
+        prices_and_trends, microstructure = prices_and_trends or {}, microstructure or {}
         t_pos = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
         vq_cash, rec_orders, hl_ro = coerce_dict_maps(
             portfolio_summary.get("venue_quote_cash"),

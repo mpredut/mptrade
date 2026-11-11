@@ -279,9 +279,7 @@ class TrailingStop(TrailingAdapterBase):
 
     def free_qty(self, asset: str) -> float:
         bal = self._find_balance_row(self._balances, asset)
-        if bal is None:
-            return 0.0
-        return safe_nonneg_float(bal.get("free"), default=0.0)
+        return safe_nonneg_float(bal.get("free"), default=0.0) if bal is not None else 0.0
 
     def total_qty(self, asset: str) -> float:
         bal = self._find_balance_row(self._balances, asset)

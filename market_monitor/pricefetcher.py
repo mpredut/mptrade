@@ -700,8 +700,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
 
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
-        symbol = self._clean_symbol_str(symbol)
-        if not symbol:
+        if not (symbol := self._clean_symbol_str(symbol)):
             return False
         with self.lock:
             base_symbol = get_base_symbol(symbol)
@@ -735,8 +734,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return True
     
     def remove_symbol(self, symbol: str, reason: str = ""):
-        symbol = self._clean_symbol_str(symbol)
-        if not symbol:
+        if not (symbol := self._clean_symbol_str(symbol)):
             return False
         sym_up = symbol.upper()
         with self.lock:

@@ -828,14 +828,17 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     return True, state
 
 
+def _pop_key_and_save_campaign(symbol, kind, state: dict, key: str) -> dict:
+    state.pop(key, None)
+    _save_symbol_campaign(symbol, kind, state)
+    return state
+
+
 def _clear_inactive_trend_defer(symbol, kind, state):
     """Reset the trend_defer clock when its tier signal is no longer crossed."""
     if not isinstance(state, dict) or "trend_defer" not in state:
         return state
-    state = dict(state)
-    state.pop("trend_defer", None)
-    _save_symbol_campaign(symbol, kind, state)
-    return state
+    return _pop_key_and_save_campaign(symbol, kind, dict(state), "trend_defer")
 
 
 def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
@@ -933,9 +936,27 @@ def _ag_client_order_id(kind, symbol, state, threshold, attempt):
 
 
 def _finalize_terminal_campaign_state(
-    symbol, kind, state, pending, threshold, status, filled_qty, cost_val, fee_val, *, dust_completed=False
+    symbol,
+    kind,
+    state,
+    pending,
+    threshold,
+    status,
+    filled_qty,
+    cost_val,
+    fee_val,
+    *,
+    dust_completed=False,
+    target_amount: float | None = None,
+    tier_accum: float = 0.0,
+    min_tol: float = 1e-9,
 ):
-    if (status.status == "closed" and filled_qty > 0) or dust_completed:
+    is_dust_done = bool(dust_completed) or (
+        target_amount is not None
+        and tier_accum > 0
+        and (target_amount - tier_accum) <= max(min_tol, target_amount * 0.02)
+    )
+    if (status.status == "closed" and filled_qty > 0) or is_dust_done:
         completed = _completed_tier_values(state)
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
@@ -952,8 +973,7 @@ def _finalize_terminal_campaign_state(
         "terminal_ts": time.time(),
     })
     state["terminal_orders"] = terminal
-    state.pop("pending", None)
-    _save_symbol_campaign(symbol, kind, state)
+    _pop_key_and_save_campaign(symbol, kind, state, "pending")
     print(
         f"[{symbol}] {kind.upper()} tier terminal: threshold={threshold:g}% status={status.status} "
         f"orderId={pending.get('order_id')} filled={filled_qty:.8f} cost={cost_val:.8f} fee={fee_val:.8f}"
@@ -970,46 +990,48 @@ def _extract_terminal_pending_tier(symbol, state, kind_label: str):
     return pending, threshold, _tier_key(threshold)
 
 
-def _extract_terminal_pending_and_metrics(
-    symbol, state, status, kind_label: str
-) -> tuple[dict, float, str, float, float, float] | None:
+def _extract_and_accumulate_terminal_tier(
+    symbol,
+    state: dict,
+    status,
+    kind_label: str,
+    map_key: str,
+    total_key: str,
+    *,
+    include_cost_and_fee: bool = False,
+) -> tuple[dict, dict, float, float, float, float, float] | None:
     extracted = _extract_terminal_pending_tier(symbol, state, kind_label)
     if extracted is None:
         return None
     pending, threshold, key = extracted
-    return (
-        pending,
-        threshold,
-        key,
-        safe_nonneg_float(status.filled_qty, default=0.0),
-        safe_nonneg_float(status.cost, default=0.0),
-        safe_nonneg_float(status.fee, default=0.0),
-    )
-
-
-def _accumulate_tier_and_total(
-    state: dict, map_key: str, total_key: str, tier_key: str, delta: float
-) -> tuple[dict, float]:
+    filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
+    cost_val = safe_nonneg_float(status.cost, default=0.0)
+    fee_val = safe_nonneg_float(status.fee, default=0.0)
+    delta = max(0.0, cost_val + fee_val) if include_cost_and_fee else filled_qty
     raw_map = state.get(map_key)
     by_tier = dict(raw_map) if isinstance(raw_map, dict) else {}
-    new_tier_val = safe_nonneg_float(by_tier.get(tier_key), default=0.0) + delta
-    by_tier[tier_key] = new_tier_val
+    tier_accum = safe_nonneg_float(by_tier.get(key), default=0.0) + delta
+    by_tier[key] = tier_accum
     out = dict(state)
     out[map_key] = by_tier
     out[total_key] = safe_nonneg_float(state.get(total_key), default=0.0) + delta
-    return out, new_tier_val
+    return out, pending, threshold, tier_accum, filled_qty, cost_val, fee_val
 
 
 def _record_terminal_buy(symbol, state, status):
     """Atomically apply one terminal BUY result and acknowledge generic pending."""
-    extracted = _extract_terminal_pending_and_metrics(symbol, state, status, "BUY terminal pending")
-    if extracted is None:
-        return state
-    pending, threshold, key, filled_qty, cost_val, fee_val = extracted
-    executed_quote = max(0.0, cost_val + fee_val)
-    state, tier_spent = _accumulate_tier_and_total(
-        state, "spent_quote_by_tier", "total_spent_quote", key, executed_quote
+    accum = _extract_and_accumulate_terminal_tier(
+        symbol,
+        state,
+        status,
+        "BUY terminal pending",
+        "spent_quote_by_tier",
+        "total_spent_quote",
+        include_cost_and_fee=True,
     )
+    if accum is None:
+        return state
+    state, pending, threshold, tier_spent, filled_qty, cost_val, fee_val = accum
     allocation = _finite_float(pending.get("allocation"), positive=True)
     initial_cash = _finite_float(state.get("initial_cash"), positive=True)
     target_cash = (
@@ -1017,26 +1039,35 @@ def _record_terminal_buy(symbol, state, status):
         if initial_cash is not None and allocation is not None
         else None
     )
-    dust_completed = (
-        target_cash is not None
-        and tier_spent > 0
-        and (target_cash - tier_spent) <= max(1e-9, target_cash * 0.02)
-    )
     return _finalize_terminal_campaign_state(
-        symbol, "buy", state, pending, threshold, status, filled_qty, cost_val, fee_val,
-        dust_completed=dust_completed,
+        symbol,
+        "buy",
+        state,
+        pending,
+        threshold,
+        status,
+        filled_qty,
+        cost_val,
+        fee_val,
+        target_amount=target_cash,
+        tier_accum=tier_spent,
+        min_tol=1e-9,
     )
 
 
 def _record_terminal_sell(symbol, state, status):
     """Apply one terminal venue status without inferring acceptance as a fill."""
-    extracted = _extract_terminal_pending_and_metrics(symbol, state, status, "SELL pending tier")
-    if extracted is None:
-        return state
-    pending, threshold, key, filled_qty, cost_val, fee_val = extracted
-    state, tier_filled = _accumulate_tier_and_total(
-        state, "filled_qty_by_tier", "total_filled_qty", key, filled_qty
+    accum = _extract_and_accumulate_terminal_tier(
+        symbol,
+        state,
+        status,
+        "SELL pending tier",
+        "filled_qty_by_tier",
+        "total_filled_qty",
     )
+    if accum is None:
+        return state
+    state, pending, threshold, tier_filled, filled_qty, cost_val, fee_val = accum
     allocation = _finite_float(pending.get("allocation"), positive=True)
     if allocation is None:
         allocation = next(
@@ -1047,14 +1078,19 @@ def _record_terminal_sell(symbol, state, status):
         )
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     target_qty = initial_qty * allocation if initial_qty is not None and allocation is not None else None
-    dust_completed = (
-        target_qty is not None
-        and tier_filled > 0
-        and (target_qty - tier_filled) <= max(1e-12, target_qty * 0.02)
-    )
     return _finalize_terminal_campaign_state(
-        symbol, "sell", state, pending, threshold, status, filled_qty, cost_val, fee_val,
-        dust_completed=dust_completed,
+        symbol,
+        "sell",
+        state,
+        pending,
+        threshold,
+        status,
+        filled_qty,
+        cost_val,
+        fee_val,
+        target_amount=target_qty,
+        tier_accum=tier_filled,
+        min_tol=1e-12,
     )
 
 

@@ -716,10 +716,12 @@ def _resolve_dynamic_lexicon_context(
 
 
 def _extract_valid_dynamic_entries(
-    raw_entries: Dict[str, Any], now: float, ttl: float, stopwords: Set[str]
+    raw_entries: Any, now: float, ttl: float, stopwords: Set[str]
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[Tuple[str, ...], str], bool]:
     existing_entries: Dict[str, Dict[str, Any]] = {}
     sig_to_key: Dict[Tuple[str, ...], str] = {}
+    if not isinstance(raw_entries, dict):
+        return existing_entries, sig_to_key, False
     pruned = False
     raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
     for idx, (k, v) in enumerate(raw_entries.items()):
@@ -830,16 +832,10 @@ def update_dynamic_lexicon(
     now, ttl, path = _resolve_dynamic_lexicon_context(cache_dir, now_ts)
 
     stopwords = _get_stopwords_set()
-    existing_entries: Dict[str, Dict[str, Any]] = {}
-    sig_to_key: Dict[Tuple[str, ...], str] = {}
-    pruned_existing = False
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
-    if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-        existing_entries, sig_to_key, pruned_existing = _extract_valid_dynamic_entries(
-            raw["entries"], now, ttl, stopwords
-        )
-
-    changed = pruned_existing
+    existing_entries, sig_to_key, changed = _extract_valid_dynamic_entries(
+        raw.get("entries") if isinstance(raw, dict) else None, now, ttl, stopwords
+    )
     for raw_t, tier_override in (
         *[(t, None) for t in new_high_terms],
         *[(a, "acute") for a in new_acute_terms],

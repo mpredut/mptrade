@@ -1457,13 +1457,11 @@ class MarketDataProvider(ABC):
     def _cached_current_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
         eff_age = resolve_positive_max_age(max_age_sec, 12.0)
-        if eff_age is None:
-            return None
-        candidates = self._prepare_ssot_price_candidates(symbol)
-        if not candidates:
-            return None
-        cp_cls = self._ssot_current_price_cls
-        if cp_cls is None:
+        if (
+            eff_age is None
+            or not (candidates := self._prepare_ssot_price_candidates(symbol))
+            or (cp_cls := self._ssot_current_price_cls) is None
+        ):
             return None
         custom_path = getattr(self, "_ssot_price_cache_path", None)
         price_path = str(custom_path) if custom_path else cache_path(CACHE_CURRENT_PRICE_FILENAME)
@@ -1482,11 +1480,7 @@ class MarketDataProvider(ABC):
         max_latest_age_sec: float = 120.0,
     ) -> Optional[list[dict]]:
         """Read 24h tick history from Cache24PriceManager when fresh and covering ``lookback_hours``."""
-        candidates = self._prepare_ssot_price_candidates(symbol)
-        if not candidates:
-            return None
-        p24_cls = self._ssot_price24_cls
-        if p24_cls is None:
+        if not (candidates := self._prepare_ssot_price_candidates(symbol)) or (p24_cls := self._ssot_price24_cls) is None:
             return None
         return p24_cls.read_ssot_price_history(
             candidates,

@@ -461,8 +461,7 @@ class T212Client:
         when history is unavailable or not yet updated so strict reconciliation retries
         without assuming a fill.
         """
-        target_oid = clean_order_id(order_id)
-        if target_oid is None:
+        if (target_oid := clean_order_id(order_id)) is None:
             return None
         matches = self._hist_matches_from_cache(target_oid, self._pf_ttl)
         if not matches:
@@ -583,8 +582,7 @@ class T212Client:
         return candidates[-1] if candidates else None
 
     def get_order_status(self, order_id) -> dict | bool | None:
-        target_oid = clean_order_id(order_id)
-        if target_oid is None:
+        if (target_oid := clean_order_id(order_id)) is None:
             return None
         status, body = http_get(
             f"{self.base}/equity/orders/{target_oid}",
@@ -609,8 +607,7 @@ class T212Client:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""
-        target_oid = clean_order_id(order_id)
-        if target_oid is None:
+        if (target_oid := clean_order_id(order_id)) is None:
             return False
         self._pace_order()
         status, _ = http_request("DELETE", f"{self.base}/equity/orders/{target_oid}",

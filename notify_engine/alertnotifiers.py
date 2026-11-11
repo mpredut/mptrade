@@ -746,8 +746,7 @@ def pass_common_gate(
     else:
         sig_raw = f"sim|{topic}|{norm_title}"
     sim_key = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
-    gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
-    topic_bulk_sec = _topic_bulk_seconds()
+    gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
     sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
 
     with FileLock(path.with_suffix(path.suffix + ".lock")):
@@ -855,6 +854,10 @@ def pass_common_gate(
         return True, "reserved", False, (title, body, priority, topic)
 
 
+def _gate_and_topic_bulk_seconds() -> tuple[int, int]:
+    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180), _topic_bulk_seconds()
+
+
 def pop_due_bulk_batch(
     channel: str = "ntfy",
     *,
@@ -865,8 +868,7 @@ def pop_due_bulk_batch(
     now_ts, force, today, path = _resolve_gate_context(now, flag=force)
     if not path.exists() and not path.with_name(path.name + ".previous").exists():
         return None
-    gate_sec = _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
-    topic_bulk_sec = _topic_bulk_seconds()
+    gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
     with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
         if channel not in state["channels"]:
@@ -1161,10 +1163,8 @@ class AlertNotifier:
         recipient: Optional[str] = None,
         subject: Optional[str] = None,
     ) -> bool:
-        if not alerts:
-            return False
-        if _external_notifications_disabled():
-            return True
+        if not alerts or _external_notifications_disabled():
+            return bool(alerts)
         alerts = list(alerts)
         subject = subject or AlertNotifier.email_subject(alerts)
         message = AlertNotifier.format_batch_message(alerts)
@@ -1178,10 +1178,8 @@ class AlertNotifier:
 
     @staticmethod
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
-        if not alerts:
-            return False
-        if _external_notifications_disabled():
-            return True
+        if not alerts or _external_notifications_disabled():
+            return bool(alerts)
         if _is_orchestrated():
             return _emit_orchestrator_intent(
                 {
