@@ -362,14 +362,7 @@ class T212Provider(MarketDataProvider):
             sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
         return by_symbol
 
-    @classmethod
-    def fetch_remote_trades_with_client(
-        cls, symbol: str, start_time_ms: int = 0, client=None
-    ) -> Optional[List[dict]]:
-        """Fetch normalized T212 fills for ``symbol`` using an injected ``client`` when compatible."""
-        if client is None or not callable(getattr(client, "refresh_order_history", None)):
-            return None
-        return cls(client=client).fetch_remote_trades(symbol, start_time_ms, client=client)
+    _REMOTE_TRADES_CLIENT_ATTR = "refresh_order_history"
 
     def fetch_remote_trades(
         self, symbol: str, start_time_ms: int = 0, *, client=None

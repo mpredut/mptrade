@@ -857,6 +857,22 @@ def _update_context_intel_cache(
         pass
 
 
+def _preflight_intelligence_guards_with_qlimit2(
+    order_type: Any,
+    bypass_guards: Any = None,
+) -> tuple[Optional[tuple[bool, str, float]], str, dict[str, Any], set[str], bool, bool]:
+    bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
+    if is_master_bypass(bypassed):
+        return (True, "stop_loss_exempt", 1.0), "", {}, bypassed, parabolic_only_bypass, weibull_only_bypass
+    m = _load_margins()
+    if is_intelligence_master_off(m, require_key=True):
+        return (True, "intelligence_guards_off", 1.0), "", m, bypassed, parabolic_only_bypass, weibull_only_bypass
+    side = normalize_side(order_type)
+    if side not in ("BUY", "SELL"):
+        return (True, "not_supported_side", 1.0), side, m, bypassed, parabolic_only_bypass, weibull_only_bypass
+    return None, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -884,19 +900,12 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
-    if is_master_bypass(bypassed):
-        return True, "stop_loss_exempt", 1.0
-
-    m = _load_margins()
+    early, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = _preflight_intelligence_guards_with_qlimit2(
+        order_type, bypass_guards
+    )
+    if early is not None:
+        return early
     valid_context = _is_valid_regime_context(regime_context, symbol, provider, margins=m, now=now)
-
-    if is_intelligence_master_off(m, require_key=True):
-        return True, "intelligence_guards_off", 1.0
-
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
 
     px_clean = safe_pos_float(price, 0.0)
     computed_notional = resolve_order_notional(notional_eur, px_clean, qty, default=None)
@@ -1044,17 +1053,11 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    bypassed, parabolic_only_bypass, weibull_only_bypass = normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
-    if is_master_bypass(bypassed):
-        return True, "stop_loss_exempt", 1.0
-
-    m = _load_margins()
-    if is_intelligence_master_off(m, require_key=True):
-        return True, "intelligence_guards_off", 1.0
-
-    side = normalize_side(order_type)
-    if side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
+    early, side, m, bypassed, parabolic_only_bypass, weibull_only_bypass = _preflight_intelligence_guards_with_qlimit2(
+        order_type, bypass_guards
+    )
+    if early is not None:
+        return early
 
     if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0

@@ -47,6 +47,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     _ensure_cacheprice_classes_bound,
     _iter_t212_state_files,
     _load_venue_balances_state,
+    _resolve_now_and_read_json,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _first_variant_dict,
@@ -1572,10 +1573,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         cache_dir = cachedb_dir
-        if callable(now_ts) and read_json_fn is None:
-            read_json_fn, now_ts = now_ts, None
-        eff_now = resolve_now_ts(now_ts)
-        _rj = _resolve_read_json_cached(read_json_fn)
+        eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         out: Dict[str, Any] = {}
         retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
         if os.path.exists(retry_q_path):

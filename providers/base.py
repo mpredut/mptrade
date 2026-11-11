@@ -860,6 +860,18 @@ class MarketDataProvider(ABC):
             and (start_ms <= 0.0 or (extract_timestamp_ms(r, default=0) or 0) >= start_ms)
         ]
 
+    _REMOTE_TRADES_CLIENT_ATTR: Optional[str] = None
+
+    @classmethod
+    def fetch_remote_trades_with_client(
+        cls, symbol: str, start_time_ms: int = 0, client=None
+    ) -> Optional[List[dict]]:
+        """Fetch normalized remote fills for ``symbol`` using an injected ``client`` when compatible."""
+        req_attr = getattr(cls, "_REMOTE_TRADES_CLIENT_ATTR", None)
+        if not req_attr or client is None or not callable(getattr(client, req_attr, None)):
+            return None
+        return cls(client=client).fetch_remote_trades(symbol, start_time_ms, client=client)
+
     def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
         self.validate_symbol(symbol)

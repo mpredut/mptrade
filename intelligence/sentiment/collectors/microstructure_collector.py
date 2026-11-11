@@ -172,6 +172,14 @@ logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 _resolve_read_json_cached = resolve_read_json_cached
 
 
+def _resolve_now_and_read_json(
+    now_ts: Any = None, read_json_fn: Any = None
+) -> Tuple[float, Any]:
+    if callable(now_ts) and read_json_fn is None:
+        read_json_fn, now_ts = now_ts, None
+    return resolve_now_ts(now_ts), _resolve_read_json_cached(read_json_fn)
+
+
 def _load_venue_balances_state(
     cache_dir: Optional[str],
     read_json_fn: Any = None,
@@ -957,6 +965,7 @@ class PriceSeriesCacheCollectorBase(TelemetryCacheCollectorInterface, ABC):
         if type(self) is PriceSeriesCacheCollectorBase:
             raise TypeError("Cannot instantiate abstract class PriceSeriesCacheCollectorBase")
         super().__init__(start_sync=start_sync)
+        _ensure_cacheprice_classes_bound()
 
 
 class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
@@ -1023,10 +1032,6 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     price_365_cls: Any = None
     price_sparse_cls: Any = None
     current_price_cls: Any = None
-
-    def __init__(self, *, start_sync: bool = False) -> None:
-        super().__init__(start_sync=start_sync)
-        _ensure_cacheprice_classes_bound()
 
     def collect(
         self,
@@ -1318,8 +1323,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         m_map = microstructure if isinstance(microstructure, dict) else {}
         cp_map = cur_p_items if isinstance(cur_p_items, dict) else {}
         inst_map = inst_by_sym if isinstance(inst_by_sym, dict) else {}
-        eff_now = resolve_now_ts(now_ts)
-        _rj = _resolve_read_json_cached(read_json_fn)
+        eff_now, _rj = _resolve_now_and_read_json(now_ts, read_json_fn)
         btc_series_24h, btc_vals_7d = load_symbol_price_series(
             cachedb_dir, symbol or "BTCUSDC", current_price_items=cp_map, include_7d=True
         )

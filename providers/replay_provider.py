@@ -351,17 +351,24 @@ class ReplayMarketDataProvider(MarketDataProvider):
                 return self._positions.get(symbol, (0.0, 0.0))[0]
         return 0.0
 
-    def has_orders_since(self, symbol: str, since_s: float) -> bool:
-        """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
+    def _resolve_recent_orders_window(
+        self, symbol: str, since_s: float
+    ) -> Optional[Tuple[str, List[dict], float]]:
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
-            return False
+            return None
         sym = self._resolve_symbol(symbol)
         orders = self._orders.get(sym)
         if not orders:
-            return False
+            return None
         cutoff_ms = (self._last_ts.get(sym, 0.0) - since_val) * 1000.0
-        return orders[-1]["timestamp"] >= cutoff_ms
+        if orders[-1]["timestamp"] < cutoff_ms:
+            return None
+        return sym, orders, cutoff_ms
+
+    def has_orders_since(self, symbol: str, since_s: float) -> bool:
+        """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
+        return self._resolve_recent_orders_window(symbol, since_s) is not None
 
     def get_orders(
         self,
@@ -372,17 +379,10 @@ class ReplayMarketDataProvider(MarketDataProvider):
         authoritative: bool = False,
         publish_cache: bool = False,
     ) -> List[dict]:
-        since_val = safe_nonneg_float(since_s, default=None)
-        if since_val is None:
+        win = self._resolve_recent_orders_window(symbol, since_s)
+        if win is None:
             return []
-        sym = self._resolve_symbol(symbol)
-        orders = self._orders.get(sym)
-        if not orders:
-            return []
-        now = self._last_ts.get(sym, 0.0)
-        cutoff_ms = (now - since_val) * 1000.0
-        if orders[-1]["timestamp"] < cutoff_ms:
-            return []
+        sym, orders, cutoff_ms = win
         if isinstance(side, bool):
             return []
         side_u = normalize_side(side) if side is not None and str(side).strip() else None
