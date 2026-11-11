@@ -21,78 +21,20 @@ from botcore import (
     split_csv,
 )
 from cachepaths import cache_path, canonical_base_asset, resolve_cachedb_filepath
+from instrument_registry import is_equity_symbol, tracked_price_instruments
+from intelligence.macro_sentiment_ssot import (
+    DEFAULT_MACRO_CONFIG_PATH,
+    _cfg_float,
+    _cfg_int,
+    _cfg_ratio,
+    _cfg_str,
+    load_macro_intelligence_config,
+)
 from state_io import read_json_dict_cached, save_json_state
 
 logger = logging.getLogger(__name__)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
-
-
-def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
-    """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
-    default_path = resolve_patched_attr(
-        "DEFAULT_MACRO_CONFIG_PATH",
-        DEFAULT_MACRO_CONFIG_PATH,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
-    )
-    target = config_path or optional_env("MACRO_INTELLIGENCE_CONF") or default_path
-    try:
-        return load_ini_config(target, must_exist=False, inline_comments=True)
-    except Exception as exc:
-        logger.warning("Failed reading %s: %s", target, exc)
-        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-
-
-def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
-    loader = resolve_patched_attr(
-        "load_macro_intelligence_config",
-        load_macro_intelligence_config,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
-        require_callable=True,
-    )
-    cfg = loader(config_path)
-    return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
-
-
-def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
-        require_callable=True,
-    )
-    return safe_float(cfg_str_fn(section, key, "", config_path=config_path), fallback)
-
-
-def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
-    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
-        require_callable=True,
-    )
-    raw = cfg_str_fn(section, key, "", config_path=config_path)
-    if not raw:
-        return fallback
-    if "/" in raw:
-        num_s, den_s = raw.split("/", 1)
-        num = safe_float(num_s.strip(), None)
-        den = safe_pos_float(den_s.strip(), 0.0)
-        if num is not None and den > 0.0:
-            return float(num) / float(den)
-    return safe_float(raw, fallback)
-
-
-def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
-    cfg_str_fn = resolve_patched_attr(
-        "_cfg_str",
-        _cfg_str,
-        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", __name__),
-        require_callable=True,
-    )
-    return safe_int(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 _LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[str, ...]]] = {}
@@ -1118,8 +1060,6 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
 def _tracked_equity_base_tickers() -> List[str]:
     """Return deduplicated canonical base tickers for all tracked equity instruments."""
     try:
-        from instrument_registry import is_equity_symbol, tracked_price_instruments
-
         tickers = [
             base
             for sym in tracked_price_instruments()[0]

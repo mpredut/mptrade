@@ -9,6 +9,7 @@ Centralizes:
 """
 from __future__ import annotations
 
+import configparser
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import os
@@ -45,7 +46,16 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from intelligence.macro_sentiment_ssot import (
+    normalize_market_bias,
+    normalize_recommended_action,
+    normalize_risk_level,
+    normalize_threat_level,
+    read_first_cached_dict,
+)
+import notify_engine.alertnotifiers as _alertnotifiers
 from providers.base import extract_order_id
+from providers.intent_state import normalize_trading_decisions
 from state_io import (
     atomic_write_text,
     read_json_recovering,
@@ -309,8 +319,6 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
                     else:
                         issues.append(f"instruments.conf:{idx} malformed line: {line[:60]!r}")
             elif cfg_name == "macro_intelligence.conf":
-                import configparser
-
                 try:
                     cp = load_ini_config(cfg_path, must_exist=True)
                     for req_sec in ("feeds", "cache_files", "intervals", "taxonomies", "sessions"):
@@ -1415,10 +1423,9 @@ def send_supervisor_ntfy_http(
 ) -> bool:
     """Gate and send a supervisor ntfy push notification via HTTP POST."""
     try:
-        from notify_engine.alertnotifiers import make_bot_event_alert, pass_common_gate
-        allowed, reason, _, out_payload = pass_common_gate(
+        allowed, reason, _, out_payload = _alertnotifiers.pass_common_gate(
             "ntfy", title, body, priority, target_topic,
-            [make_bot_event_alert(title, body, "ai_supervisor")],
+            [_alertnotifiers.make_bot_event_alert(title, body, "ai_supervisor")],
             urgent=is_any_error,
         )
         if not allowed:
@@ -1431,11 +1438,8 @@ def send_supervisor_ntfy_http(
         if log:
             log.debug("Common gate fallback in reconciler: %s", e)
 
-    try:
-        from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
-    except Exception:
-        format_ntfy_url = AlertNotifier = None  # type: ignore[assignment]
-
+    format_ntfy_url = getattr(_alertnotifiers, "format_ntfy_url", None)
+    AlertNotifier = getattr(_alertnotifiers, "AlertNotifier", None)
     topic_raw = (target_topic or "").strip()
     url_raw = (ntfy_url or "").strip()
     chosen_target = topic_raw or url_raw
@@ -1531,8 +1535,6 @@ def submit_supervisor_trading_decisions(
     is_rth_open_fn: Any,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
-    from providers.intent_state import normalize_trading_decisions
-
     if not getattr(spec, "can_trade", False):
         return [], {}, [], None, False
     decisions_list = normalize_trading_decisions(plan)
@@ -1566,14 +1568,6 @@ def summarize_fleet_sensor_status(
     read_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """Load and summarize real-time risk guards and telemetry files for FleetHealthMonitor."""
-    from intelligence.macro_sentiment_ssot import (
-        normalize_market_bias,
-        normalize_recommended_action,
-        normalize_risk_level,
-        normalize_threat_level,
-        read_first_cached_dict,
-    )
-
     _rj = _resolve_repair_json_reader(read_json_fn)
     sensors: Dict[str, Any] = {}
 

@@ -19,6 +19,8 @@ from cachepaths import (
     split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
+from intelligence.internal.state import survival as _surv_mod
+from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -1102,9 +1104,6 @@ def enrich_cross_venue_trends(
             and allow_network is not False
         ):
             try:
-                from intelligence.internal.state import survival as _surv_mod
-                from intelligence.internal.state.survival import estimate_T
-
                 is_est_patched = (
                     estimate_T is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
                     or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
@@ -1125,8 +1124,6 @@ def enrich_cross_venue_trends(
             and (w_p90 := safe_pos_float(entry.get("weibull_p90_d"), default=None)) is not None
             and (cur_est_rem is None or abs(cur_est_rem - lt_h * 0.5) <= 0.15)
         ):
-            from intelligence.internal.state.survival import estimate_remaining_trend_hours
-
             entry["long_trend_est_rem_hours"] = estimate_remaining_trend_hours(
                 lt_h, median_d=w_med, p90_d=w_p90, p_cont=tt_p_cont
             )

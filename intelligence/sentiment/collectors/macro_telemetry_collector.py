@@ -7,6 +7,7 @@ import glob as _glob
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from botcore import extract_current_price_item, fetch_public_json, is_live_network_backfill_enabled
 from cachepaths import (
@@ -28,11 +29,13 @@ from intelligence.macro.lexicon_ssot import (
 from intelligence.macro_sentiment_ssot import (
     TelemetrySensorSnapshot,
     _cfg_str,
+    enrich_macro_benchmarks_live_state,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
     normalize_epoch_sec,
     read_first_cached_dict,
+    resolve_derived_telemetry_intervals,
     resolve_now_ts,
     resolve_patched_attr,
     resolve_read_json_cached,
@@ -44,6 +47,7 @@ from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
 )
+from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 import intelligence.sentiment.collectors.microstructure_collector as _mc
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
@@ -514,8 +518,6 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                                         is_stale_us_bar = True
                                     elif bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
                                         try:
-                                            from zoneinfo import ZoneInfo
-
                                             dt_ny = datetime.fromtimestamp(now_ts, tz=ZoneInfo("America/New_York"))
                                             mins_ny = dt_ny.hour * 60 + dt_ny.minute
                                             if dt_ny.weekday() >= 5 or not (570 <= mins_ny <= 1005):
@@ -534,8 +536,6 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                             else:
                                 enriched_items[mb_k] = mb_v
                         enriched["items"] = enriched_items
-                    from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
-
                     enriched = enrich_macro_benchmarks_live_state(
                         enriched,
                         cache_dir=cache_dir,
@@ -544,8 +544,6 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     ) or enriched
                 macro_sensors[attr] = enriched
         if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
-            from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
-
             stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
             mb_cur = macro_sensors.get("market_breadth")
             mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
@@ -559,8 +557,6 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             )
             if mb_cur is None or mb_age is None or mb_age > stale_age_min or mb_missing_rot:
                 try:
-                    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-
                     breadth_snap = MarketBreadthCollector(cache_ttl_sec=60.0).fetch(force_refresh=True, now_ts=now_ts)
                     if breadth_snap is not None:
                         raw_gainers = getattr(breadth_snap, "top_gainers", None) or ()

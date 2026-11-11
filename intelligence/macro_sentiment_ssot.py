@@ -13,6 +13,8 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import configparser
+import importlib
 import logging
 import os
 import re
@@ -94,14 +96,36 @@ from botcore import (
 )
 
 
+_LEXICON_DELEGATED_ATTRS = frozenset({
+    "_get_crisis_stems_set",
+    "_get_seed_terms_set",
+    "_get_stopwords_set",
+    "_is_excluded_non_crisis_attack_keyword",
+    "_is_noise_dynamic_keyword",
+    "filter_valid_severity_keywords",
+    "headlines_are_semantic_duplicates",
+    "is_excluded_reference_news_item",
+})
+
+
+def _lex_attr(name: str) -> Any:
+    if name in globals():
+        return globals()[name]
+    return getattr(importlib.import_module("intelligence.macro.lexicon_ssot"), name)
+
+
 def __getattr__(name: str) -> Any:
     if name == "fetch_public_json":
         return _botcore.fetch_public_json
+    if name in _LEXICON_DELEGATED_ATTRS:
+        return getattr(importlib.import_module("intelligence.macro.lexicon_ssot"), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> List[str]:
-    return sorted({*globals(), "fetch_public_json"})
+    return sorted({*globals(), "fetch_public_json", *_LEXICON_DELEGATED_ATTRS})
+
+
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -109,21 +133,7 @@ from cachepaths import (
     clean_symbol_key,
     compatible_quote_suffixes,
 )
-from instrument_registry import casefold_get
-from intelligence.macro.lexicon_ssot import (
-    _cfg_float,
-    _cfg_int,
-    _cfg_ratio,
-    _cfg_str,
-    _get_crisis_stems_set,
-    _get_seed_terms_set,
-    _get_stopwords_set,
-    _is_excluded_non_crisis_attack_keyword,
-    _is_noise_dynamic_keyword,
-    filter_valid_severity_keywords,
-    headlines_are_semantic_duplicates,
-    is_excluded_reference_news_item,
-)
+from instrument_registry import casefold_get, symbols_for
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -143,13 +153,180 @@ logger = logging.getLogger(__name__)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_CACHEDB_DIR = os.path.abspath(os.path.join(_ROOT_DIR, "cachedb"))
+DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
 DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
 _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
+
+
+def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
+    """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
+    default_path = resolve_patched_attr(
+        "DEFAULT_MACRO_CONFIG_PATH",
+        DEFAULT_MACRO_CONFIG_PATH,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+    )
+    target = config_path or os.environ.get("MACRO_INTELLIGENCE_CONF") or default_path
+    try:
+        return load_ini_config(target, must_exist=False, inline_comments=True)
+    except Exception as exc:
+        logger.warning("Failed reading %s: %s", target, exc)
+        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+
+
+def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
+    loader = resolve_patched_attr(
+        "load_macro_intelligence_config",
+        load_macro_intelligence_config,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+        require_callable=True,
+    )
+    cfg = loader(config_path)
+    return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
+
+
+def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+        require_callable=True,
+    )
+    return safe_float(cfg_str_fn(section, key, "", config_path=config_path), fallback)
+
+
+def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+        require_callable=True,
+    )
+    raw = cfg_str_fn(section, key, "", config_path=config_path)
+    if not raw:
+        return fallback
+    if "/" in raw:
+        num_s, den_s = raw.split("/", 1)
+        num = safe_float(num_s.strip(), None)
+        den = safe_pos_float(den_s.strip(), 0.0)
+        if num is not None and den > 0.0:
+            return float(num) / float(den)
+    return safe_float(raw, fallback)
+
+
+def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
+    cfg_str_fn = resolve_patched_attr(
+        "_cfg_str",
+        _cfg_str,
+        modules=("intelligence.macro_sentiment_ssot", "macro_sentiment_ssot", "intelligence.macro.lexicon_ssot"),
+        require_callable=True,
+    )
+    return safe_int(cfg_str_fn(section, key, "", config_path=config_path), fallback)
 
 
 # ============================================================================
 # 0. Universal Coercion, Cache Freshness, Attribute & Daemon Primitives
 # ============================================================================
+
+
+def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
+    if not isinstance(row, (list, tuple)) or len(row) < 2:
+        return None
+    tf, pf = safe_pos_float(row[0], 0.0), safe_pos_float(row[1], 0.0)
+    return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
+
+
+_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any, Any], List[Tuple[float, float]]] = {}
+
+
+def _row_memo_token(row: Any) -> Any:
+    if isinstance(row, (list, tuple)):
+        return (row[0], row[1]) if len(row) >= 2 else tuple(row)
+    return row
+
+
+def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any, Any]]:
+    if not isinstance(series, list) or not series:
+        return None
+    cand = (
+        id(series),
+        len(series),
+        _row_memo_token(series[0]),
+        _row_memo_token(series[len(series) // 2]),
+        _row_memo_token(series[-1]),
+    )
+    try:
+        hash(cand)
+        return cand
+    except TypeError:
+        return None
+
+
+def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
+    if not isinstance(series, list) or not series:
+        return []
+    mkey = _series_memo_key(series)
+    if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
+        return cached
+    pts_vol: List[Tuple[float, float, Optional[float]]] = []
+    prev_t = -1.0
+    is_sorted = True
+    has_pos_vol = False
+    for row in series:
+        if (pt := _parse_ts_px_row(row)) is not None:
+            if pt[0] < prev_t:
+                is_sorted = False
+            prev_t = pt[0]
+            vol_v: Optional[float] = None
+            if isinstance(row, (list, tuple)) and len(row) >= 3:
+                vol_v = safe_float(row[2], default=None)
+                if vol_v is not None and vol_v > 0.0:
+                    has_pos_vol = True
+            pts_vol.append((pt[0], pt[1], vol_v))
+    if not is_sorted:
+        pts_vol.sort(key=lambda x: x[0])
+    if has_pos_vol and len(pts_vol) >= 3:
+        pts: List[Tuple[float, float]] = [(pts_vol[0][0], pts_vol[0][1])]
+        for idx in range(1, len(pts_vol) - 1):
+            t_cur, p_cur, v_cur = pts_vol[idx]
+            if v_cur is None or v_cur <= 0.0:
+                next_idx = idx + 1
+                while (
+                    next_idx < len(pts_vol) - 1
+                    and (pts_vol[next_idx][2] is None or pts_vol[next_idx][2] <= 0.0)
+                    and abs(pts_vol[next_idx][1] - p_cur) <= 1e-9
+                ):
+                    next_idx += 1
+                p_prev, p_next = pts[-1][1], pts_vol[next_idx][1]
+                if (
+                    min(p_prev, p_next, p_cur) > 0.0
+                    and abs(p_cur - p_prev) / p_prev > 0.025
+                    and abs(p_cur - p_next) / p_next > 0.025
+                    and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
+                ):
+                    continue
+            pts.append((t_cur, p_cur))
+        pts.append((pts_vol[-1][0], pts_vol[-1][1]))
+    else:
+        pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
+    if (
+        len(pts) >= 10
+        and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
+        and abs(pts[-1][1] - pts[-2][1]) <= 1e-9
+        and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
+    ):
+        pts.pop()
+    if mkey is not None:
+        if len(_SORTED_TS_PX_MEMO) >= 32:
+            _SORTED_TS_PX_MEMO.clear()
+        _SORTED_TS_PX_MEMO[mkey] = pts
+    return pts
+
+
+def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
+    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
+    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
+    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
 
 
 def extract_high_severity_headlines_and_digest(
@@ -163,6 +340,14 @@ def extract_high_severity_headlines_and_digest(
     raw_hl = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
     high_sev: List[Any] = []
     if isinstance(raw_hl, (list, tuple)):
+        is_excluded_ref = _lex_attr("is_excluded_reference_news_item")
+        filter_valid_kws = _lex_attr("filter_valid_severity_keywords")
+        get_crisis_stems = _lex_attr("_get_crisis_stems_set")
+        get_seed_terms = _lex_attr("_get_seed_terms_set")
+        get_stopwords = _lex_attr("_get_stopwords_set")
+        is_excluded_attack = _lex_attr("_is_excluded_non_crisis_attack_keyword")
+        is_noise_dyn = _lex_attr("_is_noise_dynamic_keyword")
+        are_sem_dups = _lex_attr("headlines_are_semantic_duplicates")
         kept_titles: List[str] = []
         for h in raw_hl:
             if not _parse_bool_flag(obj_attr(h, "is_high_severity", False), False):
@@ -170,7 +355,7 @@ def extract_high_severity_headlines_and_digest(
             title_s = str(obj_attr(h, "title", None) or "").strip()
             src_s = str(obj_attr(h, "source", None) or "").strip()
             url_s = str(obj_attr(h, "url", None) or obj_attr(h, "link", None) or "").strip()
-            if is_excluded_reference_news_item(title_s, src_s, url_s):
+            if is_excluded_ref(title_s, src_s, url_s):
                 continue
             raw_kws = obj_attr(h, "matched_keywords", None)
             if isinstance(raw_kws, (list, tuple)) and raw_kws and title_s:
@@ -179,21 +364,21 @@ def extract_high_severity_headlines_and_digest(
                     for k in raw_kws
                     if isinstance(k, str) and k.strip()
                 ]
-                if clean_kws and not filter_valid_severity_keywords(
+                if clean_kws and not filter_valid_kws(
                     raw_kws, title=title_s, cache_dir=cache_dir, now_ts=now_ts
                 ):
                     title_words = set(re.findall(r"[a-zA-Z]{3,}", title_s.lower()))
-                    crisis_stems = _get_crisis_stems_set()
-                    seed_set = _get_seed_terms_set()
-                    sw = _get_stopwords_set()
+                    crisis_stems = get_crisis_stems()
+                    seed_set = get_seed_terms()
+                    sw = get_stopwords()
                     if all(
-                        _is_excluded_non_crisis_attack_keyword(kc, title_words, crisis_stems)
-                        or (kc not in seed_set and _is_noise_dynamic_keyword(kc, sw))
+                        is_excluded_attack(kc, title_words, crisis_stems)
+                        or (kc not in seed_set and is_noise_dyn(kc, sw))
                         for kc in clean_kws
                     ):
                         continue
             if title_s and any(
-                title_s.lower() == kt.lower() or headlines_are_semantic_duplicates(title_s, kt)
+                title_s.lower() == kt.lower() or are_sem_dups(title_s, kt)
                 for kt in kept_titles
             ):
                 continue
@@ -233,9 +418,10 @@ def has_new_acute_shock_headline(
     phrases = [p.strip().lower() for p in active_acute_phrases if isinstance(p, str) and p.strip()]
     if not phrases:
         return False
+    are_sem_dups = _lex_attr("headlines_are_semantic_duplicates")
     return any(
         (t_h := str(obj_attr(h, "title", None) or "").strip())
-        and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in titles)
+        and not any(are_sem_dups(t_h, pt) for pt in titles)
         and any(phrase in t_h.lower() and phrase not in prev_lower for phrase in phrases)
         for h in high_sev[:max_items]
     )
@@ -407,8 +593,6 @@ def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
 def get_breadth_excluded_bases() -> Set[str]:
     out = set(_tax_tuple("breadth_excluded_bases"))
     try:
-        from instrument_registry import symbols_for
-
         for eq_sym in symbols_for("t212"):
             eq_base = str(eq_sym or "").strip().upper().split("_", 1)[0]
             if eq_base:
@@ -978,6 +1162,21 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
             parts.append(f"{lbl}({', '.join(opt_parts)})")
     return " | ".join(parts)
+
+
+def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -> str:
+    """Format the US Equity & Cross-Asset Macro quantitative benchmarks line."""
+    if not isinstance(data, dict) or not data:
+        return "NEUTRAL"
+    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
+    if bench_s:
+        return bench_s
+    regime = str(data.get("equity_regime") or "").strip().upper()
+    if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
+        regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
+    ):
+        regime = compute_equity_macro_regime(data)
+    return regime
 
 
 def _resolve_cached_btc_24h_chg_ssot(cache_dir: str) -> Optional[float]:

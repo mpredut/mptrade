@@ -32,7 +32,9 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
+from providers import order_id_context as rc
 from providers.base import MarketDataProvider
+from providers.execution_audit import ExecutionAudit, find_order_audit_record
 from providers.order_ohlc_utils import extract_order_id, extract_orig_qty, resolve_order_actor
 from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
@@ -787,7 +789,6 @@ def infer_record_owner(rec: dict) -> str:
     )
     if cid:
         try:
-            from providers import order_id_context as rc
             owner = rc.resolve_order_owner(cid)
         except Exception:
             owner = "unspecified"
@@ -796,7 +797,6 @@ def infer_record_owner(rec: dict) -> str:
     iid = _clean_str(rec.get("intent_id"))
     if iid:
         try:
-            from providers import order_id_context as rc
             iid_owner = rc.resolve_order_owner(iid)
             if _is_concrete_owner(iid_owner):
                 return iid_owner
@@ -857,7 +857,6 @@ def resolve_tracked_order_owner(
     owner = "unspecified"
     if cid_str:
         try:
-            from providers import order_id_context as rc
             owner = rc.resolve_order_owner(cid_str)
         except Exception:
             owner = "unspecified"
@@ -871,7 +870,6 @@ def resolve_tracked_order_owner(
                 return mapped
     if oid_str or cid_str:
         try:
-            from providers.execution_audit import find_order_audit_record
             audit_rec = find_order_audit_record(
                 oid_str, cid_str, symbol=symbol, event_ts_s=event_ts_s, audit_dir=audit_dir
             )
@@ -1219,8 +1217,6 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     )
     if removed_records:
         try:
-            from providers.execution_audit import ExecutionAudit
-
             audit = ExecutionAudit()
             for rec in removed_records:
                 rec_pk = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}

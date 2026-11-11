@@ -31,6 +31,7 @@ diverges is moved into ~/agy_store_fix_backups/<timestamp>/ instead of being ove
 from __future__ import annotations
 
 import collections
+from datetime import datetime, timezone
 import fcntl
 import glob
 import hashlib
@@ -48,6 +49,7 @@ if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with 
     sys.path.insert(0, _ROOT_DIR)
 
 from botcore import TOPIC_SPECS, _parse_bool_flag, safe_nonneg_int, safe_pos_float
+from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
 from state_io import (  # noqa: E402
     atomic_write_bytes,
     discard_generation_file,
@@ -673,7 +675,6 @@ def _glog_rel_ts(line: str) -> float | None:
     if not m:
         return None
     try:
-        from datetime import datetime, timezone
         mo, dy, hh, mm, ss, us_raw = m.groups()
         us = int((us_raw or "0")[:6].ljust(6, "0"))
         return datetime(2024, int(mo), int(dy), int(hh), int(mm), int(ss), us, tzinfo=timezone.utc).timestamp()
@@ -803,7 +804,6 @@ def last_store_activity() -> float:
             brain_cids = os.listdir(brain)
         except OSError:
             brain_cids = []
-        from datetime import datetime
         for cid in brain_cids:
             if cid in ignored:
                 continue
@@ -1082,7 +1082,6 @@ def main(argv) -> int:
             if mode in ("ui-sync-check", "active-check"):
                 if _ROOT_DIR not in sys.path:
                     sys.path.insert(0, _ROOT_DIR)
-                from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
                 ssot_itvs = resolve_derived_telemetry_intervals()
                 idle_arg: object = ssot_itvs.get("ui_sync_idle_sec", 120.0)
                 if "--idle-sec" in argv and argv.index("--idle-sec") + 1 < len(argv):

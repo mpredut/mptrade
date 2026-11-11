@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import importlib
 import logging
 from typing import Any, Dict, Optional
 
@@ -21,8 +22,10 @@ from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,
+    format_equity_macro_regime_line,
     get_cache_filenames,
     has_new_acute_shock_headline,
+    load_cached_macro_benchmarks,
     normalize_recommended_brake,
     normalize_threat_level,
     obj_attr,
@@ -30,7 +33,8 @@ from intelligence.macro_sentiment_ssot import (
     safe_int,
     split_headlines_digest,
 )
-from intelligence.sentiment.gemini_client import GeminiClient
+
+GeminiClient = importlib.import_module("intelligence.sentiment.gemini_client").GeminiClient
 
 load_dotenv()
 
@@ -366,9 +370,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         )
         market_reaction_line = ""
         try:
-            from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks
-            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_equity_macro_regime_line
-
             if isinstance(mb_geo := load_cached_macro_benchmarks(state_cache_dir), dict) and mb_geo:
                 eq_macro_s = format_equity_macro_regime_line(mb_geo)
                 if eq_macro_s and eq_macro_s != "NEUTRAL":

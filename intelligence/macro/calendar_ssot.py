@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+import importlib
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
@@ -716,7 +717,9 @@ def compute_dynamic_sentiment_interval(
             if cur_tr >= 1.40:
                 return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
     if isinstance(macro_benchmarks, dict) and macro_benchmarks and cached_assessment is not None:
-        from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorFactory
+        TelemetryEvaluatorFactory = importlib.import_module(
+            "intelligence.sentiment.evaluators.price_series_evaluator"
+        ).TelemetryEvaluatorFactory
 
         cached_txt = (
             f"{obj_attr(cached_assessment, 'summary', '') or ''} "
@@ -800,7 +803,7 @@ def headline_effective_ts(h: Any, now: float) -> float:
         0.0,
     )
     if ts_val <= 0.0:
-        from intelligence.macro.news_feed_collector import NewsFeedCollector
+        NewsFeedCollector = importlib.import_module("intelligence.macro.news_feed_collector").NewsFeedCollector
 
         pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
         ts_val = pub_ts if pub_ts is not None else 0.0

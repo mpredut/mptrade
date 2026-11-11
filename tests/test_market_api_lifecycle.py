@@ -590,12 +590,18 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         mod_name = ".".join(rel.parts).removesuffix(".py").removesuffix(".__init__")
         all_mods[mod_name] = rel
 
+    def _subpkg_id(mod: str) -> str:
+        parts = mod.split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+
     pkg_edges = defaultdict(set)
+    subpkg_edges = defaultdict(set)
     mod_edges = defaultdict(set)
     offline_imports = []
     for mod_name, rel in sorted(all_mods.items()):
         p = root / rel
         src_top = rel.parts[0].removesuffix(".py")
+        src_subpkg = _subpkg_id(mod_name)
         pkg_parts = rel.parts[:-1]
         try:
             tree = ast.parse(p.read_text(encoding="utf-8"))
@@ -643,6 +649,9 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                     if cand in all_mods:
                         if cand != mod_name:
                             mod_edges[mod_name].add(cand)
+                        t_subpkg = _subpkg_id(cand)
+                        if t_subpkg != src_subpkg:
+                            subpkg_edges[src_subpkg].add(t_subpkg)
                         break
 
     assert not offline_imports, f"Upward/sideways offline.* imports in production modules: {offline_imports}"
@@ -685,6 +694,7 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
         return sccs
 
     assert _find_sccs(pkg_edges) == [], f"Top-level package SCC cycle detected: {_find_sccs(pkg_edges)}"
+    assert _find_sccs(subpkg_edges) == [], f"Subpackage-level SCC cycle detected: {_find_sccs(subpkg_edges)}"
     assert _find_sccs(mod_edges) == [], f"Module-level SCC cycle detected: {_find_sccs(mod_edges)}"
 
 

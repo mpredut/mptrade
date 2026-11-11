@@ -5,6 +5,7 @@ from dataclasses import asdict
 import importlib
 import logging
 import os
+import signal as _signal
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -37,6 +38,12 @@ from instrument_registry import (
     discover_hyperliquid_spot,
     is_equity_symbol,
     tracked_price_instruments,
+)
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+from intelligence.macro.lexicon_ssot import (
+    record_dynamic_crisis_terms_from_assessment as _default_record_crisis_terms,
 )
 from state_io import (
     atomic_write_json as _default_atomic_write_json,
@@ -346,8 +353,6 @@ def run_daemon_loop(
     reraise_initial_exit: bool = False,
 ) -> None:
     """Run a standard signal-handled intelligence daemon poll loop."""
-    import signal as _signal
-
     log = logger_inst or logger
     poll_sec = safe_pos_float(poll_interval_sec, default_poll_sec)
     daemon_obj.running = True
@@ -440,10 +445,6 @@ class ExternalTelemetryMixin:
     _telemetry_logger: logging.Logger
 
     def _init_external_collectors(self, logger_inst: logging.Logger) -> None:
-        from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
-        from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-        from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
-
         self._telemetry_logger = logger_inst
         ob_ttl = max(5.0, self.orderbook_interval_sec * 0.8)
         deriv_ttl = max(10.0, self.derivatives_interval_sec * 0.8)
@@ -714,7 +715,7 @@ class CachedTopicAssessmentAgent:
         subtitle: Optional[str] = None,
         timeout_sec: float = 120.0,
     ) -> Optional[Dict[str, Any]]:
-        from intelligence.sentiment.gemini_client import query_topic_json as _default_query_topic_json
+        _default_query_topic_json = importlib.import_module("intelligence.sentiment.gemini_client").query_topic_json
 
         _query_fn = _resolve_daemon_helper(
             "query_topic_json", _default_query_topic_json, _default_query_topic_json, self.__class__.__module__
@@ -738,10 +739,6 @@ class CachedTopicAssessmentAgent:
         is_acute_shock: bool = False,
     ) -> Any:
         if record_crisis_terms and (crisis_summary or crisis_items):
-            from intelligence.macro.lexicon_ssot import (
-                record_dynamic_crisis_terms_from_assessment as _default_record_crisis_terms,
-            )
-
             _record_fn = _resolve_daemon_helper(
                 "record_dynamic_crisis_terms_from_assessment",
                 _default_record_crisis_terms,

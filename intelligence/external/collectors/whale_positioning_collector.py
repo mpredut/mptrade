@@ -31,7 +31,11 @@ from intelligence.external.collectors.base_collector import (
     is_cache_fresh,
     read_json_dict,  # noqa: F401
 )
-from intelligence.macro_sentiment_ssot import fetch_public_json, resolve_now_ts
+from intelligence.macro_sentiment_ssot import (
+    _extract_sorted_ts_px,
+    fetch_public_json,
+    resolve_now_ts,
+)
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -114,8 +118,6 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return 0.0
         try:
-            from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
-
             series_24h, _ = TelemetryCollectorFactory.get_price_series_loader().collect(
                 cache_dir, symbol.upper(), include_7d=False
             )

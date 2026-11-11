@@ -13,10 +13,11 @@ from abc import ABC, abstractmethod
 import importlib
 import logging
 import os
+import re
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
-import urllib.parse as _urlparse
+import urllib.parse
 
 from botcore import (
     _parse_bool_flag,
@@ -37,6 +38,7 @@ from cachepaths import (
     resolve_cache_dir_path,
     telemetry_cache_file_path,
 )
+import instrument_registry as _ir
 from instrument_registry import is_equity_symbol, is_symbol_market_open, venue_for_symbol
 from intelligence.macro_sentiment_ssot import (
     _require_feed_csv,
@@ -57,8 +59,6 @@ _REGISTRY_SPECS_CACHE: Tuple[float, Tuple[Any, ...]] = (0.0, ())
 def _cached_registry_specs() -> Tuple[Any, ...]:
     """Return InstrumentSpec items from ``instrument_registry.load_registry()``, cached by file mtime."""
     global _REGISTRY_SPECS_CACHE
-    import instrument_registry as _ir
-
     load_fn = getattr(_ir, "load_registry", None)
     if not callable(load_fn):
         return ()
@@ -216,9 +216,7 @@ class TelemetryCacheCollectorInterface(ABC):
 
     @staticmethod
     def resolve_session_policy(symbol: str) -> Any:
-        from intelligence.sentiment.evaluators.price_series_evaluator import resolve_asset_session_policy
-
-        return resolve_asset_session_policy(symbol)
+        return importlib.import_module("intelligence.sentiment.evaluators.price_series_evaluator").resolve_asset_session_policy(symbol)
 
     @abstractmethod
     def collect(self, cachedb_dir: str, symbol: str = "", **kwargs: Any) -> Any:
@@ -524,9 +522,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         if not (p_exact := telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, sym_clean)):
             return
         try:
-            import os as _os
-
-            if not _os.path.isfile(p_exact):
+            if not os.path.isfile(p_exact):
                 return
             cur_d = self._read_disk_json(p_exact)
             cur_ts = safe_pos_float(cur_d.get("ts") if isinstance(cur_d, dict) else None, default=0.0) or 0.0
@@ -645,7 +641,11 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
         is_hl_info = isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?")
         if fetch_fn is _ORIG_MODULE_FNS["fetch_public_json"] and is_hl_info:
+<<<<<<< HEAD
             q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
+=======
+            q_params: Dict[str, Any] = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+>>>>>>> f9b8738b (refactor(intelligence,orchestratorOS,providers): enforce 0 subpackage SCCs and hoist downward local imports)
             for int_k in ("nSigFigs", "mantissa"):
                 if (int_v := exact_int(q_params.get(int_k), default=None)) is not None:
                     q_params[int_k] = int_v
@@ -735,8 +735,6 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         opt_memo_ttl: float = 60.0,
         no_options_ttl: float = 1800.0,
     ) -> None:
-        import re as _re
-
         cached_opt = self._EQUITY_OPTIONS_MEMO.get(ticker)
         if cached_opt is not None and 0.0 <= (now - cached_opt[0]) < opt_memo_ttl:
             c_oi, p_oi, c_vol, p_vol = cached_opt[1]
@@ -749,7 +747,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         put_vol = 0.0
         no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
         if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
-            opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
+            opt_rx = re.compile(r"\d{6}([CP])\d{8}$")
             cboe_paths = (
                 (f"_{ticker}.json", f"{ticker}.json")
                 if ticker in _require_feed_csv("cboe_index_tickers")
@@ -854,9 +852,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         daily_vol_sh = 0.0
 
         # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
-        import urllib.parse as _urlparse
-
-        q_ticker = _urlparse.quote(str(ticker or "").strip())
+        q_ticker = urllib.parse.quote(str(ticker or "").strip())
         try:
             nq = self._fetch_json_dict(
                 _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=q_ticker),

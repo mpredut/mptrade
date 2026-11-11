@@ -21,6 +21,7 @@ from intelligence.macro_sentiment_ssot import (
     compute_cross_asset_regime as _ssot_compute_cross_asset_regime,
     compute_equity_macro_regime as _ssot_compute_equity_macro_regime,
     compute_futures_premarket_lead as _ssot_compute_futures_premarket_lead,
+    format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
@@ -52,21 +53,6 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
         for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
     ),
 })
-
-
-def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -> str:
-    """Format the US Equity & Cross-Asset Macro quantitative benchmarks line."""
-    if not isinstance(data, dict) or not data:
-        return "NEUTRAL"
-    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
-    if bench_s:
-        return bench_s
-    regime = str(data.get("equity_regime") or "").strip().upper()
-    if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
-        regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
-    ):
-        regime = compute_equity_macro_regime(data)
-    return regime
 
 
 def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_items: Any) -> Dict[str, float]:

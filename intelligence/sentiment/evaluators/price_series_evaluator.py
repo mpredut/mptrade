@@ -13,11 +13,18 @@ from botcore import (
     is_offline_disk_cache_enabled,
     safe_nonneg_float,
 )
+from pricewindow import KalmanTrend as _DefaultKalmanTrend
 from cachepaths import cache_path, canonical_base_asset
-from instrument_registry import is_equity_symbol
+from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.internal.guards.guard_decision import OrderGuardEvaluatorFactory
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.macro_sentiment_ssot import (
+    _SORTED_TS_PX_MEMO,
+    _extract_sorted_ts_px,
+    _parse_ts_px_row,
+    _prices_diverged,
+    _row_memo_token,
+    _series_memo_key,
     normalize_epoch_sec,
     safe_float,
     safe_pos_float,
@@ -40,105 +47,7 @@ def _auto_px_decimals(px: float, decimals: Optional[int] = None) -> int:
     return decimals if decimals is not None else (2 if px >= 100.0 else (4 if px >= 1.0 else 6))
 
 
-def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
-    if not isinstance(row, (list, tuple)) or len(row) < 2:
-        return None
-    tf, pf = safe_pos_float(row[0], 0.0), safe_pos_float(row[1], 0.0)
-    return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
-
-
-_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any, Any], List[Tuple[float, float]]] = {}
 _BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any, Any], Dict[int, float]] = {}
-
-
-def _row_memo_token(row: Any) -> Any:
-    if isinstance(row, (list, tuple)):
-        return (row[0], row[1]) if len(row) >= 2 else tuple(row)
-    return row
-
-
-def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any, Any]]:
-    if not isinstance(series, list) or not series:
-        return None
-    cand = (
-        id(series),
-        len(series),
-        _row_memo_token(series[0]),
-        _row_memo_token(series[len(series) // 2]),
-        _row_memo_token(series[-1]),
-    )
-    try:
-        hash(cand)
-        return cand
-    except TypeError:
-        return None
-
-
-def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
-    if not isinstance(series, list) or not series:
-        return []
-    mkey = _series_memo_key(series)
-    if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
-        return cached
-    pts_vol: List[Tuple[float, float, Optional[float]]] = []
-    prev_t = -1.0
-    is_sorted = True
-    has_pos_vol = False
-    for row in series:
-        if (pt := _parse_ts_px_row(row)) is not None:
-            if pt[0] < prev_t:
-                is_sorted = False
-            prev_t = pt[0]
-            vol_v: Optional[float] = None
-            if isinstance(row, (list, tuple)) and len(row) >= 3:
-                vol_v = safe_float(row[2], default=None)
-                if vol_v is not None and vol_v > 0.0:
-                    has_pos_vol = True
-            pts_vol.append((pt[0], pt[1], vol_v))
-    if not is_sorted:
-        pts_vol.sort(key=lambda x: x[0])
-    if has_pos_vol and len(pts_vol) >= 3:
-        pts: List[Tuple[float, float]] = [(pts_vol[0][0], pts_vol[0][1])]
-        for idx in range(1, len(pts_vol) - 1):
-            t_cur, p_cur, v_cur = pts_vol[idx]
-            if v_cur is None or v_cur <= 0.0:
-                next_idx = idx + 1
-                while (
-                    next_idx < len(pts_vol) - 1
-                    and (pts_vol[next_idx][2] is None or pts_vol[next_idx][2] <= 0.0)
-                    and abs(pts_vol[next_idx][1] - p_cur) <= 1e-9
-                ):
-                    next_idx += 1
-                p_prev, p_next = pts[-1][1], pts_vol[next_idx][1]
-                if (
-                    min(p_prev, p_next, p_cur) > 0.0
-                    and abs(p_cur - p_prev) / p_prev > 0.025
-                    and abs(p_cur - p_next) / p_next > 0.025
-                    and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
-                ):
-                    continue
-            pts.append((t_cur, p_cur))
-        pts.append((pts_vol[-1][0], pts_vol[-1][1]))
-    else:
-        pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
-    if (
-        len(pts) >= 10
-        and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
-        and abs(pts[-1][1] - pts[-2][1]) <= 1e-9
-        and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
-    ):
-        pts.pop()
-    if mkey is not None:
-        if len(_SORTED_TS_PX_MEMO) >= 32:
-            _SORTED_TS_PX_MEMO.clear()
-        _SORTED_TS_PX_MEMO[mkey] = pts
-    return pts
-
-
-def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
-    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
-    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
-    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
 
 
 def pct_delta(cur_px: float, ref_px: float, decimals: int = 2) -> float:
@@ -904,14 +813,9 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
         subsampled = pts[-min(len(pts), 30) :]
     if len(subsampled) < 5:
         return None
-    kalman_cls = KalmanTrend
+    kalman_cls = KalmanTrend if KalmanTrend is not None else _DefaultKalmanTrend
     if kalman_cls is None:
-        try:
-            from intelligence.internal.triggers.kalman_trigger import KalmanTrend as _KalmanTrend
-
-            kalman_cls = _KalmanTrend
-        except Exception:
-            return None
+        return None
     kf = kalman_cls(gap_reset_sec=7200.0)
     fed: List[float] = []
     last_out: Optional[Dict[str, Any]] = None
@@ -1574,9 +1478,8 @@ def strip_off_rth_flat_poller_tail(rows: list, symbol: str, *, is_market_open_fn
             rth_open_at_last = False
             if gap_after_anchor_ms <= 20 * 60 * 1000:
                 try:
-                    if is_market_open_fn is None:
-                        from instrument_registry import is_symbol_market_open as is_market_open_fn
-                    rth_open_at_last = bool(is_market_open_fn(symbol, last_pt[0] / 1000.0))
+                    eff_open_fn = is_symbol_market_open if is_market_open_fn is None else is_market_open_fn
+                    rth_open_at_last = bool(eff_open_fn(symbol, last_pt[0] / 1000.0))
                 except Exception:
                     rth_open_at_last = False
             if not rth_open_at_last or gap_after_anchor_ms > 20 * 60 * 1000:

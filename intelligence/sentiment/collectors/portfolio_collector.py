@@ -66,6 +66,8 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
+from instrument_registry import casefold_get
+import order_retry as _oq
 from providers.base import (
     MarketDataProvider,
     extract_order_id,
@@ -746,8 +748,6 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         persist: bool = True,
         **kwargs: Any,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
-        from instrument_registry import casefold_get
-
         inst_map = inst_map or {}
         prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
         trailing_map = trailing_map or {}
@@ -1110,8 +1110,6 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
         read_json_fn: Any = None,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
-        from instrument_registry import casefold_get
-
         _rj = _resolve_read_json_cached(read_json_fn)
         loaded_intents = _load_cached_ai_intents_list(cachedb_dir, _rj)
         known_ai_oids = collect_known_ai_order_ids(loaded_intents)
@@ -1560,10 +1558,6 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
         out: Dict[str, Any] = {}
         retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
         if os.path.exists(retry_q_path):
-            try:
-                import order_retry as _oq
-            except Exception:
-                _oq = None
             terminal_ai_intent_ids: set[str] = set()
             for it in _load_cached_ai_intents_list(cache_dir, _rj):
                 st_u = str(it.get("status") or "").strip().upper()

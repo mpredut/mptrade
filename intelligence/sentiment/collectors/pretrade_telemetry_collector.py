@@ -29,6 +29,7 @@ from cachepaths import (
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    enrich_macro_benchmarks_live_state,
     normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
@@ -40,6 +41,9 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.external.collectors.base_collector import (
     TelemetryCacheCollectorInterface,
     TelemetryCollectorFactory,
+    get_derivatives_collector,
+    get_orderbook_collector,
+    get_whale_collector,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     _EQ_YAHOO_CHART_MEMO,
@@ -556,8 +560,6 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
         f_snap = None
         w_snap = None
         try:
-            from intelligence.external.collectors.base_collector import get_orderbook_collector
-
             ob_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_orderbook_collector, CACHE_ORDERBOOK_DEPTH_PREFIX, sym_variants, quote_variants, _rj
             )
@@ -605,8 +607,6 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             pass
 
         try:
-            from intelligence.external.collectors.base_collector import get_derivatives_collector
-
             f_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj
             )
@@ -621,8 +621,6 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
             pass
 
         try:
-            from intelligence.external.collectors.base_collector import get_whale_collector
-
             w_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj
             )
@@ -1844,8 +1842,6 @@ class MacroPillarsStage(PretradePillarCollectorBase):
                 )[0],
                 dict,
             ):
-                from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
-
                 btc_chg_24h_live: Optional[float] = None
                 if not ctx.is_eq_sym and canonical_base_asset(ctx.symbol) == "BTC":
                     btc_chg_24h_live = safe_float(ctx.m24.get("chg_24h_pct"), default=None)
