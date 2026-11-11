@@ -42,7 +42,7 @@ _LIVE_FETCH_LOCAL = threading.local()
 @contextlib.contextmanager
 def live_price_fetch_context():
     """Mark the current thread as performing a live venue price poll for cacheManager."""
-    depth = int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0)
+    depth = safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0)
     _LIVE_FETCH_LOCAL.depth = depth + 1
     try:
         yield
@@ -52,7 +52,7 @@ def live_price_fetch_context():
 
 def is_in_live_price_fetch() -> bool:
     """Return True when called inside a cacheManager remote price poll."""
-    return int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0) > 0
+    return safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0) > 0
 
 
 from .order_ohlc_utils import (  # noqa: E402, F401

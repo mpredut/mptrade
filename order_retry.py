@@ -35,7 +35,7 @@ from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cache
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import extract_order_id, extract_orig_qty, resolve_order_actor
 from providers.strategy_executor import OrderStatus
-from state_io import atomic_write_jsonl, parse_json_payload, read_text_file, read_text_lines
+from state_io import atomic_write_jsonl, parse_json_payload, parse_proc_stat_fields, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv()
@@ -122,12 +122,7 @@ def _process_start_identity(pid):
     if pid_i is None:
         raise ValueError("process PID must be a positive integer")
     raw_stat = read_text_file(f"/proc/{pid_i}/stat", encoding="ascii").strip()
-    closing_paren = raw_stat.rfind(")")
-    if closing_paren < 0:
-        raise ValueError("malformed process stat")
-    fields = raw_stat[closing_paren + 1:].split()
-    if len(fields) <= 19:
-        raise ValueError("process stat has no start time")
+    _, fields = parse_proc_stat_fields(raw_stat, min_fields=20)
     if fields[0] in {"Z", "X", "x"}:
         raise ProcessLookupError(f"process {pid_i} is not running")
     start_ticks = exact_pos_int(fields[19], default=None)

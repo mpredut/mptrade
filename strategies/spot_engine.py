@@ -17,7 +17,7 @@ from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, format_price_log, log, defined_env, normalize_epoch_sec,
+    _parse_bool_flag, extract_timestamp_s, format_price_log, log, defined_env, normalize_epoch_sec,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
@@ -1356,8 +1356,8 @@ class Strategy(BaseSpotMixin):
             )
             ratio = ledger_qty / held if held > 0 else 1.0
             self.s["qty"] = ledger_qty
-            self.s["cost"] = float(self.s.get("cost", 0.0)) * ratio
-            self.s["spent"] = float(self.s.get("spent", 0.0)) * ratio
+            self.s["cost"] = (safe_nonneg_float(self.s.get("cost"), default=0.0) or 0.0) * ratio
+            self.s["spent"] = (safe_nonneg_float(self.s.get("spent"), default=0.0) or 0.0) * ratio
             self.s["ledger_reconcile_required"] = False
             self._save()
             return True
@@ -1392,30 +1392,27 @@ class Strategy(BaseSpotMixin):
                         else []
                     )
                     if dict_rows:
-                        def _row_ts_sec(row: dict) -> float:
-                            return normalize_epoch_sec(row.get("timestamp"), default=0.0) or 0.0
-
                         _, latest_buy = max(
                             dict_rows,
-                            key=lambda item: (_row_ts_sec(item[1]), item[0]),
+                            key=lambda item: (extract_timestamp_s(item[1], default=0.0) or 0.0, item[0]),
                         )
                         cand_px = safe_pos_float(latest_buy.get("price"), None)
                         if cand_px is not None:
                             fill_px = cand_px
-                        cand_ts_sec = _row_ts_sec(latest_buy)
+                        cand_ts_sec = extract_timestamp_s(latest_buy, default=0.0) or 0.0
                         if cand_ts_sec > 0.0:
                             fill_ts = cand_ts_sec
             except Exception:
                 pass
             added_cost = (ledger_qty - held) * fill_px
             self.s["qty"] = ledger_qty
-            self.s["cost"] = float(self.s.get("cost", 0.0)) + added_cost
-            self.s["spent"] = float(self.s.get("spent", 0.0)) + added_cost
+            self.s["cost"] = (safe_nonneg_float(self.s.get("cost"), default=0.0) or 0.0) + added_cost
+            self.s["spent"] = (safe_nonneg_float(self.s.get("spent"), default=0.0) or 0.0) + added_cost
             if held <= tolerance or self.s.get("entry_price") is None:
                 self.s["entry_price"] = fill_px
                 self.s["entry_ts"] = fill_ts
             else:
-                self.s["dca_buys"] = int(self.s.get("dca_buys") or 0) + 1
+                self.s["dca_buys"] = safe_nonneg_int(self.s.get("dca_buys"), default=0) + 1
             self.s["last_buy_price"] = fill_px
             self.s["ledger_reconcile_required"] = False
             self._save()

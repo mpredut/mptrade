@@ -980,10 +980,10 @@ def _alert_giveups(records, now):
         for report in digest.collect(events, now=now):
             labels = report["labels"]
             suffix = " summary" if report["reported"] else ""
-            cnt = report["count"]
-            tot_qty = report["quantity"]
+            cnt = safe_nonneg_int(report.get("count"), default=0)
+            tot_qty = safe_nonneg_float(report.get("quantity"), default=0.0) or 0.0
             unit_qty = (tot_qty / cnt) if cnt > 0 else tot_qty
-            attempts = int(report.get("attempts") or 0)
+            attempts = safe_nonneg_int(report.get("attempts"), default=0)
             attempts_str = f", {attempts} attempts" if attempts > 0 else ""
             prov = str(labels.get("provider") or "routed").upper()
             side = str(labels.get("side") or "").upper()
@@ -997,14 +997,14 @@ def _alert_giveups(records, now):
             owner_sfx, _ = alert.format_owner_tags(owner)
             owner_body_sfx = f" · {owner}" if owner_sfx else ""
 
-            px_val = report.get("last_price")
-            tot_notional = float(report.get("notional") or 0.0)
+            px_f = safe_pos_float(report.get("last_price"), default=None)
+            tot_notional = safe_nonneg_float(report.get("notional"), default=0.0) or 0.0
             unit_notional = (
                 (tot_notional / cnt)
                 if (cnt > 0 and tot_notional > 0)
-                else ((unit_qty * float(px_val)) if px_val else None)
+                else ((unit_qty * px_f) if px_f is not None else None)
             )
-            price_part = f" @ ${format_notify_qty(float(px_val))}" if px_val else ""
+            price_part = f" @ ${format_notify_qty(px_f)}" if px_f is not None else ""
             value_part = f", Value: ~${unit_notional:.2f} {quote_asset}" if unit_notional is not None else ""
             time_parts = [
                 f"{lbl}: {val}"
@@ -1017,7 +1017,7 @@ def _alert_giveups(records, now):
             ]
             time_info = ("Time: " + " | ".join(time_parts) + ". ") if time_parts else ""
 
-            eff_ttl = float(report.get("ttl_sec") or oq.RETRY_TTL_SEC)
+            eff_ttl = safe_pos_float(report.get("ttl_sec"), default=oq.RETRY_TTL_SEC) or oq.RETRY_TTL_SEC
             ttl_h = eff_ttl / 3600.0
             if eff_ttl >= 86400 and (eff_ttl % 43200 == 0):
                 ttl_str = f"{eff_ttl / 86400:g}d ({ttl_h:g}h)"

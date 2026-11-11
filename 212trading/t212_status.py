@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-t212_status.py — Trading 212 account report for free/invested/blocked cash,
+t212_status.py -- Trading 212 account report for free/invested/blocked cash,
 positions, and PENDING orders. Explains invested, available, and blocked amounts.
 
   python3 t212_status.py
@@ -60,15 +60,15 @@ def main() -> int:
     )
 
     # --- CASH ---
-    def _sf(obj: dict, key: str, default: float = 0.0) -> float:
-        return safe_float(obj.get(key), default=default)
-
     cash = _retry(c.get_cash)
     print("============ TRADING 212 ACCOUNT ============")
     if isinstance(cash, dict) and cash:
-        free = _sf(cash, "free"); inv = _sf(cash, "invested")
-        blk = _sf(cash, "blocked"); tot = _sf(cash, "total")
-        ppl = _sf(cash, "ppl"); pie = _sf(cash, "pieCash")
+        free = safe_float(cash.get("free"), default=0.0)
+        inv = safe_float(cash.get("invested"), default=0.0)
+        blk = safe_float(cash.get("blocked"), default=0.0)
+        tot = safe_float(cash.get("total"), default=0.0)
+        ppl = safe_float(cash.get("ppl"), default=0.0)
+        pie = safe_float(cash.get("pieCash"), default=0.0)
         print(f"  INVESTED (cost)   : {inv:>10.2f}")
         print(f"  AVAILABLE (free)  : {free:>10.2f}   <- this is what you can place new orders with")
         print(f"  BLOCKED           : {blk:>10.2f}   <- locked in pending or in-flight orders")
@@ -83,8 +83,10 @@ def main() -> int:
     print(f"\n  --- POSITIONS ({len(pf)}) ---")
     inv_sum = 0.0
     for p in pf:
-        q = _sf(p, "quantity"); avg = _sf(p, "averagePrice")
-        cur = _sf(p, "currentPrice"); ppl = _sf(p, "ppl")
+        q = safe_float(p.get("quantity"), default=0.0)
+        avg = safe_float(p.get("averagePrice"), default=0.0)
+        cur = safe_float(p.get("currentPrice"), default=0.0)
+        ppl = safe_float(p.get("ppl"), default=0.0)
         val = q * cur; inv_sum += q * avg
         print(f"    {str(p.get('ticker') or ''):<14} qty {q:<8.3f} avg {avg:<9.2f} price {cur:<9.2f} "
               f"value {val:>9.2f}  P&L {ppl:>+8.2f}")
@@ -95,7 +97,7 @@ def main() -> int:
     orders = [o for o in (_retry(c.list_active_orders) or []) if isinstance(o, dict)]
     print(f"\n  --- PENDING ORDERS ({len(orders)}) ---  <- THESE lock up free cash")
     if not orders:
-        print("    (none — the cash is not locked by orders)")
+        print("    (none -- the cash is not locked by orders)")
     for o in orders:
         q = extract_order_qty(o, default=0.0)
         lp = extract_order_price(o, default=None)

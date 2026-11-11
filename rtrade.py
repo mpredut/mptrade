@@ -277,6 +277,14 @@ class _LivePairVenue:
             raise _IntentRecoveryPending(
                 f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no available reference price"
             )
+        ticket_qty = (
+            safe_pos_float(pending.get("submitted_qty"), default=None)
+            or safe_pos_float(pending.get("requested_qty"), default=None)
+        )
+        if ticket_qty is None:
+            raise _IntentRecoveryPending(
+                f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no valid quantity"
+            )
         kind = pending.get("kind")
         rev = PairCoordinator._intent_revision(kind, "limit")
         if rev is None:
@@ -285,7 +293,7 @@ class _LivePairVenue:
             order_id=str(order_id),
             side=str(pending["side"]).upper(),
             price=ticket_price,
-            qty=float(pending.get("submitted_qty") or pending.get("requested_qty")),
+            qty=ticket_qty,
             pair_id=pair_id,
             revision=rev,
         )
@@ -299,7 +307,7 @@ class _LivePairVenue:
             intent_id=self._intent_id(pair_id, side, store_kind),
             client_order_id=client_id, symbol=self.symbol, side=side,
             requested_qty=qty, requested_price=price, kind=store_kind,
-            attempt=attempt, metadata={"pair_id": pair_id, "limit_revision": int(revision)},
+            attempt=attempt, metadata={"pair_id": pair_id, "limit_revision": safe_nonneg_int(revision, default=0)},
         )
         persist = self._persist_callback(pair_id, side, store_kind, requested_qty=qty)
         outcome_context = {}
@@ -400,7 +408,7 @@ class _LivePairVenue:
                     "absence_confirmed_at", "recovery_horizon_exhausted_at",
                 ):
                     retained.pop(field, None)
-            elif "lookup_error" in retained or int(retained.get("lookup_misses") or 0) > 0:
+            elif "lookup_error" in retained or safe_nonneg_int(retained.get("lookup_misses"), default=0) > 0:
                 retained.setdefault("recovery_started_at", now)
                 retained["last_recovery_lookup_at"] = now
                 retained["next_recovery_at"] = now + RTRADE_PAIR_POLL_SEC
@@ -1014,12 +1022,14 @@ class TradingBot:
 
         def _complete_followup(chunk_qty=0.0, chunk_price=0.0):
             nonlocal completed
-            add_qty = max(0.0, float(chunk_qty or 0.0))
+            add_qty = safe_nonneg_float(chunk_qty, default=0.0) or 0.0
             total_qty = round(cumulative_filled_qty + add_qty, 8)
             if total_qty <= 1e-12:
                 return None
-            total_cost = cumulative_cost + add_qty * float(chunk_price or 0.0)
-            avg_px = round(total_cost / total_qty, 4) if total_cost > 0 else float(chunk_price or getattr(self, filled_attr))
+            px_chunk = safe_pos_float(chunk_price, default=0.0) or 0.0
+            total_cost = cumulative_cost + add_qty * px_chunk
+            fallback_px = px_chunk if px_chunk > 0 else (safe_pos_float(getattr(self, filled_attr, None), default=0.0) or 0.0)
+            avg_px = round(total_cost / total_qty, 4) if total_cost > 0 else fallback_px
             setattr(self, filled_attr, avg_px)
             opp_price = _followup_exit_price(self.symbol, opp_side, avg_px)
             followup_extra = {"allow_math_reference_sell": True} if opp_side == "SELL" else {}

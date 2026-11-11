@@ -111,12 +111,12 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
         if params.get("fee_tier"):
             fee_tier = str(params["fee_tier"]).strip()
-        maker_bps = float(safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps))
-        taker_bps = float(safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps))
-        min_notional = float(safe_pos_float(params.get("min_notional"), default=min_notional))
-        min_qty = float(safe_pos_float(params.get("min_qty"), default=default_step))
-        step_size = float(safe_pos_float(params.get("step_size"), default=default_step))
-        tick_size = float(safe_pos_float(params.get("tick_size"), default=default_tick))
+        maker_bps = safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps)
+        taker_bps = safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps)
+        min_notional = safe_pos_float(params.get("min_notional"), default=min_notional)
+        min_qty = safe_pos_float(params.get("min_qty"), default=default_step)
+        step_size = safe_pos_float(params.get("step_size"), default=default_step)
+        tick_size = safe_pos_float(params.get("tick_size"), default=default_tick)
 
         cached_meta: Dict[str, Any] = {}
         if inst is not None:
@@ -124,13 +124,13 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
                 inst, v_norm, symbol, price=px_f
             )
         if cached_meta:
-            maker_bps = float(safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps))
-            taker_bps = float(safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps))
-            min_notional = float(safe_pos_float(cached_meta.get("min_notional"), default=min_notional))
-            min_qty = float(safe_pos_float(cached_meta.get("min_qty"), default=min_qty))
-            step_size = float(safe_pos_float(cached_meta.get("step_size"), default=step_size))
+            maker_bps = safe_nonneg_float(cached_meta.get("maker_fee_bps"), default=maker_bps)
+            taker_bps = safe_nonneg_float(cached_meta.get("taker_fee_bps"), default=taker_bps)
+            min_notional = safe_pos_float(cached_meta.get("min_notional"), default=min_notional)
+            min_qty = safe_pos_float(cached_meta.get("min_qty"), default=min_qty)
+            step_size = safe_pos_float(cached_meta.get("step_size"), default=step_size)
             if not prefer_static_tick or safe_pos_float(params.get("tick_size"), default=None) is None:
-                tick_size = float(safe_pos_float(cached_meta.get("tick_size"), default=tick_size))
+                tick_size = safe_pos_float(cached_meta.get("tick_size"), default=tick_size)
 
         out: Dict[str, Any] = {
             "fee_tier": fee_tier,
@@ -351,11 +351,11 @@ class EnterprisePortfolioRiskEvaluator(TcaRiskEvaluatorBase):
         )
         venue_nav = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
         grouped_positions = nav.get("grouped_positions") if isinstance(nav.get("grouped_positions"), list) else []
-        invested_usd = float(nav.get("invested_usd") or 0.0)
-        free_cash_usd = float(nav.get("free_cash_usd") or 0.0)
-        locked_quote_usd = float(nav.get("locked_quote_usd") or 0.0)
-        total_quote_reserve_usd = float(nav.get("total_quote_reserve_usd") or 0.0)
-        unified_nav = float(nav.get("portfolio_total_usd") or 0.0)
+        invested_usd = safe_nonneg_float(nav.get("invested_usd"), default=0.0) or 0.0
+        free_cash_usd = safe_nonneg_float(nav.get("free_cash_usd"), default=0.0) or 0.0
+        locked_quote_usd = safe_nonneg_float(nav.get("locked_quote_usd"), default=0.0) or 0.0
+        total_quote_reserve_usd = safe_nonneg_float(nav.get("total_quote_reserve_usd"), default=0.0) or 0.0
+        unified_nav = safe_nonneg_float(nav.get("portfolio_total_usd"), default=0.0) or 0.0
 
         pos_exposures: List[Tuple[str, bool, float, float, float, float]] = []
         mb_snap = portfolio_summary.get("macro_benchmarks") if isinstance(portfolio_summary.get("macro_benchmarks"), dict) else {}

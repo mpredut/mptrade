@@ -27,7 +27,7 @@ from botcore import (
 )
 from cacheintegrity import AccountCacheNotReady
 from cachepaths import CACHE_ACCOUNT_HEALTH_FILENAME, cache_path, resolve_cachedb_filepath
-from state_io import atomic_write_json, read_json_dict, read_text_file, read_text_lines
+from state_io import atomic_write_json, parse_proc_stat_fields, read_json_dict, read_text_file, read_text_lines
 
 
 load_dotenv()
@@ -81,12 +81,6 @@ _writer_path = HEALTH_PATH
 _writer_state: dict = {}
 
 
-def _proc_stat_fields(stat: str) -> Optional[list[str]]:
-    """Return fields after the command name in `/proc/<pid>/stat`, or None if malformed."""
-    rparen = stat.rfind(")") if stat else -1
-    return stat[rparen + 1:].split() if rparen >= 0 else None
-
-
 def _pid_started_at_ms(pid: int) -> Optional[int]:
     """Return the Linux process start time, or None when it is unavailable."""
     pid_val = exact_pos_int(pid, default=None)
@@ -94,17 +88,26 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         return None
     try:
         # Fields after the final ')' start at field 3; process start ticks are field 22 (index 19).
-        fields = _proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"))
-        if not fields or len(fields) <= 19 or fields[0] in _DEAD_PROC_STATES:
+        _, fields = parse_proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"), min_fields=20)
+        if fields[0] in _DEAD_PROC_STATES:
             return None
-        start_ticks = int(fields[19])
-        if start_ticks <= 0:
+        start_ticks = exact_pos_int(fields[19], default=None)
+        if start_ticks is None:
             return None
         proc_lines = read_text_lines("/proc/stat")
         if not proc_lines:
             return None
-        boot_seconds = next(int(line.split()[1]) for line in proc_lines if line.startswith("btime "))
-        return int((boot_seconds + start_ticks / int(os.sysconf("SC_CLK_TCK"))) * 1000)
+        boot_seconds = next(
+            btime
+            for line in proc_lines
+            if line.startswith("btime ")
+            and len(parts := line.split()) >= 2
+            and (btime := exact_pos_int(parts[1], default=None)) is not None
+        )
+        clk_tck = exact_pos_int(os.sysconf("SC_CLK_TCK"), default=None)
+        if clk_tck is None:
+            return None
+        return int((boot_seconds + start_ticks / clk_tck) * 1000)
     except (OSError, StopIteration, TypeError, ValueError, IndexError):
         return None
 
@@ -218,8 +221,15 @@ def _pid_is_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, OverflowError, ValueError, TypeError, OSError):
         return False
-    fields = _proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"))
-    return not (fields and fields[0] in _DEAD_PROC_STATES)
+    try:
+        _, fields = parse_proc_stat_fields(read_text_file(f"/proc/{pid_val}/stat"), min_fields=1)
+    except PermissionError:
+        return True
+    except (FileNotFoundError, ProcessLookupError):
+        return not os.path.isdir("/proc")
+    except (OSError, ValueError):
+        return False
+    return fields[0] not in _DEAD_PROC_STATES
 
 
 def inspect_health(

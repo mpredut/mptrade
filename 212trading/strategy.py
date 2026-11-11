@@ -29,11 +29,13 @@ from botcore import (  # noqa: E402
     ensure_local_module_priority,
     log as _log,
     normalize_epoch_sec,
+    require_pos_float,
     required_bool_env,
     required_env,
     required_float_env,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
@@ -346,14 +348,14 @@ class Strategy(BaseSpotMixin):
         return {
             "intent_id": new_intent_id("T212", self.ticker, kind),
             "side": str(side).upper(),
-            "qty": float(qty),
-            "limit": round(float(limit), 2),
+            "qty": require_pos_float(qty, "qty"),
+            "limit": round(require_pos_float(limit, "limit"), 2),
             "amount": amount,
             "kind": kind,
             "level": level,
             "market": bool(market),
             "ts": self._now(),
-            "before_qty": float(self.s.get("qty") or 0.0),
+            "before_qty": safe_nonneg_float(self.s.get("qty"), default=0.0) or 0.0,
             "lookup_misses": 0,
         }
 
@@ -385,12 +387,15 @@ class Strategy(BaseSpotMixin):
 
     def _submit_pending_order(self, pending: dict):
         """Persist once, submit through the common typed contract, and adopt acceptance."""
-        self._persist_pending_submit(pending)
         market = bool(pending.get("market"))
-        limit = float(pending["limit"])
+        qty = safe_pos_float(pending.get("qty"), default=None)
+        limit = safe_pos_float(pending.get("limit"), default=None)
+        if qty is None or (not market and limit is None):
+            raise ValueError("invalid pending T212 order qty or limit")
+        self._persist_pending_submit(pending)
         outcome = self.executor.submit_outcome_with_intent(
-            pending["intent_id"], self.ticker, pending["side"].lower(),
-            float(pending["qty"]), None if market else limit,
+            pending["intent_id"], self.ticker, str(pending["side"]).lower(),
+            qty, None if market else limit,
             market=market, kind=pending.get("kind"),
             reference_price=limit if market else None,
         )
@@ -460,7 +465,7 @@ class Strategy(BaseSpotMixin):
             self._persist_pending_submit(pending)
             return "filled"
 
-        misses = max(0, int(safe_nonneg_float(pending.get("lookup_misses"), 0.0))) + 1
+        misses = safe_nonneg_int(pending.get("lookup_misses"), default=0) + 1
         pending["lookup_misses"] = misses
         if misses < 2:
             self._persist_pending_submit(pending)
@@ -1115,7 +1120,7 @@ class Strategy(BaseSpotMixin):
                         self._record_tp_sold_level(o["level"])
                     self._remove(o)
                 elif status == "not_found":
-                    misses = max(0, int(safe_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
+                    misses = safe_nonneg_int(o.get("lookup_misses"), default=0) + 1
                     o["lookup_misses"] = misses
                     if misses >= (2 if o.get("cancel_requested") else 3):
                         log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")

@@ -98,7 +98,7 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
             st["surge_active"] = bool(st.get("surge_active", False))
 
         # Reset clock-skewed future timestamps
-        if ts_now > 0 and float(st.get("disarmed_peak_ts", 0.0)) > ts_now + 5.0:
+        if ts_now > 0 and (safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0) > ts_now + 5.0:
             st["disarmed_peak_ts"] = 0.0
 
         # Expire stale peak/trough state once a full window has elapsed without new extremes (or on backward clock skew)
@@ -123,7 +123,10 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
 
         # Check chronological directional move in rolling window if history provided
         if len(history_seq) >= 2:
-            window_start_ts = max(ts_now - self.window_seconds, float(st.get("disarmed_peak_ts", 0.0)))
+            window_start_ts = max(
+                ts_now - self.window_seconds,
+                safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0,
+            )
             max_allowed_ts = (ts_now + 5.0) if ts_now > 0 else float("inf")
             window_pts = []
             for item in history_seq:
@@ -231,7 +234,10 @@ class ParabolicSurgeGuard(OrderGuardEvaluatorBase):
                     required_pullback=self.pullback_required_pct,
                 )
             st["surge_active"] = False
-            st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
+            st["disarmed_peak_ts"] = max(
+                safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0,
+                safe_nonneg_float(st.get("ts"), default=0.0) or 0.0,
+            )
             st["peak"] = current_price
             st["ts"] = ts_now
 

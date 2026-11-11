@@ -10,6 +10,7 @@ from botcore import (
     _INVALID_OID_STRINGS,
     _parse_bool_flag,
     clean_order_id_str,
+    normalize_epoch_sec,
     normalize_side,
     require_pos_float,
     safe_nonneg_float,
@@ -231,7 +232,7 @@ class RTradePairStore:
             if result is not False:
                 terminal = sorted(
                     (rec for rec in pairs.values() if isinstance(rec, dict) and rec.get("terminal")),
-                    key=lambda rec: float(rec.get("updated_ts") or 0.0),
+                    key=lambda rec: normalize_epoch_sec(rec.get("updated_ts"), default=0.0, allow_zero=True, allow_iso=True) or 0.0,
                     reverse=True,
                 )
                 keep = {rec.get("pair_id") for rec in terminal[:self.terminal_retention]}

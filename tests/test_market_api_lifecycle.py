@@ -571,10 +571,19 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
     # Enforce 0 module-level SCCs and 0 top-level package SCCs across the entire repository
     from collections import defaultdict
 
+    venv_roots = {
+        d.name
+        for d in root.iterdir()
+        if d.is_dir() and (d.name in ("venv", ".venv", "myenv") or (d / "pyvenv.cfg").exists())
+    }
+    excluded_top_dirs = {"tests", "offline", "verify_tools"} | venv_roots
     all_mods = {}
     for p in sorted(root.rglob("*.py")):
         rel = p.relative_to(root)
-        if any(part.startswith(".") or part in ("tests", "offline", "verify_tools", "venv", ".venv") for part in rel.parts):
+        if any(
+            part.startswith(".") or part in ("__pycache__", "site-packages")
+            for part in rel.parts
+        ) or rel.parts[0] in excluded_top_dirs:
             continue
         mod_name = ".".join(rel.parts).removesuffix(".py").removesuffix(".__init__")
         all_mods[mod_name] = rel
@@ -617,7 +626,11 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
                 if tgt.startswith(("hyperliquid.info", "hyperliquid.exchange", "hyperliquid.utils")):
                     continue
                 t_top = tgt.split(".")[0]
-                if t_top != src_top and ((root / f"{t_top}.py").exists() or (root / t_top).is_dir()):
+                if (
+                    t_top != src_top
+                    and t_top not in excluded_top_dirs
+                    and ((root / f"{t_top}.py").exists() or (root / t_top).is_dir())
+                ):
                     pkg_edges[src_top].add(t_top)
                 parts = tgt.split(".")
                 for i in range(len(parts), 0, -1):

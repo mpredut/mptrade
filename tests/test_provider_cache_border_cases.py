@@ -1120,5 +1120,151 @@ def test_guard_regime_lifecycle_retry_and_cache_path_border_cases(monkeypatch, t
         assert order_retry._client_order_id("abcdef1234567890", bad_rev).endswith("_0")
 
 
+def test_venue_fee_precision_ssot_and_runtime_border_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify polymorphic venue fee/precision SSOT and runtime border-case hardening."""
+    import account_cache_health as health
+    import rtrade
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import VenueFeeAndLimitsEvaluator
+    from rtrade_pair_store import RTradePairStore
+
+    # 1. Polymorphic venue fee & step/tick precision SSOT on MarketDataProvider
+    assert MarketDataProvider.resolve_venue_default_fee_spec("binance") == ("VIP0", 10.0, 10.0, 5.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("kraken") == ("PRO_TIER0", 16.0, 26.0, 1.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("hyperliquid") == ("SPOT_TIER0", 4.0, 7.0, 10.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("t212") == ("INVEST_RTH", 15.0, 15.0, 1.0)
+    assert MarketDataProvider.resolve_venue_default_fee_spec("unknown_venue") == ("STANDARD", 15.0, 15.0, 5.0)
+
+    tier, maker, taker, min_notional, step_sz, tick_sz, prefer_inst = (
+        MarketDataProvider.resolve_venue_default_fee_and_precision("hyperliquid", 2500.0)
+    )
+    assert (tier, maker, taker, min_notional, prefer_inst) == ("SPOT_TIER0", 4.0, 7.0, 10.0, True)
+    assert step_sz > 0 and tick_sz > 0
+
+    _, _, _, _, t212_step, t212_tick, t212_prefer = (
+        MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 150.0)
+    )
+    assert (t212_step, t212_tick, t212_prefer) == (0.001, 0.01, False)
+
+    # VenueFeeAndLimitsEvaluator prefers instrument tick_size on hyperliquid vs live tick_size on kraken
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_instrument_cached_fee_and_limits",
+        classmethod(
+            lambda _cls, _inst, v_norm, _sym, *, price=0.0: {
+                "tick_size": 0.001 if v_norm == "hyperliquid" else 0.01,
+                "step_size": 0.001,
+                "maker_fee_bps": None,
+                "taker_fee_bps": "bad",
+            }
+        ),
+    )
+    ev = VenueFeeAndLimitsEvaluator()
+    hl_out = ev.evaluate(
+        "hyperliquid",
+        "ETHUSDC",
+        SimpleNamespace(params={"tick_size": 0.1, "step_size": 0.01}),
+        price=2500.0,
+    )
+    kr_out = ev.evaluate(
+        "kraken",
+        "SOLUSDC",
+        SimpleNamespace(params={"tick_size": 0.05, "step_size": 0.01}),
+        price=150.0,
+    )
+    assert hl_out["tick_size"] == pytest.approx(0.1)
+    assert hl_out["maker_fee_bps"] == pytest.approx(4.0)
+    assert kr_out["tick_size"] == pytest.approx(0.01)
+
+    # 2. account_cache_health._pid_is_alive TOCTOU vanish & _pid_started_at_ms invalid SC_CLK_TCK / btime
+    monkeypatch.setattr(health.os, "kill", lambda _pid, _sig: None)
+    monkeypatch.setattr(health.os.path, "isdir", lambda p: True if p == "/proc" else False)
+
+    def _raise_fnf(_path: str, **_kw):
+        raise FileNotFoundError("vanished after os.kill")
+
+    monkeypatch.setattr(health, "read_text_file", _raise_fnf)
+    assert health._pid_is_alive(42424) is False
+
+    fake_stat = "42424 (cacheManager) S 1 42424 42424 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 987654 0 0"
+    monkeypatch.setattr(health, "read_text_file", lambda _p, **_kw: fake_stat)
+    monkeypatch.setattr(health, "read_text_lines", lambda _p, **_kw: ["btime ", "btime -5", "btime 1700000000"])
+    monkeypatch.setattr(health.os, "sysconf", lambda _name: 0)
+    assert health._pid_started_at_ms(42424) is None
+    monkeypatch.setattr(health.os, "sysconf", lambda _name: 100)
+    assert health._pid_started_at_ms(42424) == int((1700000000 + 987654 / 100) * 1000)
+
+    # 3. RTradePairStore.mutate tolerates corrupt/ISO updated_ts on evicted terminal records
+    store = RTradePairStore(terminal_retention=1)
+    now_ts = 1700000100.0
+
+    def _seed(pairs: dict) -> bool:
+        pairs["old_iso"] = {
+            "symbol": "BTCUSDC",
+            "pair_id": "old_iso",
+            "start_side": "BUY",
+            "qty": 0.01,
+            "phase": "closed",
+            "terminal": True,
+            "intents": {},
+            "state": None,
+            "created_ts": now_ts - 50.0,
+            "updated_ts": "2020-01-01T00:00:00Z",
+        }
+        pairs["newest"] = {
+            "symbol": "BTCUSDC",
+            "pair_id": "newest",
+            "start_side": "BUY",
+            "qty": 0.01,
+            "phase": "closed",
+            "terminal": True,
+            "intents": {},
+            "state": None,
+            "created_ts": now_ts,
+            "updated_ts": now_ts,
+        }
+        return True
+
+    monkeypatch.setattr(store, "_read", lambda: {"version": 1, "pairs": {}})
+    store.mutate(_seed)
+    assert set(store._mem_data["pairs"]) == {"newest"}
+
+    # 4. rtrade._LivePairVenue._ticket_from_pending rejects missing/zero/NaN qty cleanly
+    venue = object.__new__(rtrade._LivePairVenue)
+    venue.current_price = lambda: 50000.0
+    for bad_qty in (None, 0.0, -1.0, float("nan"), "bad"):
+        with pytest.raises(rtrade._IntentRecoveryPending, match="no valid quantity"):
+            venue._ticket_from_pending(
+                {
+                    "order_id": "oid-1",
+                    "side": "BUY",
+                    "kind": "limit",
+                    "submitted_price": 50000.0,
+                    "submitted_qty": bad_qty,
+                    "requested_qty": None,
+                },
+                "pair-1",
+            )
+
+    # 5. ParabolicSurgeGuard survives None/corrupt disarmed_peak_ts & ts in state dict
+    pg = ParabolicSurgeGuard()
+    pg._states["BTCUSDC"] = {
+        "peak": 90000.0,
+        "surge_active": True,
+        "surge_start_px": 85000.0,
+        "ts": None,
+        "disarmed_peak_ts": None,
+    }
+    dec = pg.check(
+        "BTCUSDC",
+        "BUY",
+        current_price=88000.0,
+        price_history=[(1700000000.0, 87000.0), (1700000060.0, 88000.0)],
+        now=1700000060.0,
+    )
+    assert dec.allowed is True
+
+
+
 
 

@@ -34,7 +34,9 @@ from botcore import (
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
     topic_spec,
 )
 from cachepaths import has_equity_suffix, normalize_venue_name, resolve_cachedb_filepath
@@ -395,7 +397,7 @@ def gather_system_and_vpn_telemetry(
             except OSError:
                 rw_last_run = None
         rw_fresh = rw_last_run is None or (time.time() - rw_last_run) <= 3600.0
-        min_consec = max(2, int(safe_float(os.environ.get("RESOURCE_CONSECUTIVE_CHECKS"), default=3.0) or 3.0))
+        min_consec = max(2, safe_pos_int(os.environ.get("RESOURCE_CONSECUTIVE_CHECKS"), default=3) or 3)
         procs_map = rw_state.get("processes") if isinstance(rw_state.get("processes"), dict) else {}
         offenders = [
             {
@@ -848,7 +850,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if startup_fatal_exc_pattern.search(sample_prev) or startup_fatal_exc_pattern.search(
                                     normalize_error_signature(sample_prev)
                                 ):
-                                    error_count = max(0, error_count - int(st_prev.get("count", 0)))
+                                    error_count = max(0, error_count - safe_nonneg_int(st_prev.get("count"), default=0))
                                     file_sig_stats.pop(sig_k, None)
                                     if not any(k[1] == sig_k and v > 0 for k, v in seen_count_by_key.items()):
                                         c_sig_prev = sig_k or sample_prev
@@ -871,7 +873,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     is_dated_fname = m_dated is not None
                     for sig_k, st in file_sig_stats.items():
                         pkey = (canon_fname.lower(), sig_k)
-                        cur_cnt = int(st.get("count", 0))
+                        cur_cnt = safe_nonneg_int(st.get("count"), default=0)
                         prev_seen_cnt = seen_count_by_key.get(pkey, 0)
                         if prev_seen_cnt > 0:
                             error_count = max(0, error_count - min(prev_seen_cnt, cur_cnt))
@@ -882,7 +884,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 persistent_by_key[pkey] = st
                                 persistent_errors.append(st)
                             else:
-                                if cur_cnt > int(prev_st.get("count", 0)):
+                                if cur_cnt > safe_nonneg_int(prev_st.get("count"), default=0):
                                     prev_st["count"] = st["count"]
                                     prev_st["sample"] = st["sample"]
                                 if not is_dated_fname:
@@ -896,7 +898,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
             pass
 
     persistent_errors.sort(
-        key=lambda item: (1 if item.get("unresolved_at_tail") else 0, int(item.get("count", 0))),
+        key=lambda item: (1 if item.get("unresolved_at_tail") else 0, safe_nonneg_int(item.get("count"), default=0)),
         reverse=True,
     )
     return LogEventSummary(
