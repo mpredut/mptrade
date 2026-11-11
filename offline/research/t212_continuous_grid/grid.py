@@ -11,20 +11,25 @@ US stocks/ETFs, to separate what is specific to one chart from what generalises.
 Harness-only variant FLAGS["peak"]: after a take-profit, ratchet last_sell_price up to the
 highest close since the sale, so re-entry waits for a pullback from the post-sale peak.
 """
+from bisect import bisect_left
 import os, sys, time, traceback
 from multiprocessing import Pool
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env, optional_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
+from botcore import int_env, lru_dict_put, optional_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
 EXP = optional_env("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_replay_module  # noqa: E402
 from state_io import append_jsonl_record, atomic_write_jsonl  # noqa: E402
-from strategies.spot_replay import align_spot_interval_params, ratchet_post_exit_peak_sell_price  # noqa: E402
+from strategies.spot_replay import (  # noqa: E402
+    align_spot_interval_params,
+    ratchet_post_exit_peak_sell_price,
+    scale_subbar_timeout_params,
+)
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 rp = load_venue_replay_module("t212", "t212_replay_grid")
@@ -46,9 +51,9 @@ HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 VARIANTS = {
     "live": ({}, 0),
-    "reentry0": ({"STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
-    "reentry5": ({"STRAT_REENTRY_DROP_PCT": "5", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
-    "reentry_peak": ({"STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
+    "reentry0": ({"STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0"}, 0),
+    "reentry5": ({"STRAT_REENTRY_DROP_PCT": "5", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0"}, 0),
+    "reentry_peak": ({"STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0"}, 1),
     "tp3": ({"STRAT_TAKEPROFIT_PCT": "3", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "tp5": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "tp8": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
@@ -60,10 +65,10 @@ VARIANTS = {
     "sl15": ({"STRAT_STOP_LOSS_PCT": "15"}, 0),
     "trail8": ({"STRAT_TRAIL_PCT": "8", "STRAT_TRAIL_MIN_PROFIT_PCT": "9", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "trail_off": ({"STRAT_TRAIL_PCT": "0", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
-    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
-    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
+    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0"}, 1),
+    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0"}, 1),
     "tp5_reentry0_sl0": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_TP_MDHTP_ENABLED": "false",
-                          "STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0"}, 0),
+                          "STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_REENTRY_TTL_HOURS": "0", "STRAT_STOP_LOSS_PCT": "0"}, 0),
 }
 # Factorial: take-profit x re-entry rule x stop-loss ("live" keeps the profile's value).
 for _tp in ("1.5", "3", "5", "8", "12", "20"):
@@ -73,12 +78,15 @@ for _tp in ("1.5", "3", "5", "8", "12", "20"):
             if _re == "0":
                 _over["STRAT_REENTRY_DROP_PCT"] = "0"
                 _over["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
+                _over["STRAT_REENTRY_TTL_HOURS"] = "0"
             elif _re == "peak":
                 _over["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
+                _over["STRAT_REENTRY_TTL_HOURS"] = "0"
             if _sl == "0":
                 _over["STRAT_STOP_LOSS_PCT"] = "0"
             VARIANTS[f"f_tp{_tp}_re{_re}_sl{_sl}"] = (_over, 1 if _re == "peak" else 0)
 WARM, W90_1H, STEP_1H = 20, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per day
+W90_SEC, STEP30_SEC = 90 * 86400, 30 * 86400
 
 
 _LOAD_CACHE: dict = {}
@@ -138,11 +146,15 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
             ts = [b[0] for b in bars]
         if len(ohlc) <= WARM:
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "fills": 0, "bh": 0.0}
-        interval_params = align_spot_interval_params(params, minutes)
+        interval_params = scale_subbar_timeout_params(
+            align_spot_interval_params(params, minutes), minutes
+        )
+        budget = safe_pos_float(params.max_budget, 0.0)
         m = rp.run_replay(ohlc[WARM:], interval_params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
-                          timestamps=ts[WARM:])
-        budget = safe_pos_float(params.max_budget, 0.0)
+                          timestamps=ts[WARM:],
+                          warmup_timestamps=ts[:WARM],
+                          initial_cash=(budget if budget > 0.0 else None))
         tot = safe_float(m.get("total"), 0.0)
         p0 = safe_pos_float(ohlc[WARM][3], 0.0)
         p1 = safe_float(ohlc[-1][3], 0.0)
@@ -194,16 +206,35 @@ def task(args):
                 ohlc = [b[1:] for b in bars_1h]
                 ts = [b[0] for b in bars_1h]
             wins = []
-            for s in range(WARM, len(bars_1h) - W90_1H + 1, STEP_1H):
-                r = run(
-                    None, params, peak, 60,
-                    ohlc=ohlc[s - WARM:s + W90_1H],
-                    ts=ts[s - WARM:s + W90_1H],
-                )
-                wins.append([r["ret"], r["dd"], r["bh"]])
+            t_start0 = safe_pos_float(ts[WARM], default=None) if len(ts) > WARM else None
+            t_end_all = safe_pos_float(ts[-1], default=None) if ts else None
+            if t_start0 is not None and t_end_all is not None and (t_end_all - t_start0) >= W90_SEC:
+                s = WARM
+                while s < len(ohlc):
+                    t_s = safe_float(ts[s], 0.0)
+                    if t_s + W90_SEC > t_end_all + 3600.0:
+                        break
+                    end_idx = bisect_left(ts, t_s + W90_SEC, s)
+                    if end_idx - s < 12:
+                        break
+                    r = run(
+                        None, params, peak, 60,
+                        ohlc=ohlc[s - WARM:end_idx],
+                        ts=ts[s - WARM:end_idx],
+                    )
+                    wins.append([r["ret"], r["dd"], r["bh"]])
+                    s = max(s + 1, bisect_left(ts, t_s + STEP30_SEC, s + 1))
+            else:
+                for s in range(WARM, len(bars_1h) - W90_1H + 1, STEP_1H):
+                    r = run(
+                        None, params, peak, 60,
+                        ohlc=ohlc[s - WARM:s + W90_1H],
+                        ts=ts[s - WARM:s + W90_1H],
+                    )
+                    wins.append([r["ret"], r["dd"], r["bh"]])
             out["w90"] = wins
         out["secs"] = round(time.time() - t0, 1)
-        _TASK_CACHE[cache_key] = out
+        lru_dict_put(_TASK_CACHE, cache_key, out, max_entries=512)
         return out
     except Exception:
         return {"profile": profile, "variant": variant, "asset": asset, "error": traceback.format_exc()}
@@ -238,7 +269,7 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((profile, variant, asset))
         canon_groups[k].append((profile, variant))
-    workers = int_env("WORKERS") or (os.cpu_count() or 4)
+    workers = int_env("WORKERS") or min(4, os.cpu_count() or 2)
     print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0

@@ -8,6 +8,8 @@ volatility better than simple persistence.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import math
 import os
 import sys
 import time
@@ -74,7 +76,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         i for i in range(warmup, n - horizon, stride)
         if np.isfinite(rv[i])
         and np.isfinite(rv[i + horizon])
-        and len(_clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])) > 0
+        and len(_clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])) >= 2
     ]
     if not idxs:
         return {
@@ -83,7 +85,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
             "mae_baseline_persistence": 0.0,
             "improvement_pct": None,
             "direction_accuracy": 0.0,
-            "corr_model_vs_actual": float("nan"),
+            "corr_model_vs_actual": math.nan,
         }
     pipe = _load_pipeline()
     preds, bases, actuals = [], [], []
@@ -94,10 +96,16 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         for i in chunk:
             seg = _clean_tail(rv[max(0, i + 1 - MAX_CONTEXT):i + 1])
             contexts.append(torch.tensor(seg, dtype=torch.float32))
-        forecast = pipe.predict(contexts, prediction_length=horizon)
+        infer_ctx = (
+            torch.inference_mode()
+            if (torch is not None and hasattr(torch, "inference_mode"))
+            else contextlib.nullcontext()
+        )
+        with infer_ctx:
+            forecast = pipe.predict(contexts, prediction_length=horizon)
         for k, i in enumerate(chunk):
             path = forecast[k].numpy()
-            point = safe_float(np.median(path[..., -1]), default=np.nan) if path.size else float("nan")
+            point = safe_float(np.median(path[..., -1]), default=np.nan) if path.size else math.nan
             preds.append(point)
             bases.append(safe_float(rv[i], default=np.nan))
             actuals.append(safe_float(rv[i + horizon], default=np.nan))
@@ -114,12 +122,12 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
             "mae_baseline_persistence": 0.0,
             "improvement_pct": None,
             "direction_accuracy": 0.0,
-            "corr_model_vs_actual": float("nan"),
+            "corr_model_vs_actual": math.nan,
         }
     mae_model = safe_float(np.mean(np.abs(preds_arr - actuals_arr)), 0.0)
     mae_base = safe_float(np.mean(np.abs(bases_arr - actuals_arr)), 0.0)
-    dir_actual = (actuals_arr - bases_arr) > 0
-    dir_pred = (preds_arr - bases_arr) > 0
+    dir_actual = np.sign(actuals_arr - bases_arr)
+    dir_pred = np.sign(preds_arr - bases_arr)
     dir_acc = safe_float(np.mean(dir_actual == dir_pred), 0.0)
     std_pred = safe_pos_float(np.std(preds_arr), default=None)
     std_actual = safe_pos_float(np.std(actuals_arr), default=None)
@@ -127,7 +135,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         with np.errstate(divide="ignore", invalid="ignore"):
             corr = safe_float(np.corrcoef(preds_arr, actuals_arr)[0, 1], default=np.nan)
     else:
-        corr = float("nan")
+        corr = math.nan
     mae_base_pos = safe_pos_float(mae_base, default=None)
     return {
         "n_test": len(preds_arr),
@@ -135,7 +143,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         "mae_baseline_persistence": mae_base,
         "improvement_pct": round(100 * (1 - mae_model / mae_base_pos), 1) if mae_base_pos is not None else None,
         "direction_accuracy": round(dir_acc, 3),
-        "corr_model_vs_actual": round(corr, 3) if np.isfinite(corr) else float("nan"),
+        "corr_model_vs_actual": round(corr, 3) if np.isfinite(corr) else math.nan,
     }
 
 

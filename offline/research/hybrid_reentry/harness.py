@@ -73,7 +73,14 @@ def load_ohlc_with_timestamps_csv(
                     ts_int = safe_nonneg_int(round(ts_sec), default=None)
                     if ts_int is not None:
                         timestamps.append(ts_int)
-    if len(timestamps) != len(rows):
+    if timestamps and len(timestamps) == len(rows):
+        by_ts: dict[int, tuple[float, float, float, float]] = {}
+        for ts_val, row in zip(timestamps, rows):
+            by_ts[ts_val] = row
+        ordered_ts = sorted(by_ts)
+        timestamps = ordered_ts
+        rows = [by_ts[t] for t in ordered_ts]
+    else:
         timestamps = []
     return rows, timestamps
 
@@ -87,6 +94,9 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
 def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[str, strat.StratParams]]:
     """Build the parameter sets for Tests 0 through 4."""
     R = dataclasses.replace
+    field_names = {f.name for f in dataclasses.fields(base_params)} if dataclasses.is_dataclass(base_params) else set()
+    no_pb_adapt = {"reentry_pullback_adaptive": False} if "reentry_pullback_adaptive" in field_names else {}
+    no_re_adapt = {"reentry_adaptive": False} if "reentry_adaptive" in field_names else {}
     return {
         "Test 0": (
             "Baseline (Control)",
@@ -96,6 +106,8 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
                 reentry_peak_relative=False,
                 reentry_pullback_pct=1.5,
                 reentry_ttl_hours=0.0,
+                **no_pb_adapt,
+                **no_re_adapt,
             ),
         ),
         "Test 1": (
@@ -106,6 +118,7 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
                 reentry_peak_relative=True,
                 reentry_pullback_pct=1.5,
                 reentry_ttl_hours=0.0,
+                **no_pb_adapt,
             ),
         ),
         "Test 2": (
@@ -116,6 +129,7 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
                 reentry_peak_relative=False,
                 reentry_pullback_pct=0.0,
                 reentry_ttl_hours=0.0,
+                **no_pb_adapt,
             ),
         ),
         "Test 3": (
@@ -126,6 +140,7 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
                 reentry_peak_relative=False,
                 reentry_pullback_pct=1.5,
                 reentry_ttl_hours=0.0,
+                **no_pb_adapt,
             ),
         ),
         "Test 4": (
@@ -136,6 +151,7 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
                 reentry_peak_relative=False,
                 reentry_pullback_pct=1.5,
                 reentry_ttl_hours=336.0,  # 14 days
+                **no_pb_adapt,
             ),
         ),
     }
@@ -196,19 +212,21 @@ def evaluate_asset(
     warmup_n = min(30, len(ohlc) // 5)
     warmup_ohlc = ohlc[:warmup_n]
     run_ohlc = ohlc[warmup_n:]
-    run_timestamps = timestamps[warmup_n:] if timestamps and len(timestamps) == len(ohlc) else None
+    has_full_ts = bool(timestamps and len(timestamps) == len(ohlc))
+    warmup_timestamps = timestamps[:warmup_n] if has_full_ts else None
+    run_timestamps = timestamps[warmup_n:] if has_full_ts else None
     if not run_ohlc:
         return []
 
     runner = replay_fn or run_replay
     try:
         sig = inspect.signature(runner)
-        accepts_timestamps = (
-            "timestamps" in sig.parameters
-            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        )
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        accepts_timestamps = "timestamps" in sig.parameters or has_var_kw
+        accepts_warmup_ts = "warmup_timestamps" in sig.parameters or has_var_kw
     except (TypeError, ValueError):
         accepts_timestamps = replay_fn is not None
+        accepts_warmup_ts = False
     if replay_fn is None or hasattr(aligned_base, "surge_guard"):
         prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
     for test_id, (variant_name, params) in variants.items():
@@ -225,6 +243,8 @@ def evaluate_asset(
                 replay_kw["initial_cash"] = initial_cash
             if run_timestamps is not None and accepts_timestamps:
                 replay_kw["timestamps"] = run_timestamps
+            if warmup_timestamps is not None and accepts_warmup_ts:
+                replay_kw["warmup_timestamps"] = warmup_timestamps
             res = runner(**replay_kw)
             res_cap = safe_pos_float(res.get("initial_capital"), default=None) if isinstance(res, dict) else None
             alloc_fn = getattr(params, "allocated_budget", None)

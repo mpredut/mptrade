@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 import pricewindow as pw
-from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import float_env, normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 
 # The default "instant" window -- identical today to WINDOW_SECONDS[0] in
@@ -64,11 +64,12 @@ class ReplayTrendSource:
         for s in symbols:
             sym_w = self.window_seconds
             if is_default_w:
-                fast_w = pw.fast_trend_window_for_symbol(s)
-                if fast_w is not None and fast_w > 0.0:
-                    sym_w = float(fast_w)
+                fast_w = safe_pos_float(pw.fast_trend_window_for_symbol(s), default=None)
+                if fast_w is not None:
+                    sym_w = fast_w
             self._windows[s] = pw.PriceWindow(s, window_size=200, window_seconds=sym_w)
             self._raw_ticks[s] = deque()
+        self._max_keep_sec = max(self.window_seconds, SMALL_TIMEOUT_RANGE_SEC[1], 21600.0)
         self._prev_ts: Dict[str, Optional[float]] = {s: None for s in symbols}
         self._cached_trend_up: Dict[str, Optional[bool]] = {s: None for s in symbols}
 
@@ -79,7 +80,7 @@ class ReplayTrendSource:
         win = self._windows.get(symbol)
         if win is None:
             return
-        ts_f = safe_float(ts, default=None)
+        ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
         px_f = safe_pos_float(price, default=None)
         if ts_f is None or px_f is None:
             return
@@ -93,22 +94,28 @@ class ReplayTrendSource:
         raw_q = self._raw_ticks.get(symbol)
         if raw_q is not None:
             raw_q.append((ts_f, px_f))
-            max_keep_sec = max(self.window_seconds, SMALL_TIMEOUT_RANGE_SEC[1], 21600.0)
-            cutoff = ts_f - max_keep_sec
+            cutoff = ts_f - self._max_keep_sec
             while len(raw_q) > 200 and raw_q[0][0] < cutoff:
                 raw_q.popleft()
         self._cached_trend_up[symbol] = None
 
     def _custom_window_trend(self, symbol: str, ws_f: float) -> Optional[Tuple[Tuple[int, float, float, float], float, int]]:
+        if ws_f > self._max_keep_sec:
+            self._max_keep_sec = ws_f
         raw_q = self._raw_ticks.get(symbol)
         if not raw_q or len(raw_q) < 2:
             return None
         cutoff = raw_q[-1][0] - ws_f
-        pts = [(t, p) for t, p in raw_q if t >= cutoff]
+        pts: List[Tuple[float, float]] = []
+        for t, p in reversed(raw_q):
+            if t < cutoff:
+                break
+            pts.append((t, p))
         if len(pts) < 2:
             return None
+        pts.reverse()
         gaps = [pts[i + 1][0] - pts[i][0] for i in range(len(pts) - 1) if pts[i + 1][0] > pts[i][0]]
-        sr = float(np.median(gaps)) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
+        sr = safe_pos_float(np.median(gaps), default=pw.DEFAULT_SAMPLE_RATE_SEC) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
         prices = [p for _, p in pts]
         eps = pw.PriceWindow._std_of_gradient(prices) if len(prices) >= 3 else 0.0
         tup = pw.instant_trend_from_prices(prices, sr, window_seconds=ws_f, symbol=symbol)
@@ -183,8 +190,8 @@ class ReplayTrendSource:
             n_p = len(win.prices)
         g = gr if fast else gc
         if use_noise_gate:
-            m_steps = float(n_p - 1)
-            scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
+            m_steps = n_p - 1
+            scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
             eps = scale * base_eps
             if abs(g) <= eps:
                 return True
@@ -257,7 +264,7 @@ class DynamicReplayTrendSource:
         buf = self._buf.get(symbol)
         if buf is None:
             return
-        ts_f = safe_float(ts, default=None)
+        ts_f = normalize_epoch_sec(ts, default=None, allow_zero=True)
         px_f = safe_pos_float(price, default=None)
         if ts_f is None or px_f is None:
             return
@@ -274,7 +281,13 @@ class DynamicReplayTrendSource:
         if not buf or t_sec is None:
             return []
         cutoff = buf[-1][0] - t_sec
-        return [(t, p) for t, p in buf if t >= cutoff]
+        pts: List[Tuple[float, float]] = []
+        for t, p in reversed(buf):
+            if t < cutoff:
+                break
+            pts.append((t, p))
+        pts.reverse()
+        return pts
 
     def _prices_and_rate(self, symbol: str, timeout_sec: float) -> Tuple[List[float], float]:
         pts = self._slice(symbol, timeout_sec)
@@ -284,7 +297,7 @@ class DynamicReplayTrendSource:
         prices = [p for _, p in pts]
         gaps = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)
                 if timestamps[i + 1] > timestamps[i]]
-        sample_rate = float(np.median(gaps)) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
+        sample_rate = safe_pos_float(np.median(gaps), default=pw.DEFAULT_SAMPLE_RATE_SEC) if gaps else pw.DEFAULT_SAMPLE_RATE_SEC
         return prices, sample_rate
 
     def is_trend_up_at(self, symbol: str, timeout_sec: float) -> bool:
@@ -334,9 +347,9 @@ class DynamicReplayTrendSource:
         if use_noise_gate:
             cand_ek = safe_nonneg_float(epsilon_k, default=None)
             ek = cand_ek if cand_ek is not None else 1.0
-            m_steps = float(len(prices) - 1)
-            scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
-            eps = float(ek * scale * pw.PriceWindow._std_of_gradient(prices))
+            m_steps = len(prices) - 1
+            scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
+            eps = safe_float(ek * scale * pw.PriceWindow._std_of_gradient(prices), 0.0)
             if abs(g) <= eps:
                 return True
         if side_str == "BUY":

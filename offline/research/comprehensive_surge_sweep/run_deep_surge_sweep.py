@@ -19,6 +19,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import io
+import math
 import os
 import sys
 import time
@@ -267,7 +268,7 @@ def _run_slice_replay(
     )
     diag = _spot_replay._LAST_REPLAY_DIAG if isinstance(_spot_replay._LAST_REPLAY_DIAG, dict) else {}
     raw_max_vol = diag.get("max_active_surge_vol")
-    max_vol = safe_float(raw_max_vol, default=float("inf")) if raw_max_vol is not None else float("inf")
+    max_vol = safe_float(raw_max_vol, default=math.inf) if raw_max_vol is not None else math.inf
     raw_ts = diag.get("surge_win_check_ts", ())
     win_ts = tuple(raw_ts) if isinstance(raw_ts, (list, tuple)) else ()
     return (
@@ -369,7 +370,7 @@ def evaluate_candidate_group(
                         continue
                     m_cands.sort(key=lambda x: safe_float(x["params"].surge_max_gain_pct, 0.0), reverse=True)
                     cached_res = None
-                    cached_req = float("inf")
+                    cached_req = math.inf
                     for dc in m_cands:
                         mx = safe_float(dc["params"].surge_max_gain_pct, 0.0)
                         if cached_res is not None and mx >= cached_req:

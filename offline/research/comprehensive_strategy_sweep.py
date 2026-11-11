@@ -9,6 +9,7 @@ Evaluates high-profit / low-drawdown candidates across:
 from __future__ import annotations
 
 import dataclasses
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -52,10 +53,10 @@ def define_candidate_grid() -> dict[str, dict]:
         # Baseline (live config: TP=6.0, tp_dynamic_flat=True, tp_mdhtp_enabled=True, brake=1.5%, overlay=650t8, SL=25%)
         "00_LIVE_CURRENT": {},
 
-        # --- Fixed Take Profit Variations (unmasked: disable tp_dynamic_flat and tp_mdhtp_enabled) ---
-        "01_tp4": {"takeprofit_pct": 4.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
-        "02_tp5": {"takeprofit_pct": 5.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
-        "03_tp7": {"takeprofit_pct": 7.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False},
+        # --- Fixed Take Profit Variations (unmasked: disable tp_dynamic_flat, tp_mdhtp_enabled, and tp_trend_hold) ---
+        "01_tp4": {"takeprofit_pct": 4.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False, "tp_trend_hold": False},
+        "02_tp5": {"takeprofit_pct": 5.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False, "tp_trend_hold": False},
+        "03_tp7": {"takeprofit_pct": 7.0, "tp_dynamic_flat": False, "tp_mdhtp_enabled": False, "tp_trend_hold": False},
 
         # --- Adaptive Trailing Variations (Combined with Live tp_regime_gate) ---
         "04_adaptive_trail_k15": {
@@ -107,10 +108,10 @@ def define_candidate_grid() -> dict[str, dict]:
             "trend_interval": 240,
         },
 
-        # --- Classic Re-entry Drop Variations (unmasked: disable reentry_hybrid_enabled) ---
-        "15_reentry_pullback_15": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 1.5},
-        "16_reentry_pullback_30": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 3.0},
-        "17_reentry_pullback_40": {"reentry_hybrid_enabled": False, "reentry_drop_pct": 4.0},
+        # --- Classic Re-entry Drop Variations (unmasked: disable reentry_hybrid_enabled, TTL bypass, and adaptive pullback) ---
+        "15_reentry_pullback_15": {"reentry_hybrid_enabled": False, "reentry_ttl_hours": 0.0, "reentry_pullback_adaptive": False, "reentry_drop_pct": 1.5},
+        "16_reentry_pullback_30": {"reentry_hybrid_enabled": False, "reentry_ttl_hours": 0.0, "reentry_pullback_adaptive": False, "reentry_drop_pct": 3.0},
+        "17_reentry_pullback_40": {"reentry_hybrid_enabled": False, "reentry_ttl_hours": 0.0, "reentry_pullback_adaptive": False, "reentry_drop_pct": 4.0},
 
         # --- Trend Overlay Variations (Live already uses 650t8; test 350t6, OFF, and 650t8_exitbreak) ---
         "18_overlay_350t6": {
@@ -543,7 +544,24 @@ def main():
     lines.append(f"\n## 2. Continuous 628-Day Replay ({len(records):,} bars)\n\n")
     lines.append("| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n")
     lines.append("|---:|---|---:|---:|---:|---:|---:|\n")
-    sorted_cont = sorted(master, key=lambda x: x.get("cont_calmar", 0), reverse=True)
+    sorted_cont = sorted(
+        master,
+        key=lambda x: (
+            safe_float(x.get("cont_total_pct"), 0.0) > 0.0,
+            (
+                (
+                    math.inf
+                    if safe_float(x.get("cont_max_dd"), 0.0) <= 0.0
+                    else safe_float(x.get("cont_calmar"), 0.0)
+                )
+                if safe_float(x.get("cont_total_pct"), 0.0) > 0.0
+                else safe_float(x.get("cont_total_pct"), 0.0)
+            ),
+            safe_float(x.get("cont_total_pct"), 0.0),
+            -safe_float(x.get("cont_max_dd"), 100.0),
+        ),
+        reverse=True,
+    )
     for rank, r in enumerate(sorted_cont, 1):
         cycles = r.get("cont_cycles", 0)
         wins = r.get("cont_wins", 0)

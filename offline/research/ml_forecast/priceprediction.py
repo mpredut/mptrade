@@ -49,10 +49,15 @@ class PricePrediction:
         hidden_size: int = 32,
         lr: float = 0.01,
         epochs: int = 30,
+        max_history: int = 512,
+        retrain_every: int = 1,
     ) -> None:
         self.window_size = max(2, safe_int(window_size, default=10))
         self._hidden_size = max(1, safe_int(hidden_size, default=32))
         self._lr = safe_pos_float(lr, default=0.01)
+        self._max_history = max(self.window_size * 2 + 2, safe_int(max_history, default=512))
+        self._retrain_every = max(1, safe_int(retrain_every, default=1))
+        self._steps_since_train = 0
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self._fallback_weights: np.ndarray | None = None
@@ -66,6 +71,8 @@ class PricePrediction:
     def _reset_model(self) -> None:
         """Reinitialize model weights and optimizer state to avoid cross-series leakage."""
         if torch is not None and _LSTMNet is not None:
+            if hasattr(torch, "manual_seed"):
+                torch.manual_seed(0)
             self.model = _LSTMNet(input_size=1, hidden_size=self._hidden_size)
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
             self.criterion = nn.MSELoss()
@@ -80,7 +87,13 @@ class PricePrediction:
         if val is None:
             return
         self.prices.append(val)
-        if len(self.prices) >= self.window_size * 2:
+        if len(self.prices) > self._max_history:
+            self.prices = self.prices[-self._max_history :]
+        self._steps_since_train += 1
+        if len(self.prices) >= self.window_size * 2 and (
+            not self.trained or self._steps_since_train >= self._retrain_every
+        ):
+            self._steps_since_train = 0
             self.trained = False
             self._fallback_weights = None
             self._reset_model()
@@ -92,9 +105,11 @@ class PricePrediction:
             self.prices = []
         else:
             try:
-                self.prices = [v for p in prices if (v := safe_pos_float(p, default=None)) is not None]
+                parsed = [v for p in prices if (v := safe_pos_float(p, default=None)) is not None]
+                self.prices = parsed[-self._max_history :]
             except TypeError:
                 self.prices = []
+        self._steps_since_train = 0
         self.trained = False
         self._fallback_weights = None
         self._reset_model()

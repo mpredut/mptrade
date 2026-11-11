@@ -52,9 +52,20 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import log
-from botcore import _parse_bool_flag, bool_env, float_env, load_env_stack, load_ini_config, safe_float, single_instance, split_csv
+from botcore import (
+    FileLock,
+    _parse_bool_flag,
+    bool_env,
+    float_env,
+    int_env,
+    load_env_stack,
+    load_ini_config,
+    safe_float,
+    single_instance,
+    split_csv,
+)
 from cachepaths import cache_path
-from instrument_registry import select_instruments
+from instrument_registry import load_registry, select_instruments
 from notify_engine import alertnotifiers as alert
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
@@ -134,12 +145,18 @@ def _append_audit(entry):
 
 
 def _last_change_for(full_key):
-    """The most recent journal entry with action='applied' for full_key."""
-    last = None
-    for entry in read_jsonl_dicts(AUDIT_LOG):
+    """The most recent journal entry with action='applied' and a valid timestamp for full_key."""
+    for entry in reversed(read_jsonl_dicts(AUDIT_LOG)):
         if entry.get("full_key") == full_key and entry.get("action") == "applied":
-            last = entry
-    return last
+            ts_raw = entry.get("ts")
+            if not ts_raw:
+                continue
+            try:
+                datetime.fromisoformat(str(ts_raw))
+                return entry
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
@@ -150,11 +167,12 @@ def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
     ts_str = str(last_change["ts"])
     try:
         last_ts = datetime.fromisoformat(ts_str)
-        elapsed = (
-            datetime.now(timezone.utc) - last_ts.astimezone(timezone.utc)
+        last_utc = (
+            last_ts.astimezone(timezone.utc)
             if last_ts.tzinfo is not None
-            else datetime.now() - last_ts
+            else last_ts.replace(tzinfo=timezone.utc)
         )
+        elapsed = datetime.now(timezone.utc) - last_utc
         if elapsed < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
             return True, ts_str
     except (TypeError, ValueError):
@@ -325,7 +343,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
             d = _RUN_ONE_DIAG_CACHE.get(ck) or rb._LAST_RUN_DIAGNOSTICS.get(tk) or {}
             htp_touched = d.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk, True))
             if not htp_touched:
-                inv_state[half_idx] = [res, float("inf")]
+                inv_state[half_idx] = [res, math.inf]
             elif safe_float(d.get("min_hard_tp_gain_ratio"), 0.0) >= v_ratio:
                 inv_state[half_idx] = [res, safe_float(d.get("min_hard_tp_gain_ratio"), 0.0)]
         return res
@@ -346,8 +364,12 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if not results:
         return {"full_key": full_key, "action": "skipped", "reason": "backtest without results"}
 
-    winner_half1 = max(results, key=lambda v: results[v]["edge_half1"])
-    winner_half2 = max(results, key=lambda v: results[v]["edge_half2"])
+    max_e1 = max(r["edge_half1"] for r in results.values())
+    max_e2 = max(r["edge_half2"] for r in results.values())
+    tied_1 = [v for v, r in results.items() if math.isclose(r["edge_half1"], max_e1, rel_tol=0.0, abs_tol=1e-12)]
+    tied_2 = [v for v, r in results.items() if math.isclose(r["edge_half2"], max_e2, rel_tol=0.0, abs_tol=1e-12)]
+    winner_half1 = min(tied_1, key=lambda v: (abs(safe_float(v, current) - current), safe_float(v, 0.0)))
+    winner_half2 = min(tied_2, key=lambda v: (abs(safe_float(v, current) - current), safe_float(v, 0.0)))
 
     entry = {
         "full_key": full_key, "symbol": symbol, "current_value": current,
@@ -371,7 +393,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     # significant margin on BOTH windows. A margin of ~0 means the parameter is inert on this history
     # (e.g. a hard TP that never triggered), and the "winner" is merely a tie-break artefact.
     cur_key = next(
-        (v for v in results if math.isclose(safe_float(v, float("nan")), current, rel_tol=1e-5, abs_tol=1e-6)),
+        (v for v in results if math.isclose(safe_float(v, math.nan), current, rel_tol=1e-5, abs_tol=1e-6)),
         None,
     )
     if cur_key is None or cur_key not in results:
@@ -419,26 +441,43 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
 def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line inside `section`,
     preserving comments, formatting, and all other sections untouched."""
-    lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
-    if not lines:
-        raise FileNotFoundError(f"Empty or missing config file: {INSTRUMENTS_CONF}")
-    in_section = False
-    replaced = False
-    key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
-    for i, line in enumerate(lines):
-        sm = re.match(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$', line)
-        if sm:
-            in_section = (sm.group(1).strip() == str(section).strip())
-            continue
-        if in_section:
-            m = key_re.match(line)
-            if m:
-                lines[i] = f"{m.group(1)}{new_value}{m.group(3)}\n"
-                replaced = True
-                break
-    if not replaced:
-        raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
-    atomic_write_text(INSTRUMENTS_CONF, "".join(lines))
+    with FileLock(f"{INSTRUMENTS_CONF}.lock"):
+        lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
+        if not lines:
+            raise FileNotFoundError(f"Empty or missing config file: {INSTRUMENTS_CONF}")
+        orig_content = "".join(lines)
+        try:
+            load_registry(INSTRUMENTS_CONF)
+            validate_full_registry = True
+        except Exception:
+            validate_full_registry = False
+        in_section = False
+        replaced = False
+        key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
+        for i, line in enumerate(lines):
+            sm = re.match(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$', line)
+            if sm:
+                in_section = (sm.group(1).strip() == str(section).strip())
+                continue
+            if in_section:
+                m = key_re.match(line)
+                if m:
+                    lines[i] = f"{m.group(1)}{new_value}{m.group(3)}\n"
+                    replaced = True
+                    break
+        if not replaced:
+            raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
+        atomic_write_text(INSTRUMENTS_CONF, "".join(lines))
+        try:
+            expected_num = None if isinstance(new_value, bool) else safe_float(new_value, None)
+            parsed_num = _current_value(section, key)
+            if expected_num is None or not math.isfinite(expected_num) or abs(parsed_num - expected_num) > 1e-12:
+                raise ValueError(f"Post-write verification failed for {section}.{key}: got {parsed_num!r}")
+            if validate_full_registry:
+                load_registry(INSTRUMENTS_CONF)
+        except Exception:
+            atomic_write_text(INSTRUMENTS_CONF, orig_content)
+            raise
 
 
 def _restart_monitortrades():
@@ -513,7 +552,7 @@ def main():
 
     # Precompute baseline (base_params) once per symbol half across workers so all keys per symbol
     # reuse the cached baseline and balanced workers evaluate both halves concurrently.
-    max_workers = os.cpu_count() or 2
+    max_workers = int_env("WORKERS") or min(2, os.cpu_count() or 2)
     all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
     baseline_tasks = []
     for sym, base in unique_sym_base:

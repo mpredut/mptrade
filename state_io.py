@@ -902,44 +902,49 @@ def read_json_dict(
     )
 
 
-def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
-    """Read JSON records from a UTF-8 JSONL file, optionally enforcing strict line parsing."""
+def iter_jsonl_records(path: str, *, strict: bool = False) -> Iterator[Any]:
+    """Stream JSON records line by line from a UTF-8 JSONL file without loading the full file in RAM."""
     try:
         target = _resolve_target_path(path)
     except (TypeError, ValueError):
         if strict:
             raise
-        return []
-    records: list[Any] = []
+        return
     try:
         if not strict and not os.path.isfile(target):
-            return []
+            return
         with open(target, "r", encoding="utf-8") as handle:
             for line in handle:
                 raw = line.strip()
                 if not raw:
                     continue
                 try:
-                    records.append(json.loads(raw))
+                    yield json.loads(raw)
                 except ValueError:
                     if strict:
                         raise
     except (OSError, TypeError):
         if strict:
             raise
-        return []
-    return records
+
+
+def iter_jsonl_dicts(path: str, *, strict: bool = False) -> Iterator[dict[str, Any]]:
+    """Stream JSON object records (``dict``) line by line from a UTF-8 JSONL file."""
+    for rec in iter_jsonl_records(path, strict=strict):
+        if isinstance(rec, dict):
+            yield rec
+        elif strict:
+            raise ValueError("JSONL line must be a dict")
+
+
+def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
+    """Read JSON records from a UTF-8 JSONL file, optionally enforcing strict line parsing."""
+    return list(iter_jsonl_records(path, strict=strict))
 
 
 def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]:
     """Read JSON object records (``dict``) from a UTF-8 JSONL file."""
-    out: list[dict[str, Any]] = []
-    for rec in read_jsonl_records(path, strict=strict):
-        if isinstance(rec, dict):
-            out.append(rec)
-        elif strict:
-            raise ValueError("JSONL line must be a dict")
-    return out
+    return list(iter_jsonl_dicts(path, strict=strict))
 
 
 def read_text_file(

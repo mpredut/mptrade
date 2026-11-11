@@ -16,7 +16,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import normalize_epoch_sec, safe_pos_float
 from cachepaths import cache_365_price_filename, cache_path, cache_symbol_variants
-from state_io import atomic_write_jsonl, read_jsonl_records
+from state_io import atomic_write_jsonl, iter_jsonl_dicts
 
 
 def ts_of(r) -> float:
@@ -64,19 +64,37 @@ def main(argv: list[str] | None = None):
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)
 
-    rows = [rec for rec in read_jsonl_records(src) if _ts_sec(rec) > 0.0]
-    if not rows:
+    total_rows = 0
+    last_ts = 0.0
+    for rec in iter_jsonl_dicts(src):
+        t = _ts_sec(rec)
+        if t > 0.0:
+            total_rows += 1
+            if t > last_ts:
+                last_ts = t
+    if total_rows == 0:
         print(f"[slice] {src} empty/missing", file=sys.stderr)
         sys.exit(1)
 
-    rows.sort(key=_ts_sec)
-    last_ts = _ts_sec(rows[-1])
     cutoff = last_ts - days * 86400.0
-    sliced = [r for r in rows if _ts_sec(r) >= cutoff]
+    sliced: list[dict] = []
+    prev_t = -1.0
+    is_sorted = True
+    for rec in iter_jsonl_dicts(src):
+        t = _ts_sec(rec)
+        if t >= cutoff and t > 0.0:
+            if rec.get("s") != symbol:
+                rec = {**rec, "s": symbol}
+            if t < prev_t:
+                is_sorted = False
+            prev_t = t
+            sliced.append(rec)
+    if not is_sorted:
+        sliced.sort(key=_ts_sec)
 
     atomic_write_jsonl(out, sliced)
 
-    print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} points (last {days}d) -> {out}")
+    print(f"[slice] {symbol}: {total_rows} -> {len(sliced)} points (last {days}d) -> {out}")
 
 
 if __name__ == "__main__":

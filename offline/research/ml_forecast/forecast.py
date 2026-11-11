@@ -25,7 +25,7 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent  # noqa: E402
-from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int  # noqa: E402
+from botcore import normalize_epoch_sec, safe_float, safe_int, safe_pos_float, safe_pos_int  # noqa: E402
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor  # noqa: E402
 from sklearn.linear_model import LogisticRegression  # noqa: E402
 from sklearn.pipeline import make_pipeline  # noqa: E402
@@ -70,12 +70,32 @@ def _to_price_array(px) -> np.ndarray:
     return np.asarray(cleaned, dtype=float).reshape(-1)
 
 
-def build_dataset(px: np.ndarray):
+def build_dataset(px: np.ndarray, ts: np.ndarray | None = None):
     px_arr = _to_price_array(px)
+    ts_arr = None
+    if ts is not None:
+        raw_ts = _to_price_array(ts)
+        if len(raw_ts) == len(px_arr):
+            norm_ts = [
+                normalize_epoch_sec(v, default=np.nan, allow_zero=True)
+                for v in raw_ts
+            ]
+            ts_arr = np.asarray(
+                [v if v is not None else np.nan for v in norm_ts],
+                dtype=float,
+            )
+    expected_span_sec = (WARMUP + HORIZON_H) * 3600.0
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     X, y_dir, y_mag = [], [], []
     for i in range(WARMUP, len(px_arr) - HORIZON_H):
+        if ts_arr is not None:
+            t_start = ts_arr[i - WARMUP]
+            t_end = ts_arr[i + HORIZON_H]
+            if not (np.isfinite(t_start) and np.isfinite(t_end)):
+                continue
+            if abs((t_end - t_start) - expected_span_sec) > 1800.0:
+                continue
         row = _feat_row(i, logp, px_arr)
         fut = logp[i + HORIZON_H] - logp[i]
         if not (np.isfinite(fut) and all(np.isfinite(v) for v in row)):
@@ -195,7 +215,10 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=400)
     ap.add_argument("--eval", action="store_true", help="the walk-forward report only")
     ap.add_argument("--forecast", action="store_true", help="write forecast.json")
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast.json"))
+    ap.add_argument(
+        "--out",
+        default=os.path.join(_ROOT, "offline", "results", "ml_forecast", "forecast.json"),
+    )
     ap.add_argument("--loop", type=float, default=0, help="minutes between forecasts (0 = once)")
     args = ap.parse_args()
     days = safe_pos_int(args.days, default=None)
@@ -207,7 +230,7 @@ def main() -> int:
         if len(px) < WARMUP + HORIZON_H + 100:
             print(f"! insufficient history ({len(px)} candles)")
             return 1
-        X, y_dir, y_mag = build_dataset(px)
+        X, y_dir, y_mag = build_dataset(px, ts=ts)
         print(f"[{args.symbol}] {len(px)} 1h candles -> {len(X)} samples, horizon {HORIZON_H}h")
         rep = walk_forward(X, y_dir, y_mag)
         print(f"  Direction accuracy on {rep['n_test']} UNSEEN hours:")
@@ -215,6 +238,7 @@ def main() -> int:
         print(f"  24h amplitude:  MAE model {rep['mae_move_pct']:.2f}%  vs baseline(0) {rep['mae_baseline_pct']:.2f}%")
         if args.forecast:
             out = live_forecast(px, X, y_dir, y_mag, rep, args.symbol)
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             atomic_write_json(args.out, out, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")

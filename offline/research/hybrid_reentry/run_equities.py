@@ -16,7 +16,7 @@ from offline.research.hybrid_reentry.harness import (
     load_ohlc_with_timestamps_csv,
 )
 from state_io import atomic_write_json
-from strategies.spot_replay import align_spot_interval_params
+from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 
@@ -106,16 +106,11 @@ def main():
         cfg["STRAT_REENTRY_PULLBACK_ADAPTIVE"] = "false"
         cfg["STRAT_REENTRY_PULLBACK_PCT"] = "1.5"
         cfg["STRAT_REENTRY_TTL_HOURS"] = "0.0"
-        check_min = safe_pos_float(cfg.get("STRAT_CHECK_MINUTES"), default=5.0)
-        if check_min is not None and check_min < 1440.0:
-            bar_scale = 1440.0 / check_min
-            for timeout_key in ("STRAT_TP_STAGNATION_MAX_SEC", "STRAT_SL_TREND_DEFER_MAX_SEC"):
-                timeout_val = safe_pos_float(cfg.get(timeout_key), default=None)
-                if timeout_val is not None:
-                    cfg[timeout_key] = f"{timeout_val * bar_scale:.1f}"
         if safe_pos_float(cfg.get("STRAT_REENTRY_DROP_PCT"), default=None) is None:
             cfg["STRAT_REENTRY_DROP_PCT"] = "2.0"
-        base_params = align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
+        base_params = scale_subbar_timeout_params(
+            align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0), 1440.0
+        )
         asset_rows = evaluate_asset(
             asset_name=symbol,
             ohlc=ohlc,

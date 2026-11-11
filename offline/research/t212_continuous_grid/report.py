@@ -27,7 +27,7 @@ def g(r, itv, k):
     fval = safe_float(val, default=None)
     if fval is None:
         return None
-    return int(fval) if isinstance(val, int) else fval
+    return val if (isinstance(val, int) and not isinstance(val, bool)) else fval
 
 
 def generate_report(exp_dir=None):
@@ -131,7 +131,7 @@ def generate_report(exp_dir=None):
                 st.median(dd_dds) if dd_dds else 0.0,
             ))
         for med, v, n, bl1, pos1, dd1, n2, bl2, pos2, med2, dd2 in sorted(
-            items, key=lambda x: (x[2] == 0, -x[0], -x[9])
+            items, key=lambda x: (x[2] == 0, -x[0], x[6] == 0, -x[9])
         ):
             L.append(f"| {v} | {bl1}/{n} | {pos1}/{n} | {med:+.1f} | {dd1:.1f} | {bl2}/{n2} | {pos2}/{n2} | {med2:+.1f} | {dd2:.1f} |")
 

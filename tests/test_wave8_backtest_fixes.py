@@ -1,20 +1,34 @@
-"""Targeted regression tests for Wave 8.1 backtest, replay, strategy, and runner fixes."""
+"""Targeted regression tests for Wave 8 backtest, replay, strategy, research, and runner fixes."""
 
 from __future__ import annotations
 
 import ast
 import dataclasses
+from datetime import datetime, timedelta, timezone
 import subprocess
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from botcore import load_local_module
 from offline.backtests.evaluation import load_venue_replay_module
+from offline.research import comprehensive_strategy_sweep as css, slice_dense_archive as sda
+from offline.research.hybrid_reentry import harness as hr_harness
+from offline.research.ml_forecast import forecast as ml_fc, vol_chronos as ml_vc
+from offline.research.ml_forecast.priceprediction import PricePrediction
+from offline.research.monitortrades_backtest import (
+    backtest_wait_and_regime as bwr,
+    replay_trend_source as rts,
+    run_replay_backtest as rrb,
+    scheduled_pilot as sp,
+)
+from offline.research.t212_continuous_grid import grid as t212_grid, report as t212_report
 from offline.runners import financial_promotion_gate, walk_forward_compare
-from state_io import atomic_write_json, read_text_file
+from providers.replay_provider import load_price_series
+from state_io import atomic_write_json, atomic_write_jsonl, atomic_write_text, iter_jsonl_dicts, read_text_file
 from strategies import spot_engine, spot_replay, spot_rules
 from strategies.base_spot_mixin import BaseSpotMixin, sanitize_common_spot_state
 from strategies.state_store import (
@@ -41,6 +55,22 @@ WAVE8_1_PY_FILES = (
     "hyperliquid/shadow_longterm.py",
     "offline/runners/financial_promotion_gate.py",
     "offline/runners/walk_forward_compare.py",
+    "offline/research/slice_dense_archive.py",
+    "offline/research/t212_continuous_grid/grid.py",
+    "offline/research/t212_continuous_grid/report.py",
+    "offline/research/hybrid_reentry/harness.py",
+    "offline/research/hybrid_reentry/run_equities.py",
+    "offline/research/comprehensive_strategy_sweep.py",
+    "offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py",
+    "offline/research/monitortrades_backtest/sweep_multiwindow_mt.py",
+    "offline/research/monitortrades_backtest/backtest_wait_and_regime.py",
+    "offline/research/monitortrades_backtest/run_replay_backtest.py",
+    "offline/research/monitortrades_backtest/replay_trend_source.py",
+    "offline/research/monitortrades_backtest/scheduled_pilot.py",
+    "offline/research/ml_forecast/forecast.py",
+    "offline/research/ml_forecast/priceprediction.py",
+    "offline/research/ml_forecast/vol_chronos.py",
+    "tests/test_wave8_backtest_fixes.py",
 )
 
 WAVE8_1_SH_FILES = (
@@ -229,3 +259,146 @@ def test_backtest_cli_and_promotion_gate_validation(tmp_path: Path) -> None:
     )
     with pytest.raises(SystemExit):
         walk_forward_compare.main([str(bad_wf)])
+
+
+def test_wave8_2_slice_grid_ablation_and_sweep_invariants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify streaming slice normalization, T212 grid isolation, ablation unmasked Test 2, and sweep grid."""
+    # 1. slice_dense_archive streams via iter_jsonl_dicts and normalizes symbol alias 's'
+    fake_cache = tmp_path / "cachedb"
+    prices_dir = fake_cache / "prices"
+    prices_dir.mkdir(parents=True)
+    alias_src = prices_dir / "cache_365_price_HYPEUSDC.jsonl"
+    atomic_write_jsonl(
+        alias_src,
+        [
+            {"s": "HYPEUSDC", "i": [1_700_000_000_000, 20.0]},
+            {"s": "HYPEUSDC", "i": [1_700_200_000_000, 22.0]},
+        ],
+    )
+    out_slice = tmp_path / "sliced_hype.jsonl"
+    monkeypatch.setattr(sda, "cache_path", lambda fname: str(prices_dir / fname))
+    sda.main(["HYPEUSD", "1", str(out_slice)])
+    streamed = list(iter_jsonl_dicts(str(out_slice)))
+    assert len(streamed) == 1
+    assert streamed[0]["s"] == "HYPEUSD"
+    assert load_price_series(str(out_slice), "HYPEUSD") == [(1_700_200_000.0, 22.0)]
+
+    # 2. t212_continuous_grid disables reentry_ttl_hours on non-hybrid variants and report.g rejects bool
+    p_spcx_re5, _ = t212_grid.params_for("spcx", "reentry5")
+    assert p_spcx_re5.reentry_hybrid_enabled is False
+    assert p_spcx_re5.reentry_ttl_hours == 0.0
+    assert t212_report.g({"1h": {"cyc": True}}, "1h", "cyc") is None
+    assert t212_report.g({"1h": {"cyc": 4}}, "1h", "cyc") == 4
+
+    # 3. hybrid_reentry.harness disables reentry_pullback_adaptive so Test 2 != Test 3, and sorts CSVs
+    base_adapt = dataclasses.replace(css.LIVE_PARAMS, reentry_pullback_adaptive=True)
+    ab_vars = hr_harness.build_ablation_variants(base_adapt)
+    assert ab_vars["Test 2"][1].reentry_pullback_adaptive is False
+    assert ab_vars["Test 2"][1].reentry_pullback_pct == 0.0
+    assert ab_vars["Test 3"][1].reentry_pullback_pct == 1.5
+    assert ab_vars["Test 2"][1] != ab_vars["Test 3"][1]
+
+    unsorted_csv = tmp_path / "unsorted.csv"
+    atomic_write_text(
+        str(unsorted_csv),
+        "timestamp,open,high,low,close\n"
+        "1700007200,12,13,11,12.5\n"
+        "1700003600,10,11,9,10.5\n"
+        "1700003600,10,12,9,11.0\n",
+    )
+    rows, ts_list = hr_harness.load_ohlc_with_timestamps_csv(str(unsorted_csv))
+    assert ts_list == [1700003600, 1700007200]
+    assert rows[0][3] == 11.0 and rows[1][3] == 12.5
+
+    # 4. comprehensive_strategy_sweep unmasks fixed-TP and static re-entry candidates
+    cgrid = css.define_candidate_grid()
+    assert cgrid["01_tp4"]["tp_trend_hold"] is False
+    assert cgrid["15_reentry_pullback_15"]["reentry_ttl_hours"] == 0.0
+    assert cgrid["15_reentry_pullback_15"]["reentry_pullback_adaptive"] is False
+
+
+def test_wave8_2_monitortrades_regime_pilot_and_ml_fixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify 900s gap handling, symbol fee/quote SSOT, ms timestamp normalization, pilot rate-limit, and ML guards."""
+    # 1. evaluate_regime_900s does not look across multi-day archive gaps when [t0, t0+900s] has no sample
+    gap_ts = np.array([1000.0, 100_000.0, 100_100.0], dtype=np.float64)
+    gap_px = np.array([100.0, 200.0, 201.0], dtype=np.float64)
+    sig_gap = bwr.compute_exact_time_window_signals(gap_ts, gap_px, 900.0, "BTCUSDC")
+    res_gap, _, _ = bwr.evaluate_regime_900s(gap_ts, gap_px, sig_gap, horizon_sec=900.0, stride=1)
+    assert res_gap == []
+
+    # 2. run_replay_backtest resolves Kraken USD/0.26% vs Binance USDC/0.10%
+    assert rrb._resolve_symbol_meta("HYPEUSD") == ("USD", 0.26)
+    assert rrb._resolve_symbol_meta("BTCUSDC") == ("USDC", 0.1)
+
+    # 3. ReplayTrendSource normalizes millisecond timestamps to seconds
+    rts_src = rts.ReplayTrendSource(["BTCUSDC"], window_seconds=90.0)
+    for idx in range(5):
+        rts_src.advance("BTCUSDC", (1_700_000_000 + idx * 10) * 1000, 100.0 + idx)
+    assert rts_src._prev_ts["BTCUSDC"] == pytest.approx(1_700_000_040.0)
+    assert rts_src.is_trend_up("BTCUSDC", window_seconds=60.0) is True
+
+    # 4. scheduled_pilot.is_rate_limited does not fail open when latest applied row has corrupt timestamp
+    audit_path = tmp_path / "pilot_audit.jsonl"
+    recent_ts = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+    atomic_write_jsonl(
+        audit_path,
+        [
+            {"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": recent_ts},
+            {"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": "not-a-timestamp"},
+        ],
+    )
+    monkeypatch.setattr(sp, "AUDIT_LOG", str(audit_path))
+    limited, lim_ts = sp.is_rate_limited("BINANCE_BTC.mt.gain")
+    assert limited is True
+    assert lim_ts == recent_ts
+
+    # 5. scheduled_pilot._apply_config_change rolls back invalid writes & evaluate_key breaks ties toward current
+    conf_file = tmp_path / "instruments.conf"
+    atomic_write_text(conf_file, "[BTCEUR]\nmt.gain = 7.5 ; inline comment\n")
+    monkeypatch.setattr(sp, "INSTRUMENTS_CONF", str(conf_file))
+    sp._apply_config_change("BTCEUR", "mt.gain", 7.5, 8.25)
+    assert sp._current_value("BTCEUR", "mt.gain") == pytest.approx(8.25)
+    with pytest.raises(ValueError):
+        sp._apply_config_change("BTCEUR", "mt.gain", 8.25, "bad_num")
+    assert "mt.gain = 8.25" in conf_file.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(sp, "scan_backtest_ranges", lambda _p: {"BINANCE_OK.mt.gain": ["4.0", "6.0", "8.0"]})
+    monkeypatch.setattr(sp, "_current_value", lambda _s, _k: 6.0)
+    monkeypatch.setattr(sp.rb, "SYMBOLS", {"OKUSDC": {"params": {"mt.gain": "6.0"}}})
+    monkeypatch.setattr(sp, "_split_series", lambda _sym: ([1] * 120, [1] * 120))
+    monkeypatch.setattr(sp, "_run_one", lambda *_a, **_kw: {"net": 50.0, "buy_hold": 0.0})
+    tie_res = sp.evaluate_key("BINANCE_OK.mt.gain", "OKUSDC", "OK", "mt.gain", dry_run=True, propose=True)
+    assert tie_res["action"] == "no_change"
+    assert tie_res["winner_half1"] == "6.0"
+
+    # 6. ml_forecast.build_dataset skips windows spanning timestamp gaps; PricePrediction caps max_history
+    px_ml = np.linspace(100.0, 130.0, ml_fc.WARMUP + ml_fc.HORIZON_H + 5)
+    ts_gapped = np.arange(len(px_ml), dtype=np.float64) * 3600.0
+    ts_gapped[ml_fc.WARMUP + 2 :] += 10 * 86400.0
+    X_gap, _, _ = ml_fc.build_dataset(px_ml, ts=ts_gapped)
+    assert len(X_gap) == 0
+
+    pp = PricePrediction(window_size=4, epochs=2, max_history=12, retrain_every=5)
+    for i in range(20):
+        pp.process_price(100.0 + i)
+    assert len(pp.prices) == 12
+
+    # 7. vol_chronos flat volatility (actual == base, pred > base) scores 0.0 direction accuracy (not 1.0)
+    class _FakeTensor:
+        def __init__(self, arr: np.ndarray) -> None:
+            self._arr = arr
+
+        def numpy(self) -> np.ndarray:
+            return self._arr
+
+    class _FakePipe:
+        def predict(self, contexts: list, prediction_length: int) -> list[_FakeTensor]:
+            return [_FakeTensor(np.full((3, prediction_length), 0.5, dtype=np.float64)) for _ in contexts]
+
+    monkeypatch.setattr(ml_vc, "_load_pipeline", lambda: _FakePipe())
+    monkeypatch.setattr(ml_vc, "torch", SimpleNamespace(float32="f32", tensor=lambda a, dtype=None: np.asarray(a)))
+    flat_rv = np.full(30, 0.2, dtype=np.float64)
+    wf_flat = ml_vc.walk_forward_vol(flat_rv, horizon=5, warmup=5, stride=10)
+    assert wf_flat["direction_accuracy"] == 0.0

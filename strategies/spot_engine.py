@@ -1915,7 +1915,7 @@ class Strategy(BaseSpotMixin):
         """Stage 4: Evaluate take-profit (MDHTP, trailing, or classic/tranche) and DCA order dispatch."""
         avg = self._avg()
         if held > 1e-12 and self.s.get("entry_ts") is None:
-            self.s["entry_ts"] = tick_time
+            self.s["entry_ts"] = self._shadow_prices[0][0] if self._shadow_prices else tick_time
         if self._dispatch_take_profit(
             price, avg, held, high=high, regime=regime, regime_closes=regime_closes, tick_time=tick_time
         ):
