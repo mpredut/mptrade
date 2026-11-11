@@ -58,6 +58,13 @@ _RECONCILE_NOT_FOUND = "not_found"
 _RECONCILE_UNAVAILABLE = "unavailable"
 
 
+def _queue_sibling_state_path(filename: str) -> str:
+    return os.path.join(
+        os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
+        filename,
+    )
+
+
 class _PersistentQuarantineSet(set):
     """In-memory set backed by a JSON state file next to oq.QUEUE_FILE so quarantine
     alerts are deduplicated across worker process restarts."""
@@ -68,10 +75,7 @@ class _PersistentQuarantineSet(set):
         self._loaded_path: str | None = None
 
     def _path(self) -> str:
-        return os.path.join(
-            os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
-            "order_retry_quarantine_alerts.json",
-        )
+        return _queue_sibling_state_path("order_retry_quarantine_alerts.json")
 
     def sync_from_disk(self) -> None:
         path = self._path()
@@ -971,10 +975,7 @@ def _alert_giveups(records, now):
                 "ttl_sec": oq.resolve_record_ttl(rec),
             })
         digest = IncidentDigest(
-            os.path.join(
-                os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
-                "order_retry_giveup_alerts.json",
-            ),
+            _queue_sibling_state_path("order_retry_giveup_alerts.json"),
             GIVEUP_SUMMARY_SEC,
         )
         for report in digest.collect(events, now=now):

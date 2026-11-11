@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
     extract_timestamp_ms,
     format_price_log,
     load_dotenv,
@@ -1216,7 +1217,7 @@ def _apply_post_stop_ai_guard(
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):
                 min_qty_fn = getattr(inst, "min_qty", None)
-                min_q = float(min_qty_fn() or 0.0) if callable(min_qty_fn) else 0.0
+                min_q = (safe_nonneg_float(min_qty_fn(), default=0.0) or 0.0) if callable(min_qty_fn) else 0.0
                 ok_scaled, scaled_qty = _validate_scaled_buy_qty(
                     provider, symbol, current_price, _est_qty, scale, min_q,
                     "Post-STOP re-entry deferred after AI downscale",
@@ -1351,7 +1352,11 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         symbol, maxage_trade_s, api=inst.provider,
         buy_orders=trade_orders_buy, sell_orders=trade_orders_sell, now_ts=current_time_s,
     )
-    active_avg_buy = float(position.get("active_average_buy_price") or position.get("average_buy_price") or 0.0)
+    active_avg_buy = (
+        safe_pos_float(position.get("active_average_buy_price"), default=None)
+        or safe_pos_float(position.get("average_buy_price"), default=0.0)
+        or 0.0
+    )
     if tp_ref == "average" and active_avg_buy > 0:
         buy_price = active_avg_buy
         if _verbose:
@@ -1569,7 +1574,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 symbol, current_price, sell_price, sell_time, reentry_snap,
                 buy_budget, buy_qty_cfg, qty, inst=inst,
             )
-            _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
+            _reentry_applied_scale = clean_scale(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0), 1.0)
             if not allowed:
                 _restore_reentry_state(symbol, prev_reentry_state)
                 return

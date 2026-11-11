@@ -195,7 +195,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         continue
                 else:
                     continue
-            original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
+            original_qty = safe_nonneg_float(extract_orig_qty(order, default=0.0), default=0.0) or 0.0
             raw_exec_qty = next((order.get(k) for k in ("executedQty", "z", "vol_exec") if order.get(k) is not None), None)
             executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))

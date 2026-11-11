@@ -310,7 +310,7 @@ class MarketApi:
                 symbol, since_s, provider_name=provider_name) or []:
             if extract_order_side(trade) != side:
                 continue
-            timestamp = float(extract_timestamp_ms(trade, default=0) or 0)
+            timestamp = safe_nonneg_float(extract_timestamp_ms(trade, default=0), default=0.0) or 0.0
             if 0 < timestamp < 10_000_000_000:  # Seconds to milliseconds.
                 timestamp *= 1000.0
             price = extract_order_price(trade, default=0.0)

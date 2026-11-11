@@ -58,11 +58,6 @@ def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any
     return next((val for cand in variants if isinstance((val := casefold_get(mapping, cand)), dict)), default)
 
 
-def _scope_candidate_keys(sym: str, raw_cands: Any) -> Tuple[str, ...]:
-    """Filter symbol candidate variants so US equities (`_EQ`/`_US_EQ`) and crypto pairs never cross-contaminate."""
-    return filter_asset_class_variants(sym, raw_cands, include_compact_equity=True)
-
-
 def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bool:
     """Scale equity orderbook anchors to `spot_px`, clamp stub spreads (>200 bps), and keep walls on their proper side of spot."""
     if not isinstance(m_info, dict) or spot_px <= 0.0:
@@ -990,7 +985,11 @@ def enrich_cross_venue_trends(
         if not isinstance(entry, dict):
             continue
         sym_quotes = compatible_quote_suffixes(sym)
-        cand_keys = _scope_candidate_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True))
+        cand_keys = filter_asset_class_variants(
+            sym,
+            cache_symbol_variants(sym, include_original=True, include_base=True),
+            include_compact_equity=True,
+        )
         has_slopes = any(entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
 
         if not has_slopes and trends_items_map:
@@ -1213,7 +1212,11 @@ def sync_sibling_symbol_telemetry(
         if not isinstance(pinfo, dict):
             continue
         sym_quotes = compatible_quote_suffixes(sym)
-        for cand in _scope_candidate_keys(sym, cache_symbol_variants(sym, include_original=True, include_base=True)):
+        for cand in filter_asset_class_variants(
+            sym,
+            cache_symbol_variants(sym, include_original=True, include_base=True),
+            include_compact_equity=True,
+        ):
             if cand == sym:
                 continue
             cand_same_quote_family = compatible_quote_suffixes(cand) == sym_quotes
@@ -1304,9 +1307,10 @@ def sync_sibling_symbol_telemetry(
         msym_quotes = compatible_quote_suffixes(msym)
         p_match = _first_variant_dict(
             prices_and_trends,
-            _scope_candidate_keys(
+            filter_asset_class_variants(
                 msym,
                 cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
+                include_compact_equity=True,
             ),
         )
         enrich_microstructure_cvd(minfo, p_match)

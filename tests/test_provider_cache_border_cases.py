@@ -1265,6 +1265,66 @@ def test_venue_fee_precision_ssot_and_runtime_border_cases(monkeypatch: pytest.M
     assert dec.allowed is True
 
 
+def test_portfolio_lot_reconciliation_ssot_and_cache_coercion_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify shared open-lot pruning/VWAP SSOT and timestamp/margin coercion border cases."""
+    import assetguardian as ag
+    import guard_hierarchy as gh
+    import order_guard as og
+    from cacheprice import Cache365PriceManager
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        reconcile_fresh_lots_vwap,
+        select_fresh_open_lots,
+    )
+
+    # 1. Shared select_fresh_open_lots + reconcile_fresh_lots_vwap SSOT & corrupt ts_ms handling
+    now_ms = 1_750_000_000_000
+    day_ms = 86_400_000
+    raw_lots = [
+        {"qty": 1.0, "entry_px": 50.0, "ts_ms": now_ms - 60 * day_ms},
+        {"qty": 0.5, "entry_px": 80.0, "ts_ms": float("nan")},
+        {"qty": 0.5, "price": 90.0, "ts_ms": now_ms - 20 * day_ms},
+        {"qty": 0.5, "entry_px": 100.0, "ts_ms": now_ms - 2 * day_ms},
+    ]
+    fresh, newest_ts = select_fresh_open_lots(raw_lots, held_qty=1.5)
+    assert newest_ts == now_ms - 2 * day_ms
+    assert len(fresh) == 3
+    assert [lt["entry_px"] for lt in fresh] == [80.0, 90.0, 100.0]
+
+    ro_state = {"active_cycle_rem_qty": 2.5, "active_avg_buy_px": 72.0, "tactical_avg_buy_px": 90.0}
+    vwap, fq = reconcile_fresh_lots_vwap(ro_state, raw_lots, fresh, 1.5)
+    assert fq == pytest.approx(1.5)
+    assert vwap == pytest.approx(90.0)
+    assert ro_state["active_avg_buy_px"] == pytest.approx(90.0)
+    assert "tactical_avg_buy_px" not in ro_state
+
+    # 2. Cache365PriceManager._merge_max_nonneg_int_map handles corrupt/float/bool values safely
+    dst_ft = {"BTCUSDC": "1700000000100", "ETHUSDC": True, "SOLUSDC": None}
+    Cache365PriceManager._merge_max_nonneg_int_map(
+        dst_ft,
+        {"BTCUSDC": 1700000000250.0, "ETHUSDC": float("nan"), "SOLUSDC": -50, "ADAUSDC": "42"},
+    )
+    assert dst_ft == {
+        "BTCUSDC": 1700000000250,
+        "ETHUSDC": 0,
+        "SOLUSDC": 0,
+        "ADAUSDC": 42,
+    }
+
+    # 3. guard_hierarchy._load_margins survives NaN / corrupt mtime or last_check on order_guard
+    monkeypatch.setattr(og, "_MARGINS_FILE_MTIME", float("nan"), raising=False)
+    monkeypatch.setattr(og, "_MARGINS_LAST_CHECK", "corrupt_ts", raising=False)
+    margins = gh._load_margins()
+    assert isinstance(margins, dict)
+
+    # 4. assetguardian._price_row normalizes ms tuples and rejects bool / non-positive entries
+    assert ag._price_row([1_700_000_000_500, "42000.5"]) == pytest.approx((1_700_000_000.5, 42000.5))
+    assert ag._price_row([True, 42000.5]) is None
+    assert ag._price_row([1_700_000_000, 0.0]) is None
+
+
+
 
 
 

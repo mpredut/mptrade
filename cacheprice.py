@@ -48,6 +48,7 @@ from botcore import (
     resolve_now_ms,
     resolve_now_ts,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
     timestampToTime,
@@ -474,7 +475,7 @@ class Cache24PriceManager(CachePriceManagerBase):
                             by_ts[ts] = r
                 self.cache[s] = [by_ts[k] for k in sorted(by_ts)]
                 ft_cand = safe_pos_int(disk_ft.get(s), default=0) or 0
-                if ft_cand > int(self.fetchtime_per_symbol.get(s, 0) or 0):
+                if ft_cand > safe_nonneg_int(self.fetchtime_per_symbol.get(s), default=0):
                     self.fetchtime_per_symbol[s] = ft_cand
                 if hasattr(self, "_trim_old_data"):
                     self._trim_old_data(s)
@@ -788,8 +789,8 @@ class Cache365PriceManager(Cache24PriceManager):
             if self.cache:
                 for s_sym, rebuilt_ft in self.rebuild_fetchtimes().items():
                     self.fetchtime_per_symbol[s_sym] = max(
-                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
-                        int(rebuilt_ft or 0),
+                        safe_nonneg_int(self.fetchtime_per_symbol.get(s_sym), default=0),
+                        safe_nonneg_int(rebuilt_ft, default=0),
                     )
                     self._rest_sync_cursor_per_symbol.setdefault(
                         s_sym, self.fetchtime_per_symbol[s_sym]
@@ -819,30 +820,28 @@ class Cache365PriceManager(Cache24PriceManager):
                     0, self._persisted_counts.get(symbol, 0) - removed
                 )
 
+    @staticmethod
+    def _merge_max_nonneg_int_map(dst: dict, src: dict) -> None:
+        for s_sym, val in src.items():
+            dst[s_sym] = max(
+                safe_nonneg_int(dst.get(s_sym), default=0),
+                safe_nonneg_int(val, default=0),
+            )
+
     def _reload_and_merge_timestamps_locked(
         self, original_fetchtimes, original_rest_cursors
     ):
-        live_fetchtimes = dict(original_fetchtimes)
-        for s_sym, ft in self.fetchtime_per_symbol.items():
-            live_fetchtimes[s_sym] = max(
-                int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0)
-            )
-        live_rest_cursors = dict(original_rest_cursors)
-        for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
-            live_rest_cursors[s_sym] = max(
-                int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0)
-            )
+        live_fetchtimes = {
+            k: safe_nonneg_int(v, default=0) for k, v in dict(original_fetchtimes).items()
+        }
+        self._merge_max_nonneg_int_map(live_fetchtimes, self.fetchtime_per_symbol)
+        live_rest_cursors = {
+            k: safe_nonneg_int(v, default=0) for k, v in dict(original_rest_cursors).items()
+        }
+        self._merge_max_nonneg_int_map(live_rest_cursors, self._rest_sync_cursor_per_symbol)
         self._load_jsonl()
-        for s_sym, ft in live_fetchtimes.items():
-            self.fetchtime_per_symbol[s_sym] = max(
-                int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
-                int(ft or 0),
-            )
-        for s_sym, cur in live_rest_cursors.items():
-            self._rest_sync_cursor_per_symbol[s_sym] = max(
-                int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
-                int(cur or 0),
-            )
+        self._merge_max_nonneg_int_map(self.fetchtime_per_symbol, live_fetchtimes)
+        self._merge_max_nonneg_int_map(self._rest_sync_cursor_per_symbol, live_rest_cursors)
 
     def _write_unpersisted_memory_tail_locked(
         self, target, original_cache, original_persisted_counts, *, min_ts_ms: int = 0

@@ -16,7 +16,7 @@ from cachepaths import (
     normalize_venue_name,
 )
 from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
-from botcore import safe_nonneg_float
+from botcore import safe_nonneg_float, safe_nonneg_int, safe_pos_int
 from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_pos_float,
@@ -182,16 +182,109 @@ _FLAT_POS_KEYS = (
 )
 
 
-def _scope_variants(sym: str, variants: Any, *, is_eq: Optional[bool] = None) -> tuple[str, ...]:
-    return filter_asset_class_variants(sym, variants, is_equity=is_eq)
-
-
 def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, Any], *, full_pos_clear: bool = False) -> None:
     if isinstance(ro, dict):
         for k_ro in _FLAT_RO_KEYS:
             ro.pop(k_ro, None)
     for k_p in (_FLAT_POS_KEYS if full_pos_clear else ("trailing_peak", "dd_from_peak_pct")):
         pos.pop(k_p, None)
+
+
+def select_fresh_open_lots(
+    open_lots: Any,
+    *,
+    held_qty: float = -1.0,
+    fallback_newest_ts_ms: int = 0,
+) -> tuple[List[Dict[str, Any]], int]:
+    """Filter up to the 4 newest open lots within the active holding window, extending to match ``held_qty``."""
+    lots_seq = open_lots if isinstance(open_lots, list) else []
+    newest_lot_ts = (
+        max(
+            (safe_pos_int(x.get("ts_ms"), default=0) or 0 for x in lots_seq if isinstance(x, dict)),
+            default=0,
+        )
+        or (safe_pos_int(fallback_newest_ts_ms, default=0) or 0)
+    )
+    tail_lots = lots_seq[-4:]
+    fresh_lots = [
+        ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+        for lot in tail_lots
+        if isinstance(lot, dict)
+        and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
+        and (
+            newest_lot_ts <= 0
+            or not (lot_ts := safe_pos_int(lot.get("ts_ms"), default=0) or 0)
+            or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
+        )
+    ]
+    if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(tail_lots):
+        fresh_q_chk = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+        if fresh_q_chk < held_qty * 0.90:
+            ext_rev: List[Dict[str, Any]] = []
+            acc_q = 0.0
+            for lot in reversed(tail_lots):
+                if not isinstance(lot, dict):
+                    continue
+                lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
+                lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
+                lot_ts = safe_pos_int(lot.get("ts_ms"), default=0) or 0
+                if lot_px <= 0.0 or lq <= 0.0:
+                    continue
+                if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
+                    continue
+                if acc_q + lq <= held_qty * 1.05 or (
+                    newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
+                ):
+                    ext_rev.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+                    acc_q += lq
+            if len(ext_rev) > len(fresh_lots):
+                fresh_lots = list(reversed(ext_rev))
+    return fresh_lots, newest_lot_ts
+
+
+def reconcile_fresh_lots_vwap(
+    fills_or_ro: Dict[str, Any],
+    open_lots: Any,
+    fresh_lots: List[Dict[str, Any]],
+    held_qty: float,
+) -> tuple[Optional[float], float]:
+    """Recompute active VWAP on ``fills_or_ro`` when pruned ``fresh_lots`` match ``held_qty`` better than stale open lots."""
+    fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
+    lots_seq = open_lots if isinstance(open_lots, list) else []
+    if held_qty > 1e-8 and fresh_lots and len(fresh_lots) < len(lots_seq):
+        unfiltered_q = safe_pos_float(fills_or_ro.get("active_cycle_rem_qty"), 0.0) or sum(
+            safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in lots_seq if isinstance(lt, dict)
+        )
+        if fresh_q >= held_qty * 0.98 and unfiltered_q > held_qty * 1.15:
+            fresh_cost = sum(
+                (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
+                for lt in fresh_lots
+            )
+            if fresh_cost > 0.0:
+                fresh_vwap = round(fresh_cost / fresh_q, 6)
+                fills_or_ro["active_avg_buy_px"] = fresh_vwap
+                fills_or_ro["active_cycle_rem_qty"] = round(fresh_q, 6)
+                if (tac_cur := safe_pos_float(fills_or_ro.get("tactical_avg_buy_px"), default=None)) is not None and abs(
+                    tac_cur - fresh_vwap
+                ) <= max(1e-6, fresh_vwap * 1e-5):
+                    fills_or_ro.pop("tactical_avg_buy_px", None)
+                return fresh_vwap, fresh_q
+    return None, fresh_q
+
+
+def _extract_oldest_cycle_lot_ts_ms(ro: Any, fallback_ts_ms: int = 0) -> int:
+    if isinstance(ro, dict):
+        lot_ts = [
+            t
+            for x in (ro.get("open_lots") or ro.get("recent_buys") or ())
+            if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
+        ]
+        if not lot_ts and isinstance(lb := ro.get("last_buy"), dict):
+            if (lb_t := safe_pos_int(lb.get("ts_ms"), default=0) or 0) > 0:
+                lot_ts.append(lb_t)
+        if lot_ts:
+            return min(lot_ts)
+    return safe_pos_int(fallback_ts_ms, default=0) or 0
 
 
 def _resolve_cycle_high_since(
@@ -278,7 +371,7 @@ class VenueCycleStateEvaluator(PortfolioEvaluatorBase):
             st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price"),
             default=None,
         )
-        dca_buys_i = int(safe_nonneg_float(st_data.get("dca_buys"), default=0) or 0)
+        dca_buys_i = safe_nonneg_int(st_data.get("dca_buys"), default=0)
         single_lot_px = (
             safe_pos_float(st_data.get("entry_price") or last_buy_px, default=None)
             if dca_buys_i == 0
@@ -609,15 +702,15 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                             cycle_buys_fmt = [
                                 b
                                 for b in cycle_buys_fmt
-                                if (b_ts := int(b.get("ts_ms") or 0)) <= 0
+                                if (b_ts := safe_pos_int(b.get("ts_ms"), default=0) or 0) <= 0
                                 or (latest_fill_ts_ms - b_ts) <= 7 * 86400 * 1000
                             ]
                         if latest_fill_ts_ms > 0:
-                            ref_buy_ts = int(ts_raw) if ts_raw else latest_fill_ts_ms
+                            ref_buy_ts = safe_pos_int(ts_raw, default=0) or latest_fill_ts_ms
                             cycle_sells_fmt = [
                                 s
                                 for s in cycle_sells_fmt
-                                if (s_ts := int(s.get("ts_ms") or 0)) <= 0
+                                if (s_ts := safe_pos_int(s.get("ts_ms"), default=0) or 0) <= 0
                                 or (
                                     (ref_buy_ts - s_ts) <= 72 * 3600 * 1000
                                     and (latest_fill_ts_ms - s_ts) <= 7 * 86400 * 1000
@@ -648,10 +741,11 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                 if q_f is not None and q_f > 0.0:
                     prev_cost_qty = cost_qty
                     prev_top_lot_ts = (
-                        int(open_lots[-1].get("ts_ms") or 0)
+                        safe_pos_int(open_lots[-1].get("ts_ms"), default=0) or 0
                         if open_lots
-                        else (int(buys_fmt[-1].get("ts_ms") or 0) if buys_fmt else 0)
+                        else ((safe_pos_int(buys_fmt[-1].get("ts_ms"), default=0) or 0) if buys_fmt else 0)
                     )
+                    ts_sell_i = safe_pos_int(ts_raw, default=0) or 0
                     is_full_exit = q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12
                     last_exit_oversold = bool(
                         is_full_exit
@@ -660,24 +754,24 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                             or (prev_cost_qty <= 1e-12 and (last_exit_oversold or bool(buys_fmt)))
                         )
                         and (
-                            not ts_raw
+                            ts_sell_i <= 0
                             or prev_top_lot_ts <= 0
-                            or (int(ts_raw) - prev_top_lot_ts) <= 7 * 86400 * 1000
+                            or (ts_sell_i - prev_top_lot_ts) <= 7 * 86400 * 1000
                         )
                     )
-                    if ts_raw:
-                        last_sell_ts_ms = max(last_sell_ts_ms, int(ts_raw))
+                    if ts_sell_i > 0:
+                        last_sell_ts_ms = max(last_sell_ts_ms, ts_sell_i)
                     cost_qty, active_avg = (0.0, 0.0) if is_full_exit else (cost_qty - q_f, active_avg)
                     in_active_swing_window = (
                         latest_fill_ts_ms <= 0
-                        or not ts_raw
-                        or (latest_fill_ts_ms - int(ts_raw)) <= 72 * 3600 * 1000
+                        or ts_sell_i <= 0
+                        or (latest_fill_ts_ms - ts_sell_i) <= 72 * 3600 * 1000
                     )
                     rem_to_close = q_f
                     while rem_to_close > 1e-12 and open_lots:
                         top_lot = open_lots[-1]
-                        lot_q = float(top_lot.get("qty") or 0.0)
-                        lot_px = float(top_lot.get("entry_px") or 0.0)
+                        lot_q = safe_pos_float(top_lot.get("qty"), default=0.0) or 0.0
+                        lot_px = safe_pos_float(top_lot.get("entry_px"), default=0.0) or 0.0
                         matched_q = min(rem_to_close, lot_q)
                         if in_active_swing_window and p_f is not None and p_f > 0.0 and lot_px > 0.0:
                             lifo_realized_pnl_usd += matched_q * (p_f - lot_px)
@@ -694,8 +788,8 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
         cand_swing_lots = open_lots[-4:] if open_lots else []
         if cand_swing_lots:
             newest_lot = cand_swing_lots[-1]
-            newest_px = float(newest_lot.get("entry_px") or 0.0)
-            newest_ts = int(newest_lot.get("ts_ms") or 0)
+            newest_px = safe_pos_float(newest_lot.get("entry_px"), default=0.0) or 0.0
+            newest_ts = safe_pos_int(newest_lot.get("ts_ms"), default=0) or 0
             sold_after_newest = last_sell_ts_ms > 0 and newest_ts > 0 and last_sell_ts_ms > newest_ts
             top_lot_stale_after_sell = (
                 sold_after_newest
@@ -705,8 +799,8 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
             active_swing_lots = []
             if not top_lot_stale_after_sell:
                 for lt in reversed(cand_swing_lots):
-                    lt_px = float(lt.get("entry_px") or 0.0)
-                    lt_ts = int(lt.get("ts_ms") or 0)
+                    lt_px = safe_pos_float(lt.get("entry_px"), default=0.0) or 0.0
+                    lt_ts = safe_pos_int(lt.get("ts_ms"), default=0) or 0
                     time_ok = (newest_ts <= 0 or lt_ts <= 0) or ((newest_ts - lt_ts) <= 72 * 3600 * 1000)
                     px_ok = newest_px <= 0.0 or (abs(lt_px - newest_px) / newest_px <= 0.075)
                     if time_ok and px_ok:
@@ -717,16 +811,28 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                     active_swing_lots = [newest_lot]
                 if sold_after_newest and len(active_swing_lots) >= len(open_lots):
                     active_swing_lots = []
-            sw_cost = sum(float(x.get("qty") or 0.0) * float(x.get("entry_px") or 0.0) for x in active_swing_lots)
-            sw_qty = sum(float(x.get("qty") or 0.0) for x in active_swing_lots)
+            sw_cost = sum(
+                (safe_pos_float(x.get("qty"), default=0.0) or 0.0)
+                * (safe_pos_float(x.get("entry_px"), default=0.0) or 0.0)
+                for x in active_swing_lots
+            )
+            sw_qty = sum(safe_pos_float(x.get("qty"), default=0.0) or 0.0 for x in active_swing_lots)
             if sw_qty > 1e-12 and sw_cost > 0.0:
                 swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
                 swing_subcycle_qty = round(sw_qty, 6)
         elif buys_fmt:
-            rec_b = [b for b in buys_fmt[-4:] if (b.get("qty") or 0.0) > 0.0 and (b.get("price") or 0.0) > 0.0]
+            rec_b = [
+                b for b in buys_fmt[-4:]
+                if (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
+                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+            ]
             if rec_b:
-                sw_cost = sum(float(b["qty"]) * float(b["price"]) for b in rec_b)
-                sw_qty = sum(float(b["qty"]) for b in rec_b)
+                sw_cost = sum(
+                    (safe_pos_float(b.get("qty"), default=0.0) or 0.0)
+                    * (safe_pos_float(b.get("price"), default=0.0) or 0.0)
+                    for b in rec_b
+                )
+                sw_qty = sum(safe_pos_float(b.get("qty"), default=0.0) or 0.0 for b in rec_b)
                 if sw_qty > 1e-12:
                     swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
                     swing_subcycle_qty = round(sw_qty, 6)
@@ -751,7 +857,7 @@ class SymbolRecentFillsEvaluator(PortfolioEvaluatorBase):
                         s
                         for s in cycle_sells_fmt
                         if latest_fill_ts_ms <= 0
-                        or (s_ts := int(s.get("ts_ms") or 0)) <= 0
+                        or (s_ts := safe_pos_int(s.get("ts_ms"), default=0) or 0) <= 0
                         or (latest_fill_ts_ms - s_ts) <= 7 * 86400 * 1000
                     ]
                     or cycle_sells_fmt
@@ -806,18 +912,16 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                 entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
                 c_quotes = compatible_quote_suffixes(c_sym)
                 c_is_eq = c_venue == "t212" or has_equity_suffix(c_sym)
-                c_cands = _scope_variants(
+                c_cands = filter_asset_class_variants(
                     c_sym,
                     (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes)),
-                    is_eq=c_is_eq,
+                    is_equity=c_is_eq,
                 )
-                if entry_ts_ms:
-                    entry_ts_i = int(entry_ts_ms)
+                if (entry_ts_i := safe_pos_int(entry_ts_ms, default=0) or 0) > 0:
                     for cand in c_cands:
                         cyc_sell_ts_map.setdefault((f"{c_venue}:entry", str(cand).upper()), entry_ts_i)
                     cyc_sell_ts_map[(f"{c_venue}:entry", str(c_sym).upper())] = entry_ts_i
-                if sell_ts_ms:
-                    sell_ts_i = int(sell_ts_ms)
+                if (sell_ts_i := safe_pos_int(sell_ts_ms, default=0) or 0) > 0:
                     for cand in c_cands:
                         cyc_sell_ts_map.setdefault((c_venue, str(cand).upper()), sell_ts_i)
                     cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = sell_ts_i
@@ -949,7 +1053,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         cyc["last_sell_price"] = round(ls_px, avg_dec)
                         _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
                     if buys_after and buys_before:
-                        cyc["dca_buys"] = max(int(safe_nonneg_float(cyc.get("dca_buys"), default=0) or 0), len(buys_after))
+                        cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
                     elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
                         cyc["dca_buys"] = len(buys_after) - 1
                     continue
@@ -1039,7 +1143,7 @@ class VenueCycleReconciliationEvaluator(PortfolioEvaluatorBase):
                         cyc["last_sell_price"] = round(ls_px, avg_dec)
                         _sync_exit_kind(cyc, ls_px, max(cyc_qty_cur, live_held or 0.0, rem_q_ro))
                     if buys_before:
-                        cyc["dca_buys"] = max(int(safe_nonneg_float(cyc.get("dca_buys"), default=0) or 0), len(buys_after))
+                        cyc["dca_buys"] = max(safe_nonneg_int(cyc.get("dca_buys"), default=0), len(buys_after))
                     elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
                         cyc["dca_buys"] = len(buys_after) - 1
         return cyc_sell_ts_map
@@ -1083,15 +1187,15 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             p_venue = normalize_venue_name(pos.get("venue"))
             p_is_eq = has_equity_suffix(p_sym) or p_venue == "t212"
             p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
-            p_quote_variants = _scope_variants(
+            p_quote_variants = filter_asset_class_variants(
                 p_sym,
                 cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes),
-                is_eq=p_is_eq,
+                is_equity=p_is_eq,
             )
             if p_venue and p_sym:
                 for cand_vs in (p_sym, *p_quote_variants):
                     seen_venue_syms.add((p_venue, str(cand_vs).upper()))
-            p_variants = (*p_quote_variants, *_scope_variants(p_sym, cache_symbol_variants(p_sym), is_eq=p_is_eq))
+            p_variants = (*p_quote_variants, *filter_asset_class_variants(p_sym, cache_symbol_variants(p_sym), is_equity=p_is_eq))
             pos_px_f = safe_float(pos.get("price"), 0.0)
             p_lookup_sym = ensure_equity_suffix(p_sym, is_equity=p_is_eq)
             cand_px = resolve_symbol_price(p_lookup_sym, prices_and_trends, explicit_quote=pos.get("quote"))
@@ -1141,71 +1245,26 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
                 r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
                 open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
-                newest_lot_ts = (
-                    max([int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in open_lots if isinstance(x, dict)], default=0)
-                    or (int(safe_pos_float(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0)
+                fresh_lots, newest_lot_ts = select_fresh_open_lots(
+                    open_lots,
+                    held_qty=held_cur,
+                    fallback_newest_ts_ms=(safe_pos_int(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0,
                 )
-                fresh_lots = [
-                    ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
-                    for lot in open_lots[-4:]
-                    if isinstance(lot, dict)
-                    and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
-                    and (
-                        newest_lot_ts <= 0
-                        or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))
-                        or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
-                    )
-                ]
-                if held_cur > 1e-8 and fresh_lots and len(fresh_lots) < len(open_lots[-4:]):
-                    fresh_q_chk = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
-                    if fresh_q_chk < held_cur * 0.90:
-                        ext_rev: List[Dict[str, Any]] = []
-                        acc_q = 0.0
-                        for lot in reversed(open_lots[-4:]):
-                            if not isinstance(lot, dict):
-                                continue
-                            lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
-                            lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
-                            lot_ts = int(safe_pos_float(lot.get("ts_ms"), default=0) or 0)
-                            if lot_px <= 0.0 or lq <= 0.0:
-                                continue
-                            if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
-                                continue
-                            if acc_q + lq <= held_cur * 1.05 or (newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000):
-                                ext_rev.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
-                                acc_q += lq
-                        if len(ext_rev) > len(fresh_lots):
-                            fresh_lots = list(reversed(ext_rev))
                 if not is_flat_after_exit and "open_lots" in pos:
                     if fresh_lots:
                         pos["open_lots"] = fresh_lots
-                        if held_cur > 1e-8 and len(fresh_lots) < len(open_lots):
-                            fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
-                            unfiltered_q = safe_pos_float(ro.get("active_cycle_rem_qty"), 0.0) or sum(
-                                safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in open_lots if isinstance(lt, dict)
-                            )
-                            if fresh_q >= held_cur * 0.98 and unfiltered_q > held_cur * 1.15:
-                                fresh_cost = sum(
-                                    (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
-                                    for lt in fresh_lots
-                                )
-                                if fresh_cost > 0.0:
-                                    fresh_vwap = round(fresh_cost / fresh_q, 6)
-                                    ro["active_avg_buy_px"] = fresh_vwap
-                                    ro["open_lots"] = fresh_lots
-                                    ro["active_cycle_rem_qty"] = round(fresh_q, 6)
-                                    set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
-                                    if (tac_cur := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None and abs(
-                                        tac_cur - fresh_vwap
-                                    ) <= max(1e-6, fresh_vwap * 1e-5):
-                                        ro.pop("tactical_avg_buy_px", None)
-                                        pos.pop("tactical_avg_buy_px", None)
-                                        pos.pop("pnl_vs_tactical_avg_pct", None)
-                                    if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
-                                        sw_cur - fresh_vwap
-                                    ) / max(fresh_vwap, 1e-9) < 0.002:
-                                        pos.pop("swing_subcycle_avg_px", None)
-                                        pos.pop("pnl_vs_swing_avg_pct", None)
+                        fresh_vwap, _ = reconcile_fresh_lots_vwap(ro, open_lots, fresh_lots, held_cur)
+                        if fresh_vwap is not None:
+                            ro["open_lots"] = fresh_lots
+                            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", fresh_vwap, pos_px_f, overwrite=True)
+                            if "tactical_avg_buy_px" not in ro:
+                                pos.pop("tactical_avg_buy_px", None)
+                                pos.pop("pnl_vs_tactical_avg_pct", None)
+                            if (sw_cur := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None and abs(
+                                sw_cur - fresh_vwap
+                            ) / max(fresh_vwap, 1e-9) < 0.002:
+                                pos.pop("swing_subcycle_avg_px", None)
+                                pos.pop("pnl_vs_swing_avg_pct", None)
                     else:
                         pos.pop("open_lots", None)
                 low_buy_px = (
@@ -1220,7 +1279,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 if held_cur > 1e-8 and not is_flat_balance and not is_flat_after_exit and pos_px_f > 0.0:
                     open_lot_ts_vals = [
                         t for x in open_lots
-                        if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
+                        if isinstance(x, dict) and (t := safe_pos_int(x.get("ts_ms"), default=0) or 0) > 0
                     ]
                     oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
                     pos_age_ms = (int(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
@@ -1233,7 +1292,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         hi_24h = _resolve_cycle_high_since(
                             p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                         )
-                        ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
+                        ls_ts_ms = (safe_pos_int(ls.get("ts_ms"), default=0) or 0) if isinstance(ls, dict) else 0
                         ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
                         ref_pk_anchor = max(pos_px_f, act_avg_pk or 0.0, ls_px_pk)
                         if hi_24h > 0.0 and not _prices_diverged(ref_pk_anchor, hi_24h, threshold=0.35):
@@ -1344,14 +1403,9 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                             or (act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5))
                             or (c_entry_c is not None and abs(raw_pk_orig - c_entry_c) <= max(1e-6, max(raw_pk_orig, c_entry_c) * 1e-5))
                         ):
-                            c_lot_ts_p = [
-                                t for x in ((ro.get("open_lots") or ro.get("recent_buys") or []) if isinstance(ro, dict) else ())
-                                if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
-                            ]
-                            if not c_lot_ts_p and isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict):
-                                if (lb_t_p := int(safe_pos_float(ro["last_buy"].get("ts_ms"), default=0) or 0)) > 0:
-                                    c_lot_ts_p.append(lb_t_p)
-                            oldest_c_ts_p = min(c_lot_ts_p) if c_lot_ts_p else (cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0)
+                            oldest_c_ts_p = _extract_oldest_cycle_lot_ts_ms(
+                                ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0
+                            )
                             c_age_ms_p = (int(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
                             if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
                                 hi_24h_p = _resolve_cycle_high_since(
@@ -1430,10 +1484,10 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 if cyc_qty <= 1e-8:
                     continue
                 c_quotes = compatible_quote_suffixes(c_sym_u)
-                c_quote_variants = _scope_variants(
+                c_quote_variants = filter_asset_class_variants(
                     c_sym_u,
                     cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes),
-                    is_eq=(c_venue == "t212" or has_equity_suffix(c_sym_u)),
+                    is_equity=(c_venue == "t212" or has_equity_suffix(c_sym_u)),
                 )
                 ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
                 if ro is None and isinstance(recent_orders, dict):
@@ -1468,21 +1522,16 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                         or (c_entry is not None and abs(c_pk - c_entry) <= max(1e-6, max(c_pk, c_entry) * 1e-5))
                     )
                     if c_pk_missing_or_unwarmed:
-                        c_lot_ts = [
-                            t for x in ((ro.get("open_lots") or ro.get("recent_buys") or []) if isinstance(ro, dict) else ())
-                            if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
-                        ]
-                        if not c_lot_ts and isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict):
-                            if (lb_t := int(safe_pos_float(ro["last_buy"].get("ts_ms"), default=0) or 0)) > 0:
-                                c_lot_ts.append(lb_t)
-                        oldest_c_ts = min(c_lot_ts) if c_lot_ts else (cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0)
+                        oldest_c_ts = _extract_oldest_cycle_lot_ts_ms(
+                            ro, fallback_ts_ms=cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0
+                        )
                         c_age_ms = (int(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
                         if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
                             hi_24h_c = _resolve_cycle_high_since(
                                 c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                             )
                             ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
-                            ls_c_ts = int(safe_pos_float(ls_c_d.get("ts_ms"), default=0) or 0)
+                            ls_c_ts = safe_pos_int(ls_c_d.get("ts_ms"), default=0) or 0
                             ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
                             ref_pk_anchor_c = max(c_px, c_avg or 0.0, c_entry or 0.0, ls_c_px)
                             if hi_24h_c > 0.0 and not _prices_diverged(ref_pk_anchor_c, hi_24h_c, threshold=0.35):

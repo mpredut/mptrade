@@ -37,6 +37,7 @@ from botcore import (
     required_bool_env,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
@@ -679,7 +680,7 @@ class HyperliquidProvider(MarketDataProvider):
             return 0.0
         try:
             pp = self.pair_precision(symbol)
-            sz_dec = int(getattr(pp, "volume_decimals", 2)) if pp is not None else 2
+            sz_dec = safe_nonneg_int(getattr(pp, "volume_decimals", 2), default=2) if pp is not None else 2
         except Exception:
             sz_dec = 2
         _round_px = _hl_client_module()._round_px

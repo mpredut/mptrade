@@ -627,7 +627,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             all_tbuf_ts = list(tbuf_v.timestamps)
                             all_tbuf_px = list(tbuf_v.prices)
                         if len(ts_tail) >= 20:
-                            max_intra_dt = max(1800.0, min(7200.0, float(getattr(w_big, "window_seconds", 9000.0))))
+                            max_intra_dt = max(
+                                1800.0,
+                                min(7200.0, safe_pos_float(getattr(w_big, "window_seconds", 9000.0), default=9000.0) or 9000.0),
+                            )
                             active_dts = [
                                 (ts_tail[i] - ts_tail[i - 1]) / 1000.0
                                 for i in range(1, len(ts_tail))

@@ -51,7 +51,9 @@ from intelligence.sentiment.evaluators.portfolio_evaluator import (
     enrich_positions_with_orders_and_cycles,
     extract_symbol_recent_fills,
     parse_venue_cycle_state,
+    reconcile_fresh_lots_vwap,
     reconcile_venue_cycles_with_recent_orders,
+    select_fresh_open_lots,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _prices_diverged,
@@ -302,7 +304,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                         sym_list = by_sym.setdefault(sym_t, [])
                         if dedup_k and (sym_t, dedup_k) in idx_by_oid:
                             existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
-                            new_q = max(float(existing.get("qty") or 0.0), f_q)
+                            new_q = max(safe_pos_float(existing.get("qty"), default=0.0) or 0.0, f_q)
                             existing["qty"] = new_q
                             existing["executedQty"] = new_q
                             existing["price"] = px_f
@@ -1254,77 +1256,27 @@ class SymbolBestRecentFillsCollector(PortfolioCacheCollectorBase):
                         if fills.get("last_sell") is None and cyc_ls is not None:
                             fills["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
         if isinstance(fills, dict) and isinstance(open_lots_raw := fills.get("open_lots"), list) and open_lots_raw:
-            newest_lot_ts = max(
-                [int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in open_lots_raw if isinstance(x, dict)],
-                default=0,
-            )
-            fresh_lots = [
-                ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
-                for lot in open_lots_raw[-4:]
-                if isinstance(lot, dict)
-                and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
-                and (
-                    newest_lot_ts <= 0
-                    or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))
-                    or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
-                )
-            ]
+            held_cur_f = -1.0
+            if cachedb_dir and best_venue:
+                vb_p_f = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+                vb_d_f = _rj(vb_p_f) if os.path.exists(vb_p_f) else None
+                if isinstance(vb_d_f, dict):
+                    for cand_v in dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in scoped_variants if str(c).strip())]):
+                        if isinstance(p_d := vb_d_f.get(f"pos:{best_venue}:{cand_v}"), dict):
+                            fb_v = safe_nonneg_float(
+                                p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
+                                default=None,
+                            )
+                            lb_v = safe_pos_float(p_d.get("locked_base_qty") or p_d.get("locked"), default=0.0) or 0.0
+                            if fb_v is not None:
+                                held_cur_f = fb_v + lb_v
+                                break
+                    if held_cur_f < 0.0 and base_upper:
+                        if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
+                            held_cur_f = raw_b_v
+            fresh_lots, _ = select_fresh_open_lots(open_lots_raw, held_qty=held_cur_f)
             if fresh_lots:
-                held_cur_f = -1.0
-                if cachedb_dir and best_venue:
-                    vb_p_f = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-                    vb_d_f = _rj(vb_p_f) if os.path.exists(vb_p_f) else None
-                    if isinstance(vb_d_f, dict):
-                        for cand_v in dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in scoped_variants if str(c).strip())]):
-                            if isinstance(p_d := vb_d_f.get(f"pos:{best_venue}:{cand_v}"), dict):
-                                fb_v = safe_nonneg_float(
-                                    p_d.get("free_base") if p_d.get("free_base") is not None else p_d.get("free"),
-                                    default=None,
-                                )
-                                lb_v = safe_pos_float(p_d.get("locked_base_qty") or p_d.get("locked"), default=0.0) or 0.0
-                                if fb_v is not None:
-                                    held_cur_f = fb_v + lb_v
-                                    break
-                        if held_cur_f < 0.0 and base_upper:
-                            if (raw_b_v := safe_nonneg_float(vb_d_f.get(f"{best_venue}:{base_upper}"), default=None)) is not None:
-                                held_cur_f = raw_b_v
-                fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
-                if held_cur_f > 1e-8 and len(fresh_lots) < len(open_lots_raw[-4:]) and fresh_q < held_cur_f * 0.90:
-                    ext_rev_f: List[Dict[str, Any]] = []
-                    acc_q_f = 0.0
-                    for lot in reversed(open_lots_raw[-4:]):
-                        if not isinstance(lot, dict):
-                            continue
-                        lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
-                        lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
-                        lot_ts = int(safe_pos_float(lot.get("ts_ms"), default=0) or 0)
-                        if lot_px <= 0.0 or lq <= 0.0:
-                            continue
-                        if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
-                            continue
-                        if acc_q_f + lq <= held_cur_f * 1.05 or (newest_lot_ts <= 0 or not lot_ts or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000):
-                            ext_rev_f.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
-                            acc_q_f += lq
-                    if len(ext_rev_f) > len(fresh_lots):
-                        fresh_lots = list(reversed(ext_rev_f))
-                        fresh_q = sum(safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in fresh_lots)
-                if held_cur_f > 1e-8 and len(fresh_lots) < len(open_lots_raw):
-                    unfiltered_q = safe_pos_float(fills.get("active_cycle_rem_qty"), 0.0) or sum(
-                        safe_pos_float(lt.get("qty"), 0.0) or 0.0 for lt in open_lots_raw if isinstance(lt, dict)
-                    )
-                    if fresh_q >= held_cur_f * 0.98 and unfiltered_q > held_cur_f * 1.15:
-                        fresh_cost = sum(
-                            (safe_pos_float(lt.get("qty"), 0.0) or 0.0) * (safe_pos_float(lt.get("entry_px"), 0.0) or 0.0)
-                            for lt in fresh_lots
-                        )
-                        if fresh_cost > 0.0:
-                            fresh_vwap = round(fresh_cost / fresh_q, 6)
-                            fills["active_avg_buy_px"] = fresh_vwap
-                            fills["active_cycle_rem_qty"] = round(fresh_q, 6)
-                            if (tac_cur := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None and abs(
-                                tac_cur - fresh_vwap
-                            ) <= max(1e-6, fresh_vwap * 1e-5):
-                                fills.pop("tactical_avg_buy_px", None)
+                _, fresh_q = reconcile_fresh_lots_vwap(fills, open_lots_raw, fresh_lots, held_cur_f)
                 if held_cur_f > 1e-8 and fresh_q > held_cur_f * 1.02:
                     clipped_rev: List[Dict[str, Any]] = []
                     rem_q = held_cur_f

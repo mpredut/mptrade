@@ -24,6 +24,7 @@ from botcore import (
     _parse_bool_flag,
     parse_dotenv,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name
@@ -744,8 +745,8 @@ def _load_margins() -> Dict[str, Any]:
             return patched_loader()
         has_og_state = "_MARGINS" in og_mod.__dict__
         cur_margins = og_mod.__dict__.get("_MARGINS") if has_og_state else _MARGINS
-        cur_mtime = float(og_mod.__dict__.get("_MARGINS_FILE_MTIME", _MARGINS_FILE_MTIME) or 0.0)
-        cur_last_check = float(og_mod.__dict__.get("_MARGINS_LAST_CHECK", _MARGINS_LAST_CHECK) or 0.0)
+        cur_mtime = safe_nonneg_float(og_mod.__dict__.get("_MARGINS_FILE_MTIME", _MARGINS_FILE_MTIME), default=0.0) or 0.0
+        cur_last_check = safe_nonneg_float(og_mod.__dict__.get("_MARGINS_LAST_CHECK", _MARGINS_LAST_CHECK), default=0.0) or 0.0
         anchor_file = og_mod.__dict__.get("__file__") or _DEFAULT_ORDER_GUARD_ANCHOR
     else:
         cur_margins = _MARGINS

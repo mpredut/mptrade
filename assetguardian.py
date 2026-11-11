@@ -38,6 +38,7 @@ from botcore import (
     clamp_float,
     exact_nonneg_int,
     load_root_config,
+    normalize_epoch_sec,
     required_float_env,
     required_int_env,
     safe_float,
@@ -269,20 +270,12 @@ def _price_row(row):
     if isinstance(row, dict):
         timestamp = extract_timestamp_s(row, default=None)
         price = extract_order_price(row, default=None)
-        if timestamp is None or price is None:
-            return None
-        return timestamp, price
-    elif isinstance(row, (list, tuple)) and len(row) >= 2:
-        raw_ts, raw_price = row[0], row[1]
-    else:
+        return (timestamp, price) if (timestamp is not None and price is not None) else None
+    if not isinstance(row, (list, tuple)) or len(row) < 2:
         return None
-    timestamp = _finite_float(raw_ts, positive=True)
-    price = _finite_float(raw_price, positive=True)
-    if timestamp is None or price is None:
-        return None
-    if timestamp > 100_000_000_000:  # Price24 persists Binance timestamps in ms.
-        timestamp /= 1000.0
-    return timestamp, price
+    timestamp = normalize_epoch_sec(row[0], default=None)
+    price = safe_pos_float(row[1], default=None)
+    return (timestamp, price) if (timestamp is not None and price is not None) else None
 
 
 def _read_symbol_price_rows(symbol):
@@ -326,11 +319,11 @@ def _compute_symbol_volatility_multiplier(
         return 1.0
     ordered = sorted(
         (
-            (float(r["timestamp"]), float(r["price"]))
+            (ts_f, px_f)
             for r in normalized_rows
             if isinstance(r, dict)
-            and _finite_float(r.get("timestamp"), positive=True) is not None
-            and _finite_float(r.get("price"), positive=True) is not None
+            and (ts_f := safe_pos_float(r.get("timestamp"), default=None)) is not None
+            and (px_f := safe_pos_float(r.get("price"), default=None)) is not None
         ),
         key=lambda item: item[0],
     )
