@@ -28,16 +28,16 @@ from botcore import (
     obj_float,
     required_float_env,
     safe_pos_float,
-    single_instance,
 )
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
-    configure_daemon_cli_logging,
     detect_active_binance_symbols,
     finalize_daemon_cycle,
     normalize_cycle_args,
+    parse_and_configure_daemon_cli,
     prune_automated_cli_threads,
+    run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
     write_daemon_heartbeat,
@@ -45,7 +45,6 @@ from intelligence.macro.daemon_ssot import (
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import parse_symbol_list
-from state_io import encode_json_payload
 
 load_dotenv()
 
@@ -196,14 +195,9 @@ def main():
     parser.add_argument("--skip-macro", action="store_true", help="Skip RSS and Gemini macro news assessment.")
     parser.add_argument("--macro-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
     parser.add_argument("--macro-llm-interval", type=float, default=None, help="Stage 3 Gemini LLM macro reasoning interval in seconds.")
-    args = parser.parse_args()
-
-    try:
-        load_dotenv()
-    except Exception:
-        pass
-
-    configure_daemon_cli_logging(args.verbose, fmt="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s")
+    args = parse_and_configure_daemon_cli(
+        parser, fmt="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+    )
 
     daemon = IntelligenceTelemetryDaemon(
         symbols=parse_symbol_list(args.symbols) or None,
@@ -215,14 +209,16 @@ def main():
         skip_macro=args.skip_macro,
         skip_external=args.skip_external,
     )
-
-    if args.once:
-        logger.info("Executing single update cycle...")
-        print(encode_json_payload(daemon.run_cycle(force=True), indent=2))
-        sys.exit(0)
-
-    single_instance("intelligence_telemetry")
-    daemon.start()
+    run_daemon_cli_once_or_start(
+        daemon,
+        once=args.once,
+        force=True,
+        once_msg="Executing single update cycle...",
+        logger_inst=logger,
+        print_json_on_once=True,
+        exit_on_once=True,
+        single_instance_name="intelligence_telemetry",
+    )
 
 
 if __name__ == "__main__":

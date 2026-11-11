@@ -24,7 +24,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import exact_pos_int, safe_float, safe_int, safe_pos_float
+from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_int, safe_pos_float
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
@@ -363,13 +363,10 @@ def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_wid
 def print_mt_buy_hold_footer(
     symbols: list[str], bh_by_sym: dict[str, float], hdr: str, *, col_width: int = 34
 ) -> None:
-    width = exact_pos_int(col_width, default=34) or 34
-    bh_map = bh_by_sym if isinstance(bh_by_sym, dict) else {}
-    bh_vals = [safe_float(bh_map.get(sym), 0.0) for sym in symbols]
-    bh_tot = sum(bh_vals)
-    bh_cells = [f"{val:>+14.2f}" for val in bh_vals]
-    print("-" * len(hdr))
-    print(f"{'Buy & Hold Benchmark':<{width}} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
+    vals = [safe_float(bh_by_sym.get(sym) if isinstance(bh_by_sym, dict) else 0.0, 0.0) for sym in symbols]
+    bh_cells = [f"{v:>+14.2f}" for v in vals]
+    print("-" * len(str(hdr or "")))
+    print_mt_sweep_row("Buy & Hold Benchmark", bh_cells, sum(vals), col_width=col_width)
 
 
 def run_mt_model_sweep_table(
@@ -383,9 +380,11 @@ def run_mt_model_sweep_table(
     include_buy_hold: bool = False,
 ) -> None:
     """Evaluate a list of ``(model_name, tape_fn)`` definitions across ``symbols`` and print a comparison table."""
-    hdr = print_mt_sweep_header(title_col, symbols, col_width=col_width)
+    width = exact_pos_int(col_width, default=34) or 34
+    inc_bh = _parse_bool_flag(include_buy_hold, default=False)
+    hdr = print_mt_sweep_header(title_col, symbols, col_width=width)
 
-    bh_Wait = {}
+    bh_by_sym: dict[str, float] = {}
     with preserve_replay_backtest_caches():
         for m_name, tape_fn in models:
             cells = []
@@ -394,13 +393,13 @@ def run_mt_model_sweep_table(
                 net, bh_val, cell = evaluate_mt_model_symbol_cell(
                     sym, series_map[sym], sig_map[sym], tape_fn
                 )
-                bh_Wait[sym] = bh_val
+                bh_by_sym[sym] = bh_val
                 tot_net += net
                 cells.append(cell)
-            print_mt_sweep_row(m_name, cells, tot_net, col_width=col_width)
+            print_mt_sweep_row(m_name, cells, tot_net, col_width=width)
 
-    if include_buy_hold:
-        print_mt_buy_hold_footer(symbols, bh_Wait, hdr, col_width=col_width)
+    if inc_bh:
+        print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=width)
 
 
 def run_streaming_mt_model_sweep(
@@ -413,6 +412,9 @@ def run_streaming_mt_model_sweep(
     include_buy_hold: bool = False,
 ) -> None:
     """Stream archive series symbol-by-symbol, evaluate ``models``, and print the comparison table."""
+    use_dense = _parse_bool_flag(use_365, default=False)
+    width = exact_pos_int(col_width, default=34) or 34
+    inc_bh = _parse_bool_flag(include_buy_hold, default=False)
     symbols: list[str] = []
     model_cells: list[list[str]] = [[] for _ in models]
     model_totals: list[float] = [0.0 for _ in models]
@@ -420,7 +422,7 @@ def run_streaming_mt_model_sweep(
 
     with preserve_replay_backtest_caches():
         for sym in list(rrb.SYMBOLS._SECTIONS.keys()):
-            series = load_archive_series(sym, use_365=use_365)
+            series = load_archive_series(sym, use_365=use_dense)
             if not series:
                 continue
             symbols.append(sym)
@@ -434,11 +436,11 @@ def run_streaming_mt_model_sweep(
             del sig, series
             gc.collect()
 
-    hdr = print_mt_sweep_header(title_col, symbols, col_width=col_width)
+    hdr = print_mt_sweep_header(title_col, symbols, col_width=width)
     for m_idx, (m_name, _fn) in enumerate(models):
-        print_mt_sweep_row(m_name, model_cells[m_idx], model_totals[m_idx], col_width=col_width)
-    if include_buy_hold:
-        print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=col_width)
+        print_mt_sweep_row(m_name, model_cells[m_idx], model_totals[m_idx], col_width=width)
+    if inc_bh:
+        print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=width)
 
 
 def evaluate_dataset(use_365: bool = False):

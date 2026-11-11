@@ -198,11 +198,14 @@ def require_int(
     return parsed
 
 
+def clean_nonempty_str(val: object) -> str | None:
+    """Return ``val.strip()`` when ``val`` is a non-empty string, else ``None``."""
+    return s if isinstance(val, str) and (s := val.strip()) else None
+
+
 def clean_upper_token(val: object) -> str | None:
     """Return ``val.strip().upper()`` when ``val`` is a non-empty string, else ``None``."""
-    if not isinstance(val, str) or not (s := val.strip()):
-        return None
-    return s.upper()
+    return s.upper() if (s := clean_nonempty_str(val)) is not None else None
 
 
 def obj_attr(obj: object, key: str, default: object = None) -> object:

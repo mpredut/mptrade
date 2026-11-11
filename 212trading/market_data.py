@@ -19,6 +19,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (
+    clean_nonempty_str,
+    exact_pos_int,
     fetch_public_json,
     http_get,
     log,
@@ -65,20 +67,21 @@ def fetch_yahoo_candles(
     to_f = safe_pos_float(timeout, default=None)
     if to_f is None:
         raise ValueError(f"invalid timeout: {timeout!r}")
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    if (sym_clean := clean_nonempty_str(symbol)) is None:
         raise ValueError(f"invalid symbol: {symbol!r}")
-    if isinstance(range_, bool) or not isinstance(range_, str) or not range_.strip():
+    if (rng_clean := clean_nonempty_str(range_)) is None:
         raise ValueError(f"invalid range: {range_!r}")
-    if isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip():
+    if (itv_clean := clean_nonempty_str(interval)) is None:
         raise ValueError(f"invalid interval: {interval!r}")
-    symbol = symbol.strip()
-    range_ = range_.strip()
-    interval = interval.strip()
+    symbol = sym_clean
+    range_ = rng_clean
+    interval = itv_clean
     query = {"range": range_, "interval": interval}
     day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
     if day_range:
-        end = int(time.time())
-        span_sec = max(60, int(day_range.group(1)) * 24 * 60 * 60 - 60)
+        end = safe_int(time.time(), 0)
+        days = exact_pos_int(day_range.group(1), default=1) or 1
+        span_sec = max(60, days * 24 * 60 * 60 - 60)
         query = {
             "period1": end - span_sec,
             "period2": end,

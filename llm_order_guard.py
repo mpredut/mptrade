@@ -183,7 +183,7 @@ def evaluate_high_stake_order_guard(
         if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), resolve_now_ts(now)):
             try:
                 hs_tag = topic_spec("guard_high_stake").bracket_tag
-                scale_pct = int(g_scale * 100)
+                scale_pct = round(g_scale * 100)
                 if not g_dec.allowed:
                     g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
                 elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -326,7 +326,7 @@ def check_geopolitical_order_guards(
                 ):
                     try:
                         geo_tag = topic_spec("macro_geopolitical").bracket_tag
-                        scale_pct = int(geo_scale * 100)
+                        scale_pct = round(geo_scale * 100)
                         geo_title = (
                             f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
                             if not geo_dec.allowed

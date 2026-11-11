@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    clean_nonempty_str,
     coerce_dict_maps,
     exact_int,
     load_local_module,
@@ -226,10 +227,7 @@ class HLClient:
 
     @classmethod
     def _coin_candidates(cls, coin: object) -> tuple[str, ...]:
-        if isinstance(coin, bool) or not isinstance(coin, str):
-            return ()
-        c = coin.strip()
-        if not c:
+        if (c := clean_nonempty_str(coin)) is None:
             return ()
         split = split_symbol_assets(c)
         base = split[0] if (split is not None and split[1] == "USDC") else c
@@ -240,7 +238,7 @@ class HLClient:
         return {c.casefold() for c in cls._coin_candidates(coin)}
 
     def sz_decimals(self, coin: str) -> int:
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        if clean_nonempty_str(coin) is None:
             raise HLError(f"Missing size precision metadata for {coin}")
         cand_coins = self._coin_candidates(coin)
         meta = None
@@ -283,9 +281,8 @@ class HLClient:
         raise HLError(f"Missing size precision metadata for {coin}")
 
     def _mid_for_key(self, key: str, label: str) -> float | None:
-        if isinstance(key, bool) or not isinstance(key, str) or not key.strip():
+        if (key := clean_nonempty_str(key)) is None:
             return None
-        key = key.strip()
         try:
             mids = self.info.all_mids()
             if not isinstance(mids, dict):
@@ -311,9 +308,8 @@ class HLClient:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
         delta-neutral logic where a false zero could open a duplicate leg."""
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        if (coin := clean_nonempty_str(coin)) is None:
             return 0.0, 0.0
-        coin = coin.strip()
         cand_cfs = self._coin_candidate_cfs(coin)
         p = next(
             (
@@ -354,7 +350,7 @@ class HLClient:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
         cand_cfs: set[str] | None = None
         if coin is not None:
-            if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            if clean_nonempty_str(coin) is None:
                 return []
             cand_cfs = self._coin_candidate_cfs(coin)
         oo = self.info.open_orders(self.address)
@@ -378,9 +374,9 @@ class HLClient:
     def resolve_spot_pair(self, token: str) -> str | None:
         """Resolve a TOKEN/USDC spot pair (@index) from spotMeta for any token,
         such as HYPE -> @107, USOL -> @156, or PURR -> PURR/USDC."""
-        if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
+        if (token_clean := clean_nonempty_str(token)) is None:
             return None
-        cand_tokens = self._coin_candidates(token)
+        cand_tokens = self._coin_candidates(token_clean)
         try:
             m = self.info.spot_meta()
             if isinstance(m, dict):
@@ -396,13 +392,13 @@ class HLClient:
                         if isinstance(u, dict) and u.get("tokens") == [ti, usdc]:
                             return u.get("name")
         except Exception as e:  # noqa: BLE001
-            log(f"  ! resolve_spot_pair({token.strip()}) failed: {e}")
+            log(f"  ! resolve_spot_pair({token_clean}) failed: {e}")
         name_to_coin = getattr(self.info, "name_to_coin", None)
         if isinstance(name_to_coin, dict):
             for cand in cand_tokens:
                 mapped = casefold_get(name_to_coin, f"{cand}/USDC") or casefold_get(name_to_coin, cand)
-                if isinstance(mapped, str) and mapped.strip():
-                    return mapped.strip()
+                if (mapped_s := clean_nonempty_str(mapped)) is not None:
+                    return mapped_s
         return None
 
     def spot_mid(self, pair: str) -> float | None:
@@ -411,9 +407,9 @@ class HLClient:
 
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        if (coin_clean := clean_nonempty_str(coin)) is None:
             return None
-        cand_cfs = self._coin_candidate_cfs(coin)
+        cand_cfs = self._coin_candidate_cfs(coin_clean)
         try:
             meta, ctxs = self.info.meta_and_asset_ctxs()
             universe = (meta.get("universe") or []) if isinstance(meta, dict) else []
@@ -428,22 +424,17 @@ class HLClient:
                 ):
                     return safe_float(ctxs[i].get("funding"), None)
         except Exception as e:  # noqa: BLE001
-            log(f"  ! funding_rate({coin.strip()}) failed: {e}")
+            log(f"  ! funding_rate({coin_clean}) failed: {e}")
         return None
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
         """Return OHLCV candles for trend indicators."""
-        if (
-            not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip()
-            or not interval or isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip()
-        ):
+        if (coin := clean_nonempty_str(coin)) is None or (interval := clean_nonempty_str(interval)) is None:
             return []
         try:
             _, start, end, _ = resolve_ohlc_time_window_ms(lookback_hours=lookback_hours)
         except ValueError:
             return []
-        coin = coin.strip()
-        interval = interval.strip()
         try:
             res = self.info.candles_snapshot(coin, interval, start, end)
             return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
@@ -459,14 +450,13 @@ class HLClient:
         """Place a spot limit or market IOC order; pair is the @index name such as @107."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
-        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+        if (pair := clean_nonempty_str(pair)) is None:
             return False, None, "invalid pair"
-        pair = pair.strip()
         if not isinstance(is_buy, bool):
             return False, None, "invalid non-boolean is_buy"
         if not isinstance(is_market, bool):
             return False, None, "invalid non-boolean is_market"
-        if tif is not None and (isinstance(tif, bool) or not isinstance(tif, str) or not tif.strip()):
+        if tif is not None and (tif := clean_nonempty_str(tif)) is None:
             return False, None, "invalid tif"
         if isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
@@ -492,14 +482,14 @@ class HLClient:
 
     # ----- signed trading -----------------------------------------------------
     def set_leverage(self, coin: str, leverage: int) -> None:
-        if not self.exchange or not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        if not self.exchange or (coin_clean := clean_nonempty_str(coin)) is None:
             return
         lev_i = _exact_int_in_range(leverage, 1)
         if lev_i is None:
             return
         try:
-            self.exchange.update_leverage(lev_i, coin.strip(), is_cross=True)
-            log(f"  [HL] leverage {coin.strip()} set to {lev_i}x")
+            self.exchange.update_leverage(lev_i, coin_clean, is_cross=True)
+            log(f"  [HL] leverage {coin_clean} set to {lev_i}x")
         except Exception as e:  # noqa: BLE001
             log(f"  ! set_leverage failed: {e}")
 
@@ -508,9 +498,8 @@ class HLClient:
         """Place a GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY) -- orders cannot be placed")
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        if (coin := clean_nonempty_str(coin)) is None:
             return False, None, "invalid coin"
-        coin = coin.strip()
         if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool):
             return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
@@ -534,14 +523,11 @@ class HLClient:
     def cancel(self, coin: str, oid: int) -> bool:
         if (
             not self.exchange
-            or isinstance(coin, bool)
-            or not isinstance(coin, str)
-            or not coin.strip()
+            or (coin := clean_nonempty_str(coin)) is None
             or oid is None
             or isinstance(oid, bool)
         ):
             return False
-        coin = coin.strip()
         if isinstance(oid, str) and not oid.strip().removesuffix(".0").lstrip("+").isdigit():
             return False
         oid_i = _exact_int_in_range(oid, 1)

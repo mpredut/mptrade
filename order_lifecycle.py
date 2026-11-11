@@ -17,6 +17,7 @@ from botcore import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     check_cooldown_gate,
+    clean_nonempty_str,
     clean_order_id,
     coerce_finite_float,
     exact_pos_int,
@@ -191,9 +192,10 @@ class TrackedOrderLifecycle:
         audit=None,
         clock: Callable[[], float] = time.time,
     ):
-        if isinstance(provider_name, bool) or not isinstance(provider_name, str) or not provider_name.strip():
+        if (prov_clean := clean_nonempty_str(provider_name)) is None:
             raise ValueError("provider_name is required")
-        if venue is not None and (isinstance(venue, bool) or not isinstance(venue, str) or not venue.strip()):
+        venue_clean: Optional[str] = None
+        if venue is not None and (venue_clean := clean_nonempty_str(venue)) is None:
             raise ValueError("venue must be a non-empty string")
         mc_int = exact_pos_int(missing_confirmations, default=None)
         if mc_int is None:
@@ -204,8 +206,8 @@ class TrackedOrderLifecycle:
                 raise ValueError("max_age_seconds must be finite and positive")
             max_age_seconds = parsed_age
         self.market_api = market_api
-        self.provider_name = provider_name.strip()
-        self.venue = venue.strip() if venue is not None else self.provider_name
+        self.provider_name = prov_clean
+        self.venue = venue_clean if venue_clean is not None else self.provider_name
         self.missing_confirmations = mc_int
         self.retry_on_lookup_error = _parse_bool_flag(retry_on_lookup_error, False)
         self.max_age_seconds = max_age_seconds

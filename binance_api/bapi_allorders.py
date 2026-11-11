@@ -10,6 +10,7 @@ from binance.exceptions import BinanceAPIException
 import instrument_registry as sym
 from botcore import (
     clean_order_id,
+    clean_upper_token,
     exact_pos_int,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -41,11 +42,10 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     plus one until a short page arrives.
     """
     strict = _parse_bool_flag(strict, False)
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    if (symbol := clean_upper_token(symbol)) is None:
         if strict:
             raise ValueError("symbol must be a non-empty string")
         return []
-    symbol = symbol.strip().upper()
     start_i = safe_nonneg_int(start_time_ms, default=None)
     if start_i is None:
         if strict:

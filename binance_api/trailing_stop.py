@@ -218,14 +218,12 @@ class TrailingStop(TrailingAdapterBase):
 
     @staticmethod
     def _find_balance_row(balances: list | None, asset: str, *, unique: bool = False) -> dict | None:
-        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+        if (target := clean_upper_token(asset)) is None:
             return None
-        target = asset.strip().upper()
         matches = [
             row for row in (balances or [])
             if isinstance(row, dict)
-            and not isinstance(row.get("asset"), bool)
-            and str(row.get("asset") or "").strip().upper() == target
+            and clean_upper_token(row.get("asset")) == target
         ]
         if not matches or (unique and len(matches) != 1):
             return None
@@ -238,10 +236,9 @@ class TrailingStop(TrailingAdapterBase):
         stale, or inconsistent evidence, retain the core's first-observation fallback.
         Existing peaks, warm-up thresholds, and pending orders are never rewritten.
         """
-        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+        if (pair_norm := clean_upper_token(pair)) is None:
             return None
         try:
-            pair_norm = pair.strip().upper()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair) or TRAILING_INSTRUMENTS[pair]
             asset = spec.base
             balance = self._find_balance_row(self._balances, asset, unique=True)

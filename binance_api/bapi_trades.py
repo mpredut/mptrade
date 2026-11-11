@@ -1,7 +1,7 @@
 import time
 
 # Repository imports.
-from botcore import clean_order_id, exact_nonneg_int, safe_nonneg_int
+from botcore import clean_order_id, clean_upper_token, exact_nonneg_int, safe_nonneg_int
 from . import bapi as api, bapi_allorders as apiorders
 from providers.base import MarketDataProvider
 from providers.order_ohlc_utils import (
@@ -71,12 +71,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     for trade, side, ts_ms, px, qty in apiorders.filter_recent_cached_orders(
         init_cache_trade_manager(), order_type, symbol, max_age_seconds, _validated=True
     ):
-        raw_sym = trade.get('symbol')
-        sym_out = (
-            raw_sym.strip().upper()
-            if isinstance(raw_sym, str) and raw_sym.strip()
-            else symbol
-        )
+        sym_out = clean_upper_token(trade.get('symbol')) or symbol
         clean_oid = _resolve_trade_order_id(trade)
         row = {
             'symbol': sym_out,

@@ -899,7 +899,7 @@ class MarketDataProvider(ABC):
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        if getattr(self, "_VALIDATE_REMOTE_TRADES_SYMBOL", True):
+        if _parse_bool_flag(getattr(self, "_VALIDATE_REMOTE_TRADES_SYMBOL", True), default=True):
             self.validate_symbol(symbol)
         if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
             return []

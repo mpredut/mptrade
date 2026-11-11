@@ -14,6 +14,7 @@ Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
+import math
 import statistics
 from botcore import (
     _parse_bool_flag,
@@ -685,8 +686,10 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
 def _clean_required_qty_or_inf(required_qty) -> float:
     """Parse required_qty (>0), preserving +inf for auto-quantity while rejecting None/bool/NaN/<=0."""
-    if required_qty == float("inf"):
-        return float("inf")
+    if isinstance(required_qty, (int, float)) and not isinstance(required_qty, bool) and math.isinf(required_qty):
+        return math.inf if required_qty > 0 else 0.0
+    if isinstance(required_qty, str) and required_qty.strip().lower() in ("inf", "+inf", "infinity", "+infinity"):
+        return math.inf
     return safe_pos_float(required_qty, 0.0)
 
 

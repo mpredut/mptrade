@@ -20,6 +20,7 @@ from notify_engine import alertnotifiers as alert
 from botcore import (
     FileLock,
     _parse_bool_flag,
+    clean_upper_token,
     exact_nonneg_int,
     format_notify_qty,
     normalize_epoch_sec,
@@ -270,7 +271,11 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
         or now
     )
     age_sec = 0.0 if oq.is_non_failure_deferral(r.get("last_failure_reason")) else max(0.0, now - ttl_started)
-    effective_ttl = oq.resolve_record_ttl(r) if hasattr(oq, "resolve_record_ttl") else float(oq.RETRY_TTL_SEC)
+    effective_ttl = (
+        oq.resolve_record_ttl(r)
+        if hasattr(oq, "resolve_record_ttl")
+        else safe_pos_float(oq.RETRY_TTL_SEC, default=302400.0)
+    )
     total_ttl = safe_pos_float(effective_ttl, default=302400.0)
     age_progress = min(1.0, max(0.0, age_sec / total_ttl))
     side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
@@ -318,7 +323,7 @@ def process_once(mkt, now=None):
         lifecycle = str(r.get("lifecycle") or "submit_pending").lower()
         symbol = r.get("symbol")
         if str(r.get("submission_state") or "").lower() == "producer_claimed":
-            if safe_float(r.get("claim_until"), default=0.0) > float(now):
+            if safe_float(r.get("claim_until"), default=0.0) > now:
                 continue
             owner_state = oq.producer_claim_owner_state(r)
             if owner_state == "alive":
@@ -644,9 +649,8 @@ def process_once(mkt, now=None):
 
 def _resolve_display_assets(symbol):
     """Return (base_asset, quote_asset) for human-readable alert formatting."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+    if (sym := clean_upper_token(symbol)) is None:
         return "?", "USD"
-    sym = symbol.strip().upper()
     split = split_symbol_assets(symbol)
     base, quote = split if split is not None else resolve_assets(sym)
     return (base or sym), (quote or "USD")

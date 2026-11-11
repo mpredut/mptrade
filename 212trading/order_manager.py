@@ -20,7 +20,9 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import (  # noqa: E402
+    clean_nonempty_str,
     clean_order_id,
+    clean_upper_token,
     ensure_local_module_priority,
     log,
     optional_env,
@@ -81,7 +83,7 @@ def resolve_quantity(order_price: float,
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
     profile = sanitize_identifier(optional_env("IPO_PROFILE") or "default", sep="_", allow_dots_hyphens=True, strip_chars="._")
-    raw_ticker = "" if isinstance(ticker, bool) or not isinstance(ticker, str) else ticker.strip().upper()
+    raw_ticker = clean_upper_token(ticker) or ""
     symbol = sanitize_identifier(raw_ticker, sep="_", allow_dots_hyphens=True, strip_chars="._")
     suffix = ".test" if test else ""
     return os.path.join(
@@ -337,14 +339,12 @@ def place_order_with_retry(
     it eligible for a later invocation. There is no in-process retry loop.
     """
 
-    if isinstance(ticker, bool) or not isinstance(ticker, str) or not ticker.strip():
+    if (ticker := clean_nonempty_str(ticker)) is None:
         log("  ! [ORDER] ticker invalid")
         return False
-    ticker = ticker.strip()
-    if isinstance(validity, bool) or not isinstance(validity, str) or not validity.strip():
+    if (validity := clean_upper_token(validity)) is None:
         log("  ! [ORDER] validity invalid")
         return False
-    validity = validity.strip().upper()
     if validity == "GTC":
         validity = "GOOD_TILL_CANCEL"
     if validity not in {"DAY", "GOOD_TILL_CANCEL"}:

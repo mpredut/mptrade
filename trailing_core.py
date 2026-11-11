@@ -39,6 +39,7 @@ import time
 from botcore import (
     _parse_bool_flag,
     clean_json_value,
+    clean_upper_token,
     required_bool_env,
     required_float_env,
     safe_float,
@@ -638,9 +639,8 @@ class TrailingAdapterBase:
 
     @classmethod
     def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip() or not isinstance(mapping, dict):
+        if not isinstance(mapping, dict) or (sym_norm := clean_upper_token(symbol)) is None:
             return None
-        sym_norm = str(symbol).strip().upper()
         canon_sym = canonical_symbol_key(sym_norm) if sym_norm else ""
         cands = (
             (symbol, sym_norm, canon_sym, canonical_base_asset(sym_norm))
@@ -668,7 +668,7 @@ class TrailingAdapterBase:
     def trail_pct_for(self, symbol: str) -> float:
         raw_default = self._module_attr("DEFAULT_TRAIL_PCT", None)
         default_pct = safe_pos_float(raw_default, default=None)
-        if not isinstance(symbol, bool) and isinstance(symbol, str) and symbol.strip():
+        if clean_upper_token(symbol) is not None:
             trail_map = self._module_attr("TRAIL_PCT")
             val = self._lookup_symbol_entry(
                 trail_map,
@@ -690,9 +690,8 @@ class TrailingAdapterBase:
 
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy: on/off/auto), falling back to REBUY_ENABLED."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if (sym_norm := clean_upper_token(symbol)) is None:
             return False
-        sym_norm = symbol.strip().upper()
         rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
         default_rebuy = _parse_bool_flag(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled), self.core.rebuy_enabled)
         has_auto_trend = callable(getattr(self, "_long_trend_up", None))
@@ -720,9 +719,8 @@ class TrailingAdapterBase:
 
     def rebuy_configured_for(self, symbol: str) -> bool:
         """Return configured re-buy intent for symbol/asset (including auto while trend is down)."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if (sym_norm := clean_upper_token(symbol)) is None:
             return False
-        sym_norm = symbol.strip().upper()
         if callable(getattr(self, "_long_trend_up", None)):
             rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
             mode = self._lookup_symbol_entry(

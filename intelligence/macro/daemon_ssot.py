@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import signal as _signal
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -18,6 +19,7 @@ from botcore import (
     fetch_public_json as _fetch_public_json,
     is_cache_fresh,
     is_interval_due,
+    load_dotenv,
     normalize_epoch_sec,
     obj_attr,
     obj_float,
@@ -29,6 +31,7 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_ts,
     safe_pos_float,
+    single_instance,
     split_csv,
 )
 from cachepaths import (
@@ -53,6 +56,7 @@ from intelligence.macro.lexicon_ssot import (
 from state_io import (
     atomic_write_json as _default_atomic_write_json,
     discard_generation_file as _default_discard_generation_file,
+    encode_json_payload,
     read_json_dict as _default_read_json_dict,
     read_json_dict_recovering as _default_read_json_dict_recovering,
     save_json_state as _default_save_json_state,
@@ -444,8 +448,12 @@ def parse_and_configure_daemon_cli(
     *,
     fmt: str = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
 ) -> Any:
-    """Parse CLI arguments and configure standard daemon logging."""
+    """Parse CLI arguments, load environment defaults, and configure standard daemon logging."""
     args = parser.parse_args()
+    try:
+        load_dotenv()
+    except Exception:
+        pass
     configure_daemon_cli_logging(getattr(args, "verbose", False), fmt=fmt)
     return args
 
@@ -474,14 +482,24 @@ def run_daemon_cli_once_or_start(
     force: bool = True,
     once_msg: str = "Running single update cycle...",
     logger_inst: Optional[logging.Logger] = None,
+    print_json_on_once: bool = False,
+    exit_on_once: bool = False,
+    single_instance_name: Optional[str] = None,
 ) -> None:
     """Execute a single daemon cycle when ``--once`` is set, otherwise start the daemon loop."""
     log = logger_inst or logger
     if _parse_bool_flag(once, default=False):
         log.info(once_msg)
-        instance.run_cycle(force=_parse_bool_flag(force, default=True))
-        log.info("Cycle completed.")
+        res = instance.run_cycle(force=_parse_bool_flag(force, default=True))
+        if _parse_bool_flag(print_json_on_once, default=False):
+            print(encode_json_payload(res, indent=2))
+        else:
+            log.info("Cycle completed.")
+        if _parse_bool_flag(exit_on_once, default=False):
+            sys.exit(0)
     else:
+        if single_instance_name:
+            single_instance(single_instance_name)
         instance.start()
 
 
@@ -888,11 +906,15 @@ __all__ = [
     "ExternalTelemetryMixin",
     "_ACTIVE_BOUNDED_LOCK",
     "_ACTIVE_BOUNDED_STEPS",
+    "add_external_telemetry_cli_args",
     "compute_step_retry_ts",
     "configure_daemon_cli_logging",
     "detect_active_binance_symbols",
     "inspect_daemon_heartbeat",
+    "normalize_cycle_args",
+    "parse_and_configure_daemon_cli",
     "prune_automated_cli_threads",
+    "run_daemon_cli_once_or_start",
     "run_daemon_loop",
     "run_scheduled_step",
     "run_step_bounded",

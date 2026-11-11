@@ -127,7 +127,7 @@ def check_external_order_guards(
             scale_sfx = f", suggested_scale={d_scale}" if log_scale else ""
             print(f"{prefix} {order_side} {symbol}: {dec.reason} (brake={dec.brake_action}{scale_sfx})")
             if mode == "shadow" and shadow_notify_enabled:
-                scale_pct = int(d_scale * 100) if d_scale < 1.0 else None
+                scale_pct = round(d_scale * 100) if d_scale < 1.0 else None
                 action_str = (
                     str(dec.brake_action.value)
                     if use_brake_value_in_title

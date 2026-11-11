@@ -242,9 +242,8 @@ def _cancel_and_resolve(symbol, order_id) -> bool:
 
 def cancel_order(symbol, order_id):
     try:
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if (symbol := clean_upper_token(symbol)) is None:
             return False
-        symbol = symbol.strip().upper()
         oid_arg = normalize_scalar_order_id(order_id)
         if oid_arg is None:
             return False
@@ -274,7 +273,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
         return
     if not (open_orders := get_open_orders(order_type, symbol, allowed_owners=allowed_owners)):
         return
-    current_time = float(time.time())
+    current_time = time.time()
     print(f"Available open orders {len(open_orders)}. Try cancel {order_type} orders type ... ")
     count = 0
     for order_id in iter_expired_open_order_ids(open_orders, expire_val, current_time_sec=current_time):
@@ -304,12 +303,11 @@ def _get_symbol_price_safe(symbol):
 
 
 def _convert_to_usdc(asset, amount):
-    if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+    if (asset_clean := clean_upper_token(asset)) is None:
         return 0.0
     amt_f = safe_pos_float(amount, default=0.0)
     if amt_f <= 0:
         return 0.0
-    asset_clean = asset.strip().upper()
     if asset_clean in {"USDC", "USD"}:
         return amt_f
 

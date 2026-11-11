@@ -19,6 +19,7 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    clean_upper_token,
     env_values_map,
     folder_or_env_value,
     normalize_side,
@@ -376,18 +377,21 @@ class T212Provider(MarketDataProvider):
         if not isinstance(items, list) or not items:
             return []
         by_sym = self.normalize_history_items(items)
+        if not isinstance(by_sym, dict):
+            return []
         return [
             r
             for k, rows in by_sym.items()
-            if k.upper() == sym_u or _t212_tickers_match(symbol, k)
+            if isinstance(k, str)
+            and isinstance(rows, list)
+            and (k.upper() == sym_u or _t212_tickers_match(symbol, k))
             for r in rows
         ]
 
     def _fills_from_api(self, symbol: str, *, publish_cache: bool = False) -> List[dict]:
         """Fetch recent T212 order history and return normalized fills for ``symbol``."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if (sym_u := clean_upper_token(symbol)) is None:
             return []
-        sym_u = symbol.strip().upper()
         cache_file = self._fills_cache_file()
         try:
             cli = self._client()

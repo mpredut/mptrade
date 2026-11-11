@@ -157,7 +157,7 @@ class RetryQueueCorruptionError(RuntimeError):
     def __init__(self, path, line_number, raw_line, detail):
         digest = hashlib.sha256(raw_line.encode("utf-8", errors="replace")).hexdigest()[:20]
         self.path = os.path.abspath(path)
-        self.line_number = int(line_number)
+        self.line_number = exact_nonneg_int(line_number, default=0)
         self.fingerprint = f"{self.path}:{self.line_number}:{digest}"
         super().__init__(
             f"Malformed order-retry queue JSONL at {self.path}:{self.line_number}: {detail}. "
@@ -1056,7 +1056,7 @@ def complete_claim(
                 if order_id is not None:
                     rec["order_id"] = order_id
                     rec["lifecycle"] = "accepted"
-                    rec["accepted_ts"] = float(now)
+                    rec["accepted_ts"] = resolve_now_ts(now)
                     rec["last_status_ts"] = 0.0
                     rec["last_failure_reason"] = None
                     rec["submission_state"] = "accepted"
@@ -1365,6 +1365,7 @@ _FAST_IMPULSE_KIND_PREFIXES = (
 
 def resolve_record_ttl(rec):
     """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
+    base_ttl = safe_pos_float(RETRY_TTL_SEC, default=1800.0)
     if isinstance(rec, dict):
         custom_ttl = safe_pos_float(rec.get("ttl_sec"), default=None)
         if custom_ttl is not None:
@@ -1373,8 +1374,8 @@ def resolve_record_ttl(rec):
             raw_kw = rec.get("place_kwargs")
             kw_hours = safe_pos_float(raw_kw.get("hours") if isinstance(raw_kw, dict) else None, default=None)
             fast_ttl = kw_hours * 3600.0 if kw_hours is not None else 1800.0
-            return min(fast_ttl, float(RETRY_TTL_SEC), MAX_GLOBAL_ORDER_TTL_SEC)
-    return float(RETRY_TTL_SEC)
+            return min(fast_ttl, base_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+    return base_ttl
 
 
 def is_expired(rec, now=None):

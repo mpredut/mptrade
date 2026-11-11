@@ -2082,6 +2082,122 @@ def test_coerce_dict_maps_cli_env_path_replay_metrics_peak_scope_and_hl_status_b
     assert T212Provider._signed_qty(" sell ", 1.5) == pytest.approx(-1.5)
 
 
+def test_clean_nonempty_str_t212_fills_guard_inf_scale_rounding_and_daemon_cli_border_cases(monkeypatch, capsys):
+    """Verify Wave 12 border cases: clean_nonempty_str, T212 fills/history guards, +inf parsing, IEEE-754 scale_pct rounding, daemon CLI helpers, and sweep footer sanitization."""
+    import external_order_guard as eog
+    import intelligence.macro.daemon_ssot as dssot
+    from binance_api import bapi_trades
+    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+    from offline.backtests import evaluation as bt_eval
+    from offline.research.monitortrades_backtest import sweep_mt_models as smt
+    from tests.conftest import make_test_margins
+
+    # 1. clean_nonempty_str preserves case while rejecting bool/non-str/blank; re-exported on macro_sentiment_ssot
+    assert botcore.clean_nonempty_str("  abc_1 ") == "abc_1"
+    assert mss.clean_nonempty_str("  XyZ ") == "XyZ"
+    for bad in ("", "   ", True, False, 123, None, ["a"]):
+        assert botcore.clean_nonempty_str(bad) is None
+        assert botcore.clean_upper_token(bad) is None
+
+    # 2. T212Provider._fills_from_api rejects non-str symbols without AttributeError; _remote_trade_rows_for_symbol guards malformed maps
+    t212 = T212Provider(client=SimpleNamespace(refresh_order_history=lambda max_age_sec=0.0: [{"id": 1}]))
+    assert t212._fills_from_api(123) == []  # type: ignore[arg-type]
+    monkeypatch.setattr(t212, "normalize_history_items", lambda _items: None)
+    assert t212._remote_trade_rows_for_symbol("NVDA_US_EQ", "NVDA_US_EQ", 0.0) == []
+    monkeypatch.setattr(
+        t212,
+        "normalize_history_items",
+        lambda _items: {123: [{"orderId": "bad"}], "OTHER": "not-a-list", "NVDA_US_EQ": [{"orderId": "ok1"}]},
+    )
+    assert t212._remote_trade_rows_for_symbol("NVDA_US_EQ", "NVDA_US_EQ", 0.0) == [{"orderId": "ok1"}]
+
+    prov = _TestMarketProvider()
+    prov._VALIDATE_REMOTE_TRADES_SYMBOL = "false"  # type: ignore[assignment]
+    validated_calls: list[str] = []
+    monkeypatch.setattr(prov, "validate_symbol", lambda s: validated_calls.append(s))
+    monkeypatch.setattr(prov, "_fills_from_api", lambda _s, **_kw: [{"id": 1, "timestamp": 1700000000000}])
+    assert prov.fetch_remote_trades("BTCUSDC", 0) == [{"id": 1, "timestamp": 1700000000000}]
+    assert validated_calls == []
+
+    # 3. _clean_required_qty_or_inf handles math.inf and "+inf" strings while rejecting -inf/bool; shadow notify rounds 0.29*100 -> 29%
+    assert math.isinf(order_guard._clean_required_qty_or_inf(math.inf))
+    assert math.isinf(order_guard._clean_required_qty_or_inf(" +INF "))
+    assert order_guard._clean_required_qty_or_inf("-inf") == 0.0
+    assert order_guard._clean_required_qty_or_inf(True) == 0.0
+
+    notified_msgs: list[tuple[str, str]] = []
+    eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
+    monkeypatch.setattr(
+        eog._alertnotifiers,
+        "notify",
+        lambda *, title="", body="", **_kw: notified_msgs.append((title, body)),
+    )
+    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: SimpleNamespace(fetch=lambda *_a, **_k: {"ts": 1_700_000_000.0}))
+    monkeypatch.setattr(
+        eog.owg,
+        "OrderbookWallGuard",
+        lambda **_kw: SimpleNamespace(
+            check=lambda *_a, **_k: GuardDecision(
+                allowed=True,
+                reason="wall_near",
+                guard_name="OrderbookWallGuard",
+                brake_action=BrakeAction.DOWNSCALE_QTY,
+                suggested_scale=0.29,
+            )
+        ),
+    )
+    margins_shadow = make_test_margins(
+        disable_external_pillars=True,
+        external_guard_mode="shadow",
+        orderbook_wall_guard_mode="shadow",
+        shadow_notify=True,
+    )
+    assert eog.check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins=margins_shadow, now=1_700_000_000.0) == (True, "ok", 1.0)
+    assert len(notified_msgs) == 1
+    assert "SCALE 29%" in notified_msgs[0][0] and "(Scale: 29%)" in notified_msgs[0][1]
+
+    # 4. run_daemon_cli_once_or_start supports print_json_on_once, exit_on_once, and single_instance_name
+    capsys.readouterr()
+    locks_acquired: list[str] = []
+    started: list[bool] = []
+    monkeypatch.setattr(dssot, "single_instance", lambda name: locks_acquired.append(name))
+    daemon_stub = SimpleNamespace(
+        run_cycle=lambda *, force=True: {"ok": force, "count": 2},
+        start=lambda: started.append(True),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        dssot.run_daemon_cli_once_or_start(
+            daemon_stub,
+            once="true",  # type: ignore[arg-type]
+            force="true",  # type: ignore[arg-type]
+            print_json_on_once="true",  # type: ignore[arg-type]
+            exit_on_once="true",  # type: ignore[arg-type]
+        )
+    assert exc_info.value.code == 0
+    assert '"count": 2' in capsys.readouterr().out
+
+    dssot.run_daemon_cli_once_or_start(
+        daemon_stub,
+        once="false",  # type: ignore[arg-type]
+        single_instance_name="test_intel_daemon",
+    )
+    assert locks_acquired == ["test_intel_daemon"] and started == [True]
+
+    # 5. print_mt_buy_hold_footer sanitizes None/NaN entries & re-export seams remain intact
+    capsys.readouterr()
+    smt.print_mt_buy_hold_footer(
+        ["BTCUSDC", "TAOUSDC"],
+        {"BTCUSDC": 12.5, "TAOUSDC": None},  # type: ignore[dict-item]
+        "HEADER",
+        col_width="22",  # type: ignore[arg-type]
+    )
+    footer_out = capsys.readouterr().out
+    assert "Buy & Hold Benchmark" in footer_out and "+12.50" in footer_out
+    assert hasattr(bapi_trades.apiorders, "sym") and bapi_trades.api._normalize_side(" b ") == "BUY"
+    assert callable(bt_eval.load_layered_env_config)
+
+
+
 
 
 
