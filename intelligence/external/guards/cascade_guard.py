@@ -37,8 +37,7 @@ class LiquidationCascadeGuard(OrderGuardEvaluatorBase):
             max_active_cascade_usd: Dollar threshold in active_window_sec to qualify as an active cascade.
             active_window_sec: Window for instantaneous cascade velocity (default 60s).
         """
-        super().__init__()
-        self.collector = collector
+        super().__init__(collector=collector)
         self.max_active_cascade_usd = safe_pos_float(max_active_cascade_usd, default=500_000.0) or 500_000.0
         self.active_window_sec = safe_pos_float(active_window_sec, default=60.0) or 60.0
 

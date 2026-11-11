@@ -38,8 +38,7 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
         taker_downscale_threshold: float = 0.90,
         taker_downscaled_scale: float = 0.50,
     ) -> None:
-        super().__init__()
-        self.collector = collector
+        super().__init__(collector=collector)
         self.block_short_covering_fakeout = _parse_bool_flag(block_short_covering_fakeout, True)
         self.block_aggressive_shorting = _parse_bool_flag(block_aggressive_shorting, True)
         self.block_liquidation_cascade = _parse_bool_flag(block_liquidation_cascade, True)

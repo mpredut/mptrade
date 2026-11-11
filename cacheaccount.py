@@ -979,33 +979,19 @@ class CacheTradeManager(CacheAccountManagerBase):
         with self._generation_lock():
             return self._migrate_legacy_json_generation_locked()
 
+    def _verify_migrated_trade_snapshot_locked(self) -> None:
+        metadata = self._load_versioned_account_meta(optional=False)
+        if metadata is None:
+            raise ValueError("versioned Trade metadata was not created")
+        self._read_trade_snapshot_strict(metadata)
+
     def _migrate_legacy_json_generation_locked(self):
-        legacy = self._resolve_legacy_json_for_jsonl_locked()
-        if not legacy:
-            return
-        try:
-            payload = read_json_dict(legacy)
-            items = payload.get("items", {})
-            if not isinstance(items, dict):
-                raise ValueError("legacy cache items must be a dictionary")
-            with self.lock:
-                self.cache = items
-                self._hydrate_fetchtimes_from_mapping_locked(payload)
-                self._persisted_counts = {}
-            if not self._compact_account_trade_jsonl_generation_locked():
-                raise ValueError(
-                    "legacy cache could not be converted into a durable JSONL generation"
-                )
-            metadata = self._load_versioned_account_meta(optional=False)
-            if metadata is None:
-                raise ValueError("versioned Trade metadata was not created")
-            self._read_trade_snapshot_strict(metadata)
-            builtins.print(
-                f"[{self.cls_name}][migration] created {self.filename} from {legacy}; "
-                "the legacy file was retained for rollback"
-            )
-        except (OSError, ValueError, TypeError) as exc:
-            raise RuntimeError(f"Cannot migrate legacy cache {legacy}: {exc}") from exc
+        return self._migrate_legacy_json_with_compactor(
+            self._compact_account_trade_jsonl_generation_locked,
+            post_compact_fn=self._verify_migrated_trade_snapshot_locked,
+            skip_if_read_only=False,
+            read_json_fn=read_json_dict,
+        )
 
     def _save_jsonl_append(self):
         """Commit Trade data and its manifest under the generation lock."""

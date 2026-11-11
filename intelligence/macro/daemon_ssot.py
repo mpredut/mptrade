@@ -411,6 +411,23 @@ def configure_daemon_cli_logging(
     )
 
 
+def add_external_telemetry_cli_args(
+    parser: Any,
+    *,
+    ob_default: Optional[float] = None,
+    deriv_default: Optional[float] = None,
+    whale_default: Optional[float] = None,
+) -> None:
+    """Register shared CLI arguments for external telemetry collector daemons."""
+    parser.add_argument("--symbols", type=str, default="", help="Comma-separated symbols to monitor.")
+    parser.add_argument("--once", action="store_true", help="Run a single update cycle and exit.")
+    parser.add_argument("--skip-external", action="store_true", help="Skip external orderbook and derivatives telemetry.")
+    parser.add_argument("--ob-interval", type=float, default=ob_default, help="Orderbook refresh interval in seconds.")
+    parser.add_argument("--deriv-interval", type=float, default=deriv_default, help="Derivatives refresh interval in seconds.")
+    parser.add_argument("--whale-interval", type=float, default=whale_default, help="Whale positioning refresh interval in seconds.")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
+
+
 def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) -> int:
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
@@ -482,6 +499,18 @@ class ExternalTelemetryMixin:
         label: str = "telemetry_step",
     ) -> bool:
         return run_step_bounded(fn, *args, timeout_sec=timeout_sec, label=label)
+
+    def _new_external_cycle_results(
+        self, current_ts: float, **extra_fields: Any
+    ) -> Dict[str, Any]:
+        return {
+            "ts": current_ts,
+            "symbols": list(getattr(self, "symbols", ())),
+            "orderbook_updated": 0,
+            "derivatives_updated": 0,
+            "whale_updated": 0,
+            **extra_fields,
+        }
 
     def _step_external_symbols(
         self,

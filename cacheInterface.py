@@ -747,13 +747,20 @@ class CacheManagerInterface(ABC):
                     return cand_json
         return None
 
-    def _migrate_legacy_json_if_needed(self):
-        """Migrate a legacy ``.json`` cache file into ``.jsonl`` format."""
+    def _migrate_legacy_json_with_compactor(
+        self,
+        compact_fn,
+        *,
+        post_compact_fn=None,
+        skip_if_read_only: bool = True,
+        read_json_fn=None,
+    ):
         legacy = self._resolve_legacy_json_for_jsonl_locked()
         if not legacy:
             return
+        reader = read_json_fn if callable(read_json_fn) else read_json_dict
         try:
-            payload = read_json_dict(legacy)
+            payload = reader(legacy)
             items = payload.get("items", {})
             if not isinstance(items, dict):
                 raise ValueError("legacy cache items must be a dictionary")
@@ -761,18 +768,24 @@ class CacheManagerInterface(ABC):
                 self.cache = items
                 self._hydrate_fetchtimes_from_mapping_locked(payload)
                 self._persisted_counts = {}
-            if self.read_only:
+            if skip_if_read_only and self.read_only:
                 return
-            if not self.compact_jsonl():
+            if not compact_fn():
                 raise ValueError(
                     "legacy cache could not be converted into a durable JSONL generation"
                 )
+            if callable(post_compact_fn):
+                post_compact_fn()
             builtins.print(
                 f"[{self.cls_name}][migration] created {self.filename} from {legacy}; "
                 "the legacy file was retained for rollback"
             )
         except (OSError, ValueError, TypeError) as exc:
             raise RuntimeError(f"Cannot migrate legacy cache {legacy}: {exc}") from exc
+
+    def _migrate_legacy_json_if_needed(self):
+        """Migrate a legacy ``.json`` cache file into ``.jsonl`` format."""
+        return self._migrate_legacy_json_with_compactor(self.compact_jsonl)
 
     def _save_jsonl_append(self):
         """Append only items added since the last flush without rewriting the file."""

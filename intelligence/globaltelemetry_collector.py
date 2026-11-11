@@ -31,6 +31,7 @@ from botcore import (
 )
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
+    add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
     run_daemon_loop,
@@ -266,18 +267,14 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if detected_syms := detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True):
                 self.symbols = detected_syms
                 self._auto_detected_symbols = list(detected_syms)
-        results: Dict[str, Any] = {
-            "ts": current_ts,
-            "symbols": list(self.symbols),
-            "orderbook_updated": 0,
-            "derivatives_updated": 0,
-            "whale_updated": 0,
-            "news_updated": False,
-            "fear_greed_updated": False,
-            "breadth_updated": False,
-            "macro_benchmarks_updated": False,
-            "pretrade_caches_updated": False,
-        }
+        results = self._new_external_cycle_results(
+            current_ts,
+            news_updated=False,
+            fear_greed_updated=False,
+            breadth_updated=False,
+            macro_benchmarks_updated=False,
+            pretrade_caches_updated=False,
+        )
 
         self.write_heartbeat(results)
         self._active_cycle_ts = current_ts
@@ -358,15 +355,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 def main():
     """Command-line entrypoint for the global telemetry collector."""
     parser = argparse.ArgumentParser(description="Global Market Telemetry Collector Daemon")
-    parser.add_argument("--symbols", type=str, default="", help="Comma-separated symbols to monitor.")
-    parser.add_argument("--once", action="store_true", help="Run a single update cycle and exit.")
+    add_external_telemetry_cli_args(parser)
     parser.add_argument("--skip-news", action="store_true", help="Skip RSS macro news collection.")
-    parser.add_argument("--skip-external", action="store_true", help="Skip external orderbook and derivatives telemetry.")
-    parser.add_argument("--ob-interval", type=float, default=None, help="Orderbook refresh interval in seconds.")
-    parser.add_argument("--deriv-interval", type=float, default=None, help="Derivatives refresh interval in seconds.")
-    parser.add_argument("--whale-interval", type=float, default=None, help="Whale positioning refresh interval in seconds.")
     parser.add_argument("--news-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
     args = parser.parse_args()
 
     configure_daemon_cli_logging(args.verbose)

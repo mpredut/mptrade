@@ -33,6 +33,7 @@ from botcore import (
 )
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
+    add_external_telemetry_cli_args,
     configure_daemon_cli_logging,
     detect_active_binance_symbols,
     prune_automated_cli_threads,
@@ -121,14 +122,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         """Execute one evaluation cycle, updating tasks whose scheduled interval has elapsed."""
         force = _parse_bool_flag(force, False)
         current_ts = resolve_now_ts(now)
-        results: Dict[str, Any] = {
-            "ts": current_ts,
-            "symbols": list(self.symbols),
-            "orderbook_updated": 0,
-            "derivatives_updated": 0,
-            "whale_updated": 0,
-            "macro_updated": False,
-        }
+        results = self._new_external_cycle_results(current_ts, macro_updated=False)
 
         self._step_external_symbols(current_ts, force, results, bounded=False)
 
@@ -196,16 +190,12 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 def main():
     """Command-line entrypoint for the telemetry collector daemon."""
     parser = argparse.ArgumentParser(description="Market Intelligence Telemetry Background Daemon")
-    parser.add_argument("--symbols", type=str, default="", help="Comma-separated symbols to monitor.")
-    parser.add_argument("--once", action="store_true", help="Run a single update cycle and exit.")
+    add_external_telemetry_cli_args(
+        parser, ob_default=15.0, deriv_default=30.0, whale_default=60.0
+    )
     parser.add_argument("--skip-macro", action="store_true", help="Skip RSS and Gemini macro news assessment.")
-    parser.add_argument("--skip-external", action="store_true", help="Skip external orderbook and derivatives telemetry.")
-    parser.add_argument("--ob-interval", type=float, default=15.0, help="Orderbook refresh interval in seconds.")
-    parser.add_argument("--deriv-interval", type=float, default=30.0, help="Derivatives refresh interval in seconds.")
-    parser.add_argument("--whale-interval", type=float, default=60.0, help="Whale positioning refresh interval in seconds.")
     parser.add_argument("--macro-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
     parser.add_argument("--macro-llm-interval", type=float, default=None, help="Stage 3 Gemini LLM macro reasoning interval in seconds.")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
     args = parser.parse_args()
 
     try:

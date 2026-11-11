@@ -36,8 +36,7 @@ class FundingCrowdingGuard(OrderGuardEvaluatorBase):
         crowding_policy: str = "downscale",         # "downscale" or "defer"
         crowded_scale: float = 0.50,
     ) -> None:
-        super().__init__()
-        self.collector = collector
+        super().__init__(collector=collector)
         self.max_long_funding_rate = safe_pos_float(max_long_funding_rate, default=0.0005) or 0.0005
         min_short = safe_float(min_short_funding_rate, default=-0.0005) or -0.0005
         self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005

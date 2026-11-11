@@ -34,8 +34,7 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
         max_sell_imbalance: float = 0.75,    # Above 0.75 (bids 3:1 over asks) is unfavorable for SELL
         whale_wall_usd_limit: float = 1_000_000.0,
     ) -> None:
-        super().__init__()
-        self.collector = collector
+        super().__init__(collector=collector)
         self.min_buy_imbalance = clean_scale(
             min_buy_imbalance,
             default=0.25,

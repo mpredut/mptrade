@@ -168,7 +168,7 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
 
     cls_name: str = "OrderGuardEvaluatorBase"
 
-    def __init__(self) -> None:
+    def __init__(self, collector: Any = None) -> None:
         if type(self) is OrderGuardEvaluatorBase:
             raise TypeError("Cannot instantiate abstract class OrderGuardEvaluatorBase")
         if (
@@ -179,6 +179,8 @@ class OrderGuardEvaluatorBase(OrderGuardEvaluatorInterface, ABC):
                 f"Cannot instantiate abstract class {type(self).__name__} without implementing 'evaluate' or 'check'"
             )
         super().__init__()
+        if collector is not None or not hasattr(self, "collector"):
+            self.collector = collector
 
     def evaluate(self, *args: Any, **kwargs: Any) -> Any:
         """Polymorphic evaluation entrypoint delegating to ``check(*args, **kwargs)`` when defined on subclass."""
