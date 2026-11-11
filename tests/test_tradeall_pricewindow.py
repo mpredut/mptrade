@@ -16,8 +16,10 @@ Coverage:
 import os, sys, json, time, tempfile, threading, unittest
 from unittest.mock import MagicMock, patch
 import order_retry
+import pricewindow as pw
 import pricewindow as pw_mod
 import pytest
+from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
 
 # ── mocks for the external dependencies (before any local import) ─────────
 _mock_bapi = MagicMock()
@@ -167,9 +169,6 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL", reason="small_window_plunge_down")[0])
                 sim_now[0] += ta.GATE_STALE_SEC + 1.0
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
-
-
-from tests.conftest import TempDirTestCase, make_cache24_test_manager, make_synthetic_price_entries
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1387,7 +1386,6 @@ def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clea
 
 def test_pricetrendanalyzer_linear_regression_trend_and_instant_trend_from_prices_edge_cases_iter166_s1():
     """[ITER166 #1] PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases."""
-    import pricewindow as pw
     # 1. PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases
     empty_pta = pw.PriceTrendAnalyzer([])
     assert empty_pta.linear_regression_trend() == (None, None, None)
@@ -1399,7 +1397,6 @@ def test_pricetrendanalyzer_linear_regression_trend_and_instant_trend_from_price
 
 def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_log_return_std_iter166_s2():
     """[ITER166 #2] IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check."""
-    import pricewindow as pw
     # 2. IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check
     buf = pw.IncrementalTrendBuffer()
     for idx in range(25):
@@ -1415,7 +1412,6 @@ def test_incrementaltrendbuffer_trim_front_true_eval_slice_eps_k_validation_and_
 def test_pricewindow_from_cache24_with_string_window_seconds_and_windowanalyzer_check_price_change_iter166_s3():
     """[ITER166 #3] PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold."""
     from types import SimpleNamespace
-    import pricewindow as pw
     # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold
     fake_c24 = SimpleNamespace(
         get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],

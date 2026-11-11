@@ -53,7 +53,13 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
 )
-from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+from orchestratorOS.supervisor.prompt_formatters import (
+    _format_macro_and_news_section,
+    _format_market_prices_section,
+    _format_microstructure_section,
+    _format_portfolio_section,
+    build_supervisor_prompt,
+)
 from orchestratorOS.supervisor.prompt_sections import (
     _format_recent_order_line,
     _format_tradable_position_line,
@@ -85,7 +91,7 @@ from instrument import resolve_instrument_live_price
 from instrument_registry import discover_kraken_cache_pairs, resolve_instrument_spec
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
 from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.agy.topics import topic_spec
@@ -3591,7 +3597,6 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
 def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tmp_path):
     """Verify collect_pretrade_telemetry populates microstructure/liquidation clusters without 24h series and gateway_max_usd forwards."""
     from intelligence.sentiment.collectors.macro_telemetry_collector import build_cycle_fallback_prices
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
     # 1. build_cycle_fallback_prices falls back to (best_bid + best_ask) / 2.0 when ob_mid_price is absent
     fb_px = build_cycle_fallback_prices(
@@ -4085,7 +4090,6 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
 
 
 def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(tmp_path):
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from providers.order_ohlc_utils import normalize_order
 
     # 1. normalize_order and extract_symbol_recent_fills use executed qty on partial fills and skip resting HL orders
@@ -4407,7 +4411,6 @@ def test_iteration23_execution_audit_cross_venue_recent_orders_isolation(tmp_pat
 
 
 def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
-    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
 
     # 1. _format_tradable_position_line populates limits(...) lazily via resolve_venue_fee_and_limits
     line_pos = _format_tradable_position_line(
@@ -4633,7 +4636,6 @@ def test_iteration27_position_enrichment_and_audit_quote_isolation(tmp_path):
 
 
 def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_derivation(tmp_path):
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
     # 1. harvest_tradable_positions_and_orders derives clean base/quote when inst.base/inst.quote are unset MagicMocks
     mock_inst = MagicMock(symbol="SOLUSD", provider_name="kraken", params={})
@@ -4918,7 +4920,6 @@ def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tm
 
 
 def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3b():
-    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
     from providers.quantity import clamp_notional_to_wallet_balance
 
     # 1. resolve_assets and clamp_notional_to_wallet_balance support USDT pairs and unset MagicMock base/quote
@@ -5438,7 +5439,6 @@ def test_iteration39_cross_quote_trend_price_isolation_resolve_assets_and_bare_b
 
 
 def test_iteration40_monolithic_cache24_isolation_and_bare_base_series_micro_pretrade(tmp_path):
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
     cache_dir = tmp_path / "cachedb"
     cache_dir.mkdir(exist_ok=True)
@@ -5515,7 +5515,6 @@ def test_iteration40_monolithic_cache24_isolation_and_bare_base_series_micro_pre
 
 
 def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
-    from orchestratorOS.supervisor.prompt_formatters import _format_market_prices_section
 
     t0 = 1_793_300_000_000
     hr = 3_600_000
@@ -5564,7 +5563,6 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
 def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     from state_io import save_json_state
 
     t0 = 1_793_300_000_000
@@ -5829,7 +5827,6 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
         discover_dynamic_terms_from_headlines,
         filter_valid_severity_keywords,
     )
-    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section, _format_microstructure_section
 
     # 1. Sub-$1 coin slopes & g_coeff scientific formatting (< 1e-4)
     lines_3a = _format_market_prices_section(
@@ -6933,7 +6930,6 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert "max_buy=$13.77, replace_max_buy=$273.66" in s_3c
 
     # 4. Macro Economic Calendar sensor in Section 1 (next_high_impact_event countdown + live macro headlines)
-    from orchestratorOS.supervisor.prompt_formatters import _format_macro_and_news_section
 
     # Monday 2026-11-02 15:20 EET is 13:20 UTC -> 10 minutes before 15:30 EET US Macro release window
     ts_1520_eet = datetime(2026, 11, 2, 13, 20, tzinfo=timezone.utc).timestamp()
@@ -7139,7 +7135,6 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
     assert pt_hl["HYPEUSDC"]["price"] == pytest.approx(84.33)
 
     # 7. _format_macro_and_news_section includes age=...m on Market Breadth line
-    from orchestratorOS.supervisor.prompt_formatters import _format_macro_and_news_section
 
     snap_mb = SimpleNamespace(
         fear_greed=None,
@@ -7474,7 +7469,6 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
 
 
 def test_harvest_bot_runtime_states_awaiting_cancel_and_pretrade_ai_intent_fills(tmp_path):
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     cache_dir = tmp_path / "cachedb"
     (cache_dir / "orders").mkdir(parents=True, exist_ok=True)
@@ -7567,7 +7561,6 @@ def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_can
        and used as fallback in collect_pretrade_telemetry for T212 / Hyperliquid.
     4. KrakenProvider.cancel_order_by_id uses _query_with_bot_fallback when primary client fails with permission/nonce error.
     """
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     now_ts = 1793650000.0
     now_ms = int(now_ts * 1000)

@@ -12,6 +12,7 @@ import cacheManager as cm
 import json
 from binance_api import bapi_ws_bridge
 from providers.order_ohlc_utils import extract_remaining_qty
+from providers.market_api import api
 
 
 def fill(i, side="BUY", qty=1, price=100, **values):
@@ -58,7 +59,6 @@ def test_negative_fee_is_unknown():
 
 @pytest.fixture
 def binance_history(monkeypatch):
-    from providers.market_api import api
 
     rows = []
     manager = SimpleNamespace(cache={"ARBUSDC": rows}, lock=RLock(),
@@ -109,7 +109,6 @@ def test_binance_base_fee_matches_actual_inventory(binance_history):
 
 
 def test_provider_without_inventory_cost_support_reports_unknown():
-    from providers.market_api import api
     assert api.position_cost_basis("HYPEUSD", 1, 3600, provider_name="kraken") is None
 
 

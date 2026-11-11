@@ -6,14 +6,13 @@ import os
 import sys
 import time
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import order_retry as oq
-from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
+from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus, ProviderError
 from types import SimpleNamespace
 import instrument as inst_mod
 import order_lifecycle as ol
@@ -1456,7 +1455,6 @@ def test_order_retry_get_and_claim_input_validation_iter113_s2():
 
 def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_client_order_id_iter113_s3():
     """[ITER113 #3] StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()."""
-    from providers.strategy_executor import ProviderError
     # 3. StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()
     exec_stub = SimpleNamespace(
         reconciliation_capabilities=lambda: OrderReconciliationCapabilities(
@@ -1476,7 +1474,6 @@ def test_strategyexecutorlifecycleapi_rejects_bool_none_blank_order_id_and_clien
 
 def test_auditedstrategyexecutor_ohlc_series_rejects_bool_invalid_interval_min_iter113_s4():
     """[ITER113 #4] AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min."""
-    from providers.strategy_executor import ProviderError
     # 4. AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min
     audited = AuditedStrategyExecutor(SimpleNamespace(name="Stub", ohlc_closes=lambda _s, _i: [100.0]))
     with pytest.raises(ProviderError):
@@ -1499,7 +1496,6 @@ def test_order_rollback_sanitizes_nan_level_in_extract_order_restore_params_iter
 
 def test_auditedstrategyexecutor_normalizes_symbol_case_whitespace_and_order_id_across_iter123_s2(tmp_path):
     """[ITER123 #2] AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status & StrategyExecutorLifecycleApi rejects NaN/'nan'/'null' and normalizes integer float IDs."""
-    from providers.strategy_executor import ProviderError
     from providers.execution_audit import ExecutionAudit
     # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
     class _DummyExec:
@@ -1688,7 +1684,6 @@ def test_trackedorderresult_order_known_rejects_nan_none_iter157_s1():
 
 def test_strategyexecutorlifecycleapi_rejects_and_normalizes_iter157_s2():
     """[ITER157 #2] StrategyExecutorLifecycleApi rejects '0' and normalizes .0."""
-    from providers.base import ProviderError
     # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
 
     class _DummyExec:

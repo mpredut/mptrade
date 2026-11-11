@@ -87,7 +87,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     enrich_open_limit_orders_tca,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
 from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 from orchestratorOS.lib.technical_repair_ssot import (
     LogEventSummary,
@@ -95,6 +95,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     harvest_log_anomalies_from_dirs,
 )
 from orchestratorOS.supervisor.prompt_sections import (
+    _format_market_prices_section,
     _format_microstructure_section,
     _format_portfolio_section,
     _format_recent_order_line,
@@ -801,7 +802,6 @@ class TestOrderGuardWithGemini:
 
 class TestEnrichedPretradeTelemetry:
     def test_collect_pretrade_telemetry(self, tmp_path, monkeypatch):
-        from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
 
         # Create dummy cache files
         cachedb = tmp_path / "cachedb"
@@ -1638,7 +1638,6 @@ def test_equity_symbol_normalization_and_pretrade_telemetry_cache_isolation(tmp_
         normalize_cache_base_asset,
         split_symbol_assets,
     )
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     assert normalize_cache_base_asset("SPCXUSEQ") == "SPCX"
     assert split_symbol_assets("SPCXUSEQ") == ("SPCX", "USD")
@@ -1911,7 +1910,6 @@ def test_telemetry_deep_bug_hunt_fixes_a_through_g():
     from intelligence.macro.daemon_ssot import (
         detect_active_binance_symbols,
     )
-    from orchestratorOS.supervisor.prompt_formatters import _format_market_prices_section
 
     # Bug A: detect_active_binance_symbols includes TAOUSD alongside TAOUSDC when configured on Kraken
     active_syms = detect_active_binance_symbols(include_kraken_cache=True)
@@ -3252,7 +3250,6 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert cm_ctx["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]["realized_pnl_usd"] == -115.65
 
     # 9. Bug 16: _format_market_prices_section omits vs_btc(7d=...) when symbol has sub-24h history matching 24h range
-    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
     pt_short: dict = {
         "BTCUSDC": {
             "price": 75575.56,
@@ -4273,7 +4270,6 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert sw_ak["pullback_from_swing_high_pct"] == -3.19
 
     # Wave 6: collect_pretrade_telemetry omits deduplicated/stale horizons and sub-2.5h slopes on sparse series
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     pt_sparse_dir = tmp_path / "pt_sparse"
     pt_sparse_dir.mkdir(parents=True, exist_ok=True)
@@ -4826,7 +4822,6 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert micro_b80["HYPEUSDC"]["cycle_delta"]["oi_delta_pct"] == 0.0
 
     # Bug 84: _format_portfolio_section omits last_cycle_execution_status when all entries are >30m OPEN_RESTING already in open_limit_orders
-    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
 
     sec3c_b84 = "\n".join(
         _format_portfolio_section(
@@ -4993,7 +4988,6 @@ def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filteri
     - Bug 18: collect_pretrade_telemetry backfills zero slope_90s/growth_90s/trend_90s from non-diverged sibling live_<SYM>.json (e.g. ADAUSDC for ADAUSD)
     - Bug 20: harvest_log_anomalies_from_dirs ignores interactive [<stdin>:NN] lines and clears manage_agy errors after 'ui-sync: check healthy'
     """
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     cdir = tmp_path / "cachedb"
     for sub in ("prices", "trends/24trend", "telemetry", "24trend"):
@@ -5450,7 +5444,6 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
 
 def test_bugs_93_94_95_pretrade_venue_ob_isolation_watchdog_state_cleanup_and_partial_trim_scalein_dca(tmp_path):
     from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
     import external_order_guard as eog
 
     # 1. Bug 93: collect_pretrade_telemetry isolates HYPEUSD/TAOUSD orderbooks on disk even when singleton
@@ -5843,7 +5836,6 @@ def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
     enrich_microstructure_cvd(ada_accum_abs, {"price": 0.19835, "chg_15m_pct": -0.07})
     assert ada_accum_abs["cvd_regime"] == "spot_absorbing"
 
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     (tmp_path / "orderbook_depth_HYPEUSD.json").write_text(
         json.dumps({"symbol": "HYPEUSD", "mid_price": 84.0, "imbalance_ratio": 0.615, "ts": time.time()}),
@@ -6379,7 +6371,6 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
 
 def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretrade_fill_ages(tmp_path):
     from intelligence.sentiment.collectors.macro_telemetry_collector import PortfolioAndVenueCyclesCollector
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     # 1. Bug 110: cache_asset_value.jsonl inner "i.timestamp" extracts total_value_usdc_age_min
     cdir = tmp_path / "cachedb"
@@ -7861,7 +7852,6 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert nvda_entry_st.get("slope_15m") is not None and nvda_entry_st["slope_15m"] > 0.0
     assert abs(nvda_entry_st.get("gradient_recent", 0.0) - 0.115) > 1e-6
 
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     pt_stale_dir = tmp_path / "pt_stale_slopes"
     pt_stale_dir.mkdir(parents=True, exist_ok=True)
@@ -8662,7 +8652,6 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert parse_cited_taker_ratio(sa_headline_buy, horizon="5m") == 1.6606
 
     # Bug 127: collect_pretrade_telemetry prefers fresher venue_balances_state pos:t212:* price over stale timestamped cache_current_price tick and normalizes Whale Taker Flow on zero-OI equities
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     cdir_eq_vb = tmp_path / "cdir_eq_vb"
     cdir_eq_vb.mkdir(exist_ok=True)
@@ -9250,7 +9239,6 @@ def test_b1_through_b4_and_cached_ai_intents_collector_fallback(tmp_path, monkey
 
 def test_harvest_positions_dedup_bare_equity_pretrade_and_assetguardian_recovery(tmp_path):
     """Verify duplicate (venue, symbol) inst_map dedup, bare equity pretrade funding suppression, and recovered AssetValue log error suppression."""
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     # 1. Duplicate (venue, symbol) alias keys in inst_map do not duplicate positions, open orders, or locked_base_qty
     prov = SimpleNamespace(
@@ -9579,7 +9567,6 @@ def test_marketbreadthcollector_parse_tickers_ignores_non_str_symbol_iter104_s3(
 
 def test_collect_pretrade_telemetry_skips_nan_wall_prices_and_nan_funding_iter98_s4(tmp_path, monkeypatch):
     """[ITER98 #4] collect_pretrade_telemetry: skips NaN wall prices and NaN funding/whale fields."""
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     # 4. collect_pretrade_telemetry: skips NaN wall prices and NaN funding/whale fields
     monkeypatch.setattr(
         "external_order_guard.get_orderbook_collector",
@@ -9691,7 +9678,6 @@ def test_meanreversiontrigger_sentimentcontrariantrigger_and_marketbreadthtrigge
 
 def test_collect_pretrade_telemetry_extracts_technical_trend_regime_from_dict_regime_context_iter174_s5():
     """[ITER174 #5] collect_pretrade_telemetry extracts Technical Trend Regime from dict regime_context."""
-    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
     # 5. collect_pretrade_telemetry extracts Technical Trend Regime from dict regime_context
     telem = collect_pretrade_telemetry(
         "BTCUSDC",
@@ -9732,7 +9718,6 @@ def test_resolve_llm_guard_cache_ttl_respects_explicit_ttl_custom_client_and_cus
 
 def test_post_rth_equity_24_5_move_up_to_35pct_aligns_series_orderbook_and_pretrade(tmp_path):
     """Ensure >10% (<=35%) 24/5 equity moves (e.g. RGNT_US_EQ $1.27 -> $1.52) stay coherent across Section 3A, 3B, and pretrade telemetry."""
-    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
 
     now_s = 1_794_295_500.0
     rth_close_ms = int((now_s - 10 * 3600.0) * 1000)

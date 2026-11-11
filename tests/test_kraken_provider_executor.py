@@ -1,13 +1,20 @@
 """Kraken executor-contract tests with an injected offline fake client."""
+import base64 as _b64
+import json
 import os
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 from unittest.mock import patch
-import json
+
 import kraken.market_data as kmd
 import pytest
 from botcore import load_local_module
-from kraken import kraken_client as kc, kraken_xstock_watch as kxw
+from cacheaccount import CacheTradeManager
+from kraken import kraken_client as kc, kraken_xstock_watch as kxw, kraken_xstock_watch as xw
+from kraken.kraken_client import KrakenClient, KrakenError
+from providers.hyperliquid_provider import HyperliquidProvider
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -505,7 +512,6 @@ class AddOrderRoundingTest(unittest.TestCase):
     def _client(self, pair_decimals):
         if os.path.join(ROOT, "kraken") not in sys.path:
             sys.path.insert(0, os.path.join(ROOT, "kraken"))
-        from kraken_client import KrakenClient
 
         c = KrakenClient.__new__(KrakenClient)
         c.pair_info = lambda pair: {"pair_decimals": pair_decimals}
@@ -527,7 +533,6 @@ class AddOrderRoundingTest(unittest.TestCase):
     def test_price_decimals_fallback(self):
         if os.path.join(ROOT, "kraken") not in sys.path:
             sys.path.insert(0, os.path.join(ROOT, "kraken"))
-        from kraken_client import KrakenClient
 
         def boom(pair):
             raise RuntimeError("API down")
@@ -555,12 +560,6 @@ class AddOrderRoundingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "128-bit hex UUID"):
             c.add_order("HYPEUSD", "buy", 1.0, 60.0, cl_ord_id="too-short")
 
-
-import base64 as _b64
-from unittest import mock
-from cacheaccount import CacheTradeManager
-from providers.hyperliquid_provider import HyperliquidProvider
-from types import SimpleNamespace
 
 _KRAKEN_EMPTY = (200, b'{"error":[],"result":{}}')
 _KRAKEN_FULL = (200, b'{"error":[],"result":{"HYPEUSD":{"ordermin":"0.1"}}}')
@@ -763,7 +762,6 @@ def test_kraken_cachemanager__ledger_to_fills_rejects_nan_bool_zero_amounts_and_
 
 def test_kraken_xstock_watch__bot_alive_rejects_boolean_true_pid_systemd_and_iter48_s3():
     """[ITER48 #3] kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1."""
-    from kraken import kraken_xstock_watch as kxw
     # 3. kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1
     assert kxw._bot_alive(True) is False
     assert kxw._bot_alive(1) is False
@@ -861,7 +859,6 @@ def test_krakenprovider_pair_precision_rejects_nan_non_positive_ordermin_iter58_
 
 def test_krakenclient_ohlc_closes_with_timestamps_rejects_inf_nan_interval_cleanly_with_iter59_s4():
     """[ITER59 #4] KrakenClient.ohlc_closes_with_timestamps rejects inf/nan interval cleanly with ValueError."""
-    from kraken.kraken_client import KrakenClient
     # 4. KrakenClient.ohlc_closes_with_timestamps rejects inf/nan interval cleanly with ValueError
     kc = KrakenClient.__new__(KrakenClient)
     with pytest.raises(ValueError, match="positive integer"):
@@ -870,7 +867,6 @@ def test_krakenclient_ohlc_closes_with_timestamps_rejects_inf_nan_interval_clean
 def test_kraken_xstock_watch__load_state_merges_partial_json_onto_default_keys_iter60_s3(tmp_path, monkeypatch):
     """[ITER60 #3] kraken_xstock_watch._load_state merges partial JSON onto default keys without KeyError."""
     # 3. kraken_xstock_watch._load_state merges partial JSON onto default keys without KeyError
-    from kraken import kraken_xstock_watch as xw
     state_file = tmp_path / "xstock_partial.json"
     state_file.write_text(json.dumps({"known_assets": "corrupt"}), encoding="utf-8")
     monkeypatch.setenv("XSTOCK_STATE_FILE", str(state_file))
@@ -881,7 +877,6 @@ def test_kraken_xstock_watch__load_state_merges_partial_json_onto_default_keys_i
 
 def test_krakenclient__parse_rejects_non_dict_json_payloads_cleanly_iter68_s1():
     """[ITER68 #1] KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError."""
-    from kraken.kraken_client import KrakenClient, KrakenError
     # 1. KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError
     with pytest.raises(KrakenError):
         KrakenClient._parse(200, b"[1, 2, 3]")
@@ -967,7 +962,6 @@ def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_
 
 def test_krakenclient_add_order_validates_side_ordertype_and_mandatory_limit_iter90_s1():
     """[ITER90 #1] KrakenClient.add_order validates side, ordertype, and mandatory limit price."""
-    from kraken.kraken_client import KrakenClient
     # 1. KrakenClient.add_order validates side, ordertype, and mandatory limit price
     kc = KrakenClient("key", "c2VjcmV0")
     with pytest.raises(ValueError, match="invalid Kraken order side"):
@@ -1025,7 +1019,6 @@ def test_kraken_kraken_xstock_watch_check_pairs_skips_non_tradable_status_iter92
 def test_krakenclient_validation_on_pair_txid_and_price_decimals_non_iter94_s3(monkeypatch):
     """[ITER94 #3] KrakenClient validation on pair, txid, and price_decimals non-integer rejection."""
     # 3. KrakenClient validation on pair, txid, and price_decimals non-integer rejection
-    from kraken.kraken_client import KrakenClient
 
     kc = KrakenClient("k", "s")
     assert kc.pair_info("") is None
@@ -1095,7 +1088,6 @@ def test_krakenprovider_iter111_s1():
 
 def test_krakenclient_ohlc_closes_with_timestamps_and_kraken_market_data_iter115_s2():
     """[ITER115 #2] KrakenClient.ohlc_closes_with_timestamps and kraken.market_data."""
-    from kraken.kraken_client import KrakenClient
     # 2. KrakenClient.ohlc_closes_with_timestamps and kraken.market_data
     kc = KrakenClient(api_key="", api_secret="")
     with pytest.raises(ValueError):
@@ -1127,7 +1119,6 @@ def test_kraken_cachemanager__normalize__load_initial_cache_and__ledger_to_fills
 
 def test_krakenclient_pair_info_ticker_and_add_order_validate_false_iter116_s1(monkeypatch):
     """[ITER116 #1] KrakenClient.pair_info, ticker, and add_order validate='false'."""
-    from kraken.kraken_client import KrakenClient
     # 1. KrakenClient.pair_info, ticker, and add_order validate="false"
     kc = KrakenClient(api_key="k", api_secret="c2VjcmV0")
     assert kc.pair_info(123) is None
@@ -1187,7 +1178,6 @@ def test_marketapi_krakenprovider_and_t212provider_reject_nan_inf_non_iter122_s3
 
 def test_krakenclient_cancel_order_and_query_orders_reject_sentinel_strings_nan_iter135_s1():
     """[ITER135 #1] KrakenClient.cancel_order and query_orders reject sentinel strings ('nan', 'null') and containers/floats."""
-    from kraken.kraken_client import KrakenClient
     # 1. KrakenClient.cancel_order and query_orders reject sentinel strings ("nan", "null") and containers/floats
     kc = KrakenClient("k", "c2VjcmV0")
     for bad_txid in ("nan", "null", "none", "inf", float("nan"), ["OX123"], {"a": 1}, True, None):
@@ -1267,7 +1257,6 @@ def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_s
 
 def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_watch__load_state_iter146_s2(tmp_path, monkeypatch):
     """[ITER146 #2] hyperliquid/strategy.py _sanitize_state and _clean_oid & kraken_xstock_watch._load_state & _bot_alive & 212trading/price_alert.py _parse_armed_flag."""
-    from kraken import kraken_xstock_watch as xw
     # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     hl_mod = load_local_module(os.path.join(root, "hyperliquid"), "strategy", module_key="hl_strat_t146", register=False)

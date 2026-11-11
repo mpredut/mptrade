@@ -26,6 +26,7 @@ from intelligence.external.guards.smart_stop_loss_guard import (
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
 import json
+import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
 
 
 @pytest.fixture(autouse=True)
@@ -203,7 +204,6 @@ def test_smart_sl_shadow_mode():
 
 
 def test_smart_sl_notifications_detail_and_debounce():
-    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
     ssl_guard._GRACE_TRACKER.clear()
     ssl_guard._LAST_RECOVERY_ALERT_TS.clear()
     ssl_guard._PENDING_RECOVERIES.clear()
@@ -326,7 +326,6 @@ def test_smart_sl_batch_unification_multiple_coins():
 
 def test_smart_sl_replay_provider_never_emits_notifications(tmp_path):
     import os
-    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
 
     test_state_file = str(tmp_path / "smart_stop_loss_state_replay.json")
     ssl_guard._SMART_SL_STATE_FILE = test_state_file
@@ -420,7 +419,6 @@ def test_smart_sl_buy_price_change_resets_stale_grace_and_updates_current_price(
 
 
 def test_smart_sl_on_recovered_ignores_stale_grace_when_buy_price_changed():
-    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
 
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
@@ -452,7 +450,6 @@ def test_smart_sl_on_recovered_ignores_stale_grace_when_buy_price_changed():
 
 
 def test_smart_sl_save_grace_state_filters_simulated_entries_and_uses_exact_memo_key(tmp_path, monkeypatch):
-    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
 
     state_file = tmp_path / "smart_stop_loss_state.json"
     monkeypatch.setattr(ssl_guard, "_SMART_SL_STATE_FILE", str(state_file))

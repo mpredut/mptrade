@@ -1,16 +1,27 @@
 """Tests verifying backtest and replay determinism, wall-clock immunity, and cache isolation."""
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
+from instrument import Instrument
+import monitortrades as mt
+from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
+from offline.backtests.metrics import validate_replay_metrics
+from providers.market_api import MarketApi
+from providers.replay_provider import ReplayMarketDataProvider, SimClock, _base_asset, load_price_series
 from strategies.position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
@@ -23,6 +34,7 @@ from strategies.spot_replay import (
     make_spot_replay_adapter,
     run_replay,
 )
+from tests.conftest import make_spot_test_params
 
 
 def _sample_ohlc(length: int = 40, base_price: float = 100.0) -> list[tuple[float, float, float, float]]:
@@ -48,29 +60,15 @@ def _sample_ohlc(length: int = 40, base_price: float = 100.0) -> list[tuple[floa
 
 
 def _make_params(**over) -> StratParams:
-    d = dict(
-        currency="USD",
-        entry_amount=100.0,
-        entry_discount_pct=0.2,
-        dca_amount=50.0,
+    defaults = dict(
         dca_drop_pct=1.5,
-        check_minutes=5.0,
         takeprofit_pct=3.0,
-        max_budget=500.0,
-        max_dca_buys=3,
-        enable_takeprofit=True,
         order_ttl_min=10.0,
         stop_loss_pct=8.0,
-        adopt_cost=0.0,
-        adopt_qty=0.0,
-        reentry_drop_pct=0.0,
-        reentry_tolerance_pct=0.05,
-        reentry_adaptive=False,
         reentry_sl_bounce_pct=1.5,
-        tp_tranches=[],
     )
-    d.update(over)
-    return StratParams(**d)
+    defaults.update(over)
+    return make_spot_test_params(**defaults)
 
 
 class ReplayDeterminismTest(unittest.TestCase):
@@ -312,38 +310,15 @@ class ReplayDeterminismTest(unittest.TestCase):
 # Consolidated from tests/test_binance_backtest.py & tests/test_replay_provider.py
 # ---------------------------------------------------------------------------
 
-import json
-import tempfile
-import pytest
-
-from binance_api.market_data import (
-    fetch_ohlc_candles,
-    parse_interval_minutes,
-)
-from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
-from offline.backtests.metrics import validate_replay_metrics
-from providers.replay_provider import ReplayMarketDataProvider, load_price_series, _base_asset
-from providers.market_api import MarketApi
-from instrument import Instrument
-import monitortrades as mt
-
 SYMBOL = "ZZZTESTUSDC"
 
 
 def _sample_params() -> _ReplayStratParams:
-    return _ReplayStratParams(
+    return make_spot_test_params(
         currency="USDT",
-        entry_amount=100.0,
-        entry_discount_pct=0.2,
-        dca_amount=50.0,
-        dca_drop_pct=2.0,
         takeprofit_pct=1.0,
-        max_budget=500.0,
         max_dca_buys=2,
         check_minutes=1.0,
-        enable_takeprofit=True,
-        order_ttl_min=60.0,
-        stop_loss_pct=5.0,
     )
 
 
@@ -583,13 +558,11 @@ class TestMonitorPriceAndTradeIntegration(unittest.TestCase):
 
 class TestSimClock(unittest.TestCase):
     def test_callable_returns_ts(self):
-        from providers.replay_provider import SimClock
         clock = SimClock()
         clock.ts = 12345.0
         self.assertEqual(clock(), 12345.0)
 
     def test_advancing_ts_reflected_immediately(self):
-        from providers.replay_provider import SimClock
         clock = SimClock()
         clock.ts = 100.0
         self.assertEqual(clock(), 100.0)
@@ -598,7 +571,6 @@ class TestSimClock(unittest.TestCase):
 
     def test_tradeall_backtest_uses_shared_class(self):
         from offline.backtests import tradeall as tb
-        from providers.replay_provider import SimClock
         self.assertIs(tb.SimClock, SimClock)
 
 

@@ -17,6 +17,7 @@ from binance_api import (
     bapi_allorders as ao,
     bapi_client,
     bapi_placeorder,
+    bapi_placeorder as bp,
     bapi_placeorder as po,
     bapi_trades,
     bapi_ws,
@@ -35,6 +36,7 @@ import pytest
 import threading
 from decimal import Decimal
 from providers.base import extract_order_price
+from providers.strategy_executor import ProviderError
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"
@@ -730,7 +732,6 @@ def test_bapi_cancel_expired_orders_and_bapi_cancel_recent_orders_with_nan_bool_
 
 def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_price_iter37_s2():
     """[ITER37 #2] bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price."""
-    from binance_api import bapi_placeorder as bp
     # 2. bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price
     with pytest.raises(bp.SubmissionRefused):
         bp.apply_weight_limit("BTCUSDC", "BUY", True, 1.0, 1.0)
@@ -747,7 +748,6 @@ def test_bapi_placeorder_rejects_boolean_qty_price_cancel_opposite_requested_pri
 
 def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_ages_iter38_s1():
     """[ITER38 #1] _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages."""
-    from binance_api import bapi_placeorder as bp
     # 1. _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages
     for bad_status in (
         SimpleNamespace(order_age_sec=0.5, trade_age_sec=float("nan")),
@@ -760,7 +760,6 @@ def test__require_submit_permit_headroom_refuses_nan_negative_or_boolean_cache_a
 
 def test_cancel_opposite_orders_ignores_zero_missing_price_on_buy_symmetrically_iter38_s2(monkeypatch):
     """[ITER38 #2] cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price."""
-    from binance_api import bapi_placeorder as bp
     # 2. cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price
     with pytest.raises(bp.SubmissionRefused):
         bp.cancel_opposite_orders("BUY", "BTCUSDC", True)
@@ -802,7 +801,6 @@ def test_binance_filters__decimal_rejects_bool_and__parse_bool_flag_handles_stri
 
 def test_binanceprovider_position_cost_basis_order_status_cancel_order_reject_boolean_inputs_iter39_s3():
     """[ITER39 #3] BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs."""
-    from providers.strategy_executor import ProviderError
     # 3. BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs
     bp_prov = BinanceProvider()
     with pytest.raises(ValueError):
@@ -993,7 +991,6 @@ def test_binance_trailingstop__sync_retry_count_from_state__order_intent_iter58_
 
 def test_binanceprovider_open_orders_order_status_reject_bool_nan_iter58_s3(monkeypatch):
     """[ITER58 #3] BinanceProvider.open_orders & order_status reject bool/NaN."""
-    from providers.strategy_executor import ProviderError
     # 3. BinanceProvider.open_orders & order_status reject bool/NaN
     bp = BinanceProvider()
     fake_bapi = MagicMock()
@@ -1131,7 +1128,6 @@ def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractiona
     from providers.market_api import MarketApi
     from providers.quantity import balance_cap_quantity, resolve_assets
     from providers.replay_provider import ReplayMarketDataProvider
-    from providers.strategy_executor import ProviderError
     # 3. MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price
     class _DummyProvider(MarketDataProvider):
         name = "dummy"
@@ -1258,7 +1254,6 @@ def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109
 
 def test_binanceprovider_open_orders_rejects_missing_bool_orderid_and_bool_iter112_s1(monkeypatch):
     """[ITER112 #1] BinanceProvider.open_orders rejects missing/bool orderId and bool status/side."""
-    from providers.base import ProviderError
     import providers.market_api as ma
     # 1. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
     b_prov = ma.BinanceProvider()

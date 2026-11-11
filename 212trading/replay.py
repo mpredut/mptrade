@@ -19,7 +19,6 @@ if ROOT not in sys.path:
 from botcore import (
     load_local_module,
     require_pos_float,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )

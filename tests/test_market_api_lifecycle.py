@@ -18,6 +18,7 @@ from providers import market_api as mapi
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.t212_provider import T212Provider
+import botcore
 
 
 class FakeProvider(MarketDataProvider):
@@ -374,7 +375,6 @@ def test_marketapi_latest_fill_price_with_bid_ask_aliases_and_marketapi_iter170_
 
 def test_declarative_venue_attributes_and_unified_routing(monkeypatch):
     """Verify venue-agnostic MarketDataProvider capabilities, SSOT cold-start client detection, and unified MarketApi routing."""
-    import botcore
 
     assert not hasattr(MarketDataProvider, "_REAL_CLIENT_CLASS_NAMES")
     assert not hasattr(MarketApi, "_provider_routed_or_default")
@@ -748,7 +748,6 @@ def test_provider_dag_purity_and_submit_order_unification(monkeypatch):
 def test_replay_execution_metrics_and_config_ssot_identity(monkeypatch, tmp_path):
     """Verify canonical SSOT identity across botcore, order_ohlc_utils, strategies.replay_*, and offline.backtests.*."""
     import importlib
-    import botcore
     import offline.backtests.datasets as ds
     import offline.backtests.evaluation as ev
     import offline.backtests.execution as ex

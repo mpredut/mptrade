@@ -19,7 +19,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from botcore import safe_nonneg_float, safe_pos_int
 import pricewindow as pw
 from cachepaths import cache_path
-from offline.research.monitortrades_backtest.run_replay_backtest import resolve_archive_jsonl_path
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_signals_from_bounds,
     load_archive_series,

@@ -16,8 +16,6 @@ import order_guard
 import pytest
 import rtrade
 import time
-from instrument import Instrument
-from providers.quantity import QuantityDecision
 from types import SimpleNamespace
 
 

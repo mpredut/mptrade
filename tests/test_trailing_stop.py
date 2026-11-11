@@ -15,6 +15,7 @@ from tests.conftest import TrailingTestBase  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 import json
+import binance_api.trailing_stop as m
 
 
 class FakeApi:
@@ -284,7 +285,6 @@ class TestPerCoinRebuy(Base):
 
     def test_auto_mode_and_trend(self):
         with self.subTest(msg="auto_mode_delegates_to_the_long_term_trend"):
-            import binance_api.trailing_stop as m
             api = FakeApi(250.0); ts = self.ts(api)
             saved = dict(m.REBUY_MODE_BY_SYMBOL)
             m.REBUY_MODE_BY_SYMBOL["TAOUSDC"] = "auto"
@@ -298,7 +298,6 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="long_trend_up_uses_the_configured_sma_and_fails_closed"):
             self.tearDown(); self.setUp()
-            import binance_api.trailing_stop as m
             api = FakeApi(250.0); ts = self.ts(api)
             day = int(m.time.time() // 86400)
             kl = lambda n: [[d * 86400000, 0, 0, 0, "100.0", 0,
@@ -313,7 +312,6 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="auto_keeps_recovery_intent_while_down_then_buys_after_recovery"):
             self.tearDown(); self.setUp()
-            import binance_api.trailing_stop as m
             api = FakeApi(250.0); ts = self.ts(api)
             ts.core.sell_skip_if_trend_up = False
             with patch.dict(m.REBUY_MODE_BY_SYMBOL, TAOUSDC="auto"):
@@ -331,7 +329,6 @@ class TestPerCoinRebuy(Base):
 
         with self.subTest(msg="auto_rejects_stale_gapped_and_nonfinite_candles"):
             self.tearDown(); self.setUp()
-            import binance_api.trailing_stop as m
             day = 20000
             good = [[d * 86400000, 0, 0, 0, "100", 0, (d + 1) * 86400000 - 1]
                     for d in range(day - 3, day + 1)]
