@@ -17,6 +17,10 @@ from intelligence.macro.calendar_ssot import (
 )
 from botcore import compute_venue_nav_breakdown, safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
+    compute_cross_asset_regime as _ssot_compute_cross_asset_regime,
+    compute_equity_macro_regime as _ssot_compute_equity_macro_regime,
+    compute_futures_premarket_lead as _ssot_compute_futures_premarket_lead,
+    format_macro_benchmarks_summary_line,
     get_cross_asset_regimes,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
@@ -48,81 +52,6 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
         for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
     ),
 })
-
-
-def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
-    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface / Cross-Asset Regime)."""
-    if not isinstance(data, dict):
-        return ""
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    if not isinstance(items, dict):
-        return ""
-    meta_skip = {"ts", "age_min", "summary_line", "items"} | _MACRO_EXTRA_TELEMETRY_KEYS
-    if not include_crypto:
-        meta_skip = meta_skip | {"IBIT"}
-    ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items and k not in meta_skip] + [
-        k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
-    ]
-    parts: List[str] = []
-    for sym in ordered_keys:
-        entry = items.get(sym)
-        if not isinstance(entry, dict) or (px := safe_pos_float(entry.get("price"), default=None)) is None:
-            continue
-        unit_kind = str(entry.get("unit") or "").lower()
-        px_s = (
-            f"{px:.2f}%"
-            if (sym == "US10Y" or unit_kind == "yield_pct")
-            else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
-        )
-        m_state = str(entry.get("market_state") or "").strip().upper()
-        d_parts = [
-            f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
-            for h_lbl, h_key in (
-                (("24h", "chg_24h_pct"),)
-                if m_state == "CLOSED"
-                else (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
-            )
-            if (val := safe_float(entry.get(h_key), default=None)) is not None
-        ]
-        if m_state and m_state != "REGULAR":
-            d_parts.append(m_state.lower())
-        delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
-        parts.append(f"{sym}={px_s}{delta_s}")
-    lead_info = compute_futures_premarket_lead(data)
-    if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and str(
-        lead_info.get("futures_lead_regime") or ""
-    ).strip() in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
-        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}%")
-    if not include_crypto:
-        return " | ".join(parts)
-    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
-    if cb_bps is not None:
-        cb_bps = round(cb_bps, 1) + 0.0
-        parts.append(f"CB_Premium={cb_bps:+.1f}bps")
-    btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
-    eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
-    if btc_dvol is not None or eth_dvol is not None:
-        dvol_s = " / ".join(
-            f"{lbl}={val:.1f}%"
-            for lbl, val in (("BTC_DVOL", btc_dvol), ("ETH_DVOL", eth_dvol))
-            if val is not None
-        ).replace(" / ", "/")
-        parts.append(dvol_s)
-    for ccy in get_deribit_options_currencies():
-        pfx = ccy.lower()
-        opt_parts: List[str] = []
-        if (rv_v := safe_pos_float(data.get(f"{pfx}_rv_pct", items.get(f"{pfx}_rv_pct")), default=None)) is not None:
-            opt_parts.append(f"RV={rv_v:.1f}%")
-        if (vrp_v := safe_float(data.get(f"{pfx}_vrp_pct", items.get(f"{pfx}_vrp_pct")), default=None)) is not None:
-            opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
-        if (pc_v := safe_pos_float(data.get(f"{pfx}_pc_oi_ratio", items.get(f"{pfx}_pc_oi_ratio")), default=None)) is not None:
-            opt_parts.append(f"PC_OI={pc_v:.2f}")
-        if (sk_v := safe_float(data.get(f"{pfx}_skew_25d_pct", items.get(f"{pfx}_skew_25d_pct")), default=None)) is not None:
-            opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
-        if opt_parts:
-            lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
-            parts.append(f"{lbl}({', '.join(opt_parts)})")
-    return " | ".join(parts)
 
 
 def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -> str:
@@ -539,50 +468,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
     cls_name = "FuturesPremarketLeadEvaluator"
 
     def evaluate(self, data: Any, **kwargs: Any) -> Dict[str, Any]:
-        if not isinstance(data, dict):
-            return {}
-        items = data.get("items") if isinstance(data.get("items"), dict) else data
-        if not isinstance(items, dict):
-            return {}
-        out: Dict[str, Any] = {}
-        any_cash_live_rth = False
-        for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
-            fut, cash = items.get(fut_sym), items.get(cash_sym)
-            if not isinstance(fut, dict) or not isinstance(cash, dict):
-                continue
-            fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
-            fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
-            fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
-            cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
-            fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
-            cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
-            cash_state = str(cash.get("market_state") or "").strip().upper()
-            cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
-                fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
-            )
-            is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
-            if not is_off_rth:
-                any_cash_live_rth = True
-                continue
-            if fut_globex is not None and abs(fut_globex) >= 0.25:
-                out[lead_key] = round(fut_globex, 2) + 0.0
-            elif fut_24h is not None and cash_24h is not None:
-                diff_v = round(fut_24h - cash_24h, 2) + 0.0
-                dir_ok = (
-                    (diff_v > 0.0 and (fut_24h >= -0.15 or (fut_1h is not None and fut_1h >= 0.15)))
-                    or (diff_v < 0.0 and (fut_24h <= 0.15 or (fut_1h is not None and fut_1h <= -0.15)))
-                )
-                if dir_ok and abs(diff_v) >= 0.25:
-                    out[lead_key] = diff_v
-            elif fut_1h is not None and abs(fut_1h) >= 0.25:
-                out[lead_key] = round(fut_1h, 2) + 0.0
-        lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
-        if lead_v is None and not any_cash_live_rth:
-            lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
-        if lead_v is not None and abs(lead_v) >= 0.25:
-            out["futures_lead_pct"] = round(lead_v, 2) + 0.0
-            out["futures_lead_regime"] = "FUTURES_PREMARKET_GAP_UP" if lead_v >= 0.25 else "FUTURES_PREMARKET_GAP_DOWN"
-        return out
+        return _ssot_compute_futures_premarket_lead(data)
 
 
 class EquityMacroRegimeEvaluator(MacroTelemetryEvaluatorBase):
@@ -591,52 +477,7 @@ class EquityMacroRegimeEvaluator(MacroTelemetryEvaluatorBase):
     cls_name = "EquityMacroRegimeEvaluator"
 
     def evaluate(self, data: Any, **kwargs: Any) -> str:
-        if not isinstance(data, dict):
-            return "NEUTRAL"
-        items = data.get("items") if isinstance(data.get("items"), dict) else data
-        if not isinstance(items, dict):
-            items = {}
-        eq_24h: List[float] = []
-        eq_1h: List[float] = []
-        for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
-            entry = items.get(sym)
-            if not isinstance(entry, dict):
-                continue
-            m_state = str(entry.get("market_state") or "").strip().upper()
-            if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
-                eq_24h.append(c24)
-            if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
-                eq_1h.append(c1)
-        if not eq_24h and not eq_1h:
-            explicit = str(data.get("equity_regime") or "").strip().upper()
-            return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
-        avg_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
-        avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
-        dxy_entry = items.get("DXY")
-        dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
-        vix_entry = items.get("VIX")
-        vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
-        fut_lead = safe_float(
-            data.get("futures_lead_pct")
-            if "futures_lead_pct" in data
-            else compute_futures_premarket_lead(data).get("futures_lead_pct"),
-            default=0.0,
-        ) or 0.0
-        if (
-            avg_24h >= 0.35
-            or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
-            or (avg_24h >= 0.0 and fut_lead >= 0.40 and (dxy_24h is None or dxy_24h <= 0.25))
-        ) and (vix_24h is None or vix_24h <= 5.0):
-            return "RISK_ON"
-        if (
-            avg_24h <= -0.35
-            or (avg_24h <= -0.15 and avg_1h <= -0.15)
-            or (avg_24h <= 0.0 and fut_lead <= -0.40)
-            or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
-            or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
-        ):
-            return "RISK_OFF"
-        return "NEUTRAL"
+        return _ssot_compute_equity_macro_regime(data)
 
 
 class CrossAssetRegimeEvaluator(MacroTelemetryEvaluatorBase):
@@ -651,75 +492,7 @@ class CrossAssetRegimeEvaluator(MacroTelemetryEvaluatorBase):
         btc_chg_24h_pct: Optional[float] = None,
         **kwargs: Any,
     ) -> str:
-        allowed = get_cross_asset_regimes()
-        if not isinstance(data, dict):
-            return "NEUTRAL"
-        items = data.get("items") if isinstance(data.get("items"), dict) else data
-        if not isinstance(items, dict):
-            items = {}
-        eq_24h: List[float] = []
-        for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
-            entry = items.get(sym)
-            if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
-                eq_24h.append(c24)
-        eq_regime = str(data.get("equity_regime") or "").strip().upper()
-        if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
-            eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
-        ):
-            eq_regime = compute_equity_macro_regime(data)
-        avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
-
-        ibit_entry = items.get("IBIT")
-        ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
-        btc_24h = safe_float(btc_chg_24h_pct, default=None)
-        if btc_24h is not None and abs(btc_24h) > 1e-6:
-            if ibit_24h is None or abs(ibit_24h) <= 1e-6:
-                crypto_px_chg = btc_24h
-            elif ibit_24h > 0.0 and btc_24h >= -0.15:
-                crypto_px_chg = max(ibit_24h, btc_24h)
-            elif ibit_24h < 0.0 and btc_24h <= 0.15:
-                crypto_px_chg = min(ibit_24h, btc_24h)
-            else:
-                crypto_px_chg = btc_24h
-        else:
-            crypto_px_chg = ibit_24h
-        cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
-
-        if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
-            explicit = str(data.get("cross_asset_regime") or "").strip().upper()
-            return explicit if explicit in allowed else "NEUTRAL"
-
-        vix_entry = items.get("VIX")
-        vix_chg = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
-        vix_px = safe_pos_float(vix_entry.get("price"), default=None) if isinstance(vix_entry, dict) else None
-        vix_fear_spike = (vix_chg is not None and vix_chg >= 8.0) or (
-            vix_px is not None and vix_px >= 28.0 and (vix_chg is None or vix_chg >= 3.0)
-        )
-
-        eq_bull = eq_regime == "RISK_ON" or (
-            eq_regime != "RISK_OFF" and not vix_fear_spike and bool(eq_24h) and avg_eq_24h >= 0.25
-        )
-        eq_bear = eq_regime == "RISK_OFF" or (
-            eq_regime != "RISK_ON" and bool(eq_24h) and avg_eq_24h <= -0.25
-        )
-        crypto_bull = (
-            (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
-            or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
-        )
-        crypto_bear = (
-            (crypto_px_chg is not None and crypto_px_chg <= -0.35 and (cb_bps is None or cb_bps < 5.0))
-            or (cb_bps is not None and cb_bps <= -5.0 and (crypto_px_chg is None or crypto_px_chg <= 0.15))
-        )
-
-        if eq_bull and crypto_bull:
-            return "COUPLED_RISK_ON"
-        if eq_bear and crypto_bear:
-            return "COUPLED_RISK_OFF"
-        if eq_bear and crypto_bull:
-            return "CRYPTO_BULLISH_DECOUPLING"
-        if eq_bull and crypto_bear:
-            return "EQUITY_BULLISH_DECOUPLING"
-        return "NEUTRAL"
+        return _ssot_compute_cross_asset_regime(data, btc_chg_24h_pct=btc_chg_24h_pct)
 
 
 class DeribitOptionsSurfaceEvaluator(MacroTelemetryEvaluatorBase):

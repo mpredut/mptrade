@@ -114,10 +114,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return 0.0
         try:
-            from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
             from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
 
-            series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper(), include_7d=False)
+            series_24h, _ = TelemetryCollectorFactory.get_price_series_loader().collect(
+                cache_dir, symbol.upper(), include_7d=False
+            )
             pts = _extract_sorted_ts_px(series_24h or [])
             if len(pts) >= 2:
                 now_ms, latest_p = pts[-1]

@@ -15,6 +15,7 @@ from collections import OrderedDict
 from typing import Mapping, Optional
 
 from botcore import (
+    ClosedPriceSeries,
     _parse_bool_flag,
     exact_int,
     exact_pos_int,
@@ -28,7 +29,6 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name
-from providers.order_ohlc_utils import ClosedPriceSeries
 
 
 def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[float]:

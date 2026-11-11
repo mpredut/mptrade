@@ -95,6 +95,7 @@ from intelligence.external.collectors.base_collector import (
 )
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    load_microstructure_cycle_history,
     lookup_symbol_cache_items,
     normalize_epoch_sec,
     obj_attr,
@@ -102,6 +103,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_read_json_cached,
     safe_float,
     safe_pos_float,
+    save_microstructure_cycle_history,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_PRICE_ANCHOR_KEYS,
@@ -116,6 +118,7 @@ from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     resolve_symbol_price,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    _LAST_7D_SPAN_MS_BY_SYM,
     _RTH_VP_ANCHOR_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     _STALE_SHORT_24H_KEYS,
@@ -147,7 +150,6 @@ from state_io import (
 )
 
 read_json_cached = _default_read_json_cached
-_LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, str, int], Tuple[float, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
@@ -1892,47 +1894,6 @@ def enrich_24h_and_microstructure(
         allow_network=allow_network,
         persist=persist,
     )
-
-
-def load_microstructure_cycle_history(
-    cache_dir: Optional[str],
-    *,
-    read_json_fn: Any = None,
-) -> Dict[str, Any]:
-    """Load rolling microstructure cycle history from `microstructure_cycle_history.json`."""
-    if not cache_dir:
-        return {}
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
-    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
-    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
-    if not (os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)):
-        return {}
-    rj = read_json_fn if callable(read_json_fn) else read_json_file
-    try:
-        raw_mh = rj(mhist_path, default={})
-    except TypeError:
-        raw_mh = rj(mhist_path)
-    return dict(raw_mh) if isinstance(raw_mh, dict) else {}
-
-
-def save_microstructure_cycle_history(
-    cache_dir: Optional[str],
-    history: Dict[str, Any],
-) -> bool:
-    """Persist rolling microstructure cycle history to `microstructure_cycle_history.json`."""
-    if not cache_dir or not isinstance(history, dict):
-        return False
-    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
-    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
-    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
-    if not (is_live_network_backfill_enabled() or not is_repo_cachedb):
-        return False
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
-        save_json_state(mhist_path, history, indent=2)
-        return True
-    except Exception:
-        return False
 
 
 __all__ = [

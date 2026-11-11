@@ -50,7 +50,6 @@ from orchestratorOS.lib.technical_repair_ssot import (
     default_supervisor_fallback_plan,
     execute_venue_or_fleet_repair_action,
     format_supervisor_ntfy_notification,
-    harvest_fleet_and_system_telemetry,
     harvest_heartbeats_and_state_files,
     harvest_log_anomalies_from_dirs,
     is_bot_or_code_error_report,
@@ -61,6 +60,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     send_supervisor_ntfy_http,
     submit_supervisor_trading_decisions,
 )
+from orchestratorOS.livecheck.fleet_health_monitor import harvest_fleet_and_system_telemetry
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 import instrument as _instrument_preload  # noqa: F401 — preload with core modules to prevent mid-deploy split-commit lazy import races

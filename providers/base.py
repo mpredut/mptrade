@@ -57,6 +57,7 @@ def is_in_live_price_fetch() -> bool:
 
 from .order_ohlc_utils import (  # noqa: E402, F401
     ClosedPriceSeries,
+    VENUE_PROVIDER_SPECS,
     _is_fresh_obs_ts,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
@@ -67,6 +68,7 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     extract_timestamp_s,
     normalize_side,
     normalize_timestamp_ms,
+    resolve_venue_provider_class as _resolve_venue_provider_class,
 )
 from .quantity import (  # noqa: E402, F401
     compute_fills_cost_basis,
@@ -143,12 +145,7 @@ class MarketDataProvider(ABC):
     _INTENT_CLIENT_ID_FORMAT: Optional[str] = None
     _BUY_SLIPPAGE_FEE_BUFFER: Optional[float] = None
     _SELL_DUST_SPEC: Optional[tuple[int, float]] = None
-    _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
-        "binance": ("providers.binance_provider", "BinanceProvider"),
-        "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
-        "kraken": ("providers.kraken_provider", "KrakenProvider"),
-        "t212": ("providers.t212_provider", "T212Provider"),
-    }
+    _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = VENUE_PROVIDER_SPECS
     _fills_match_fn: Any = None
     _fills_normalize_fn: Any = None
     _ssot_current_price_reader: Any = None
@@ -457,25 +454,9 @@ class MarketDataProvider(ABC):
     @classmethod
     def resolve_venue_provider_class(cls, venue: Any, *, provider: Any = None) -> Any:
         """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` or ``provider``."""
-        if not isinstance(venue, bool) and venue is not None:
-            if isinstance(venue, type) and (issubclass(venue, cls) or hasattr(venue, "supports_symbol")):
-                return venue
-            if not isinstance(venue, (str, bytes)) and (
-                isinstance(venue, cls) or hasattr(type(venue), "supports_symbol")
-            ):
-                return type(venue)
-            spec = cls._VENUE_PROVIDER_SPECS.get(normalize_venue_name(venue))
-            if spec is not None:
-                mod_path, cls_name = spec
-                resolved = getattr(importlib.import_module(mod_path), cls_name, None)
-                if resolved is not None:
-                    return resolved
-        if provider is not None and not isinstance(provider, (str, bytes, bool)):
-            if isinstance(provider, type) and (issubclass(provider, cls) or hasattr(provider, "supports_symbol")):
-                return provider
-            if isinstance(provider, cls) or hasattr(type(provider), "supports_symbol"):
-                return type(provider)
-        return None
+        return _resolve_venue_provider_class(
+            venue, provider=provider, base_cls=cls, specs=cls._VENUE_PROVIDER_SPECS
+        )
 
     @classmethod
     def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:

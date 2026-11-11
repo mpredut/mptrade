@@ -30,6 +30,8 @@ from botcore import (
     _parse_bool_flag,
     evaluate_heartbeat_files_freshness,
     load_key_value_conf,
+    parse_procs_manifest,
+    resolve_heartbeat_paths,
     safe_pos_float,
     safe_pos_int,
 )
@@ -38,8 +40,7 @@ from state_io import encode_json_payload, read_json_recovering, save_json_state
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     gather_basic_os_resources,
-    parse_procs_manifest,
-    resolve_heartbeat_paths,
+    gather_system_and_vpn_telemetry,
     summarize_fleet_sensor_status,
 )
 
@@ -258,6 +259,19 @@ class FleetHealthMonitor:
             except Exception as e:
                 logger.error("Error in monitor loop: %s", e, exc_info=True)
             time.sleep(sleep_s)
+
+
+def harvest_fleet_and_system_telemetry(workspace_dir: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Collect fleet process status via FleetHealthMonitor and Linux OS / VPN / DNS / config audit telemetry."""
+    fleet_processes: List[Dict[str, Any]] = []
+    base_res: Dict[str, Any] = {}
+    try:
+        monitor = FleetHealthMonitor(workspace_dir=workspace_dir)
+        fleet_processes = [asdict(p) for p in monitor.check_processes()]
+        base_res = dict(gather_basic_os_resources(workspace_dir) or {})
+    except Exception:
+        base_res = {}
+    return fleet_processes, gather_system_and_vpn_telemetry(workspace_dir, base_resources=base_res)
 
 
 def main() -> None:

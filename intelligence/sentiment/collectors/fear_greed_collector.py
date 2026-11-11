@@ -1,12 +1,12 @@
 """Alternative.me Crypto Fear & Greed Index collector with caching and trend metrics."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from intelligence.macro_sentiment_ssot import (
+    FearGreedSnapshot,
     fetch_public_json,
     get_fear_greed_endpoint_url,
     resolve_now_ts,
@@ -19,19 +19,6 @@ from intelligence.external.collectors.base_collector import (
 from providers.base import extract_timestamp_s
 
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
-
-
-@dataclass(frozen=True)
-class FearGreedSnapshot:
-    """Snapshot of current market sentiment derived from the Fear & Greed Index."""
-
-    value: int                           # 0 to 100
-    classification: str                  # "Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"
-    timestamp: float                     # Unix epoch timestamp of calculation
-    historical_values: Tuple[int, ...]   # Past daily values (up to 14 days, newest to oldest)
-    trend_7d_change: int                 # Net change over last 7 available days (positive = increasing greed)
-    is_extreme_fear: bool                # True if value <= 25
-    is_extreme_greed: bool               # True if value >= 75
 
 
 class FearGreedCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterface):

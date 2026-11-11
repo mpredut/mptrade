@@ -33,15 +33,14 @@ if ROOT_DIR not in sys.path:
 
 from botcore import _parse_bool_flag, load_env_stack, optional_env, safe_pos_int
 from notify_engine.alertnotifiers import (
+    EMAIL_MIRRORED_CATEGORIES,
     _GATE_ACCEPTED_REASONS,
     _canonical_topic_key,
     _external_notifications_disabled,
+    is_email_mirrored,
     pass_common_gate,
     sanitize_single_line,
 )
-
-# Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
-EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
 
 _SMTP_TIMEOUT_SEC = 15
 _LAST_ERROR_IS_AUTH = False
@@ -49,21 +48,6 @@ _LAST_ERROR_IS_AUTH = False
 
 def last_error_is_auth_failure() -> bool:
     return _LAST_ERROR_IS_AUTH
-
-
-def is_email_mirrored(topic: str | None) -> bool:
-    if not topic or not isinstance(topic, str) or not topic.strip():
-        return False
-    if not os.environ.get("NTFY_TOPIC_ERROR"):
-        load_env_stack()
-    topics = {
-        optional_env(f"NTFY_TOPIC_{cat}")
-        for cat in EMAIL_MIRRORED_CATEGORIES
-    }
-    topics.discard("")
-    if not topics:
-        topics.update({"ntfy-error-1978", "ntfy-server-1978"})
-    return _canonical_topic_key(topic) in topics
 
 
 def _config() -> dict | None:

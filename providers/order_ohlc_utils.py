@@ -1,12 +1,13 @@
 """Stateless order, fill, client-order-ID, and OHLC normalization utilities."""
 
 import hashlib
+import importlib
 import re
 import time
-from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from botcore import (
+    ClosedPriceSeries,
     _COST_EXEC_KEY_PAIRS,
     _ORDER_ID_KEYS,
     _PRICE_KEYS,
@@ -484,11 +485,51 @@ def format_strategy_execution_mode(
     return paper_label if _parse_bool_flag(dry_run, True) else real_label
 
 
+VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
+    "binance": ("providers.binance_provider", "BinanceProvider"),
+    "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
+    "kraken": ("providers.kraken_provider", "KrakenProvider"),
+    "t212": ("providers.t212_provider", "T212Provider"),
+}
+
+
+def resolve_venue_provider_class(
+    venue: Any,
+    *,
+    provider: Any = None,
+    base_cls: Any = None,
+    specs: Optional[dict[str, tuple[str, str]]] = None,
+) -> Any:
+    """Resolve the concrete ``MarketDataProvider`` subclass for ``venue`` or ``provider``."""
+    spec_map = specs if isinstance(specs, dict) else VENUE_PROVIDER_SPECS
+    if not isinstance(venue, bool) and venue is not None:
+        if isinstance(venue, type) and (
+            (base_cls is not None and issubclass(venue, base_cls)) or hasattr(venue, "supports_symbol")
+        ):
+            return venue
+        if not isinstance(venue, (str, bytes)) and (
+            (base_cls is not None and isinstance(venue, base_cls)) or hasattr(type(venue), "supports_symbol")
+        ):
+            return type(venue)
+        spec = spec_map.get(normalize_venue_name(venue))
+        if spec is not None:
+            mod_path, cls_name = spec
+            resolved = getattr(importlib.import_module(mod_path), cls_name, None)
+            if resolved is not None:
+                return resolved
+    if provider is not None and not isinstance(provider, (str, bytes, bool)):
+        if isinstance(provider, type) and (
+            (base_cls is not None and issubclass(provider, base_cls)) or hasattr(provider, "supports_symbol")
+        ):
+            return provider
+        if (base_cls is not None and isinstance(provider, base_cls)) or hasattr(type(provider), "supports_symbol"):
+            return type(provider)
+    return None
+
+
 def derive_venue_128bit_client_order_id(venue: Any, client_order_id: Any) -> str:
     """Map one durable client ID to the declarative 128-bit clientOrderId form for ``venue``."""
-    from .base import MarketDataProvider
-
-    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue)
+    prov_cls = resolve_venue_provider_class(venue)
     spec = getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) if prov_cls is not None else None
     if spec is None:
         raise ProviderError(f"Unsupported 128-bit client_order_id venue: {venue!r}")
@@ -512,11 +553,9 @@ def all_venue_native_client_order_ids(client_order_id: Any) -> set[str]:
     raw = clean_order_id(client_order_id)
     if not raw:
         return set()
-    from .base import MarketDataProvider
-
     out = {raw.lower()}
-    for venue_key in MarketDataProvider._VENUE_PROVIDER_SPECS:
-        prov_cls = MarketDataProvider.resolve_venue_provider_class(venue_key)
+    for venue_key in VENUE_PROVIDER_SPECS:
+        prov_cls = resolve_venue_provider_class(venue_key)
         if getattr(prov_cls, "_CLIENT_ID_128BIT_SPEC", None) is None:
             continue
         try:
@@ -530,9 +569,7 @@ def format_venue_intent_client_order_id(venue: Any, token: str) -> Optional[str]
     """Format a 32-hex intent token into the venue's clientOrderId format (or ``None`` when unsupported)."""
     if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
         return None
-    from .base import MarketDataProvider
-
-    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue)
+    prov_cls = resolve_venue_provider_class(venue)
     fmt = getattr(prov_cls, "_INTENT_CLIENT_ID_FORMAT", None) if prov_cls is not None else None
     return fmt.format(token=token.strip()) if isinstance(fmt, str) and fmt else None
 
@@ -752,55 +789,6 @@ def validate_ohlc_candle_bar(
     if ts_sec <= 0:
         return None
     return {"timestamp": ts_sec, "open": o_v, "high": h_v, "low": l_v, "close": c_v}
-
-
-@dataclass(frozen=True)
-class ClosedPriceSeries:
-    """Completed closes with the timestamp of the newest completed candle."""
-
-    closes: tuple
-    interval_min: int
-    last_closed_at: Optional[float] = None
-    timestamps: tuple = ()
-    volumes: tuple = ()
-
-    @classmethod
-    def from_raw_candles(
-        cls,
-        raw_candles: Any,
-        interval_min: int,
-        close_getter: Any,
-        ts_ms_getter: Any,
-        vol_getter: Any = None,
-    ) -> "ClosedPriceSeries":
-        completed = list(raw_candles or ())[:-1]
-        valid = [
-            (item, c_f)
-            for item in completed
-            if (c_f := safe_pos_float(close_getter(item), default=None)) is not None
-        ]
-        closes = tuple(c_f for _item, c_f in valid)
-        ts_list = []
-        ts_ok = bool(valid)
-        for item, _ in valid:
-            t_ms = safe_pos_float(ts_ms_getter(item), default=None)
-            if t_ms is None:
-                ts_ok = False
-                break
-            ts_list.append(t_ms / 1000.0)
-        timestamps = tuple(ts_list) if ts_ok else ()
-        volumes = (
-            tuple(safe_nonneg_float(vol_getter(item), default=0.0) or 0.0 for item, _ in valid)
-            if callable(vol_getter) and valid
-            else ()
-        )
-        return cls(
-            closes,
-            safe_pos_int(interval_min, 1),
-            timestamps[-1] if timestamps else None,
-            timestamps,
-            volumes,
-        )
 
 
 def summarize_order_position(buy_orders: Any, sell_orders: Any) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env, safe_nonneg_ts
 from cachepaths import cache_path
-from intelligence.macro.calendar_ssot import resolve_global_trading_session
+from intelligence.macro.calendar_ssot import headline_effective_ts, resolve_global_trading_session
 from intelligence.macro.daemon_ssot import CachedTopicAssessmentAgent
 from intelligence.macro.lexicon_ssot import (
     demote_dynamic_acute_terms,
@@ -146,25 +146,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         self._last_headlines_digest = digest
         return self._commit_topic_assessment(assessment, now)
 
-    @staticmethod
-    def _headline_effective_ts(h: Any, now: float) -> float:
-        ts_val = safe_nonneg_ts(
-            obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-            0.0,
-        )
-        if ts_val <= 0.0:
-            pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
-            ts_val = pub_ts if pub_ts is not None else 0.0
-        if ts_val <= 0.0:
-            raw_age = obj_attr(h, "age_min", None)
-            if raw_age is not None and not isinstance(raw_age, bool):
-                try:
-                    age_f = float(raw_age)
-                    if 0.0 <= age_f <= 2880.0:
-                        ts_val = now - age_f * 60.0
-                except (TypeError, ValueError):
-                    pass
-        return ts_val
+    _headline_effective_ts = staticmethod(headline_effective_ts)
 
     @classmethod
     def _headline_age_suffix(cls, h: Any, now: float, *, include_utc_time: bool = False) -> str:

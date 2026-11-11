@@ -917,14 +917,14 @@ def update_microstructure_cycle_deltas(
     if isinstance(history, dict):
         mhist = history
     elif cache_dir:
-        from intelligence.sentiment.collectors.microstructure_collector import load_microstructure_cycle_history
+        from intelligence.macro_sentiment_ssot import load_microstructure_cycle_history
 
         mhist = load_microstructure_cycle_history(cache_dir)
     else:
         return {}
     _, mhist, mhist_dirty = evaluate_microstructure_cycle_deltas(microstructure, mhist, now_ts=now_ts)
     if persist and mhist_dirty and cache_dir:
-        from intelligence.sentiment.collectors.microstructure_collector import save_microstructure_cycle_history
+        from intelligence.macro_sentiment_ssot import save_microstructure_cycle_history
 
         save_microstructure_cycle_history(cache_dir, mhist)
     return mhist
@@ -1155,7 +1155,7 @@ def enrich_cross_venue_trends(
                     or entry.get("_partial_7d_span_ms") is None
                     or w_span_ms <= safe_float(entry.get("_partial_7d_span_ms"), 0.0)
                 ):
-                    from intelligence.sentiment.collectors.microstructure_collector import _LAST_7D_SPAN_MS_BY_SYM
+                    from intelligence.sentiment.evaluators.price_series_evaluator import _LAST_7D_SPAN_MS_BY_SYM
 
                     if (
                         not is_eq_w7

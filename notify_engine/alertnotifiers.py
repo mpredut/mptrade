@@ -25,8 +25,10 @@ from botcore import (
     int_env,
     is_cache_fresh,
     is_live_network_backfill_enabled,
+    load_env_stack,
     normalize_epoch_sec,
     obj_attr,
+    optional_env,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -1237,6 +1239,24 @@ def _external_notifications_disabled() -> bool:
     )
 
 
+EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
+
+
+def is_email_mirrored(topic: str | None) -> bool:
+    if not topic or not isinstance(topic, str) or not topic.strip():
+        return False
+    if not os.environ.get("NTFY_TOPIC_ERROR"):
+        load_env_stack()
+    topics = {
+        optional_env(f"NTFY_TOPIC_{cat}")
+        for cat in EMAIL_MIRRORED_CATEGORIES
+    }
+    topics.discard("")
+    if not topics:
+        topics.update({"ntfy-error-1978", "ntfy-server-1978"})
+    return _canonical_topic_key(topic) in topics
+
+
 def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
@@ -1266,7 +1286,6 @@ def notify(title: str, body: str, source: str, symbol: str,
         from notify_engine.server import NotificationServer
         NotificationServer().dispatch_alerts([alert])
     if _parse_bool_flag(email, False):
-        from notify_engine.mailer import is_email_mirrored
         from notify_engine.server import _topic_for_category
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)

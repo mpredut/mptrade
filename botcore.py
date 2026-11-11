@@ -2719,4 +2719,54 @@ def compute_venue_nav_breakdown(
     }
 
 
+@dataclass(frozen=True)
+class ClosedPriceSeries:
+    """Completed closes with the timestamp of the newest completed candle."""
+
+    closes: tuple
+    interval_min: int
+    last_closed_at: float | None = None
+    timestamps: tuple = ()
+    volumes: tuple = ()
+
+    @classmethod
+    def from_raw_candles(
+        cls,
+        raw_candles: object,
+        interval_min: int,
+        close_getter: object,
+        ts_ms_getter: object,
+        vol_getter: object = None,
+    ) -> "ClosedPriceSeries":
+        completed = list(raw_candles or ())[:-1]  # type: ignore[arg-type]
+        valid = [
+            (item, c_f)
+            for item in completed
+            if (c_f := safe_pos_float(close_getter(item), default=None)) is not None  # type: ignore[operator]
+        ]
+        closes = tuple(c_f for _item, c_f in valid)
+        ts_list = []
+        ts_ok = bool(valid)
+        for item, _ in valid:
+            t_ms = safe_pos_float(ts_ms_getter(item), default=None)  # type: ignore[operator]
+            if t_ms is None:
+                ts_ok = False
+                break
+            ts_list.append(t_ms / 1000.0)
+        timestamps = tuple(ts_list) if ts_ok else ()
+        volumes = (
+            tuple(safe_nonneg_float(vol_getter(item), default=0.0) or 0.0 for item, _ in valid)
+            if callable(vol_getter) and valid
+            else ()
+        )
+        return cls(
+            closes,
+            safe_pos_int(interval_min, 1),
+            timestamps[-1] if timestamps else None,
+            timestamps,
+            volumes,
+        )
+
+
+
 

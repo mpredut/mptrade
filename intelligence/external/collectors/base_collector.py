@@ -303,21 +303,15 @@ class TelemetryCollectorFactory:
 
     @classmethod
     def get_price_series_loader(cls, *, start_sync: bool = False) -> Any:
-        from intelligence.sentiment.collectors.microstructure_collector import CompositeSymbolPriceSeriesLoader
-
-        return cls.get_collector(CompositeSymbolPriceSeriesLoader, start_sync=start_sync)
+        return cls.create("price_series_loader", start_sync=start_sync)
 
     @classmethod
     def get_fleet_enricher(cls, *, start_sync: bool = False) -> Any:
-        from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
-
-        return cls.get_collector(Fleet24hAndMicrostructureEnricher, start_sync=start_sync)
+        return cls.create("fleet_24h_and_microstructure", start_sync=start_sync)
 
     @classmethod
     def get_yahoo_chart_collector(cls, *, start_sync: bool = False) -> Any:
-        from intelligence.sentiment.collectors.microstructure_collector import EquityYahoo5dChartCollector
-
-        return cls.get_collector(EquityYahoo5dChartCollector, start_sync=start_sync)
+        return cls.create("equity_yahoo_5d_chart", start_sync=start_sync)
 
 
 class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):

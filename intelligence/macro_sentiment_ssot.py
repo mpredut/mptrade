@@ -24,7 +24,6 @@ if _self_mod is not None:
     sys.modules.setdefault("intelligence.macro_sentiment_ssot", _self_mod)
     sys.modules.setdefault("macro_sentiment_ssot", _self_mod)
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -35,14 +34,51 @@ from typing import (
     Tuple,
 )
 
-if TYPE_CHECKING:
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+
+@dataclass(frozen=True)
+class FearGreedSnapshot:
+    """Snapshot of current market sentiment derived from the Fear & Greed Index."""
+
+    value: int                           # 0 to 100
+    classification: str                  # "Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"
+    timestamp: float                     # Unix epoch timestamp of calculation
+    historical_values: Tuple[int, ...]   # Past daily values (up to 14 days, newest to oldest)
+    trend_7d_change: int                 # Net change over last 7 available days (positive = increasing greed)
+    is_extreme_fear: bool                # True if value <= 25
+    is_extreme_greed: bool               # True if value >= 75
+
+
+@dataclass(frozen=True)
+class MarketBreadthSnapshot:
+    """Snapshot of cross-market breadth, advance/decline participation, and dispersion."""
+
+    advance_ratio: float                          # Fraction of liquid coins with positive 24h change (0.0 - 1.0)
+    advancing_count: int                          # Count of positive 24h pairs
+    declining_count: int                          # Count of negative 24h pairs
+    total_count: int                              # Total liquid pairs analyzed
+    median_change_pct: float                      # Median 24h price change percentage
+    mean_change_pct: float                        # Mean 24h price change percentage
+    dispersion_std: float                         # Standard deviation of 24h returns (dispersion)
+    regime: str                                   # "PANIC_WASHOUT", "EUPHORIC_BLOWOFF", "BULLISH_BREADTH", "BEARISH_BREADTH", "NEUTRAL"
+    top_gainers: Tuple[Tuple[str, float], ...]    # (symbol, change_pct) top 3 gainers
+    top_losers: Tuple[Tuple[str, float], ...]     # (symbol, change_pct) top 3 losers
+    ts: float
+    btc_price: Optional[float] = None
+    btc_chg_24h_pct: Optional[float] = None
+    eth_price: Optional[float] = None
+    eth_chg_24h_pct: Optional[float] = None
+    eth_btc_ratio: Optional[float] = None
+    eth_btc_chg_24h_pct: Optional[float] = None
+    btc_vol_share_pct: Optional[float] = None
+    eth_vol_share_pct: Optional[float] = None
+    alt_vol_share_pct: Optional[float] = None
+    rotation_regime: Optional[str] = None
 
 from botcore import (
     _parse_bool_flag,
     clean_scale,
     fetch_public_json,
+    is_live_network_backfill_enabled,
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
@@ -83,8 +119,10 @@ from state_io import (
     discard_generation_file,
     read_json_dict,
     read_json_dict_recovering as _default_read_json_dict_recovering,
+    read_json_file,
     read_json_recovering as _default_read_json_recovering,
     read_text_lines,
+    resolve_cachedb_filepath,
     save_json_state as _default_save_json_state,
 )
 
@@ -505,8 +543,6 @@ def load_cached_fear_greed_snapshot(
     now_ts: Optional[float] = None,
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-
     reader = resolve_read_json_cached()
     eval_now = resolve_now_ts(now_ts)
     for fg_fname in get_cache_filenames("fear_greed_files"):
@@ -552,8 +588,6 @@ def load_cached_market_breadth_snapshot(
     now_ts: Optional[float] = None,
 ) -> Optional[MarketBreadthSnapshot]:
     """Load cached Market Breadth snapshot using configured candidate filenames."""
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-
     def _norm_pairs(items: Any) -> Tuple[Tuple[str, float], ...]:
         return tuple(
             (s_clean, safe_float(x[1], 0.0))
@@ -668,6 +702,311 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
+    """Compute pre-market / extended-hours US index futures lead (NQ=F vs QQQ, ES=F vs SPY)."""
+    if not isinstance(data, dict):
+        return {}
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    any_cash_live_rth = False
+    for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
+        fut, cash = items.get(fut_sym), items.get(cash_sym)
+        if not isinstance(fut, dict) or not isinstance(cash, dict):
+            continue
+        fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
+        fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
+        fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
+        cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
+        fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
+        cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
+        cash_state = str(cash.get("market_state") or "").strip().upper()
+        cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
+            fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
+        )
+        is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
+        if not is_off_rth:
+            any_cash_live_rth = True
+            continue
+        if fut_globex is not None and abs(fut_globex) >= 0.25:
+            out[lead_key] = round(fut_globex, 2) + 0.0
+        elif fut_24h is not None and cash_24h is not None:
+            diff_v = round(fut_24h - cash_24h, 2) + 0.0
+            dir_ok = (
+                (diff_v > 0.0 and (fut_24h >= -0.15 or (fut_1h is not None and fut_1h >= 0.15)))
+                or (diff_v < 0.0 and (fut_24h <= 0.15 or (fut_1h is not None and fut_1h <= -0.15)))
+            )
+            if dir_ok and abs(diff_v) >= 0.25:
+                out[lead_key] = diff_v
+        elif fut_1h is not None and abs(fut_1h) >= 0.25:
+            out[lead_key] = round(fut_1h, 2) + 0.0
+    lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
+    if lead_v is None and not any_cash_live_rth:
+        lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
+    if lead_v is not None and abs(lead_v) >= 0.25:
+        out["futures_lead_pct"] = round(lead_v, 2) + 0.0
+        out["futures_lead_regime"] = "FUTURES_PREMARKET_GAP_UP" if lead_v >= 0.25 else "FUTURES_PREMARKET_GAP_DOWN"
+    return out
+
+
+def compute_equity_macro_regime(data: Any) -> str:
+    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
+    if not isinstance(data, dict):
+        return "NEUTRAL"
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        items = {}
+    eq_24h: List[float] = []
+    eq_1h: List[float] = []
+    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+        entry = items.get(sym)
+        if not isinstance(entry, dict):
+            continue
+        m_state = str(entry.get("market_state") or "").strip().upper()
+        if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+            eq_24h.append(c24)
+        if m_state != "CLOSED" and (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
+            eq_1h.append(c1)
+    if not eq_24h and not eq_1h:
+        explicit = str(data.get("equity_regime") or "").strip().upper()
+        return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
+    avg_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+    avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
+    dxy_entry = items.get("DXY")
+    dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
+    vix_entry = items.get("VIX")
+    vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+    fut_lead = safe_float(
+        data.get("futures_lead_pct")
+        if "futures_lead_pct" in data
+        else compute_futures_premarket_lead(data).get("futures_lead_pct"),
+        default=0.0,
+    ) or 0.0
+    if (
+        avg_24h >= 0.35
+        or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
+        or (avg_24h >= 0.0 and fut_lead >= 0.40 and (dxy_24h is None or dxy_24h <= 0.25))
+    ) and (vix_24h is None or vix_24h <= 5.0):
+        return "RISK_ON"
+    if (
+        avg_24h <= -0.35
+        or (avg_24h <= -0.15 and avg_1h <= -0.15)
+        or (avg_24h <= 0.0 and fut_lead <= -0.40)
+        or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
+        or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
+    ):
+        return "RISK_OFF"
+    return "NEUTRAL"
+
+
+def compute_cross_asset_regime(
+    data: Any,
+    *,
+    btc_chg_24h_pct: Optional[float] = None,
+) -> str:
+    """Classify the symmetric US Equity vs Crypto Institutional correlation regime."""
+    allowed = get_cross_asset_regimes()
+    if not isinstance(data, dict):
+        return "NEUTRAL"
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        items = {}
+    eq_24h: List[float] = []
+    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+        entry = items.get(sym)
+        if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+            eq_24h.append(c24)
+    eq_regime = str(data.get("equity_regime") or "").strip().upper()
+    if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
+        eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
+    ):
+        eq_regime = compute_equity_macro_regime(data)
+    avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+
+    ibit_entry = items.get("IBIT")
+    ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
+    btc_24h = safe_float(btc_chg_24h_pct, default=None)
+    if btc_24h is not None and abs(btc_24h) > 1e-6:
+        if ibit_24h is None or abs(ibit_24h) <= 1e-6:
+            crypto_px_chg = btc_24h
+        elif ibit_24h > 0.0 and btc_24h >= -0.15:
+            crypto_px_chg = max(ibit_24h, btc_24h)
+        elif ibit_24h < 0.0 and btc_24h <= 0.15:
+            crypto_px_chg = min(ibit_24h, btc_24h)
+        else:
+            crypto_px_chg = btc_24h
+    else:
+        crypto_px_chg = ibit_24h
+    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
+
+    if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
+        explicit = str(data.get("cross_asset_regime") or "").strip().upper()
+        return explicit if explicit in allowed else "NEUTRAL"
+
+    vix_entry = items.get("VIX")
+    vix_chg = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+    vix_px = safe_pos_float(vix_entry.get("price"), default=None) if isinstance(vix_entry, dict) else None
+    vix_fear_spike = (vix_chg is not None and vix_chg >= 8.0) or (
+        vix_px is not None and vix_px >= 28.0 and (vix_chg is None or vix_chg >= 3.0)
+    )
+
+    eq_bull = eq_regime == "RISK_ON" or (
+        eq_regime != "RISK_OFF" and not vix_fear_spike and bool(eq_24h) and avg_eq_24h >= 0.25
+    )
+    eq_bear = eq_regime == "RISK_OFF" or (
+        eq_regime != "RISK_ON" and bool(eq_24h) and avg_eq_24h <= -0.25
+    )
+    crypto_bull = (
+        (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
+        or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
+    )
+    crypto_bear = (
+        (crypto_px_chg is not None and crypto_px_chg <= -0.35 and (cb_bps is None or cb_bps < 5.0))
+        or (cb_bps is not None and cb_bps <= -5.0 and (crypto_px_chg is None or crypto_px_chg <= 0.15))
+    )
+
+    if eq_bull and crypto_bull:
+        return "COUPLED_RISK_ON"
+    if eq_bear and crypto_bear:
+        return "COUPLED_RISK_OFF"
+    if eq_bear and crypto_bull:
+        return "CRYPTO_BULLISH_DECOUPLING"
+    if eq_bull and crypto_bear:
+        return "EQUITY_BULLISH_DECOUPLING"
+    return "NEUTRAL"
+
+
+def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
+    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
+    if not isinstance(data, dict):
+        return ""
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        return ""
+    specs = get_macro_benchmark_specs()
+    extra_keys: frozenset[str] = frozenset({
+        "equity_regime",
+        "cross_asset_regime",
+        "coinbase_premium_bps",
+        "coinbase_premium_regime",
+        "options_vol_regime",
+        "futures_lead_pct",
+        "futures_lead_regime",
+        "nq_qqq_lead_pct",
+        "es_spy_lead_pct",
+        *(
+            f"{ccy.lower()}_{sfx}"
+            for ccy in get_deribit_options_currencies()
+            for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
+        ),
+    })
+    meta_skip = {"ts", "age_min", "summary_line", "items"} | extra_keys
+    if not include_crypto:
+        meta_skip = meta_skip | {"IBIT"}
+    ordered_keys = [k for k, _, _ in specs if k in items and k not in meta_skip] + [
+        k for k in items if k not in {s[0] for s in specs} and k not in meta_skip
+    ]
+    parts: List[str] = []
+    for sym in ordered_keys:
+        entry = items.get(sym)
+        if not isinstance(entry, dict) or (px := safe_pos_float(entry.get("price"), default=None)) is None:
+            continue
+        unit_kind = str(entry.get("unit") or "").lower()
+        px_s = (
+            f"{px:.2f}%"
+            if (sym == "US10Y" or unit_kind == "yield_pct")
+            else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
+        )
+        m_state = str(entry.get("market_state") or "").strip().upper()
+        d_parts = [
+            f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
+            for h_lbl, h_key in (
+                (("24h", "chg_24h_pct"),)
+                if m_state == "CLOSED"
+                else (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
+            )
+            if (val := safe_float(entry.get(h_key), default=None)) is not None
+        ]
+        if m_state and m_state != "REGULAR":
+            d_parts.append(m_state.lower())
+        delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
+        parts.append(f"{sym}={px_s}{delta_s}")
+    lead_info = compute_futures_premarket_lead(data)
+    if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and str(
+        lead_info.get("futures_lead_regime") or ""
+    ).strip() in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
+        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}%")
+    if not include_crypto:
+        return " | ".join(parts)
+    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
+    if cb_bps is not None:
+        cb_bps = round(cb_bps, 1) + 0.0
+        parts.append(f"CB_Premium={cb_bps:+.1f}bps")
+    btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
+    eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
+    if btc_dvol is not None or eth_dvol is not None:
+        dvol_s = " / ".join(
+            f"{lbl}={val:.1f}%"
+            for lbl, val in (("BTC_DVOL", btc_dvol), ("ETH_DVOL", eth_dvol))
+            if val is not None
+        ).replace(" / ", "/")
+        parts.append(dvol_s)
+    for ccy in get_deribit_options_currencies():
+        pfx = ccy.lower()
+        opt_parts: List[str] = []
+        if (rv_v := safe_pos_float(data.get(f"{pfx}_rv_pct", items.get(f"{pfx}_rv_pct")), default=None)) is not None:
+            opt_parts.append(f"RV={rv_v:.1f}%")
+        if (vrp_v := safe_float(data.get(f"{pfx}_vrp_pct", items.get(f"{pfx}_vrp_pct")), default=None)) is not None:
+            opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
+        if (pc_v := safe_pos_float(data.get(f"{pfx}_pc_oi_ratio", items.get(f"{pfx}_pc_oi_ratio")), default=None)) is not None:
+            opt_parts.append(f"PC_OI={pc_v:.2f}")
+        if (sk_v := safe_float(data.get(f"{pfx}_skew_25d_pct", items.get(f"{pfx}_skew_25d_pct")), default=None)) is not None:
+            opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
+        if opt_parts:
+            lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
+            parts.append(f"{lbl}({', '.join(opt_parts)})")
+    return " | ".join(parts)
+
+
+def _resolve_cached_btc_24h_chg_ssot(cache_dir: str) -> Optional[float]:
+    if not cache_dir:
+        return None
+    for fn in (
+        "24price_BTCUSDC.json",
+        "cache_24_price_BTCUSDC.json",
+        "24price_BTCUSDT.json",
+        "cache_24_price_BTCUSDT.json",
+        "24price.json",
+        "cache_24_price.json",
+    ):
+        fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, fn)))
+        if not os.path.exists(fpath):
+            continue
+        raw = _default_read_json_recovering(fpath, default=None)
+        rows = lookup_symbol_cache_items(raw, "BTCUSDC", require_list=True, unwrap_items=True)
+        if not isinstance(rows, list) or len(rows) < 2:
+            continue
+        pts: List[Tuple[float, float]] = []
+        for r in rows:
+            if isinstance(r, (list, tuple)) and len(r) >= 2:
+                tf, pf = safe_pos_float(r[0], 0.0), safe_pos_float(r[1], 0.0)
+                if tf > 0.0 and pf > 0.0:
+                    pts.append((tf * 1000.0 if tf < 1e11 else tf, pf))
+        if len(pts) >= 2:
+            pts.sort(key=lambda x: x[0])
+            cutoff = pts[-1][0] - 86400.0 * 1000.0
+            win = [p for p in pts if p[0] >= cutoff]
+            if len(win) < 2:
+                win = pts
+            p0, p1 = win[0][1], win[-1][1]
+            if p0 > 0.0:
+                chg = round((p1 - p0) / p0 * 100.0, 2) + 0.0
+                if abs(chg) > 1e-6:
+                    return chg
+    return None
+
+
 def enrich_macro_benchmarks_live_state(
     data: Optional[Dict[str, Any]],
     *,
@@ -681,14 +1020,6 @@ def enrich_macro_benchmarks_live_state(
         return None
     out = dict(data)
     try:
-        from intelligence.sentiment.collectors.microstructure_collector import resolve_cached_btc_24h_change_pct
-        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-            compute_cross_asset_regime,
-            compute_equity_macro_regime,
-            compute_futures_premarket_lead,
-            format_macro_benchmarks_summary_line,
-        )
-
         lead_recomputed = compute_futures_premarket_lead(out)
         prev_lead_sig = (out.get("futures_lead_pct"), out.get("futures_lead_regime"))
         for lk in ("futures_lead_pct", "futures_lead_regime", "nq_qqq_lead_pct", "es_spy_lead_pct"):
@@ -703,7 +1034,7 @@ def enrich_macro_benchmarks_live_state(
             out["equity_regime"] = compute_equity_macro_regime(out)
         btc_chg = btc_chg_24h_pct
         if btc_chg is None and cache_dir:
-            btc_chg = resolve_cached_btc_24h_change_pct(cache_dir)
+            btc_chg = _resolve_cached_btc_24h_chg_ssot(cache_dir)
         if (
             force_recompute
             or lead_changed
@@ -722,6 +1053,47 @@ def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
     data, _ = read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
     return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
+
+
+def load_microstructure_cycle_history(
+    cache_dir: Optional[str],
+    *,
+    read_json_fn: Any = None,
+) -> Dict[str, Any]:
+    """Load rolling microstructure cycle history from `microstructure_cycle_history.json`."""
+    if not cache_dir:
+        return {}
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "cachedb"))
+    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
+    if not (os.path.exists(mhist_path) and (is_live_network_backfill_enabled() or not is_repo_cachedb)):
+        return {}
+    rj = read_json_fn if callable(read_json_fn) else read_json_file
+    try:
+        raw_mh = rj(mhist_path, default={})
+    except TypeError:
+        raw_mh = rj(mhist_path)
+    return dict(raw_mh) if isinstance(raw_mh, dict) else {}
+
+
+def save_microstructure_cycle_history(
+    cache_dir: Optional[str],
+    history: Dict[str, Any],
+) -> bool:
+    """Persist rolling microstructure cycle history to `microstructure_cycle_history.json`."""
+    if not cache_dir or not isinstance(history, dict):
+        return False
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "cachedb"))
+    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
+    if not (is_live_network_backfill_enabled() or not is_repo_cachedb):
+        return False
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
+        save_json_state(mhist_path, history, indent=2)
+        return True
+    except Exception:
+        return False
 
 
 def lookup_symbol_cache_items(

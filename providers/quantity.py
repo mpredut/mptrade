@@ -25,6 +25,7 @@ from .order_ohlc_utils import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
+    resolve_venue_provider_class,
 )
 
 logger = logging.getLogger(__name__)
@@ -296,9 +297,7 @@ def _resolve_venue_sizing_specs(
         venue is None or isinstance(venue, bool) or (isinstance(venue, str) and not venue.strip())
     ) and provider is None:
         return None, None
-    from .base import MarketDataProvider
-
-    prov_cls = MarketDataProvider.resolve_venue_provider_class(venue, provider=provider)
+    prov_cls = resolve_venue_provider_class(venue, provider=provider)
     if prov_cls is None:
         return None, None
     buy_buf = safe_pos_float(getattr(prov_cls, "_BUY_SLIPPAGE_FEE_BUFFER", None), default=None)

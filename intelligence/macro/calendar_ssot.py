@@ -7,8 +7,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+    from intelligence.macro_sentiment_ssot import FearGreedSnapshot, MarketBreadthSnapshot
 
 try:
     from zoneinfo import ZoneInfo
@@ -25,6 +24,7 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
+    safe_nonneg_ts,
     safe_pos_float,
     split_csv,
 )
@@ -714,13 +714,13 @@ def compute_dynamic_sentiment_interval(
             if cur_tr >= 1.40:
                 return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
     if isinstance(macro_benchmarks, dict) and macro_benchmarks and cached_assessment is not None:
-        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import evaluate_institutional_posture_divergence
+        from intelligence.sentiment.evaluators.price_series_evaluator import TelemetryEvaluatorFactory
 
         cached_txt = (
             f"{obj_attr(cached_assessment, 'summary', '') or ''} "
             f"{obj_attr(cached_assessment, 'key_risks', '') or ''}"
         )
-        if inst_div := evaluate_institutional_posture_divergence(
+        if inst_div := TelemetryEvaluatorFactory.create("macro_institutional_posture_divergence").evaluate(
             cached_act,
             cached_bias,
             cached_txt,
@@ -789,6 +789,29 @@ def compute_dynamic_sentiment_interval(
     if cached_risk in ("LOW", "MODERATE") and norm_geo == "NORMAL" and breadth_regime == "NEUTRAL" and median_abs < 2.0 and not is_extreme_fg:
         return min(max_interval, base * (4.0 / 3.0)), f"global_calm_quiet_{session_ctx.session_key}"
     return base, f"baseline_{session_ctx.session_key}"
+
+
+def headline_effective_ts(h: Any, now: float) -> float:
+    """Resolve effective publication/observation epoch timestamp (seconds) for a headline item."""
+    ts_val = safe_nonneg_ts(
+        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+        0.0,
+    )
+    if ts_val <= 0.0:
+        from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+        pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
+        ts_val = pub_ts if pub_ts is not None else 0.0
+    if ts_val <= 0.0:
+        raw_age = obj_attr(h, "age_min", None)
+        if raw_age is not None and not isinstance(raw_age, bool):
+            try:
+                age_f = float(raw_age)
+                if 0.0 <= age_f <= 2880.0:
+                    ts_val = now - age_f * 60.0
+            except (TypeError, ValueError):
+                pass
+    return ts_val
 
 
 def compute_dynamic_geopolitical_interval(
@@ -863,10 +886,8 @@ def compute_dynamic_geopolitical_interval(
     ):
         high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
         if high_sev_all:
-            from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-
             all_high_sev_aged_90m = all(
-                0.0 < GeopoliticalThreatAnalyzer._headline_effective_ts(h, ts) <= ts - 5400.0
+                0.0 < headline_effective_ts(h, ts) <= ts - 5400.0
                 for h in high_sev_all
             )
     if all_high_sev_aged_90m:

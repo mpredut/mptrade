@@ -25,6 +25,7 @@ from state_io import read_json_recovering, save_json_state
 KalmanTrend: Any = None
 _OHLC_24H_DISK_MEMO: Dict[Tuple[str, int, int], List[List[Any]]] = {}
 _LAST_OHLC_WRITER_ID_BY_PATH: Dict[str, int] = {}
+_LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:

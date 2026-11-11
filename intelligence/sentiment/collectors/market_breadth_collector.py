@@ -1,7 +1,6 @@
 """Market breadth and cross-asset sentiment dispersion collector."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,6 +9,7 @@ from cachepaths import canonical_base_asset
 from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
 from botcore import safe_nonneg_float
 from intelligence.macro_sentiment_ssot import (
+    MarketBreadthSnapshot,
     _cfg_float,
     fetch_public_json,
     get_breadth_excluded_bases,
@@ -25,33 +25,6 @@ from intelligence.external.collectors.base_collector import (
 )
 
 logger = logging.getLogger("intelligence.sentiment.market_breadth")
-
-
-@dataclass(frozen=True)
-class MarketBreadthSnapshot:
-    """Snapshot of cross-market breadth, advance/decline participation, and dispersion."""
-
-    advance_ratio: float                          # Fraction of liquid coins with positive 24h change (0.0 - 1.0)
-    advancing_count: int                          # Count of positive 24h pairs
-    declining_count: int                          # Count of negative 24h pairs
-    total_count: int                              # Total liquid pairs analyzed
-    median_change_pct: float                      # Median 24h price change percentage
-    mean_change_pct: float                        # Mean 24h price change percentage
-    dispersion_std: float                         # Standard deviation of 24h returns (dispersion)
-    regime: str                                   # "PANIC_WASHOUT", "EUPHORIC_BLOWOFF", "BULLISH_BREADTH", "BEARISH_BREADTH", "NEUTRAL"
-    top_gainers: Tuple[Tuple[str, float], ...]    # (symbol, change_pct) top 3 gainers
-    top_losers: Tuple[Tuple[str, float], ...]     # (symbol, change_pct) top 3 losers
-    ts: float
-    btc_price: Optional[float] = None
-    btc_chg_24h_pct: Optional[float] = None
-    eth_price: Optional[float] = None
-    eth_chg_24h_pct: Optional[float] = None
-    eth_btc_ratio: Optional[float] = None
-    eth_btc_chg_24h_pct: Optional[float] = None
-    btc_vol_share_pct: Optional[float] = None
-    eth_vol_share_pct: Optional[float] = None
-    alt_vol_share_pct: Optional[float] = None
-    rotation_regime: Optional[str] = None
 
 
 class MarketBreadthCollector(CachedHttpJsonCollector, TelemetryCacheCollectorInterface):

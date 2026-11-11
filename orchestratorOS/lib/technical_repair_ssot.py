@@ -1505,21 +1505,6 @@ def parse_supervisor_config(
     )
 
 
-def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Collect fleet process status via FleetHealthMonitor and Linux OS / VPN / DNS / config audit telemetry."""
-    fleet_processes: List[Dict[str, Any]] = []
-    base_res: Dict[str, Any] = {}
-    try:
-        from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
-
-        monitor = FleetHealthMonitor(workspace_dir=workspace_dir)
-        fleet_processes = [asdict(p) for p in monitor.check_processes()]
-        base_res = dict(gather_basic_os_resources(workspace_dir) or {})
-    except Exception:
-        base_res = {}
-    return fleet_processes, gather_system_and_vpn_telemetry(workspace_dir, base_resources=base_res)
-
-
 def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
     if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL"):
         return True
@@ -1629,6 +1614,16 @@ def summarize_fleet_sensor_status(
         sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
 
     return sensors
+
+
+def __getattr__(name: str):
+    if name == "harvest_fleet_and_system_telemetry":
+        mod = sys.modules.get("orchestratorOS.livecheck.fleet_health_monitor") or getattr(
+            __import__("orchestratorOS.livecheck.fleet_health_monitor"), "livecheck"
+        ).fleet_health_monitor
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 
 
