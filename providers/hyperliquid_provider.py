@@ -56,13 +56,13 @@ from .order_ohlc_utils import (
     ClosedPriceSeries,
     build_open_order_entry,
     build_price_history_points,
-    derive_venue_128bit_client_order_id,
     extract_order_fee,
     extract_order_qty,
     extract_order_side,
     extract_orig_qty,
     require_int_order_id,
     resolve_market_flag,
+    resolve_ohlc_time_window_ms,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -110,11 +110,6 @@ def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
         f"{base}-USDC",
         f"{base}_USDC",
     }
-
-
-def _cloid_for_client_order_id(client_order_id: str) -> str:
-    """Map one durable client ID to Hyperliquid's exact 128-bit CLOID form."""
-    return derive_venue_128bit_client_order_id("hyperliquid", client_order_id)
 
 
 def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
@@ -172,8 +167,9 @@ class HyperliquidProvider(MarketDataProvider):
         if isinstance(token, bool):
             raise ValueError(f"invalid Hyperliquid token: {token!r}")
         raw_tok = str(token or "HYPE").strip().upper() or "HYPE"
-        if raw_tok != "USDC" and raw_tok.endswith("USDC") and len(raw_tok) > 4:
-            raw_tok = raw_tok[:-4].rstrip("/-_") or raw_tok
+        split_tok = split_symbol_assets(raw_tok)
+        if split_tok is not None and split_tok[1] == "USDC":
+            raw_tok = split_tok[0]
         self._token = raw_tok
         self._live_enabled = live_enabled
         self._lock = threading.Lock()
@@ -311,14 +307,16 @@ class HyperliquidProvider(MarketDataProvider):
 
     def _fetch_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Fetch ascending granular spot closes over the last ``lookback_h`` hours from Hyperliquid."""
+        lookback_f = safe_pos_float(lookback_h, default=None)
+        if lookback_f is None:
+            return None
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
             return None
         try:
-            interval = "1m" if lookback_h <= 24 else "15m"
-            end = int(time.time() * 1000)
-            start = end - int(lookback_h * 3600 * 1000)
+            _, start, end, _ = resolve_ohlc_time_window_ms(lookback_hours=lookback_f)
+            interval = "1m" if lookback_f <= 24.0 else "15m"
             candles = c.info.candles_snapshot(pair, interval, start, end) or []
             return build_price_history_points(
                 candles,
@@ -403,7 +401,7 @@ class HyperliquidProvider(MarketDataProvider):
     ) -> tuple[str, ...]:
         """Resolve ordered Hyperliquid ``allMids`` spot lookup keys (e.g. ``@107``, ``HYPE/USDC``) for ``symbol``."""
         split = split_symbol_assets(symbol)
-        base = split[0] if split else symbol.replace("USDC", "").replace("USD", "")
+        base = split[0] if split else canonical_base_asset(symbol)
         keys: list[str] = []
         if market_api is not None and hasattr(market_api, "provider_by_name"):
             try:
@@ -674,7 +672,7 @@ class HyperliquidProvider(MarketDataProvider):
         if not self._client_tried and not self._env_loaded:
             self._load_env()
         cloid = (
-            _cloid_for_client_order_id(client_order_id)
+            self.derive_client_order_id(client_order_id)
             if client_order_id is not None
             else None
         )
@@ -1005,7 +1003,7 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(
                 "order_by_client_id: client/pair/address unavailable")
         try:
-            cloid = _cloid_for_client_order_id(client_order_id)
+            cloid = self.derive_client_order_id(client_order_id)
             query = getattr(c.info, "query_order_by_cloid", None)
             if not callable(query):
                 raise ProviderError(

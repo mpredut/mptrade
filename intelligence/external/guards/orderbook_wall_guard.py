@@ -78,7 +78,7 @@ class OrderbookWallGuard(OrderGuardEvaluatorBase):
         raw_imb = obj_attr(snapshot, "imbalance_ratio")
         if raw_imb is None:
             raw_imb = obj_attr(snapshot, "ob_imbalance")
-        imb = clean_scale(raw_imb, default=0.5, allow_percentage=True)
+        imb = clean_scale(raw_imb, default=0.5, allow_percent=True)
         raw_ask_usd = obj_attr(snapshot, "largest_ask_wall_usd")
         ask_wall_usd = safe_nonneg_float(
             raw_ask_usd if raw_ask_usd is not None else obj_attr(snapshot, "ask_wall_usd"),

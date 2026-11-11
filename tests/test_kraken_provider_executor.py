@@ -186,7 +186,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
     def test_live_instrument_place_behaviors(self):
         with self.subTest(msg="forwards_the_deterministic_client_id"):
             raw_client_id = "OR_0123456789abcdef01234567_0"
-            expected = kraken_provider._kraken_client_order_id(raw_client_id)
+            expected = kraken_provider.KrakenProvider.derive_client_order_id(raw_client_id)
             order = self._instrument_place(client_order_id=raw_client_id)
             self.assertEqual(order["txid"], ["OABC-123"])
             self.assertEqual(self.fake.calls[-1][-1], expected)
@@ -1021,11 +1021,11 @@ def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_
     """[ITER87 #1] KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order & HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order."""
     import pytest
     from providers.strategy_executor import ProviderError, SubmissionRefused
-    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id
-    from providers.hyperliquid_provider import HyperliquidProvider, _cloid_for_client_order_id
+    from providers.kraken_provider import KrakenProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
     # 1. KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
     with pytest.raises(ProviderError, match="client_order_id"):
-        _kraken_client_order_id(True)
+        KrakenProvider.derive_client_order_id(True)
     kp = KrakenProvider()
     for bad_side in ("", None, "HOLD", "bad", True):
         assert kp.place_order("HYPEUSD", bad_side, 25.0, 1.0) is None
@@ -1035,7 +1035,7 @@ def test_krakenprovider_rejects_boolean_client_order_id_and_invalid_order_sides_
 
     # 2. HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
     with pytest.raises(ProviderError, match="client_order_id"):
-        _cloid_for_client_order_id(False)
+        HyperliquidProvider.derive_client_order_id(False)
     hp = HyperliquidProvider(live_enabled=True)
     for bad_side in ("", None, "HOLD", "bad", True):
         assert hp.place_order("HYPEUSDC", bad_side, 25.0, 1.0) is None
@@ -1343,19 +1343,19 @@ def test_kraken_cachemanager__ledger_to_fills_ignores_entries_with_sentinel_cont
     )
     assert [f["id"] for f in fills] == ["REF-OK"]
 
-def test__kraken_client_order_id__normalize_kraken_fill_and_krakenprovider_order_status_whitespace_handling_iter141_s2():
-    """[ITER141 #2] _kraken_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling."""
+def test_derive_client_order_id_normalize_kraken_fill_and_krakenprovider_order_status_whitespace_handling_iter141_s2():
+    """[ITER141 #2] derive_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling."""
     import pytest
     from types import SimpleNamespace
-    from providers.hyperliquid_provider import _cloid_for_client_order_id
-    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id, _normalize_kraken_fill
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider, _normalize_kraken_fill
     from providers.strategy_executor import ProviderError
-    # 2. _kraken_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
+    # 2. derive_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
     for bad_cid in ("nan", "null", "none", "inf", ["abc"], {"a": 1}, True, None, ""):
         with pytest.raises(ProviderError):
-            _kraken_client_order_id(bad_cid)  # type: ignore[arg-type]
+            KrakenProvider.derive_client_order_id(bad_cid)  # type: ignore[arg-type]
         with pytest.raises(ProviderError):
-            _cloid_for_client_order_id(bad_cid)  # type: ignore[arg-type]
+            HyperliquidProvider.derive_client_order_id(bad_cid)  # type: ignore[arg-type]
 
     nf_bad = _normalize_kraken_fill({"ordertxid": "nan", "price": 20.0, "qty": 1.0, "side": "BUY", "timestamp": 1000})
     assert "orderId" not in nf_bad

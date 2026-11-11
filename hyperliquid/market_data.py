@@ -6,10 +6,8 @@ Price comes from public all_mids; available means the coin is in the perpetual u
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -17,6 +15,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    fetch_json_post,
     load_local_module,
     log,
     safe_float,
@@ -44,17 +43,12 @@ _REV_INTERVALS = {v: k for k, v in INTERVALS.items()}
 
 
 def _post_info(body: dict, timeout: int = 25) -> object:
-    req = urllib.request.Request(
+    return fetch_json_post(
         API_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "mptrade/hyperliquid-market-data",
-        },
-        method="POST",
+        body,
+        timeout=timeout,
+        headers={"User-Agent": "mptrade/hyperliquid-market-data"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
 
 
 def normalize_closed_candles(

@@ -209,11 +209,6 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     return "MARKET"
 
 
-def parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
-    """Parse confidence into [0.0, 1.0], normalizing percentage strings or 1..100 values."""
-    return clean_scale(raw_conf, default, allow_percent=True)
-
-
 def _intent_venue_symbol_side_key(
     venue: Any, symbol: Any, side: Any
 ) -> tuple[str, str, tuple[str, ...], str]:
@@ -262,7 +257,7 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
             if v_norm:
                 d["venue"] = v_norm
             if "confidence" in d and d.get("confidence") is not None:
-                d["confidence"] = parse_intent_confidence(d.get("confidence"), default=0.0)
+                d["confidence"] = clean_scale(d.get("confidence"), default=0.0, allow_percent=True)
             extracted_usd = extract_intent_notional(d, default=None)
             if extracted_usd is not None:
                 d["suggested_notional_usd"] = extracted_usd
@@ -280,7 +275,7 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
-        conf = parse_intent_confidence(d.get("confidence"), default=0.0)
+        conf = clean_scale(d.get("confidence"), default=0.0, allow_percent=True)
         return (-is_action, -conf)
 
     candidates.sort(key=_sort_key)
@@ -365,7 +360,7 @@ def validate_and_build_intent_dict(
         if log:
             log.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
         return None
-    confidence = parse_intent_confidence(decision.get("confidence"), 0.0)
+    confidence = clean_scale(decision.get("confidence"), 0.0, allow_percent=True)
     if confidence < min_confidence:
         if log:
             log.info(
@@ -553,7 +548,6 @@ __all__ = [
     "load_durable_intents_state",
     "normalize_intent_fields",
     "normalize_trading_decisions",
-    "parse_intent_confidence",
     "parse_intent_gateway_config",
     "save_durable_intents_state",
     "upsert_durable_intent",

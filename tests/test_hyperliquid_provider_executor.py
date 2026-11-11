@@ -349,7 +349,7 @@ class HLExecutorContractTest(unittest.TestCase):
         os.environ["HL_LIVE_ORDERS"] = "true"
         os.environ["HL_SECRET_KEY"] = "test-only-secret"
         raw_client_id = "OR_0123456789abcdef01234567_0"
-        expected = hl_provider._cloid_for_client_order_id(raw_client_id)
+        expected = hl_provider.HyperliquidProvider.derive_client_order_id(raw_client_id)
         observed_lookup = []
         self.p._new_client = lambda _secret=None: self.signer
         self.p._client.info.query_order_by_cloid = lambda _addr, value: (

@@ -13,6 +13,7 @@ strict and always sends a real request; its caller's dry-run policy is the contr
 gate. Importing this module does not eagerly initialize the Kraken client.
 """
 import inspect
+import math
 import os
 import re
 import threading
@@ -35,11 +36,6 @@ from botcore import (
     safe_pos_float,
     split_csv,
 )
-from cachepaths import (
-    canonical_symbol_key,
-    normalize_cache_base_asset,
-    resolve_kraken_lookup_symbol,
-)
 from .base import (
     MarketDataProvider,
     extract_order_id,
@@ -48,7 +44,6 @@ from .order_ohlc_utils import (
     ClosedPriceSeries,
     build_open_order_entry,
     build_price_history_points,
-    derive_venue_128bit_client_order_id,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,
@@ -71,10 +66,12 @@ from cachepaths import (
     _strip_kraken_asset_suffixes,
     cache_path,
     canonical_base_asset,
+    canonical_symbol_key,
     clean_symbol_key,
     compatible_quote_suffixes,
     kraken_pair_key,
     kraken_pair_matches,
+    normalize_cache_base_asset,
     resolve_kraken_lookup_symbol,
     split_kraken_pair,
     split_symbol_assets,
@@ -141,11 +138,6 @@ def _normalize_kraken_fill(raw: dict) -> dict:
             if fee_info["fee_asset"]:
                 norm["feeAsset"] = fee_info["fee_asset"]
     return norm
-
-
-def _kraken_client_order_id(client_order_id: str) -> str:
-    """Map one durable client ID to Kraken's 128-bit hexadecimal UUID form."""
-    return derive_venue_128bit_client_order_id("kraken", client_order_id)
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
@@ -409,9 +401,9 @@ class KrakenProvider(MarketDataProvider):
         try:
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
-            ratio = (lookback_f * 60.0) / 720.0
-            raw_interval = max(1, int(ratio) + (1 if ratio > int(ratio) else 0))
             valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
+            ratio = min(lookback_f / 12.0, float(valid_intervals[-1]))
+            raw_interval = max(1, math.ceil(ratio))
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
             res = cli._public("OHLC", {"pair": str(symbol).strip(), "interval": interval})
             if not isinstance(res, dict):
@@ -419,11 +411,13 @@ class KrakenProvider(MarketDataProvider):
             rows = next((v for k, v in res.items() if k != "last"), None)
             if not rows or not isinstance(rows, (list, tuple)):
                 return None
+            now_s = time.time()
+            cutoff_s = 0.0 if lookback_f >= now_s / 3600.0 else now_s - lookback_f * 3600.0
             out = build_price_history_points(
                 rows,
                 lambda r: r[0] if isinstance(r, (list, tuple)) and len(r) >= 5 else None,
                 lambda r: r[4] if isinstance(r, (list, tuple)) and len(r) >= 5 else None,
-                cutoff_s=time.time() - lookback_f * 3600,
+                cutoff_s=cutoff_s,
                 ts_in_seconds=True,
             )
             return out or None
@@ -864,7 +858,9 @@ class KrakenProvider(MarketDataProvider):
         )
         if lb_sec is None:
             return {}
-        res = client._private("Ledgers", {"start": int(time.time() - lb_sec)}, fresh=True)
+        now_s = time.time()
+        start_s = max(0, int(now_s - min(lb_sec, now_s)))
+        res = client._private("Ledgers", {"start": start_s}, fresh=True)
         fills = cls.ledger_to_fills((res or {}).get("ledger", {}) or {})
         by_sym: dict[str, list[dict]] = {s: [] for s in (pairs or ()) if s and s != "*"}
         for f in fills:
@@ -1011,7 +1007,7 @@ class KrakenProvider(MarketDataProvider):
                 symbol, side, qty, price, is_market=market, caller="place_order"
             )
             client_order_id = kwargs.get("client_order_id")
-            cl_ord_id = _kraken_client_order_id(client_order_id) if client_order_id is not None else None
+            cl_ord_id = self.derive_client_order_id(client_order_id) if client_order_id is not None else None
         except (SubmissionRefused, ProviderError) as exc:
             print(f"[Kraken] {exc}")
             return None
@@ -1063,7 +1059,7 @@ class KrakenProvider(MarketDataProvider):
         )
         try:
             cl_ord_id = (
-                _kraken_client_order_id(client_order_id)
+                self.derive_client_order_id(client_order_id)
                 if client_order_id is not None else None
             )
             # This is the final authoritative gate for every raw executor path,
@@ -1169,7 +1165,7 @@ class KrakenProvider(MarketDataProvider):
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover an open or recently terminal Kraken order by ``cl_ord_id``."""
-        wanted = _kraken_client_order_id(client_order_id)
+        wanted = self.derive_client_order_id(client_order_id)
         groups = self._query_with_bot_fallback(
             lambda cli: (cli.open_orders(), cli.closed_orders()),
             f"order_by_client_id({symbol},{client_order_id})",

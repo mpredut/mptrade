@@ -776,3 +776,103 @@ def test_open_closed_provider_class_specs_execution_symmetry_and_border_cases(mo
     monkeypatch.setattr(bp_mod, "venue_for_symbol", lambda s: "hyperliquid" if "PURR" in s else "binance")
     assert bp.supports_symbol("PURRUSDC") is False
 
+
+def test_provider_client_id_ratio_grace_and_history_border_cases(monkeypatch):
+    """Verify parse_ratio_or_pct, derive_client_order_id, cancel grace, and extreme lookback border cases."""
+    from types import SimpleNamespace
+    import intelligence.macro_sentiment_ssot as mss
+    from botcore import clean_scale, parse_ratio_or_pct
+    from providers.base import MarketDataProvider
+    from providers.binance_provider import BinanceProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.order_ohlc_utils import build_price_history_points, resolve_ohlc_time_window_ms
+    from providers.strategy_executor import ProviderError
+
+    # 1. parse_ratio_or_pct & clean_scale strict border validation
+    assert parse_ratio_or_pct("2.5%") == pytest.approx(0.025)
+    assert parse_ratio_or_pct(2.5) == pytest.approx(0.025)
+    assert parse_ratio_or_pct(0.03) == pytest.approx(0.03)
+    assert parse_ratio_or_pct(0.0) == pytest.approx(0.0)
+    for bad_val in (True, False, float("nan"), float("inf"), -0.01, "-5%", "", None):
+        with pytest.raises(ValueError):
+            parse_ratio_or_pct(bad_val)
+    with pytest.raises(ValueError):
+        parse_ratio_or_pct(0.02, pct_cutoff=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        parse_ratio_or_pct(0.02, pct_cutoff=-0.1)
+    assert clean_scale("85%", 0.0, allow_percent=True) == pytest.approx(0.85)
+    with pytest.raises(TypeError):
+        clean_scale("85%", 0.0, allow_percentage=True)  # type: ignore[call-arg]
+
+    # 2. Polymorphic MarketDataProvider.derive_client_order_id
+    kr_cid = KrakenProvider.derive_client_order_id("AI_intent-border-1")
+    hl_cid = HyperliquidProvider.derive_client_order_id("AI_intent-border-1")
+    assert len(kr_cid) == 32 and not kr_cid.startswith("0x")
+    assert len(hl_cid) == 34 and hl_cid.startswith("0x")
+    with pytest.raises(ProviderError):
+        BinanceProvider.derive_client_order_id("AI_intent-border-1")
+
+    # 3. MarketDataProvider.resolve_unfilled_order_cancel_grace_sec rejects bool/NaN/negative
+    monkeypatch.setattr(mss, "resolve_derived_telemetry_intervals", lambda: {"unfilled_order_cancel_grace_sec": 45.0})
+    assert MarketDataProvider.resolve_unfilled_order_cancel_grace_sec() == pytest.approx(45.0)
+    for bad_grace in (True, float("nan"), float("inf"), -5.0, "bad"):
+        monkeypatch.setattr(
+            mss, "resolve_derived_telemetry_intervals", lambda v=bad_grace: {"unfilled_order_cancel_grace_sec": v}
+        )
+        with pytest.raises(ValueError):
+            MarketDataProvider.resolve_unfilled_order_cancel_grace_sec()
+
+    # 4. HyperliquidProvider token normalization & _fetch_price_history border cases
+    assert HyperliquidProvider(token="HYPE/USDC")._token == "HYPE"
+    assert HyperliquidProvider(token="PURR-USDC")._token == "PURR"
+    captured_hl: list[tuple[str, str, int, int]] = []
+    fake_hl_client = SimpleNamespace(
+        resolve_spot_pair=lambda _tok: "@107",
+        info=SimpleNamespace(
+            candles_snapshot=lambda pair, iv, s, e: (
+                captured_hl.append((pair, iv, s, e)) or [{"t": 1700000000000, "c": "25.5"}]
+            )
+        ),
+    )
+    hp = HyperliquidProvider(token="HYPE/USDC", client=fake_hl_client)
+    for bad_lb in (0.0, -1.0, True, float("nan"), float("inf")):
+        assert hp._fetch_price_history("HYPEUSDC", bad_lb) is None  # type: ignore[arg-type]
+    assert captured_hl == []
+    pts_hl = hp._fetch_price_history("HYPEUSDC", 1e15)
+    assert pts_hl == [{"timestamp": 1700000000000, "price": 25.5}]
+    assert captured_hl[-1][2] == 0 and captured_hl[-1][3] > 0
+    _, start_clamped, end_clamped, _ = resolve_ohlc_time_window_ms(lookback_hours=1e15)
+    assert start_clamped == 0 and end_clamped > 0
+
+    # 5. KrakenProvider._fetch_price_history, build_price_history_points & fetch_ledger_fills_by_symbol overflow guards
+    captured_kr: list[dict] = []
+    captured_ledgers: list[dict] = []
+
+    class _FakeKrakenClient:
+        def _public(self, method, params):
+            assert method == "OHLC"
+            captured_kr.append(dict(params))
+            return {"HYPEUSD": [[1700000000, "20", "21", "19", "20.5"], [1e308, "20", "21", "19", "21.0"]], "last": 1}
+
+        def _private(self, method, params=None, fresh=False):
+            assert method == "Ledgers"
+            captured_ledgers.append(dict(params or {}))
+            return {"ledger": {}}
+
+    kp = KrakenProvider(client=_FakeKrakenClient())
+    pts_kr = kp._fetch_price_history("HYPEUSD", 1e308)
+    assert pts_kr == [{"timestamp": 1700000000000, "price": 20.5}]
+    assert captured_kr[-1]["interval"] == 21600
+    assert build_price_history_points(
+        [[1e308, 10.0], [1700000000, 12.5]],
+        lambda r: r[0],
+        lambda r: r[1],
+        ts_in_seconds=True,
+    ) == [{"timestamp": 1700000000000, "price": 12.5}]
+    assert KrakenProvider.fetch_ledger_fills_by_symbol(_FakeKrakenClient(), pairs=("HYPEUSD",), lookback_sec=1e20) == {
+        "HYPEUSD": []
+    }
+    assert captured_ledgers[-1]["start"] == 0
+
+

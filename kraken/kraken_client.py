@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import json
 import os
 import re
 import sys
@@ -41,6 +40,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from state_io import parse_json_payload
 
 API_URL = "https://api.kraken.com"
 
@@ -239,7 +239,7 @@ class KrakenClient:
     @staticmethod
     def _parse(status: int, body: bytes) -> dict:
         try:
-            payload = json.loads(body or b"{}")
+            payload = parse_json_payload(body or b"{}")
         except ValueError:
             raise KrakenError(f"invalid response (HTTP {status})")
         if not isinstance(payload, dict):

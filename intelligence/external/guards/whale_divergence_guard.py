@@ -90,7 +90,7 @@ class WhaleDivergenceGuard(OrderGuardEvaluatorBase):
         raw_long_pct = obj_attr(snapshot, "top_traders_long_pct")
         if raw_long_pct is None:
             raw_long_pct = obj_attr(snapshot, "whale_long_pct")
-        top_long_pct = clean_scale(raw_long_pct, default=0.5, allow_percentage=True)
+        top_long_pct = clean_scale(raw_long_pct, default=0.5, allow_percent=True)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":

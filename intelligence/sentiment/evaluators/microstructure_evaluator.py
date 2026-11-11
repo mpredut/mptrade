@@ -382,7 +382,7 @@ def compute_liquidation_clusters(
     if oi_usd <= 0.0:
         return {}
 
-    raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percentage=True)
+    raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percent=True)
     if raw_long_pct is not None:
         raw_ls = min(0.85, max(0.15, float(raw_long_pct)))
         long_share = min(0.75, max(0.25, 0.50 + (raw_ls - 0.58) * 0.65))

@@ -572,7 +572,13 @@ def build_price_history_points(
         p_f = safe_pos_float(extract_px(row), default=None)
         if t_f is None or p_f is None or (cutoff_s is not None and t_f < cutoff_s):
             continue
-        out.append({"timestamp": int(round(t_f * 1000.0)) if ts_in_seconds else int(round(t_f)), "price": p_f})
+        scaled_ts = safe_pos_float(t_f * 1000.0 if ts_in_seconds else t_f, default=None)
+        if scaled_ts is None:
+            continue
+        ts_ms = safe_pos_int(round(scaled_ts), default=None)
+        if ts_ms is None:
+            continue
+        out.append({"timestamp": ts_ms, "price": p_f})
     out.sort(key=lambda x: x["timestamp"])
     return out
 
@@ -693,12 +699,12 @@ def resolve_ohlc_time_window_ms(
         final_start = safe_nonneg_int(_valid_num(start_ms, "start_ms", pos=False), default=0) or 0
     elif lookback_days is not None:
         span_ms = safe_pos_int(_valid_num(lookback_days, "lookback_days", scale_ms=86400 * 1000) * 86400 * 1000, default=0) or 0
-        final_start = final_end - span_ms
+        final_start = max(0, final_end - span_ms)
     elif lookback_hours is not None:
         span_ms = safe_pos_int(_valid_num(lookback_hours, "lookback_hours", scale_ms=3600 * 1000) * 3600 * 1000, default=0) or 0
-        final_start = final_end - span_ms
+        final_start = max(0, final_end - span_ms)
     else:
-        final_start = final_end - default_lookback_days * 86400 * 1000
+        final_start = max(0, final_end - default_lookback_days * 86400 * 1000)
     if final_start >= final_end:
         raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
     return now_ms, final_start, final_end, timeout_f

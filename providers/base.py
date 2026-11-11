@@ -19,6 +19,7 @@ from botcore import (
     exact_nonneg_int,
     is_shared_disk_cache_enabled,
     load_env_file_defaults,
+    require_nonneg_float,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -59,6 +60,7 @@ from .order_ohlc_utils import (  # noqa: E402, F401
     _is_fresh_obs_ts,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
+    derive_venue_128bit_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_timestamp_ms,
@@ -412,7 +414,15 @@ class MarketDataProvider(ABC):
         )
         if not callable(fn):
             raise RuntimeError("resolve_derived_telemetry_intervals is not bound")
-        return float(fn()["unfilled_order_cancel_grace_sec"])
+        return require_nonneg_float(
+            fn()["unfilled_order_cancel_grace_sec"],
+            name="unfilled_order_cancel_grace_sec",
+        )
+
+    @classmethod
+    def derive_client_order_id(cls, client_order_id: Any) -> str:
+        """Derive the venue-native 128-bit clientOrderId for ``cls``."""
+        return derive_venue_128bit_client_order_id(cls, client_order_id)
 
     @staticmethod
     def _invoke_fee_and_limits_callable(

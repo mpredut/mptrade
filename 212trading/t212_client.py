@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
-import json
 import os
 import sys
 import threading
@@ -41,7 +40,13 @@ from botcore import (
 from cachepaths import CACHE_T212_TRADE_FILENAME, STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
 from providers.t212_provider import T212Provider
-from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict
+from state_io import (
+    atomic_write_json,
+    cleanup_stale_staging_siblings,
+    encode_json_payload,
+    parse_json_payload,
+    read_json_dict,
+)
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -339,7 +344,7 @@ class T212Client:
     def _place_order(self, endpoint: str, payload: dict) -> tuple[int, dict]:
         """Send an order without retrying non-idempotent placement endpoints."""
         self._pace_order()
-        log(f"  [ORDER] payload: {json.dumps(payload)}")
+        log(f"  [ORDER] payload: {encode_json_payload(payload)}")
         status, body = http_post_json(
             f"{self.base}/equity/orders/{endpoint}",
             payload=payload,
@@ -348,7 +353,7 @@ class T212Client:
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         try:
-            parsed = json.loads(body) if body else {}
+            parsed = parse_json_payload(body) if body else {}
             data = parsed if isinstance(parsed, dict) else {"raw": parsed}
         except ValueError:
             data = {"raw": body.decode(errors="replace")[:500]}
@@ -502,7 +507,7 @@ class T212Client:
                 self._fetch_fail["_hist_cache"] = time.monotonic()
             return None
         try:
-            payload = json.loads(body)
+            payload = parse_json_payload(body)
         except ValueError:
             self._log_read_fail("order history (invalid JSON)", status)
             with self._lock:
@@ -592,7 +597,7 @@ class T212Client:
             self._log_read_fail("order status", status)
             return None
         try:
-            parsed = json.loads(body)
+            parsed = parse_json_payload(body)
         except (TypeError, ValueError):
             self._log_read_fail("order status (invalid JSON)", status)
             return None
@@ -705,7 +710,7 @@ class T212Client:
                             return c[1]
                     return None
                 try:
-                    data = json.loads(body)
+                    data = parse_json_payload(body)
                 except ValueError:
                     self._log_read_fail(f"{what} (invalid JSON)", status)
                     with self._lock:

@@ -16,6 +16,7 @@ from cachepaths import (
     canonical_symbol_key,
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
+    split_symbol_assets,
 )
 from instrument_registry import casefold_get, venue_for_symbol
 
@@ -151,7 +152,8 @@ class BinanceProvider(MarketDataProvider):
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
         sym_norm = symbol.strip().upper()
-        if not sym_norm.endswith("USDC") or not sym_norm[:-4].strip("/-_"):
+        split = split_symbol_assets(sym_norm)
+        if split is None or split[1] != "USDC":
             return False
         return venue_for_symbol(sym_norm) == "binance"
 

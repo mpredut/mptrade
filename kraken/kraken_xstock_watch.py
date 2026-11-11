@@ -20,13 +20,12 @@ What it does on every check:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import subprocess
 import sys
 import time
-import urllib.request
+import urllib.parse
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -37,6 +36,7 @@ from botcore import (
     INVALID_SCALAR_STRINGS,
     _parse_bool_flag,
     exact_pos_int,
+    fetch_public_json,
     load_env_stack,
     log,
     optional_env,
@@ -145,9 +145,7 @@ def yahoo_last(sym: str) -> float | None:
         return None
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym_clean, safe='')}?range=1d&interval=5m"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (watch)"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
+        data = fetch_public_json(url, timeout=20, user_agent="Mozilla/5.0 (watch)")
         chart = data.get("chart") if isinstance(data, dict) and isinstance(data.get("chart"), dict) else {}
         res = (chart.get("result") or [None])[0]
         if not isinstance(res, dict):

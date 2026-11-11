@@ -714,9 +714,9 @@ def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_
 
 def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_workspace):
     import json
+    from botcore import clean_scale
     from providers.execution_audit import (
         extract_intent_notional as _extract_intent_notional,
-        parse_intent_confidence as _parse_intent_confidence,
     )
 
     ws, _ = temp_workspace
@@ -728,11 +728,11 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
     assert _extract_intent_notional({"value_usd": "$450 USDC"}) == pytest.approx(450.0)
     assert _extract_intent_notional({"suggested_notional_usd": "-50"}, default=25.0) == pytest.approx(25.0)
 
-    # 2. _parse_intent_confidence normalizes percentage strings and 1..100 numbers
-    assert _parse_intent_confidence("91%") == pytest.approx(0.91)
-    assert _parse_intent_confidence(92) == pytest.approx(0.92)
-    assert _parse_intent_confidence(0.88) == pytest.approx(0.88)
-    assert _parse_intent_confidence(True, default=0.0) == 0.0
+    # 2. clean_scale normalizes percentage strings and 5..100 numbers for intent confidence
+    assert clean_scale("91%", 0.0, allow_percent=True) == pytest.approx(0.91)
+    assert clean_scale(92, 0.0, allow_percent=True) == pytest.approx(0.92)
+    assert clean_scale(0.88, 0.0, allow_percent=True) == pytest.approx(0.88)
+    assert clean_scale(True, default=0.0, allow_percent=True) == 0.0
 
     # 3. _clamp_notional_to_wallet_balance:
     #    - rejects non-positive/NaN price on SELL
@@ -1242,12 +1242,12 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
     #    their own resting order, open orders are labeled AI, and another AI intent's order is not adopted.
     from providers.order_ohlc_utils import normalize_open_order
     from providers.execution_audit import collect_known_ai_order_ids
-    from providers.hyperliquid_provider import _cloid_for_client_order_id
-    from providers.kraken_provider import _kraken_client_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
 
     for venue_name, native_cid in (
-        ("kraken", _kraken_client_order_id("AI_intent-lost-1")),
-        ("hyperliquid", _cloid_for_client_order_id("AI_intent-lost-1")),
+        ("kraken", KrakenProvider.derive_client_order_id("AI_intent-lost-1")),
+        ("hyperliquid", HyperliquidProvider.derive_client_order_id("AI_intent-lost-1")),
     ):
         v_intent = dict(intent, venue=venue_name, symbol="BTCUSD")
         raw_oo = {"orderId": "V1", "side": "BUY", "price": "77900", "clientOrderId": native_cid}
@@ -1256,7 +1256,7 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
         assert norm_oo["actor"] == "AI"
         v_details = _resolve_intent_execution_details(v_intent, now_ts, extract_intent_notional, open_orders=[norm_oo])
         assert v_details.get("exec_status") == "OPEN_RESTING"
-        other_oo = dict(norm_oo, clientOrderId=_kraken_client_order_id("AI_other-intent-2"))
+        other_oo = dict(norm_oo, clientOrderId=KrakenProvider.derive_client_order_id("AI_other-intent-2"))
         other_details = _resolve_intent_execution_details(v_intent, now_ts, extract_intent_notional, open_orders=[other_oo])
         assert other_details.get("exec_status") == "CANCELED_OR_EXPIRED"
 
@@ -1438,8 +1438,8 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
 
         # Even when replace_open_orders=True is passed, an identical resting AI limit order is preserved
         # while any stale AI open order at a different price is still canceled
-        from providers.hyperliquid_provider import _cloid_for_client_order_id
-        ai_cloid = _cloid_for_client_order_id("AI_intent_1793644299_sell_hypeusdc")
+        from providers.hyperliquid_provider import HyperliquidProvider
+        ai_cloid = HyperliquidProvider.derive_client_order_id("AI_intent_1793644299_sell_hypeusdc")
         hl_inst.open_orders.return_value = [
             {
                 "oid": 592714000111,

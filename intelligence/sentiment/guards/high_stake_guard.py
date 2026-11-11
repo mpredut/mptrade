@@ -110,7 +110,7 @@ def evaluate_llm_guard_response(
     decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
     raw_reason = resp.get("reason")
     reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
-    scale = clean_scale(resp.get("suggested_scale"), 0.5 if decision_str == "DOWNSCALE" else 1.0, allow_percentage=True)
+    scale = clean_scale(resp.get("suggested_scale"), 0.5 if decision_str == "DOWNSCALE" else 1.0, allow_percent=True)
 
     if decision_str in ("REJECTED", "REJECT", "VETO", "BLOCK", "DENIED", "DENY"):
         return GuardDecision.veto(

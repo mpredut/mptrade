@@ -189,6 +189,21 @@ def require_pos_float(
     return f
 
 
+def require_nonneg_float(
+    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
+) -> float:
+    """Coerce ``val`` to a finite non-negative float (optionally ``>= min_value``) or raise ``ValueError``."""
+    f = safe_nonneg_float(val, default=None)
+    if f is None or (min_value is not None and f < min_value):
+        msg = (
+            f"{name} must be finite and >= {min_value}"
+            if min_value is not None
+            else f"{name} must be finite and non-negative"
+        )
+        raise ValueError(error_msg or msg)
+    return f
+
+
 def require_int(
     val: object, name: str = "value", *, min_value: int | None = None, error_msg: str | None = None
 ) -> int:
@@ -1301,8 +1316,11 @@ def clamp_float(
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
     """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
-    val = float(raw)
-    return val / 100.0 if val > pct_cutoff else val
+    if isinstance(raw, str) and raw.strip().endswith("%"):
+        return require_nonneg_float(raw.strip()[:-1].strip(), name="ratio_or_pct") / 100.0
+    val = require_nonneg_float(raw, name="ratio_or_pct")
+    cutoff = require_nonneg_float(pct_cutoff, name="pct_cutoff")
+    return val / 100.0 if val > cutoff else val
 
 
 def safe_thresh(val: object, default: int) -> int:
@@ -1335,18 +1353,16 @@ def clean_scale(
     default: float = 1.0,
     *,
     allow_percent: bool = False,
-    allow_percentage: bool = False,
     min_positive: bool = False,
     clamp: bool = False,
 ) -> float:
     """Normalize a scale factor into [0.0, 1.0], optionally converting [5.0, 100.0] or '%' percentages."""
-    allow_pct = allow_percent or allow_percentage
-    if allow_pct and isinstance(val, str) and val.strip().endswith("%"):
+    if allow_percent and isinstance(val, str) and val.strip().endswith("%"):
         pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
         f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
     else:
         f = safe_float(val, -1.0)
-        if allow_pct and 5.0 <= f <= 100.0:
+        if allow_percent and 5.0 <= f <= 100.0:
             f = round(f / 100.0, 4)
     if f < 0.0 or (min_positive and f <= 0.0):
         return default

@@ -10,7 +10,6 @@ order_manager.py — SPCX order-placement logic:
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -33,7 +32,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
-from state_io import load_json_state, save_json_state
+from state_io import encode_json_payload, load_json_state, save_json_state
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
 from providers.t212_provider import _t212_tickers_match
@@ -509,7 +508,7 @@ def place_order_with_retry(
                source="T212 order", price=price_r, desktop=desktop)
         return True
 
-    record["submit_error"] = f"T212 HTTP {status}: {json.dumps(data, default=str)[:400]}"
+    record["submit_error"] = f"T212 HTTP {status}: {encode_json_payload(data, default=str)[:400]}"
     _persist_marker(record, marker_path)
     log(f"  ! [ORDER] {record['submit_error']} — non-blocking retry on the next cycle")
     return False

@@ -74,7 +74,6 @@ from .intent_state import (
     load_durable_intents_state,
     normalize_intent_fields,
     normalize_trading_decisions,
-    parse_intent_confidence,
     parse_intent_gateway_config,
     save_durable_intents_state,
     upsert_durable_intent,

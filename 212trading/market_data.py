@@ -5,7 +5,6 @@ market_data.py — Yahoo Finance market data: prices, FX rates, and real-trading
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import statistics
@@ -19,11 +18,20 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import (
+    fetch_public_json,
+    http_get,
+    log,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
 from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
+from state_io import parse_json_payload
 
 
 def _extract_yahoo_result_and_quote(payload: object) -> tuple[dict | None, dict, list, dict]:
@@ -89,12 +97,8 @@ def fetch_yahoo_candles(
         "https://query1.finance.yahoo.com/v8/finance/chart/"
         f"{urllib.parse.quote(symbol)}?{urllib.parse.urlencode(query)}"
     )
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "mptrade/t212-yahoo-fetcher"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=to_f) as response:
-            payload = json.loads(response.read())
+        payload = fetch_public_json(url, timeout=to_f, user_agent="mptrade/t212-yahoo-fetcher")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
         raise RuntimeError(
@@ -158,7 +162,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
     if status != 200 or not body:
         return None, []
     try:
-        result, _, ts, q = _extract_yahoo_result_and_quote(json.loads(body))
+        result, _, ts, q = _extract_yahoo_result_and_quote(parse_json_payload(body))
         if result is None:
             return None, []
         meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}

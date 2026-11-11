@@ -5,6 +5,7 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
+    clean_scale,
     format_notify_price,
     format_notify_qty,
     get_stale_cache_retry_delay_sec,
@@ -23,7 +24,6 @@ from .intent_state import (
     extract_intent_limit_price,
     extract_intent_order_type,
     normalize_intent_fields,
-    parse_intent_confidence,
 )
 from .order_ohlc_utils import (
     extract_client_order_id,
@@ -549,7 +549,7 @@ def preflight_intent_and_resolve_price(
         _record_intent_state(intent, "REJECTED_INVALID_DECISION", now_ts, decision=decision)
         return False, intent_id, decision, symbol, venue, 0.0, None, 0.0, 0.0, False
 
-    confidence = parse_intent_confidence(intent.get("confidence"), 0.0)
+    confidence = clean_scale(intent.get("confidence"), 0.0, allow_percent=True)
     intent["confidence"] = confidence
     if confidence < min_confidence:
         if log:
