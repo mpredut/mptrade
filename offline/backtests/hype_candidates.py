@@ -44,63 +44,6 @@ def default_candidates() -> list[Candidate]:
     ]
 
 
-def _tp4(name: str) -> Candidate:
-    return Candidate(name, "TP threshold 4%", {"takeprofit_pct": 4.0})
-
-
-def _dca15(name: str) -> Candidate:
-    return Candidate(name, "DCA on a 1.5% drop", {"dca_drop_pct": 1.5})
-
-
-def _dca_vol_m1(name: str) -> Candidate:
-    return Candidate(
-        name,
-        "DCA size scaled by volatility: k=-1, reference 2%",
-        {
-            "dca_vol_scale_k": -1.0,
-            "dca_vol_ref": 2.0,
-            "dca_vol_interval": 240,
-        },
-    )
-
-
-def _adaptive_trail(name: str) -> Candidate:
-    return Candidate(
-        name, "adaptive trailing k=2, clamp 1.5-8%",
-        {
-            "tp_mdhtp_enabled": False,
-            "tp_trail_adaptive": True,
-            "tp_trail_k": 2.0,
-            "tp_trail_min": 1.5,
-            "tp_trail_max": 8.0,
-            "tp_trail_vol_interval": 240,
-        },
-    )
-
-
-def _dca_brake(name: str) -> Candidate:
-    return Candidate(
-        name, "block DCA in a confirmed downtrend",
-        {
-            "dca_trend_brake": True,
-            "dca_brake_min_pct": 1.5,
-            "trend_interval": 240,
-        },
-    )
-
-
-def _overlay650t8() -> Candidate:
-    return Candidate(
-        "overlay650t8", "reduced overlay: top-up 650, trail 8%",
-        {
-            "trend_overlay": True,
-            "trend_topup": 650.0,
-            "trend_trail_pct": 8.0,
-            "trend_interval": 240,
-        },
-    )
-
-
 def hype_240_candidates() -> list[Candidate]:
     """The historical set of the walk-forward comparator; keeps the report names."""
     return [
@@ -110,11 +53,21 @@ def hype_240_candidates() -> list[Candidate]:
             {"trend_overlay": True, "trend_topup": 2000.0,
              "trend_trail_pct": 5.0, "trend_interval": 240},
         ),
-        _overlay650t8(),
-        _adaptive_trail("A_adaptive_trail"),
-        _dca_brake("B_dca_brake"),
-        _tp4("tp_4"),
-        _dca15("dca_drop_1_5"),
+        Candidate(
+            "overlay650t8", "reduced overlay: top-up 650, trail 8%",
+            {"trend_overlay": True, "trend_topup": 650.0, "trend_trail_pct": 8.0, "trend_interval": 240},
+        ),
+        Candidate(
+            "A_adaptive_trail", "adaptive trailing k=2, clamp 1.5-8%",
+            {"tp_mdhtp_enabled": False, "tp_trail_adaptive": True, "tp_trail_k": 2.0,
+             "tp_trail_min": 1.5, "tp_trail_max": 8.0, "tp_trail_vol_interval": 240},
+        ),
+        Candidate(
+            "B_dca_brake", "block DCA in a confirmed downtrend",
+            {"dca_trend_brake": True, "dca_brake_min_pct": 1.5, "trend_interval": 240},
+        ),
+        Candidate("tp_4", "TP threshold 4%", {"takeprofit_pct": 4.0}),
+        Candidate("dca_drop_1_5", "DCA on a 1.5% drop", {"dca_drop_pct": 1.5}),
     ]
 
 
@@ -127,17 +80,31 @@ def financial_priority_candidates() -> list[Candidate]:
             "re-entry only after a 4% pullback; HLC cross-venue shadow candidate",
             {"reentry_drop_pct": 4.0},
         ),
-        _tp4("tp4"),
-        _dca15("dca15"),
+        Candidate("tp4", "TP threshold 4%", {"takeprofit_pct": 4.0}),
+        Candidate("dca15", "DCA on a 1.5% drop", {"dca_drop_pct": 1.5}),
         Candidate(
             "dca_progressive025",
             "DCA 1.25% initially, then +0.25pp after each executed DCA",
             {"dca_spacing_growth_pct": 0.25},
         ),
-        _dca_vol_m1("dca_vol_m1"),
-        _adaptive_trail("A_trail"),
-        _dca_brake("B_dcabrake"),
-        _overlay650t8(),
+        Candidate(
+            "dca_vol_m1",
+            "DCA size scaled by volatility: k=-1, reference 2%",
+            {"dca_vol_scale_k": -1.0, "dca_vol_ref": 2.0, "dca_vol_interval": 240},
+        ),
+        Candidate(
+            "A_trail", "adaptive trailing k=2, clamp 1.5-8%",
+            {"tp_mdhtp_enabled": False, "tp_trail_adaptive": True, "tp_trail_k": 2.0,
+             "tp_trail_min": 1.5, "tp_trail_max": 8.0, "tp_trail_vol_interval": 240},
+        ),
+        Candidate(
+            "B_dcabrake", "block DCA in a confirmed downtrend",
+            {"dca_trend_brake": True, "dca_brake_min_pct": 1.5, "trend_interval": 240},
+        ),
+        Candidate(
+            "overlay650t8", "reduced overlay: top-up 650, trail 8%",
+            {"trend_overlay": True, "trend_topup": 650.0, "trend_trail_pct": 8.0, "trend_interval": 240},
+        ),
         Candidate(
             "trail_profit_floor_sl18",
             "soft trailing at +1% gross minimum; hard MARKET stop at -18%",

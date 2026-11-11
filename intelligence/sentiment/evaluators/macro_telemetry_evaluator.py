@@ -999,11 +999,20 @@ class AssetScopeFilterEvaluator(MacroTelemetryEvaluatorBase):
                 _set_or_pop("venues_value_usd", crypto_venues)
                 _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
         if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
-            def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:
-                v_str = cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
-                return (normalize_venue_name(v_str) == "t212") == want_t212
-
-            _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_cash_entry(ck, cv)})
+            _set_or_pop(
+                "venue_quote_cash",
+                {
+                    ck: cv
+                    for ck, cv in portfolio_summary["venue_quote_cash"].items()
+                    if (
+                        normalize_venue_name(
+                            cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
+                        )
+                        == "t212"
+                    )
+                    == want_t212
+                },
+            )
         if isinstance(portfolio_summary.get("recent_orders"), dict):
             allowed_eq_ro_syms = set(t212_sym_set)
             for pos_it in (portfolio_summary.get("tradable_positions") or ()):

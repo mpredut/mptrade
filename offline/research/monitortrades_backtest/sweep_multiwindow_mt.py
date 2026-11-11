@@ -56,12 +56,6 @@ def run_multiwindow_sweep(use_365: bool = False):
             dtype=bool,
         )
 
-    def _not_crash_arr(s_win, k_crash: float = 1.5):
-        gc = s_win["diff"]
-        eps = s_win["eps"]
-        sc = s_win["scale_inv"]
-        return np.where(eps > 0.0, gc > (-k_crash * sc * eps), True)
-
     models = [
         ("1. Single 60s (1.0m fast)",
          lambda d: _up_arr(d[60]).tolist()),
@@ -76,7 +70,9 @@ def run_multiwindow_sweep(use_365: bool = False):
         ("6. Multi AND (222s AND 90s)",
          lambda d: (_up_arr(d[222]) & _up_arr(d[90])).tolist()),
         ("7. Macro-Guarded (222s & !Crash900s)",
-         lambda d, sym="": (_up_arr(d[222]) & _not_crash_arr(d[900], 1.5)).tolist()),
+         lambda d, sym="": (
+             _up_arr(d[222]) & np.where(d[900]["eps"] > 0.0, d[900]["diff"] > (-1.5 * d[900]["scale_inv"] * d[900]["eps"]), True)
+         ).tolist()),
         ("8. 2-of-3 Majority (60s, 222s, 900s)",
          lambda d, sym="": ((_up_arr(d[60]).astype(int) + _up_arr(d[222]).astype(int) + _up_arr(d[900]).astype(int)) >= 2).tolist()),
         ("9. Per-Coin PROD (TAO 90s, others 222s)",

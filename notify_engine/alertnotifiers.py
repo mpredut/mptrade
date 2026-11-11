@@ -545,12 +545,6 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
     non_empty_venues = [v for v in item_venues if v]
     common_venue = non_empty_venues[0] if non_empty_venues and len(set(non_empty_venues)) == 1 else ""
 
-    def _canon_tag(tg: str) -> str:
-        tl = tg.lower()
-        if tl in ("auto_cryptotrade_executor", "auto_sharetrade_executor", "auto_trade_executor"):
-            return "ai_executor"
-        return tl
-
     common_tag = ""
     if item_tags and all(item_tags):
         first_tags = item_tags[0]
@@ -560,7 +554,13 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         ]
         if shared:
             common_tag = shared[0]
-        elif all(any(_canon_tag(other) == "ai_executor" for other in tg_list) for tg_list in item_tags):
+        elif all(
+            any(
+                other.lower() in ("ai_executor", "auto_cryptotrade_executor", "auto_sharetrade_executor", "auto_trade_executor")
+                for other in tg_list
+            )
+            for tg_list in item_tags
+        ):
             common_tag = "ai_executor"
         else:
             auto_prefixes = []

@@ -29,15 +29,6 @@ def _series_span_sec(series: list[tuple[float, float]]) -> float:
     return max(0.0, float(series[-1][0]) - float(series[0][0]))
 
 
-def _load_best_series(sym: str, use_365: bool) -> list[tuple[float, float]]:
-    series = load_archive_series(sym, use_365=use_365)
-    if use_365 and _series_span_sec(series) < _MIN_DENSE_SPAN_SEC:
-        sparse = load_archive_series(sym, use_365=False)
-        if _series_span_sec(sparse) > _series_span_sec(series):
-            return sparse
-    return series
-
-
 def _run_variant_symbol(task_args):
     label, enabled, sym, params, base = task_args
     orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
@@ -60,7 +51,14 @@ def main():
     ]
     results = {label: {} for label, _ in variants}
     use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), True)
-    series_map = {sym: _load_best_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
+    series_map = {}
+    for sym in SYMBOLS._SECTIONS:
+        series = load_archive_series(sym, use_365=use_365)
+        if use_365 and _series_span_sec(series) < _MIN_DENSE_SPAN_SEC:
+            sparse = load_archive_series(sym, use_365=False)
+            if _series_span_sec(sparse) > _series_span_sec(series):
+                series = sparse
+        series_map[sym] = series
     for sym, series in series_map.items():
         if series:
             prewarm_trend_series(sym, series)

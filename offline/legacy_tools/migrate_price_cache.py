@@ -40,30 +40,17 @@ def _entry_ts(item):
     return int(val) if val is not None else 0
 
 
-def _load_old_json(path):
-    """{'items': {SYM: [[ts,price],...]}, 'fetchtime': {...}} → {SYM: [items]}"""
-    data = read_json_dict(path, default={})
-    items = data.get("items", data) if isinstance(data, dict) else {}
-    if not isinstance(items, dict):
-        return {}
-    return {k: v for k, v in items.items() if isinstance(v, list)}
-
-
-def _load_jsonl(path):
-    """{SYM: [items]} from the lines {'s': SYM, 'i': item}."""
-    out = {}
-    for rec in read_jsonl_dicts(path):
-        if "s" in rec and "i" in rec:
-            out.setdefault(rec["s"], []).append(rec["i"])
-    return out
-
-
 def migrate_file(json_path, dry_run=False):
     sym_from_name = os.path.basename(json_path)[len("cache_price_"):-len(".json")]
     jsonl_path = os.path.join(os.path.dirname(json_path), f"cache_sparse_price_{sym_from_name}.jsonl")
 
-    old = _load_old_json(json_path)
-    new = _load_jsonl(jsonl_path)
+    raw_old = read_json_dict(json_path, default={})
+    raw_items = raw_old.get("items", raw_old) if isinstance(raw_old, dict) else {}
+    old = {k: v for k, v in raw_items.items() if isinstance(v, list)} if isinstance(raw_items, dict) else {}
+    new = {}
+    for rec in read_jsonl_dicts(jsonl_path):
+        if "s" in rec and "i" in rec:
+            new.setdefault(rec["s"], []).append(rec["i"])
 
     symbols = set(old) | set(new)
     merged = {}
@@ -107,17 +94,10 @@ def migrate_file(json_path, dry_run=False):
     return added_total
 
 
-def _arg_value(flag, default=None):
-    if flag in sys.argv:
-        i = sys.argv.index(flag)
-        if i + 1 < len(sys.argv):
-            return sys.argv[i + 1]
-    return default
-
-
 def main():
     dry_run = "--dry-run" in sys.argv
-    work_dir = _arg_value("--dir", CACHE_DIR)   # cachedb/ by default (or --dir / BINANCE_CACHE_DIR)
+    dir_idx = sys.argv.index("--dir") if "--dir" in sys.argv else -1
+    work_dir = sys.argv[dir_idx + 1] if 0 <= dir_idx < len(sys.argv) - 1 else CACHE_DIR
     # cache_price_long_trend.json is the PriceLongTrend cache (a full-rewrite json, NOT
     # a per-symbol append) -> it stays .json, and we exclude it from the migration.
     EXCLUDE = {"long_trend"}

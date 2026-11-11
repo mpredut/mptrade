@@ -402,10 +402,6 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             target = now_ms - mins * 60000.0
             return next(((tms, p_val) for tms, p_val in reversed(clean_series) if tms <= target), (None, clean_series[0][1]))
 
-        def _has_sample_near(mins: float, max_gap_mins: float) -> bool:
-            tms, _ = _sample_at(mins)
-            return tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0
-
         out = _compute_horizon_range_dict(
             cur_px,
             round(min(x[1] for x in clean_series), 6),
@@ -424,7 +420,9 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
             tms, p_ref = _sample_at(mins)
-            valid_back = p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins))
+            valid_back = p_ref > 0 and span_ms >= min_span_ms and (
+                max_gap_mins <= 0.0 or (tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0)
+            )
             if valid_back and dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
                 valid_back = False
             if not valid_back and 15.0 <= mins <= 180.0 and span_ms >= max(min_span_ms, mins * 60000.0):

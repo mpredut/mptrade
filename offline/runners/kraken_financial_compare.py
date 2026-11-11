@@ -33,13 +33,6 @@ DEFAULT_BASELINE = (
 )
 
 
-def _scenario_summary(report: dict) -> dict:
-    return {
-        name: values["aggregate"]
-        for name, values in report["scenarios"].items()
-    }
-
-
 def build_comparison(args) -> dict:
     baseline_report = read_json_file(args.baseline)
     if not isinstance(baseline_report, dict) or not isinstance(baseline_report.get("strategy_params"), dict):
@@ -78,7 +71,7 @@ def build_comparison(args) -> dict:
             "description": candidate.description,
             "overrides": candidate.overrides,
             "strategy_params": dataclasses.asdict(params),
-            "scenarios": _scenario_summary(report),
+            "scenarios": {name: values["aggregate"] for name, values in report["scenarios"].items()},
             "promotion_gate": gate,
         }
 

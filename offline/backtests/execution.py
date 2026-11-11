@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 
 _POLICIES = {"buy_first", "sell_first", "worst_case"}
