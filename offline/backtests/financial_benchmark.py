@@ -122,7 +122,7 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
         BenchmarkScenario(
             name="central",
             description=(
-                "maker/taker separat; costuri moderate, provizorii, necalibrate"
+                "separate maker/taker; moderate, provisional, uncalibrated costs"
             ),
             fees=FeeModel(limit_fee_pct=0.16, market_fee_pct=0.26),
             execution=ExecutionModel(
@@ -254,9 +254,9 @@ def aggregate_financial_windows(
             total_gross_loss += gl
             has_gp_gl = True
         elif tc > 0 and exp_val is not None:
-            pf_raw = safe_pos_float(item.get("profit_factor"), default=None)
+            pf_raw = safe_nonneg_float(item.get("profit_factor"), default=None)
             tot_pnl = tc * exp_val
-            if pf_raw is not None and abs(pf_raw - 1.0) > 1e-12:
+            if pf_raw is not None and pf_raw > 0.0 and abs(pf_raw - 1.0) > 1e-12:
                 gl_est = tot_pnl / (pf_raw - 1.0)
                 if gl_est > 0:
                     total_gross_loss += gl_est
@@ -269,13 +269,17 @@ def aggregate_financial_windows(
                 total_gross_loss += -tot_pnl
                 has_gp_gl = True
 
-        pf_val = safe_float(item.get("profit_factor"), default=None)
+        pf_val = safe_nonneg_float(item.get("profit_factor"), default=None)
         if pf_val is not None:
             active_pfs.append(pf_val)
         elif tc > 0:
-            if (gp is not None and gp > 0 and (gl is None or gl == 0.0)) or (exp_val is not None and exp_val > 0):
+            if gp is not None and gl is not None and gp > 0.0 and gl > 0.0:
+                active_pfs.append(gp / gl)
+            elif (gp is not None and gp > 0 and (gl is None or gl == 0.0)) or (
+                gp is None and exp_val is not None and exp_val > 0
+            ):
                 active_pfs.append(float("inf"))
-            elif (gp is not None and gp == 0.0) or (exp_val is not None and exp_val <= 0):
+            elif (gp is not None and gp == 0.0) or (gp is None and exp_val is not None and exp_val <= 0):
                 active_pfs.append(0.0)
 
     aggregate_pf = (
@@ -306,12 +310,12 @@ def aggregate_financial_windows(
         "mean_buy_hold_return_pct": _mean(
             window.get("buy_hold_return_pct") for window in windows
         ),
-        "initial_capital_usd": float(initial_capital),
+        "initial_capital_usd": initial_capital,
         "mean_net_pnl_usd_per_window": statistics.fmean(net_pnls),
         "median_net_pnl_usd_per_window": statistics.median(net_pnls),
         "sum_reset_net_pnl_usd": sum_net_pnl,
         "sum_reset_return_on_initial_capital_pct": (
-            sum_net_pnl / float(initial_capital) * 100.0
+            sum_net_pnl / initial_capital * 100.0
         ),
         "mean_max_drawdown_abs_usd": _mean(
             item.get("max_drawdown_abs") for item in metrics
@@ -328,11 +332,11 @@ def aggregate_financial_windows(
         "mean_exposure_pct": _mean(item.get("exposure_pct") for item in metrics),
         "mean_turnover_pct": _mean(item.get("turnover_pct") for item in metrics),
         "total_trade_count": total_trade_count,
-        "worst_underwater_bars": int(max(
+        "worst_underwater_bars": max(
             (safe_nonneg_int(item.get("max_underwater_periods"), default=0) for item in metrics),
             default=0,
-        )),
+        ),
         "total_test_bars": sum(safe_nonneg_int(window.get("bars"), default=0) for window in windows),
-        "regime_threshold_pct": float(regime_threshold_pct),
+        "regime_threshold_pct": regime_threshold_pct,
         "regimes": regimes,
     }

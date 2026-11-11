@@ -1,9 +1,8 @@
 """A manual simulation; it is not part of the live runtime."""
 
 import os
-import sys
-import matplotlib.pyplot as plt
 import random
+import sys
 import time
 from collections import deque
 
@@ -11,15 +10,15 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_int  # noqa: E402
+from botcore import exact_pos_int, safe_float, safe_nonneg_float  # noqa: E402
 
 
 class PriceWindow:
     def __init__(self, window_size, max_index=1000000, epsilon=1e-5):
-        ws = safe_pos_int(window_size, default=None) if isinstance(window_size, (int, float)) else None
+        ws = exact_pos_int(window_size, default=None)
         if ws is None:
             raise ValueError("window_size must be a positive integer")
-        mi = safe_pos_int(max_index, default=None) if isinstance(max_index, (int, float)) else None
+        mi = exact_pos_int(max_index, default=None)
         if mi is None:
             raise ValueError("max_index must be a positive integer")
         eps = safe_nonneg_float(epsilon, default=None) if isinstance(epsilon, (int, float)) else None
@@ -40,6 +39,8 @@ class PriceWindow:
 
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
+        self._evict_expired(self.min_deque)
+        self._evict_expired(self.max_deque)
         min_index = min(
             (d[0][0] for d in (self.min_deque, self.max_deque) if d),
             default=self.current_index,
@@ -61,8 +62,6 @@ class PriceWindow:
             self.prices.popleft()
 
         if self.current_index >= self.max_index:
-            self._evict_expired(self.min_deque)
-            self._evict_expired(self.max_deque)
             self.normalize_indices()
 
         # Handling of the current low and high.
@@ -76,16 +75,12 @@ class PriceWindow:
         """Handling of the current low in the window."""
         self._evict_expired(self.min_deque)
 
-        # Check whether the current price is approximately equal to any price already in `min_deque`.
-        for index, existing_price in self.min_deque:
-            if abs(existing_price - price) <= self.epsilon:
-                return  # Do not add the current price if an equivalent already exists.
-        
-        # Remove the trailing elements that are larger than the current price.
-        while self.min_deque and self.min_deque[-1][1] > price:
+        # Remove trailing elements that are strictly larger beyond epsilon, while still
+        # appending near-equal lows behind earlier lows so expiry of the old low promotes
+        # the newer in-window low instead of losing it.
+        while self.min_deque and self.min_deque[-1][1] > price + self.epsilon:
             self.min_deque.pop()
 
-        # Add the current price.
         self.min_deque.append((self.current_index, price))
 
     def _manage_maximum(self, price):
@@ -115,14 +110,19 @@ class PriceWindow:
 
     def plot_window(self):
         """Plot the values in the window and mark the low and the high."""
+        import matplotlib.pyplot as plt
+
         prices = list(self.prices)
         min_price, min_pos = self.get_min()
         max_price, max_pos = self.get_max()
-        
+
         plt.clf()  # Clear the current figure to prepare the new chart.
         plt.plot(prices, marker='o', linestyle='-', label='Prices')
-        
-        
+        if min_price is not None:
+            plt.plot(min_pos, min_price, 'ro', label=f'Min: {min_price:.2f}')
+        if max_price is not None:
+            plt.plot(max_pos, max_price, 'go', label=f'Max: {max_price:.2f}')
+
         plt.title('Price Window with Min and Max')
         plt.xlabel('Relative Position in Window')
         plt.ylabel('Price')
@@ -132,6 +132,8 @@ class PriceWindow:
 
 
 def main():
+    import matplotlib.pyplot as plt
+
     window_size = 10
     price_window = PriceWindow(window_size)
     random.seed(42)

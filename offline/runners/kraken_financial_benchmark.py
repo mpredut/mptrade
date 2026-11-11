@@ -32,7 +32,7 @@ from offline.backtests.financial_benchmark import (  # noqa: E402
     aggregate_financial_windows,
     default_scenarios,
 )
-from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
+from offline.backtests.promotion import _assumption_signature, evaluate_dual_promotion  # noqa: E402
 from offline.backtests.walk_forward import walk_forward_splits  # noqa: E402
 
 
@@ -83,7 +83,7 @@ def strat_params_from_dict(values: dict) -> StratParams:
 
 
 def _load_params(args) -> StratParams:
-    cfg = load_layered_env_config(args.config_file, args.env_file)
+    cfg = load_layered_env_config(args.config_file, args.env_file, fallback_prefixes=())
     if not args.params_report:
         return StratParams.from_env(cfg)
     payload = read_json_file(args.params_report)
@@ -185,8 +185,8 @@ def build_report(
             "manifest": _display_path(args.manifest),
             "sha256": digest,
             "bars": len(records),
-            "start_utc": iso_utc(int(records[0]["timestamp"])),
-            "end_utc": iso_utc(int(records[-1]["timestamp"])),
+            "start_utc": iso_utc(safe_int(records[0]["timestamp"], 0)),
+            "end_utc": iso_utc(safe_int(records[-1]["timestamp"], 0)),
             "venue": (manifest_info["manifest"].get("source") if isinstance(manifest_info["manifest"].get("source"), dict) else {}).get("venue"),
             "market": (manifest_info["manifest"].get("source") if isinstance(manifest_info["manifest"].get("source"), dict) else {}).get("market"),
             "role": "cross-venue price-path proxy; not Kraken execution",
@@ -285,6 +285,20 @@ def _projection(report: dict) -> dict:
     strategy_params = dataclasses.asdict(strat_params_from_dict(raw_params))
     raw_ds = rep.get("dataset")
     ds_map = raw_ds if isinstance(raw_ds, dict) else {}
+    raw_scen = rep.get("scenarios")
+    norm_scenarios = (
+        {
+            s_name: {
+                **s_val,
+                "assumptions": _assumption_signature(s_val.get("assumptions")),
+            }
+            if isinstance(s_val, dict)
+            else s_val
+            for s_name, s_val in raw_scen.items()
+        }
+        if isinstance(raw_scen, dict)
+        else raw_scen
+    )
     return {
         "schema_version": rep.get("schema_version"),
         "strategy_params": strategy_params,
@@ -294,7 +308,7 @@ def _projection(report: dict) -> dict:
             for key in ("sha256", "bars", "venue", "market", "role")
         },
         "walk_forward": rep.get("walk_forward"),
-        "scenarios": rep.get("scenarios"),
+        "scenarios": norm_scenarios,
     }
 
 
@@ -344,7 +358,7 @@ def main() -> int:
         args.markdown.expanduser().resolve() if args.markdown
         else output.with_suffix(".md")
     )
-    atomic_write_json(output, report, indent=2, ensure_ascii=False)
+    atomic_write_json(output, report, indent=2, ensure_ascii=True)
     atomic_write_text(markdown, markdown_report(report))
 
     print(f"Financial benchmark JSON: {output}")

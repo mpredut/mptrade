@@ -429,7 +429,7 @@ def test_format_comparison_markdown():
     assert "# Walk-Forward Robustness Comparison" in md
     assert "| `candidate_a` | +6.500 | +5.500 | -0.500 | 2.500 | 9/10 | 7/2/1 | 18 |" in md
     assert "Pareto frontier: `candidate_a`" in md
-    assert "## Fee stress — live configuration" in md
+    assert "## Fee stress - live configuration" in md
 
 
 def test_format_comparison_markdown_none_mean_return():

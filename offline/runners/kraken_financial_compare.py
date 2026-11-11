@@ -99,8 +99,8 @@ def markdown_report(report: dict) -> str:
         "# HYPE financial candidate comparison", "",
         "Pre-registered set; the same 31 OOS windows and the same costs for all.",
         "No candidate is enabled by this runner.", "",
-        "| Candidate | Scenario | Mean % | Δ mean pp | Worst % | Δ worst pp | "
-        "Δ DD pp | Return W/T/L | Calmar Δ | DD W/T/L | Return/Risk |",
+        "| Candidate | Scenario | Mean % | d mean pp | Worst % | d worst pp | "
+        "d DD pp | Return W/T/L | Calmar d | DD W/T/L | Return/Risk |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for name, candidate in report["candidates"].items():
@@ -174,7 +174,7 @@ def main() -> int:
         args.markdown.expanduser().resolve() if args.markdown else
         output.with_suffix(".md")
     )
-    atomic_write_json(output, report, indent=2, ensure_ascii=False)
+    atomic_write_json(output, report, indent=2, ensure_ascii=True)
     atomic_write_text(markdown, markdown_report(report))
 
     print(f"Financial comparison JSON: {output}")

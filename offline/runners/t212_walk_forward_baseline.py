@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         help="fixed FX override; by default the historical series is downloaded for non-USD",
     )
     parser.add_argument("--fx-dataset", type=Path, help="a frozen FX OHLC CSV")
-    parser.add_argument("--fx-symbol", help="Yahoo FX symbol override, e.g. EURUSD=X")
+    parser.add_argument("--fx-symbol", help="override Yahoo FX symbol, e.g. EURUSD=X")
     parser.add_argument("--fx-invert", action="store_true", help="invert the FX close")
     add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=None)
     parser.add_argument(
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     interval_minutes = parse_interval_minutes(args.interval)
     config_path = T212_DIR / f"config.{args.profile}.env"
     if not config_path.exists():
-        parser.error(f"nonexistent profile: {config_path}")
+        parser.error(f"non-existent profile: {config_path}")
     config = parse_dotenv(str(config_path))
     params = StratParams.from_env(config)
     symbol = str(config.get("YAHOO_SYMBOL") or params.yahoo_sym or "").strip().upper()
@@ -196,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             "execute_live": _parse_bool_flag(config.get("STRAT_EXECUTE"), False),
         },
         "strategy_params": dataclasses.asdict(params),
+        "fee_pct_per_leg": params.fx_fee_pct,
         "fx_model": fx_metadata,
         "dataset": {
             "source": source_label,
@@ -219,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     report_path = output_dir / f"baseline_{symbol}_{stamp}.json"
-    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=True)
 
     aggregate = result["aggregate_test"]
     print(f"Baseline saved: {report_path}")

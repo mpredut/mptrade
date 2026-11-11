@@ -10,7 +10,7 @@ import math
 import statistics
 from collections.abc import Iterable, Sequence
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
 
 
 def round_metric(value: object, decimals: int = 10) -> object:
@@ -78,11 +78,22 @@ def calculate_performance_metrics(
 
     periodic_returns = []
     returns_valid = True
+    ruined = False
     for previous, current in zip(curve, curve[1:]):
+        if ruined:
+            if current > 0:
+                returns_valid = False
+                break
+            periodic_returns.append(0.0)
+            continue
         if previous <= 0:
             returns_valid = False
             break
-        periodic_returns.append(current / previous - 1.0)
+        if current <= 0:
+            periodic_returns.append(-1.0)
+            ruined = True
+        else:
+            periodic_returns.append(current / previous - 1.0)
 
     annualized_return = sharpe = sortino = calmar = None
     if periods_per_year is not None:
@@ -92,7 +103,9 @@ def calculate_performance_metrics(
     if periods_per_year and periodic_returns and returns_valid:
         periods = len(periodic_returns)
         growth = curve[-1] / initial_capital
-        if growth > 0:
+        if growth <= 0:
+            annualized_return = -1.0
+        else:
             try:
                 annualized_return = safe_float(growth ** (periods_per_year / periods) - 1.0, default=None)
             except OverflowError:
@@ -104,11 +117,11 @@ def calculate_performance_metrics(
             if volatility > 0:
                 sharpe = mean_return / volatility * math.sqrt(periods_per_year)
 
-        downside_deviation = math.sqrt(
-            statistics.fmean(min(value, 0.0) ** 2 for value in periodic_returns)
-        )
-        if downside_deviation > 0:
-            sortino = mean_return / downside_deviation * math.sqrt(periods_per_year)
+            downside_deviation = math.sqrt(
+                statistics.fmean(min(value, 0.0) ** 2 for value in periodic_returns)
+            )
+            if downside_deviation > 0:
+                sortino = mean_return / downside_deviation * math.sqrt(periods_per_year)
         if annualized_return is not None and max_drawdown_pct > 0:
             calmar = annualized_return / max_drawdown_pct
 
@@ -186,10 +199,10 @@ def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
         if len(first) < 4 or len(last) < 4:
             return 0.0
         c0 = safe_pos_float(first[3], default=None)
-        c1 = safe_float(last[3], default=None)
+        c1 = safe_nonneg_float(last[3], default=None)
     else:
         c0 = safe_pos_float(first, default=None)
-        c1 = safe_float(last, default=None)
+        c1 = safe_nonneg_float(last, default=None)
     if c0 is None or c1 is None:
         return 0.0
     return (c1 - c0) / c0 * 100.0
@@ -207,11 +220,13 @@ def print_single_backtest_report(
     emit=print,
 ) -> None:
     """Emit standardized single-run CLI backtest report across Kraken, Hyperliquid, and T212."""
-    b_val = safe_pos_float(budget, default=1.0)
+    b_val = safe_pos_float(budget, default=None)
+    if b_val is None:
+        raise ValueError("budget must be positive")
     tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
     net_pct = safe_float(m.get("net"), 0.0) / b_val * 100.0
-    cycles = int(safe_float(m.get("cycles"), 0.0))
-    wins = int(safe_float(m.get("wins"), 0.0))
+    cycles = safe_nonneg_int(m.get("cycles"), default=0)
+    wins = safe_nonneg_int(m.get("wins"), default=0)
     wr = 100.0 * wins / cycles if cycles else 0.0
     realized = safe_float(m.get("realized"), 0.0)
     upnl = safe_float(m.get("final_upnl"), 0.0)
@@ -223,17 +238,17 @@ def print_single_backtest_report(
     if include_funding:
         funding = safe_float(m.get("funding"), 0.0)
         emit(
-            f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${realized:+.2f} "
+            f"  REAL TOTAL: {tot:+.2f}% of the budget  <= realised ${realized:+.2f} "
             f"+ funding ${funding:+.2f} + the open position ${upnl:+.2f} - fees ${fees:.2f}"
         )
-        emit(f"  (the realised part alone: {net_pct:+.2f}% — MISLEADING if a losing position remains)")
+        emit(f"  (the realised part alone: {net_pct:+.2f}% -- MISLEADING if a losing position remains)")
         emit(
             f"  cycles  : {cycles}  win rate {wr:.0f}%   max drawdown ${maxdd:.2f}  "
             f"({maxdd / b_val * 100.0:.0f}% of the budget)"
         )
     else:
         emit(
-            f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${realized:+.2f} "
+            f"  REAL TOTAL: {tot:+.2f}% of the budget  <= realised ${realized:+.2f} "
             f"+ the open position ${upnl:+.2f} - fees ${fees:.2f}"
         )
         emit(f"  (realized alone: {net_pct:+.2f}%)")
@@ -259,7 +274,9 @@ def run_tp_drop_sl_sweep(
     emit=print,
 ) -> list[tuple]:
     """Run a TP x DROP (x SL) parameter sweep and print the top N configurations."""
-    b_val = safe_pos_float(budget, default=1.0)
+    b_val = safe_pos_float(budget, default=None)
+    if b_val is None:
+        raise ValueError("budget must be positive")
     rows: list[tuple] = []
     if sl_values is None:
         for tp_val in tp_values:
@@ -267,11 +284,11 @@ def run_tp_drop_sl_sweep(
                 p = dict(base, tp=tp_val, drop=drop_val)
                 m = eval_fn(p)
                 tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
-                cyc = int(safe_float(m.get("cycles"), 0.0))
-                wins = int(safe_float(m.get("wins"), 0.0))
+                cyc = safe_nonneg_int(m.get("cycles"), default=0)
+                wins = safe_nonneg_int(m.get("wins"), default=0)
                 wr = 100.0 * wins / cyc if cyc else 0.0
                 rows.append((tot, tp_val, drop_val, cyc, wr, safe_float(m.get("maxdd"), 0.0)))
-        rows.sort(reverse=True)
+        rows.sort(key=lambda r: (r[0], -r[5], r[4], r[3], r[1], r[2]), reverse=True)
         emit(f"  top {top_n} combinations (net% | tp | drop | cycles | win% | maxDD$):")
         for net, tp_v, drop_v, cyc, wr, dd in rows[:top_n]:
             emit(f"    {net:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} cyc={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
@@ -283,8 +300,8 @@ def run_tp_drop_sl_sweep(
                 p = dict(base, tp=tp_val, drop=drop_val, sl=sl_val)
                 m = eval_fn(p)
                 tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
-                rows.append((tot, tp_val, drop_val, sl_val, int(safe_float(m.get("cycles"), 0.0)), safe_float(m.get("maxdd"), 0.0)))
-    rows.sort(reverse=True)
+                rows.append((tot, tp_val, drop_val, sl_val, safe_nonneg_int(m.get("cycles"), default=0), safe_float(m.get("maxdd"), 0.0)))
+    rows.sort(key=lambda r: (r[0], -r[5], r[4], r[1], r[2], r[3]), reverse=True)
     emit(f"  top {top_n} (total% | tp | drop | sl | cycles | maxDD$):")
     for tot, tp_v, drop_v, sl_v, cyc, dd in rows[:top_n]:
         emit(f"    {tot:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} sl={sl_v:<4} cyc={cyc:<3} dd=${dd:.0f}")

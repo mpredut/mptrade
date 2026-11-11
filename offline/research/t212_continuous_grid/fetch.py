@@ -24,24 +24,31 @@ def fetch(sym, rng, itv):
 if __name__ == "__main__":
     missing_only = "--missing-only" in sys.argv[1:]
     os.makedirs(DATA, exist_ok=True)
+    attempted = 0
+    succeeded = 0
     for sym in ASSETS:
         for rng, itv in (("730d", "1h"), ("10y", "1d")):
             csv_path = os.path.join(DATA, f"{sym}_{itv}.csv")
             if missing_only and os.path.exists(csv_path) and os.path.getsize(csv_path) > 64:
                 continue
+            attempted += 1
             try:
                 rows = fetch(sym, rng, itv)
+                if not rows:
+                    print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
+                    continue
+                with atomic_text_writer(csv_path, newline="") as fh:
+                    w = csv.writer(fh)
+                    w.writerow(["timestamp", "open", "high", "low", "close"])
+                    w.writerows(rows)
+                succeeded += 1
+                print(f"[fetch] {sym} {itv}: {len(rows)} bars "
+                      f"{time.strftime('%Y-%m-%d', time.gmtime(rows[0][0]))} -> "
+                      f"{time.strftime('%Y-%m-%d', time.gmtime(rows[-1][0]))}", flush=True)
             except Exception as exc:  # noqa: BLE001
-                print(f"[fetch] {sym} {itv}: {exc}")
-                continue
-            if not rows:
-                print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
-                continue
-            with atomic_text_writer(csv_path, newline="") as fh:
-                w = csv.writer(fh)
-                w.writerow(["timestamp", "open", "high", "low", "close"])
-                w.writerows(rows)
-            print(f"[fetch] {sym} {itv}: {len(rows)} bars "
-                  f"{time.strftime('%Y-%m-%d', time.gmtime(rows[0][0]))} -> "
-                  f"{time.strftime('%Y-%m-%d', time.gmtime(rows[-1][0]))}", flush=True)
-            time.sleep(0.5)
+                print(f"[fetch] {sym} {itv}: {exc}", flush=True)
+            finally:
+                time.sleep(0.5)
+    if attempted > 0 and succeeded == 0:
+        print("[fetch] ERROR: all requested Yahoo candle fetches failed", file=sys.stderr, flush=True)
+        sys.exit(1)

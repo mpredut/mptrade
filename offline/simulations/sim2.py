@@ -5,7 +5,6 @@ import os
 import random
 import sys
 import time
-import matplotlib.pyplot as plt
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
@@ -16,6 +15,8 @@ from offline.simulations.sim import PriceWindow
 
 def plot_graphs(price_window, full_prices):
     """Plot the charts with every price and the current window."""
+    import matplotlib.pyplot as plt
+
     # Clear previous charts.
     plt.clf()
 
@@ -25,6 +26,7 @@ def plot_graphs(price_window, full_prices):
     plt.title('All Prices (Last 500)')
     plt.xlabel('Index')
     plt.ylabel('Price')
+    plt.legend()
     plt.grid(True)
 
     # Plot sliding window chart.
@@ -34,28 +36,32 @@ def plot_graphs(price_window, full_prices):
     max_price, max_pos = price_window.get_max()
 
     plt.plot(prices, marker='o', linestyle='-', label='Window Prices')
-    
+
     if min_price is not None:
-        plt.plot(min_pos, min_price, 'ro', label=f'Min: {min_price}')
-    
+        plt.plot(min_pos, min_price, 'ro', label=f'Min: {min_price:.2f}')
+
     if max_price is not None:
-        plt.plot(max_pos, max_price, 'go', label=f'Max: {max_price}')
-    
+        plt.plot(max_pos, max_price, 'go', label=f'Max: {max_price:.2f}')
+
     plt.title('Price Window with Min and Max')
     plt.xlabel('Relative Position in Window')
     plt.ylabel('Price')
+    plt.legend()
     plt.grid(True)
-    
+
     # Update charts.
     plt.tight_layout()
     plt.pause(0.1)
 
 
 def main():
+    import matplotlib.pyplot as plt
+
     window_size = 10
     max_full_prices = 500
     price_window = PriceWindow(window_size)
     full_prices = deque(maxlen=max_full_prices)  # We keep up to 500 values.
+    random.seed(42)
 
     plt.ion()  # Enable interactive mode so the charts can be watched in real time.
 

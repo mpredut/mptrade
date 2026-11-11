@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# run_backtest_cycle.sh — Unified Backtest Proposal Cycle:
-#   ./run_backtest_cycle.sh [local] — Run on DEV: scheduled_pilot.py --propose + publish to backtest-proposals worktree
-#   ./run_backtest_cycle.sh remote  — Run on PROD: sync_cache_to.sh dev -> SSH DEV run_backtest_cycle.sh -> apply_proposals.py
+# run_backtest_cycle.sh -- Unified Backtest Proposal Cycle:
+#   ./run_backtest_cycle.sh [local] -- Run on DEV: scheduled_pilot.py --propose + publish to backtest-proposals worktree
+#   ./run_backtest_cycle.sh remote  -- Run on PROD: sync_cache_to.sh dev -> SSH DEV run_backtest_cycle.sh -> apply_proposals.py
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,7 +42,7 @@ DEFAULT_WT="$(dirname "$REPO_ROOT")/mptrade-proposals"
 WT="${WT:-$DEFAULT_WT}"
 BRANCH="$BACKTEST_PROPOSALS_BRANCH"
 SRC_FILE="$REPO_ROOT/backtest_proposals.json"
-[ -f "$SRC_FILE" ] || { echo "[publish] is missing $SRC_FILE — run the pilot with --propose first"; exit 1; }
+[ -f "$SRC_FILE" ] || { echo "[publish] is missing $SRC_FILE -- run the pilot with --propose first"; exit 1; }
 
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}"
 timeout 30 git -C "$REPO_ROOT" fetch -q origin || true
@@ -64,10 +64,10 @@ fi
 cp "$SRC_FILE" "$WT/backtest_proposals.json"
 git -C "$WT" add -f backtest_proposals.json
 if git -C "$WT" diff --cached --quiet; then
-  echo "[publish] the proposals are unchanged — nothing to push"
+  echo "[publish] the proposals are unchanged -- nothing to push"
 else
   n=$(grep -c '"full_key"' "$WT/backtest_proposals.json" || true)
-  git -C "$WT" commit -q -m "backtest proposals $(date '+%F %T') [$(git -C "$REPO_ROOT" rev-parse --short HEAD)] — $n proposal(s)"
+  git -C "$WT" commit -q -m "backtest proposals $(date '+%F %T') [$(git -C "$REPO_ROOT" rev-parse --short HEAD)] -- $n proposal(s)"
   timeout 30 git -C "$WT" push -q origin "$BRANCH"
   echo "[publish] $n proposal(s) published on branch $BRANCH"
 fi

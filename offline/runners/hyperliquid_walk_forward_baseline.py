@@ -17,7 +17,7 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import required_env, required_float_env, safe_nonneg_float, safe_pos_int
+from botcore import required_env, required_float_env, safe_nonneg_float, safe_pos_float, safe_pos_int
 from strategies.spot_engine import StratParams as SpotStratParams
 from strategies.spot_replay import align_spot_interval_params
 
@@ -76,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         if lookback_days <= 0:
             parser.error("--lookback-days must be positive")
 
-    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("HL_",))
+    cfg = load_layered_env_config(
+        args.config_file, args.env_file, override_prefixes=("HL_",), fallback_prefixes=(),
+    )
 
     coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
     direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
@@ -117,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             records = validate_dataset(raw_candles, interval_minutes=interval)
             meta = dataset_metadata(records, interval_minutes=interval)
-            frozen_path = output_dir / "datasets" / f"{coin}_{interval}m_{meta['sha256'][:12]}.csv"
+            frozen_path = output_dir / "datasets" / f"{coin}_{args.engine}_{interval}m_{meta['sha256'][:12]}.csv"
             save_dataset(records, frozen_path)
             source_label = f"Hyperliquid API, frozen to {frozen_path}"
 
@@ -129,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
             params=align_spot_interval_params(strat_params, interval) if args.engine == "spot" else strat_params,
             direction=direction,
             coin=coin,
-            bar_minutes=float(interval),
+            bar_minutes=safe_pos_float(interval, default=60.0),
             execution=execution,
             fee_pct=fee_pct,
             engine=args.engine,

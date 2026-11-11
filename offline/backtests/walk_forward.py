@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import statistics
 
-from botcore import safe_float
+from botcore import exact_nonneg_int, safe_float, safe_nonneg_float
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,20 @@ def _finite_number(val, name: str) -> float:
     return fval
 
 
+def _nonneg_finite_number(val, name: str) -> float:
+    fval = safe_nonneg_float(val, default=None)
+    if fval is None:
+        raise ValueError(f"{name} must be a non-negative finite number, got {val!r}")
+    return fval
+
+
+def _nonneg_exact_int(val, name: str) -> int:
+    ival = exact_nonneg_int(val, default=None)
+    if ival is None:
+        raise ValueError(f"{name} must be a non-negative integer, got {val!r}")
+    return ival
+
+
 def summarize_test_windows(windows: list[dict]) -> dict:
     """Aggregate comparable TEST windows without hiding the worst regime.
 
@@ -84,7 +98,9 @@ def summarize_test_windows(windows: list[dict]) -> dict:
             raise ValueError(f"missing fields in the TEST window: {sorted(missing)}")
 
     returns = [_finite_number(window["return_pct"], "return_pct") for window in windows]
-    drawdowns = [_finite_number(window["max_drawdown_pct"], "max_drawdown_pct") for window in windows]
+    drawdowns = [_nonneg_finite_number(window["max_drawdown_pct"], "max_drawdown_pct") for window in windows]
+    total_cycles = sum(_nonneg_exact_int(window["cycles"], "cycles") for window in windows)
+    total_fills = sum(_nonneg_exact_int(window["fills"], "fills") for window in windows)
     up_market = []
     down_market = []
     for window, ret in zip(windows, returns):
@@ -94,7 +110,7 @@ def summarize_test_windows(windows: list[dict]) -> dict:
         bh = _finite_number(bh_raw, "buy_hold_return_pct")
         if bh > 0:
             up_market.append(ret)
-        else:
+        elif bh < 0:
             down_market.append(ret)
     return {
         "window_count": len(windows),
@@ -111,6 +127,6 @@ def summarize_test_windows(windows: list[dict]) -> dict:
         "mean_return_down_market_pct": (
             statistics.fmean(down_market) if down_market else None
         ),
-        "total_cycles": sum(int(_finite_number(window["cycles"], "cycles")) for window in windows),
-        "total_fills": sum(int(_finite_number(window["fills"], "fills")) for window in windows),
+        "total_cycles": total_cycles,
+        "total_fills": total_fills,
     }

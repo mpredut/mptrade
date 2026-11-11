@@ -23,6 +23,8 @@ Result on 27 Oct 2026 (BTC 6.78M + TAO 3.97M + ARB 0.51M ticks, 14 Jul - 27 Oct)
 usage: short_trend_estimator_benchmark.py [--data-dir DIR] [SYMBOL ...]
 """
 import argparse
+import io
+import math
 import os
 import sys
 from multiprocessing import Pool
@@ -35,9 +37,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import int_env, safe_float, safe_pos_float
+from botcore import int_env, normalize_epoch_sec, safe_float, safe_int, safe_pos_float
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
-from state_io import read_jsonl_dicts
+from state_io import atomic_write_bytes, read_jsonl_dicts
 
 D = get_cachedb_dir()
 N_WIN = 222
@@ -53,9 +55,7 @@ def _set_data_dir(path):
 def load_series(sym):
     """Return (ts_sec, px) from <D>/cache_365_price_<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
     npz_365 = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
-    if os.path.exists(npz_365):
-        with np.load(npz_365) as z:
-            return z["ts"], z["px"]
+    npz_sparse = str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.npz")))
     ts, px = [], []
     sym_cands = cache_symbol_variants(sym)
     chosen_prefix = None
@@ -70,15 +70,19 @@ def load_series(sym):
         if jsonl_path:
             break
     if not jsonl_path:
+        for existing_npz in (npz_365, npz_sparse):
+            if os.path.exists(existing_npz):
+                with np.load(existing_npz) as z:
+                    return z["ts"], z["px"]
         return np.empty(0), np.empty(0)
-    npz_target = (
-        npz_365
-        if chosen_prefix == "cache_365_price_"
-        else str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.npz")))
-    )
-    if chosen_prefix != "cache_365_price_" and os.path.exists(npz_target):
-        with np.load(npz_target) as z:
-            return z["ts"], z["px"]
+    npz_target = npz_365 if chosen_prefix == "cache_365_price_" else npz_sparse
+    if os.path.exists(npz_target):
+        try:
+            if os.path.getmtime(npz_target) >= os.path.getmtime(jsonl_path):
+                with np.load(npz_target) as z:
+                    return z["ts"], z["px"]
+        except OSError:
+            pass
 
     valid_syms = set(sym_cands) | {sym}
     for r in read_jsonl_dicts(jsonl_path):
@@ -87,10 +91,10 @@ def load_series(sym):
         item = r.get("i")
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        t = safe_float(item[0], default=None)
+        t = normalize_epoch_sec(item[0], default=None, allow_zero=True)
         p = safe_pos_float(item[1], default=None)
         if t is not None and p is not None:
-            ts.append(t / 1000.0 if t > 1e11 else t)
+            ts.append(t)
             px.append(p)
     if not ts:
         return np.empty(0), np.empty(0)
@@ -99,7 +103,9 @@ def load_series(sym):
     ts, px = ts[o], px[o]
     keep = np.concatenate(([True], np.diff(ts) > 0))
     ts, px = ts[keep], px[keep]
-    np.savez(npz_target, ts=ts, px=px)
+    buf = io.BytesIO()
+    np.savez(buf, ts=ts, px=px)
+    atomic_write_bytes(npz_target, buf.getvalue())
     return ts, px
 
 
@@ -221,8 +227,10 @@ def turning_points(ts, px, half=180, prom=0.003):
     def dedup(ix):
         out, last = [], -10 ** 9
         for i in ix:
-            if i - last >= half:
-                out.append(int(i)); last = int(i)
+            ii = safe_int(i.item() if hasattr(i, "item") else i, 0)
+            if ii - last >= half:
+                out.append(ii)
+                last = ii
         return out
     return dedup(np.where(is_min)[0]), dedup(np.where(is_max)[0])
 
@@ -237,13 +245,15 @@ def trigger_indices(ts, px, lo, hi, lookback_s, thr_bps, sign, min_gap_s):
     cand = np.where((move * sign >= thr_bps) & (idx_arr >= lo) & (idx_arr < hi))[0]
     out, last_t = [], -1e18
     for i in cand:
-        if ts[i] - last_t >= min_gap_s:
-            out.append(int(i)); last_t = ts[i]
+        ii = safe_int(i.item() if hasattr(i, "item") else i, 0)
+        if ts[ii] - last_t >= min_gap_s:
+            out.append(ii)
+            last_t = ts[ii]
     return out
 
 
 def _safe_mean(arr) -> float:
-    return float(np.mean(arr)) if len(arr) > 0 else float("nan")
+    return safe_float(np.mean(arr).item(), default=math.nan) if len(arr) > 0 else math.nan
 
 
 def evaluate(sym):
@@ -256,27 +266,43 @@ def evaluate(sym):
     if N < N_WIN + 20:
         return sym, N, {}
     t_split = ts[0] + IS_FRAC * (ts[-1] - ts[0])
-    i_split = int(np.searchsorted(ts, t_split))
+    i_split = safe_int(np.searchsorted(ts, t_split).item(), N_WIN + 11)
     i_split = min(max(N_WIN + 11, i_split), N - 11)
 
     i60, ok60 = fwd_index(ts, 60.0)
     i180, ok180 = fwd_index(ts, 180.0)
     r60 = (px[i60] - px) / px * 1e4
     r180 = (px[i180] - px) / px * 1e4
-    mins, maxs = turning_points(ts, px)
+    mins_is, maxs_is = turning_points(ts[:i_split], px[:i_split])
+    mins_oos_rel, maxs_oos_rel = turning_points(ts[i_split:], px[i_split:])
+    tp_by_seg = {
+        "IS": (mins_is, maxs_is),
+        "OOS": ([i + i_split for i in mins_oos_rel], [i + i_split for i in maxs_oos_rel]),
+    }
 
     segs = {"IS": (N_WIN + 10, i_split), "OOS": (i_split, N - 10)}
     trig = {}
     for name, (lo, hi) in segs.items():
-        trig[name] = {
-            "dip": trigger_indices(ts, px, lo, hi, 120.0, 20.0, -1, 600.0),
-            "rally": trigger_indices(ts, px, lo, hi, 120.0, 20.0, +1, 600.0),
-        }
+        seg_lo = 0 if name == "IS" else i_split
+        j_lb = np.maximum(seg_lo, np.minimum(np.searchsorted(ts, ts - 120.0), len(ts) - 1))
+        base_px = px[j_lb]
+        move = np.divide(px - base_px, base_px, out=np.zeros_like(px, dtype=np.float64), where=base_px > 0) * 1e4
+        idx_arr = np.arange(len(ts))
+        trig[name] = {}
+        for key_name, sign in (("dip", -1), ("rally", +1)):
+            cand = np.where((move * sign >= 20.0) & (idx_arr >= lo) & (idx_arr < hi) & (ts - ts[j_lb] >= 60.0))[0]
+            sel, last_t = [], -1e18
+            for i in cand:
+                ii = safe_int(i.item() if hasattr(i, "item") else i, 0)
+                if ts[ii] - last_t >= 600.0:
+                    sel.append(ii)
+                    last_t = ts[ii]
+            trig[name][key_name] = sel
 
-    def wait_exec(sig, i, want_positive, max_wait=90.0):
+    def wait_exec(sig, i, want_positive, upper, max_wait=90.0):
         t0 = ts[i]
         j = i
-        while j < N - 1 and ts[j] - t0 < max_wait:
+        while j < upper - 1 and ts[j] - t0 < max_wait:
             if (sig[j] >= 0) if want_positive else (sig[j] <= 0):
                 break
             j += 1
@@ -287,34 +313,37 @@ def evaluate(sym):
         out = {}
         sgn = np.sign(sig)
         for sname, (lo, hi) in segs.items():
+            seg_bound = i_split if sname == "IS" else N
             sl = slice(lo, hi)
             s = sgn[sl]
-            m60 = ok60[sl]; m180 = ok180[sl]
+            m60 = ok60[sl] & (i60[sl] < seg_bound)
+            m180 = ok180[sl] & (i180[sl] < seg_bound)
             up, dn = s > 0, s < 0
             spread60 = _safe_mean(r60[sl][up & m60]) - _safe_mean(r60[sl][dn & m60])
             spread180 = _safe_mean(r180[sl][up & m180]) - _safe_mean(r180[sl][dn & m180])
             big = m180 & (np.abs(r180[sl]) >= 8.0) & (s != 0)
             hit = _safe_mean(np.sign(r180[sl][big]) == s[big]) * 100
             minutes = max((ts[hi - 1] - ts[lo]) / 60.0, 1e-9) if hi > lo else 1e-9
-            flips = float(np.sum(s[1:] * s[:-1] < 0) / minutes)
+            flips = safe_float(np.sum(s[1:] * s[:-1] < 0).item(), 0.0) / minutes
+            seg_mins, seg_maxs = tp_by_seg[sname]
             lags = []
-            for ix, want in [(i, 1) for i in mins] + [(i, -1) for i in maxs]:
+            for ix, want in [(i, 1) for i in seg_mins] + [(i, -1) for i in seg_maxs]:
                 if ix < lo or ix >= hi:
                     continue
                 t0 = ts[ix]
                 j = ix
-                while j < N - 1 and ts[j] - t0 < 240 and sgn[j] != want:
+                while j < seg_bound - 1 and ts[j] - t0 < 240 and sgn[j] != want:
                     j += 1
                 lags.append(min(240.0, ts[j] - t0))
             # GT_S BUY on dips: wait while falling (sig < 0)
-            buy_sav = [(px[i] - px[wait_exec(sig, i, True)]) / px[i] * 1e4 for i in trig[sname]["dip"]]
+            buy_sav = [(px[i] - px[wait_exec(sig, i, True, seg_bound)]) / px[i] * 1e4 for i in trig[sname]["dip"]]
             # GT_S SELL on rallies: wait while rising (sig > 0)
-            sell_sav = [(px[wait_exec(sig, i, False)] - px[i]) / px[i] * 1e4 for i in trig[sname]["rally"]]
+            sell_sav = [(px[wait_exec(sig, i, False, seg_bound)] - px[i]) / px[i] * 1e4 for i in trig[sname]["rally"]]
             # TP ride after rally: hold while rising, 20bp trail, max 360s
             ride = []
             for i in trig[sname]["rally"]:
                 t0, p0, peak, j = ts[i], px[i], px[i], i
-                while j < N - 1 and ts[j] - t0 < 360:
+                while j < seg_bound - 1 and ts[j] - t0 < 360:
                     peak = max(peak, px[j])
                     if sig[j] <= 0 or (peak - px[j]) / peak * 1e4 >= 20.0:
                         break
@@ -322,8 +351,8 @@ def evaluate(sym):
                 ride.append((px[j] - p0) / p0 * 1e4)
             out[sname] = dict(
                 sp60=spread60, sp180=spread180, hit=hit, flips=flips,
-                lag_med=float(np.median(lags)) if lags else np.nan,
-                lag_mean=float(np.mean(lags)) if lags else np.nan,
+                lag_med=safe_float(np.median(lags).item(), default=math.nan) if lags else math.nan,
+                lag_mean=safe_float(np.mean(lags).item(), default=math.nan) if lags else math.nan,
                 buy=_safe_mean(buy_sav), sell=_safe_mean(sell_sav), ride=_safe_mean(ride),
                 n_dip=len(buy_sav), n_rally=len(sell_sav), n_tp=len(lags),
             )
@@ -406,15 +435,17 @@ def main():
     print(hdr); print("-" * len(hdr))
     rows = []
     for c, a in agg.items():
-        m = {s: {k: float(np.nanmean(v)) for k, v in a[s].items()} for s in a}
+        m = {s: {k: safe_float(np.nanmean(v).item(), default=math.nan) for k, v in a[s].items()} for s in a}
         rows.append((m["OOS"]["edge"], c, m))
-    for _, c, m in sorted(rows, reverse=True):
+    row_sort_key = lambda r: (math.isnan(r[0]), -r[0] if not math.isnan(r[0]) else 0.0, r[1])
+    sorted_rows = sorted(rows, key=row_sort_key)
+    for _, c, m in sorted_rows:
         o = m["OOS"]
         print(f"{c:<24}|{m['IS']['edge']:>+7.2f}{o['edge']:>+8.2f}|{o['buy']:>+7.2f}{o['sell']:>+8.2f}{o['ride']:>+8.2f}|"
               f"{o['sp60']:>+6.2f}{o['sp180']:>+7.2f}{o['hit']:>6.1f}|{o['flips']:>7.2f}{o['lag_med']:>7.0f}{o['lag_mean']:>7.0f}")
     sys.stdout.flush()
     # per-symbol OOS for top candidates
-    top = [c for _, c, _ in sorted(rows, reverse=True)[:8]] + ["LEGACY (sf+gr)/2"]
+    top = [c for _, c, _ in sorted_rows[:8]] + ["LEGACY (sf+gr)/2"]
     print("\n>>> PER-SYMBOL OOS edge (bps) for top-8 + legacy <<<")
     for sym, N, res in results:
         print(sym, " | ".join(f"{c}: {res[c]['OOS']['edge']:+.2f}" for c in dict.fromkeys(top) if c in res))

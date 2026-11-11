@@ -1074,7 +1074,13 @@ class PositionExitManager:
         if self.config.reentry_hybrid_enabled and (snapshot.trend_up or self.config.reentry_peak_relative):
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = snapshot.pullback_ratio(peak)
-            if not snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct):
+            pb_req_clean = safe_nonneg_float(pullback_required, default=None)
+            pulled_back = (
+                (snapshot.is_valid_price and safe_pos_float(peak, default=None) is not None)
+                if pb_req_clean == 0.0
+                else snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct)
+            )
+            if not pulled_back:
                 target_px = peak * (1.0 - pullback_required)
                 return self._reentry_wait(
                     f"bull_reentry_pullback_waiting (price={current_price:.4f} > {target_px:.4f}, pullback={pullback_ratio*100:.2f}% < {pullback_required*100:.2f}%)",

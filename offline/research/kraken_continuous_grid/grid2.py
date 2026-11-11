@@ -11,15 +11,15 @@ Reuses grid.py (same live engine, same TTL harness correction, same datasets).
             the individually reverted 23 Sep changes; same views as wave 1.
   fee     - key configs at 0.40%/leg instead of 0.26% (execution-cost stress).
 """
-import json, os, sys, time, traceback
+import os, sys, time, traceback
 from multiprocessing import Pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import int_env
-from state_io import read_jsonl_dicts
+from botcore import int_env, safe_float, safe_pos_float
+from state_io import append_jsonl_record, atomic_write_jsonl, read_jsonl_dicts
 from offline.research.kraken_continuous_grid import grid
 CONFIGS, LIVE, OLD, R, ov, load = grid.CONFIGS, grid.LIVE, grid.OLD, grid.R, grid.ov, grid.load
 WARM, W30, W90, WSTEP, DATA, EXP = grid.WARM, grid.W30, grid.W90, grid.WSTEP, grid.DATA, grid.EXP
@@ -102,8 +102,8 @@ def select(asset):
             if k not in oos_cache:
                 oos_cache[k] = replay(oos_slice, oos_warm, p, pk, 0.26)["ret"]
             oos[c] = oos_cache[k]
-        p0 = float(ohlc[t][3])
-        p1 = float(ohlc[t + TEST - 1][3])
+        p0 = safe_pos_float(ohlc[t][3], 0.0)
+        p1 = safe_float(ohlc[t + TEST - 1][3], 0.0)
         steps.append({"t": bars[t][0], "pick": best, "pick_ret": oos[best], "oos": oos,
                       "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0})
     return {"kind": "select", "asset": asset, "steps": steps}
@@ -119,26 +119,36 @@ def task(args):
 
 
 if __name__ == "__main__":
-    assets = grid.discover_and_preload_assets(DATA)
+    assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    for a in assets:
+        grid.load_asset(a)
     for r in read_jsonl_dicts(grid.OUT):
         if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
             bars, _, _ = grid.load_asset(r["asset"])
-            if len(bars) == r.get("bars"):
-                p, pk = ALL[r["cfg"]]
+            start_ts = bars[0][0] if bars else 0
+            end_ts = bars[-1][0] if bars else 0
+            p, pk = ALL[r["cfg"]]
+            if (
+                len(bars) == r.get("bars")
+                and ("start_ts" not in r or r.get("start_ts") == start_ts)
+                and ("end_ts" not in r or r.get("end_ts") == end_ts)
+                and ("params_repr" not in r or r.get("params_repr") == repr(p))
+                and ("peak" not in r or bool(r.get("peak")) == bool(pk))
+            ):
                 ck = (
-                    r["asset"], len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+                    r["asset"], len(bars), start_ts, end_ts,
                     repr(p), bool(pk), "std",
                 )
                 _VIEWS_CACHE[ck] = {
                     "kind": "views",
-                            "fee": "std",
-                            "asset": r["asset"],
-                            "cfg": r["cfg"],
-                            "bars": r["bars"],
-                            "full": r["full"],
-                            "w30": r["w30"],
-                            "w90": r["w90"],
-                        }
+                    "fee": "std",
+                    "asset": r["asset"],
+                    "cfg": r["cfg"],
+                    "bars": r["bars"],
+                    "full": r["full"],
+                    "w30": r["w30"],
+                    "w90": r["w90"],
+                }
     assets_by_len = sorted(assets, key=lambda a: -len(grid.load_asset(a)[0]))
     todo = []
     for a in assets_by_len:
@@ -165,7 +175,8 @@ if __name__ == "__main__":
     print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(workers) as pool, open(OUT, "w") as out:
+    atomic_write_jsonl(OUT, ())
+    with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
             tag = r.get("kind")
             if tag == "views":
@@ -174,13 +185,12 @@ if __name__ == "__main__":
                 for idx, alias_cfg in enumerate(aliases):
                     done_count += 1
                     row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}
-                    out.write(json.dumps(row) + "\n")
+                    append_jsonl_record(OUT, row)
                     vtag = f"{row['asset']:<5} {row['cfg']:<24} {row['fee']:<6} full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f}"
                     print(f"[grid2] {done_count}/{len(todo)} {vtag} [{time.time()-t0:.0f}s]", flush=True)
-                out.flush()
             else:
                 done_count += 1
-                out.write(json.dumps(r) + "\n"); out.flush()
+                append_jsonl_record(OUT, r)
                 if tag == "select":
                     tag = f"select {r['asset']} ({len(r['steps'])} steps)"
                 print(f"[grid2] {done_count}/{len(todo)} {tag} [{time.time()-t0:.0f}s]", flush=True)

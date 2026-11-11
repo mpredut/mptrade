@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-backtest.py — COMPLETE Hyperliquid DCA and take-profit strategy backtester.
+backtest.py -- COMPLETE Hyperliquid DCA and take-profit strategy backtester.
 
 Replay the strategy bar by bar over one-hour OHLC candles:
   * LIMIT entry at market-/+discount, filling when the bar touches price;
   * DCA after price moves against the position by drop%;
-  * take profit at average_price*(1±tp), then restart the cycle;
+  * take profit at average_price*(1+/-tp), then restart the cycle;
   * include per-fill FEES AND FUNDING from real HL history;
   * optional signal gate allowing longs only on up and shorts only on down.
 
 Modes:
-  single — one run with a detailed report
-  sweep  — test many TP/DROP combinations and show the best for tuning
+  single -- one run with a detailed report
+  sweep  -- test many TP/DROP combinations and show the best for tuning
 
 Run with the virtual environment:
   python backtest.py --coin HYPE --days 45 --direction short
@@ -32,15 +32,16 @@ if _ROOT not in sys.path:
 
 
 from botcore import (
-    float_env,
-    load_env_stack,
     load_local_module,
     log,
     required_env,
     required_float_env,
     required_int_env,
+    safe_float,
+    safe_int,
     safe_pos_float,
 )
+from offline.backtests.evaluation import load_layered_env_config
 from offline.backtests.metrics import (
     buy_hold_pct,
     print_single_backtest_report,
@@ -67,23 +68,34 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     out = ["neutral"] * len(closes)
     if src == "off":
         return ["__any__"] * len(closes)         # gate disabled
+    fast_i = safe_int(fast, default=0)
+    slow_i = safe_int(slow, default=0)
+    band_f = safe_float(band, default=0.0)
+    win_f = safe_pos_float(win_h, default=24.0)
+    step_f = safe_pos_float(step_h, default=8.0)
     detect_fn = None
     if src == "analysis":
         detect_fn = load_local_module(_HERE, "signals").detect_long_term_trend
+    max_lookback = max(256, safe_int(win_f * 4.0, default=256))
     for i in range(len(closes)):
         if src == "analysis":
-            res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)
+            lo_idx = max(0, i + 1 - max_lookback)
+            res = detect_fn(ts[lo_idx:i+1], closes[lo_idx:i+1], win_f, step_f)
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
-            if fast > 0 and slow > 0 and i + 1 >= max(fast, slow):
-                mf = statistics.fmean(closes[i+1-fast:i+1]); ms = statistics.fmean(closes[i+1-slow:i+1])
-                diff = (mf - ms) / ms if ms else 0
-                out[i] = "up" if diff > band else "down" if diff < -band else "neutral"
+            if fast_i > 0 and slow_i > 0 and i + 1 >= max(fast_i, slow_i):
+                win_fast = [cf for c in closes[i+1-fast_i:i+1] if (cf := safe_pos_float(c, default=None)) is not None]
+                win_slow = [cs for c in closes[i+1-slow_i:i+1] if (cs := safe_pos_float(c, default=None)) is not None]
+                if len(win_fast) == fast_i and len(win_slow) == slow_i:
+                    mf = statistics.fmean(win_fast)
+                    ms = statistics.fmean(win_slow)
+                    diff = (mf - ms) / ms if ms else 0.0
+                    out[i] = "up" if diff > band_f else "down" if diff < -band_f else "neutral"
     return out
 
 
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):
-    m = run_replay(ohlc, ts, fund, sig, P, direction=direction)
+    m = run_replay(ohlc, ts, fund, sig, P, direction=direction, coin=coin)
     b_val = safe_pos_float(budget, default=None)
     total_pct = m["total"] / b_val * 100 if b_val is not None else 0.0  # TRUE result: realized + funding + open position
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
@@ -107,33 +119,41 @@ def main() -> int:
     ap.add_argument("--step", type=int, default=8)
     args = ap.parse_args()
 
-    try:
-        load_env_stack(os.path.join(_HERE, ".env"))
-    except Exception:
-        pass
+    cfg = load_layered_env_config(
+        os.path.join(_HERE, "config.env"),
+        os.path.join(_HERE, ".env"),
+        override_prefixes=("HL_",),
+        fallback_prefixes=(),
+    )
 
-    coin = args.coin or required_env("HL_COIN")
-    direction = args.direction or required_env("HL_DIRECTION")
-    entry = args.entry if args.entry is not None else required_float_env("STRAT_ENTRY")
-    dca = args.dca if args.dca is not None else required_float_env("STRAT_DCA")
-    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT")
-    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT")
-    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT")
-    maxdca = args.maxdca if args.maxdca is not None else required_int_env("STRAT_MAX_DCA_BUYS")
-    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET")
-    fee = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT")
-    sl = args.sl if args.sl is not None else (float_env("STRAT_STOP_LOSS_PCT") or 0.0)
+    coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
+    direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
+    entry = args.entry if args.entry is not None else required_float_env("STRAT_ENTRY", env=cfg)
+    dca = args.dca if args.dca is not None else required_float_env("STRAT_DCA", env=cfg)
+    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env=cfg)
+    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT", env=cfg)
+    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT", env=cfg)
+    maxdca = args.maxdca if args.maxdca is not None else required_int_env("STRAT_MAX_DCA_BUYS", env=cfg)
+    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", env=cfg)
+    fee = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
+    sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", env=cfg)
 
-    records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + 5, drop_incomplete=True)
-    ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
-    ts = [r["timestamp"] * 1000 for r in records]
-    closes = [x[3] for x in ohlc]
-    if len(ohlc) < 50:
+    warmup_h = max(args.slow, args.win * 2, 48) if args.signal != "off" else 5
+    records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + warmup_h, drop_incomplete=True)
+    if len(records) < 50:
         log("! too few candles"); return 1
     if budget <= 0:
         log("! budget must be > 0"); return 1
+    all_closes = [r["close"] for r in records]
+    all_ts_sec = [r["timestamp"] for r in records]
+    all_sig = precompute_signal(all_closes, all_ts_sec, args.signal, args.fast, args.slow, args.band / 100.0, args.win, args.step)
+    eval_start = max(0, len(records) - args.days * 24) if len(records) > args.days * 24 else 0
+    eval_records = records[eval_start:]
+    ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in eval_records]
+    ts = [r["timestamp"] * 1000 for r in eval_records]
+    sig = all_sig[eval_start:]
+    closes = [x[3] for x in ohlc]
     fund = fetch_funding_history(coin, ts[0])
-    sig = precompute_signal(closes, [t/1000 for t in ts], args.signal, args.fast, args.slow, args.band/100, args.win, args.step)
     bh = buy_hold_pct(closes)
 
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop, tp=tp,
@@ -156,7 +176,7 @@ def main() -> int:
     log(f"=== SWEEP {coin} {args.days}d {direction} signal={args.signal} (buy&hold {bh:+.1f}%) ===")
     run_tp_drop_sl_sweep(
         base,
-        lambda p: run_replay(ohlc, ts, fund, sig, p, direction=direction),
+        lambda p: run_replay(ohlc, ts, fund, sig, p, direction=direction, coin=coin),
         budget=budget,
         tp_values=(0.5, 0.8, 1.0, 1.5, 2.0, 3.0),
         drop_values=(1.0, 2.0, 3.0, 5.0),

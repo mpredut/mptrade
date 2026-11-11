@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-offline.backtests.tradeall — replays the price history already saved
+offline.backtests.tradeall -- replays the price history already saved
 (cachedb/cache_price_{symbol}.jsonl, ~11 months) through EXACTLY the same decision
 model as tradeall.py (PriceWindow / WindowAnalyzer / TrendState / logic /
 logic_small), with place_order_smart replaced by a stub that simulates
 execution instead of hitting the Binance network. It writes ONLY into a separate
-logger/backtest/<run_id>/ — NEVER in the live logs used by
+logger/backtest/<run_id>/ -- NEVER in the live logs used by
 live tradeall.py (see plan A5).
 
 Usage:
@@ -16,23 +16,25 @@ Visualisation (while running or afterwards): in another terminal,
     python -m visuals.tradeall_observe --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
 """
 import argparse
+from collections import deque
 import os
 import shutil
+import statistics
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A5) — the model is not reimplemented.
+import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A5) -- the model is not reimplemented.
 # 23 Jul: SimClock extracted into providers/replay_clock.py (shared with
-# monitortrades — see UNIFIED_BACKTEST_PLAN.md §7/§8), passed to
+# monitortrades -- see UNIFIED_BACKTEST_PLAN.md sec. 7/8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5).
-from botcore import safe_nonneg_float, safe_pos_float, sanitize_pipe_field
+from botcore import safe_int, safe_nonneg_float, safe_pos_float, sanitize_pipe_field
 from providers.base import normalize_side
 from providers.replay_provider import SimClock, backtest_isolation_context  # noqa: F401
-from state_io import atomic_write_json, lookup_symbol_cache_items, read_json_dict, read_jsonl_dicts
+from state_io import append_text_line, atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
@@ -42,7 +44,7 @@ import shadow_signals
 
 
 FEE_PCT = 0.1   # Binance spot fee ~0.1% per leg (taker)
-# Standard position size for simulation (kalman-primary + buy&hold benchmark) —
+# Standard position size for simulation (kalman-primary + buy&hold benchmark) --
 # 21 Jul: replaces ta.api.quantities[symbol] (removed from bapi.py, it was only
 # a placeholder always trimmed by the weight limit in live, but here we really do need
 # a REAL, fixed NUMBER, so that variants can be compared honestly on the same volume.
@@ -52,7 +54,7 @@ BACKTEST_NOTIONAL_USD = 1000.0
 class BacktestBroker:
     """Stub for po.place_order_smart: it simulates execution (no network),
     writes into its own backtest folder, the same pipe format as the live
-    order_outcomes (Step A2) — so that tradeall_observe.py can render it identically.
+    order_outcomes (Step A2) -- so that tradeall_observe.py can render it identically.
     It also keeps P&L ACCOUNTING: position, average cost, realised, fees."""
     def __init__(self, out_dir, clock, trend_gate=None, trend_gate_timeout_sec=None,
                  trend_gate_max_wait_sec=3600.0):
@@ -64,11 +66,12 @@ class BacktestBroker:
         self.realized = 0.0       # realised profit/loss (excluding fees)
         self.fees = 0.0
         self.last_price = None
+        self.current_tick_price = None
         # 29 Jul (user's idea): a "wait for a better price" gate. FAITHFUL to live
         # (bapi_placeorder.__place_order -> _maybe_wait_trend -> wait_for_favorable_entry):
         # the gate does NOT block the order, it only DELAYS it until a favourable tick
         # (or until max_wait, then places it anyway). The P&L effect is a better
-        # a better entry/exit, NOT avoided trades. Deferred orders sit in
+        # entry/exit, NOT avoided trades. Deferred orders sit in
         # self.pending and execute on future ticks (process_pending, called
         # from the main loop). trend_gate=None => OFF (the old behaviour).
         self.trend_gate = trend_gate
@@ -77,53 +80,66 @@ class BacktestBroker:
         self.trend_gate_max_wait_sec = _mw if _mw is not None else 3600.0
         self.pending = []          # [{side, symbol, qty_arg, motivation, deadline}]
         self.n_waited = 0          # How many orders were delayed (and then executed).
-        self._log_f = None
+        self._next_oid = 0
+        self._outcome_buf: list[str] | None = None
+
+    def _alloc_order_id(self) -> int:
+        self._next_oid += 1
+        return self._next_oid
+
+    def flush_outcomes(self) -> None:
+        if self._outcome_buf:
+            append_text_line(self.path, "".join(self._outcome_buf))
+            self._outcome_buf.clear()
 
     def write_outcome_row(self, cols):
         line = "|".join(sanitize_pipe_field(c) for c in cols) + "\n"
-        if self._log_f is not None and not self._log_f.closed:
-            self._log_f.write(line)
+        if self._outcome_buf is not None:
+            self._outcome_buf.append(line)
+            if len(self._outcome_buf) >= 256:
+                self.flush_outcomes()
         else:
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(line)
+            append_text_line(self.path, line)
 
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
-        """The real P&L accounting (no gate) — used directly or after waiting."""
+        """The real P&L accounting (no gate) -- used directly or after waiting."""
         order_type = normalize_side(order_type)
         if order_type not in ("BUY", "SELL"):
             return None
-        price = safe_pos_float(price, default=None)
-        if price is None:
+        req_price = safe_pos_float(price, default=None)
+        if req_price is None:
             return None
+        exec_price = safe_pos_float(self.current_tick_price, default=None) or req_price
         if qty is None:
-            qty = BACKTEST_NOTIONAL_USD / price
+            qty = BACKTEST_NOTIONAL_USD / exec_price
         qty = safe_pos_float(qty, default=None)
         if qty is None:
             return None
-        self.last_price = price
+        self.last_price = exec_price
         if order_type == "BUY":
             exec_qty = qty
             self.n_buy += 1
             self.pos_qty += qty
-            self.pos_cost += qty * price
-            self.fees += qty * price * FEE_PCT / 100
+            self.pos_cost += qty * exec_price
+            self.fees += qty * exec_price * FEE_PCT / 100
         else:
             if self.pos_qty <= 1e-12:
-                return None            # Nothing to sell (spot) — refuse, as in reality.
+                return None            # Nothing to sell (spot) -- refuse, as in reality.
             sell_q = min(qty, self.pos_qty)
             exec_qty = sell_q
             avg = self.pos_cost / self.pos_qty
-            self.realized += (price - avg) * sell_q
-            self.fees += sell_q * price * FEE_PCT / 100
+            self.realized += (exec_price - avg) * sell_q
+            self.fees += sell_q * exec_price * FEE_PCT / 100
             self.pos_cost -= avg * sell_q
             self.pos_qty -= sell_q
             if self.pos_qty <= 1e-9:
                 self.pos_qty = 0.0
                 self.pos_cost = 0.0
             self.n_sell += 1
-        cols = [self.clock(), symbol, order_type, price, exec_qty, "executed", "", "backtest", motivation]
+        oid = self._alloc_order_id()
+        cols = [self.clock(), symbol, order_type, exec_price, exec_qty, "executed", "", "backtest", motivation]
         self.write_outcome_row(cols)
-        return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
+        return {"orderId": oid, "backtest": True}   # Positive int orderId for live track_and_place_order parity.
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
         order_type = normalize_side(order_type)
@@ -131,7 +147,7 @@ class BacktestBroker:
             return None
         if order_type != "BUY" and self.pos_qty <= 1e-12:
             return None
-        # The gate applies UNCONDITIONALLY (force=True included) — user (29 Jul, "the
+        # The gate applies UNCONDITIONALLY (force=True included) -- user (29 Jul, "the
         # is always welcome"), consistent with live. If the direction is NOT favourable yet,
         # It DELAYS (it does not block): the order is recorded as pending and executed on the
         # first favourable tick (or when max_wait expires). As in live, the caller
@@ -139,11 +155,12 @@ class BacktestBroker:
         # exactly as after a wait_for_favorable_entry that ends in a placement.
         if (self.trend_gate is not None
                 and self.trend_gate.should_wait(symbol, order_type, self.trend_gate_timeout_sec)):
+            oid = self._alloc_order_id()
             self.pending.append({
                 "side": order_type, "symbol": symbol, "qty_arg": qty,
                 "motivation": motivation, "deadline": self.clock() + self.trend_gate_max_wait_sec})
             self.n_waited += 1
-            return {"orderId": -1, "backtest": True, "pending": True}   # Truthy, as in live after the wait.
+            return {"orderId": oid, "backtest": True, "pending": True}
         return self._execute(order_type, symbol, price, qty, motivation)
 
     def process_pending(self, symbol, ts, price):
@@ -184,7 +201,7 @@ class BacktestBroker:
                 "n_waited": self.n_waited}
 
 
-def make_decision_logger(out_dir, clock, file_handle=None):
+def make_decision_logger(out_dir, clock, decision_buf: list[str] | None = None):
     path = os.path.join(out_dir, "tradeall_decisions.log")
 
     def _log_decision(symbol, event, **fields):
@@ -192,11 +209,13 @@ def make_decision_logger(out_dir, clock, file_handle=None):
             cols = [clock(), symbol, event, fields.get("state", ""), fields.get("old_state", ""),
                     fields.get("price", ""), fields.get("prev_confirm_count", "")]
             line = "|".join(sanitize_pipe_field(c) for c in cols) + "\n"
-            if file_handle is not None and not file_handle.closed:
-                file_handle.write(line)
+            if decision_buf is not None:
+                decision_buf.append(line)
+                if len(decision_buf) >= 256:
+                    append_text_line(path, "".join(decision_buf))
+                    decision_buf.clear()
             else:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write(line)
+                append_text_line(path, line)
         except OSError as e:
             print(f"[tradeall_backtest] log_decision error: {e}")
     return _log_decision
@@ -228,11 +247,9 @@ def _resolve_existing_cache_file(path):
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     try:
         st = os.stat(path)
-        with open(path, "r", encoding="utf-8") as f:
-            head_line = f.readline()
-        sig = (head_line, st.st_size, st.st_mtime_ns)
+        sig = (st.st_ino, st.st_size, st.st_mtime_ns)
     except OSError:
-        sig = ("", 0, 0)
+        sig = (0, 0, 0)
     file_key = (path, symbol, sig)
     cache_key = (file_key, start_ts, end_ts)
     cached = _TICK_SLICE_CACHE.get(cache_key)
@@ -264,7 +281,7 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
 
 def load_ticks_history(symbol, start_ts, end_ts):
-    """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
+    """Reads cache_sparse_price_{symbol}.jsonl -- a long history, SPARSE."""
     path = _resolve_existing_cache_file(cache_path(f"cache_sparse_price_{symbol}.jsonl"))
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
@@ -273,7 +290,7 @@ def load_ticks_history(symbol, start_ts, end_ts):
 
 def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     """Read cache_24_price_{symbol}.json (or cache_365_price_{symbol}.jsonl
-    if a filename is given) — a DENSE resolution (~1s/tick, as in live)."""
+    if a filename is given) -- a DENSE resolution (~1s/tick, as in live)."""
     if filename:
         path = filename
     else:
@@ -292,7 +309,14 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     data = read_json_dict(path, default={}, recover_previous=True)
-    entries = lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
+    items_map = data.get("items") if isinstance(data, dict) else None
+    entries = []
+    if isinstance(items_map, dict):
+        for cand in cache_symbol_variants(symbol, include_original=True):
+            cand_val = casefold_get(items_map, cand)
+            if isinstance(cand_val, list) and cand_val:
+                entries = cand_val
+                break
     for entry in entries:
         parsed = _parse_tick_pair(entry)
         if parsed is None:
@@ -313,13 +337,13 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     if not safe_run_id or safe_run_id in (".", ".."):
         raise ValueError(f"Invalid run_id: {run_id!r}")
     out_dir = os.path.join(ROOT, "logger", "backtest", safe_run_id)
-    # 23 Jul: clean the folder BEFORE running — several files here
+    # 23 Jul: clean the folder BEFORE running -- several files here
     # (order_outcomes.log, tradeall_decisions.log, tradeall_shadow.log,
-    # tradeall_price_samples.log) are written with open(..., "a") (append), so without
+    # tradeall_price_samples.log) are written via append, so without
     # this, a SECOND run with the SAME run_id would silently mix the old history with
     # the new one. Until now, every caller had to remember to do the
     # shutil.rmtree() itself (offline/research/tradeall_trigger_gate/experiment_quality_
-    # signal_v2.py did it by hand) — moved here once, for every caller.
+    # signal_v2.py did it by hand) -- moved here once, for every caller.
     shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)
     price_path = os.path.join(out_dir, "tradeall_price_samples.log")
@@ -331,16 +355,45 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                             trend_gate_max_wait_sec=trend_gate_max_wait_sec)
     orig_mkt_place = getattr(ta.mkt, "place", None)
     orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
+    orig_mkt_tick_size = getattr(ta.mkt, "get_symbol_tick_size", None)
     orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", None)
     orig_log_decision = getattr(ta, "log_decision", None)
     orig_kalman_ref = getattr(ta, "_kalman_ref", None)
     orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
+    orig_fire_symbols = getattr(ta, "TRADEALL_FIRE_SYMBOLS", None)
+    orig_symbol_oids = (
+        {k: list(v) for k, v in ta._symbol_order_ids.items()}
+        if isinstance(getattr(ta, "_symbol_order_ids", None), dict)
+        else None
+    )
+    orig_tick_cache = (
+        dict(ta._SYMBOL_TICK_SIZE_CACHE)
+        if isinstance(getattr(ta, "_SYMBOL_TICK_SIZE_CACHE", None), dict)
+        else None
+    )
+    order_retry_mod = getattr(ta, "order_retry", None)
+    orig_retry_get_ids = getattr(order_retry_mod, "get_accepted_order_ids_for_owner", None) if order_retry_mod is not None else None
+    orig_retry_resolve = getattr(order_retry_mod, "resolve_accepted_order", None) if order_retry_mod is not None else None
 
     with backtest_isolation_context(quiet=quiet):
         try:
             ta.mkt.cancel_order = lambda *a, **kw: True
+            ta.mkt.get_symbol_tick_size = lambda *a, **kw: None
             if hasattr(ta, "api"):
                 ta.api.cancel_expired_orders = lambda *a, **kw: None
+            if order_retry_mod is not None:
+                if orig_retry_get_ids is not None:
+                    order_retry_mod.get_accepted_order_ids_for_owner = lambda *a, **kw: set()
+                if orig_retry_resolve is not None:
+                    order_retry_mod.resolve_accepted_order = lambda *a, **kw: None
+            if orig_symbol_oids is not None:
+                ta._symbol_order_ids.clear()
+            if orig_tick_cache is not None:
+                ta._SYMBOL_TICK_SIZE_CACHE.clear()
+            if isinstance(orig_fire_symbols, (set, frozenset)):
+                ta.TRADEALL_FIRE_SYMBOLS = set(orig_fire_symbols) | {symbol}
+            elif isinstance(orig_fire_symbols, (list, tuple)):
+                ta.TRADEALL_FIRE_SYMBOLS = list(dict.fromkeys([*orig_fire_symbols, symbol]))
             if kalman_primary:
                 _old_attempts = {"n": 0}
                 def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
@@ -380,6 +433,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             )
 
             prev_ts = None
+            dt_history: deque[float] = deque(maxlen=5)
             n = 0
             first_price = None
             prev_ktrend = 0
@@ -398,36 +452,50 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 except Exception:
                     pass
 
-            with open(price_path, "a", encoding="utf-8") as price_f, \
-                 open(broker.path, "a", encoding="utf-8") as outcome_f, \
-                 open(decision_path, "a", encoding="utf-8") as decision_f:
-                broker._log_f = outcome_f
-                ta.log_decision = make_decision_logger(out_dir, clock, file_handle=decision_f)
+            price_buf: list[str] = []
+            decision_buf: list[str] = []
+            broker._outcome_buf = []
+            ta.log_decision = make_decision_logger(out_dir, clock, decision_buf=decision_buf)
+            try:
+                for path_init in (price_path, broker.path, decision_path):
+                    append_text_line(path_init, "")
+                    try:
+                        os.truncate(path_init, 0)
+                    except OSError:
+                        pass
                 for ts, price in tick_source:
                     clock.ts = ts
+                    broker.current_tick_price = price
                     if speed == "real" and prev_ts is not None:
                         time.sleep(max(0.0, ts - prev_ts))
                     dt = ts - prev_ts if prev_ts is not None else None
                     prev_ts = ts
 
                     if dt and dt > 0:
-                        window_small.set_sample_rate(dt)
-                        window_big.set_sample_rate(dt)
+                        dt_history.append(dt)
+                        eff_dt = statistics.median(dt_history)
+                        window_small.set_sample_rate(eff_dt)
+                        window_big.set_sample_rate(eff_dt)
                     window_small.process_price(price)
                     window_big.process_price(price)
                     if trend_gate is not None:
                         trend_gate.advance(symbol, ts, price)
                         broker.process_pending(symbol, ts, price)
-                    price_f.write(f"{ts}|{symbol}|{price}\n")
+                    price_buf.append(f"{ts}|{symbol}|{price}\n")
+                    if speed != "fast" or len(price_buf) >= 2000:
+                        append_text_line(price_path, "".join(price_buf))
+                        price_buf.clear()
 
                     if not fast_kalman_only:
                         thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
                         slope, _pos = analyzer_small.check_price_change(thr_small)
                         gradient, _gc, _sf, _gr = window_small.get_short_trend()
-                        ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
-                                       price_window=window_small)
+                        small_placed = ta.logic_small(
+                            "SMALL", True, symbol, gradient, slope, trend_state, price,
+                            price_window=window_small,
+                        )
                         slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
-                        ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
+                        ta.logic("BIG", not bool(small_placed), symbol, gradient, slope_big, trend_state_big, price)
 
                     need_eps = (
                         ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
@@ -459,9 +527,18 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     if speed != "fast" and n % 100 == 0:
                         _persist_analysis_state(price, ts, shadow_fields)
                     if n % 5000 == 0:
-                        sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts)} "
+                        sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts, tz=timezone.utc)} "
                                          f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
-                broker._log_f = None
+            finally:
+                broker.current_tick_price = None
+                if price_buf:
+                    append_text_line(price_path, "".join(price_buf))
+                    price_buf.clear()
+                if decision_buf:
+                    append_text_line(decision_path, "".join(decision_buf))
+                    decision_buf.clear()
+                broker.flush_outcomes()
+                broker._outcome_buf = None
             if n > 0:
                 try:
                     if fast_kalman_only:
@@ -501,8 +578,23 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 ta.mkt.place = orig_mkt_place
             if orig_mkt_cancel is not None:
                 ta.mkt.cancel_order = orig_mkt_cancel
+            if orig_mkt_tick_size is not None:
+                ta.mkt.get_symbol_tick_size = orig_mkt_tick_size
             if orig_api_cancel_expired is not None and hasattr(ta, "api"):
                 ta.api.cancel_expired_orders = orig_api_cancel_expired
+            if order_retry_mod is not None:
+                if orig_retry_get_ids is not None:
+                    order_retry_mod.get_accepted_order_ids_for_owner = orig_retry_get_ids
+                if orig_retry_resolve is not None:
+                    order_retry_mod.resolve_accepted_order = orig_retry_resolve
+            if orig_symbol_oids is not None:
+                ta._symbol_order_ids.clear()
+                ta._symbol_order_ids.update(orig_symbol_oids)
+            if orig_tick_cache is not None:
+                ta._SYMBOL_TICK_SIZE_CACHE.clear()
+                ta._SYMBOL_TICK_SIZE_CACHE.update(orig_tick_cache)
+            if orig_fire_symbols is not None:
+                ta.TRADEALL_FIRE_SYMBOLS = orig_fire_symbols
             if orig_log_decision is not None:
                 ta.log_decision = orig_log_decision
             ta._kalman_ref = orig_kalman_ref
@@ -513,7 +605,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--symbol", required=True)
-    p.add_argument("--start", required=True, help="YYYY-MM-DD — simulation start date")
+    p.add_argument("--start", required=True, help="YYYY-MM-DD -- simulation start date")
     p.add_argument("--end", default=None, help="YYYY-MM-DD (default: up to the end of saved data)")
     p.add_argument("--speed", choices=["real", "fast"], default="fast",
                    help="real = honour the historical intervals; fast = no waiting (the default)")
@@ -540,9 +632,9 @@ def main():
                         "(default 3600 = the live value).")
     args = p.parse_args()
 
-    start_ts = datetime.strptime(args.start, "%Y-%m-%d").timestamp()
-    end_ts = (datetime.strptime(args.end, "%Y-%m-%d").timestamp() + 86399.999) if args.end else None
-    run_id = args.run_id or f"{args.symbol}_{args.start}_{int(time.time())}"
+    start_ts = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    end_ts = (datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() + 86399.999) if args.end else None
+    run_id = args.run_id or f"{args.symbol}_{args.start}_{safe_int(time.time(), 0)}"
 
     run_backtest(args.symbol, start_ts, end_ts, args.speed, run_id, args.source, args.cache24_file,
                  args.quiet, kalman_primary=args.kalman_primary,

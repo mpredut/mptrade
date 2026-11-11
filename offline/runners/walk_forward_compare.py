@@ -162,7 +162,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
         if interval_raw is not None:
             interval = parse_interval_minutes(interval_raw)
         elif safe_pos_float(dataset_meta.get("median_step_seconds"), default=0.0) > 0:
-            step_min = int(round(safe_pos_float(dataset_meta["median_step_seconds"], default=60.0) / 60.0))
+            step_min = safe_nonneg_int(round(safe_pos_float(dataset_meta["median_step_seconds"], default=60.0) / 60.0), default=60)
             interval = 1440 if step_min >= 1440 else max(1, step_min)
         elif exec_meta.get("calendar_periods_per_year") == 252.0:
             interval = 1440
@@ -215,7 +215,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
             def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
                 adapter = hl_replay.make_hyperliquid_replay_adapter(
                     align_spot_interval_params(params, interval),
-                    bar_minutes=float(interval),
+                    bar_minutes=safe_pos_float(interval, default=60.0),
                     execution=execution,
                     fee_pct=fee_pct,
                     engine="spot",
@@ -233,7 +233,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                     params,
                     direction=params.direction,
                     coin=coin,
-                    bar_minutes=float(interval),
+                    bar_minutes=safe_pos_float(interval, default=60.0),
                     execution=execution,
                     fee_pct=fee_pct,
                     engine="perp",
@@ -245,9 +245,12 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
     if norm_venue in ("trading212", "t212"):
         t212_replay = load_venue_module("212trading", "replay.py", "t212_wf_replay")
         base_params = t212_replay._strat.StratParams.from_dict(raw_params)
+        exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:
             raw_fee = raw_params.get("fx_fee_pct")
+        if raw_fee is None:
+            raw_fee = exec_meta.get("fx_fee_pct_per_leg")
         base_fee = safe_nonneg_float(raw_fee, default=0.0)
         fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
         raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
@@ -257,7 +260,6 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
             fx_path = _resolve_frozen_file(str(fx_model["frozen_file"]), baseline_dir)
             fx_records = load_dataset(fx_path)
-        exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
         periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
@@ -265,7 +267,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                 params = dataclasses.replace(params, fx_fee_pct=fee_pct)
             adapter = t212_replay.make_t212_replay_adapter(
                 params,
-                bar_minutes=float(interval),
+                bar_minutes=safe_pos_float(interval, default=60.0),
                 fx_to_usd=fx_fixed,
                 fx_records=fx_records,
                 fx_invert=fx_invert,
@@ -348,6 +350,7 @@ def _resolve_candidate_overrides(
     if "trail_pct" in valid_param_fields and "tp_trail_pct" not in valid_param_fields:
         if overrides.get("tp_trend_hold") is False:
             overrides.pop("tp_trend_hold", None)
+            overrides.pop("tp_dynamic_flat", None)
             overrides["tp_mdhtp_enabled"] = False
             overrides["trail_pct"] = 0.0
             if "tp_ladder" in valid_param_fields:
@@ -489,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     json_path = output_dir / f"comparison_{stamp}.json"
     markdown_path = output_dir / f"comparison_{stamp}.md"
-    atomic_write_json(json_path, report, indent=2, ensure_ascii=False)
+    atomic_write_json(json_path, report, indent=2, ensure_ascii=True)
     atomic_write_text(markdown_path, _markdown(report, venue=venue))
 
     print(f"Venue: {venue}")

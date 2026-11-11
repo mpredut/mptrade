@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 
 from botcore import (
     _parse_bool_flag,
     clean_finite_floats,
+    clean_order_id_str,
     normalize_epoch_sec,
     safe_float,
+    safe_nonneg_float,
 )
 from cachepaths import normalize_venue_name
 from providers.base import normalize_side
@@ -50,7 +53,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     if len(ordered) == 1:
         return ordered[0]
     position = (len(ordered) - 1) * pct / 100.0
-    lower = max(0, min(int(position), len(ordered) - 1))
+    lower = max(0, min(math.floor(position), len(ordered) - 1))
     upper = min(lower + 1, len(ordered) - 1)
     fraction = position - lower
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
@@ -100,19 +103,15 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         active_oid = ""
         for event in history:
             if event.get("event") == "submit_accepted":
-                raw_oid = event.get("order_id")
-                if raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip():
-                    active_oid = str(raw_oid).strip()
+                cleaned_oid = clean_order_id_str(event.get("order_id"))
+                if cleaned_oid:
+                    active_oid = cleaned_oid
             elif event.get("event") in STATUS_EVENTS:
-                filled_step = safe_float(event.get("filled_qty"), 0.0)
-                cost_step = safe_float(event.get("cost"), 0.0)
-                fee_step = safe_float(event.get("fee"), 0.0)
-                raw_s_oid = event.get("order_id")
-                oid_key = (
-                    str(raw_s_oid).strip()
-                    if raw_s_oid is not None and not isinstance(raw_s_oid, bool) and str(raw_s_oid).strip()
-                    else active_oid
-                )
+                filled_step = safe_nonneg_float(event.get("filled_qty"), 0.0)
+                cost_step = safe_nonneg_float(event.get("cost"), 0.0)
+                fee_step = abs(safe_float(event.get("fee"), 0.0))
+                cleaned_s_oid = clean_order_id_str(event.get("order_id"))
+                oid_key = cleaned_s_oid if cleaned_s_oid else active_oid
                 row_t = (event, filled_step, cost_step, fee_step)
                 status_rows.append((oid_key, row_t))
                 by_order_id.setdefault(oid_key, []).append(row_t)
@@ -122,15 +121,15 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         cost = 0.0
         fee = 0.0
         for bucket in by_order_id.values():
-            best = max(
-                bucket,
-                key=lambda row: (row[1], _ts_sec(row[0].get("ts"), 0.0)),
-                default=None,
-            )
-            if best is not None:
-                filled += best[1]
-                cost += best[2]
-                fee += best[3]
+            if not bucket:
+                continue
+            max_filled = max(row[1] for row in bucket)
+            at_max = [row for row in bucket if math.isclose(row[1], max_filled, rel_tol=1e-12, abs_tol=1e-12)]
+            best_cost = max((row[2] for row in at_max), default=0.0)
+            best_fee = max((row[3] for row in at_max), default=0.0)
+            filled += max_filled
+            cost += best_cost
+            fee += best_fee
 
         fill_ratios = []
         if qty > 0:
@@ -188,7 +187,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             "order_id": accepted.get("order_id") if accepted is not None else None,
             "client_order_id": client_order_id,
             "client_order_id_valid": client_order_id_valid,
-            "rejected": any(
+            "rejected": accepted is None and any(
                 event.get("event") in ("submit_rejected", "submit_refused")
                 for event in history
             ),
@@ -224,7 +223,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             ]),
             "limit_fill_deviation_bps": distribution([
                 order["limit_fill_deviation_bps"] for order in filled
-                if order["limit_fill_deviation_bps"] is not None
+                if not order["market"] and order["limit_fill_deviation_bps"] is not None
             ]),
             "market_execution_shortfall_bps": distribution([
                 order["market_execution_shortfall_bps"] for order in filled
@@ -240,12 +239,16 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         if order["accepted"] and order["client_order_id_valid"] is not None
     ]
     first_valid_by_venue = {}
+    seen_venues_norm: set[str] = set()
     for order in sorted(
         supported_client_ids,
-        key=lambda item: safe_float(item.get("accepted_ts"), 0.0),
+        key=lambda item: _ts_sec(item.get("accepted_ts"), 0.0),
     ):
-        venue = str(order.get("venue") or "")
-        if order["client_order_id_valid"] and venue not in first_valid_by_venue:
+        raw_venue = order.get("venue")
+        venue = "" if isinstance(raw_venue, bool) else str(raw_venue or "").strip()
+        venue_norm = normalize_venue_name(venue) or venue.lower()
+        if order["client_order_id_valid"] and venue and venue_norm not in seen_venues_norm:
+            seen_venues_norm.add(venue_norm)
             first_valid_by_venue[venue] = {
                 "intent_id": order["intent_id"],
                 "symbol": order["symbol"],

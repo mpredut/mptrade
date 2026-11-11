@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_volatility.py — analyze an asset's Yahoo OHLC volatility to CALIBRATE
+analyze_volatility.py -- analyze an asset's Yahoo OHLC volatility to CALIBRATE
 t212_bot DCA spacing, take profit, and stop loss from data rather than guesses.
 Reusable for any new asset.
 
@@ -8,6 +8,7 @@ Reusable for any new asset.
 """
 from __future__ import annotations
 
+import math
 import os
 import statistics
 import sys
@@ -19,13 +20,39 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import fetch_public_json, load_local_module, safe_float, safe_pos_float
+from botcore import (
+    fetch_public_json,
+    float_env,
+    load_local_module,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
+from cachepaths import canonical_base_asset
+from offline.backtests.datasets import drop_incomplete_last_bar
+from offline.backtests.evaluation import load_layered_env_config
+from providers.order_ohlc_utils import parse_ohlc_interval_minutes
 
 _extract_yahoo_result_and_quote = load_local_module(_HERE, "market_data")._extract_yahoo_result_and_quote
 
 
-def fetch_ohlc(sym: str, rng: str, interval: str):
-    q_sym = urllib.parse.quote(str(sym or "").strip(), safe="")
+def _quantile_sorted(sorted_vals: list[float], q: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    pos = max(0.0, min(1.0, q)) * (len(sorted_vals) - 1)
+    lo = math.floor(pos)
+    hi = min(len(sorted_vals) - 1, lo + 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def fetch_ohlc(sym: str, rng: str, interval: str, *, drop_incomplete: bool = True):
+    raw_sym = str(sym or "").strip()
+    norm_sym = canonical_base_asset(raw_sym, venue="t212") if "_" in raw_sym else raw_sym
+    q_sym = urllib.parse.quote(norm_sym, safe="")
     q_rng = urllib.parse.quote(str(rng or "").strip(), safe="")
     q_int = urllib.parse.quote(str(interval or "").strip(), safe="")
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{q_sym}?range={q_rng}&interval={q_int}"
@@ -38,7 +65,7 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
         return [], {}
     o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
     n_ohlc = min(len(o), len(h), len(l), len(c))
-    out = []
+    records = []
     for i, t in enumerate(ts):
         if i < n_ohlc and None not in (t, o[i], h[i], l[i], c[i]):
             tf = safe_pos_float(t, default=None)
@@ -51,8 +78,22 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
             if not (hf >= max(of, cf, lf) and lf <= min(of, cf, hf)):
                 continue
             raw_v = v[i] if i < len(v) else 0.0
-            vf = safe_pos_float(raw_v, default=0.0)
-            out.append((int(tf) if isinstance(t, int) else tf, of, hf, lf, cf, vf))
+            vf = safe_nonneg_float(raw_v, default=0.0)
+            ts_out = safe_int(tf, default=0) if isinstance(t, int) else tf
+            records.append({"timestamp": ts_out, "open": of, "high": hf, "low": lf, "close": cf, "volume": vf})
+    if drop_incomplete and records:
+        try:
+            iv_min = parse_ohlc_interval_minutes(
+                str(interval or "").strip(),
+                str_to_min={},
+                allow_unit_multiplier=True,
+                require_unit_suffix=True,
+                venue_label="Yahoo",
+            )
+            records = drop_incomplete_last_bar(records, iv_min)
+        except ValueError:
+            pass
+    out = [(r["timestamp"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in records]
     meta = res.get("meta")
     return out, meta if isinstance(meta, dict) else {}
 
@@ -65,8 +106,8 @@ def pct(a, b):
     return (af - bf) / bf * 100.0
 
 
-def pullbacks(closes):
-    """Return pullback depths below the running peak for DCA spacing."""
+def pullbacks(closes, *, include_ongoing: bool = False):
+    """Return completed pullback depths below the running peak for DCA spacing."""
     if closes is None or isinstance(closes, bool):
         return []
     try:
@@ -83,13 +124,19 @@ def pullbacks(closes):
             peak = c; cur = 0.0
         else:
             cur = max(cur, (peak - c) / peak * 100.0)
-    if cur > 0:
+    if include_ongoing and cur > 0:
         dips.append(cur)
     return dips
 
 
 def main() -> int:
-    sym = sys.argv[1] if len(sys.argv) > 1 else "RGNT"
+    cfg = load_layered_env_config(
+        os.path.join(_HERE, "config.env"),
+        os.path.join(_HERE, ".env"),
+        override_prefixes=("T212_",),
+        fallback_prefixes=(),
+    )
+    sym = sys.argv[1] if len(sys.argv) > 1 else str(cfg.get("STRAT_YAHOO_SYM") or cfg.get("T212_TICKER") or "NVDA").strip()
     intra, meta = fetch_ohlc(sym, "1d", "5m")
     daily, _ = fetch_ohlc(sym, "1mo", "1d")
     if not intra:
@@ -109,12 +156,12 @@ def main() -> int:
     print(f"  max spike (lo->hi today): {pct(hi,lo):+.1f}%")
     print(f"\n  --- 5min bars ({len(intra)} bars) ---")
     print(f"  mean move/bar     : {statistics.fmean(abs_rets):.2f}%   (median {statistics.median(abs_rets):.2f}%)")
-    print(f"  bar 5m p90        : {sorted(abs_rets)[min(len(abs_rets) - 1, int(len(abs_rets)*0.9))]:.2f}%   max {max(abs_rets):.2f}%")
+    print(f"  bar 5m p90        : {_quantile_sorted(sorted(abs_rets), 0.9):.2f}%   max {max(abs_rets):.2f}%")
     print(f"  mean range/bar    : {statistics.fmean(bar_rng):.2f}%  (approx ATR-5m)")
     if dips:
         ds = sorted(dips)
         print(f"\n  --- pullbacks (dips) today: {len(dips)} ---")
-        print(f"  median dip {statistics.median(dips):.2f}%  | p75 {ds[min(len(ds) - 1, int(len(ds)*0.75))]:.2f}%  | max {max(dips):.2f}%")
+        print(f"  median dip {statistics.median(dips):.2f}%  | p75 {_quantile_sorted(ds, 0.75):.2f}%  | max {max(dips):.2f}%")
     if daily:
         dr = [pct(b[2], b[3]) for b in daily[-10:]]
         dchg = [abs(pct(b[4], b[1])) for b in daily[-10:]]
@@ -122,14 +169,16 @@ def main() -> int:
         print(f"  mean range/day {statistics.fmean(dr):.1f}%  | mean close-open move {statistics.fmean(dchg):.1f}%  | max day {max(dr):.1f}%")
 
     # --- PARAMETER SUGGESTION using transparent heuristics ---
-    fee = 0.30  # FX 0.15%x2
+    fx_fee = float_env("T212_FX_FEE_PCT", cfg)
+    fee = round(2.0 * (fx_fee if fx_fee is not None else 0.15), 4)
+    budget_ref = float_env("STRAT_MAX_BUDGET", cfg) or 3000.0
     med_dip = statistics.median(dips) if dips else statistics.fmean(abs_rets) * 2
     atr5 = statistics.fmean(bar_rng)
     tp = max(round(med_dip * 1.3, 1), round(fee + 2 * atr5, 1))   # clear fees/noise and capture a real swing
     drop = round(max(med_dip, atr5 * 1.5), 1)                     # DCA at a typical dip
     daily_rng = statistics.fmean([pct(b[2], b[3]) for b in daily[-10:]]) if daily else 10
     stop = round(min(max(daily_rng * 1.3, tp * 2.5), 25), 0)      # above a typical daily swing, capped at 25%
-    print("\n  ===> SUGGESTION (heuristic, for $3000 budget):")
+    print(f"\n  ===> SUGGESTION (heuristic, for {budget_ref:g} budget):")
     print(f"       TP            = {tp}%   (a fee of {fee}% plus 2xATR5 {2*atr5:.1f}%, or 1.3x the median dip)")
     print(f"       DCA_DROP_PCT  = {drop}%")
     print(f"       STOP_LOSS_PCT = {stop:.0f}%")

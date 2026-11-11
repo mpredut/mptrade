@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backtest_trail.py — compare fixed TP with trend-following trailing TP on Kraken OHLC.
+backtest_trail.py -- compare fixed TP with trend-following trailing TP on Kraken OHLC.
 
 The question is whether a fixed +5% TP sells too early and misses trends, while a
 trailing TP (once profitable, sell only after price falls X% from its peak) captures
@@ -24,20 +24,30 @@ _ROOT = os.path.dirname(_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float, safe_int, safe_pos_float
-from kraken.backtest import _bt_params, fetch_candles, simulate
+from botcore import normalize_epoch_sec, safe_float, safe_int, safe_nonneg_int, safe_pos_float
+from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
 from kraken.market_data import fetch_ohlc_candles
 from strategies import spot_replay as rp
 from offline.backtests.metrics import buy_hold_pct as bh
 
 
+def _resolve_reentry_drop(P: dict) -> float:
+    re_drop = P.get("reentry_drop")
+    if re_drop is None:
+        re_drop = P.get("reentry")
+    if re_drop is None:
+        return 0.0
+    val = safe_float(re_drop, default=0.0)
+    return max(0.0, val) if val is not None else 0.0
+
+
 def fetch_with_time(pair, interval):
-    """Fetch candles with timestamps for intraday distribution analysis."""
-    records = fetch_ohlc_candles(pair, interval, drop_incomplete=False)
+    """Fetch completed candles with timestamps for intraday distribution analysis."""
+    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
     return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
-def simulate_trail(ohlc, P):
+def simulate_trail(ohlc, P, *, warmup_ohlc=()):
     """Match ``backtest.simulate`` except for trailing exit behavior.
 
     Delegates to the faithful replay engine (rp.run_replay) which runs
@@ -45,17 +55,13 @@ def simulate_trail(ohlc, P):
     eliminating parity bugs and duplicate simulation drift.
     """
     trail_val = P.get("trail") if P.get("trail") is not None else 3.0
-    re_drop = P.get("reentry_drop")
-    if re_drop is None:
-        re_drop = P.get("reentry")
-    if re_drop is None:
-        re_drop = 0.0
     over = {
         "tp_trend_hold": True,
         "tp_trail_adaptive": False,
         "tp_trail_pct": trail_val,
         "tp_mdhtp_enabled": False,
-        "reentry_drop_pct": re_drop,
+        "tp_dynamic_flat": False,
+        "reentry_drop_pct": _resolve_reentry_drop(P),
     }
     params = _bt_params(P, over)
     return rp.run_replay(
@@ -63,18 +69,26 @@ def simulate_trail(ohlc, P):
         params,
         fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
         bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
+        warmup_ohlc=warmup_ohlc,
         intrabar_high=True,
     )
 
 
-def simulate_fixed_tp(ohlc, P):
-    """Run fixed-TP replay with trailing and MDHTP explicitly disabled."""
-    params = _bt_params(P, {"tp_trend_hold": False, "tp_mdhtp_enabled": False})
+def simulate_fixed_tp(ohlc, P, *, warmup_ohlc=()):
+    """Run fixed-TP replay with trailing, MDHTP, and dynamic flat TP disabled."""
+    over = {
+        "tp_trend_hold": False,
+        "tp_mdhtp_enabled": False,
+        "tp_dynamic_flat": False,
+        "reentry_drop_pct": _resolve_reentry_drop(P),
+    }
+    params = _bt_params(P, over)
     return rp.run_replay(
         ohlc,
         params,
         fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
         bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
+        warmup_ohlc=warmup_ohlc,
     )
 
 
@@ -88,7 +102,7 @@ def run_compare(pairs, intervals):
     print(f"params: entry={P['entry']} dca={P['dca']} drop={P['drop']}% sl={P['sl']}% | "
           f"FIX tp={P['tp']}% | TRAIL act={P['tp']}% trail={P['trail']}%  (fee {P['fee']}%/leg)")
     print(f"{'pair':<9} {'intv':<5} {'bars':<5} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
-    fixw = trailw = 0
+    fixw = trailw = ties = 0
     for pair in pairs:
         for iv in intervals:
             try:
@@ -101,10 +115,17 @@ def run_compare(pairs, intervals):
             h = bh(ohlc)
             f = simulate_fixed_tp(ohlc, P_iv)["total"]/P["budget"]*100
             t = simulate_trail(ohlc, P_iv)["total"]/P["budget"]*100
-            win = "trailing" if t > f else "TP-fix"
-            (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
+            if abs(t - f) <= 1e-9:
+                win = "tie"
+                ties += 1
+            elif t > f:
+                win = "trailing"
+                trailw += 1
+            else:
+                win = "TP-fix"
+                fixw += 1
             print(f"{pair:<9} {iv:<5} {len(ohlc):<5} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw} cases")
+    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} cases ({ties} ties)")
 
 
 def run_wf(pair, interval, segments=4):
@@ -118,18 +139,28 @@ def run_wf(pair, interval, segments=4):
     n = len(ohlc); seg = max(1, n // segments)
     print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bars, {segments} segments) ===")
     print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
-    fixw = trailw = 0
+    fixw = trailw = ties = 0
     for i in range(segments):
-        s = ohlc[i*seg:(i+1)*seg] if i < segments-1 else ohlc[i*seg:]
+        start_idx = i * seg
+        end_idx = (i + 1) * seg if i < segments - 1 else n
+        s = ohlc[start_idx:end_idx]
         if len(s) < 20:
             continue
+        warmup = ohlc[max(0, start_idx - 40):start_idx]
         h = bh(s)
-        f = simulate_fixed_tp(s, P)["total"]/P["budget"]*100
-        t = simulate_trail(s, P)["total"]/P["budget"]*100
-        win = "trailing" if t > f else "TP-fix"
-        (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
+        f = simulate_fixed_tp(s, P, warmup_ohlc=warmup)["total"]/P["budget"]*100
+        t = simulate_trail(s, P, warmup_ohlc=warmup)["total"]/P["budget"]*100
+        if abs(t - f) <= 1e-9:
+            win = "tie"
+            ties += 1
+        elif t > f:
+            win = "trailing"
+            trailw += 1
+        else:
+            win = "TP-fix"
+            fixw += 1
         print(f"#{i+1:<8} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw} segments (sequential out-of-sample)")
+    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} segments ({ties} ties, sequential out-of-sample)")
 
 
 def run_intraday(pair, tz_offset=3):
@@ -149,11 +180,12 @@ def run_intraday(pair, tz_offset=3):
         if not isinstance(row, (list, tuple)) or len(row) < 5:
             continue
         ts, o, _h, _l, c = row[:5]
-        ts_i = safe_int(ts, default=None)
+        ts_sec = normalize_epoch_sec(ts, default=None)
         o_f = safe_pos_float(o, default=None)
         c_f = safe_float(c, default=None)
-        if ts_i is None or o_f is None or c_f is None:
+        if ts_sec is None or o_f is None or c_f is None:
             continue
+        ts_i = safe_int(ts_sec, default=0)
         hr = (ts_i // 3600 + tz_offset) % 24
         by_hour[hr].append((c_f - o_f) / o_f * 100)
     print(f"=== INTRADAY {pair} (LOCAL hour UTC+{tz_offset}, {len(rows)} hourly bars) ===")
@@ -163,12 +195,12 @@ def run_intraday(pair, tz_offset=3):
         if not v:
             continue
         avg = statistics.fmean(v); pos = 100*sum(1 for x in v if x > 0)/len(v)
-        bar = "#" * int(abs(avg)*20)
+        bar = "#" * safe_nonneg_int(abs(avg) * 20, default=0)
         sign = "+" if avg >= 0 else "-"
         print(f"{hr:>02}:00 {len(v):<5} {avg:>+13.3f}% {pos:>14.0f}%  {sign}{bar}")
-    # Aggregate the 06:00-12:00 morning window.
-    morn = [x for hr in range(6, 13) for x in by_hour.get(hr, [])]
-    rest = [x for hr in list(range(0, 6)) + list(range(13, 24)) for x in by_hour.get(hr, [])]
+    # Aggregate the 06:00-12:00 morning window (hours 06..11).
+    morn = [x for hr in range(6, 12) for x in by_hour.get(hr, [])]
+    rest = [x for hr in list(range(0, 6)) + list(range(12, 24)) for x in by_hour.get(hr, [])]
     if morn and rest:
         print(f"\n  morning 06-12  : avg {statistics.fmean(morn):+.3f}%/hour ({len(morn)} obs)")
         print(f"  rest of day    : avg {statistics.fmean(rest):+.3f}%/hour ({len(rest)} obs)")

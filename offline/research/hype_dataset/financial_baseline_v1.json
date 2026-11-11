@@ -72,7 +72,7 @@
     "central": {
       "assumptions": {
         "name": "central",
-        "description": "maker/taker separat; costuri moderate, provizorii, necalibrate",
+        "description": "separate maker/taker; moderate, provisional, uncalibrated costs",
         "fees": {
           "limit_fee_pct": 0.16,
           "market_fee_pct": 0.26

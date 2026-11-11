@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Tests 0 to 4 ablation across 11 crypto assets and US equities."""
+"""Run Tests 0 to 4 ablation across 11 benchmark crypto assets (see run_equities.py for US equities)."""
 
 import os
 import statistics
@@ -74,6 +74,11 @@ BASE_PARAMS = strat.StratParams(
     reentry_peak_relative=False,
     reentry_pullback_pct=1.5,
     reentry_ttl_hours=0.0,
+    tp_mdhtp_enabled=False,
+    sl_mhdsl_enabled=False,
+    tp_dynamic_flat=False,
+    surge_guard=False,
+    fast_profit_guard=False,
 )
 
 
@@ -101,8 +106,16 @@ def main():
             initial_cash=3900.0,
         )
         elapsed = time.time() - t0
-        print(f"  Completed {asset} in {elapsed:.1f}s.")
+        errs = [r for r in res if isinstance(r, dict) and "error" in r]
+        print(f"  Completed {asset} in {elapsed:.1f}s ({len(errs)} errors).")
+        for err_row in errs:
+            print(f"    [ERROR] {asset} {err_row.get('test_id')}: {err_row.get('error')}")
         all_results.extend(res)
+
+    valid_results = [r for r in all_results if isinstance(r, dict) and "error" not in r]
+    if not valid_results:
+        print("\nERROR: No valid ablation results produced; keeping existing output files untouched.", file=sys.stderr)
+        sys.exit(1)
 
     # Save raw results
     out_json = os.path.join(OUT_DIR, "ablation_results.json")

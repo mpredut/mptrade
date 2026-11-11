@@ -16,7 +16,7 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import exact_int, exact_pos_int
+from botcore import exact_int, exact_pos_int, safe_int
 from state_io import atomic_write_bytes, atomic_write_json
 from offline.backtests.datasets import canonical_bytes, dataset_metadata
 from offline.backtests.evaluation import load_venue_module, parse_intervals
@@ -106,7 +106,7 @@ def main() -> int:
         parser.error("--lookback-days must be positive")
 
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
-    end_ms = int(generated_at.timestamp() * 1000)
+    end_ms = safe_int(generated_at.timestamp() * 1000, 0)
     start_ms = (
         end_ms - args.lookback_days * 24 * 60 * 60 * 1000
         if args.lookback_days is not None else 0
@@ -161,7 +161,7 @@ def main() -> int:
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     manifest_path = output_dir.parent / f"manifest_{stamp}.json"
-    atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=False)
+    atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=True)
     print(f"Manifest: {manifest_path}")
     return 0
 

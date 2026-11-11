@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""offline/backtests/comparison.py — Multi-criteria candidate comparison and Pareto dominance.
+"""offline/backtests/comparison.py -- Multi-criteria candidate comparison and Pareto dominance.
 
 Provides venue-agnostic comparison math for walk-forward evaluation windows:
 - Conservative Pareto dominance (better or equal on all primary objectives, strictly better on at least one)
@@ -30,17 +30,29 @@ def relative_to_baseline(
     base_by_key = {
         window[key_field]: window
         for window in baseline
-        if isinstance(window, Mapping) and key_field in window and isinstance(window[key_field], Hashable)
+        if (
+            isinstance(window, Mapping)
+            and key_field in window
+            and not isinstance(window[key_field], bool)
+            and isinstance(window[key_field], Hashable)
+        )
     }
     deltas = []
+    seen_keys: set[Hashable] = set()
     for window in candidate:
         if not isinstance(window, Mapping):
             continue
         w_key = window.get(key_field)
-        if not isinstance(w_key, Hashable) or w_key not in base_by_key:
+        if (
+            isinstance(w_key, bool)
+            or not isinstance(w_key, Hashable)
+            or w_key not in base_by_key
+            or w_key in seen_keys
+        ):
             continue
+        seen_keys.add(w_key)
         c_val = safe_float(window.get(metric_field), default=None)
-        b_val = safe_float(base_by_key[window[key_field]].get(metric_field), default=None)
+        b_val = safe_float(base_by_key[w_key].get(metric_field), default=None)
         if c_val is not None and b_val is not None:
             deltas.append(c_val - b_val)
     if not deltas:
@@ -63,7 +75,7 @@ def _summary_metrics(summary: Mapping[str, Any]) -> tuple[float, float, float] |
         return None
     mean_ret = safe_float(summary.get("mean_return_pct"), default=None)
     worst_ret = safe_float(summary.get("worst_return_pct"), default=None)
-    worst_dd = safe_float(summary.get("worst_max_drawdown_pct"), default=None)
+    worst_dd = safe_nonneg_float(summary.get("worst_max_drawdown_pct"), default=None)
     if mean_ret is None or worst_ret is None or worst_dd is None:
         return None
     return mean_ret, worst_ret, worst_dd
@@ -111,9 +123,10 @@ def pareto_frontier(
         if isinstance(candidate, Mapping)
         and _summary_metrics(candidate.get(summary_key, candidate)) is not None
     }
-    pool = valid_items if valid_items else results
+    if not valid_items:
+        return []
     names = []
-    for name, candidate in pool.items():
+    for name, candidate in valid_items.items():
         summary = candidate.get(summary_key, candidate) if isinstance(candidate, Mapping) else {}
         if not any(
             other_name != name
@@ -121,7 +134,7 @@ def pareto_frontier(
                 other.get(summary_key, other) if isinstance(other, Mapping) else {},
                 summary,
             )
-            for other_name, other in pool.items()
+            for other_name, other in valid_items.items()
         ):
             names.append(name)
     return sorted(names)
@@ -152,11 +165,11 @@ def format_comparison_markdown(
     ]
     candidates_raw = report.get("candidates")
     candidates = candidates_raw if isinstance(candidates_raw, Mapping) else {}
-    def _sort_key(item: tuple[str, Any]) -> tuple[bool, float, str]:
+    def _sort_key(item: tuple[str, Any]) -> tuple[bool, bool, float, str]:
         cand_name, cand_val = item
         summary = cand_val.get("summary") if isinstance(cand_val, Mapping) else {}
-        mean_ret = safe_float(summary.get("mean_return_pct") if isinstance(summary, Mapping) else None, 0.0)
-        return (cand_name != "live", -mean_ret, cand_name)
+        mean_ret = safe_float(summary.get("mean_return_pct") if isinstance(summary, Mapping) else None, default=None)
+        return (cand_name != "live", mean_ret is None, -(mean_ret or 0.0), cand_name)
 
     ordered = sorted(candidates.items(), key=_sort_key)
     for name, item in ordered:
@@ -185,7 +198,7 @@ def format_comparison_markdown(
     fee_stress = fee_stress_raw if isinstance(fee_stress_raw, Mapping) else {}
     if fee_stress:
         lines.extend([
-            "## Fee stress — live configuration",
+            "## Fee stress - live configuration",
             "",
             "| Fee per leg % | Mean % | Worst % | Worst DD % | Positive |",
             "|---:|---:|---:|---:|---:|",

@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from instrument_registry import symbols_for
 from state_io import atomic_write_json
 from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
@@ -33,7 +33,6 @@ from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.state.volatility import calculate_volatility_1h
-from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.internal.guards.guard_decision import BrakeAction
 
 # Pillar 2 Microstructure & Derivatives Imports
@@ -54,7 +53,6 @@ from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessmen
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("intelligence.backtest")
 
 
@@ -92,24 +90,28 @@ def _precompute_intelligence_tape(
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
     step_f = _req_pos_num(step_seconds, "step_seconds")
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    step_seconds = max(1, int(round(step_f)))
-    kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
+    step_seconds = max(1, safe_int(round(step_f), 1))
+    step_sec_f = safe_pos_float(step_seconds, 1.0)
+    kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_sec_f * 3.0))
     mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
 
     rolling_prices: List[float] = []
     rolling_ts: List[float] = []
     rolling_history: List[Tuple[float, float]] = []
-    max_roll_bars = max(300, int(round(18000.0 / step_seconds)) + 4)
+    max_roll_bars = max(300, safe_int(round(18000.0 / step_sec_f), 60) + 4)
+    max_asof_gap_sec = max(step_sec_f * 2.5, 900.0)
     current_trend = "FLAT"
     trend_start_ts: Optional[float] = None
     tape: List[dict] = []
 
-    def _price_asof(target_ts: float, fallback_first: bool = False) -> float:
+    def _price_asof(target_ts: float) -> float:
         idx = bisect_right(rolling_ts, target_ts) - 1
-        if idx >= 0:
-            return rolling_prices[idx]
-        return rolling_prices[0] if fallback_first else rolling_prices[-1]
+        if idx < 0:
+            return 0.0
+        if (target_ts - rolling_ts[idx]) > max_asof_gap_sec:
+            return 0.0
+        return rolling_prices[idx]
 
     for raw_t, raw_p in sampled:
         t = safe_float(raw_t, default=None)
@@ -127,7 +129,7 @@ def _precompute_intelligence_tape(
             rolling_history.pop(0)
 
         n_roll = len(rolling_prices)
-        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if n_roll >= 20 else 0.5
+        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=step_sec_f) if n_roll >= 20 else 0.5
         eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
 
         k_out, k_event = kalman.evaluate(symbol, t, p, eps)
@@ -140,12 +142,13 @@ def _precompute_intelligence_tape(
             current_trend = new_trend
             trend_start_ts = t
 
-        p_15m = _price_asof(t - 900.0, fallback_first=False)
-        p_30m = _price_asof(t - 1800.0, fallback_first=False)
-        p_1h = _price_asof(t - 3600.0, fallback_first=True)
-        p_4h = _price_asof(t - 14400.0, fallback_first=True)
-        bars_4h = max(48, int(round(14400.0 / step_seconds)))
+        p_15m = _price_asof(t - 900.0)
+        p_30m = _price_asof(t - 1800.0)
+        p_1h = _price_asof(t - 3600.0)
+        p_4h = _price_asof(t - 14400.0)
+        bars_4h = max(48, safe_int(round(14400.0 / step_sec_f), 48))
         prior_20 = rolling_prices[-21:-1] if n_roll >= 21 else rolling_prices[:-1]
+        prior_4h = rolling_prices[-bars_4h - 1:-1] if n_roll >= 2 else []
 
         tape.append({
             "t": t,
@@ -158,13 +161,54 @@ def _precompute_intelligence_tape(
             "current_trend": current_trend,
             "trend_duration_sec": max(0.0, t - trend_start_ts),
             "recent_high_20": max(prior_20) if n_roll >= 20 and prior_20 else 0.0,
-            "local_high_48": max(rolling_prices[-bars_4h:]) if n_roll >= min(48, bars_4h) else 0.0,
+            "local_high_48": max(prior_4h) if len(prior_4h) >= min(47, bars_4h - 1) else 0.0,
             "drop_15m": (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0,
             "drop_30m": (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0,
             "p_1h_pct": (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0,
             "p_4h_pct": (p - p_4h) / p_4h * 100.0 if p_4h > 0 else 0.0,
         })
     return tape
+
+
+def _compute_causal_survival_schedule(
+    tape: List[dict],
+    warmup_median_days: float = 3.0,
+    warmup_p90_days: float = 7.0,
+    min_completed_trends: int = 5,
+) -> List[Tuple[float, float]]:
+    """Compute strictly causal (median_days, p90_days) at each bar from prior completed trends."""
+    completed_days: List[float] = []
+    schedule: List[Tuple[float, float]] = []
+    prev_trend = "FLAT"
+    prev_dur_sec = 0.0
+
+    for bar in tape:
+        cur_trend = str(bar.get("current_trend", "FLAT"))
+        cur_dur_sec = safe_nonneg_float(bar.get("trend_duration_sec"), 0.0)
+        if prev_trend in ("BULL", "BEAR") and prev_dur_sec > 0.0:
+            if cur_trend != prev_trend or cur_dur_sec < prev_dur_sec:
+                completed_days.append(prev_dur_sec / 86400.0)
+                if len(completed_days) > 200:
+                    completed_days.pop(0)
+
+        if len(completed_days) >= min_completed_trends:
+            ordered = sorted(completed_days)
+            n = len(ordered)
+            mid = n // 2
+            med = ordered[mid] if (n % 2 == 1) else 0.5 * (ordered[mid - 1] + ordered[mid])
+            p90_pos = 0.90 * (n - 1)
+            lo = safe_int(p90_pos, 0)
+            hi = min(n - 1, lo + 1)
+            frac = p90_pos - lo
+            p90 = ordered[lo] + frac * (ordered[hi] - ordered[lo])
+            schedule.append((max(0.05, med), max(0.10, p90)))
+        else:
+            schedule.append((warmup_median_days, warmup_p90_days))
+
+        prev_trend = cur_trend
+        prev_dur_sec = cur_dur_sec
+
+    return schedule
 
 
 def run_intelligence_backtest(
@@ -182,7 +226,7 @@ def run_intelligence_backtest(
     fee_f = safe_nonneg_float(fee_pct, default=None) if isinstance(fee_pct, (int, float)) else None
     if fee_f is None or fee_f >= 1.0:
         raise ValueError("fee_pct must be in [0, 1)")
-    step_seconds = max(1, int(round(step_f)))
+    step_seconds = max(1, safe_int(round(step_f), 1))
     fee_pct = fee_f
     if cache_path is None:
         cache_path = resolve_cache_path(f"cache_sparse_price_{symbol}.jsonl")
@@ -199,13 +243,9 @@ def run_intelligence_backtest(
     if not sampled:
         raise ValueError(f"Insufficient sampled price bars for {symbol} after resampling at {step_seconds}s")
 
-    # Pre-fetch survival metrics and mode-independent signal tape once per symbol
-    base_survival = get_trend_survival_metrics(symbol, 0.0, allow_network=False)
-    raw_p90 = base_survival.get("p90_days") if isinstance(base_survival, dict) else None
-    raw_med = base_survival.get("median_days") if isinstance(base_survival, dict) else None
-    p90_days = safe_pos_float(raw_p90, default=7.0)
-    median_days = safe_pos_float(raw_med, default=3.0)
+    # Precompute mode-independent signal tape and strictly causal survival schedule once per symbol
     tape = _precompute_intelligence_tape(symbol, sampled, step_seconds, parabolic_surge_pct)
+    survival_schedule = _compute_causal_survival_schedule(tape)
 
     # Run across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite (All 4 Pillars)
     results = {}
@@ -249,7 +289,8 @@ def run_intelligence_backtest(
         geopolitical_vetoes = 0
         sentiment_downscales = 0
 
-        for bar in tape:
+        for bar_idx, bar in enumerate(tape):
+            median_days, p90_days = survival_schedule[bar_idx]
             t = bar["t"]
             p = bar["p"]
             n_roll = bar["n_roll"]
@@ -476,7 +517,7 @@ def run_intelligence_backtest(
                     entry_cost += alloc_usd
 
         # Final liquidation at end
-        final_price = float(tape[-1]["p"]) if tape else (safe_pos_float(sampled[-1][1], default=0.0) if sampled else 0.0)
+        final_price = safe_pos_float(tape[-1]["p"], default=0.0) if tape else (safe_pos_float(sampled[-1][1], default=0.0) if sampled else 0.0)
         if asset_qty > 0:
             final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
@@ -520,6 +561,7 @@ def run_intelligence_backtest(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     symbols = (
         sys.argv[1].split(",")
         if len(sys.argv) > 1

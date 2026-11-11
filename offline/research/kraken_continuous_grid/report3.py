@@ -41,20 +41,28 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 continue
             if any(not isinstance(d[a].get(fee), dict) for a in assets):
                 continue
-            ret = [safe_float(d[a][fee].get("ret"), default=float("nan")) for a in assets]
-            dd = [safe_float(d[a][fee].get("dd"), default=float("nan")) for a in assets]
-            if not all(safe_float(x, default=None) is not None for x in ret + dd):
+            ret = [safe_float(d[a][fee].get("ret"), default=None) for a in assets]
+            dd = [safe_float(d[a][fee].get("dd"), default=None) for a in assets]
+            if any(x is None for x in ret + dd):
                 continue
             live_cfg = by.get("live", {})
-            live = [safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=float("-inf")) for a in assets]
+            live = [
+                safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=None)
+                if isinstance(live_cfg.get(a, {}).get(fee), dict)
+                else None
+                for a in assets
+            ]
             refused = [safe_float(d[a][fee].get("refused"), default=0.0) for a in assets]
             min_cash = [safe_float(d[a][fee].get("min_cash"), default=3900.0) for a in assets]
             score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
-            items.append((safe_float(score, default=float("-inf")), cfg, ret, dd, live, refused, min_cash))
+            score_val = safe_float(score, default=None)
+            items.append((score_val if score_val is not None else -1e300, cfg, ret, dd, live, refused, min_cash))
         for score, cfg, ret, dd, live, refused, min_cash in sorted(items, reverse=True):
             if not ret:
                 continue
-            L.append(f"| {cfg} | {sum(r > l for r, l in zip(ret, live))}/{len(assets)} | "
+            live_pairs = [(r, l) for r, l in zip(ret, live) if l is not None]
+            beat_str = f"{sum(r > l + 1e-9 for r, l in live_pairs)}/{len(live_pairs)}" if live_pairs else "-/-"
+            L.append(f"| {cfg} | {beat_str} | "
                      f"{sum(r < 0 for r in ret)} | {st.median(ret):+.1f} | {min(ret):+.1f} | {max(ret):+.1f} | "
                      f"{st.median(dd):.1f} | {max(dd):.1f} | {score:+.2f} | {st.median(refused):.0f} | {st.median(min_cash):.0f} |")
 

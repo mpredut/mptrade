@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 
-from botcore import safe_float, safe_int
+from botcore import exact_pos_int, safe_float, safe_int
 
 
 @dataclass(frozen=True)
@@ -71,22 +71,39 @@ def _diff(left, right) -> float:
 
 
 def _relative_change(baseline, candidate) -> float | None:
-    """Signed relative change ``(cand - base) / |base|`` across positive, zero, or negative baselines."""
+    """Signed relative change ``(cand - base) / |base|`` when ``|base| > 1e-12``."""
     base = safe_float(baseline, default=None)
     cand = safe_float(candidate, default=None)
-    if base is None or cand is None:
+    if base is None or cand is None or abs(base) <= 1e-12:
         return None
-    if abs(base) <= 1e-12:
-        if abs(cand) <= 1e-12:
-            return 0.0
-        return 1.0 if cand > 0.0 else -1.0
     return (cand - base) / abs(base)
+
+
+def _assumption_signature(assumptions: object) -> object:
+    """Normalize scenario assumptions while ignoring human-readable description prose."""
+    if isinstance(assumptions, dict):
+        return {k: v for k, v in assumptions.items() if k != "description"}
+    return assumptions
 
 
 def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, dict]:
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         raise ValueError("baseline and candidate must be dictionaries")
+    for label, rep in (("baseline", baseline), ("candidate", candidate)):
+        ds = rep.get("dataset") if isinstance(rep.get("dataset"), dict) else {}
+        sha = ds.get("sha256")
+        bars = exact_pos_int(ds.get("bars"), default=None)
+        if not isinstance(sha, str) or not sha.strip() or bars is None:
+            raise ValueError(f"{label} dataset metadata (sha256, bars) is missing or invalid")
     if _identity(baseline) != _identity(candidate):
+        raise ValueError("baseline and candidate use different datasets or windows")
+    base_wf = baseline.get("walk_forward") if isinstance(baseline.get("walk_forward"), dict) else {}
+    cand_wf = candidate.get("walk_forward") if isinstance(candidate.get("walk_forward"), dict) else {}
+    if bool(base_wf.get("anchored_train", False)) != bool(cand_wf.get("anchored_train", False)):
+        raise ValueError("baseline and candidate use different datasets or windows")
+    base_venue = "" if isinstance(baseline.get("venue"), bool) else str(baseline.get("venue") or "").strip().lower()
+    cand_venue = "" if isinstance(candidate.get("venue"), bool) else str(candidate.get("venue") or "").strip().lower()
+    if base_venue != cand_venue:
         raise ValueError("baseline and candidate use different datasets or windows")
     raw_base_scen = baseline.get("scenarios")
     raw_cand_scen = candidate.get("scenarios")
@@ -100,7 +117,7 @@ def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, 
 def _extract_scenario_windows(name: str, base: dict, cand: dict) -> tuple[dict, dict, dict, dict]:
     if not isinstance(base, dict) or not isinstance(cand, dict):
         raise ValueError(f"invalid scenario structure in scenario {name}")
-    if base.get("assumptions") != cand.get("assumptions"):
+    if _assumption_signature(base.get("assumptions")) != _assumption_signature(cand.get("assumptions")):
         raise ValueError(f"different execution assumptions in scenario {name}")
     base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
     cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
@@ -266,9 +283,10 @@ def evaluate_risk_adjusted_promotion(
         base_calmar = safe_float(base_aggregate.get("median_calmar"), default=None)
         cand_calmar = safe_float(candidate_aggregate.get("median_calmar"), default=None)
         calmar_improvement = _relative_change(base_calmar, cand_calmar)
+        cand_sortino = safe_float(candidate_aggregate.get("median_sortino"), default=None)
         sortino_change = _relative_change(
             base_aggregate.get("median_sortino"),
-            candidate_aggregate.get("median_sortino"),
+            cand_sortino,
         )
 
         checks = {
@@ -292,6 +310,8 @@ def evaluate_risk_adjusted_promotion(
             ),
             "sortino_preserved": (
                 sortino_change is not None
+                and cand_sortino is not None
+                and cand_sortino > 0.0
                 and sortino_change >= -limits.max_median_sortino_degradation_ratio
             ),
             "material_drawdown_improvement": (

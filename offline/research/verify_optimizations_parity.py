@@ -25,6 +25,7 @@ import pricewindow as pw
 import priceAnalysis as pa
 import monitortrades as mt
 import intelligence.internal.state.volatility as vol
+from botcore import safe_float
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
 
@@ -112,38 +113,55 @@ def test_priceanalysis_ols_parity(iterations: int = 10_000) -> None:
 def test_detect_long_term_trend_real_data() -> None:
     print("[TEST 3/5] Testing detect_long_term_trend memoization vs raw unmemoized on real historical caches...")
     symbols = ["BTCUSDC", "TAOUSDC"]
+    datasets = []
     for sym in symbols:
         c_path = cache_path(f"cache_sparse_price_{sym}.jsonl")
         if not os.path.exists(c_path):
             continue
         series = load_price_series(c_path, sym)
-        if not series or len(series) < 1000:
-            continue
+        if series and len(series) >= 1000:
+            datasets.append((sym, [s[0] for s in series[-2000:]], [s[1] for s in series[-2000:]]))
 
-        timestamps = [s[0] for s in series[-2000:]]
-        prices = [s[1] for s in series[-2000:]]
+    if not datasets:
+        rng = np.random.default_rng(4242)
+        t0 = 1_700_000_000.0
+        dt = rng.uniform(55.0, 65.0, size=2500)
+        dt[0] = 0.0
+        syn_ts = (t0 + np.cumsum(dt)).tolist()
+        syn_px = (50_000.0 * np.exp(np.cumsum(rng.normal(0.00015, 0.002, size=2500)))).tolist()
+        datasets.append(("SYNTHETIC_BTCUSDC", syn_ts, syn_px))
 
-        # 1. Warm incremental memoization cache on prefix, then evaluate full series (warm incremental path)
+    saved_cache = dict(pa._trend_memo_cache)
+    try:
+        for sym, timestamps, prices in datasets:
+            # 1. Warm incremental memoization cache on prefix, then evaluate full series (warm incremental path)
+            pa._trend_memo_cache.clear()
+            pa.detect_long_term_trend(timestamps[:-50], prices[:-50], window_hours=16, step_hours=8)
+            res_memo = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
+
+            # 2. Clear memoization cache and evaluate full series from scratch (cold unmemoized reference)
+            pa._trend_memo_cache.clear()
+            res_cold = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
+
+            # Verify exact parity between incremental-cached and cold-computed results
+            if res_cold is None:
+                assert res_memo is None
+            else:
+                assert res_memo is not None
+                assert res_memo["direction"] == res_cold["direction"]
+                assert res_memo["start_timestamp"] == res_cold["start_timestamp"]
+                assert res_memo["duration_seconds"] == res_cold["duration_seconds"]
+                assert np.isclose(res_memo["current_slope_h"], res_cold["current_slope_h"], rtol=1e-12, atol=1e-12)
+                assert res_memo["blocks"] == res_cold["blocks"]
+
+            print(
+                f"  -> PASSED for {sym} history: "
+                f"direction={res_cold.get('direction') if res_cold else None}, "
+                f"duration={res_cold.get('duration_seconds') if res_cold else 0:.0f}s"
+            )
+    finally:
         pa._trend_memo_cache.clear()
-        pa.detect_long_term_trend(timestamps[:-50], prices[:-50], window_hours=16, step_hours=8)
-        res_memo = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
-
-        # 2. Clear memoization cache and evaluate full series from scratch (cold unmemoized reference)
-        pa._trend_memo_cache.clear()
-        res_cold = pa.detect_long_term_trend(timestamps, prices, window_hours=16, step_hours=8)
-
-        # Verify exact parity between incremental-cached and cold-computed results
-        if res_cold is None:
-            assert res_memo is None
-        else:
-            assert res_memo is not None
-            assert res_memo["direction"] == res_cold["direction"]
-            assert res_memo["start_timestamp"] == res_cold["start_timestamp"]
-            assert res_memo["duration_seconds"] == res_cold["duration_seconds"]
-            assert np.isclose(res_memo["current_slope_h"], res_cold["current_slope_h"], rtol=1e-12, atol=1e-12)
-            assert res_memo["blocks"] == res_cold["blocks"]
-
-        print(f"  -> PASSED for real {sym} history: direction={res_cold.get('direction') if res_cold else None}, duration={res_cold.get('duration_seconds') if res_cold else 0:.0f}s")
+        pa._trend_memo_cache.update(saved_cache)
 
 
 def test_monitortrades_position_stats_parity() -> None:
@@ -165,25 +183,30 @@ def test_monitortrades_position_stats_parity() -> None:
     avg_buy = tot_buy_val / tot_buy_qty
     avg_sell = tot_sell_val / tot_sell_qty
 
-    mt._position_stats_cache.clear()
-    stats1 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys, sell_orders=sample_sells)
-    # Second call uses dirty-flag memoization
-    stats2 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys, sell_orders=sample_sells)
+    saved_pos_cache = dict(mt._position_stats_cache)
+    try:
+        mt._position_stats_cache.clear()
+        stats1 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys, sell_orders=sample_sells)
+        # Second call uses dirty-flag memoization
+        stats2 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys, sell_orders=sample_sells)
 
-    assert stats1["buy_qty"] == tot_buy_qty
-    assert stats1["sell_qty"] == tot_sell_qty
-    assert stats1["net_qty"] == (tot_buy_qty - tot_sell_qty)
-    assert math.isclose(stats1["average_buy_price"], avg_buy, rel_tol=1e-9)
-    assert math.isclose(stats1["average_sell_price"], avg_sell, rel_tol=1e-9)
+        assert stats1["buy_qty"] == tot_buy_qty
+        assert stats1["sell_qty"] == tot_sell_qty
+        assert stats1["net_qty"] == (tot_buy_qty - tot_sell_qty)
+        assert math.isclose(stats1["average_buy_price"], avg_buy, rel_tol=1e-9)
+        assert math.isclose(stats1["average_sell_price"], avg_sell, rel_tol=1e-9)
 
-    assert stats1 == stats2, "Memoized stats do not match initial computation!"
+        assert stats1 == stats2, "Memoized stats do not match initial computation!"
 
-    # Now simulate a new fill arriving (dirty flag trips)
-    sample_buys_new = [{"id": 104, "timestamp": 1700008000000, "price": "62000.0", "qty": "0.10"}] + sample_buys
-    stats3 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys_new, sell_orders=sample_sells)
-    assert stats3["buy_count"] == 4
-    assert stats3["buy_qty"] == 0.60
-    assert stats3 != stats1, "Dirty flag failed to detect new order fill!"
+        # Now simulate a new fill arriving (dirty flag trips)
+        sample_buys_new = [{"id": 104, "timestamp": 1700008000000, "price": "62000.0", "qty": "0.10"}] + sample_buys
+        stats3 = mt.get_position_stats("BTCUSDT", 86400, buy_orders=sample_buys_new, sell_orders=sample_sells)
+        assert stats3["buy_count"] == 4
+        assert stats3["buy_qty"] == 0.60
+        assert stats3 != stats1, "Dirty flag failed to detect new order fill!"
+    finally:
+        mt._position_stats_cache.clear()
+        mt._position_stats_cache.update(saved_pos_cache)
 
     print("  -> PASSED! Memoized stats match manual calculation, and dirty-flag invalidation triggers on new fills.")
 
@@ -193,27 +216,32 @@ def test_volatility_parity(iterations: int = 10_000) -> None:
     np.random.seed(999)
     max_diff_vol = 0.0
 
-    for i in range(iterations):
-        n = np.random.randint(20, 200)
-        p0 = np.random.uniform(1.0, 50_000.0)
-        returns = np.random.normal(0, 0.02, size=n)
-        prices = p0 * np.exp(np.cumsum(returns))
-        sample_rate = float(np.random.choice([0.8, 1.0, 5.0, 60.0, 300.0]))
+    saved_vol_cache = dict(vol._vol_memo_cache)
+    try:
+        for i in range(iterations):
+            n = np.random.randint(20, 200)
+            p0 = np.random.uniform(1.0, 50_000.0)
+            returns = np.random.normal(0, 0.02, size=n)
+            prices = p0 * np.exp(np.cumsum(returns))
+            sample_rate = safe_float(np.random.choice([0.8, 1.0, 5.0, 60.0, 300.0]).item(), 1.0)
 
-        # Baseline calculation using np.diff(np.log(p))
-        p = np.asarray(prices, dtype=float)
-        p = p[p > 0]
-        rets_base = np.diff(np.log(p))
-        std_base = float(np.std(rets_base))
-        vol_base = round(std_base * math.sqrt(3600.0 / sample_rate) * 100.0, 4)
+            # Baseline calculation using np.diff(np.log(p))
+            p = np.asarray(prices, dtype=float)
+            p = p[p > 0]
+            rets_base = np.diff(np.log(p))
+            std_base = safe_float(np.std(rets_base).item(), 0.0)
+            vol_base = round(std_base * math.sqrt(3600.0 / sample_rate) * 100.0, 4)
 
-        # Optimized calculate_volatility_1h
+            # Optimized calculate_volatility_1h
+            vol._vol_memo_cache.clear()
+            vol_opt = vol.calculate_volatility_1h(prices, sample_rate)
+
+            diff = abs(vol_base - vol_opt)
+            max_diff_vol = max(max_diff_vol, diff)
+            assert vol_base == vol_opt, f"Volatility mismatch at iter {i}: {vol_base} vs {vol_opt}"
+    finally:
         vol._vol_memo_cache.clear()
-        vol_opt = vol.calculate_volatility_1h(prices, sample_rate)
-
-        diff = abs(vol_base - vol_opt)
-        max_diff_vol = max(max_diff_vol, diff)
-        assert vol_base == vol_opt, f"Volatility mismatch at iter {i}: {vol_base} vs {vol_opt}"
+        vol._vol_memo_cache.update(saved_vol_cache)
 
     print(f"  -> PASSED! Exact match across {iterations:,} randomized trials.")
     print(f"     Max delta: {max_diff_vol:.2e}")

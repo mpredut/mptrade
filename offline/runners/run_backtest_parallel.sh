@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_backtest_parallel.sh — runs backtest commands from a file in parallel on DEV (N cores).
+# run_backtest_parallel.sh -- runs backtest commands from a file in parallel on DEV (N cores).
 # Usage: offline/runners/run_backtest_parallel.sh <command_file> [JOBS]
 set -euo pipefail
 

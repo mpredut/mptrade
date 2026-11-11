@@ -39,6 +39,11 @@ def run_comparison(csv_path=None):
         return []
 
     print(f"Loaded {len(bars)} historical bars (HYPE spot 4h).")
+    bar_minutes = 240.0
+    defer_max_sec = 3.0 * bar_minutes * 60.0
+    warmup_bars = 40 if len(bars) > 60 else 0
+    eval_bars = bars[warmup_bars:]
+    warmup_ohlc = bars[:warmup_bars]
     sl_levels = [6.0, 8.0, 10.0, 12.0]
     results = []
 
@@ -63,18 +68,15 @@ def run_comparison(csv_path=None):
             sl_disaster_buffer_ratio=0.30,
             sl_disaster_vol_multiplier=0.85,
             sl_disaster_buffer_min_pct=0.80,
-            sl_trend_defer_max_sec=220.0,
+            sl_trend_defer_max_sec=defer_max_sec,
             sl_bounce_min_recovery_pct=0.40,
             sl_bounce_pullback_pct=0.30,
             sl_bounce_ratchet_enabled=True,
             sl_structural_break_enabled=True,
             **common_reentry,
         ), 240)
-        warmup_bars = 40 if len(bars) > 60 else 0
-        eval_bars = bars[warmup_bars:]
-        warmup_ohlc = bars[:warmup_bars]
         if sl == sl_levels[0] and len(bars) > 40:
-            prewarm_trend_series(bars, warmup=warmup_bars, params=p_base, bar_minutes=240.0)
+            prewarm_trend_series(bars, warmup=warmup_bars, params=p_base, bar_minutes=bar_minutes)
 
         res_base = run_replay(eval_bars, p_base, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
         res_prop = run_replay(eval_bars, p_prop, fee_pct=0.26, bar_minutes=240, warmup_ohlc=warmup_ohlc)
@@ -119,7 +121,8 @@ def run_comparison(csv_path=None):
 
 
 def main():
-    run_comparison()
+    if not run_comparison():
+        sys.exit(1)
 
 
 if __name__ == "__main__":

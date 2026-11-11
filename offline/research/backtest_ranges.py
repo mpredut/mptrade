@@ -1,29 +1,29 @@
 """
-backtest_ranges.py — parses test ranges written as PLAIN text,
+backtest_ranges.py -- parse plain-text backtest parameter ranges written
 DIRECTLY above a parameter in any config file (23 Jul,
 offline/research/UNIFIED_BACKTEST_PLAN.md, a user decision: plain text, NOT YAML/JSON).
 
-The format (one line, above the parameter, in ANY file — .env, a .conf of the
-INI, monitortrades.conf):
+The format (one line, above the parameter, in ANY file -- .env, an INI-style
+.conf, monitortrades.conf):
 
     # BACKTEST: 5.0, 6.0, 7.0, 8.0, 9.0
     mt.gain = 7.0
 
-Generic over formats: it knows nothing about .env vs INI vs monitortrades.conf —
+Generic over formats: it knows nothing about .env vs INI vs monitortrades.conf --
 it only looks for the comment line "# BACKTEST: ..." IMMEDIATELY above a line
 "key = value" / "key=value" (whitespace around "=" is optional),
 through a simple regex on the key. The comment must be on the very previous
-line — any other line between them (another comment, a blank line)
+line -- any other line between them (another comment, a blank line)
 cancels it, so that it is not wrongly attributed to a different parameter.
 
 INI-style files (instruments.conf) have `[NAME]` sections that REUSE
 the same keys (e.g. mt.gain appears both in [BINANCE_BTC] and in
-[BINANCE_TAO]) — the key returned is prefixed with the current section
+[BINANCE_TAO]) -- the key returned is prefixed with the current section
 ("BINANCE_BTC.mt.gain"), so that they cannot be confused or overwrite one another. Files
 WITHOUT sections (.env, monitortrades.conf) return the key unchanged.
 
 Why NOT a separate YAML/JSON (an explicit user decision): the test range lives
-NEXT TO the real value, in the same file a human reads anyway —
+NEXT TO the real value, in the same file a human reads anyway --
 not in a separate sidecar that can silently drift from the real value.
 """
 from __future__ import annotations

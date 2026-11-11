@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_financial_baseline.sh — runs the fast characterization & financial baseline pytest gate.
+# run_financial_baseline.sh -- runs the fast characterization & financial baseline pytest gate.
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

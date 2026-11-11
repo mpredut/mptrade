@@ -15,10 +15,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import safe_nonneg_float, safe_pos_int
+from botcore import safe_nonneg_float, safe_pos_float, safe_pos_int
 from binance_api.market_data import fetch_ohlc_candles
 from strategies.spot_replay import StratParams, align_spot_interval_params, make_spot_replay_adapter
 from offline.backtests.datasets import (
+    dataset_metadata,
     load_dataset,
     save_dataset,
     validate_dataset,
@@ -61,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     if lookback_days <= 0:
         parser.error("--lookback-days must be positive")
 
-    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("BINANCE_",))
+    cfg = load_layered_env_config(
+        args.config_file, args.env_file, override_prefixes=("BINANCE_",), fallback_prefixes=(),
+    )
 
     symbol = (args.symbol or cfg.get("SYMBOL") or cfg.get("BINANCE_PAIR") or "BTCUSDT").strip().upper()
 
@@ -114,12 +117,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[!] Insufficient bars for {symbol} {interval}m ({len(raw_records or ())} < 20); skipping.")
                 continue
             records = validate_dataset(raw_records, interval_minutes=interval)
-            frozen_path = dataset_dir / f"{symbol}_{interval}m.csv"
+            meta = dataset_metadata(records, interval_minutes=interval)
+            frozen_path = dataset_dir / f"{symbol}_{interval}m_{meta['sha256'][:12]}.csv"
             save_dataset(records, frozen_path)
         adapter = make_spot_replay_adapter(
             params=align_spot_interval_params(strat_params, interval),
             fee_pct=args.fee,
-            bar_minutes=float(interval),
+            bar_minutes=safe_pos_float(interval, default=60.0),
             execution=execution,
         )
         summary_by_interval[interval] = build_and_save_interval_baseline_report(

@@ -15,12 +15,19 @@ class Candidate:
     description: str
     overrides: dict
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "overrides", dict(self.overrides or {}))
+
 
 def default_candidates() -> list[Candidate]:
     """A small, interpretable neighbourhood around the live configuration."""
     return [
         Candidate("live", "the live configuration, unchanged", {}),
-        Candidate("classic_tp", "a fixed TP; the trailing is off", {"tp_trend_hold": False}),
+        Candidate(
+            "classic_tp",
+            "a fixed TP; the trailing is off",
+            {"tp_trend_hold": False, "tp_mdhtp_enabled": False, "tp_dynamic_flat": False},
+        ),
         Candidate("trail_2", "trailing 2%", {"tp_mdhtp_enabled": False, "tp_trail_adaptive": False, "tp_trail_pct": 2.0}),
         Candidate("trail_4", "trailing 4%", {"tp_mdhtp_enabled": False, "tp_trail_adaptive": False, "tp_trail_pct": 4.0}),
         Candidate("trail_5", "trailing 5%", {"tp_mdhtp_enabled": False, "tp_trail_adaptive": False, "tp_trail_pct": 5.0}),
@@ -113,7 +120,7 @@ def financial_priority_candidates() -> list[Candidate]:
         Candidate(
             "trail_profit_floor_sl125",
             "DECOUPLED: a gross profit floor of +1%, but a hard stop at 12.5% (the baseline) "
-            "— isolates profit-floor upside from the wide-stop drawdown penalty",
+            "-- isolates profit-floor upside from the wide-stop drawdown penalty",
             {"tp_trail_profit_floor_pct": 1.0},
         ),
     ]

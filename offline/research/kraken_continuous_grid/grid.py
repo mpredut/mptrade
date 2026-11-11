@@ -16,7 +16,7 @@ to the highest close since the exit, i.e. re-enter on a pullback from the post-e
 Data comes from fetch_data.py; results go to $GRID_OUT (default
 offline/results/kraken_continuous_grid). Run everything with run_all.sh.
 """
-import dataclasses, json, os, sys, time, traceback
+import dataclasses, os, sys, time, traceback
 from datetime import datetime, timezone
 from multiprocessing import Pool
 
@@ -29,10 +29,11 @@ if ROOT not in sys.path:
 from botcore import (
     int_env,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
-from state_io import read_jsonl_dicts
+from state_io import append_jsonl_record, read_jsonl_dicts
 from strategies import spot_engine as strat  # noqa: E402
 from strategies import spot_replay as rp  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
@@ -42,6 +43,7 @@ _KRAKEN_CFG = load_layered_env_config(
     os.path.join(ROOT, "kraken", "config.env"),
     os.path.join(ROOT, "kraken", ".env"),
     override_prefixes=("KRAKEN_",),
+    fallback_prefixes=(),
 )
 
 FLAGS = {"peak": False}
@@ -64,14 +66,15 @@ LIVE = strat.StratParams.from_env(_KRAKEN_CFG)
 OLD = R(LIVE, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0, tp_trail_adaptive=False,
         tp_regime_gate=False, tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5,
         reentry_hybrid_enabled=False, reentry_bear_bounce_pct=0.0,
+        reentry_ttl_hours=0.0, reentry_pullback_adaptive=False, reentry_drop_pct=2.2,
         tp_mdhtp_enabled=False, sl_mhdsl_enabled=False,
         trend_overlay=False, dca_trend_brake=False, surge_guard=False,
         fast_profit_guard=False, tp_dynamic_flat=False)
 
 
 def ov(p, topup, trail, brk=False):
-    return R(p, trend_overlay=True, trend_topup=float(topup), trend_trail_pct=float(trail),
-             trend_exit_break=brk)
+    return R(p, trend_overlay=True, trend_topup=safe_nonneg_float(topup, 0.0),
+             trend_trail_pct=safe_nonneg_float(trail, 0.0), trend_exit_break=brk)
 
 
 CONFIGS = {
@@ -96,10 +99,10 @@ CONFIGS = {
     "reentry1": (R(LIVE, reentry_drop_pct=1.0, reentry_hybrid_enabled=False), 0),
     "reentry4": (R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 0),
     "reentry_adaptive": (R(LIVE, reentry_adaptive=True, reentry_hybrid_enabled=False), 0),
-    "peak2.2": (R(LIVE, reentry_hybrid_enabled=False), 1),
-    "peak4": (R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 1),
+    "peak2.2": (R(LIVE, reentry_drop_pct=2.2, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 1),
+    "peak4": (R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 1),
     "peak2.2_oldlive": (OLD, 1),
-    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 650, 8), 1),
+    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_ttl_hours=0.0, reentry_hybrid_enabled=False), 650, 8), 1),
     # E. stop loss
     "sl0": (R(LIVE, stop_loss_pct=0.0), 0), "sl8": (R(LIVE, stop_loss_pct=8.0), 0),
     "sl25": (R(LIVE, stop_loss_pct=25.0), 0),
@@ -107,7 +110,7 @@ CONFIGS = {
     "tp3": (R(LIVE, takeprofit_pct=3.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
     "tp6": (R(LIVE, takeprofit_pct=6.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
     "tp8": (R(LIVE, takeprofit_pct=8.0, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
-    "tp_classic": (R(LIVE, tp_trend_hold=False, tp_mdhtp_enabled=False), 0),
+    "tp_classic": (R(LIVE, tp_trend_hold=False, tp_mdhtp_enabled=False, tp_dynamic_flat=False), 0),
     # G. DCA spacing
     "dca0.75": (R(LIVE, dca_drop_pct=0.75), 0), "dca1.5": (R(LIVE, dca_drop_pct=1.5), 0),
     "dca2.5": (R(LIVE, dca_drop_pct=2.5), 0),
@@ -165,7 +168,7 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
         w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
         if not ohlc:
             if initial_cash is not None:
-                return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": float(initial_cash)}
+                return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": safe_nonneg_float(initial_cash, 0.0)}
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         interval_params = rp.align_spot_interval_params(params, 240)
         m = rp.run_replay(ohlc, interval_params, fee_pct=fee, bar_minutes=240,
@@ -205,7 +208,10 @@ def task(args):
         if cached is not None:
             return {**cached, "cfg": cfg, "secs": 0.0}
         t0 = time.time()
+        start_ts = bars[0][0] if bars else 0
+        end_ts = bars[-1][0] if bars else 0
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
+               "start_ts": start_ts, "end_ts": end_ts, "params_repr": repr(params), "peak": bool(peak),
                "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
         for y_str, s_idx, e_idx in year_slices:
             res["year"][y_str] = replay(ohlc[s_idx:e_idx], ohlc[s_idx - WARM:s_idx], params, peak)
@@ -220,52 +226,62 @@ def task(args):
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
 
 
-def discover_and_preload_assets(data_dir: str = DATA) -> list[str]:
-    assets = sorted(f[:-9] for f in os.listdir(data_dir) if f.endswith("_240m.csv"))
-    for a in assets:
-        load_asset(a)
-    return assets
-
-
-def group_canonical_tasks(todo: list[tuple[str, str]], config_map: dict):
-    canon_groups: dict = {}
-    canon_todo: list[tuple[str, str]] = []
-    for a, c in todo:
-        p, pk = config_map[c]
-        k = (a, repr(p), bool(pk))
-        if k not in canon_groups:
-            canon_groups[k] = []
-            canon_todo.append((a, c))
-        canon_groups[k].append(c)
-    return canon_groups, canon_todo
+def _row_matches_current_spec(r: dict, assets_set: set[str]) -> bool:
+    if "error" in r or r.get("asset") not in assets_set or r.get("cfg") not in CONFIGS:
+        return False
+    bars, _, _ = load_asset(r["asset"])
+    if r.get("bars") != len(bars):
+        return False
+    start_ts = bars[0][0] if bars else 0
+    end_ts = bars[-1][0] if bars else 0
+    if "start_ts" in r and r.get("start_ts") != start_ts:
+        return False
+    if "end_ts" in r and r.get("end_ts") != end_ts:
+        return False
+    params, peak = CONFIGS[r["cfg"]]
+    if "params_repr" in r and r.get("params_repr") != repr(params):
+        return False
+    if "peak" in r and bool(r.get("peak")) != bool(peak):
+        return False
+    return True
 
 
 if __name__ == "__main__":
-    assets = discover_and_preload_assets(DATA)
+    assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    assets_set = set(assets)
+    for a in assets:
+        load_asset(a)
     done = {
         (r["asset"], r["cfg"])
         for r in read_jsonl_dicts(OUT)
-        if "error" not in r and "asset" in r and "cfg" in r
+        if _row_matches_current_spec(r, assets_set)
     }
     first = ["live", "old_live_pre0923", "ov650_t8", "ov350_t6", "ov1000_t8", "ov2000_t8",
              "abl_tp5", "abl_spacing0", "abl_trail_fixed", "abl_gate_off", "abl_floor0", "abl_sl12.5",
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]
     order = first + [c for c in CONFIGS if c not in first]
     todo = [(a, c) for a in assets for c in order if (a, c) not in done]
-    canon_groups, canon_todo = group_canonical_tasks(todo, CONFIGS)
+    canon_groups: dict = {}
+    canon_todo = []
+    for a, c in todo:
+        p, pk = CONFIGS[c]
+        k = (a, repr(p), bool(pk))
+        if k not in canon_groups:
+            canon_groups[k] = []
+            canon_todo.append((a, c))
+        canon_groups[k].append(c)
     workers = int_env("WORKERS") or (os.cpu_count() or 4)
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(workers) as pool, open(OUT, "a") as out:
+    with Pool(workers) as pool:
         for r in pool.imap_unordered(task, canon_todo):
             p, pk = CONFIGS[r["cfg"]]
             aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])
             for idx, alias_cfg in enumerate(aliases):
                 done_count += 1
                 row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}
-                out.write(json.dumps(row) + "\n")
+                append_jsonl_record(OUT, row)
                 tag = "ERROR" if "error" in row else f"full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f} ({row['secs']}s)"
                 print(f"[grid] {done_count}/{len(todo)} {row['asset']:<9} {row['cfg']:<20} {tag}  [{time.time()-t0:.0f}s]", flush=True)
-            out.flush()
     print("[grid] done", flush=True)

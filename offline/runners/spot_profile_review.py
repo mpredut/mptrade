@@ -10,14 +10,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, replace
 import hashlib
-import io
-import json
 from pathlib import Path
 import subprocess
 
-from dotenv import dotenv_values
-from botcore import safe_pos_float
-from state_io import atomic_write_json, read_bytes_file, read_json_file
+from botcore import parse_dotenv_line, safe_pos_float
+from state_io import atomic_write_json, encode_json_payload, read_bytes_file, read_json_file
 from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
@@ -36,11 +33,11 @@ def revision_params(spec: str) -> StratParams:
         raise ValueError(f"Invalid git revision spec: {spec!r}")
     text = subprocess.run(["git", "show", spec.strip()], check=True, capture_output=True,
                           text=True, cwd=ROOT).stdout
-    env = {
-        k: str(v)
-        for k, v in dotenv_values(stream=io.StringIO(text), interpolate=False).items()
-        if v is not None
-    }
+    env = dict(
+        parsed
+        for line in text.splitlines()
+        if (parsed := parse_dotenv_line(line)) is not None
+    )
     return StratParams.from_env(env)
 
 
@@ -134,7 +131,7 @@ def main():
     for name, profile in result["profiles"].items():
         for scenario, values in profile["scenarios"].items():
             agg, continuous = values["aggregate"], values["continuous"]
-            print(name, scenario, json.dumps({
+            print(name, scenario, encode_json_payload({
                 "mean_return_pct": agg["mean_return_pct"], "worst_dd_pct": agg["worst_max_drawdown_pct"],
                 "exposure_pct": agg["mean_exposure_pct"], "continuous_return_pct": continuous["return_pct"],
                 "continuous_dd_pct": continuous["max_drawdown_pct"],

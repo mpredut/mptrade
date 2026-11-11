@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-scheduled_pilot.py — A PILOT (a single module: monitortrades.py, a user decision on
+scheduled_pilot.py -- A PILOT (a single module: monitortrades.py, a user decision on
 23 Jul: "for now we run a pilot test and do not extend it to all modules").
 
 It reads the test ranges from the "# BACKTEST: ..." annotations written DIRECTLY in
-instruments.conf (offline/research/backtest_ranges.py, plain text — NOT YAML/JSON,
+instruments.conf (offline/research/backtest_ranges.py, plain text -- NOT YAML/JSON,
 an explicit user decision), runs a REAL backtest (offline/research/monitortrades_backtest/
 run_replay_backtest.py, over cache_price_{symbol}.jsonl) for each value
 from the grid, and RECONFIGURES + RESTARTS monitortrades.py if it finds a
-value is clearly better — with explicit guardrails (the user asked for complete
+value is clearly better -- with explicit guardrails (the user asked for complete
 automation, but after it was shown today that the same max_budget=5000 gave +$3016 in
 one configuration and -$5279 in another, on the SAME history):
 
   1. CONFIRMATION ON 2 INDEPENDENT WINDOWS: the available history is split in
-     half (first/second) — a value is considered a "winner" ONLY
+     half (first/second) -- a value is considered a "winner" ONLY
      if it has the best edge against buy & hold (net - buy_hold) in BOTH
      halves, not just one. A result that wins on only one window is
      treated as noise, not signal.
   2. ONLY values from the grid (never extrapolation).
   3. AVERAGING, not a direct jump (a user decision): the value actually applied =
-     (value_configured_today + winning_backtest_value) / 2 —
+     (value_configured_today + winning_backtest_value) / 2 --
      it damps exactly the kind of instability demonstrated today.
   4. RATE LIMIT: a parameter does not change more often than once every
-     PILOT_MIN_DAYS_BETWEEN_CHANGES days (7 by default) — a persistent journal.
+     PILOT_MIN_DAYS_BETWEEN_CHANGES days (7 by default) -- a persistent journal.
   5. AUDIT: every run writes a line into the journal (what was tested, both windows,
-     decision, reason) — whether or not anything changed.
+     decision, reason) -- whether or not anything changed.
   6. NOTIFICATION (alertnotifiers.notify, the channel the fleet already uses): ONLY
      when a real change is applied (not on every "nothing new" run).
   7. KILL SWITCH: the env var PILOT_DISABLED=true stops EVERYTHING, without touching the code.
@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 from bisect import bisect_left
 import concurrent.futures as _futures
-import json
 import math
 import os
 import re
@@ -46,25 +45,32 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore[assignment]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import log
-from botcore import _parse_bool_flag, float_env, load_ini_config, safe_float
+from botcore import _parse_bool_flag, float_env, load_env_stack, load_ini_config, safe_float, single_instance
 from cachepaths import cache_path
 from instrument_registry import select_instruments
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
-from state_io import append_jsonl_record, atomic_write_json, atomic_write_text, read_jsonl_dicts, read_text_lines
+from state_io import (
+    append_jsonl_record,
+    atomic_write_json,
+    atomic_write_text,
+    encode_json_payload,
+    read_jsonl_dicts,
+    read_text_lines,
+)
+
+try:
+    load_env_stack()
+except Exception:  # noqa: BLE001
+    pass
 
 
 def _env_float(name: str, default: float) -> float:
@@ -81,7 +87,7 @@ MIN_DAYS_BETWEEN_CHANGES = _env_float("PILOT_MIN_DAYS_BETWEEN_CHANGES", 7.0)
 # identical results, and max() on a tie falsely "applies" the first element of the grid).
 MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
 
-# The keys in the pilot's scope (BTC/TAO, monitortrades) — the rest of the annotations in
+# The keys in the pilot's scope (BTC/TAO, monitortrades) -- the rest of the annotations in
 # instruments.conf are NOT touched without explicitly extending this list (a user
 # decision: the pilot is limited to monitortrades, not all modules). They all live as
 # mt.* in instruments.conf, so run_replay_backtest already fires them through params
@@ -113,7 +119,7 @@ PILOT_KEYS = _build_pilot_keys()
 
 
 def _git_head_short():
-    """The (short) commit of the code that produced the proposal — so that prod knows
+    """The (short) commit of the code that produced the proposal -- so that prod knows
     exactly which engine/config version produced it. '?' if git does not answer."""
     try:
         return subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
@@ -123,7 +129,7 @@ def _git_head_short():
 
 
 def _append_audit(entry):
-    append_jsonl_record(AUDIT_LOG, dict(entry, ts=datetime.now().isoformat(timespec="seconds")))
+    append_jsonl_record(AUDIT_LOG, dict(entry, ts=datetime.now(timezone.utc).isoformat(timespec="seconds")))
 
 
 def _last_change_for(full_key):
@@ -167,18 +173,18 @@ def _current_value(section, key):
 
 
 def _edge(pnl):
-    """net - buy_hold — a measure of "how much better than simply holding",
+    """net - buy_hold -- a measure of "how much better than simply holding",
     comparable between different windows (unlike the raw net)."""
     if not isinstance(pnl, dict):
         return 0.0
     net = safe_float(pnl.get("net"), 0.0)
     bh = safe_float(pnl.get("buy_hold"), 0.0)
-    return float(net) - float(bh)
+    return net - bh
 
 
 def _num_str(x):
     """A compact representation of a numeric value for the grid (17.0->'17',
-    0.5->'0.5', 5.25->'5.25') — used when the LIVE value is added to the test set."""
+    0.5->'0.5', 5.25->'5.25') -- used when the LIVE value is added to the test set."""
     return "%g" % x
 
 
@@ -209,7 +215,7 @@ def _run_one_cache_key(symbol: str, params: dict, series: list) -> tuple:
 
 
 def _split_series(symbol):
-    """The available history, split into 2 halves (first/second) — the 2
+    """The available history, split into 2 halves (first/second) -- the 2
     INDEPENDENT windows required by the confirmation guardrail."""
     cached = _SERIES_SPLIT_CACHE.get(symbol)
     if cached is not None:
@@ -222,7 +228,7 @@ def _split_series(symbol):
         t1 = safe_float(series[-1][0], default=None)
         if t0 is not None and t1 is not None and t1 > t0:
             mid_ts = 0.5 * (t0 + t1)
-            ts_mid = bisect_left(series, mid_ts, key=lambda item: float(item[0]))
+            ts_mid = bisect_left(series, mid_ts, key=lambda item: safe_float(item[0], 0.0))
             if 0 < ts_mid < len(series):
                 mid = ts_mid
     res = (series[:mid], series[mid:])
@@ -319,8 +325,8 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
             htp_touched = d.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk, True))
             if not htp_touched:
                 inv_state[half_idx] = [res, float("inf")]
-            elif d.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
-                inv_state[half_idx] = [res, float(d["min_hard_tp_gain_ratio"])]
+            elif safe_float(d.get("min_hard_tp_gain_ratio"), 0.0) >= v_ratio:
+                inv_state[half_idx] = [res, safe_float(d.get("min_hard_tp_gain_ratio"), 0.0)]
         return res
 
     raw_results = {}
@@ -378,13 +384,13 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         entry["action"] = "no_change"
         entry["reason"] = (f"negligible gain versus the current value {current} "
                             f"(+{margin_h1:.2f}/+{margin_h2:.2f} < {MIN_EDGE_MARGIN_USD} USD) "
-                            f"— the parameter may be inert on this history")
+                            f"-- the parameter may be inert on this history")
         return entry
 
     # DEV mode (--propose): the winner passed the guardrails (confirmed on 2
-    # windows plus beating the current value by a margin). We do NOT apply or rate-limit here —
+    # windows plus beating the current value by a margin). We do NOT apply or rate-limit here --
     # we propose the RAW winning value; PROD decides at application time (averaging with
-    # ITS live value, a rate limit, an audit). See UNIFIED_BACKTEST_PLAN.md §9.
+    # ITS live value, a rate limit, an audit). See UNIFIED_BACKTEST_PLAN.md sec. 9.
     if propose:
         entry["winner_value"] = winner_val
         entry["action"] = "proposed"
@@ -410,11 +416,13 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
 
 
 def _apply_config_change(section, key, old_value, new_value):
-    """Replace ONLY the numeric value on the `key = ...` line in
-    section `section`, keeping the rest of the file (comments,
-    formatting, other sections) untouched."""
+    """Replace ONLY the numeric value on the `key = ...` line inside `section`,
+    preserving comments, formatting, and all other sections untouched."""
     lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
+    if not lines:
+        raise FileNotFoundError(f"Empty or missing config file: {INSTRUMENTS_CONF}")
     in_section = False
+    replaced = False
     key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
     for i, line in enumerate(lines):
         sm = re.match(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$', line)
@@ -425,7 +433,10 @@ def _apply_config_change(section, key, old_value, new_value):
             m = key_re.match(line)
             if m:
                 lines[i] = f"{m.group(1)}{new_value}{m.group(3)}\n"
+                replaced = True
                 break
+    if not replaced:
+        raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
     atomic_write_text(INSTRUMENTS_CONF, "".join(lines))
 
 
@@ -438,7 +449,7 @@ def _restart_monitortrades():
         pids = [p for p in out.stdout.split() if p.isdigit()]
         for pid in pids:
             subprocess.run(["kill", pid], timeout=5)
-    except Exception as e:  # noqa: BLE001 — it does not stop the journalling or the notification
+    except Exception as e:  # noqa: BLE001 -- it does not stop the journalling or the notification
         print(f"[scheduled_pilot] error restarting monitortrades: {e}")
 
 
@@ -472,23 +483,11 @@ def main():
         print("[scheduled_pilot] PILOT_DISABLED=true -- leaving without doing anything")
         return
 
-    lock_file = None
-    try:
-        if fcntl is not None:
-            lock_path = (
-                "/tmp/mptrade_scheduled_pilot_dryrun.lock"
-                if (args.dry_run and not args.propose)
-                else "/tmp/mptrade_scheduled_pilot.lock"
-            )
-            lock_file = open(lock_path, "w", encoding="utf-8")
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        sys.stderr.write("[scheduled_pilot] Another instance is already running -- exiting\n")
-        return
-    except Exception:  # noqa: BLE001
-        pass
+    single_instance(
+        "scheduled_pilot_dryrun" if (args.dry_run and not args.propose) else "scheduled_pilot"
+    )
 
-    # monitor_price_and_trade() is VERY chatty (a print() on every tick) —
+    # monitor_price_and_trade() is VERY chatty (a print() on every tick) --
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
     # output suppression is required (otherwise console I/O dominates execution time).
     log.disable_print()
@@ -498,11 +497,6 @@ def main():
             if not only_terms or any(t in k for t in only_terms)}
     if not keys:
         log.enable_print()
-        if lock_file is not None:
-            try:
-                lock_file.close()
-            except Exception:
-                pass
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
 
@@ -662,11 +656,11 @@ def main():
         entry = entries[full_key]
         _append_audit(entry)
         sys.stderr.write(f"=== {full_key} ===\n"
-                         + json.dumps({k: v for k, v in entry.items() if k != "results"},
-                                      indent=2, default=str) + "\n")
+                         + encode_json_payload({k: v for k, v in entry.items() if k != "results"},
+                                               indent=2, default=str) + "\n")
         if args.propose and entry.get("action") == "proposed":
             proposals.append({
-                "ts": datetime.now().isoformat(timespec="seconds"), "full_key": full_key,
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "full_key": full_key,
                 "section": full_key.split(".", 1)[0], "key": key, "symbol": symbol,
                 "current_on_dev": entry["current_value"],
                 "winner_value": entry["winner_value"],
@@ -675,7 +669,7 @@ def main():
             })
 
     if args.propose:
-        # a snapshot of the current proposals (overwriting — the file means "what dev proposes
+        # a snapshot of the current proposals (overwriting -- the file means "what dev proposes
         # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
         # confirmed signal in this cycle (prod has nothing to apply).
         atomic_write_json(args.propose_out, proposals, indent=2, default=str)
@@ -683,7 +677,6 @@ def main():
         if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
             # notify user that new proposals are available to review and apply
             try:
-                from botcore import load_env_stack
                 load_env_stack()
                 from notify_engine import alertnotifiers as alert
                 lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
@@ -695,11 +688,6 @@ def main():
             except Exception as e:  # noqa: BLE001
                 print(f"[scheduled_pilot] proposals notification error: {e}")
     log.enable_print()
-    if lock_file is not None:
-        try:
-            lock_file.close()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
