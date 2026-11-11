@@ -41,7 +41,6 @@ from cachepaths import (
     is_equity_venue,
     is_equity_venue_or_suffix,
     normalize_venue_name,
-    split_symbol_assets,
 )
 from instrument_registry import casefold_get
 from state_io import append_jsonl_record, read_jsonl_dicts
@@ -51,7 +50,6 @@ from .intent_execution import (
     execute_enforce_intent_order,
     find_duplicate_ai_open_limit_order,
     preflight_intent_and_resolve_price,
-    resolve_intent_topic_tag,
 )
 from .intent_state import (
     _extract_intent_id,

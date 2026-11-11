@@ -6,7 +6,6 @@ compaction; the thread is never rotated or deleted.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import os
@@ -21,7 +20,6 @@ if _ROOT_DIR not in sys.path:
 from botcore import (
     TOPIC_ALIASES,
     TOPIC_SPECS,
-    TopicSpec,
     _parse_bool_flag,
     canonical_topic_key,
     exact_pos_int,

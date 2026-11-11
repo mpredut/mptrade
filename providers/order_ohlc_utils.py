@@ -23,7 +23,6 @@ from botcore import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
-    normalize_epoch_sec,
     normalize_side,
     normalize_timestamp_ms,
     obj_attr,

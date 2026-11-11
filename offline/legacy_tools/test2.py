@@ -11,7 +11,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_nonneg_float, safe_pos_float
 from offline.legacy_tools.test import _compute_interval_drops, _klines_to_df
 
 def fetch_data():

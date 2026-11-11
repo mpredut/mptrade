@@ -14,7 +14,6 @@ import dataclasses
 from botcore import (
     exact_nonneg_int,
     normalize_side,
-    require_finite_float,
     require_pos_float,
     safe_float,
     safe_int,

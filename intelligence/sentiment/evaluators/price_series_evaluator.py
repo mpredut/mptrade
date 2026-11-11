@@ -2162,9 +2162,9 @@ class AssetSessionPolicy(ABC):
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         """Merge stitched 24h OHLC bars into the raw 24h series."""
 
-    @abstractmethod
     def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
         """Deduplicate and session-normalize the 24h series."""
+        return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
 
     @abstractmethod
     def evaluate_post_rth_override(
@@ -2206,9 +2206,6 @@ class Crypto24x7SessionPolicy(AssetSessionPolicy):
 
     def merge_ohlc24_into_raw_series(self, raw_ser: list, ohlc24_pts: list) -> list:
         return prepend_older_non_diverged_points(raw_ser, ohlc24_pts)
-
-    def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
-        return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
 
     def evaluate_post_rth_override(
         self,
@@ -2274,9 +2271,6 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
                     by_bar_ts[pt_o[0]] = r_o
             return [by_bar_ts[k] for k in sorted(by_bar_ts)]
         return raw_ser
-
-    def normalize_24h_series(self, series_24h: list, symbol: str, *, is_market_open_fn: Any = None) -> list:
-        return normalize_and_dedup_24h_series(series_24h, symbol, is_market_open_fn=is_market_open_fn)
 
     def evaluate_post_rth_override(
         self,
