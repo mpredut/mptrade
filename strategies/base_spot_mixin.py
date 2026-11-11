@@ -24,7 +24,7 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
-from providers.base import normalize_side
+from providers.base import MarketDataProvider, normalize_side
 from providers.order_ohlc_utils import clean_order_id
 from .position_exit_manager import PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
@@ -431,13 +431,20 @@ def sanitize_common_spot_state(
 
 
 class BaseSpotMixin:
-    """Shared mixin for Spot (Kraken/Binance/HL) and Equity (T212) DCA + TP/SL engines."""
+    """Shared venue-agnostic mixin for Spot and Equity DCA + TP/SL engines."""
 
-    _exit_manager_mode: str = "spot"
+    venue_label: str = "Strategy"
     _cost_state_key: str = "cost"
     _spent_state_key: str = "spent"
+    _pending_submit_state_key: str | None = None
     _qty_eps: float = 1e-12
     _vol_default_source: str = "default"
+    _tp_floor_param_attr: str = "tp_trail_profit_floor_pct"
+    _supports_fast_profit_guard: bool = True
+    _track_stop_sl_low: bool = True
+    _include_shadow_in_snapshot: bool = True
+    _use_shadow_tick_time_default: bool = True
+    _exit_config_ratio_fn: Callable[[float], float] | None = None
 
     _SHADOW_VOL_CACHE: dict = {}
     _TRAIL_VOL_CACHE: dict = {}
@@ -502,7 +509,7 @@ class BaseSpotMixin:
         return store_cls(
             self.state_file,
             self._mod_global("_new_state"),
-            label=getattr(self, "venue_label", "T212"),
+            label=self.venue_label,
             logger=self._mod_global("log", log),
             fail_closed=not self.dry_run,
         )
@@ -540,7 +547,7 @@ class BaseSpotMixin:
         cost = safe_pos_float(self.s.get(self._cost_state_key), None)
         if qty is None or cost is None or qty <= self._qty_eps:
             return None
-        return safe_pos_float(cost / qty, default=None) if self._exit_manager_mode == "t212" else cost / qty
+        return safe_pos_float(cost / qty, default=None)
 
     def _qty_for(self, amount: float, price: float) -> float:
         amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
@@ -575,13 +582,13 @@ class BaseSpotMixin:
         return find_open_order(self.s, side)
 
     def _has_open(self, side: str) -> bool:
-        if self._exit_manager_mode == "t212":
-            if isinstance(side, bool):
-                return False
+        if isinstance(side, bool):
+            return False
+        if self._pending_submit_state_key:
             side_u = str(side or "").strip().upper()
             if not side_u:
                 return False
-            raw_pending = self.s.get("pending_submit")
+            raw_pending = self.s.get(self._pending_submit_state_key)
             pending = raw_pending if isinstance(raw_pending, dict) else {}
             return str(pending.get("side") or "").strip().upper() == side_u or self._find_open(side_u) is not None
         return self._find_open(side) is not None
@@ -619,7 +626,7 @@ class BaseSpotMixin:
         o = self._find_open(side)
         if not o:
             return True
-        return self._cancel_specific(o) if self._exit_manager_mode == "t212" else self._cancel_order(o)
+        return self._cancel_order(o)
 
     def _seed_post_exit_anchors(
         self, price: float, exit_kind: str | None, exit_ts: float, *, include_sl_low: bool = True
@@ -801,27 +808,31 @@ class BaseSpotMixin:
                 return None
         return None
 
+    def _raw_reentry_shadow_vol_pct(self) -> float | None:
+        return self._shadow_vol_1h()
+
+    def _local_vol_1h_sources(self) -> tuple[tuple[Callable[[], float | None], str], ...]:
+        return ((self._trail_vol_1h, "trail_ohlc"), (self._shadow_vol_1h, "shadow_ticks"))
+
+    def _reentry_pullback_labels(self, sp_len: int) -> tuple[str, str]:
+        return f"fixed (fallback, warm-up {sp_len}/20)", "vol_1h"
+
     def _resolve_reentry_vol_1h_pct(self) -> float | None:
         """Resolve 1-hour volatility (%) from shadow ticks with non-replay cache fallback."""
-        vol = self._shadow_vol_1h() if self._exit_manager_mode == "spot" else self._resolve_shadow_vol_1h_pct()
+        vol = self._raw_reentry_shadow_vol_pct()
         if vol is None and not self.replay_mode:
             vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(self._symbol_id)
         return vol
 
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
-        if self._exit_manager_mode == "spot":
-            for fn, src in ((self._trail_vol_1h, "trail_ohlc"), (self._shadow_vol_1h, "shadow_ticks")):
-                try:
-                    vol = safe_pos_float(fn(), default=None)
-                    if vol is not None:
-                        return vol_pct_to_ratio(vol), src
-                except Exception:
-                    pass
-        else:
-            vol = self._resolve_shadow_vol_1h_pct()
-            if vol is not None:
-                return vol_pct_to_ratio(vol), "shadow"
+        for fn, src in self._local_vol_1h_sources():
+            try:
+                vol = safe_pos_float(fn(), default=None)
+                if vol is not None:
+                    return vol_pct_to_ratio(vol), src
+            except Exception:
+                pass
         if not self.replay_mode:
             cached = self._mod_global("resolve_cached_volatility_1h", resolve_cached_volatility_1h)(self._symbol_id)
             if cached is not None:
@@ -852,13 +863,13 @@ class BaseSpotMixin:
         except Exception as e:
             self._log_msg(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
             vol = None
-        is_spot = self._exit_manager_mode == "spot"
         sp_len = len(getattr(self, "_shadow_prices", None) or ())
+        fallback_reason, vol_label = self._reentry_pullback_labels(sp_len)
         return compute_adaptive_reentry_pullback_pct(
             self.p,
             vol,
-            fallback_reason=f"fixed (fallback, warm-up {sp_len}/20)" if is_spot else "fixed (fallback)",
-            vol_label="vol_1h" if is_spot else "vol",
+            fallback_reason=fallback_reason,
+            vol_label=vol_label,
         )
 
     def _effective_trail_pct(self) -> float:
@@ -875,11 +886,43 @@ class BaseSpotMixin:
         return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))
 
     # -- Exit Manager, Snapshot & Re-entry Gate --------------------------------
+    def _exit_config_overrides(self) -> dict[str, Any]:
+        p = self.p
+        return dict(
+            sl_disaster_vol_multiplier=p.sl_disaster_vol_multiplier,
+            sl_disaster_buffer_min_pct=p.sl_disaster_buffer_min_pct / 100.0,
+            sl_bounce_ratchet_enabled=p.sl_bounce_ratchet_enabled,
+            sl_bounce_ratchet_k=p.sl_bounce_ratchet_k,
+            sl_bounce_min_pullback_pct=p.sl_bounce_min_pullback_pct / 100.0,
+            tp_trend_ride_enabled=p.tp_trend_hold,
+            tp_profit_floor_min_pct=(p.tp_trail_profit_floor_pct or 0.0) / 100.0,
+            tp_pullback_pct=p.tp_trail_pct / 100.0,
+            fast_profit_guard_enabled=p.fast_profit_guard,
+            fast_profit_mult=p.fast_profit_mult,
+            fast_profit_window_sec=p.fast_profit_window_min * 60.0,
+            fast_profit_drop_pct=p.fast_profit_drop_pct,
+            reentry_sl_bounce_pct=p.reentry_sl_bounce_pct / 100.0,
+            reentry_bear_bounce_pct=p.reentry_bear_bounce_pct / 100.0,
+        )
+
     def _init_exit_manager(self) -> PositionExitManager:
         return build_strategy_exit_manager(
-            self.p, self.s, lambda _symbol: self._vol_1h_ratio(),
-            allow_external_cache=not self.replay_mode, mode=self._exit_manager_mode,
+            self.p,
+            self.s,
+            lambda _symbol: self._vol_1h_ratio(),
+            allow_external_cache=not self.replay_mode,
+            ratio_fn=self._exit_config_ratio_fn,
+            extra_config=self._exit_config_overrides(),
         )
+
+    def _sellable_qty(self, held: float, ref_price: float | None = None) -> float:
+        return held
+
+    def _snapshot_provider_name(self) -> str:
+        return self.venue_label
+
+    def _snapshot_trend_up(self, regime: Any) -> bool:
+        return self._is_trend_up(regime)
 
     def _create_position_snapshot(
         self,
@@ -893,25 +936,14 @@ class BaseSpotMixin:
         tick_time: float | None = None,
     ) -> PositionSnapshot:
         """Construct a standardized PositionSnapshot using the strategy's current context."""
-        is_spot = self._exit_manager_mode == "spot"
         sp = getattr(self, "_shadow_prices", None)
         if tick_time is None:
-            tick_time = sp[-1][0] if (is_spot and sp) else self._now()
+            tick_time = sp[-1][0] if (self._use_shadow_tick_time_default and sp) else self._now()
         vol_1h, vol_source = self._vol_1h_ratio() if include_vol else (0.0, "default")
-        if is_spot:
-            trend_up = self._is_trend_up(regime) if include_trend else False
-            sell_qty, provider = held, getattr(self, "venue_label", "Kraken")
-            shadow = list(sp) if (include_shadow and sp is not None) else []
-        else:
-            trend_up = False
-            slope_fn = getattr(self, "_trend_slope_provider", None)
-            if include_trend and slope_fn:
-                try:
-                    if safe_nonneg_float(slope_fn(self.yahoo_sym), default=None) is not None:
-                        trend_up = True
-                except Exception:
-                    pass
-            sell_qty, provider, shadow = self._sellable_qty(held, price), "t212", []
+        trend_up = self._snapshot_trend_up(regime) if include_trend else False
+        sell_qty = self._sellable_qty(held, price)
+        provider = self._snapshot_provider_name()
+        shadow = list(sp) if (self._include_shadow_in_snapshot and include_shadow and sp is not None) else []
         return PositionSnapshot(
             symbol=self._symbol_id,
             current_price=price,
@@ -957,32 +989,60 @@ class BaseSpotMixin:
         cfg.tp_trend_ride_enabled = (
             bool(getattr(self.p, "tp_trend_hold", True)) if trend_ride_enabled is None else trend_ride_enabled
         )
-        floor_attr = "tp_trail_profit_floor_pct" if self._exit_manager_mode == "spot" else "trail_min_profit_pct"
-        cfg.tp_profit_floor_min_pct = (getattr(self.p, floor_attr, None) or 0.0) / 100.0
+        cfg.tp_profit_floor_min_pct = (getattr(self.p, self._tp_floor_param_attr, None) or 0.0) / 100.0
         cfg.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
-        if self._exit_manager_mode == "spot":
+        if self._supports_fast_profit_guard:
             cfg.fast_profit_guard_enabled = self.p.fast_profit_guard
             cfg.fast_profit_mult = self.p.fast_profit_mult
             cfg.fast_profit_window_sec = self.p.fast_profit_window_min * 60.0
             cfg.fast_profit_drop_pct = self.p.fast_profit_drop_pct
 
+    def _pre_reentry_gate_hook(self, price: float) -> tuple[bool, str] | None:
+        return None
+
+    def _resolve_reentry_context(
+        self,
+        mgr: PositionExitManager,
+        norm_exit_kind: str,
+        is_stop_exit: bool,
+        regime: Any,
+    ) -> tuple[str | None, bool, bool]:
+        last_kind = "STOP" if is_stop_exit else (norm_exit_kind or None)
+        mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
+        mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
+        needs_reentry_regime = bool(
+            self.p.trend_overlay
+            or self.p.reentry_hybrid_enabled
+            or (last_kind == "STOP" and self.p.sl_mhdsl_enabled)
+        )
+        if regime is None and needs_reentry_regime:
+            try:
+                regime, _ = self._regime_context()
+            except Exception:
+                regime = None
+        trend_up = self._is_trend_up(regime) if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0) else False
+        trend_down = self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend")) if needs_reentry_regime else False
+        return last_kind, trend_up, trend_down
+
+    def _resolve_reentry_custom_drop(self, is_bull_reentry: bool, last_kind: str | None) -> float | None:
+        drop_pct = (
+            self._effective_reentry_drop_pct()[0]
+            if ((not is_bull_reentry and last_kind != "STOP") or not self.replay_mode)
+            else self.p.reentry_drop_pct
+        )
+        return vol_pct_to_ratio(drop_pct)
+
     def _evaluate_reentry_gate(
         self, price: float, regime: Any = None, tick_time: float | None = None
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across spot and equity engines."""
-        is_spot = self._exit_manager_mode == "spot"
-        lsp = update_post_sell_anchors(self.s, price, track_stop_sl_low=is_spot)
+        lsp = update_post_sell_anchors(self.s, price, track_stop_sl_low=self._track_stop_sl_low)
         if not lsp:
             return True, "no_last_sell"
 
-        if not is_spot:
-            last_sell_ts = normalize_epoch_sec(self.s.get("last_sell_ts"), None)
-            if self.p.reentry_ttl_hours > 0 and last_sell_ts:
-                if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
-                    self.s.pop("sl_rebuy", None)
-            if self.s.get("sl_rebuy"):
-                self._handle_sl_rebuy(price)
-                return False, "handling_sl_rebuy"
+        early = self._pre_reentry_gate_hook(price)
+        if early is not None:
+            return early
 
         if self.exit_manager is None:
             self.exit_manager = self._init_exit_manager()
@@ -996,43 +1056,9 @@ class BaseSpotMixin:
         raw_exit_kind = self.s.get("last_exit_kind")
         norm_exit_kind = "" if isinstance(raw_exit_kind, bool) else str(raw_exit_kind or "").strip().upper()
         is_stop_exit = norm_exit_kind in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"}
-        if is_spot:
-            last_kind = "STOP" if is_stop_exit else (norm_exit_kind or None)
-            mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
-            mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
-            needs_reentry_regime = bool(
-                self.p.trend_overlay
-                or self.p.reentry_hybrid_enabled
-                or (last_kind == "STOP" and self.p.sl_mhdsl_enabled)
-            )
-            if regime is None and needs_reentry_regime:
-                try:
-                    regime, _ = self._regime_context()
-                except Exception:
-                    regime = None
-            trend_up = self._is_trend_up(regime) if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0) else False
-            trend_down = self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend")) if needs_reentry_regime else False
-        else:
-            last_kind = "STOP" if is_stop_exit else "TP"
-            mgr.config.reentry_sl_bounce_pct = (
-                vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
-                if self.p.sl_rebuy_enabled
-                else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
-            )
-            mgr.config.reentry_bear_gate_enabled = False
-            mgr.config.reentry_bear_bounce_pct = 0.0
-            trend_up, trend_down = bool(self.p.reentry_peak_relative), False
-            slope_fn = getattr(self, "_trend_slope_provider", None)
-            if not trend_up and slope_fn:
-                try:
-                    slope_f = safe_float(slope_fn(self.yahoo_sym), default=None)
-                    if slope_f is not None:
-                        if slope_f >= 0.0:
-                            trend_up = True
-                        elif slope_f < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
-                            trend_down = True
-                except Exception:
-                    pass
+        last_kind, trend_up, trend_down = self._resolve_reentry_context(
+            mgr, norm_exit_kind, is_stop_exit, regime
+        )
 
         is_bull_reentry = bool(
             last_kind != "STOP" and self.p.reentry_hybrid_enabled and (trend_up or self.p.reentry_peak_relative)
@@ -1043,15 +1069,7 @@ class BaseSpotMixin:
             else self.p.reentry_pullback_pct
         )
         mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
-
-        custom_drop = None
-        if is_spot:
-            drop_pct = (
-                self._effective_reentry_drop_pct()[0]
-                if ((not is_bull_reentry and last_kind != "STOP") or not self.replay_mode)
-                else self.p.reentry_drop_pct
-            )
-            custom_drop = vol_pct_to_ratio(drop_pct)
+        custom_drop = self._resolve_reentry_custom_drop(is_bull_reentry, last_kind)
 
         vol_1h, vol_source = (0.0, "default") if self.replay_mode else self._vol_1h_ratio()
         reentry_snap = ReentrySnapshot(
@@ -1075,6 +1093,9 @@ class BaseSpotMixin:
         )
         return reentry_dec.should_enter, reentry_dec.reason
 
+    def _place_entry_order(self, entry_amt: float, entry_px: float) -> bool:
+        return self._place("buy", self._qty_for(entry_amt, entry_px), entry_px, kind="ENTRY", amount=entry_amt)
+
     def _execute_flat_reentry(
         self,
         price: float,
@@ -1087,7 +1108,6 @@ class BaseSpotMixin:
         cap_label: str = "cap",
     ) -> bool:
         """Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
-        is_spot = self._exit_manager_mode == "spot"
         blocked_tick = getattr(self, "_reentry_blocked_tick", None)
         if blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
             allowed, reason = False, blocked_tick[2]
@@ -1102,11 +1122,7 @@ class BaseSpotMixin:
             self._restore_reentry_state()
             self._log_msg(f"  [STRAT] {cap_label} {budget:.0f} {self.ccy} reached — not entering")
             return False
-        placed = (
-            self._place("buy", self._qty_for(entry_amt, entry_px), entry_px, kind="ENTRY", amount=entry_amt)
-            if is_spot
-            else self._place_buy(entry_amt, entry_px, kind="ENTRY")
-        )
+        placed = self._place_entry_order(entry_amt, entry_px)
         if not placed:
             self._restore_reentry_state()
         return placed
@@ -1114,14 +1130,10 @@ class BaseSpotMixin:
     def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
         if getattr(self, "replay_mode", False):
             return
-        venue = str(getattr(self, "venue_label", "") or "").strip().lower()
         sym = str(self._symbol_id or "").strip().upper()
-        if venue == "hyperliquid":
-            hb_name = "HL-bot"
-        elif venue == "kraken":
-            hb_name = "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
-        else:
-            hb_name = "T212-bot"
+        hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(
+            getattr(self, "venue_label", ""), sym
+        )
         touch_module_heartbeat(
             hb_name,
             interval_sec=30.0,

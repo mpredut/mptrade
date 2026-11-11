@@ -38,6 +38,8 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
+from typing import Any
+from intelligence.internal.state.volatility import vol_pct_to_ratio
 from ipo_common import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
@@ -269,11 +271,19 @@ def _sell_pnl(avg: float, price: float, qty: float, fee_pct: float = FX_FEE_PCT)
 
 
 class Strategy(BaseSpotMixin):
-    _exit_manager_mode = "t212"
+    venue_label = "T212"
     _cost_state_key = "cost_usd"
     _spent_state_key = "spent_cash"
+    _pending_submit_state_key = "pending_submit"
     _qty_eps = 1e-9
     _vol_default_source = "none"
+    _tp_floor_param_attr = "trail_min_profit_pct"
+    _supports_fast_profit_guard = False
+    _track_stop_sl_low = False
+    _include_shadow_in_snapshot = False
+    _use_shadow_tick_time_default = False
+    _exit_config_ratio_fn = staticmethod(vol_pct_to_ratio)
+    _raw_reentry_shadow_vol_pct = BaseSpotMixin._resolve_shadow_vol_1h_pct
     _sanitize_state_dict = staticmethod(_sanitize_t212_state)
 
     def __init__(self, client: T212Client, ticker: str, params: StratParams,
@@ -651,6 +661,87 @@ class Strategy(BaseSpotMixin):
             ),
             log_prefix="cancelled order",
         )
+
+    _cancel_order = _cancel_specific
+
+    def _local_vol_1h_sources(self):
+        return ((self._resolve_shadow_vol_1h_pct, "shadow"),)
+
+    def _reentry_pullback_labels(self, _sp_len: int) -> tuple[str, str]:
+        return "fixed (fallback)", "vol"
+
+    def _exit_config_overrides(self) -> dict[str, Any]:
+        p = self.p
+        return dict(
+            reentry_sl_bounce_pct=(
+                vol_pct_to_ratio(p.sl_rebuy_bounce_pct)
+                if p.sl_rebuy_enabled
+                else (0.015 if p.sl_mhdsl_enabled else 0.0)
+            ),
+            reentry_bear_gate_enabled=False,
+            reentry_bear_bounce_pct=0.0,
+            tp_trend_ride_enabled=p.tp_mdhtp_enabled,
+            tp_profit_floor_min_pct=vol_pct_to_ratio(p.trail_min_profit_pct) if p.trail_min_profit_pct > 0 else 0.0,
+            tp_pullback_pct=vol_pct_to_ratio(p.trail_pct) if p.trail_pct > 0 else 0.015,
+        )
+
+    def _snapshot_provider_name(self) -> str:
+        return "t212"
+
+    def _snapshot_trend_up(self, _regime: Any) -> bool:
+        slope_fn = getattr(self, "_trend_slope_provider", None)
+        if slope_fn:
+            try:
+                if safe_nonneg_float(slope_fn(self.yahoo_sym), default=None) is not None:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _pre_reentry_gate_hook(self, price: float) -> tuple[bool, str] | None:
+        last_sell_ts = normalize_epoch_sec(self.s.get("last_sell_ts"), None)
+        if self.p.reentry_ttl_hours > 0 and last_sell_ts:
+            if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
+                self.s.pop("sl_rebuy", None)
+        if self.s.get("sl_rebuy"):
+            self._handle_sl_rebuy(price)
+            return False, "handling_sl_rebuy"
+        return None
+
+    def _resolve_reentry_context(
+        self,
+        mgr: PositionExitManager,
+        _norm_exit_kind: str,
+        is_stop_exit: bool,
+        _regime: Any,
+    ) -> tuple[str | None, bool, bool]:
+        last_kind = "STOP" if is_stop_exit else "TP"
+        mgr.config.reentry_sl_bounce_pct = (
+            vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
+            if self.p.sl_rebuy_enabled
+            else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
+        )
+        mgr.config.reentry_bear_gate_enabled = False
+        mgr.config.reentry_bear_bounce_pct = 0.0
+        trend_up, trend_down = bool(self.p.reentry_peak_relative), False
+        slope_fn = getattr(self, "_trend_slope_provider", None)
+        if not trend_up and slope_fn:
+            try:
+                slope_f = safe_float(slope_fn(self.yahoo_sym), default=None)
+                if slope_f is not None:
+                    if slope_f >= 0.0:
+                        trend_up = True
+                    elif slope_f < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
+                        trend_down = True
+            except Exception:
+                pass
+        return last_kind, trend_up, trend_down
+
+    def _resolve_reentry_custom_drop(self, _is_bull_reentry: bool, _last_kind: str | None) -> float | None:
+        return None
+
+    def _place_entry_order(self, entry_amt: float, entry_px: float) -> bool:
+        return self._place_buy(entry_amt, entry_px, kind="ENTRY")
 
     def _cancel_all_orders(self) -> bool:
         success = True

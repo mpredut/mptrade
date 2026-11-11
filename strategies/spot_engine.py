@@ -302,7 +302,7 @@ def _new_state() -> dict:
 
 
 class Strategy(BaseSpotMixin):
-    _exit_manager_mode = "spot"
+    venue_label = "Kraken"
     _cost_state_key = "cost"
     _spent_state_key = "spent"
     _qty_eps = 1e-12

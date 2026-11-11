@@ -95,6 +95,7 @@ class T212Provider(MarketDataProvider):
     _ASSET_SCOPE = "equities"
     _RUNTIME_ENV_RELPATH = ("212trading", "runtime.env")
     _SUPPORTS_ORDER_VALIDITY = True
+    _STRATEGY_HEARTBEAT_NAME = "T212-bot"
     _DEFAULT_FILLS_CACHE_FILENAME = CACHE_T212_TRADE_FILENAME
     _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
     _fills_match_fn = staticmethod(_t212_tickers_match)

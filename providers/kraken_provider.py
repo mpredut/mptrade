@@ -183,6 +183,11 @@ class KrakenProvider(MarketDataProvider):
     def name(self) -> str:
         return "Kraken"
 
+    @classmethod
+    def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
+        sym = str(symbol or "").strip().upper()
+        return "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
+
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real Kraken order."""
         return _live()

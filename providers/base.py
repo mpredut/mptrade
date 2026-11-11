@@ -133,6 +133,7 @@ class MarketDataProvider(ABC):
     _SUPPORTS_BUSINESS_MINIMUM: bool = False
     _SUPPORTS_ORDER_VALIDITY: bool = False
     _DEFERS_PREFLIGHT_QUANTITY: bool = False
+    _STRATEGY_HEARTBEAT_NAME: str = ""
     _VENUE_PROVIDER_SPECS: dict[str, tuple[str, str]] = {
         "binance": ("providers.binance_provider", "BinanceProvider"),
         "hyperliquid": ("providers.hyperliquid_provider", "HyperliquidProvider"),
@@ -294,6 +295,24 @@ class MarketDataProvider(ABC):
             return None
         mod_path, cls_name = spec
         return getattr(importlib.import_module(mod_path), cls_name, None)
+
+    @classmethod
+    def format_strategy_heartbeat_name(cls, symbol: str = "") -> str:
+        """Return the daemon heartbeat module name for this provider's strategy engine."""
+        if cls._STRATEGY_HEARTBEAT_NAME:
+            return cls._STRATEGY_HEARTBEAT_NAME
+        raw_name = getattr(cls, "name", "")
+        label = raw_name if isinstance(raw_name, str) and raw_name else cls.__name__.removesuffix("Provider")
+        return f"{label or 'Strategy'}-bot"
+
+    @classmethod
+    def resolve_venue_strategy_heartbeat(cls, venue: Any, symbol: str = "") -> str:
+        """Resolve the strategy daemon heartbeat module name for ``venue`` and ``symbol``."""
+        prov_cls = cls.resolve_venue_provider_class(venue)
+        if prov_cls is not None:
+            return prov_cls.format_strategy_heartbeat_name(symbol)
+        venue_str = str(venue or "").strip()
+        return f"{venue_str}-bot" if venue_str else "Strategy-bot"
 
     @classmethod
     def resolve_venue_intent_executor_tag(cls, venue: Any) -> str:

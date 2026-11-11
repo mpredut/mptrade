@@ -175,5 +175,70 @@ def test_hyperliquid_live_engines_declare_fail_closed_reads():
         assert "fail_closed=not self.dry_run" in text
 
 
+def test_strategies_core_modules_dag_and_venue_purity():
+    """Enforce DAG layering and zero hardcoded venue/mode branches across strategies/."""
+    import ast
+    from pathlib import Path
+    from providers.base import MarketDataProvider
+
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat("Hyperliquid", "HYPE") == "HL-bot"
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat("Kraken", "HYPEUSD") == "Kraken-HYPE"
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat("Kraken", "TAOUSD") == "Kraken-TAOUSD"
+    assert MarketDataProvider.resolve_venue_strategy_heartbeat("T212", "NVDA_US_EQ") == "T212-bot"
+
+    strat_dir = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "strategies"
+    forbidden_import_roots = {
+        "binance_api", "binance", "kraken", "hyperliquid", "212trading",
+        "hl_client", "orchestratorOS", "orchestratorTrade",
+        "monitortrades", "assetguardian", "rtrade", "tradeall",
+    }
+    venue_tokens = ("binance", "kraken", "hyperliquid", "t212", "212trading")
+    pure_venue_files = {
+        "base_spot_mixin.py",
+        "mt_position_accounting.py",
+        "position_exit_manager.py",
+        "rtrade_pair.py",
+        "spot_replay.py",
+        "spot_rules.py",
+        "state_store.py",
+    }
+
+    for py_file in sorted(strat_dir.glob("*.py")):
+        src = py_file.read_text(encoding="utf-8")
+        assert "_exit_manager_mode" not in src, f"{py_file.name} still references _exit_manager_mode"
+        tree = ast.parse(src)
+
+        docstring_nodes = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if (
+                    node.body
+                    and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)
+                ):
+                    docstring_nodes.add(node.body[0].value)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root_mod = alias.name.split(".")[0]
+                    assert root_mod not in forbidden_import_roots, f"{py_file.name} imports {alias.name}"
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                root_mod = node.module.split(".")[0]
+                assert root_mod not in forbidden_import_roots, f"{py_file.name} imports from {node.module}"
+            elif (
+                py_file.name in pure_venue_files
+                and isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node not in docstring_nodes
+            ):
+                low = node.value.lower()
+                assert not any(tok in low for tok in venue_tokens), (
+                    f"{py_file.name}:{node.lineno} contains hardcoded venue literal {node.value!r}"
+                )
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import fields
 from botcore import _parse_bool_flag, safe_pos_float
 from cachepaths import resolve_venue_runtime_dir
-from intelligence.internal.state.volatility import vol_pct_to_ratio
 from state_io import StateReadError, load_json_state, save_json_state
 from .position_exit_manager import PositionExitConfig, PositionExitManager
 
@@ -50,11 +49,12 @@ def build_strategy_exit_manager(
     vol_resolver: Callable[[str], tuple[float, str]],
     *,
     allow_external_cache: bool,
-    mode: str = "spot",
+    ratio_fn: Callable[[float], float] | None = None,
+    extra_config: dict | None = None,
 ) -> PositionExitManager:
-    """Construct and bind a ``PositionExitManager`` for spot or T212 strategy engines."""
+    """Construct and bind a ``PositionExitManager`` using declarative strategy overrides."""
     p = params
-    to_ratio = vol_pct_to_ratio if mode == "t212" else (lambda v: v / 100.0)
+    to_ratio = ratio_fn if callable(ratio_fn) else (lambda v: v / 100.0)
     common = dict(
         lost_threshold=to_ratio(p.stop_loss_pct),
         sl_disaster_buffer_ratio=p.sl_disaster_buffer_ratio,
@@ -73,38 +73,9 @@ def build_strategy_exit_manager(
         tp_stagnation_max_sec=p.tp_stagnation_max_sec,
         allow_external_cache=allow_external_cache,
     )
-    if mode == "t212":
-        exit_cfg = PositionExitConfig(
-            **common,
-            reentry_sl_bounce_pct=(
-                vol_pct_to_ratio(p.sl_rebuy_bounce_pct)
-                if p.sl_rebuy_enabled
-                else (0.015 if p.sl_mhdsl_enabled else 0.0)
-            ),
-            reentry_bear_gate_enabled=False,
-            reentry_bear_bounce_pct=0.0,
-            tp_trend_ride_enabled=p.tp_mdhtp_enabled,
-            tp_profit_floor_min_pct=vol_pct_to_ratio(p.trail_min_profit_pct) if p.trail_min_profit_pct > 0 else 0.0,
-            tp_pullback_pct=vol_pct_to_ratio(p.trail_pct) if p.trail_pct > 0 else 0.015,
-        )
-    else:
-        exit_cfg = PositionExitConfig(
-            **common,
-            sl_disaster_vol_multiplier=p.sl_disaster_vol_multiplier,
-            sl_disaster_buffer_min_pct=p.sl_disaster_buffer_min_pct / 100.0,
-            sl_bounce_ratchet_enabled=p.sl_bounce_ratchet_enabled,
-            sl_bounce_ratchet_k=p.sl_bounce_ratchet_k,
-            sl_bounce_min_pullback_pct=p.sl_bounce_min_pullback_pct / 100.0,
-            tp_trend_ride_enabled=p.tp_trend_hold,
-            tp_profit_floor_min_pct=(p.tp_trail_profit_floor_pct or 0.0) / 100.0,
-            tp_pullback_pct=p.tp_trail_pct / 100.0,
-            fast_profit_guard_enabled=p.fast_profit_guard,
-            fast_profit_mult=p.fast_profit_mult,
-            fast_profit_window_sec=p.fast_profit_window_min * 60.0,
-            fast_profit_drop_pct=p.fast_profit_drop_pct,
-            reentry_sl_bounce_pct=p.reentry_sl_bounce_pct / 100.0,
-            reentry_bear_bounce_pct=p.reentry_bear_bounce_pct / 100.0,
-        )
+    if isinstance(extra_config, dict):
+        common.update(extra_config)
+    exit_cfg = PositionExitConfig(**common)
     mgr = PositionExitManager(config=exit_cfg, vol_resolver=vol_resolver)
     mgr.bind_state(state)
     return mgr

@@ -197,8 +197,7 @@ def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
     try:
         return _mt_attr("order_retry", order_retry).is_terminal_filter_refusal(str(reason))
     except Exception:
-        r = str(reason)
-        return r == "below_min_notional" or r.startswith(("filter_", "binance_filter_refused:"))
+        return order_retry.is_terminal_filter_refusal(str(reason))
 
 
 def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:
@@ -297,7 +296,7 @@ def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_by
         getattr(provider, "name", None)
         or getattr(inst, "provider_name", None)
         or getattr(inst, "provider_label", None)
-        or "binance"
+        or ""
     )
     return _mt_attr("order_guard", order_guard).resolve_effective_bypass_guards(
         raw_venue, bypass_guards=extra_bypass, inst_bypass=inst_bg
