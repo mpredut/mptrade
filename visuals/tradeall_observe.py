@@ -41,7 +41,17 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from active_intents import build_active_intent_index
-from botcore import lru_dict_put, normalize_trend_direction, safe_float, safe_int, safe_pos_float, safe_pos_int, sanitize_pipe_field
+from botcore import (
+    lru_dict_put,
+    normalize_trend_direction,
+    require_pos_float,
+    safe_float,
+    safe_int,
+    safe_pos_float,
+    safe_pos_int,
+    sanitize_pipe_field,
+    split_csv,
+)
 from state_io import append_text_line, atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
@@ -843,13 +853,29 @@ def main():
                               "sliding as offline/backtests/tradeall.py writes new data in parallel; "
                               "the events appear on the frame exactly when the backtester reaches them)")
     args = parser.parse_args()
-    symbols = (symbols_for("binance") if args.symbols is None else
-               [s.strip() for s in args.symbols.split(",") if s.strip()])
+    interval_sec = require_pos_float(args.interval, name="--interval")
+    live_minutes = require_pos_float(args.live_minutes, name="--live-minutes")
+    day_refresh = require_pos_float(args.day_refresh, name="--day-refresh")
+    week_refresh = require_pos_float(args.week_refresh, name="--week-refresh")
+    frame_hours = (
+        require_pos_float(args.frame_hours, name="--frame-hours")
+        if args.frame_hours is not None
+        else None
+    )
+    window_hours = (
+        require_pos_float(args.window_hours, name="--window-hours")
+        if args.window_hours is not None
+        else None
+    )
+    symbols = (
+        symbols_for("binance")
+        if args.symbols is None
+        else list(split_csv(args.symbols))
+    )
 
-    if args.backtest_dir and args.frame_hours:
+    if args.backtest_dir and frame_hours is not None:
         directory = os.path.abspath(args.backtest_dir)
-        ch_f = safe_pos_float(args.frame_hours, default=24.0)
-        chunk_sec = ch_f * 3600
+        chunk_sec = frame_hours * 3600
         for symbol in symbols:
             price_ts, price_vals = load_backtest_price_samples(directory, symbol)
             trend_events = load_backtest_trend_starts(directory, symbol)
@@ -909,12 +935,12 @@ setInterval(function() {{
 </body></html>"""
         html_path = os.path.join(directory, "tradeall_live_backtest.html")
         atomic_write_text(html_path, bt_html)
-        mode = f"a sliding window of {args.window_hours}h" if args.window_hours else "the whole interval"
+        mode = f"a sliding window of {window_hours}h" if window_hours is not None else "the whole interval"
         print(f"[tradeall_observe] BACKTEST ({mode}): {directory} | symbols: {symbols} | "
-              f"rendering every {args.interval}s")
+              f"rendering every {interval_sec}s")
         print(f"[tradeall_observe] open in browser: {html_path}")
         last_memory_trim = 0.0
-        wh_val = safe_pos_float(args.window_hours, default=0.0)
+        wh_val = window_hours or 0.0
         try:
             while True:
                 for symbol in symbols:
@@ -933,7 +959,7 @@ setInterval(function() {{
                                 ts_str = datetime.fromtimestamp(window_end).strftime('%Y-%m-%d %H:%M')
                             except (ValueError, OSError, OverflowError):
                                 ts_str = "unknown"
-                            label = f"a sliding window of {args.window_hours}h (simulated clock: {ts_str})"
+                            label = f"a sliding window of {wh_val}h (simulated clock: {ts_str})"
                         else:
                             window_start, window_end = min(all_ts), max(all_ts)
                             label = "backtest (full replayed interval)"
@@ -953,15 +979,15 @@ setInterval(function() {{
                 if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
                     _release_unused_memory()
                     last_memory_trim = monotonic_now
-                time.sleep(args.interval)
+                time.sleep(interval_sec)
         except KeyboardInterrupt:
             print("\n[tradeall_observe] stopped.")
         return
 
     active_summary = _get_active_summary()
-    write_html(symbols, live_minutes=args.live_minutes, active_summary=active_summary)
+    write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
     html_path = os.path.join(LIVE_OUT_DIR, "tradeall_live.html")
-    print(f"[tradeall_observe] symbols: {symbols} | rendering every {args.interval}s")
+    print(f"[tradeall_observe] symbols: {symbols} | rendering every {interval_sec}s")
     print(f"[tradeall_observe] open in browser: {html_path}")
 
     # Schedule live charts and analysis state every cycle for a real-time feel.
@@ -972,17 +998,17 @@ setInterval(function() {{
         while True:
             cycle_start = time.time()
             sample_current_prices(symbols)
-            due_day = cycle_start - last_day >= args.day_refresh
-            due_week = cycle_start - last_week >= args.week_refresh
+            due_day = cycle_start - last_day >= day_refresh
+            due_week = cycle_start - last_week >= week_refresh
             if due_day:
                 active_summary = _get_active_summary()
-                write_html(symbols, live_minutes=args.live_minutes, active_summary=active_summary)
+                write_html(symbols, live_minutes=live_minutes, active_summary=active_summary)
             for symbol in symbols:
                 try:
                     chart_specs = [
                         (
-                            f"LIVE last {args.live_minutes:.0f} min",
-                            args.live_minutes * 60,
+                            f"LIVE last {live_minutes:.0f} min",
+                            live_minutes * 60,
                             os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_live.png"),
                         )
                     ]
@@ -1055,7 +1081,7 @@ setInterval(function() {{
             if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
                 _release_unused_memory()
                 last_memory_trim = monotonic_now
-            time.sleep(args.interval)
+            time.sleep(interval_sec)
     except KeyboardInterrupt:
         print("\n[tradeall_observe] stopped.")
 

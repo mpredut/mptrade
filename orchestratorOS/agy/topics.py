@@ -265,7 +265,7 @@ def prepare_topic_session(
     compact_steps_i = exact_pos_int(compact_steps, default=None)
     if compact_steps_i is None:
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
-    raw_max = max_steps if max_steps is not None else os.environ.get("LLM_TOPIC_MAX_STEPS")
+    raw_max = max_steps if max_steps is not None else optional_env("LLM_TOPIC_MAX_STEPS", "")
     max_steps_i = safe_nonneg_int(raw_max, 0)
 
     reg = load_topic_registry(registry_path)

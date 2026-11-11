@@ -1440,4 +1440,67 @@ def test_auto_ws_ssot_tp_ladder_checkpoint_and_estimator_border_cases(
         wd._parse_proc_stat(bad_stat)
 
 
+def test_hoisted_patch_seams_symbol_csv_and_observe_cli_border_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Verify hoisted module-level patch seams, SSOT CSV/symbol parsing, and tradeall_observe CLI bounds."""
+    import sys
+    from intelligence.internal.state import survival as surv_mod
+    from intelligence.sentiment.evaluators import microstructure_evaluator as me_mod
+    from market_monitor.new_coins_discovery import NewCoinsFactory
+    from market_monitor.pricefetcher import StockYahooPricePlatform
+    import order_guard
+    from providers import order_id_context as oic
+    import visuals.tradeall_observe as tobs
+
+    # 1. microstructure_evaluator.enrich_cross_venue_trends honors survival.estimate_T monkeypatches
+    called_est: list[str] = []
+    monkeypatch.setattr(
+        surv_mod,
+        "estimate_T",
+        lambda sym: called_est.append(sym) or {"T": 10.0, "median_d": 4.0, "p90_d": 9.0},
+    )
+    price_map = {"BTCUSDC": {"price": 70000.0}}
+    t_map: dict[str, Any] = {}
+    me_mod.enrich_cross_venue_trends(
+        price_map,
+        {},
+        {},
+        {"BTCUSDC": {"direction": "UP", "duration_seconds": 86400.0}},
+        {},
+        t_map,
+        None,
+        allow_network=True,
+    )
+    assert called_est == ["BTCUSDC"]
+    assert price_map["BTCUSDC"]["weibull_median_d"] == 4.0
+    assert price_map["BTCUSDC"]["long_trend_est_rem_hours"] > 0.0
+
+    # 2. order_guard.resolve_caller_module honors providers.order_id_context.get_process_name monkeypatches
+    monkeypatch.setattr(oic, "get_process_name", lambda: "TA")
+    assert order_guard.resolve_caller_module() == "tradeall"
+    monkeypatch.setattr(oic, "get_process_name", lambda: "ORW")
+    assert order_guard.resolve_caller_module() is None
+
+    # 3. botcore.parse_symbol_list, StockYahooPricePlatform, and NewCoinsFactory deduplicate comma/newline lists
+    assert botcore.parse_symbol_list(" nvda , tsla\nNVDA , ") == ["NVDA", "TSLA"]
+    yahoo_pf = StockYahooPricePlatform(tickers=" nvda , aapl\nNVDA ")
+    assert yahoo_pf._symbols == {"NVDA", "AAPL"}
+    factory = NewCoinsFactory(enabled_sources=" CoinGecko , DEXSCREENER\ncoingecko ", cmc_api_key="")
+    assert list(factory._all_sources.keys()) == ["coingecko", "dexscreener"]
+
+    # 4. tradeall_observe.main rejects non-positive / NaN numeric CLI flags (--frame-hours 0 must not enter live loop)
+    for bad_argv in (
+        ["tradeall_observe.py", "--backtest-dir", str(tmp_path), "--frame-hours", "0"],
+        ["tradeall_observe.py", "--backtest-dir", str(tmp_path), "--window-hours", "-2"],
+        ["tradeall_observe.py", "--interval", "0"],
+        ["tradeall_observe.py", "--live-minutes", "nan"],
+    ):
+        monkeypatch.setattr(sys, "argv", bad_argv)
+        with pytest.raises(ValueError):
+            tobs.main()
+
+
+
 

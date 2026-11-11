@@ -14,7 +14,17 @@ from urllib.parse import quote
 from abc import ABC, abstractmethod
 
 import instrument_registry as sym
-from botcore import exact_pos_int, is_rth_gate_enabled, is_us_rth_open, normalize_epoch_sec, required_env, safe_pos_float, safe_pos_int
+from botcore import (
+    exact_pos_int,
+    is_rth_gate_enabled,
+    is_us_rth_open,
+    normalize_epoch_sec,
+    optional_env,
+    parse_symbol_list,
+    required_env,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import (
     CACHE_WATCHER_ALL_PRICE_FILENAME,
     cache_path,
@@ -274,7 +284,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
     def __init__(self, api_key: Optional[str] = _CMC_KEY_UNSET):  # type: ignore[assignment]
         # Respect explicit api_key=None (offline/disabled) without falling back to os.environ.
         if api_key is _CMC_KEY_UNSET:
-            raw_key = os.environ.get('CMC_API_KEY')
+            raw_key = optional_env("CMC_API_KEY", "") or None
         else:
             raw_key = api_key
         self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
@@ -428,20 +438,8 @@ class StockYahooPricePlatform(PricePlatformInterface):
     _UA = {"User-Agent": "Mozilla/5.0 (pricefetcher)"}
 
     def __init__(self, tickers: Optional[List[str]] = None):
-        if tickers is None:
-            configured = required_env("STOCK_TICKERS")
-            src = configured.split(",")
-        elif isinstance(tickers, str):
-            src = tickers.split(",")
-        elif isinstance(tickers, (list, tuple, set, frozenset)):
-            src = tickers
-        else:
-            src = []
-        self._symbols: Set[str] = {
-            t.strip().upper()
-            for t in src
-            if isinstance(t, str) and t.strip()
-        }
+        raw_tickers = required_env("STOCK_TICKERS") if tickers is None else tickers
+        self._symbols: Set[str] = set(parse_symbol_list(raw_tickers))
         self._supported_symbols = self._symbols
 
     @property
@@ -1050,7 +1048,7 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
 
 
 if __name__ == "__main__":
-    CMC_API_KEY = os.environ.get('CMC_API_KEY', None)
+    CMC_API_KEY = optional_env("CMC_API_KEY", "") or None
     print("=" * 60)
     print("Starting crypto price monitor (multi-platform)")
     print(f"Base quote currency: {QUOTE_CURRENCY}")

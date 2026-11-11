@@ -20,7 +20,6 @@ from cachepaths import (
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.internal.state import survival as _surv_mod
-from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -1105,12 +1104,11 @@ def enrich_cross_venue_trends(
         ):
             try:
                 is_est_patched = (
-                    estimate_T is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
-                    or getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
+                    getattr(_surv_mod, "estimate_T", None) is not getattr(_surv_mod, "_ORIG_ESTIMATE_T", None)
                     or getattr(_surv_mod, "fetch_klines", None) is not getattr(_surv_mod, "_ORIG_FETCH_KLINES", None)
                 )
                 if (bool(allow_network) and is_live_network_backfill_enabled()) or is_est_patched:
-                    if isinstance(est_tt := estimate_T(sym), dict) and est_tt.get("median_d") is not None:
+                    if isinstance(est_tt := _surv_mod.estimate_T(sym), dict) and est_tt.get("median_d") is not None:
                         entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
                         tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
                         if isinstance(t_trend_map, dict):
@@ -1124,7 +1122,7 @@ def enrich_cross_venue_trends(
             and (w_p90 := safe_pos_float(entry.get("weibull_p90_d"), default=None)) is not None
             and (cur_est_rem is None or abs(cur_est_rem - lt_h * 0.5) <= 0.15)
         ):
-            entry["long_trend_est_rem_hours"] = estimate_remaining_trend_hours(
+            entry["long_trend_est_rem_hours"] = _surv_mod.estimate_remaining_trend_hours(
                 lt_h, median_d=w_med, p90_d=w_p90, p_cont=tt_p_cont
             )
         if isinstance(watcher_price_items, dict):

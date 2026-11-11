@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 
-from botcore import _parse_bool_flag, exact_int, parse_dotenv_line, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, exact_int, parse_dotenv_line, safe_float, safe_pos_float, split_csv
 from cachepaths import cache_symbol_variants, canonical_base_asset
 from instrument_registry import casefold_get
 from providers.quantity import resolve_assets
@@ -75,7 +75,7 @@ def load_config(path: str) -> dict:
                 cfg["discover_new_coins"] = bval
             elif key_low in _LIST_KEYS:
                 norm = _LIST_KEYS[key_low]
-                cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
+                cfg[key_low] = [norm(x) for x in split_csv(val)]
             elif key_low in _SETTING_KEYS:
                 typ, where = _SETTING_KEYS[key_low]
                 v = exact_int(val, default=None) if typ is int else safe_float(val, default=None)

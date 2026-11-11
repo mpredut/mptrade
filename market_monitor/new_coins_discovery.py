@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 
-from botcore import _parse_bool_flag, normalize_epoch_sec, safe_float, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, normalize_epoch_sec, optional_env, safe_float, safe_pos_float, safe_pos_int, split_csv
 from instrument_registry import casefold_get
 
 # ============================================
@@ -16,7 +16,7 @@ from instrument_registry import casefold_get
 # ============================================
 
 # Sourced from environment (CMC_API_KEY), passed to CoinMarketCapSource unless callers override it.
-CMC_API_KEY = os.environ.get("CMC_API_KEY", "").split("#", 1)[0].strip()
+CMC_API_KEY = optional_env("CMC_API_KEY", "")
 
 # Discovery configuration
 NEW_COINS_AGE_DAYS = 3
@@ -370,7 +370,7 @@ class NewCoinsFactory:
         }
         if enabled_sources is not None:
             raw_sources = (
-                enabled_sources.split(",")
+                split_csv(enabled_sources, lower=True)
                 if isinstance(enabled_sources, str)
                 else (enabled_sources if isinstance(enabled_sources, (list, tuple, set, frozenset)) else [])
             )

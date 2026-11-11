@@ -29,9 +29,11 @@ from botcore import (
     TOPIC_ALIASES,
     TOPIC_SPECS,
     _parse_bool_flag,
+    bool_env,
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
+    parse_symbol_list,
     safe_nonneg_float,
     safe_pos_float,
     topic_spec,
@@ -336,7 +338,7 @@ class AutonomousAIReconciler:
         if (
             scope == "equities"
             and not _parse_bool_flag(force_rth_open, False)
-            and not _parse_bool_flag(os.environ.get("FORCE_SHARE_RTH_OPEN"), False)
+            and not bool_env("FORCE_SHARE_RTH_OPEN", default=False)
             and not is_us_rth_open(now)
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
@@ -443,7 +445,7 @@ def main() -> None:
                         help="Allow auto_sharetrade_executor evaluation even outside US Regular Trading Hours")
     args = parser.parse_args()
 
-    focus = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] or None
+    focus = parse_symbol_list(args.focus_symbols) or None
     reconciler = AutonomousAIReconciler(mode=args.mode, lookback_hours=args.lookback_hours)
     report = reconciler.run_cycle(
         topic_key=args.topic_key,

@@ -13,7 +13,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import load_dotenv, required_env
+from botcore import load_dotenv, optional_env, required_env
 
 load_dotenv()
 
@@ -63,7 +63,7 @@ def visible_conversations_dir(cli_base: str) -> str:
 def resolve_store_lock_path(home_dir: Optional[str] = None) -> str:
     """Shared flock file coordinating agy_store_fix and ui_mirror store operations."""
     expanded_home = expand_config_path(home_dir) if isinstance(home_dir, (str, os.PathLike)) else ""
-    expanded_env = expand_config_path(os.environ.get("AGY_FIX_HOME") or "")
+    expanded_env = expand_config_path(optional_env("AGY_FIX_HOME", ""))
     base = expanded_home or expanded_env or os.path.expanduser("~")
     return os.path.join(base, ".agy_store_fix.lock")
 

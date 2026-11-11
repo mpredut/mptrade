@@ -26,16 +26,15 @@ from intelligence.macro.lexicon_ssot import (
     is_excluded_reference_news_item,
     is_off_topic_general_news_title,
 )
+import intelligence.macro_sentiment_ssot as _mss
 from intelligence.macro_sentiment_ssot import (
     TelemetrySensorSnapshot,
     _cfg_str,
-    enrich_macro_benchmarks_live_state,
     get_breadth_excluded_bases,
     get_deribit_options_currencies,
     get_yahoo_chart_url,
     normalize_epoch_sec,
     read_first_cached_dict,
-    resolve_derived_telemetry_intervals,
     resolve_now_ts,
     resolve_patched_attr,
     resolve_read_json_cached,
@@ -536,7 +535,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                             else:
                                 enriched_items[mb_k] = mb_v
                         enriched["items"] = enriched_items
-                    enriched = enrich_macro_benchmarks_live_state(
+                    enriched = _mss.enrich_macro_benchmarks_live_state(
                         enriched,
                         cache_dir=cache_dir,
                         force_recompute=stripped_stale_intraday,
@@ -544,7 +543,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     ) or enriched
                 macro_sensors[attr] = enriched
         if allow_network and read_json_fn in (None, read_json_recovering, read_json_cached) and is_live_network_backfill_enabled():
-            stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
+            stale_age_min = _mss.resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
             mb_cur = macro_sensors.get("market_breadth")
             mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
             mb_missing_rot = isinstance(mb_cur, dict) and (

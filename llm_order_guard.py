@@ -31,7 +31,8 @@ from botcore import (
     safe_pos_float,
     topic_spec,
 )
-from cachepaths import clean_symbol_key, get_cachedb_dir
+import cachepaths as _cachepaths
+from cachepaths import clean_symbol_key
 from guard_hierarchy import (
     GUARD_REGISTRY,
     _is_valid_regime_context,
@@ -48,7 +49,7 @@ from instrument_registry import is_equity_symbol
 from intelligence.internal.guards.guard_decision import BrakeAction, OrderGuardEvaluatorBase, OrderGuardEvaluatorFactory
 import intelligence.macro.geopolitical_analyzer as _geo_analyzer
 import intelligence.macro.geopolitical_guard as _geo_guard
-from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, read_first_cached_dict
+import intelligence.macro_sentiment_ssot as _mss
 import intelligence.sentiment.guards.high_stake_guard as _high_stake_guard
 import notify_engine.alertnotifiers as _alertnotifiers
 
@@ -276,9 +277,9 @@ def check_geopolitical_order_guards(
                     cdir = (
                         analyzer._effective_cache_dir()
                         if hasattr(analyzer, "_effective_cache_dir")
-                        else get_cachedb_dir()
+                        else _cachepaths.get_cachedb_dir()
                     )
-                    sa_data, _ = read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
+                    sa_data, _ = _mss.read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
                     if isinstance(sa_data, dict):
                         sa_ts = normalize_epoch_sec(sa_data.get("ts"), allow_iso=True) or 0.0
                         sa_action = str(
@@ -292,7 +293,7 @@ def check_geopolitical_order_guards(
                         ):
                             market_absorbed = True
                     if not market_absorbed:
-                        mb_data = load_cached_macro_benchmarks(cdir)
+                        mb_data = _mss.load_cached_macro_benchmarks(cdir)
                         mb_ts = (
                             (normalize_epoch_sec(mb_data.get("ts"), allow_iso=True) or 0.0)
                             if isinstance(mb_data, dict)

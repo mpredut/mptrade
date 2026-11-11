@@ -29,6 +29,7 @@ from botcore import (
     load_ini_config,
     normalize_epoch_sec,
     obj_attr,
+    optional_env,
     parse_dotenv_line,
     parse_notify_enabled_flag,
     parse_procs_manifest,
@@ -371,7 +372,7 @@ def gather_system_and_vpn_telemetry(
     except Exception:
         pass
 
-    vpn_if = os.environ.get("PIA_VPN_IF", "wgpia0").strip() or "wgpia0"
+    vpn_if = optional_env("PIA_VPN_IF", "wgpia0") or "wgpia0"
     vpn_net_dir = f"/sys/class/net/{vpn_if}"
     oper = str(read_text_file(f"{vpn_net_dir}/operstate", default="unknown") or "unknown").strip().lower() if os.path.exists(vpn_net_dir) else "down"
     sys_vpn["vpn_interface"] = vpn_if
@@ -410,7 +411,7 @@ def gather_system_and_vpn_telemetry(
             except OSError:
                 rw_last_run = None
         rw_fresh = rw_last_run is None or (time.time() - rw_last_run) <= 3600.0
-        min_consec = max(2, safe_pos_int(os.environ.get("RESOURCE_CONSECUTIVE_CHECKS"), default=3) or 3)
+        min_consec = max(2, safe_pos_int(optional_env("RESOURCE_CONSECUTIVE_CHECKS", ""), default=3) or 3)
         procs_map = rw_state.get("processes") if isinstance(rw_state.get("processes"), dict) else {}
         offenders = [
             {

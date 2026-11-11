@@ -28,7 +28,7 @@ from orchestratorOS.agy.protobuf import (
     summary_annotation_title,
     summary_ui_visible,
 )
-from botcore import _parse_bool_flag, safe_nonneg_int
+from botcore import _parse_bool_flag, optional_env, safe_nonneg_int
 from state_io import (
     atomic_write_bytes,
     read_bytes_file,
@@ -525,7 +525,7 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
     finally:
         conn.close()
     vis_dir = _visible_dir_if_cli_store(cli_base)
-    active = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
+    active = optional_env("CURRENT_CONVERSATION_ID", "")
     orphans = {
         cid.strip()
         for cid, _ in rows

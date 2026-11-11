@@ -70,7 +70,7 @@ from intelligence.internal.state.survival import (
 import llm_order_guard as _llm_order_guard
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 import providers.market_api as _market_api_mod
-from providers.order_id_context import get_process_name, resolve_order_owner
+import providers.order_id_context as _order_id_ctx
 from providers.order_ohlc_utils import (
     extract_order_price,
     extract_order_qty,
@@ -118,13 +118,13 @@ def resolve_caller_module(
             for candidate in (client_order_id, prefix):
                 if not candidate or isinstance(candidate, bool):
                     continue
-                owner = resolve_order_owner(candidate)
+                owner = _order_id_ctx.resolve_order_owner(candidate)
                 if owner in _KNOWN_GUARD_MODULES:
                     return owner
         except Exception:
             pass
     try:
-        return _PROCESS_TO_MODULE.get(get_process_name())
+        return _PROCESS_TO_MODULE.get(_order_id_ctx.get_process_name())
     except Exception:
         return None
 

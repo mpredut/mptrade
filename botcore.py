@@ -1952,11 +1952,9 @@ def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> t
 
 def parse_symbol_list(symbols: object) -> list[str]:
     """Normalize comma-separated string or iterable of symbols into uppercase list."""
-    raw = (
-        symbols.split(",")
-        if isinstance(symbols, str)
-        else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
-    )
+    if isinstance(symbols, str):
+        return list(split_csv(symbols, upper=True))
+    raw = symbols if isinstance(symbols, (list, tuple, set, frozenset)) else ()
     return [s.strip().upper() for s in raw if isinstance(s, str) and s.strip()]
 
 

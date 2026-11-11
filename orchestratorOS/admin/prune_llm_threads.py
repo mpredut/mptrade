@@ -22,11 +22,13 @@ from botcore import (  # noqa: E402
     TOPIC_SPECS,
     _parse_bool_flag,
     load_dotenv,
+    optional_env,
     required_env,
     required_float_env,
     required_int_env,
     safe_nonneg_float,
     safe_nonneg_int,
+    split_csv,
 )
 
 load_dotenv()
@@ -171,13 +173,13 @@ def prune_old_cli_threads(
 
     project_bases = [base, resolve_ui_cli_base()]
     if isinstance(exclude_cids, str):
-        excl_set = {c.strip() for c in exclude_cids.split(",") if c.strip()}
+        excl_set = set(split_csv(exclude_cids))
     elif isinstance(exclude_cids, (set, list, tuple, frozenset)):
         excl_set = {str(c).strip() for c in exclude_cids if isinstance(c, str) and c.strip()}
     else:
         excl_set = set()
     protected = excl_set | get_active_topic_cids()
-    active_env_cid = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
+    active_env_cid = optional_env("CURRENT_CONVERSATION_ID", "")
     if active_env_cid:
         protected.add(active_env_cid)
 
