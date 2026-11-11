@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import load_layered_env_config, safe_nonneg_float, safe_pos_float
+from botcore import load_layered_env_config, safe_pos_float
 from cachepaths import split_symbol_assets
 from offline.backtests.datasets import (
     dataset_metadata,
@@ -29,10 +29,8 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     extract_cfg_float,
     extract_cfg_int,
-    parse_cli_float,
     parse_cli_int,
     parse_dataset_specs,
-    parse_intervals,
     parse_optional_lookback_days,
 )
 from providers.market_api import api as mkt
@@ -53,8 +51,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--config-file", default=str(ROOT / "config.env"))
     parser.add_argument("--symbol", help="defaults to SYMBOL or BINANCE_PAIR (e.g. BTCUSDT)")
-    parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=parse_cli_float, default=0.10, help="fee per leg (pct), defaults to 0.10%%")
     parser.add_argument(
         "--lookback-days", type=parse_cli_int, default=630,
         help="API fetch lookback in days when --dataset is omitted (defaults to 630)",
@@ -65,10 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         default_warmup=0,
         include_dataset_list=True,
         default_output_dir=ROOT / "offline/results/binance_walk_forward",
+        default_intervals=[60, 240, 1440],
+        default_fee=0.10,
+        fee_help="fee per leg (pct), defaults to 0.10%%",
     )
     args = parser.parse_args(argv)
-    if safe_nonneg_float(args.fee, default=None) is None:
-        parser.error("--fee cannot be negative")
+    execution = build_execution_model_from_args(parser, args)
     lookback_days = parse_optional_lookback_days(
         parser, args.lookback_days, allow_none=False
     ) or 630
@@ -109,7 +107,6 @@ def main(argv: list[str] | None = None) -> int:
                     "enable_takeprofit": True,
                     "order_ttl_min": 60.0,
                 })
-        execution = build_execution_model_from_args(parser, args)
         supplied_datasets = parse_dataset_specs(args.dataset)
         output_dir = args.output_dir.expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -1269,7 +1269,8 @@ class Strategy(BaseSpotMixin):
             return False
         if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
             return True
-        if (sl_ctx := self._resolve_stop_loss_avg_and_loss_pct(price)) is None:
+        sl_ctx = self._resolve_stop_loss_avg_and_loss_pct(price)
+        if not sl_ctx:
             return False
         avg, loss_pct = sl_ctx
 

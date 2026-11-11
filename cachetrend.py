@@ -1802,12 +1802,11 @@ class KalmanStateTracker:
                 if norm_sym not in self._state and val_sym is not None:
                     self._state[norm_sym] = val_sym
             symbol = norm_sym
-        ts_f = normalize_epoch_sec(ts, allow_zero=True)
-        price_f = safe_pos_float(price, default=None)
-        if ts_f is None or price_f is None:
+        if (ts := normalize_epoch_sec(ts, allow_zero=True)) is None or (
+            price := safe_pos_float(price, default=None)
+        ) is None:
             k = self._last_kfields.get(symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
             return self._build_fields(k, self._last_vol_fields.get(symbol))
-        ts, price = ts_f, price_f
         sr_val = safe_pos_float(big_sample_rate, 1.0)
         eps_val = safe_nonneg_float(epsilon, 0.0)
         last_fed = self._last_fed.get(symbol, -1e18)

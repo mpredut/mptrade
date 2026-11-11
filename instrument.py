@@ -1467,8 +1467,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     venue = getattr(inst, "provider_name", None)
     if not isinstance(venue, str):
         venue = getattr(inst, "provider", None)
-    raw_base = getattr(inst, "base", None)
-    raw_quote = getattr(inst, "quote", None)
+    raw_base, raw_quote = getattr(inst, "base", None), getattr(inst, "quote", None)
     return resolve_cached_symbol_price(
         str(getattr(inst, "symbol", "") or ""),
         venue=venue if isinstance(venue, str) else None,

@@ -21,7 +21,7 @@ KRAKEN_DIR = ROOT / "kraken"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import _parse_bool_flag, load_local_module, safe_nonneg_float  # noqa: E402
+from botcore import _parse_bool_flag, load_local_module  # noqa: E402
 from providers.market_api import api as mkt  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -38,9 +38,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     assess_decision_evidence,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
-    parse_cli_float,
     parse_dataset_specs,
-    parse_intervals,
     resolve_window_sizes,
 )
 from offline.backtests.execution import ExecutionModel  # noqa: E402
@@ -77,19 +75,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=str(KRAKEN_DIR / ".env"))
     parser.add_argument("--config-file", default=str(KRAKEN_DIR / "config.env"))
     parser.add_argument("--pair", help="defaults to KRAKEN_PAIR from the live configuration")
-    parser.add_argument("--intervals", type=parse_intervals, default=[60, 240, 1440])
-    parser.add_argument("--fee", type=parse_cli_float, default=0.26, help="fee per leg, percent")
     add_walk_forward_cli_args(
         parser,
         include_warmup=True,
         default_warmup=0,
         include_dataset_list=True,
         default_output_dir=ROOT / "offline" / "results" / "kraken_walk_forward",
+        default_intervals=[60, 240, 1440],
+        default_fee=0.26,
+        fee_help="fee per leg, percent",
     )
     args = parser.parse_args(argv)
-
-    if safe_nonneg_float(args.fee, default=None) is None:
-        parser.error("--fee cannot be negative")
     execution = build_execution_model_from_args(parser, args)
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.

@@ -875,16 +875,23 @@ class MarketDataProvider(ABC):
         start_ms = safe_nonneg_int(start_time_ms, default=0)
         return cls(client=client).fetch_remote_trades(symbol, start_ms, client=client)
 
+    def _remote_trade_rows_for_symbol(
+        self, symbol: str, sym_u: str, start_ms: float, *, client=None
+    ) -> Any:
+        return self._invoke_fills_from_api(symbol, publish_cache=False)
+
     def fetch_remote_trades(
         self, symbol: str, start_time_ms: int = 0, *, client=None
     ) -> List[dict]:
         """Fetch and normalize remote fills for ``symbol`` since ``start_time_ms`` without mutating disk caches."""
-        self.validate_symbol(symbol)
+        if getattr(self, "_VALIDATE_REMOTE_TRADES_SYMBOL", True):
+            self.validate_symbol(symbol)
         if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
             return []
-        _, start_ms = parsed
+        sym_u, start_ms = parsed
         return self._filter_remote_trade_rows(
-            self._invoke_fills_from_api(symbol, publish_cache=False), start_ms
+            self._remote_trade_rows_for_symbol(symbol, sym_u, start_ms, client=client),
+            start_ms,
         )
 
     def get_orders(

@@ -1477,16 +1477,15 @@ class KalmanTrend:
 
     def update(self, ts: float, price: float, epsilon: Optional[float]) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
-        ts_f = normalize_epoch_sec(ts, allow_zero=True)
-        price_f = safe_pos_float(price, default=None)
-        if ts_f is None or price_f is None:
+        if (ts := normalize_epoch_sec(ts, allow_zero=True)) is None or (
+            price := safe_pos_float(price, default=None)
+        ) is None:
             return {
                 "vel": 0.0,
                 "vel_std": 0.0,
                 "trend": self.trend,
                 "old_trend": self.trend,
             }
-        ts, price = ts_f, price_f
         eps_f = safe_pos_float(epsilon, default=None)
         eps = eps_f if eps_f is not None else max(price * 1e-4, 1e-9)
         R = eps * eps

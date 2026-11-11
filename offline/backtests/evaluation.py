@@ -38,6 +38,7 @@ from botcore import (
     require_pos_float,
     safe_float,
     safe_int,
+    safe_nonneg_float,
     split_csv,
 )
 from providers.order_ohlc_utils import normalize_record
@@ -414,8 +415,15 @@ def add_walk_forward_cli_args(
     default_warmup: int | None = 0,
     include_dataset_list: bool = False,
     default_output_dir: Path | str | None = None,
+    default_intervals: list[int] | None = None,
+    default_fee: float | None = None,
+    fee_help: str = "fee per leg, percent",
 ) -> None:
     """Register standard execution model and walk-forward window arguments on a CLI parser."""
+    if default_intervals is not None:
+        parser.add_argument("--intervals", type=parse_intervals, default=list(default_intervals))
+    if default_fee is not None:
+        parser.add_argument("--fee", type=parse_cli_float, default=default_fee, help=fee_help)
     parser.add_argument("--spread-bps", type=parse_cli_float, default=0.0)
     parser.add_argument("--market-slippage-bps", type=parse_cli_float, default=0.0)
     parser.add_argument("--partial-fill-ratio", type=parse_cli_float, default=1.0)
@@ -472,6 +480,8 @@ def build_execution_model_from_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> ExecutionModel:
     """Validate walk-forward window CLI flags and construct ExecutionModel."""
+    if hasattr(args, "fee") and args.fee is not None and safe_nonneg_float(args.fee, default=None) is None:
+        parser.error("--fee cannot be negative")
     explicit_windows = (args.train, args.validation, args.test)
     if any(isinstance(value, bool) for value in (*explicit_windows, args.step)):
         parser.error("the walk-forward sizes must be positive")

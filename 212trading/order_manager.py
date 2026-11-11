@@ -356,8 +356,7 @@ def place_order_with_retry(
     if qty_f is None or price_f is None or retry_delay_f is None:
         log("  ! [ORDER] invalid numeric parameters: bool not allowed")
         return False
-    qty_r = round(qty_f, 2)
-    price_r = round(price_f, 2)
+    qty_r, price_r = round(qty_f, 2), round(price_f, 2)
     if qty_r <= 0 or price_r <= 0:
         log("  ! [ORDER] qty/price/retry_delay must be finite and valid")
         return False

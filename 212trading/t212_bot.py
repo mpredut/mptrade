@@ -45,7 +45,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "ipo_common", "listing_watcher", "strategy", "t212_client")
 from credentials import t212_credentials  # noqa: E402
-from ipo_common import load_t212_environment, notify  # noqa: E402
+from ipo_common import add_t212_env_file_arg, load_t212_environment, notify  # noqa: E402
 from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
 from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
 from strategy import StratParams, Strategy  # noqa: E402
@@ -116,7 +116,7 @@ def main() -> int:
     ap.add_argument("--only", metavar="NAME", help="Run only the asset with this name (config.NAME.env)")
     ap.add_argument("--skip-wait", action="store_true", help="Skip waiting for the launch")
     ap.add_argument("--list", action="store_true", help="Show the assets and exit")
-    ap.add_argument("--env-file", default=os.path.join(_HERE, ".env"))
+    add_t212_env_file_arg(ap, _HERE)
     args = ap.parse_args()
     if not args.list:
         single_instance("t212_bot")   # one instance prevents duplicate trading

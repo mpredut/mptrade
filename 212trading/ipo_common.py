@@ -35,6 +35,12 @@ def t212_env_layer_paths(env_file: str, *, profile_file: str | None = None) -> l
     return layers
 
 
+def add_t212_env_file_arg(parser, default_dir: str | None = None) -> None:
+    """Register the canonical ``--env-file`` argument for T212 CLI entrypoints."""
+    base_dir = default_dir or os.path.dirname(os.path.abspath(__file__))
+    parser.add_argument("--env-file", default=os.path.join(base_dir, ".env"))
+
+
 def load_t212_environment(env_file: str, *, profile_file: str | None = None) -> None:
     """Load T212 configuration using one explicit precedence policy.
 

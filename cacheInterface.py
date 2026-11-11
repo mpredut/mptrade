@@ -1210,12 +1210,10 @@ class CacheManagerInterface(ABC):
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
         self.request_stop()
-        eff_timeout = safe_nonneg_float(timeout, default=5.0)
         thread = self.thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=eff_timeout)
-        stopped = thread is None or not thread.is_alive()
-        if stopped:
+            thread.join(timeout=safe_nonneg_float(timeout, default=5.0))
+        if (stopped := thread is None or not thread.is_alive()):
             self.thread = None
         return stopped
 

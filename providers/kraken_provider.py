@@ -876,14 +876,11 @@ class KrakenProvider(MarketDataProvider):
         return by_sym
 
     _REMOTE_TRADES_CLIENT_ATTR = "_private"
+    _VALIDATE_REMOTE_TRADES_SYMBOL = False
 
-    def fetch_remote_trades(
-        self, symbol: str, start_time_ms: int = 0, *, client=None
-    ) -> List[dict]:
-        """Fetch normalized Kraken fills for ``symbol`` via ``Ledgers`` (when ``client`` is provided) or ``TradesHistory``."""
-        if (parsed := self._parse_remote_trades_query(symbol, start_time_ms)) is None:
-            return []
-        sym_u, start_ms = parsed
+    def _remote_trade_rows_for_symbol(
+        self, symbol: str, sym_u: str, start_ms: float, *, client=None
+    ) -> Any:
         if client is not None and callable(getattr(client, "_private", None)):
             now_s = time.time()
             start_sec = (
@@ -896,8 +893,9 @@ class KrakenProvider(MarketDataProvider):
                 pairs=[sym_u],
                 lookback_sec=max(60.0, now_s - start_sec),
             )
-            return self._filter_remote_trade_rows(casefold_get(by_sym, sym_u), start_ms)
-        return super().fetch_remote_trades(symbol, start_time_ms)
+            return casefold_get(by_sym, sym_u)
+        self.validate_symbol(symbol)
+        return self._invoke_fills_from_api(symbol, publish_cache=False)
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""

@@ -389,8 +389,7 @@ def clamp_notional_to_wallet_balance(
         return True, desired_usd, "Wallet balance check skipped (no provider hook)"
 
     raw_sym = symbol if symbol is not None else getattr(inst, "symbol", "")
-    raw_base = getattr(inst, "base", None)
-    raw_quote = getattr(inst, "quote", None)
+    raw_base, raw_quote = getattr(inst, "base", None), getattr(inst, "quote", None)
     base_asset, quote_asset = resolve_assets(
         str(raw_sym or ""),
         raw_base if isinstance(raw_base, str) else None,
