@@ -302,10 +302,12 @@ def test_sweeps_hybrid_reentry_and_cli_backtest_validators(
         css.main()
     assert exc_css.value.code == 1
 
-    # 2. run_deep_surge_sweep.load_base_params scales sub-bar timeouts for 240m bars
+    # 2. run_deep_surge_sweep preserves unscaled profile in load_base_params and scales 240m sub-bar timeouts per slice
     surge_base = rdss.load_base_params(ROOT / "kraken" / "config.env")
-    assert surge_base.check_minutes == pytest.approx(240.0)
-    assert surge_base.tp_stagnation_max_sec > 1080.0
+    assert surge_base.check_minutes == pytest.approx(2.0)
+    scaled_surge = rdss.prepare_spot_interval_params(surge_base, 240.0)
+    assert scaled_surge.check_minutes == pytest.approx(240.0)
+    assert scaled_surge.tp_stagnation_max_sec > 1080.0
 
     # 3. hybrid_reentry.harness.load_ohlc_with_timestamps_csv parses ISO dates & skips bad ts row
     iso_csv = tmp_path / "equity_iso.csv"

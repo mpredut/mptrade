@@ -194,7 +194,7 @@ def test_t212_grid_spec_matching_empty_row_filter_and_fetch_threshold(tmp_path, 
 
     # Verify fetch.py > 32 bar threshold matches grid.py WARM + 12 (32)
     fetch_src = read_text_file(ROOT / "offline/research/t212_continuous_grid/fetch.py")
-    assert ") > 32:" in fetch_src
+    assert ") > 32" in fetch_src
 
 
 def test_hybrid_reentry_report_validates_test_id_and_fails_closed(tmp_path, monkeypatch):
