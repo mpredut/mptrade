@@ -17,7 +17,7 @@ from intelligence.macro.lexicon_ssot import (
     has_acute_shock_keywords,
     record_dynamic_crisis_terms_from_assessment,
 )
-from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot
+from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,

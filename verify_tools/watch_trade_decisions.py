@@ -20,12 +20,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 import cacheManager as cm  # noqa: E402
-from providers.base import (
-    extract_order_price,
-    extract_timestamp_ms,
-)
 from providers.market_api import api as mkt  # noqa: E402
-from providers.order_ohlc_utils import extract_order_qty, summarize_order_position
+from providers.order_ohlc_utils import summarize_order_position
 from providers.quantity import resolve_assets  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
 from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402

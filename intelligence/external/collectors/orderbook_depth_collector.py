@@ -23,7 +23,7 @@ from cachepaths import (
 )
 from instrument_registry import is_equity_symbol, venue_for_symbol
 from providers.base import MarketDataProvider
-from state_io import read_json_dict, read_json_dict_recovering, save_json_state
+from state_io import read_json_dict
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 

@@ -21,7 +21,6 @@ from intelligence.external.collectors.base_collector import (
     _clean_snapshot_ts,
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json
-from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
 

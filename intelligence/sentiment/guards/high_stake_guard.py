@@ -37,7 +37,6 @@ from intelligence.sentiment.gemini_client import (
     GeminiClient,
     query_topic_json as _default_query_topic_json,
 )
-from state_io import read_json_dict_recovering as read_json_cached
 
 collect_pretrade_telemetry = _default_collect_pretrade_telemetry
 read_pretrade_telemetry_snapshot = _default_read_pretrade_telemetry_snapshot

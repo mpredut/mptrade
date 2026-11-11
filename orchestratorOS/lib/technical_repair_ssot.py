@@ -31,7 +31,6 @@ from botcore import (
     parse_dotenv_line,
     parse_notify_enabled_flag,
     parse_procs_manifest,
-    resolve_heartbeat_paths,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,

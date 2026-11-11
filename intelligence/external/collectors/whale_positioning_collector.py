@@ -20,7 +20,7 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
-from instrument_registry import is_equity_symbol, venue_for_symbol
+from instrument_registry import is_equity_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,
@@ -31,7 +31,6 @@ from intelligence.external.collectors.base_collector import (
     is_cache_fresh,
 )
 from intelligence.macro_sentiment_ssot import fetch_public_json, resolve_now_ts
-from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 

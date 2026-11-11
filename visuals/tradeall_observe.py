@@ -56,7 +56,7 @@ from cachepaths import (
     get_cachedb_dir,
     resolve_cachedb_filepath,
 )
-from instrument_registry import casefold_get, symbols_for
+from instrument_registry import symbols_for
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path(CACHE_SHORT_TREND_FILENAME)
 

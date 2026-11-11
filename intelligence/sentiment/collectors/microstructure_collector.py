@@ -142,7 +142,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get, is_equity_symbol
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
-    read_json_file,
     read_json_recovering,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,

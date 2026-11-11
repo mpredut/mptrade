@@ -58,7 +58,6 @@ def is_in_live_price_fetch() -> bool:
 from .order_ohlc_utils import (  # noqa: E402, F401
     ClosedPriceSeries,
     VENUE_PROVIDER_SPECS,
-    _is_fresh_obs_ts,
     _ts_ms_to_s,
     aggregate_fills_by_order_id,
     derive_venue_128bit_client_order_id,
@@ -528,6 +527,39 @@ class MarketDataProvider(ABC):
         except Exception:
             pass
         return {}
+
+    @classmethod
+    def resolve_instrument_cached_fee_and_limits(
+        cls,
+        inst: Any,
+        venue: str,
+        symbol: str,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
+        """Resolve cached fee and limit metadata from an ``Instrument`` or compatible stub."""
+        if inst is None:
+            return {}
+        inst_hook = getattr(type(inst), "cached_fee_and_limits", None)
+        if callable(inst_hook):
+            try:
+                res = inst.cached_fee_and_limits(price=price)
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+        mock_children = getattr(inst, "_mock_children", None)
+        if isinstance(mock_children, dict) and "provider" in mock_children and "_provider" not in mock_children:
+            prov = getattr(inst, "provider", None)
+        else:
+            prov = getattr(inst, "_provider", None)
+            if prov is None or isinstance(prov, str):
+                prov = getattr(inst, "provider", None)
+        if prov is None or isinstance(prov, str):
+            return {}
+        return cls.resolve_provider_cached_fee_and_limits(
+            venue, symbol, prov, price=price
+        )
 
     @classmethod
     def fetch_venue_remote_trades(

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import statistics
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))

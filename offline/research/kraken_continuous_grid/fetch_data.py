@@ -17,10 +17,6 @@ from offline.backtests.datasets import save_dataset, validate_dataset
 from providers.market_api import api as mkt
 from state_io import atomic_snapshot_file
 
-
-def fetch_ohlc_candles(symbol: str, interval: int = 240, **kwargs) -> list[dict]:
-    return mkt.fetch_ohlc_candles(symbol, interval=interval, provider_name="binance", **kwargs)
-
 EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
 ASSETS = ("TAO", "ADA", "SOL", "BTC", "ETH", "XRP", "DOGE", "LINK", "AVAX", "BNB")
@@ -32,7 +28,9 @@ def fetch(symbol: str, name: str, force: bool = False) -> bool:
     if not force and os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
         print(f"[fetch] {name}: using cached {out_path}", flush=True)
         return True
-    candles = fetch_ohlc_candles(symbol, interval=240, start_ms=START_MS, drop_incomplete=True)
+    candles = mkt.fetch_ohlc_candles(
+        symbol, interval=240, provider_name="binance", start_ms=START_MS, drop_incomplete=True,
+    )
     if not candles:
         print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
         return os.path.exists(out_path) and os.path.getsize(out_path) > 1024

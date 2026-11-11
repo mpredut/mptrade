@@ -21,7 +21,6 @@ from intelligence.macro_sentiment_ssot import (
     compute_equity_macro_regime as _ssot_compute_equity_macro_regime,
     compute_futures_premarket_lead as _ssot_compute_futures_premarket_lead,
     format_macro_benchmarks_summary_line,
-    get_cross_asset_regimes,
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
     normalize_epoch_sec,

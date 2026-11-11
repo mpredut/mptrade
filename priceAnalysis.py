@@ -42,7 +42,6 @@ from intelligence.internal.state.survival import (
     last_timestamp,
     last_w,
 )
-from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from instrument_registry import casefold_get, is_equity_symbol
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
