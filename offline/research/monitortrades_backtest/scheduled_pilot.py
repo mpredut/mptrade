@@ -54,7 +54,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import log
 from botcore import (
     FileLock,
-    _parse_bool_flag,
     bool_env,
     float_env,
     int_env,

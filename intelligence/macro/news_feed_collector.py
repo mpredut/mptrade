@@ -15,7 +15,6 @@ import xml.etree.ElementTree as ET
 from botcore import (
     _parse_bool_flag,
     fetch_public_bytes,
-    is_cache_fresh,
     normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,

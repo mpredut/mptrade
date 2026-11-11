@@ -218,6 +218,54 @@ def make_spot_test_params(**overrides):
     return strat.StratParams(**values)
 
 
+def make_spot_live_test_params(**overrides):
+    """Build a live-reconciliation ``strategies.spot_engine.StratParams`` test instance with overrides."""
+    return make_spot_test_params(
+        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
+        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0, **overrides,
+    )
+
+
+_DEFAULT_MARGINS_SNAPSHOT: dict | None = None
+
+
+def make_test_margins(*, disable_external_pillars: bool = False, strip_venue_refs: bool = False, **overrides) -> dict:
+    """Build an ``order_guard._load_margins()`` copy with optional test overrides."""
+    global _DEFAULT_MARGINS_SNAPSHOT
+    if _DEFAULT_MARGINS_SNAPSHOT is None:
+        import order_guard
+
+        _DEFAULT_MARGINS_SNAPSHOT = dict(order_guard._load_margins())
+    base = dict(_DEFAULT_MARGINS_SNAPSHOT)
+    if disable_external_pillars:
+        base.update({
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "geopolitical_guard_mode": "off",
+            "weibull_exhaustion_policy": "off",
+        })
+    if strip_venue_refs:
+        for k in (
+            "binance_buy_reference", "binance_sell_reference",
+            "kraken_buy_reference", "kraken_sell_reference",
+            "assetguardian_buy_reference", "assetguardian_sell_reference",
+            "monitortrades_buy_reference", "monitortrades_sell_reference",
+            "tradeall_buy_reference", "tradeall_sell_reference",
+            "rtrade_buy_reference", "rtrade_sell_reference",
+            "kraken_window_h",
+        ):
+            base.pop(k, None)
+        base.update({
+            "default": 1.15, "binance": 1.15, "default_window_h": 0.0,
+            "default_max_daily_trades": 30, "default_safeback_sec": 14 * 24 * 3600 + 60,
+            "default_buy_reference": "strict",
+            "default_sell_reference": "strict",
+        })
+    base.update(overrides)
+    return base
+
+
 def make_test_regime_context(symbol: str = "BTCUSDC", provider: str = "binance", *, regime: str = "bull"):
     """Build a fresh mock ``MarketRegimeContext`` for guard and instrument tests."""
     from market_regime import MarketRegimeContext, MarketRegimeDecision

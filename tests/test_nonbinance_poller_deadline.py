@@ -390,8 +390,6 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertEqual(val, "on")
 
     def test_ws_stream_dynamic_add_remove_and_provider_ssot_cache_helpers(self):
-        from providers.base import MarketDataProvider
-
         # 1. Dynamic add_symbol / remove_symbol on KrakenPriceStream and HyperliquidPriceStream
         krk_stream = cm.KrakenPriceStream(["HYPEUSD"])
         self.assertTrue(krk_stream.add_symbol("BTC/USD"))

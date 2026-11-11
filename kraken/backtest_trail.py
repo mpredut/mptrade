@@ -28,7 +28,6 @@ from botcore import (
     normalize_epoch_sec,
     require_nonneg_float,
     require_pos_float,
-    safe_float,
     safe_int,
     safe_nonneg_int,
     safe_pos_float,

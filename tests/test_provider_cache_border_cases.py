@@ -1632,7 +1632,6 @@ def test_expired_orders_sync_mode_trailing_status_and_runtime_flag_border_cases(
     """Verify Wave 8 border cases across iter_expired_open_order_ids, SyncModeMixin, equity context bars, trailing logs, and RuntimeServices."""
     from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
-    from intelligence.macro.daemon_ssot import CachedHttpJsonCollector
     from intelligence.macro.news_feed_collector import NewsFeedCollector
     from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
     from intelligence.sentiment.sentiment_advisor import SentimentAdvisor

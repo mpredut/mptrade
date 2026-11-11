@@ -1157,8 +1157,6 @@ def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
 
 def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
     """Verify glob.escape handling on directory paths containing brackets and export env parsing."""
-    from orchestratorTrade import autonomous_intent_gateway as aig
-
     bracket_dir = tmp_path / "dir[with]brackets"
     bracket_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3434,7 +3432,6 @@ def test_batch21_monitortrades_position_exit_manager_and_active_intents_hardenin
 
 def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     import binance_api.market_data as b_md
-    from providers.base import MarketDataProvider
     from providers.order_ohlc_utils import extract_order_side
 
     # 1. bapi_ws._parse_bool_flag, safe_nonneg_float, and _interruptible_sleep handle bool/NaN/negative/0 inputs safely
@@ -5222,7 +5219,6 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     from providers import order_ohlc_utils as oou
     from providers import quantity as pqty
     from providers import market_api as pmarket
-    from providers import kraken_provider as pkraken
 
     # 1. providers.order_ohlc_utils.clean_order_id normalizes '+12345.0' and rejects '+0.0'
     assert oou.clean_order_id("+12345.0") == "12345"

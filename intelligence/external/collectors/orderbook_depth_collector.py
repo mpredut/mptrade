@@ -21,7 +21,7 @@ from cachepaths import (
     canonical_symbol_key,
     resolve_binance_lookup_symbol,
 )
-from instrument_registry import is_equity_symbol, venue_for_symbol
+from instrument_registry import venue_for_symbol
 from providers.base import MarketDataProvider
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")

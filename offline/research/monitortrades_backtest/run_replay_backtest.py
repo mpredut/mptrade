@@ -39,7 +39,6 @@ if ROOT not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import (
-    _parse_bool_flag,
     bool_env,
     int_env,
     load_ini_config,

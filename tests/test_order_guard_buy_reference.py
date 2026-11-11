@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard  # noqa: E402
 from instrument import Instrument
 from providers.market_api import MarketApi
-from tests.conftest import DummySpotExecutionProvider
+from tests.conftest import DummySpotExecutionProvider, make_test_margins
 
 
 from types import SimpleNamespace
@@ -35,26 +35,7 @@ def _OrdersProvider(orders=(), *, last_fill=None, side_filter=None, name="binanc
     )
 
 
-def _margins(**overrides):
-    base = dict(order_guard._load_margins())
-    for k in (
-        "binance_buy_reference", "binance_sell_reference",
-        "kraken_buy_reference", "kraken_sell_reference",
-        "assetguardian_buy_reference", "assetguardian_sell_reference",
-        "monitortrades_buy_reference", "monitortrades_sell_reference",
-        "tradeall_buy_reference", "tradeall_sell_reference",
-        "rtrade_buy_reference", "rtrade_sell_reference",
-        "kraken_window_h",
-    ):
-        base.pop(k, None)
-    base.update({
-        "default": 1.15, "binance": 1.15, "default_window_h": 0.0,
-        "default_max_daily_trades": 30, "default_safeback_sec": 14 * 24 * 3600 + 60,
-        "default_buy_reference": "strict",
-        "default_sell_reference": "strict",
-    })
-    base.update(overrides)
-    return base
+_margins = lambda **overrides: make_test_margins(strip_venue_refs=True, **overrides)
 
 
 class BuyReferenceSwitchTest(unittest.TestCase):

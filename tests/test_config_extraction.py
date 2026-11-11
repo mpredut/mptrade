@@ -37,7 +37,7 @@ from providers.strategy_executor import PairPrecision
 import strategies
 from strategies import spot_engine
 from strategies.spot_engine import StratParams
-from tests.conftest import make_spot_test_params
+from tests.conftest import make_spot_live_test_params, make_spot_test_params
 from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 
 # Computed values (identical to what the original files did).
@@ -292,11 +292,7 @@ def _Executor():
     return SimpleNamespace(pair_precision=lambda _symbol: PairPrecision(2, 4, 0.01, "ASSET"))
 
 
-def _params():
-    return make_spot_test_params(
-        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0,
-    )
+_params = make_spot_live_test_params
 
 
 class SpotModuleBoundaryTest(unittest.TestCase):

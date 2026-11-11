@@ -38,13 +38,9 @@ import subprocess
 from intelligence.daemon import IntelligenceTelemetryDaemon
 from offline.backtests.evaluation import load_venue_module
 from order_guard import check_intelligence_guards
-from tests.conftest import MockHttpResponse
+from tests.conftest import MockHttpResponse, make_test_margins
 
-_BASE_MARGINS = dict(order_guard._load_margins())
-
-
-def _margins(**overrides):
-    return {**_BASE_MARGINS, **overrides}
+_margins = make_test_margins
 
 
 # =====================================================================

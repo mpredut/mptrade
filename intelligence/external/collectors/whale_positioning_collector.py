@@ -20,7 +20,6 @@ from cachepaths import (
     resolve_binance_lookup_symbol,
     telemetry_cache_file_path,
 )
-from instrument_registry import is_equity_symbol
 from intelligence.external.collectors.base_collector import (
     TelemetryCollectorFactory,
     _DiskBackedSymbolCollector,

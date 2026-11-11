@@ -5530,8 +5530,6 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
 
 
 def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
-    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
     from state_io import save_json_state
 
     t0 = 1_793_300_000_000

@@ -284,7 +284,6 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
     import instrument
     import order_retry
     import monitortrades as mt
-    from binance_api import bapi_trades
 
     # 1. Explicit remainingQty=0 must return 0.0 instead of falling back to origQty/quantity
     assert extract_remaining_qty({"remainingQty": 0.0, "origQty": 1.5, "quantity": 1.5}) == 0.0
@@ -452,7 +451,6 @@ def test_cache_order_on_items_update_routes_through_persist_items(tmp_path):
 
 def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
     """Verify Hyperliquid Strategy does not drop tracked open/close orders or place duplicates when cancel fails."""
-    import importlib.util
     import os
     from botcore import load_local_module
 

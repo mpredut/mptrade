@@ -32,7 +32,6 @@ from botcore import (
     exact_int,
     exact_pos_int,
     float_env,
-    load_layered_env_config,
     load_local_module,
     normalize_epoch_sec,
     require_pos_float,

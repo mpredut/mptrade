@@ -446,7 +446,6 @@ def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
 
 def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     from providers.base import live_price_fetch_context
-    from providers.execution_audit import AuditedStrategyExecutor
     from providers.hyperliquid_provider import HyperliquidProvider
     from providers.kraken_provider import KrakenProvider
     from instrument_registry import venue_for_symbol

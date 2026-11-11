@@ -31,8 +31,7 @@ def _series():
     return pts
 
 
-def _params(**over):
-    return make_spot_test_params(**over)
+_params = make_spot_test_params
 
 
 class ReplayEngineTest(unittest.TestCase):

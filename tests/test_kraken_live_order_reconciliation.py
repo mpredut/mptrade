@@ -19,16 +19,11 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from strategies import spot_engine as strat  # noqa: E402
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError  # noqa: E402
 from botcore import parse_dotenv  # noqa: E402
-from tests.conftest import make_spot_test_params  # noqa: E402
+from tests.conftest import make_spot_live_test_params  # noqa: E402
 
 _CONFIG_ENV = parse_dotenv(os.path.join(ROOT, "kraken", "config.env"))
 
-
-def _params(**overrides):
-    return make_spot_test_params(
-        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
-        reentry_drop_pct=2.2, reentry_tolerance_pct=0.0, **overrides,
-    )
+_params = make_spot_live_test_params
 
 
 def _strategy(*, state=None, **param_overrides):

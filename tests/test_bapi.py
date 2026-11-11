@@ -1093,7 +1093,6 @@ def test_binanceprovider_submit_order_rejects_invalid_sides_instead_of_mapping_i
 
 def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractional_decimals_in_iter96_s3():
     """[ITER96 #3] MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price & ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation & resolve_assets & balance_cap_quantity bool rejection & BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price."""
-    from providers.base import MarketDataProvider
     from providers.market_api import MarketApi
     from providers.quantity import balance_cap_quantity, resolve_assets
     from providers.replay_provider import ReplayMarketDataProvider

@@ -2241,8 +2241,6 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
 
 
 def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision(tmp_path, monkeypatch):
-    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
-
     # 1. resolve_hierarchical_guard_mode cascades "shadow" from intelligence_guards_mode
     assert (
         resolve_hierarchical_guard_mode(
@@ -3487,7 +3485,6 @@ def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_pric
 
 
 def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
-    import importlib.util
     import utils as u
     import shadow_signals
     import tradeall
@@ -4895,8 +4892,6 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
 
 
 def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes(tmp_path, monkeypatch, capsys):
-    import binance_api
-
     # 1. Reloading host modules refreshes Package E/H aliases in sys.modules and parent packages
     ir_reloaded = importlib.reload(instrument_registry)
     assert sys.modules.get("symbols") is ir_reloaded

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
-from tests.conftest import DummyGeminiClient, DummySpotExecutionProvider, make_test_regime_context
+from tests.conftest import DummyGeminiClient, DummySpotExecutionProvider, make_test_margins, make_test_regime_context
 from types import SimpleNamespace
 from instrument import Instrument
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -41,19 +41,7 @@ from pathlib import Path
 import numpy as np
 
 
-_BASE_MARGINS = dict(order_guard._load_margins())
-
-
-def _margins(**overrides):
-    return {
-        **_BASE_MARGINS,
-        "whale_guard_mode": "off",
-        "orderbook_wall_guard_mode": "off",
-        "funding_guard_mode": "off",
-        "geopolitical_guard_mode": "off",
-        "weibull_exhaustion_policy": "off",
-        **overrides,
-    }
+_margins = lambda **overrides: make_test_margins(disable_external_pillars=True, **overrides)
 
 
 _build_test_context = make_test_regime_context
@@ -2035,7 +2023,6 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Verify CacheShortTrendManager resolves cross-venue symbol variants (TAOUSD -> TAOUSDC)
         and bapi_placeorder.if_place_safe_order skips trade history fetch when G_PROF is bypassed."""
         from cachetrend import CacheShortTrendManager
-        from binance_api import bapi_placeorder
 
         st_file = tmp_path / "cache_short_trend.json"
         now_s = time.time()

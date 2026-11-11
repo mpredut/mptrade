@@ -507,7 +507,6 @@ def test_pyproject_python_version_and_active_packages_aligned():
     import tomllib
     import pytest
     import order_guard
-    import monitortrades as mt
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["requires-python"] == ">=3.12"

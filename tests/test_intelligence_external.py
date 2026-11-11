@@ -824,7 +824,6 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
     def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
         from intelligence.sentiment.evaluators.microstructure_evaluator import (
-            compute_liquidation_clusters,
             enrich_microstructure_cvd,
         )
         from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
