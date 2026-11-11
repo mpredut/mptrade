@@ -89,15 +89,13 @@ class ReplayDeterminismTest(unittest.TestCase):
         )
 
         # Run 2: monkeypatch time.time to return an arbitrary future timestamp that advances arbitrarily
-        class TimeWarp:
-            def __init__(self):
-                self._t = 2_000_000_000.0
+        warp_t = [2_000_000_000.0]
 
-            def __call__(self):
-                self._t += 137.5
-                return self._t
+        def _time_warp():
+            warp_t[0] += 137.5
+            return warp_t[0]
 
-        with patch("time.time", side_effect=TimeWarp()):
+        with patch("time.time", side_effect=_time_warp):
             res2 = run_replay(
                 bars,
                 params,
@@ -279,16 +277,12 @@ class ReplayDeterminismTest(unittest.TestCase):
             reentry_pullback_adaptive=True,
         )
 
-        class SimClock:
-            def __call__(self):
-                return 1000.0
-
         strat = mod.Strategy(
             client=client,
             ticker="AAPL_US_EQ",
             params=params,
             dry_run=True,
-            clock=SimClock(),
+            clock=lambda: 1000.0,
         )
 
         self.assertTrue(strat.replay_mode)

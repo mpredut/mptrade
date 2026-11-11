@@ -499,21 +499,18 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
         encoding="utf-8",
     )
 
-    class _BoomClient:
-        def spot_mid(self, pair):
-            raise AssertionError("should have used SSOT cache")
-
-        def last_price(self, pair):
-            raise AssertionError("should have used SSOT cache")
-
+    boom_cli = SimpleNamespace(
+        spot_mid=lambda pair: (_ for _ in ()).throw(AssertionError("should have used SSOT cache")),
+        last_price=lambda pair: (_ for _ in ()).throw(AssertionError("should have used SSOT cache")),
+    )
     hl_prov = HyperliquidProvider(token="HYPE", live_enabled=False)
-    hl_prov._client = _BoomClient()
+    hl_prov._client = boom_cli
     hl_prov._spot_pair = "@107"
     hl_prov._ssot_price_cache_path = str(price_cache)
     hl_prov._ssot_trend_cache_path = str(trend_cache)
     hl_prov._ssot_24price_cache_dir = str(tmp_path)
 
-    kr_prov = KrakenProvider(client=_BoomClient())
+    kr_prov = KrakenProvider(client=boom_cli)
     kr_prov._ssot_price_cache_path = str(price_cache)
     kr_prov._ssot_trend_cache_path = str(trend_cache)
     kr_prov._ssot_24price_cache_dir = str(tmp_path)
@@ -662,24 +659,16 @@ def test_registry_execution_independence_and_layered_binding(tmp_path):
 
     # 3. Instrument.from_spec binds provider and forwards per-order order_validity without mutating provider state
     captured_kwargs = {}
-
-    class _FakeT212Provider(_Provider):
-        name = "t212"
-
-        @staticmethod
-        def guards_internally():
-            return True
-
-        @staticmethod
-        def is_execution_enabled():
-            return True
-
-        @staticmethod
-        def place_order(symbol, side, price, qty, **kwargs):
-            captured_kwargs.update(kwargs)
-            return {"orderId": "t212_1", "status": "FILLED"}
-
-    inst = Instrument.from_spec(spec, api=type("_T212Api", (), {"provider_by_name": staticmethod(lambda _n: _FakeT212Provider())})())
+    fake_t212 = SimpleNamespace(
+        name="t212",
+        validate_symbol=_Provider.validate_symbol,
+        guards_internally=lambda: True,
+        is_execution_enabled=lambda: True,
+        place_order=lambda symbol, side, price, qty, **kwargs: (
+            captured_kwargs.update(kwargs) or {"orderId": "t212_1", "status": "FILLED"}
+        ),
+    )
+    inst = Instrument.from_spec(spec, api=SingleProviderApi(fake_t212))
     assert inst.spec is spec
     res = inst.place("BUY", 120.0, 2.0, market=True)
     assert res["orderId"] == "t212_1"

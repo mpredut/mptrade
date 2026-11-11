@@ -23,7 +23,7 @@ import threading
 from decimal import Decimal
 from providers.base import extract_order_price
 from providers.strategy_executor import ProviderError
-from tests.conftest import MockHttpResponse
+from tests.conftest import DummySpotExecutionProvider, MockHttpResponse
 
 SYMBOL = "BTCUSDC"
 TAO_SYMBOL = "TAOUSDC"
@@ -1098,31 +1098,9 @@ def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractiona
     from providers.quantity import balance_cap_quantity, resolve_assets
     from providers.replay_provider import ReplayMarketDataProvider
     # 3. MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price
-    class _DummyProvider(MarketDataProvider):
-        name = "dummy"
-
-        def get_current_price(self, symbol: str):
-            return 100.0
-
-        def get_price_history(self, symbol: str, lookback_h: float):
-            return []
-
-        def supports_symbol(self, symbol: str) -> bool:
-            return True
-
-        def free_balance(self, asset: str):
-            return 100.0
-
-        def get_orders(self, symbol: str, side, since_s: float):
-            return [{"side": side or "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000}]
-
-        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
-            return None
-
-        def pair_precision(self, symbol: str):
-            return type("PP", (), {"volume_decimals": 2.5, "price_decimals": 3.5, "order_min": 0.01})()
-
-    dp = _DummyProvider()
+    dp = DummySpotExecutionProvider("dummy")
+    dp.get_orders = lambda symbol, side, since_s: [{"side": side or "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000}]
+    dp.pair_precision = lambda symbol: SimpleNamespace(volume_decimals=2.5, price_decimals=3.5, order_min=0.01)
     assert dp.last_opposite_fill("BTCUSDC", True) is None
     assert dp.last_opposite_fill("BTCUSDC", "INVALID") is None
     assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(100.0)

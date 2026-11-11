@@ -3029,15 +3029,17 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     cache_file = str(tmp_path / "cache_trade_kraken.json")
     pulled_event = threading.Event()
 
-    class _FakeKrakenClient:
-        def _private(self, method, data=None, fresh=False):
+    fake_kraken_cli = SimpleNamespace(
+        _private=lambda method, data=None, fresh=False: (
             pulled_event.set()
-            return {
+            or {
                 "ledger": {
                     "L1": {"refid": "R10", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000010.0},
                     "L2": {"refid": "R10", "asset": "ZUSD", "amount": "-60.0", "type": "trade", "time": 1700000010.0},
                 }
             }
+        )
+    )
 
     monkeypatch.setattr(
         KrakenProvider,
@@ -3058,7 +3060,7 @@ def test_kraken_account_trade_bridge_poll_lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(
         KrakenProvider,
         "build_cache_client",
-        classmethod(lambda _cls: (_FakeKrakenClient(), "Kraken CACHE")),
+        classmethod(lambda _cls: (fake_kraken_cli, "Kraken CACHE")),
     )
 
     bridge = cacheaccount._KrakenAccountTradeBridge()

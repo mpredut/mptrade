@@ -413,9 +413,6 @@ class RuntimeImportSafetyTest(unittest.TestCase):
     def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
         from types import SimpleNamespace
 
-        class _RecvWindowError(Exception):
-            code = -1021
-
         calls = []
 
         def _req_retry(method, uri, signed, force_params=False, **kwargs):
@@ -425,7 +422,9 @@ class RuntimeImportSafetyTest(unittest.TestCase):
                 if isinstance(data, dict):
                     data["timestamp"] = 111
                     data["signature"] = "stale_sig"
-                raise _RecvWindowError("Timestamp outside recvWindow")
+                err = Exception("Timestamp outside recvWindow")
+                err.code = -1021
+                raise err
             return {"ok": True, "data": data}
 
         dummy = SimpleNamespace(
@@ -443,24 +442,24 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertEqual(calls[1], {"symbol": "BTCUSDC"})
         self.assertEqual(bapi_client.REQUEST_RECVWINDOW_MS, 30000)
 
-        class _Html500Error(Exception):
-            code = 0
-            status_code = 500
-            def __init__(self):
-                self.message = "Invalid JSON error message from Binance: <html>\r\n<head><title>500 Internal Server Error</title></head>\r\n</html>"
-            def __str__(self):
-                return f"APIError(code={self.code}): {self.message}"
+        def _make_html500():
+            msg = "Invalid JSON error message from Binance: <html>\r\n<head><title>500 Internal Server Error</title></head>\r\n</html>"
+            err = RuntimeError(f"APIError(code=0): {msg}")
+            err.code = 0
+            err.status_code = 500
+            err.message = msg
+            return err
 
         fail500 = SimpleNamespace(calls=0)
         fail500._request = lambda method, uri, signed, force_params=False, **kwargs: (
-            setattr(fail500, "calls", fail500.calls + 1) or (_ for _ in ()).throw(_Html500Error())
+            setattr(fail500, "calls", fail500.calls + 1) or (_ for _ in ()).throw(_make_html500())
         )
         bapi_client._install_recvwindow_retry(fail500)
-        with self.assertRaises(_Html500Error) as ctx:
+        with self.assertRaises(RuntimeError) as ctx:
             fail500._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
         self.assertEqual(fail500.calls, 2)
-        self.assertNotIn("\n", str(ctx.exception))
-        self.assertNotIn("\r", str(ctx.exception))
+        self.assertNotIn("\n", ctx.exception.message)
+        self.assertNotIn("\r", ctx.exception.message)
 
     def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
         from types import SimpleNamespace

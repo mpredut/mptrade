@@ -306,7 +306,10 @@ class SingleProviderApi:
         return None
 
 
-class DummySpotExecutionProvider:
+from providers.base import MarketDataProvider
+
+
+class DummySpotExecutionProvider(MarketDataProvider):
     """Minimal spot execution provider stub for ``Instrument.place`` and ``MarketApi.place`` tests."""
 
     name = "kraken"
@@ -320,6 +323,7 @@ class DummySpotExecutionProvider:
         free_bal: float = 10000.0,
         wait_short_trend: bool = False,
         requires_permit: bool = False,
+        use_real_quantity_decision: bool = False,
     ):
         if name is not None:
             self.name = name
@@ -328,6 +332,7 @@ class DummySpotExecutionProvider:
         self._free_bal = free_bal
         self._wait_short_trend = wait_short_trend
         self._requires_permit = requires_permit
+        self._use_real_quantity_decision = use_real_quantity_decision
 
     def supports_symbol(self, sym):
         return self._symbol is None or sym == self._symbol
@@ -362,9 +367,6 @@ class DummySpotExecutionProvider:
     def preflight_order(self, *a, **k):
         return None
 
-    def round_price(self, sym, px):
-        return px
-
     def round_amount(self, sym, q):
         return round(float(q), 4)
 
@@ -396,6 +398,8 @@ class DummySpotExecutionProvider:
         return None
 
     def quantity_decision(self, symbol, side, price, qty, **kw):
+        if self._use_real_quantity_decision:
+            return super().quantity_decision(symbol, side, price, qty, **kw)
         from providers.quantity import QuantityDecision
 
         rc = kw.get("regime_context")

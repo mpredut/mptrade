@@ -4,6 +4,7 @@
   - calculation API and fast on_price_update channel
 """
 import os, sys, json, time, unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import cacheintegrity
 import pricewindow as pw_mod
@@ -1072,12 +1073,10 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         )
         self.assertEqual(persisted_events, [])
 
-        class _ExplodingCache:
-            def _is_valid_item(self, _item):
-                return True
-
-            def _persist_items(self, _symbol, _items):
-                raise RuntimeError("boom")
+        exploding_cache = SimpleNamespace(
+            _is_valid_item=lambda _item: True,
+            _persist_items=lambda _symbol, _items: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
 
         trade_event = {
             "e": "executionReport",
@@ -1096,12 +1095,12 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         }
         self.assertFalse(
             bapi_ws_bridge.upsert_order_from_execution_report(
-                trade_event, cache_getter=lambda _name, **_kw: _ExplodingCache()
+                trade_event, cache_getter=lambda _name, **_kw: exploding_cache
             )
         )
         self.assertFalse(
             bapi_ws_bridge.append_trade_from_execution_report(
-                trade_event, cache_getter=lambda _name, **_kw: _ExplodingCache()
+                trade_event, cache_getter=lambda _name, **_kw: exploding_cache
             )
         )
         self.assertFalse(bapi_ws_bridge._bridge_is_usable(type("_DeadBridge", (), {"is_running": False})()))
@@ -1113,7 +1112,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             "get_cache_manager",
             side_effect=lambda name, *args, **kwargs: (
                 seen_sync_flags.append((name, kwargs.get("data_sync_mode", "disk_reader"))),
-                _ExplodingCache(),
+                exploding_cache,
             )[1],
         ):
             bapi_ws_bridge.upsert_order_from_execution_report(trade_event)
@@ -1347,20 +1346,17 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(cpm.get_sample_rate("BTCUSDT", fallback=1.5), 1.5)
 
         # paginate_my_trades handles string IDs and breaks on non-advancing IDs
+        mock_client = SimpleNamespace(calls=0)
 
-        class _MockTradeClient:
-            def __init__(self):
-                self.calls = 0
+        def _get_my_trades(**kwargs):
+            mock_client.calls += 1
+            if mock_client.calls == 1:
+                return [{"id": "10"}, {"id": "11"}]
+            if mock_client.calls == 2:
+                return [{"id": "11"}, {"id": "11"}]  # non-advancing -> must break
+            return [{"id": "99"}]
 
-            def get_my_trades(self, **kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    return [{"id": "10"}, {"id": "11"}]
-                if self.calls == 2:
-                    return [{"id": "11"}, {"id": "11"}]  # non-advancing -> must break
-                return [{"id": "99"}]
-
-        mock_client = _MockTradeClient()
+        mock_client.get_my_trades = _get_my_trades
         with unittest.mock.patch.object(bapi_allorders.time, "sleep"):
             pages = bapi_allorders.paginate_my_trades(mock_client, "BTCUSDT", 1000, limit=2)
         self.assertEqual(len(pages), 4)

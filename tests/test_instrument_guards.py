@@ -61,6 +61,8 @@ class _FakeProvider(MarketDataProvider):
         adjust_price_fn=None,
         defers_cancel=False,
         reconcile_caps=None,
+        requires_permit=False,
+        supports_biz_min=False,
     ):
         self._name = name
         self._price = price
@@ -75,6 +77,11 @@ class _FakeProvider(MarketDataProvider):
         self._adjust_price_fn = adjust_price_fn
         self._defers_cancel = defers_cancel
         self._reconcile_caps = reconcile_caps
+        self._requires_permit = requires_permit
+        self._supports_biz_min = supports_biz_min
+        self.state_prepared = 0
+        self.state_validated = 0
+        self.preflight_calls = []
         self._orders = []   # [{"side","price","qty","timestamp"(ms)}]
         self.placed = []    # REAL calls to place_order (after every gate)
         self.status_calls = []
@@ -82,6 +89,26 @@ class _FakeProvider(MarketDataProvider):
     @property
     def name(self):
         return self._name
+
+    def requires_cache_permit(self):
+        return self._requires_permit
+
+    def supports_business_minimum(self):
+        return self._supports_biz_min
+
+    def prepare_order_state(self):
+        self.state_prepared += 1
+        return {"snap": self.state_prepared}
+
+    def validate_order_state(self, state):
+        self.state_validated += 1
+        assert state == {"snap": 1}
+
+    def preflight_order(self, symbol, side, qty, price=None, **kwargs):
+        if self._requires_permit:
+            self.preflight_calls.append((symbol, side, qty, price, kwargs))
+            return {"permit_qty": qty, "seq": len(self.preflight_calls)}
+        return super().preflight_order(symbol, side, qty, price=price, **kwargs)
 
     def execution_enabled(self):
         if callable(self.live):
@@ -1574,39 +1601,14 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # ------------------------------------------------------------------
         with self.subTest("permit_market_dispatch_late_scale_and_claim_sync"):
             clear_all()
-
-            class _PermitMarketProvider(_FakeProvider):
-                def __init__(self):
-                    super().__init__(name="Binance", price=100.0)
-                    self.state_prepared = 0
-                    self.state_validated = 0
-                    self.preflight_calls = []
-
-                def requires_cache_permit(self):
-                    return True
-
-                def supports_business_minimum(self):
-                    return True
-
-                def prepare_order_state(self):
-                    self.state_prepared += 1
-                    return {"snap": self.state_prepared}
-
-                def validate_order_state(self, state):
-                    self.state_validated += 1
-                    assert state == {"snap": 1}
-
-                def preflight_order(self, symbol, side, qty, price, **kwargs):
-                    self.preflight_calls.append((symbol, side, qty, price, kwargs))
-                    return {"permit_qty": qty, "seq": len(self.preflight_calls)}
-
-                def profit_guard_window_ref(self, symbol, side, safeback_sec, **kwargs):
-                    return 100.0
-
-                def policy_cap_quantity(self, symbol, side, price, qty, available_qty, **kwargs):
-                    return qty
-
-            p_perm = _PermitMarketProvider()
+            p_perm = _FakeProvider(
+                name="Binance",
+                price=100.0,
+                requires_permit=True,
+                supports_biz_min=True,
+                window_ref=100.0,
+                policy_cap=lambda symbol, side, price, qty, available_qty, **kwargs: qty,
+            )
             inst_perm = self._inst(p_perm)
             # Late intelligence scale triggered only during final market profit_guard
             late_regime = {"regime": "bear", "suggested_scale": 1.0}

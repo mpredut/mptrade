@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
-from tests.conftest import DummyGeminiClient, make_test_regime_context
+from tests.conftest import DummyGeminiClient, DummySpotExecutionProvider, make_test_regime_context
 from types import SimpleNamespace
 from instrument import Instrument
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -299,9 +299,9 @@ class TestCase3BinanceArchivedIsolation:
     def test_archived_order_recognized_only_on_get_order(self, monkeypatch):
         bp = BinanceProvider()
         mock_bapi = MagicMock()
-        class BinanceApiErr(Exception):
-            code = -2026
-        mock_bapi.client.get_order.side_effect = BinanceApiErr("Order was canceled or archived -2026")
+        err = Exception("Order was canceled or archived -2026")
+        err.code = -2026
+        mock_bapi.client.get_order.side_effect = err
         monkeypatch.setattr("providers.market_api._get_bapi", lambda: mock_bapi)
 
         status = bp.order_status("BTCUSDC", "12345")
@@ -405,19 +405,8 @@ class TestCase5HistoryFailClosed:
             hp.open_orders("PURR/USDC")
 
     def test_window_reference_and_last_opposite_fill_fail_closed_on_none_history(self):
-        from providers.base import MarketDataProvider
-        class NoneHistoryProvider(MarketDataProvider):
-            @property
-            def name(self):
-                return "mock"
-            def get_current_price(self, symbol):
-                return 100.0
-            def supports_symbol(self, symbol):
-                return True
-            def get_orders(self, symbol, side, since_s):
-                return None
-
-        p = NoneHistoryProvider()
+        p = DummySpotExecutionProvider("mock")
+        p.get_orders = lambda symbol, side, since_s: None
         with pytest.raises(ProviderError, match="failed to read order history"):
             order_guard.window_reference(p, "BTCUSDC", "BUY", 3600.0)
 

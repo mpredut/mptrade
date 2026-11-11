@@ -19,7 +19,7 @@ from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
 import pytest
-from tests.conftest import TempDirTestCase
+from tests.conftest import DummySpotExecutionProvider, TempDirTestCase
 
 
 class FakeMkt:
@@ -184,32 +184,18 @@ class ProcessOnceTest(TempDirTestCase):
     def test_market_retry_price_and_protective_minimum_policies(self):
         with self.subTest("market_retry_rechecks_price_after_worker_gate_before_submit"):
             oq.rewrite([])
-            class MovingMarketProvider(MarketDataProvider):
-                name = "Moving"
-
-                def __init__(self):
-                    self.prices = iter((100.0, 100.0, 101.0))
-                    self.submit_calls = []
-
-                def supports_symbol(self, symbol):
-                    return symbol == "BTCUSDC"
-
-                def get_current_price(self, symbol):
-                    return next(self.prices)
-
-                def profit_guard_window_ref(self, symbol, side, safeback_sec):
-                    return None
-
-                def quantity_decision(self, symbol, side, price, qty, **kwargs):
-                    return SimpleNamespace(
-                        final_qty=float(qty), refuse_reason=None,
-                        balance_asset="USDC")
-
-                def place_order(self, symbol, side, price, qty, **kwargs):
-                    self.submit_calls.append((symbol, side, price, qty, kwargs))
-                    return {"orderId": "unexpected-duplicate"}
-
-            provider = MovingMarketProvider()
+            prices = iter((100.0, 100.0, 101.0))
+            provider = DummySpotExecutionProvider("Moving", symbol="BTCUSDC")
+            provider.submit_calls = []
+            provider.get_current_price = lambda symbol: next(prices)
+            provider.profit_guard_window_ref = lambda symbol, side, safeback_sec: None
+            provider.quantity_decision = lambda symbol, side, price, qty, **kwargs: SimpleNamespace(
+                final_qty=float(qty), refuse_reason=None, balance_asset="USDC"
+            )
+            provider.place_order = lambda symbol, side, price, qty, **kwargs: (
+                provider.submit_calls.append((symbol, side, price, qty, kwargs))
+                or {"orderId": "unexpected-duplicate"}
+            )
             market = MarketApi([provider])
             oq.enqueue(
                 "BTCUSDC", "BUY", 1.0,
@@ -235,37 +221,26 @@ class ProcessOnceTest(TempDirTestCase):
 
         with self.subTest("protective_market_retry_reconstructs_venue_only_minimum_policy"):
             oq.rewrite([])
-            class ProtectiveProvider(MarketDataProvider):
-                name = "Protective"
-
-                def __init__(self):
-                    self.business_minimum_flags = []
-                    self.submit_calls = []
-
-                def supports_symbol(self, symbol):
-                    return symbol == "BTCUSDC"
-
-                def get_current_price(self, symbol):
-                    return 100.0
-
-                def free_balance(self, asset):
-                    return 1.0
-
-                def policy_cap_quantity(self, *args, **kwargs):
-                    raise AssertionError("protective SELL must bypass quantity policy")
-
-                def order_filter_refusal(
-                        self, symbol, side, price, qty, *, market=False,
-                        enforce_business_minimum=True):
-                    self.business_minimum_flags.append(
-                        enforce_business_minimum)
-                    return None
-
-                def place_order(self, symbol, side, price, qty, **kwargs):
-                    self.submit_calls.append((symbol, side, price, qty, kwargs))
-                    return {"orderId": "protective-retry"}
-
-            provider = ProtectiveProvider()
+            provider = DummySpotExecutionProvider(
+                "Protective",
+                symbol="BTCUSDC",
+                free_bal=1.0,
+                use_real_quantity_decision=True,
+            )
+            provider.business_minimum_flags = []
+            provider.submit_calls = []
+            provider.policy_cap_quantity = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("protective SELL must bypass quantity policy")
+            )
+            provider.order_filter_refusal = (
+                lambda symbol, side, price, qty, *, market=False, enforce_business_minimum=True: (
+                    provider.business_minimum_flags.append(enforce_business_minimum)
+                )
+            )
+            provider.place_order = lambda symbol, side, price, qty, **kwargs: (
+                provider.submit_calls.append((symbol, side, price, qty, kwargs))
+                or {"orderId": "protective-retry"}
+            )
             market = MarketApi([provider])
             oq.enqueue(
                 "BTCUSDC", "SELL", 0.2,

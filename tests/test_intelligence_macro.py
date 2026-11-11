@@ -459,15 +459,11 @@ def test_macro_analyzer_default_3h_interval(temp_cache_dir, monkeypatch):
     assert analyzer.advisor_interval_sec == 10800.0
 
     captured = {}
-
-    class DummyAnalyzer:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def run_cycle(self, force=False):
-            pass
-
-    monkeypatch.setattr(macro_analyzer, "MacroAnalyzer", DummyAnalyzer)
+    monkeypatch.setattr(
+        macro_analyzer,
+        "MacroAnalyzer",
+        lambda **kwargs: (captured.update(kwargs) or SimpleNamespace(run_cycle=lambda force=False: None)),
+    )
     monkeypatch.setattr(sys, "argv", ["macro_analyzer.py", "--once"])
     macro_analyzer.main()
     assert captured["advisor_interval_sec"] is None
