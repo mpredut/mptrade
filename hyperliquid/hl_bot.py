@@ -14,7 +14,6 @@ directional long, so do not run base v2 and long-hold over the same HYPE.
 """
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 
@@ -24,7 +23,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import (  # noqa: E402
+    add_paper_skip_wait_cli_args,
     bool_env,
+    create_env_cli_parser,
     load_cli_env_stack,
     load_env_stack,
     load_local_module,
@@ -54,11 +55,15 @@ def main() -> int:
     # because load_dotenv does not override already defined variables.
     env_file = load_cli_env_stack(__file__, load_fn=load_env_stack)
 
-    ap = argparse.ArgumentParser(description="base v2 (spot_dca) on Hyperliquid HYPE.")
-    ap.add_argument("--env-file", default=env_file)
-    ap.add_argument("--paper", action="store_true", help="Force PAPER (no money)")
+    ap = create_env_cli_parser("base v2 (spot_dca) on Hyperliquid HYPE.", env_file)
     ap.add_argument("--token", default=None, help="Token to trade (defaults to HL_SPOT_TOKEN)")
-    ap.add_argument("--test-strategy", metavar="TOKEN", help="Run strategy once on given token")
+    add_paper_skip_wait_cli_args(
+        ap,
+        paper_help="Force PAPER (no money)",
+        include_skip_wait=False,
+        test_strategy_metavar="TOKEN",
+        test_strategy_help="Run strategy once on given token",
+    )
     args = ap.parse_args()
 
     token = (args.test_strategy or args.token or required_env("HL_SPOT_TOKEN")).strip().upper()

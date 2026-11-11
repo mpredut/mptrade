@@ -5,6 +5,7 @@ No external dependencies; standard library only.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import atexit
 import base64
@@ -939,25 +940,40 @@ def load_cli_env_stack(
     return env_file
 
 
+def create_env_cli_parser(description: str, env_file: str) -> argparse.ArgumentParser:
+    """Create an ``ArgumentParser`` pre-populated with ``--env-file``."""
+    ap = argparse.ArgumentParser(description=description)
+    ap.add_argument("--env-file", default=env_file)
+    return ap
+
+
 def add_paper_skip_wait_cli_args(
     parser: object,
     *,
     paper_help: str = "Force PAPER mode without real money",
     skip_wait_help: str = "Skip waiting for the launch",
+    include_skip_wait: bool = True,
     include_desktop: bool = False,
     test_strategy_metavar: str | None = None,
     test_strategy_help: str = "Run the strategy NOW",
     find_flag: str | None = None,
     find_metavar: str = "TERM",
     find_help: str = "",
+    extra_store_true: tuple[tuple[str, str], ...] = (),
 ) -> None:
     """Register standard ``--skip-wait`` and ``--paper`` (plus optional shared bot CLI) flags on ``parser``."""
     add_arg = getattr(parser, "add_argument", None)
     if callable(add_arg):
         if include_desktop:
             add_arg("--desktop", action="store_true")
-        add_arg("--skip-wait", action="store_true", help=skip_wait_help)
+        if include_skip_wait:
+            add_arg("--skip-wait", action="store_true", help=skip_wait_help)
         add_arg("--paper", action="store_true", help=paper_help)
+        for flag_name, flag_help in extra_store_true:
+            if flag_help:
+                add_arg(flag_name, action="store_true", help=flag_help)
+            else:
+                add_arg(flag_name, action="store_true")
         if test_strategy_metavar:
             add_arg("--test-strategy", metavar=test_strategy_metavar, help=test_strategy_help)
         if find_flag:

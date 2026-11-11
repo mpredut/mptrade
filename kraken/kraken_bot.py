@@ -18,7 +18,6 @@ Commands:
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 import time
@@ -29,6 +28,7 @@ if _ROOT not in sys.path:
 
 from botcore import (
     add_paper_skip_wait_cli_args,
+    create_env_cli_parser,
     load_cli_env_stack,
     load_env_stack,
     log,
@@ -60,8 +60,7 @@ def main() -> int:
     env_file = load_cli_env_stack(__file__, load_fn=load_env_stack)
     poll_seconds = required_int_env("KRAKEN_BOT_POLL_SEC")
 
-    ap = argparse.ArgumentParser(description="Kraken DCA and take-profit bot.")
-    ap.add_argument("--env-file", default=env_file)
+    ap = create_env_cli_parser("Kraken DCA and take-profit bot.", env_file)
     ap.add_argument("--pair", help="Override the pair (otherwise from .env KRAKEN_PAIR)")
     ap.add_argument("--interval", type=int, default=poll_seconds)
     add_paper_skip_wait_cli_args(
@@ -74,11 +73,11 @@ def main() -> int:
         find_flag="--find-pair",
         find_metavar="TERM",
         find_help="Search Kraken pairs",
+        extra_store_true=(
+            ("--price", "Show the current price and exit"),
+            ("--balance", "Show balances (requires API credentials)"),
+        ),
     )
-    ap.add_argument("--price", action="store_true", help="Show the current price and exit")
-    ap.add_argument(
-        "--balance", action="store_true",
-        help="Show balances (requires API credentials)")
     args = ap.parse_args()
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()

@@ -92,7 +92,6 @@ def main() -> int:
                     help="Override the instrument (otherwise T212_TICKER from .env)")
     ap.add_argument("--interval",          type=float,
                     default=required_float_env("POLL_SECONDS"))
-    ap.add_argument("--market-hours-only", action="store_true")
     add_paper_skip_wait_cli_args(
         ap,
         paper_help="Force PAPER (a safe test, no money), whatever .env says",
@@ -103,9 +102,11 @@ def main() -> int:
         find_flag="--find-ticker",
         find_metavar="NAME",
         find_help="Search for an instrument on T212 by name or symbol",
+        extra_store_true=(
+            ("--market-hours-only", ""),
+            ("--execute", "Override: a real order (single-order mode)"),
+        ),
     )
-    ap.add_argument("--execute",           action="store_true",
-                    help="Override: a real order (single-order mode)")
     ap.add_argument("--test-notify",       choices=["market", "trade", "all"], metavar="WHAT")
     ap.add_argument("--test-order",        metavar="T212_TICKER",
                     help="Test a single order on the given ticker and exit")
