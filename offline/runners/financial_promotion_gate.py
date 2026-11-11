@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import safe_float  # noqa: E402
-from offline.backtests.comparison import resolve_existing_report_path  # noqa: E402
+from offline.backtests.comparison import add_path_cli_args, resolve_existing_report_path  # noqa: E402
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
 from state_io import atomic_write_json, read_json_file  # noqa: E402
 
@@ -29,9 +29,7 @@ def _fmt_pp(val) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("baseline", type=Path)
-    parser.add_argument("candidate", type=Path)
-    parser.add_argument("--output", type=Path)
+    add_path_cli_args(parser, "baseline", "candidate", "--output")
     args = parser.parse_args(argv)
     try:
         baseline_path = resolve_existing_report_path(args.baseline, "baseline")

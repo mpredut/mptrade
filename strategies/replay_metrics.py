@@ -249,6 +249,13 @@ def parse_bt_cli_int(raw: Any) -> int:
     return val
 
 
+def create_backtest_cli_parser(description: str) -> argparse.ArgumentParser:
+    """Create a CLI ArgumentParser preconfigured with ``--mode {single,sweep}``."""
+    ap = argparse.ArgumentParser(description=description)
+    ap.add_argument("--mode", choices=["single", "sweep"], default="single")
+    return ap
+
+
 def add_common_backtest_cli_args(
     ap: Any,
     *,

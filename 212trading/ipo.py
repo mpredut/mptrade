@@ -92,22 +92,23 @@ def main() -> int:
                     help="Override the instrument (otherwise T212_TICKER from .env)")
     ap.add_argument("--interval",          type=float,
                     default=required_float_env("POLL_SECONDS"))
-    ap.add_argument("--desktop",           action="store_true")
     ap.add_argument("--market-hours-only", action="store_true")
     add_paper_skip_wait_cli_args(
         ap,
         paper_help="Force PAPER (a safe test, no money), whatever .env says",
         skip_wait_help="Skip the launch check (start straight away even if the feed says it is not trading yet)",
+        include_desktop=True,
+        test_strategy_metavar="T212_TICKER",
+        test_strategy_help="Run the strategy NOW on the given ticker (paper if STRAT_EXECUTE!=true)",
+        find_flag="--find-ticker",
+        find_metavar="NAME",
+        find_help="Search for an instrument on T212 by name or symbol",
     )
     ap.add_argument("--execute",           action="store_true",
                     help="Override: a real order (single-order mode)")
     ap.add_argument("--test-notify",       choices=["market", "trade", "all"], metavar="WHAT")
     ap.add_argument("--test-order",        metavar="T212_TICKER",
                     help="Test a single order on the given ticker and exit")
-    ap.add_argument("--test-strategy",     metavar="T212_TICKER",
-                    help="Run the strategy NOW on the given ticker (paper if STRAT_EXECUTE!=true)")
-    ap.add_argument("--find-ticker",       metavar="NAME",
-                    help="Search for an instrument on T212 by name or symbol")
     args = ap.parse_args()
     # The one-shot lifecycle marker is namespaced by profile. Preserve the CLI
     # identity explicitly so parallel profiles/accounts never share one marker.

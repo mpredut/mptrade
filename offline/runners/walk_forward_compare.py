@@ -33,6 +33,7 @@ from botcore import (
 from cachepaths import normalize_venue_name
 from state_io import atomic_write_json, atomic_write_text, read_json_file
 from offline.backtests.comparison import (
+    add_path_cli_args,
     dominates,
     format_comparison_markdown,
     pareto_frontier,
@@ -418,8 +419,7 @@ def _markdown(report: dict, venue: str = "Kraken") -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("baseline_report", type=Path)
-    parser.add_argument("--output-dir", type=Path)
+    add_path_cli_args(parser, "baseline_report", "--output-dir")
     parser.add_argument(
         "--venue", choices=("kraken", "binance", "hyperliquid", "trading212", "t212"),
         default=None, help="Explicit venue override; defaults to auto-detect from report",

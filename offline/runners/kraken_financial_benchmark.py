@@ -28,7 +28,7 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file  # noq
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params, prepare_spot_interval_params  # noqa: E402
-from offline.backtests.comparison import add_report_output_cli_args, format_number  # noqa: E402
+from offline.backtests.comparison import add_path_cli_args, add_report_output_cli_args, format_number  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
@@ -388,10 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", type=Path, default=KRAKEN_DIR / ".env")
     parser.add_argument("--config-file", type=Path, default=KRAKEN_DIR / "config.env")
     add_financial_benchmark_common_args(parser)
-    parser.add_argument("--params-report", type=Path)
     parser.add_argument("--name", default="base_v2_live")
-    parser.add_argument("--compare-to", type=Path)
-    parser.add_argument("--verify", type=Path)
+    add_path_cli_args(parser, "--params-report", "--compare-to", "--verify")
     args = parser.parse_args(argv)
 
     validate_financial_benchmark_args(

@@ -1388,8 +1388,7 @@ class Strategy(BaseSpotMixin):
 
     def _step_evaluate_reentry(self, price: float, disc: float, *, in_backoff: bool) -> bool:
         """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
-        self.s["tp_pending_exit"] = None
-        self.s["sl_pending_exit"] = None
+        self._clear_state_slots("tp_pending_exit", "sl_pending_exit")
         if in_backoff or self._has_open("BUY"):
             return False
         return self._execute_flat_reentry(

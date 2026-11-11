@@ -20,7 +20,6 @@ Run with the virtual environment:
 
 from __future__ import annotations
 
-import argparse
 import bisect
 import math
 import os
@@ -50,6 +49,7 @@ from botcore import (
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     buy_hold_pct,
+    create_backtest_cli_parser,
     run_cli_single_or_sweep_backtest,
 )
 
@@ -112,8 +112,7 @@ def run(coin, ohlc, ts, fund, sig, P, direction, budget):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Complete DCA+TP backtester on Hyperliquid.")
-    ap.add_argument("--mode", choices=["single", "sweep"], default="single")
+    ap = create_backtest_cli_parser("Complete DCA+TP backtester on Hyperliquid.")
     ap.add_argument("--coin", default=None)
     ap.add_argument("--days", default=45)
     ap.add_argument("--direction", choices=["long", "short"], default=None)

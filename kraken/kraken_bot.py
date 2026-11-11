@@ -64,18 +64,21 @@ def main() -> int:
     ap.add_argument("--env-file", default=env_file)
     ap.add_argument("--pair", help="Override the pair (otherwise from .env KRAKEN_PAIR)")
     ap.add_argument("--interval", type=int, default=poll_seconds)
-    ap.add_argument("--desktop", action="store_true")
     add_paper_skip_wait_cli_args(
         ap,
         paper_help="Force paper mode without using real money",
         skip_wait_help="Skip waiting for the listing",
+        include_desktop=True,
+        test_strategy_metavar="PAIR",
+        test_strategy_help="Run the strategy NOW on the given pair",
+        find_flag="--find-pair",
+        find_metavar="TERM",
+        find_help="Search Kraken pairs",
     )
-    ap.add_argument("--find-pair", metavar="TERM", help="Search Kraken pairs")
     ap.add_argument("--price", action="store_true", help="Show the current price and exit")
     ap.add_argument(
         "--balance", action="store_true",
         help="Show balances (requires API credentials)")
-    ap.add_argument("--test-strategy", metavar="PAIR", help="Run the strategy NOW on the given pair")
     args = ap.parse_args()
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()

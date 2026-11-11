@@ -1217,6 +1217,11 @@ class BaseSpotMixin:
         eff_sign = -1 if sign == -1 else 1
         return avg_f, (-eff_sign * (px_f - avg_f) / avg_f * 100.0)
 
+    def _clear_state_slots(self, *keys: str) -> None:
+        """Reset each state key in ``keys`` to ``None`` in ``self.s``."""
+        for k in keys:
+            self.s[k] = None
+
     def _persist_pending_state_slot(
         self,
         key: str,

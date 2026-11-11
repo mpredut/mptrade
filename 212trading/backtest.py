@@ -24,6 +24,7 @@ if ROOT not in sys.path:
 
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
+    create_backtest_cli_parser,
     parse_bt_cli_float,
     run_cli_single_or_sweep_backtest,
 )
@@ -194,8 +195,7 @@ def interval_minutes(value: str) -> int | None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backtester DCA+TP T212 (Yahoo).")
-    ap.add_argument("--mode", choices=["single", "sweep"], default="single")
+    ap = create_backtest_cli_parser("Backtester DCA+TP T212 (Yahoo).")
     ap.add_argument("--profile", "-p", default=None, help="config profile to load (e.g. nvda, spcx, rgnt)")
     ap.add_argument("--sym", default=None)
     ap.add_argument("--range", default="1y", help="ex: 1mo,3mo,6mo,1y,2y")

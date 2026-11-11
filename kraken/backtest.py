@@ -12,7 +12,6 @@ is honest: TOTAL includes the mark-to-market open position, not just realized pr
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 
@@ -25,6 +24,7 @@ import dataclasses
 from strategies.spot_engine import StratParams
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
+    create_backtest_cli_parser,
     parse_bt_cli_int,
     run_cli_single_or_sweep_backtest,
 )
@@ -139,8 +139,7 @@ def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backtester DCA+TP Kraken (OHLC).")
-    ap.add_argument("--mode", choices=["single", "sweep"], default="single")
+    ap = create_backtest_cli_parser("Backtester DCA+TP Kraken (OHLC).")
     ap.add_argument("--pair", default="HYPEUSD")
     ap.add_argument("--interval", type=parse_bt_cli_int, default=60, help="minutes: 60=1h, 240=4h, 1440=1d")
     add_common_backtest_cli_args(

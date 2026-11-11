@@ -1743,8 +1743,7 @@ class Strategy(BaseSpotMixin):
             log(f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, trail-stop {trail_stop:.{self.price_dec}f})")
             return False
 
-        self.s["trail_peak"] = None
-        self.s["trail_stop"] = None
+        self._clear_state_slots("trail_peak", "trail_stop")
         if trend_hold_active:
             self._cancel_orders("sell", exclude_market=True)
             return False

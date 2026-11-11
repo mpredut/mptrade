@@ -944,12 +944,24 @@ def add_paper_skip_wait_cli_args(
     *,
     paper_help: str = "Force PAPER mode without real money",
     skip_wait_help: str = "Skip waiting for the launch",
+    include_desktop: bool = False,
+    test_strategy_metavar: str | None = None,
+    test_strategy_help: str = "Run the strategy NOW",
+    find_flag: str | None = None,
+    find_metavar: str = "TERM",
+    find_help: str = "",
 ) -> None:
-    """Register standard ``--skip-wait`` and ``--paper`` CLI flags on ``parser``."""
+    """Register standard ``--skip-wait`` and ``--paper`` (plus optional shared bot CLI) flags on ``parser``."""
     add_arg = getattr(parser, "add_argument", None)
     if callable(add_arg):
+        if include_desktop:
+            add_arg("--desktop", action="store_true")
         add_arg("--skip-wait", action="store_true", help=skip_wait_help)
         add_arg("--paper", action="store_true", help=paper_help)
+        if test_strategy_metavar:
+            add_arg("--test-strategy", metavar=test_strategy_metavar, help=test_strategy_help)
+        if find_flag:
+            add_arg(find_flag, metavar=find_metavar, help=find_help)
 
 
 # ── 2.4. Global trade_enabled Configuration Cache & Hot-Reload Watcher ───────
