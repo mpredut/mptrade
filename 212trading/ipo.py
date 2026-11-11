@@ -54,21 +54,13 @@ ensure_local_module_priority(
     "t212_client", "order_manager", "strategy",
 )
 
-try:
-    from .ipo_common import load_t212_environment, notify, now_str
-    from .listing_watcher import verify_instrument_isin, wait_for_launch
-    from .t212_client import T212Client
-    from .order_manager import resolve_quantity, place_order_with_retry
-    from .strategy import Strategy, StratParams
-except ImportError:
-    from ipo_common import load_t212_environment, notify, now_str
-    from listing_watcher import verify_instrument_isin, wait_for_launch
-    from t212_client import T212Client
-    from order_manager import resolve_quantity, place_order_with_retry
-    from strategy import Strategy, StratParams
-
-from cachepaths import canonical_base_asset
-from credentials import t212_credentials
+from cachepaths import canonical_base_asset  # noqa: E402
+from credentials import t212_credentials  # noqa: E402
+from ipo_common import load_t212_environment, notify, now_str  # noqa: E402
+from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
+from order_manager import place_order_with_retry, resolve_quantity  # noqa: E402
+from strategy import StratParams, Strategy  # noqa: E402
+from t212_client import T212Client  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

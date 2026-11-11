@@ -11,8 +11,6 @@ total. It touches nothing.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import os
 import sys
 from datetime import datetime, timezone
@@ -21,27 +19,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-with contextlib.redirect_stdout(io.StringIO()):
-    from notify_engine.alertnotifiers import (  # noqa: E402
-        AlertNotifier,
-        _canonical_topic_key,
-        _external_notifications_disabled,
-        format_ntfy_url,
-        pass_common_gate,
-        sanitize_single_line,
-    )
-    from botcore import (  # noqa: E402
-        _parse_bool_flag,
-        http_request,
-        is_live_network_backfill_enabled,
-        parse_dotenv,
-        required_float_env,
-        safe_float,
-    )
-    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-    from providers.market_api import api as mkt  # noqa: E402
-    from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
-    from strategies.state_store import state_path_for  # noqa: E402
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+from botcore import (  # noqa: E402
+    _parse_bool_flag,
+    http_request,
+    is_live_network_backfill_enabled,
+    parse_dotenv,
+    required_float_env,
+    safe_float,
+)
+from notify_engine.alertnotifiers import (  # noqa: E402
+    AlertNotifier,
+    _canonical_topic_key,
+    _external_notifications_disabled,
+    format_ntfy_url,
+    pass_common_gate,
+    sanitize_single_line,
+)
+from providers.market_api import api as mkt  # noqa: E402
+from state_io import encode_json_payload, read_json_dict, save_json_state  # noqa: E402
+from strategies.state_store import state_path_for  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 

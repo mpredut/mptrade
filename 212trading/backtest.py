@@ -44,6 +44,8 @@ _replay_mod = load_local_module(T212_DIR, "replay", module_key="t212_backtest_re
 run_replay = _replay_mod.run_replay
 StratParams = _replay_mod._strat.StratParams
 _md_mod = _replay_mod._md
+_ipo_common_mod = load_local_module(T212_DIR, "ipo_common", module_key="t212_ipo_common")
+_load_isolated_t212_cfg = _ipo_common_mod.load_isolated_t212_cfg
 
 
 def fetch_candles(sym, rng, interval):
@@ -84,27 +86,6 @@ _SIMULATE_ALIAS_MAP = (
     (("trail_pct",), "STRAT_TRAIL_PCT"),
     (("trail_min_profit",), "STRAT_TRAIL_MIN_PROFIT_PCT"),
 )
-
-
-def _load_isolated_t212_cfg(env_file: str, *, profile_file: str | None = None) -> dict[str, str]:
-    """Load T212 environment layers into an isolated dict without mutating os.environ."""
-    cfg: dict[str, str] = {}
-    layers = [
-        os.path.abspath(env_file),
-        os.path.join(ROOT, ".env"),
-    ]
-    if profile_file:
-        layers.append(os.path.abspath(profile_file))
-    layers.append(os.path.join(T212_DIR, "runtime.env"))
-    for path in layers:
-        if os.path.exists(path):
-            for k, v in parse_dotenv(path).items():
-                if k not in cfg:
-                    cfg[k] = v
-    for k, v in os.environ.items():
-        if k.startswith(("T212_", "YAHOO_")):
-            cfg[k] = v
-    return cfg
 
 
 def simulate(ohlc, P):

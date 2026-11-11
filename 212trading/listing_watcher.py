@@ -19,14 +19,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from botcore import ET, ensure_local_module_priority, log, safe_float
-
-try:
-    from .market_data import check_market
-except ImportError:
-    ensure_local_module_priority(_HERE, "ipo_common", "market_data")
-    from market_data import check_market
-
-from providers.t212_provider import _t212_tickers_match
+ensure_local_module_priority(_HERE, "ipo_common", "market_data")
+from market_data import check_market  # noqa: E402
+from providers.t212_provider import _t212_tickers_match  # noqa: E402
 
 
 def verify_instrument_isin(

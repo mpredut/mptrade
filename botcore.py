@@ -36,7 +36,6 @@ from cachepaths import (
     _coerce_int,
     _parse_bool_flag,
     cache_path,
-    cache_path as _cache_path,
     cache_symbol_variants,
     canonical_base_asset,
     clean_finite_floats,
@@ -48,7 +47,6 @@ from cachepaths import (
     is_equity_venue_or_suffix,
     normalize_venue_name,
     resolve_cachedb_filepath,
-    resolve_cachedb_filepath as _resolve_hb,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -1092,8 +1090,13 @@ def ensure_local_module_priority(directory: str, *module_names: str) -> None:
                 sys.path.remove(abs_dir)
             sys.path.insert(0, abs_dir)
         for mod_name in module_names:
-            mod_file = getattr(sys.modules.get(mod_name), "__file__", None)
-            if isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir:
+            mod_obj = sys.modules.get(mod_name)
+            if mod_obj is None:
+                continue
+            mod_file = getattr(mod_obj, "__file__", None)
+            if type(mod_obj) is object or (
+                isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir
+            ):
                 sys.modules.pop(mod_name, None)
 
 
@@ -1293,7 +1296,7 @@ def touch_module_heartbeat(
         fname = clean_name if clean_name.endswith(".heartbeat") else f"{clean_name}.heartbeat"
         try:
 
-            hb_path = str(_resolve_hb(_cache_path(fname)))
+            hb_path = str(resolve_cachedb_filepath(cache_path(fname)))
         except Exception:
             hb_path = os.path.join(_REPO_ROOT, "cachedb", "system", "heartbeat", fname)
     with _MODULE_HEARTBEAT_LOCK:

@@ -44,18 +44,12 @@ from botcore import (  # noqa: E402
     touch_module_heartbeat,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "listing_watcher", "strategy", "t212_client")
-try:
-    from .ipo_common import load_t212_environment, notify  # noqa: E402
-    from .listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
-    from .strategy import Strategy, StratParams  # noqa: E402
-    from .t212_client import T212Client  # noqa: E402
-except ImportError:
-    from ipo_common import load_t212_environment, notify  # noqa: E402
-    from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
-    from strategy import Strategy, StratParams  # noqa: E402
-    from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
+from ipo_common import load_t212_environment, notify  # noqa: E402
+from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
 from providers.order_ohlc_utils import format_strategy_execution_mode  # noqa: E402
+from strategy import StratParams, Strategy  # noqa: E402
+from t212_client import T212Client  # noqa: E402
 
 STOP = threading.Event()
 

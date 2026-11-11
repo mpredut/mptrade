@@ -33,24 +33,13 @@ from botcore import (  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from cachepaths import canonical_base_asset
-from state_io import encode_json_payload, load_json_state, save_json_state
+from ipo_common import load_t212_market_data, notify, now_str  # noqa: E402
+from market_data import get_price_usd, get_usd_ron  # noqa: E402
 from providers.base import extract_order_id
 from providers.order_ohlc_utils import extract_order_side
 from providers.t212_provider import _order_ticker, _t212_tickers_match
-
-try:
-    from .ipo_common import load_t212_market_data, notify, now_str
-    from .market_data import get_usd_ron, get_price_usd
-    from .t212_client import T212Client
-except ImportError:
-    from ipo_common import load_t212_market_data, notify, now_str
-    try:
-        from market_data import get_usd_ron, get_price_usd
-    except ImportError:
-        _md_mod = load_t212_market_data()
-        get_usd_ron = _md_mod.get_usd_ron
-        get_price_usd = _md_mod.get_price_usd
-    from t212_client import T212Client
+from state_io import encode_json_payload, load_json_state, save_json_state
+from t212_client import T212Client  # noqa: E402
 
 T212_ORDER_TERMINAL = {"FILLED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED"}
 T212_ORDER_OPEN = {
