@@ -505,6 +505,14 @@ def build_execution_model_from_args(
         parser.error(str(exc))
 
 
+def parse_walk_forward_cli_args(
+    parser: argparse.ArgumentParser, argv: Sequence[str] | None = None
+) -> tuple[argparse.Namespace, ExecutionModel]:
+    """Parse CLI arguments and construct the validated ExecutionModel."""
+    args = parser.parse_args(argv)
+    return args, build_execution_model_from_args(parser, args)
+
+
 def resolve_window_sizes(
     args: argparse.Namespace, record_count: int
 ) -> tuple[int, int, int, int]:

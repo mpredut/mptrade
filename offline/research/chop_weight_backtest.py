@@ -106,6 +106,17 @@ def _validate_fee_pct(fee_pct: Any) -> float:
     return fee_f
 
 
+def _validate_backtest_step_balance_fee(
+    step_seconds: Any,
+    initial_balance: Any,
+    fee_pct: Any,
+) -> Tuple[int, float, float]:
+    step_i, _ = _req_pos_step_seconds(step_seconds)
+    init_bal = _req_pos_num(initial_balance, "initial_balance")
+    fee_f = _validate_fee_pct(fee_pct)
+    return step_i, init_bal, fee_f
+
+
 def _clean_sorted_price_samples(raw_series: Any) -> List[Tuple[float, float]]:
     cleaned: List[Tuple[float, float]] = []
     needs_sort = False
@@ -322,14 +333,13 @@ def run_single_simulation(
     """Run a single backtest simulation under a specific chop allocation policy."""
     if not isinstance(policy, str) or (policy != "PROXY_BTC" and policy not in _CHOP_POLICY_WEIGHTS):
         raise ValueError(f"Unknown chop policy: {policy!r}")
-    step_seconds, _ = _req_pos_step_seconds(step_seconds)
-    initial_balance = _req_pos_num(initial_balance, "initial_balance")
+    step_seconds, initial_balance, fee_pct = _validate_backtest_step_balance_fee(
+        step_seconds, initial_balance, fee_pct
+    )
     base_notional = _req_pos_num(base_notional, "base_notional")
-    fee_f = _validate_fee_pct(fee_pct)
     tp_pct = _req_pos_num(tp_pct, "tp_pct")
     stop_pct = _req_pos_num(stop_pct, "stop_pct")
     _req_pos_num(T_days, "T_days")
-    fee_pct = fee_f
     usd = initial_balance
     asset_qty = 0.0
     entry_price = 0.0

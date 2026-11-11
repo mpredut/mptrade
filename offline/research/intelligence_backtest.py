@@ -32,7 +32,7 @@ from offline.research.chop_weight_backtest import (
     _req_pos_step_seconds,
     _summarize_trade_outcomes,
     _update_equity_drawdown,
-    _validate_fee_pct,
+    _validate_backtest_step_balance_fee,
 )
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -235,11 +235,10 @@ def run_intelligence_backtest(
     fee_pct: float = 0.001,  # 0.1% taker fee
 ) -> Dict[str, BacktestStats]:
     """Run comparative backtest across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite."""
-    step_seconds, _ = _req_pos_step_seconds(step_seconds)
-    initial_balance = _req_pos_num(initial_balance, "initial_balance")
+    step_seconds, initial_balance, fee_pct = _validate_backtest_step_balance_fee(
+        step_seconds, initial_balance, fee_pct
+    )
     parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
-    fee_f = _validate_fee_pct(fee_pct)
-    fee_pct = fee_f
     if cache_path is None:
         cache_path = resolve_cache_path(f"cache_sparse_price_{symbol}.jsonl")
 

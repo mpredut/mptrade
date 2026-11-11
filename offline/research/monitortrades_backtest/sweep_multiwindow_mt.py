@@ -17,15 +17,10 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import safe_pos_float
 import pricewindow as pw
-import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_all_signals,
-    evaluate_mt_model_symbol_cell,
-    load_archive_series,
     make_tape,
-    preserve_replay_backtest_caches,
-    print_mt_sweep_header,
-    print_mt_sweep_row,
+    run_streaming_mt_model_sweep,
 )
 
 
@@ -64,50 +59,27 @@ def run_multiwindow_sweep(use_365: bool = False):
          lambda d, sym="": _up_arr(d["prod"]).tolist()),
     ]
 
-    all_symbols = list(rrb.SYMBOLS._SECTIONS.keys())
-    symbols: list[str] = []
-    model_cells: list[list[str]] = [[] for _ in models]
-    model_totals: list[float] = [0.0 for _ in models]
+    def _build_multiwindow_sigs(sym: str, series):
+        prod_w = safe_pos_float(pw.fast_trend_window_for_symbol(sym), default=222.0)
+        sigs: dict = {
+            w: compute_all_signals(series, win_sec=float(w), symbol=sym, use_symbol_fast_window=False)
+            for w in (60, 90, 222, 900)
+        }
+        matched = next((sigs[w] for w in (60, 90, 222, 900) if np.isclose(prod_w, float(w))), None)
+        sigs["prod"] = (
+            matched
+            if matched is not None
+            else compute_all_signals(series, win_sec=prod_w, symbol=sym, use_symbol_fast_window=False)
+        )
+        return sigs
 
-    with preserve_replay_backtest_caches():
-        for sym in all_symbols:
-            series = load_archive_series(sym, use_365=use_365)
-            if not series:
-                continue
-            symbols.append(sym)
-            fast_w = pw.fast_trend_window_for_symbol(sym)
-            prod_w = safe_pos_float(fast_w, default=222.0)
-            sig_60 = compute_all_signals(series, win_sec=60.0, symbol=sym, use_symbol_fast_window=False)
-            sig_90 = compute_all_signals(series, win_sec=90.0, symbol=sym, use_symbol_fast_window=False)
-            sig_222 = compute_all_signals(series, win_sec=222.0, symbol=sym, use_symbol_fast_window=False)
-            sig_900 = compute_all_signals(series, win_sec=900.0, symbol=sym, use_symbol_fast_window=False)
-            if np.isclose(prod_w, 60.0):
-                sig_prod = sig_60
-            elif np.isclose(prod_w, 90.0):
-                sig_prod = sig_90
-            elif np.isclose(prod_w, 222.0):
-                sig_prod = sig_222
-            elif np.isclose(prod_w, 900.0):
-                sig_prod = sig_900
-            else:
-                sig_prod = compute_all_signals(series, win_sec=prod_w, symbol=sym, use_symbol_fast_window=False)
-            sym_sigs = {
-                60: sig_60,
-                90: sig_90,
-                222: sig_222,
-                900: sig_900,
-                "prod": sig_prod,
-            }
-            for m_idx, (_m_name, fn) in enumerate(models):
-                net, _bh, cell = evaluate_mt_model_symbol_cell(sym, series, sym_sigs, fn)
-                model_totals[m_idx] += net
-                model_cells[m_idx].append(cell)
-            rrb._TREND_TAPE_CACHE.clear()
-            del sym_sigs, series
-
-    print_mt_sweep_header("Multi-Window Policy", symbols, col_width=36)
-    for m_idx, (m_name, _fn) in enumerate(models):
-        print_mt_sweep_row(m_name, model_cells[m_idx], model_totals[m_idx], col_width=36)
+    run_streaming_mt_model_sweep(
+        models,
+        _build_multiwindow_sigs,
+        use_365=use_365,
+        title_col="Multi-Window Policy",
+        col_width=36,
+    )
 
 
 if __name__ == "__main__":

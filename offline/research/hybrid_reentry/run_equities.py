@@ -14,6 +14,7 @@ from offline.backtests.evaluation import load_venue_replay_module
 from offline.research.hybrid_reentry.harness import (
     evaluate_asset,
     load_ohlc_with_timestamps_csv,
+    print_ablation_suite_banner,
     save_validated_ablation_results,
 )
 from strategies.spot_replay import align_spot_interval_params, scale_subbar_timeout_params
@@ -75,10 +76,9 @@ def _import_t212():
 
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    print("======================================================================")
-    print("TRADING 212 EQUITIES HYBRID RE-ENTRY ABLATION SUITE (Tests 0 to 4)")
-    print("======================================================================")
+    print_ablation_suite_banner(
+        OUT_DIR, "TRADING 212 EQUITIES HYBRID RE-ENTRY ABLATION SUITE (Tests 0 to 4)"
+    )
     _strat, rp = _import_t212()
     results = []
     

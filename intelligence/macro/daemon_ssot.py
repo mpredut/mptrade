@@ -419,6 +419,17 @@ def configure_daemon_cli_logging(
     )
 
 
+def parse_and_configure_daemon_cli(
+    parser: Any,
+    *,
+    fmt: str = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+) -> Any:
+    """Parse CLI arguments and configure standard daemon logging."""
+    args = parser.parse_args()
+    configure_daemon_cli_logging(getattr(args, "verbose", False), fmt=fmt)
+    return args
+
+
 def add_external_telemetry_cli_args(
     parser: Any,
     *,

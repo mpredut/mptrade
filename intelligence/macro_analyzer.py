@@ -40,8 +40,8 @@ from intelligence.macro.calendar_ssot import (
 )
 from intelligence.macro.daemon_ssot import (
     compute_step_retry_ts,
-    configure_daemon_cli_logging,
     normalize_cycle_args,
+    parse_and_configure_daemon_cli,
     prune_automated_cli_threads,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
@@ -480,9 +480,7 @@ def main():
     parser.add_argument("--macro-llm-interval", type=float, default=None, help="Geopolitical LLM evaluation interval in seconds.")
     parser.add_argument("--advisor-interval", type=float, default=None, help="Market advisor synthesis interval in seconds.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
-    args = parser.parse_args()
-
-    configure_daemon_cli_logging(args.verbose)
+    args = parse_and_configure_daemon_cli(parser)
 
     analyzer = MacroAnalyzer(
         macro_llm_interval_sec=args.macro_llm_interval,

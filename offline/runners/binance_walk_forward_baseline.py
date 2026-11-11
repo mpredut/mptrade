@@ -26,12 +26,12 @@ from offline.backtests.datasets import (
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     build_and_save_interval_baseline_report,
-    build_execution_model_from_args,
     extract_cfg_float,
     extract_cfg_int,
     parse_cli_int,
     parse_dataset_specs,
     parse_optional_lookback_days,
+    parse_walk_forward_cli_args,
 )
 from providers.market_api import api as mkt
 from strategies.spot_replay import (
@@ -65,8 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         default_fee=0.10,
         fee_help="fee per leg (pct), defaults to 0.10%%",
     )
-    args = parser.parse_args(argv)
-    execution = build_execution_model_from_args(parser, args)
+    args, execution = parse_walk_forward_cli_args(parser, argv)
     lookback_days = parse_optional_lookback_days(
         parser, args.lookback_days, allow_none=False
     ) or 630

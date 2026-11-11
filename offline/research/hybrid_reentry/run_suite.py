@@ -18,6 +18,7 @@ from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,
     load_ohlc_with_timestamps_csv,
+    print_ablation_suite_banner,
     save_validated_ablation_results,
 )
 
@@ -85,10 +86,9 @@ BASE_PARAMS = strat.StratParams(
 
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    print("======================================================================")
-    print("HYBRID RE-ENTRY ABLATION EXPERIMENT SUITE (Tests 0 to 4)")
-    print("======================================================================")
+    print_ablation_suite_banner(
+        OUT_DIR, "HYBRID RE-ENTRY ABLATION EXPERIMENT SUITE (Tests 0 to 4)"
+    )
     all_results = []
     
     for asset in ASSETS:

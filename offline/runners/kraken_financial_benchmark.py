@@ -28,7 +28,7 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file  # noq
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
-from offline.backtests.comparison import format_number  # noqa: E402
+from offline.backtests.comparison import add_report_output_cli_args, format_number  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
@@ -336,8 +336,7 @@ def add_financial_benchmark_common_args(parser: argparse.ArgumentParser) -> None
     parser.add_argument("--step", type=int, default=90)
     parser.add_argument("--warmup", type=int, default=40)
     parser.add_argument("--regime-threshold", type=float, default=3.0)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--markdown", type=Path)
+    add_report_output_cli_args(parser)
 
 
 def validate_financial_benchmark_args(

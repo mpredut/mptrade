@@ -391,6 +391,44 @@ def run_mt_model_sweep_table(
         print_mt_buy_hold_footer(symbols, bh_Wait, hdr, col_width=col_width)
 
 
+def run_streaming_mt_model_sweep(
+    models,
+    sig_builder,
+    *,
+    use_365: bool = False,
+    title_col: str = "Model Architecture",
+    col_width: int = 34,
+    include_buy_hold: bool = False,
+) -> None:
+    """Stream archive series symbol-by-symbol, evaluate ``models``, and print the comparison table."""
+    symbols: list[str] = []
+    model_cells: list[list[str]] = [[] for _ in models]
+    model_totals: list[float] = [0.0 for _ in models]
+    bh_by_sym: dict[str, float] = {}
+
+    with preserve_replay_backtest_caches():
+        for sym in list(rrb.SYMBOLS._SECTIONS.keys()):
+            series = load_archive_series(sym, use_365=use_365)
+            if not series:
+                continue
+            symbols.append(sym)
+            sig = sig_builder(sym, series)
+            for m_idx, (_m_name, tape_fn) in enumerate(models):
+                net, bh_val, cell = evaluate_mt_model_symbol_cell(sym, series, sig, tape_fn)
+                bh_by_sym[sym] = bh_val
+                model_totals[m_idx] += net
+                model_cells[m_idx].append(cell)
+            rrb._TREND_TAPE_CACHE.clear()
+            del sig, series
+            gc.collect()
+
+    hdr = print_mt_sweep_header(title_col, symbols, col_width=col_width)
+    for m_idx, (m_name, _fn) in enumerate(models):
+        print_mt_sweep_row(m_name, model_cells[m_idx], model_totals[m_idx], col_width=col_width)
+    if include_buy_hold:
+        print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=col_width)
+
+
 def evaluate_dataset(use_365: bool = False):
     label = "DENSE 1-SECOND ARCHIVE (cache_365_price_*.jsonl)" if use_365 else "FULL 329-DAY SPARSE ARCHIVE (cache_sparse_price_*.jsonl)"
     print(f"\n{'=' * 105}")
@@ -407,40 +445,23 @@ def evaluate_dataset(use_365: bool = False):
         ("7. DIFFERENTIATED (BTC p3/ALT p2)", lambda s: make_tape(s["diff"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
     ]
 
-    all_symbols = list(rrb.SYMBOLS._SECTIONS.keys())
-    symbols: list[str] = []
-    per_model_cells: dict[str, dict[str, str]] = {m_name: {} for m_name, _ in models}
-    per_model_net: dict[str, float] = {m_name: 0.0 for m_name, _ in models}
-    bh_by_sym: dict[str, float] = {}
+    def _build_sig(sym: str, series):
+        t0 = time.time()
+        sig = compute_all_signals(series, symbol=sym)
+        dt = time.time() - t0
+        med_m = safe_int(np.median(sig["m"]).item(), 0)
+        print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
+              f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
+        return sig
 
-    with preserve_replay_backtest_caches():
-        for sym in all_symbols:
-            t0 = time.time()
-            series = load_archive_series(sym, use_365=use_365)
-            if not series:
-                continue
-            symbols.append(sym)
-            sig = compute_all_signals(series, symbol=sym)
-            dt = time.time() - t0
-            med_m = safe_int(np.median(sig["m"]).item(), 0)
-            print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
-                  f"{len(series):>9,} ticks in {dt:.2f}s (median m={med_m} steps)")
-            for m_name, tape_fn in models:
-                net, bh_val, cell = evaluate_mt_model_symbol_cell(sym, series, sig, tape_fn)
-                bh_by_sym[sym] = bh_val
-                per_model_net[m_name] += net
-                per_model_cells[m_name][sym] = cell
-            rrb._TREND_TAPE_CACHE.clear()
-            del sig
-            del series
-            gc.collect()
-
-    col_width = 34
-    hdr = print_mt_sweep_header("Model Architecture", symbols, col_width=col_width)
-    for m_name, _ in models:
-        cells = [per_model_cells[m_name].get(sym, "") for sym in symbols]
-        print_mt_sweep_row(m_name, cells, per_model_net[m_name], col_width=col_width)
-    print_mt_buy_hold_footer(symbols, bh_by_sym, hdr, col_width=col_width)
+    run_streaming_mt_model_sweep(
+        models,
+        _build_sig,
+        use_365=use_365,
+        title_col="Model Architecture",
+        col_width=34,
+        include_buy_hold=True,
+    )
 
 
 if __name__ == "__main__":

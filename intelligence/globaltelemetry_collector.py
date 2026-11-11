@@ -32,9 +32,9 @@ from botcore import (
 from intelligence.macro.daemon_ssot import (
     ExternalTelemetryMixin,
     add_external_telemetry_cli_args,
-    configure_daemon_cli_logging,
     detect_active_binance_symbols,
     normalize_cycle_args,
+    parse_and_configure_daemon_cli,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
@@ -348,9 +348,7 @@ def main():
     add_external_telemetry_cli_args(parser)
     parser.add_argument("--skip-news", action="store_true", help="Skip RSS macro news collection.")
     parser.add_argument("--news-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
-    args = parser.parse_args()
-
-    configure_daemon_cli_logging(args.verbose)
+    args = parse_and_configure_daemon_cli(parser)
 
     collector = GlobalTelemetryCollector(
         symbols=parse_symbol_list(args.symbols) or None,

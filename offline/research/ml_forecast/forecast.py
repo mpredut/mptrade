@@ -209,10 +209,15 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     }
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Walk-forward machine learning forecast benchmark.")
+def create_ml_forecast_parser(description: str) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--symbol", default="TAOUSDC")
     ap.add_argument("--days", type=int, default=400)
+    return ap
+
+
+def main() -> int:
+    ap = create_ml_forecast_parser("Walk-forward machine learning forecast benchmark.")
     ap.add_argument("--eval", action="store_true", help="the walk-forward report only")
     ap.add_argument("--forecast", action="store_true", help="write forecast.json")
     ap.add_argument(
@@ -221,8 +226,7 @@ def main() -> int:
     )
     ap.add_argument("--loop", type=float, default=0, help="minutes between forecasts (0 = once)")
     args = ap.parse_args()
-    days = safe_pos_int(args.days, default=None)
-    if days is None:
+    if (days := safe_pos_int(args.days, default=None)) is None:
         ap.error("--days must be positive")
 
     while True:

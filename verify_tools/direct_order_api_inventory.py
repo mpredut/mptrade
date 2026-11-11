@@ -6,7 +6,6 @@ gate until its ownership, persistence and recovery behavior are reviewed explici
 """
 from __future__ import annotations
 
-import argparse
 import ast
 import sys
 from dataclasses import asdict, dataclass
@@ -18,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from state_io import encode_json_payload, read_text_file
+from verify_tools.ownership_inventory import create_root_cli_parser
 
 SENSITIVE_METHODS = {
     "create_order", "order_limit_buy", "order_limit_sell",
@@ -122,8 +122,7 @@ def inventory(root: Path = ROOT) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=ROOT)
+    parser = create_root_cli_parser(__doc__, ROOT)
     args = parser.parse_args()
     report = inventory(args.root.resolve())
     print(encode_json_payload(report, indent=2, sort_keys=True))

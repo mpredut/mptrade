@@ -217,8 +217,7 @@ def evaluate_asset(
     results = []
     # Warmup first 30 bars if available to seed regime
     warmup_n = min(30, len(ohlc) // 5)
-    warmup_ohlc = ohlc[:warmup_n]
-    run_ohlc = ohlc[warmup_n:]
+    warmup_ohlc, run_ohlc = ohlc[:warmup_n], ohlc[warmup_n:]
     has_full_ts = bool(timestamps and len(timestamps) == len(ohlc))
     warmup_timestamps = timestamps[:warmup_n] if has_full_ts else None
     run_timestamps = timestamps[warmup_n:] if has_full_ts else None
@@ -295,3 +294,11 @@ def save_validated_ablation_results(
     atomic_write_json(out_json, results, indent=2)
     print(f"\n{saved_label} saved to {out_json}")
     return valid_results
+
+
+def print_ablation_suite_banner(out_dir: str, title: str) -> None:
+    """Ensure ``out_dir`` exists and print the standard ablation suite header banner."""
+    os.makedirs(out_dir, exist_ok=True)
+    print("=" * 70)
+    print(title)
+    print("=" * 70)

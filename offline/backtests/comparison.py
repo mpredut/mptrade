@@ -11,6 +11,7 @@ Provides venue-agnostic comparison math for walk-forward evaluation windows:
 from __future__ import annotations
 
 from collections.abc import Hashable
+from pathlib import Path
 import statistics
 from typing import Any, Mapping, Sequence
 
@@ -220,3 +221,9 @@ def format_comparison_markdown(
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def add_report_output_cli_args(parser: Any) -> None:
+    """Register ``--output`` (JSON) and ``--markdown`` (Markdown) path CLI flags."""
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--markdown", type=Path)

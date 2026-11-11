@@ -41,6 +41,12 @@ def add_t212_env_file_arg(parser, default_dir: str | None = None) -> None:
     parser.add_argument("--env-file", default=os.path.join(base_dir, ".env"))
 
 
+def parse_t212_cli_args(parser, default_dir: str | None = None):
+    """Register ``--env-file`` and return parsed CLI arguments for T212 entrypoints."""
+    add_t212_env_file_arg(parser, default_dir)
+    return parser.parse_args()
+
+
 def load_t212_environment(env_file: str, *, profile_file: str | None = None) -> None:
     """Load T212 configuration using one explicit precedence policy.
 

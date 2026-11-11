@@ -7,7 +7,6 @@ volatility better than simple persistence.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import math
 import os
@@ -27,7 +26,7 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from botcore import safe_float, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
-from offline.research.ml_forecast.forecast import _to_price_array  # noqa: E402
+from offline.research.ml_forecast.forecast import _to_price_array, create_ml_forecast_parser  # noqa: E402
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
 MAX_CONTEXT = 512                       # maximum history hours supplied per prediction
@@ -148,19 +147,16 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Chronos zero-shot volatility forecast benchmark.")
-    ap.add_argument("--symbol", default="TAOUSDC")
-    ap.add_argument("--days", type=int, default=400)
+    ap = create_ml_forecast_parser("Chronos zero-shot volatility forecast benchmark.")
     ap.add_argument("--win", type=int, default=24, help="the window (hours) for the realized volatility")
     ap.add_argument("--horizon", type=int, default=24, help="how many hours ahead we predict")
     ap.add_argument("--stride", type=int, default=6, help="the step between test windows (hours)")
     ap.add_argument("--eval", action="store_true")
     args = ap.parse_args()
-
-    days = safe_pos_int(args.days, default=None)
-    win = safe_pos_int(args.win, default=None)
-    horizon = safe_pos_int(args.horizon, default=None)
-    stride = safe_pos_int(args.stride, default=None)
+    days, win, horizon, stride = (
+        safe_pos_int(getattr(args, k), default=None)
+        for k in ("days", "win", "horizon", "stride")
+    )
     if None in (days, win, horizon, stride):
         ap.error("--days, --win, --horizon, and --stride must be positive integers")
 

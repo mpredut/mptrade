@@ -31,7 +31,7 @@ from botcore import (  # noqa: E402
     safe_pos_float,
 )
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
-from ipo_common import add_t212_env_file_arg, load_t212_environment  # noqa: E402
+from ipo_common import load_t212_environment, parse_t212_cli_args  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url, make_bot_event_alert  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
@@ -61,8 +61,7 @@ def main() -> int:
     ap.add_argument("--above", type=float, help="alert when the price >= this threshold")
     ap.add_argument("--topic", default=None, help="the ntfy topic (otherwise NTFY_TOPIC from .env)")
     ap.add_argument("--state", default=None)
-    add_t212_env_file_arg(ap, _HERE)
-    args = ap.parse_args()
+    args = parse_t212_cli_args(ap, _HERE)
 
     # The shared T212 policy also reads the repository .env, where NTFY_TOPIC_PRICE lives
     # since the secrets moved there; loading only 212trading/.env left the alert mute.

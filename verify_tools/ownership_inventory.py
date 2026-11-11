@@ -390,9 +390,16 @@ def _print(owners: list[Owner], *, require_running: bool) -> None:
         )
 
 
+def create_root_cli_parser(
+    description: str | None, default_root: Path = ROOT
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--root", type=Path, default=default_root)
+    return parser
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=ROOT)
+    parser = create_root_cli_parser(__doc__, ROOT)
     parser.add_argument(
         "--running", action="store_true",
         help="treat an owner as active only if its process is running right now",

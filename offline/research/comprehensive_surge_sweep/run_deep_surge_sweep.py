@@ -167,11 +167,9 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
 
 def _asset_slices(ohlc: list[tuple[float, float, float, float]]):
     warmup_n = min(42, len(ohlc) // 5)
-    warmup_ohlc = ohlc[:warmup_n]
-    run_ohlc = ohlc[warmup_n:]
+    warmup_ohlc, run_ohlc = ohlc[:warmup_n], ohlc[warmup_n:]
     half_idx = len(run_ohlc) // 2
-    ohlc_h1 = run_ohlc[:half_idx]
-    ohlc_h2 = run_ohlc[half_idx:]
+    ohlc_h1, ohlc_h2 = run_ohlc[:half_idx], run_ohlc[half_idx:]
     warmup_h2 = ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc
     return (
         ("full", warmup_ohlc, run_ohlc),

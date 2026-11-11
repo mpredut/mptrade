@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, iter_jsonl_dicts  # noqa: E402
-from offline.backtests.comparison import format_number  # noqa: E402
+from offline.backtests.comparison import add_report_output_cli_args, format_number  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
 )
@@ -141,8 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         help="JSONL files or logger/execution_audit directories",
     )
     parser.add_argument("--venue")
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--markdown", type=Path)
+    add_report_output_cli_args(parser)
     args = parser.parse_args(argv)
     try:
         paths = _paths(args.inputs)
