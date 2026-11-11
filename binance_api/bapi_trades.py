@@ -40,9 +40,7 @@ def _resolve_trade_order_id(trade_obj):
 
 
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
+    order_type = apiorders.validate_order_query_args(order_type, symbol)
     days_ago = safe_nonneg_int(days_ago, default=0)
     limit = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
     try:
@@ -71,12 +69,10 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
 
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
+    order_type = apiorders.validate_order_query_args(order_type, symbol)
     filtered_trades = []
     for trade, side, ts_ms, px, qty in apiorders.filter_recent_cached_orders(
-        init_cache_trade_manager(), order_type, symbol, max_age_seconds
+        init_cache_trade_manager(), order_type, symbol, max_age_seconds, _validated=True
     ):
         raw_sym = trade.get('symbol')
         sym_out = (

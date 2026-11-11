@@ -119,11 +119,17 @@ def snapshot_cache_symbol_rows(manager, symbol: str) -> list[dict]:
         ]
 
 
-def filter_recent_cached_orders(manager, order_type, symbol, max_age_seconds):
-    """Validate inputs, snapshot symbol rows from ``manager``, and return recent ``(row, side, ts_ms, px, qty)``."""
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
+def validate_order_query_args(order_type, symbol) -> str | None:
+    """Normalize and validate ``(order_type, symbol)`` for order/trade cache queries."""
+    normalized_type = _normalize_side(order_type)
+    sym.validate_ordertype(normalized_type)
     sym.validate_symbols(symbol)
+    return normalized_type
+
+
+def filter_recent_cached_orders(manager, order_type, symbol, max_age_seconds, *, _validated: bool = False):
+    """Validate inputs, snapshot symbol rows from ``manager``, and return recent ``(row, side, ts_ms, px, qty)``."""
+    order_type = _normalize_side(order_type) if _validated else validate_order_query_args(order_type, symbol)
     orders_for_symbol = snapshot_cache_symbol_rows(manager, symbol)
     max_age_val = safe_nonneg_float(max_age_seconds, default=None) if orders_for_symbol else None
     if max_age_val is None:

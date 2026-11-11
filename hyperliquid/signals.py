@@ -29,7 +29,6 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402
-    load_layered_env_config,
     load_local_module,
     log,
     normalize_epoch_sec,
@@ -46,16 +45,7 @@ from intelligence.internal.state.persistence import detect_long_term_trend as _r
 from state_io import read_json_dict  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
-
-
-def _hl_signals_env() -> dict[str, str]:
-    base = load_layered_env_config(
-        os.path.join(_HERE, "config.env"),
-        os.path.join(_HERE, ".env"),
-        fallback_prefixes=(),
-    )
-    base.update(os.environ)
-    return base
+_hl_signals_env = _common_mod.load_hl_default_env
 
 
 MIN_POINTS_PER_WINDOW = 3

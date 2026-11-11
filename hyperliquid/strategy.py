@@ -34,7 +34,6 @@ from botcore import (  # noqa: E402
     exact_int,
     exact_nonneg_int,
     format_price_log,
-    load_layered_env_config,
     log,
     normalize_scalar_order_id,
     require_finite_float,
@@ -51,7 +50,7 @@ from botcore import (  # noqa: E402
 )
 ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
-from common import notify
+from common import load_hl_default_env as _hl_default_env, notify
 from providers.order_ohlc_utils import clean_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
@@ -59,16 +58,6 @@ from strategies.state_store import safe_state_token, state_path_for as _shared_s
 from hl_client import HLClient
 from market_data import get_price
 from signals import _normalize_signal_trend, get_signal
-
-
-def _hl_default_env() -> dict[str, str]:
-    base = load_layered_env_config(
-        os.path.join(_HERE, "config.env"),
-        os.path.join(_HERE, ".env"),
-        fallback_prefixes=(),
-    )
-    base.update(os.environ)
-    return base
 
 
 HL_FEE_PCT = required_float_env("HL_FEE_PCT", _hl_default_env())

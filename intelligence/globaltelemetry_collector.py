@@ -110,15 +110,11 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             start_sync=True,
         )
 
-        self._last_orderbook_ts: Dict[str, float] = {}
-        self._last_derivatives_ts: Dict[str, float] = {}
-        self._last_whale_ts: Dict[str, float] = {}
         self._last_news_ts: float = 0.0
         self._last_fear_greed_ts: float = 0.0
         self._last_breadth_ts: float = 0.0
         self._last_macro_benchmarks_ts: float = 0.0
         self._last_pretrade_caches_ts: float = 0.0
-        self._last_stdout_hb_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
 

@@ -446,6 +446,10 @@ class ExternalTelemetryMixin:
 
     def _init_external_collectors(self, logger_inst: logging.Logger) -> None:
         self._telemetry_logger = logger_inst
+        self._last_orderbook_ts: Dict[str, float] = {}
+        self._last_derivatives_ts: Dict[str, float] = {}
+        self._last_whale_ts: Dict[str, float] = {}
+        self._last_stdout_hb_ts: float = 0.0
         ob_ttl = max(5.0, self.orderbook_interval_sec * 0.8)
         deriv_ttl = max(10.0, self.derivatives_interval_sec * 0.8)
         whale_ttl = max(15.0, self.whale_interval_sec * 0.8)

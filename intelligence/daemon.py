@@ -88,12 +88,8 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
             state_file=os.path.join(self.cache_dir, "geopolitical_eval.json"),
         )
 
-        self._last_orderbook_ts: Dict[str, float] = {}
-        self._last_derivatives_ts: Dict[str, float] = {}
-        self._last_whale_ts: Dict[str, float] = {}
         self._last_macro_ts: float = 0.0
         self._last_thread_prune_ts: float = 0.0
-        self._last_stdout_hb_ts: float = 0.0
         self.heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
 
     def update_macro(self, force: bool = False, now: Optional[float] = None) -> bool:
