@@ -183,11 +183,10 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_symbols_facade_constants_and_dynamic_lookup(self):
-        import instrument_registry as sym
-        self.assertEqual(sym.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
-        self.assertEqual(sym.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
+        self.assertEqual(registry.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(registry.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
         with self.assertRaises(AttributeError):
-            getattr(sym, "nonexistentsymbol")
+            getattr(registry, "nonexistentsymbol")
 
     def test_ownership_inventory_symbols_fallback(self):
         from verify_tools.ownership_inventory import _python_symbols
@@ -610,19 +609,18 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
 
     # _resolve_configured_venue & _is_multi_venue_base inspect dict-based load_registry() without AttributeError
     import intelligence.external.collectors.base_collector as obd_mod
-    import instrument_registry as ir_mod
-    orig_load = ir_mod.load_registry
+    orig_load = registry.load_registry
     try:
-        ir_mod.load_registry = lambda path=None: {
+        registry.load_registry = lambda path=None: {
             "KRAKEN_SOL": SimpleNamespace(symbol="SOLUSD", base="SOL", quote="USD", provider="kraken", enabled=True),
             "HL_SOL": SimpleNamespace(symbol="SOLUSDC", base="SOL", quote="USDC", provider="hyperliquid", enabled=False),
         }
-        assert ir_mod.venue_for_symbol("SOLUSD") == "kraken"
-        assert ir_mod.venue_for_symbol("SOLUSDC") == "hyperliquid"
+        assert registry.venue_for_symbol("SOLUSD") == "kraken"
+        assert registry.venue_for_symbol("SOLUSDC") == "hyperliquid"
         assert obd_mod._is_multi_venue_base("SOLUSD") is True
         assert obd_mod._has_hyperliquid_instrument("SOLUSD") is True
     finally:
-        ir_mod.load_registry = orig_load
+        registry.load_registry = orig_load
 
 
 def test_registry_execution_independence_and_layered_binding(tmp_path):
@@ -710,7 +708,6 @@ if __name__ == "__main__":
 def test_marketapi_place_inherits_instrument_params_from_instrument_registry_bool_iter28_s4(monkeypatch):
     """[ITER28 #4] MarketApi.place inherits instrument params from instrument_registry & bool rejections."""
     import order_guard
-    import instrument_registry
     from providers.market_api import MarketApi
     # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
     captured_bypasses = []
@@ -723,7 +720,7 @@ def test_marketapi_place_inherits_instrument_params_from_instrument_registry_boo
         lambda *a, **k: (captured_bypasses.append(set(k.get("bypass_guards") or set())) or True),
     )
     monkeypatch.setattr(
-        instrument_registry,
+        registry,
         "select_instruments",
         lambda prov=None: {
             "KRAKEN:TAOUSD": SimpleNamespace(
@@ -821,26 +818,24 @@ def test_scan_backtest_ranges_rejects_bool_int_path_and_strips_trailing_iter139_
 
 def test_instrument_registry_select_instruments_accepts_provider_object_with_name_and_iter162_s4():
     """[ITER162 #4] instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider."""
-    import instrument_registry as ir
     # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
     class _DummyProv:
         name = "Binance"
 
-    selected = ir.select_instruments(_DummyProv())
+    selected = registry.select_instruments(_DummyProv())
     assert len(selected) > 0
     with pytest.raises(ValueError):
-        ir.select_instruments("   ")
+        registry.select_instruments("   ")
 
 def test_symbols_validate_ordertype_validate_symbols_and_validate_params_with_case_slash_iter167_s1():
     """[ITER167 #1] symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs."""
-    import instrument_registry as sym_mod
     # 1. symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs
-    valid_sym = sym_mod.symbols[0]
-    sym_mod.validate_ordertype("b")
-    sym_mod.validate_ordertype(" sell ")
-    sym_mod.validate_symbols(f" {valid_sym.lower()} ")
-    sym_mod.validate_params("b", f" {valid_sym.lower()} ", price="100.5", qty="0.25")
+    valid_sym = registry.symbols[0]
+    registry.validate_ordertype("b")
+    registry.validate_ordertype(" sell ")
+    registry.validate_symbols(f" {valid_sym.lower()} ")
+    registry.validate_params("b", f" {valid_sym.lower()} ", price="100.5", qty="0.25")
     with pytest.raises(ValueError):
-        sym_mod.validate_params("BUY", valid_sym, price=True, qty=1.0)
+        registry.validate_params("BUY", valid_sym, price=True, qty=1.0)
     with pytest.raises(ValueError):
-        sym_mod.validate_params("BUY", valid_sym, price="nan", qty=1.0)
+        registry.validate_params("BUY", valid_sym, price="nan", qty=1.0)

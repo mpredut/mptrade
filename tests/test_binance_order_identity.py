@@ -363,14 +363,13 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
     def test_cancel_open_recent_and_opposite_orders_resolve_accepted_retry_tracker(self):
         from binance_api import bapi_placeorder as bp
-        import order_retry
 
         now_s = int(time.time())
         open_map = {"9001": {"price": 80000.0, "timestamp": now_s - 5}}
         with patch.object(bapi.sym, "validate_params"), \
              patch.object(bapi, "get_open_orders", return_value=open_map), \
              patch.object(bapi, "cancel_order", return_value=True), \
-             patch.object(order_retry, "resolve_accepted_order") as mock_resolve:
+             patch.object(oq, "resolve_accepted_order") as mock_resolve:
             bapi.cancel_open_orders("BUY", "BTCUSDC")
             mock_resolve.assert_called_once_with("BTCUSDC", "9001")
 
@@ -385,14 +384,13 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
 def test_order_id_context_boolean_clientorderid_case_insensitive_allowed_owners_iter42_s1():
     """[ITER42 #1] order_id_context: boolean clientOrderId & case-insensitive allowed_owners."""
-    from providers import order_id_context
     # 1. order_id_context: boolean clientOrderId & case-insensitive allowed_owners
-    assert order_id_context.resolve_order_owner(True) == "unspecified"
-    assert order_id_context.resolve_order_owner(False) == "unspecified"
-    assert order_id_context.order_matches_owner("TA_main_1234", "TRADEALL") is True
-    assert order_id_context.order_matches_owner("MO_TA_1234", ["MonitorOrder"]) is True
-    assert order_id_context.order_matches_owner("TA_main_1234", True) is False
-    assert order_id_context.order_matches_owner("TA_main_1234", [True, None, ""]) is False
+    assert rc.resolve_order_owner(True) == "unspecified"
+    assert rc.resolve_order_owner(False) == "unspecified"
+    assert rc.order_matches_owner("TA_main_1234", "TRADEALL") is True
+    assert rc.order_matches_owner("MO_TA_1234", ["MonitorOrder"]) is True
+    assert rc.order_matches_owner("TA_main_1234", True) is False
+    assert rc.order_matches_owner("TA_main_1234", [True, None, ""]) is False
 
 def test__base36_handles_none_bool_inf_nan_and_invalid_iter67_s3():
     """[ITER67 #3] _base36 handles None, bool, inf, nan, and invalid strings safely."""

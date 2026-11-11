@@ -557,25 +557,24 @@ def test_alertnotifier_helpers_iter78_s2(monkeypatch):
 
 def test_notify_engine_alertnotifiers__positive_int_env__safe_pos_int_format_bot_event_iter99_s4(monkeypatch):
     """[ITER99 #4] notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event."""
-    from notify_engine import alertnotifiers
     # 4. notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event
     monkeypatch.setenv("MP_TEST_POS_INT", "-5")
-    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 42
     monkeypatch.setenv("MP_TEST_POS_INT", "3.5")
-    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 42
     monkeypatch.setenv("MP_TEST_POS_INT", "15")
-    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 15
+    assert an._positive_int_env("MP_TEST_POS_INT", 42) == 15
 
-    assert alertnotifiers.exact_pos_int(True, 7) == 7
-    assert alertnotifiers.exact_pos_int(-3, 7) == 7
-    assert alertnotifiers.exact_pos_int(2.5, 7) == 7
-    assert alertnotifiers.exact_pos_int("12", 7) == 12
+    assert an.exact_pos_int(True, 7) == 7
+    assert an.exact_pos_int(-3, 7) == 7
+    assert an.exact_pos_int(2.5, 7) == 7
+    assert an.exact_pos_int("12", 7) == 12
 
-    msg = alertnotifiers.AlertNotifier.format_bot_event(
+    msg = an.AlertNotifier.format_bot_event(
         {"name": "Started", "source": "BTC_bot", "added_at": 1700000000}
     )
     assert "Started" in msg and "BTC_bot" in msg and "11-1" in msg
-    msg_bool = alertnotifiers.AlertNotifier.format_bot_event(
+    msg_bool = an.AlertNotifier.format_bot_event(
         {"name": "Started", "source": "BTC_bot", "added_at": True}
     )
     assert msg_bool == "Started · BTC_bot"

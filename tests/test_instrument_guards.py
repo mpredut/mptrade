@@ -1409,7 +1409,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         order_retry outbox state transitions, _EXECUTION_AUDIT events, and provider
         place_order kwargs across all placement stages.
         """
-        import instrument as inst_mod
 
         def read_audit_events():
             audit_files = glob.glob(os.path.join(self._log_tmp, "execution_audit_*.jsonl"))

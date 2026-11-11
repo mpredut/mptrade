@@ -2035,17 +2035,16 @@ if __name__ == "__main__":
 
 def test_monitortrades__resolve_exit_and__handle_position_recovery_clear__sl_episode_state_iter5_s4(monkeypatch):
     """[ITER5 #4] monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE."""
-    import monitortrades
     # 4. monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE
-    monkeypatch.setattr(monitortrades, "_save_mt_state", lambda: None)
-    monkeypatch.setattr(monitortrades, "_clear_smart_sl_exit", lambda *a, **k: None)
-    monitortrades._SL_EPISODE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
-    monitortrades._SL_BOUNCE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
-    monitortrades._TP_RIDE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
-    monitortrades._resolve_exit("TESTUSDC", inst=None, kind="STOP", clear_pending=True)
-    assert "TESTUSDC" not in monitortrades._SL_EPISODE_STATE
-    assert "TESTUSDC" not in monitortrades._SL_BOUNCE_STATE
-    assert "TESTUSDC" not in monitortrades._TP_RIDE_STATE
+    monkeypatch.setattr(mt, "_save_mt_state", lambda: None)
+    monkeypatch.setattr(mt, "_clear_smart_sl_exit", lambda *a, **k: None)
+    mt._SL_EPISODE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    mt._SL_BOUNCE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    mt._TP_RIDE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+    mt._resolve_exit("TESTUSDC", inst=None, kind="STOP", clear_pending=True)
+    assert "TESTUSDC" not in mt._SL_EPISODE_STATE
+    assert "TESTUSDC" not in mt._SL_BOUNCE_STATE
+    assert "TESTUSDC" not in mt._TP_RIDE_STATE
 
 def test_monitortrades__can_pass_buy_quantity_policy_passes_cancelorders_true_and_checks_go1_iter10_s3(monkeypatch):
     """[ITER10 #3] monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard."""
@@ -2315,11 +2314,10 @@ def test_monitortrades__extract_trade_uid_normalizes_integer_floats_and_rejects_
 
 def test_resolve_caller_module_ignores_boolean_module_prefix_client_order_id_and_resolves_iter125_s2():
     """[ITER125 #2] resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage."""
-    import order_guard as og
     # 2. resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage
-    assert og.resolve_caller_module(True, client_order_id="TA_main_123") == "tradeall"
-    assert og.resolve_caller_module(None, prefix=True, client_order_id="MT_stop_1") == "monitortrades"
-    assert og.normalize_venue_name(True, default="") == ""
+    assert order_guard.resolve_caller_module(True, client_order_id="TA_main_123") == "tradeall"
+    assert order_guard.resolve_caller_module(None, prefix=True, client_order_id="MT_stop_1") == "monitortrades"
+    assert order_guard.normalize_venue_name(True, default="") == ""
 
 def test__series_cache_key_prewarm_trend_series_with_none_bool_nan_trend_window_seconds_iter142_s3():
     """[ITER142 #3] _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds."""

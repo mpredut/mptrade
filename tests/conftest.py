@@ -121,11 +121,9 @@ def _isolate_order_outcomes_journal(tmp_path, monkeypatch):
     fills (CHARPIPEUSD, "BTCUSDC SELL 0.2 @ 100 accepted") landed in the journal that
     tradeall_observe.py reads for the production fleet.
     """
-    import order_lifecycle as order_outcomes_log
-    from intelligence.external.collectors import bybit_liquidations_collector as _liq_col  # noqa: F401
 
     monkeypatch.setattr(
-        order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
+        _order_lifecycle_init, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
 
 
 @pytest.fixture

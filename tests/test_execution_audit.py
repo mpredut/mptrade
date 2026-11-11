@@ -550,18 +550,16 @@ def test_executionaudit_handles_out_of_range_clock_timestamps_and_iter59_s3(tmp_
 
 def test_execution_audit__parse_cache_max_parses_float_strings_iter84_s3(monkeypatch):
     """[ITER84 #3] execution_audit._parse_cache_max parses float strings."""
-    from providers import execution_audit
     # 3. execution_audit._parse_cache_max parses float strings
     monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "2500.0 # inline comment")
-    assert execution_audit._parse_cache_max() == 2500
+    assert execution_audit_module._parse_cache_max() == 2500
 
 def test_providers_execution_audit_intent_client_order_id_rejects_none_bool_empty_iter106_s2():
     """[ITER106 #2] providers.execution_audit: intent_client_order_id rejects None / bool / empty."""
-    from providers import execution_audit as ea
     # 2. providers.execution_audit: intent_client_order_id rejects None / bool / empty
-    assert ea.intent_client_order_id("kraken", None) is None
-    assert ea.intent_client_order_id("kraken", True) is None
-    assert ea.intent_client_order_id("kraken", "   ") is None
+    assert execution_audit_module.intent_client_order_id("kraken", None) is None
+    assert execution_audit_module.intent_client_order_id("kraken", True) is None
+    assert execution_audit_module.intent_client_order_id("kraken", "   ") is None
 
 def test_execution_audit_market_api__parse_bool_flag_and__parse_binance_order_id__clean_order_id_arg_iter151_s3():
     """[ITER151 #3] execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg."""

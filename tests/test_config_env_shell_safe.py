@@ -39,26 +39,25 @@ def test_config_env_sources_under_set_u_with_empty_environment():
 
 
 def test_config_module_parses_falsy_trade_enabled_fail_closed(tmp_path, monkeypatch):
-    import botcore as config
 
     env_file = tmp_path / "config.env"
     txt_file = tmp_path / "config.txt"
-    monkeypatch.setattr(config, "CONFIG_ENV_PATH", str(env_file))
-    monkeypatch.setattr(config, "CONFIG_TXT_PATH", str(txt_file))
+    monkeypatch.setattr(botcore, "CONFIG_ENV_PATH", str(env_file))
+    monkeypatch.setattr(botcore, "CONFIG_TXT_PATH", str(txt_file))
     monkeypatch.delenv("TRADE_ENABLED", raising=False)
 
     for raw in ("0", "false", '"false"', "'0'", "no", "off"):
         env_file.write_text(f"export TRADE_ENABLED={raw}\n", encoding="utf-8")
-        config.load_config()
-        assert config.is_trade_enabled() is False, f"Expected False for {raw}"
+        botcore.load_config()
+        assert botcore.is_trade_enabled() is False, f"Expected False for {raw}"
 
     env_file.write_text("TRADE_ENABLED=1\n", encoding="utf-8")
     txt_file.write_text("trade_enabled=0 # override\n", encoding="utf-8")
-    config.load_config()
-    assert config.is_trade_enabled() is False
+    botcore.load_config()
+    assert botcore.is_trade_enabled() is False
 
-    config.config_cache["trade_enabled"] = "0"
-    assert config.is_trade_enabled() is False
+    botcore.config_cache["trade_enabled"] = "0"
+    assert botcore.is_trade_enabled() is False
 
 
 def test_shell_launchers_source_env_common_correctly():
@@ -156,7 +155,6 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
 
 def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     import order_lifecycle as order_outcomes_log
-    import botcore as shadow_runtime
     import shadow_signals
 
     monkeypatch.setenv("TEST_SHADOW_FLOAT", "nan")
@@ -173,7 +171,7 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     assert tracker._last_state_write == 1000.0
 
     with pytest.raises(ValueError):
-        shadow_runtime.require_shadow_interval(True, 1.0, "test")
+        botcore.require_shadow_interval(True, 1.0, "test")
 
     monkeypatch.setattr(order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     order_outcomes_log.log_order_outcome(

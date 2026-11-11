@@ -870,16 +870,15 @@ def test_protobuf_summary_ui_visible_self_heals_corrupted_raw_bytes_and_iter81_s
 
 def test_agy_store_fix_rejects_non_finite_idle_sec_and_handles_missing_iter81_s2(monkeypatch):
     """[ITER81 #2] agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully."""
-    from orchestratorOS.admin import agy_store_fix
     # 2. agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully
     with pytest.raises(ValueError):
-        agy_store_fix.mode_ui_sync_check(float("nan"))
+        asf.mode_ui_sync_check(float("nan"))
     with pytest.raises(ValueError):
-        agy_store_fix.mode_ui_sync_check(float("inf"))
-    monkeypatch.setattr(agy_store_fix, "PB", "/nonexistent/path/agyhub_summaries_proto.pb")
-    monkeypatch.setattr(agy_store_fix, "DB", "/nonexistent/path/conversation_summaries.db")
-    assert agy_store_fix.daemon_known_cids() == set()
-    assert agy_store_fix.summary_row_cids() == set()
+        asf.mode_ui_sync_check(float("inf"))
+    monkeypatch.setattr(asf, "PB", "/nonexistent/path/agyhub_summaries_proto.pb")
+    monkeypatch.setattr(asf, "DB", "/nonexistent/path/conversation_summaries.db")
+    assert asf.daemon_known_cids() == set()
+    assert asf.summary_row_cids() == set()
 
 def test_topics_extract_json_object_preserves_trailing_json_outside_non_json_iter82_s1():
     """[ITER82 #1] topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences."""

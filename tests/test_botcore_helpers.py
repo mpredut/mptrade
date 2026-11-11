@@ -1042,12 +1042,11 @@ def test_utils_gaussian_weights_from_idx_handles_overflowerror_and_clamps_huge_t
 
 def test_config__parse_bool_flag_handles_nan_inf_and_unrecognized_strings_iter81_s3():
     """[ITER81 #3] config._parse_bool_flag handles NaN/Inf and unrecognized strings by falling back to default."""
-    import botcore as config
     # 3. config._parse_bool_flag handles NaN/Inf and unrecognized strings by falling back to default
-    assert config._parse_bool_flag(float("nan"), default=False) is False
-    assert config._parse_bool_flag(float("nan"), default=True) is True
-    assert config._parse_bool_flag("unknown_token", default=True) is True
-    assert config._parse_bool_flag("unknown_token", default=False) is False
+    assert botcore._parse_bool_flag(float("nan"), default=False) is False
+    assert botcore._parse_bool_flag(float("nan"), default=True) is True
+    assert botcore._parse_bool_flag("unknown_token", default=True) is True
+    assert botcore._parse_bool_flag("unknown_token", default=False) is False
 
 def test_jsonstatestore_rejects_non_dict_loaded_payloads_even_if_iter84_s2(monkeypatch, tmp_path):
     """[ITER84 #2] JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs."""
@@ -1127,14 +1126,13 @@ def test_providers_http_resilience_mount_connect_retry_rejects_boolean_status_fo
 
 def test_utils_value_diff_to_percent_secondsto_cache_path_iter110_s3():
     """[ITER110 #3] utils: value_diff_to_percent, secondsTo*, cache_path."""
-    import utils as u
     # 3. utils: value_diff_to_percent, secondsTo*, cache_path
-    assert u.value_diff_to_percent(True, 100.0) == 0.0
-    assert u.value_diff_to_percent(float("nan"), 100.0) == 0.0
-    assert u.value_diff_to_percent(0.0, 100.0) == 0.0
-    assert u.secondsToDays(True) == 0.0
-    assert u.secondsToHours(None) == 0.0
-    assert u.cache_path(True) is True
+    assert utils.value_diff_to_percent(True, 100.0) == 0.0
+    assert utils.value_diff_to_percent(float("nan"), 100.0) == 0.0
+    assert utils.value_diff_to_percent(0.0, 100.0) == 0.0
+    assert utils.secondsToDays(True) == 0.0
+    assert utils.secondsToHours(None) == 0.0
+    assert utils.cache_path(True) is True
 
 def test_botcore__dotenv_pairs_required_env_defined_env_required_bool_env_iter114_s2():
     """[ITER114 #2] botcore._dotenv_pairs, required_env, defined_env, required_bool_env."""
@@ -1192,13 +1190,12 @@ def test_botcore_load_dotenv_override_false_does_not_overwrite_existing_iter162_
 
 def test_config__parse_bool_flag_with_default_false_and__read_properties_file_with_iter162_s2(tmp_path):
     """[ITER162 #2] config: _parse_bool_flag with default='false' and _read_properties_file with quoted # and invalid path."""
-    import botcore as cfg
     # 2. config: _parse_bool_flag with default="false" and _read_properties_file with quoted # and invalid path
-    assert cfg._parse_bool_flag("unknown_token", default="false") is False
-    assert cfg._read_properties_file(True) == {}
+    assert botcore._parse_bool_flag("unknown_token", default="false") is False
+    assert botcore._read_properties_file(True) == {}
     prop_file = tmp_path / "props.env"
     prop_file.write_text('QUOTED_HASH="abc#def" # inline comment\nTRADE_ENABLED="false"\n', encoding="utf-8")
-    props = cfg._read_properties_file(str(prop_file))
+    props = botcore._read_properties_file(str(prop_file))
     assert props["QUOTED_HASH"] == "abc#def"
     assert props["TRADE_ENABLED"] is False
 
@@ -1245,13 +1242,12 @@ def test_providers_http_resilience_mount_connect_retry_with_string_numbers_and_r
 
 def test_config_load_config_with_empty_trade_enabled_env_var_iter168_s4(tmp_path, monkeypatch):
     """[ITER168 #4] config.load_config with empty TRADE_ENABLED env var."""
-    import botcore as cfg_mod
     # 4. config.load_config with empty TRADE_ENABLED env var
     monkeypatch.setenv("TRADE_ENABLED", "   ")
-    monkeypatch.setattr(cfg_mod, "CONFIG_ENV_PATH", str(tmp_path / "nonexistent.env"))
-    monkeypatch.setattr(cfg_mod, "CONFIG_TXT_PATH", str(tmp_path / "nonexistent.txt"))
-    cfg_mod.load_config()
-    assert cfg_mod.is_trade_enabled() is True
+    monkeypatch.setattr(botcore, "CONFIG_ENV_PATH", str(tmp_path / "nonexistent.env"))
+    monkeypatch.setattr(botcore, "CONFIG_TXT_PATH", str(tmp_path / "nonexistent.txt"))
+    botcore.load_config()
+    assert botcore.is_trade_enabled() is True
 
 def test_is_interval_due_handles_elapsed_non_elapsed_future_clock_skew_iter182_s1():
     """[ITER182 #1] is_interval_due handles elapsed, non-elapsed, future clock skew, None/bool/NaN, and force."""

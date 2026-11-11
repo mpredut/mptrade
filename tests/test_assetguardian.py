@@ -1567,9 +1567,8 @@ def test_assetguardian__p3b_threshold_multipliers_unions_caller_bypass_guards_wi
 
 def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_corrupted_prior_spent_fee_iter63_s4(monkeypatch):
     """[ITER63 #4] assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee."""
-    import assetguardian
     # 4. assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee
-    rem, target, prior = assetguardian._buy_remaining_cash(
+    rem, target, prior = ag._buy_remaining_cash(
         {"initial_cash": 1000.0, "spent_quote_by_tier": {"5": -500.0}},
         5.0,
         0.2,
@@ -1578,8 +1577,8 @@ def test_assetguardian__buy_remaining_cash__record_terminal_buy_clamp_negative_c
     assert rem == pytest.approx(target)
 
     saved = {}
-    monkeypatch.setattr(assetguardian, "_save_symbol_campaign", lambda sym, kind, st: saved.update(st))
-    updated = assetguardian._record_terminal_buy(
+    monkeypatch.setattr(ag, "_save_symbol_campaign", lambda sym, kind, st: saved.update(st))
+    updated = ag._record_terminal_buy(
         "BTCUSDC",
         {
             "initial_cash": 1000.0,

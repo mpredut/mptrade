@@ -1224,9 +1224,8 @@ def test_hyperliquidprovider_token_live_enabled_order_id_ohlc_series_validation_
 
 def test_hyperliquidprovider_iter111_s2():
     """[ITER111 #2] HyperliquidProvider."""
-    import providers.hyperliquid_provider as hlp
     # 2. HyperliquidProvider
-    hl_prov = hlp.HyperliquidProvider.__new__(hlp.HyperliquidProvider)
+    hl_prov = hl_provider.HyperliquidProvider.__new__(hl_provider.HyperliquidProvider)
     hl_prov._token = "PURR"
     hl_prov._symbol = "PURR"
     hl_prov.validate_symbol = lambda _s: None
@@ -1585,9 +1584,8 @@ def test_simulate_sys_modules_market_data_polluted_by_hyperliquid_market_data_it
 
 def test_hyperliquidprovider_underscore_alias_and_long_ask_side_normalization_iter169_s2(monkeypatch):
     """[ITER169 #2] HyperliquidProvider underscore alias and LONG/ASK side normalization."""
-    from providers import hyperliquid_provider as hlp
     # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
-    hl = hlp.HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl = hl_provider.HyperliquidProvider(token="HYPE", live_enabled=False)
     assert hl.supports_symbol("HYPE_USDC") is True
     monkeypatch.setattr(hl, "free_balance", lambda asset: 10.0)
     with pytest.raises(ProviderError, match="insufficient USDC"):

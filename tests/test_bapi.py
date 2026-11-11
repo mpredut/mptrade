@@ -373,9 +373,6 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             extract_order_side,
             normalize_order,
         )
-        import binance_api.bapi as bapi_mod
-        import binance_api.bapi_allorders as bapi_all
-        import binance_api.bapi_trades as bapi_tr
 
         # 1. Canonical timestamp normalization (seconds vs ms, multiple field names)
         self.assertEqual(extract_timestamp_ms({"timestamp": 1_700_000_000}), 1_700_000_000_000)
@@ -398,15 +395,14 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
 
         # 5. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders emit both timestamp/time and qty/quantity
         now_ms = int(time.time() * 1000)
-        import cacheManager as cm_mod
         fake_order_mgr = types.SimpleNamespace(
             lock=threading.Lock(),
             cache={SYMBOL: [
                 {"orderId": 77, "symbol": SYMBOL, "side": "BUY", "price": "105.0", "executedQty": "1.5", "updateTime": now_ms - 5000}
             ]},
         )
-        with mock.patch.object(cm_mod, "get_cache_manager", return_value=fake_order_mgr):
-            all_orders_res = bapi_all.get_trade_orders("BUY", SYMBOL, 60)
+        with mock.patch.object(cm, "get_cache_manager", return_value=fake_order_mgr):
+            all_orders_res = bapi_allorders.get_trade_orders("BUY", SYMBOL, 60)
         self.assertEqual(len(all_orders_res), 1)
         self.assertEqual(all_orders_res[0]["time"], now_ms - 5000)
         self.assertEqual(all_orders_res[0]["timestamp"], now_ms - 5000)
@@ -420,8 +416,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 {"orderId": 88, "symbol": SYMBOL, "side": "SELL", "price": "110.0", "quantity": "2.5", "timestamp": now_ms - 5000}
             ]},
         )
-        with mock.patch.object(bapi_tr, "init_cache_trade_manager", return_value=fake_trade_mgr):
-            tr_orders_res = bapi_tr.get_trade_orders("SELL", SYMBOL, 60)
+        with mock.patch.object(bapi_trades, "init_cache_trade_manager", return_value=fake_trade_mgr):
+            tr_orders_res = bapi_trades.get_trade_orders("SELL", SYMBOL, 60)
         self.assertEqual(len(tr_orders_res), 1)
         self.assertEqual(tr_orders_res[0]["time"], now_ms - 5000)
         self.assertEqual(tr_orders_res[0]["timestamp"], now_ms - 5000)
@@ -437,10 +433,10 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             2: {"orderId": 2, "symbol": SYMBOL, "time": fresh_ms},
         }
         with (
-            mock.patch.object(bapi_mod, "get_open_orders", return_value=open_orders_map),
-            mock.patch.object(bapi_mod, "cancel_order", return_value=True) as mock_cancel,
+            mock.patch.object(bapi, "get_open_orders", return_value=open_orders_map),
+            mock.patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
         ):
-            bapi_mod.cancel_expired_orders("BUY", SYMBOL, 3600)
+            bapi.cancel_expired_orders("BUY", SYMBOL, 3600)
             mock_cancel.assert_called_once_with(SYMBOL, 1)
 
         # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
@@ -551,11 +547,11 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         fake_client = MagicMock()
         fake_client.get_symbol_ticker.return_value = {"price": True}
         fake_client.get_asset_balance.return_value = {"free": True}
-        with mock.patch.object(bapi_mod, "client", fake_client):
-            self.assertIsNone(bapi_mod.update_price(SYMBOL))
-            self.assertIsNone(bapi_mod.get_free_balance("USDC"))
+        with mock.patch.object(bapi, "client", fake_client):
+            self.assertIsNone(bapi.update_price(SYMBOL))
+            self.assertIsNone(bapi.get_free_balance("USDC"))
             fake_client.get_asset_balance.return_value = {"free": "-5.0"}
-            self.assertIsNone(bapi_mod.get_free_balance("USDC"))
+            self.assertIsNone(bapi.get_free_balance("USDC"))
 
         # 14. compute_24h_price_metrics normalizes Unix-second timestamps
         from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
@@ -595,12 +591,12 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 sym_mod.validate_params("BUY", SYMBOL, price=100.0, qty=bad_val)
 
         fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": True, "locked": "0.0"}]}
-        with mock.patch.object(bapi_mod, "client", fake_client):
-            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+        with mock.patch.object(bapi, "client", fake_client):
+            self.assertEqual(bapi.get_account_assets_balances(), [])
             fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "nan", "locked": "0.0"}]}
-            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+            self.assertEqual(bapi.get_account_assets_balances(), [])
             fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "-1.0", "locked": "0.0"}]}
-            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+            self.assertEqual(bapi.get_account_assets_balances(), [])
 
         with mock.patch.object(bapi_placeorder.api, "get_current_price", return_value=float("inf")):
             self.assertEqual(
@@ -613,12 +609,12 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             )
 
         # 18. _convert_to_usdc supports inverse USDCUSDT quote and stablecoin peg fallback
-        with mock.patch.object(bapi_mod, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):
-            self.assertAlmostEqual(bapi_mod._convert_to_usdc("USDT", 100.1), 100.0, places=4)
-            self.assertEqual(bapi_mod._convert_to_usdc("FDUSD", 50.0), 50.0)
-            self.assertEqual(bapi_mod._convert_to_usdc("USD", 25.0), 25.0)
-        self.assertEqual(bapi_mod._normalize_side("long"), "BUY")
-        self.assertEqual(bapi_mod._normalize_side("short"), "SELL")
+        with mock.patch.object(bapi, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):
+            self.assertAlmostEqual(bapi._convert_to_usdc("USDT", 100.1), 100.0, places=4)
+            self.assertEqual(bapi._convert_to_usdc("FDUSD", 50.0), 50.0)
+            self.assertEqual(bapi._convert_to_usdc("USD", 25.0), 25.0)
+        self.assertEqual(bapi._normalize_side("long"), "BUY")
+        self.assertEqual(bapi._normalize_side("short"), "SELL")
 
 
 
@@ -853,21 +849,19 @@ def test_bapi_ws_normalize_now_ms_true_nan_falls_back_to_current_iter42_s2():
 
 def test_bapi_ws_health_mark_ws_event_received_ignores_bool_nan_and_falls_back_iter43_s1():
     """[ITER43 #1] bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock."""
-    from binance_api import bapi_ws_bridge as bapi_ws_health
     # 1. bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock
-    ts_bool = bapi_ws_health.mark_ws_event_received(True)
+    ts_bool = ws_bridge.mark_ws_event_received(True)
     assert ts_bool > 1_700_000_000.0
-    ts_nan = bapi_ws_health.mark_ws_event_received(float("nan"))
+    ts_nan = ws_bridge.mark_ws_event_received(float("nan"))
     assert ts_nan > 1_700_000_000.0
 
 def test_market_data_fetch_ohlc_candles_rejects_boolean_window_parameters_iter43_s2():
     """[ITER43 #2] market_data.fetch_ohlc_candles rejects boolean window parameters."""
-    from binance_api import market_data
     # 2. market_data.fetch_ohlc_candles rejects boolean window parameters
     with pytest.raises(ValueError):
-        market_data.fetch_ohlc_candles("BTCUSDC", start_ms=True)
+        b_md.fetch_ohlc_candles("BTCUSDC", start_ms=True)
     with pytest.raises(ValueError):
-        market_data.fetch_ohlc_candles("BTCUSDC", lookback_days=True)
+        b_md.fetch_ohlc_candles("BTCUSDC", lookback_days=True)
 
 def test_trailingstop_rejects_boolean_price_balance_trend_iter43_s5():
     """[ITER43 #5] TrailingStop rejects boolean price/balance/trend."""
@@ -1182,24 +1176,22 @@ def test_marketdataprovider_last_opposite_fill_bool_invalid_order_type_fractiona
 
 def test_bapi_placeorder_order_candidate_price_supports_b_s_and_rejects_bool_iter106_s4():
     """[ITER106 #4] bapi_placeorder: order_candidate_price supports 'b'/'s' and rejects bool."""
-    from binance_api import bapi_placeorder as bpo
     # 4. bapi_placeorder: order_candidate_price supports 'b'/'s' and rejects bool
-    assert bpo.order_candidate_price(" b ", 100.0, 95.0) == 95.0
-    assert bpo.order_candidate_price(" s ", 100.0, 105.0) == 105.0
+    assert bapi_placeorder.order_candidate_price(" b ", 100.0, 95.0) == 95.0
+    assert bapi_placeorder.order_candidate_price(" s ", 100.0, 105.0) == 105.0
 
 def test_bapi_ws_normalize_parse_order_execution_report_rejects_non_integer_float_orderid_or_iter108_s2():
     """[ITER108 #2] bapi_ws_normalize: parse_order_execution_report rejects non-integer float orderId or boolean side."""
-    from binance_api import bapi_ws_normalize as ws_norm
     # 2. bapi_ws_normalize: parse_order_execution_report rejects non-integer float orderId or boolean side
-    assert ws_norm.parse_order_execution_report(
+    assert bapi_ws_normalize.parse_order_execution_report(
         {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": float("nan"), "S": "BUY", "l": "1.0", "L": "100.0"}
     ) is None
-    assert ws_norm.parse_order_execution_report(
+    assert bapi_ws_normalize.parse_order_execution_report(
         {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": 200, "S": True, "l": "1.0", "L": "100.0"}
     ) is None
 
     # parse_trade_execution_report sanitizes fallback trade_id and commission fields
-    res_trade = ws_norm.parse_trade_execution_report(
+    res_trade = bapi_ws_normalize.parse_trade_execution_report(
         {
             "s": "BTCUSDC",
             "x": "TRADE",
@@ -1228,12 +1220,11 @@ def test_bapi_ws_bridge_handle_binance_ws_event_ignores_unhashable_or_boolean_ev
 
 def test_binance_api_trailing_stop_string_false_enabled_flag_and_boolean_iter109_s4(tmp_path):
     """[ITER109 #4] binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards."""
-    from binance_api import trailing_stop as bts
     # 4. binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards
     dummy_api = SimpleNamespace()
     dummy_po = SimpleNamespace()
     dummy_sym = SimpleNamespace(symbols=["BTCUSDC"])
-    ts = bts.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled="false", state_file=str(tmp_path / "trail.json"))
+    ts = trailing_stop.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled="false", state_file=str(tmp_path / "trail.json"))
     assert ts.enabled is False
     assert ts.rebuy_enabled_for(True) is False
     assert ts.rebuy_configured_for(True) is False
@@ -1257,18 +1248,17 @@ def test_binanceprovider_open_orders_rejects_missing_bool_orderid_and_bool_iter1
 
 def test_bapi_placeorder__normalize_side_and__last_opposite_fill_price_api_iter115_s1():
     """[ITER115 #1] bapi_placeorder._normalize_side and _last_opposite_fill_price_api."""
-    import binance_api.bapi_placeorder as bpo
     # 1. bapi_placeorder._normalize_side and _last_opposite_fill_price_api
-    assert bpo._normalize_side(" b ") == "BUY"
-    assert bpo._normalize_side(" s ") == "SELL"
-    with pytest.raises( bpo.SubmissionRefused ):
-        bpo.apply_weight_limit("BTCUSDC", True, 100.0, 1.0, 2.0)
-    with pytest.raises( bpo.SubmissionRefused ):
-        bpo.apply_weight_limit("BTCUSDC", "INVALID", 100.0, 1.0, 2.0)
+    assert bapi_placeorder._normalize_side(" b ") == "BUY"
+    assert bapi_placeorder._normalize_side(" s ") == "SELL"
+    with pytest.raises( bapi_placeorder.SubmissionRefused ):
+        bapi_placeorder.apply_weight_limit("BTCUSDC", True, 100.0, 1.0, 2.0)
+    with pytest.raises( bapi_placeorder.SubmissionRefused ):
+        bapi_placeorder.apply_weight_limit("BTCUSDC", "INVALID", 100.0, 1.0, 2.0)
     with pytest.raises(ValueError):
-        bpo._last_opposite_fill_price_api("BTCUSDC", "INVALID")
+        bapi_placeorder._last_opposite_fill_price_api("BTCUSDC", "INVALID")
     with pytest.raises(ValueError):
-        bpo._last_opposite_fill_price_api("BTCUSDC", True)
+        bapi_placeorder._last_opposite_fill_price_api("BTCUSDC", True)
 
 def test_binancewsbase_stop_timeout_and_binanceaccountstream_keepalive_sec_loss_timeout_sec_iter117_s3():
     """[ITER117 #3] BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec."""
@@ -1561,10 +1551,9 @@ def test_providers_market_api_binanceprovider_ohlc_series_with_marketapi_provide
 
 def test_bapi_ws_health__parse_bool_flag_value_default_bapi_ws_bridge_handle_binance_ws_event_log_enabled_true_iter166_s4():
     """[ITER166 #4] bapi_ws_health._parse_bool_flag(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)."""
-    from binance_api import bapi_ws_bridge as ws_health
     # 4. bapi_ws_health._parse_bool_flag(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
-    assert ws_health._parse_bool_flag("unknown", default=True) is True
-    assert ws_health._parse_bool_flag("false", default=True) is False
+    assert ws_bridge._parse_bool_flag("unknown", default=True) is True
+    assert ws_bridge._parse_bool_flag("false", default=True) is False
     persisted = []
     ws_bridge.handle_binance_ws_event(
         {"e": "executionReport", "s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": 123},
@@ -1577,9 +1566,8 @@ def test_bapi_ws_health__parse_bool_flag_value_default_bapi_ws_bridge_handle_bin
 
 def test_binancepricestream_with_scalar_string_symbols_and_slash_formatted_iter167_s3():
     """[ITER167 #3] BinancePriceStream with scalar string symbols and slash-formatted symbol methods."""
-    from binance_api import bapi_ws as bws
     # 3. BinancePriceStream with scalar string symbols and slash-formatted symbol methods
-    ps = bws.BinancePriceStream("btc/usdc")
+    ps = bapi_ws.BinancePriceStream("btc/usdc")
     assert ps.running_symbols == {"BTCUSDC"}
     assert ps.add_symbol("tao/usdc") is True
     assert "TAOUSDC" in ps.running_symbols
@@ -1625,14 +1613,13 @@ def test_bapi_allorders_snapshot_cache_symbol_rows_copies_rows_safely_under_lock
 
 def test_market_data_fetch_ohlc_candles_discards_candles_with_inverted_timestamps_close_time_iter185_s4(monkeypatch):
     """[ITER185 #4] market_data.fetch_ohlc_candles discards candles with inverted timestamps (close_time < open_time)."""
-    import binance_api.market_data as md
     # 4. market_data.fetch_ohlc_candles discards candles with inverted timestamps (close_time < open_time)
     fake_klines = [
         [1000, "10.0", "15.0", "9.0", "12.0", "1.0", 900, "12.0", 1, "0.5", "6.0", "0"],
         [2000, "12.0", "18.0", "11.0", "17.0", "2.0", 2500, "34.0", 2, "1.0", "17.0", "0"],
     ]
-    monkeypatch.setattr(md, "fetch_public_json", lambda *a, **kw: fake_klines)
-    candles = md.fetch_ohlc_candles("BTCUSDC", "1h", start_ms=1000, end_ms=3000)
+    monkeypatch.setattr(b_md, "fetch_public_json", lambda *a, **kw: fake_klines)
+    candles = b_md.fetch_ohlc_candles("BTCUSDC", "1h", start_ms=1000, end_ms=3000)
     assert len(candles) == 1
     assert candles[0]["timestamp"] == 2
     assert candles[0]["close"] == 17.0

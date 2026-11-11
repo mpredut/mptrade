@@ -996,9 +996,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
             self.assertEqual(lt.get_remote_items("BTCUSDT", 0), [{"trend": 1, "ts": now_sec}])
 
         # PriceWindow and IncrementalTrendBuffer ignore NaN/Inf/bool without poisoning prefix sums
-        import pricewindow as pw
 
-        w = pw.PriceWindow("BTCUSDT", 5, sample_rate_sec=1.0, window_seconds=50.0)
+        w = pw_mod.PriceWindow("BTCUSDT", 5, sample_rate_sec=1.0, window_seconds=50.0)
         for p in (100.0, 101.0, float("nan"), float("inf"), True, None, 102.0):
             w.process_price(p)
         for bad_r in (float("nan"), float("inf"), True, -1.0, 0.0, None):
@@ -1576,7 +1575,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
     def test_audit41_primary_window_float_precision_and_price_coercion(self):
         """Audit #41: CacheShortTrendManager primary window 222.0 exact matching, price coercion in Cache24/Sparse/CurrentPrice, and bapi_ws_health mirroring."""
         from decimal import Decimal
-        from binance_api import bapi_ws_bridge as bapi_ws_health
 
         # 1. WINDOW_SECONDS[0] is exact 222.0 and matches both 222 and 3.7*60 without duplicate evaluation
         stm = cm.CacheShortTrendManager(
@@ -1623,16 +1621,16 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(notified, [("BTCUSDT", fresh_ts_ms, 64123.45)])
 
         # 4. bapi_ws_health.mark_ws_* updates SSOT state in bapi_ws_bridge without mutating cacheManager
-        bapi_ws_health.mark_ws_available(True)
-        self.assertTrue(bapi_ws_health._ws_available)
+        bapi_ws_bridge.mark_ws_available(True)
+        self.assertTrue(bapi_ws_bridge._ws_available)
         self.assertFalse(hasattr(cm, "_ws_available"))
-        ev_ts = bapi_ws_health.mark_ws_event_received(1700000000.0)
-        self.assertEqual(bapi_ws_health._ws_last_event_ts, ev_ts)
-        self.assertTrue(bapi_ws_health._ws_is_healthy)
-        bapi_ws_health.mark_ws_unhealthy()
-        self.assertFalse(bapi_ws_health._ws_is_healthy)
-        bapi_ws_health.mark_ws_available(False)
-        self.assertFalse(bapi_ws_health._ws_available)
+        ev_ts = bapi_ws_bridge.mark_ws_event_received(1700000000.0)
+        self.assertEqual(bapi_ws_bridge._ws_last_event_ts, ev_ts)
+        self.assertTrue(bapi_ws_bridge._ws_is_healthy)
+        bapi_ws_bridge.mark_ws_unhealthy()
+        self.assertFalse(bapi_ws_bridge._ws_is_healthy)
+        bapi_ws_bridge.mark_ws_available(False)
+        self.assertFalse(bapi_ws_bridge._ws_available)
 
     def test_audit42_long_trend_neutral_snapshot_and_pricefetcher_guards(self):
         """Audit #42: explicit trailing None in cache_long_trend.json stops reverse scan, order_guard recovers .previous, and pricefetcher guards malformed entries."""
